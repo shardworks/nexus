@@ -1,0 +1,56 @@
+{
+  "description": "Everything a new guild needs — base tools, starter training, and initial schema",
+  "tools": [
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "tool-install", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "tool-remove", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "tool-list", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "commission-create", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "commission-list", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "commission-show", "roles": ["steward", "artificer"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "commission-update", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "commission-check", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "anima-create", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "anima-list", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "anima-show", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "anima-update", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "anima-remove", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "workshop-create", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "workshop-register", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "workshop-list", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "workshop-show", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "workshop-remove", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "clock-list", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "clock-tick", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "clock-run", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "clock-start", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "clock-stop", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "clock-status", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "nexus-version", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "signal", "roles": ["steward", "artificer"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "create-writ", "roles": ["steward", "artificer"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "list-writs", "roles": ["steward", "artificer"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "show-writ", "roles": ["steward", "artificer"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "fail-writ", "roles": ["steward", "artificer"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "complete-session", "roles": ["steward", "artificer"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "convene", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "conversation-list", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "conversation-show", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "conversation-end", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "session-list", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "session-show", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "event-list", "roles": ["steward"] },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "event-show", "roles": ["steward"] }
+  ],
+  "engines": [
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "workshop-prepare" },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "workshop-merge" },
+    { "package": "@shardworks/nexus-stdlib@0.x", "name": "summon-engine" }
+  ],
+  "temperaments": [
+    { "path": "temperaments/guide" },
+    { "path": "temperaments/artisan" }
+  ],
+  "curricula": [
+    { "path": "curricula/guild-operations" }
+  ]
+}

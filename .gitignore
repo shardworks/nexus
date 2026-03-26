@@ -1,0 +1,32 @@
+# only add shareable .claude artifacts
+.claude/*
+!.claude/*.example
+!.claude/agents
+!.claude/CLAUDE.md
+!.claude/hooks
+!.claude/settings.json
+!.claude/skills
+# do not ignore .claude directories in nested directories, since these are custom configs, skills, etc.
+!*/**/.claude
+
+.artifacts
+.artifacts/**
+.locks
+.locks/**
+.devcontainer/logs/
+domain
+
+# Turbo (not used, but cache dir can appear)
+.turbo/
+
+# Node / TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
+package-lock.json
+
+# Build artifacts that leak into src/ (from test runner or misconfigured tsc)
+packages/*/src/**/*.js
+packages/*/src/**/*.js.map
+packages/*/src/**/*.d.ts
+packages/*/src/**/*.d.ts.map

@@ -1,0 +1,97 @@
+name: Publish
+
+on:
+  push:
+    branches: [main]
+
+# Serialize publish runs so two workflows can't race on the same version.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+# OIDC token for npm trusted publishers (+ provenance attestation).
+# Also works with a classic NPM_TOKEN secret for bootstrapping new packages.
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0        # need full history for git tags
+          fetch-tags: true
+
+      - name: Configure git identity (needed by tests that shell out to git)
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@shardworks.dev"
+
+      - uses: pnpm/action-setup@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+      # Derive next version from the latest git tag
+      - name: Compute next version
+        id: version
+        run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 --match='v*' 2>/dev/null || echo "v0.0.0")
+          LATEST_VERSION="${LATEST_TAG#v}"
+          MAJOR=$(echo "$LATEST_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$LATEST_VERSION" | cut -d. -f2)
+          PATCH=$(echo "$LATEST_VERSION" | cut -d. -f3)
+
+          if [ "$MAJOR" -ge 1 ]; then
+            echo "::error::Auto-publish is disabled for stable versions (>= 1.0.0). Use a manual release process."
+            exit 1
+          fi
+
+          NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          echo "new=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing as $NEW_VERSION (previous: $LATEST_VERSION)"
+
+      # Inject version into all package.json files (temporary — not committed)
+      - name: Inject version
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new }}"
+          for f in package.json packages/*/package.json; do
+            node -e "
+              const fs = require('fs');
+              const pkg = JSON.parse(fs.readFileSync('$f', 'utf8'));
+              pkg.version = '$NEW_VERSION';
+              fs.writeFileSync('$f', JSON.stringify(pkg, null, 2) + '\n');
+            "
+          done
+
+      # Rebuild so dist/ has the new version if any package embeds it
+      - run: pnpm build
+
+      # Publish all packages
+      - name: Publish all packages
+        run: pnpm -r publish --no-git-checks --access public
+        env:
+          NPM_CONFIG_PROVENANCE: true
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Tag the commit (no version-bump commit needed)
+      - name: Tag release
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new }}"
+          git tag "v${NEW_VERSION}"
+          git push origin "v${NEW_VERSION}"

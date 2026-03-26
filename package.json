@@ -1,0 +1,29 @@
+{
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "version": "0.0.0",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shardworks/nexus-mk2"
+  },
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "cli": "pnpm --filter @shardworks/nexus cli"
+  },
+  "devDependencies": {
+    "@tsconfig/node24": "24.0.4",
+    "typescript": "5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
+  }
+}
