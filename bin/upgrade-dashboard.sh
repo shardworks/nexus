@@ -54,10 +54,13 @@ echo "→ Running pnpm install to update lock file…"
 
 echo "→ Committing version bump…"
 git -C "$PROJECT_ROOT" add packages/cli/package.json pnpm-lock.yaml
-git -C "$PROJECT_ROOT" commit -m "chore: bump $PACKAGE to $VERSION"
-
-echo "→ Pushing…"
-git -C "$PROJECT_ROOT" push
+if git -C "$PROJECT_ROOT" diff --cached --quiet; then
+  echo "  (nothing to commit — $PACKAGE was already at $VERSION)"
+else
+  git -C "$PROJECT_ROOT" commit -m "chore: bump $PACKAGE to $VERSION"
+  echo "→ Pushing…"
+  git -C "$PROJECT_ROOT" push
+fi
 
 # ── 5. Wait for nexus publish and upgrade the guild ───────────
 
