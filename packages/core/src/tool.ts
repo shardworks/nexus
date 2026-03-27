@@ -50,6 +50,15 @@ export interface ToolContext {
 }
 
 /**
+ * The deployment channels a tool is available in.
+ * - `'cli'` — accessible via `nsg` commands (human-facing)
+ * - `'mcp'` — accessible via MCP server (anima-facing)
+ *
+ * Defaults to `['cli', 'mcp']` if unspecified — available in all channels.
+ */
+export type ToolChannel = 'cli' | 'mcp';
+
+/**
  * A fully-defined tool — the return type of `tool()`.
  *
  * The MCP engine uses `.params.shape` to register the tool's input schema,
@@ -69,6 +78,11 @@ export interface ToolDefinition<TShape extends ZodShape = ZodShape> {
    * Mutually exclusive with `instructions`.
    */
   readonly instructionsFile?: string;
+  /**
+   * Channels where this tool is available.
+   * Defaults to `['cli', 'mcp']` if unspecified — available in all channels.
+   */
+  readonly allowedContexts?: ToolChannel[];
   readonly params: z.ZodObject<TShape>;
   readonly handler: (
     params: z.infer<z.ZodObject<TShape>>,
@@ -85,6 +99,8 @@ type ToolInput<TShape extends ZodShape> = {
     params: z.infer<z.ZodObject<TShape>>,
     context: ToolContext,
   ) => unknown | Promise<unknown>;
+  /** Channels where this tool is available. Defaults to all channels if unspecified. */
+  allowedContexts?: ToolChannel[];
 } & (
   | { instructions?: string; instructionsFile?: never }
   | { instructions?: never; instructionsFile?: string }
@@ -114,6 +130,7 @@ export function tool<TShape extends ZodShape>(def: ToolInput<TShape>): ToolDefin
     description: def.description,
     ...(def.instructions ? { instructions: def.instructions } : {}),
     ...(def.instructionsFile ? { instructionsFile: def.instructionsFile } : {}),
+    ...(def.allowedContexts ? { allowedContexts: def.allowedContexts } : {}),
     params: z.object(def.params),
     handler: def.handler,
   };
