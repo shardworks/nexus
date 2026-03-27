@@ -4,7 +4,7 @@
   "license": "ISC",
   "repository": {
     "type": "git",
-    "url": "https://github.com/shardworks/nexus-mk2",
+    "url": "https://github.com/shardworks/nexus",
     "directory": "packages/stdlib"
   },
   "description": "Standard tools and engines for the Nexus guild system",
