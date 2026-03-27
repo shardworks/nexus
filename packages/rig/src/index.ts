@@ -29,3 +29,5 @@ export {
   type NexusTool,
   type ListToolsOptions,
 } from './rig.ts';
+
+export { builtinTools } from './tools/index.ts';

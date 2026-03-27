@@ -13,11 +13,12 @@
  */
 
 import { createRequire } from 'node:module';
-import { readGuildConfig, resolveAllToolsFromExport } from '@shardworks/nexus-core';
+import fs from 'node:fs';
+import path from 'node:path';
+import { readGuildConfig, resolveAllToolsFromExport, VERSION } from '@shardworks/nexus-core';
 import type { GuildConfig, ToolDefinition } from '@shardworks/nexus-core';
 import type { ToolChannel } from '@shardworks/nexus-core';
-
-const _require = createRequire(import.meta.url);
+import { builtinTools } from './tools/index.ts';
 
 // ── Plugin key derivation ──────────────────────────────────────────────
 
@@ -144,12 +145,74 @@ export interface Rig {
 
 // ── Implementation ─────────────────────────────────────────────────────
 
+/**
+ * Read a package.json from the guild's node_modules.
+ * Returns the parsed JSON and version. Falls back gracefully.
+ */
+function readGuildPackageJson(
+  guildRoot: string,
+  pkgName: string,
+): { version: string; pkgJson: Record<string, unknown> | null } {
+  const pkgJsonPath = path.join(guildRoot, 'node_modules', pkgName, 'package.json');
+  try {
+    const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8')) as Record<string, unknown>;
+    return { version: (pkgJson.version as string) ?? 'unknown', pkgJson };
+  } catch {
+    console.warn(`[rig] Could not resolve package.json for "${pkgName}"`);
+    return { version: 'unknown', pkgJson: null };
+  }
+}
+
+/**
+ * Resolve the entry point for a guild-installed package.
+ *
+ * Reads the package's exports map to find the ESM entry point,
+ * since guild packages are ESM-only and createRequire() can't resolve them.
+ * Returns an absolute path suitable for dynamic import().
+ */
+function resolveGuildPackageEntry(guildRoot: string, pkgName: string): string {
+  const pkgDir = path.join(guildRoot, 'node_modules', pkgName);
+  const { pkgJson } = readGuildPackageJson(guildRoot, pkgName);
+
+  if (pkgJson) {
+    // Try exports['.'].import, then exports['.'] as string, then main
+    const exports = pkgJson.exports as Record<string, unknown> | string | undefined;
+    if (exports) {
+      if (typeof exports === 'string') return path.join(pkgDir, exports);
+      const main = (exports as Record<string, unknown>)['.'];
+      if (typeof main === 'string') return path.join(pkgDir, main);
+      if (main && typeof main === 'object') {
+        const importPath = (main as Record<string, string>).import;
+        if (importPath) return path.join(pkgDir, importPath);
+      }
+    }
+    if (pkgJson.main) return path.join(pkgDir, pkgJson.main as string);
+  }
+
+  // Last resort
+  return path.join(pkgDir, 'index.js');
+}
+
+/** Build the rig's own plugin entry from its built-in tools. */
+function rigPlugin(): NexusPlugin {
+  const rigPackageName = '@shardworks/nexus-rig';
+  return {
+    packageName: rigPackageName,
+    key: derivePluginKey(rigPackageName),
+    version: VERSION,
+    tools: builtinTools.map((t) => ({ ...t, pluginName: rigPackageName }) as NexusTool),
+  };
+}
+
 /** Load and cache all plugins from the guild.json tools catalog. */
 async function loadAllPlugins(
   guildRoot: string,
   config: GuildConfig,
 ): Promise<NexusPlugin[]> {
-  // Group tools by their npm package name
+  // Start with rig's own built-in tools — always present
+  const plugins: NexusPlugin[] = [rigPlugin()];
+
+  // Group installed tools by their npm package name
   const pluginMap = new Map<string, { version: string; tools: NexusTool[] }>();
 
   for (const [toolName, entry] of Object.entries(config.tools)) {
@@ -159,20 +222,16 @@ async function loadAllPlugins(
 
     // Ensure the plugin entry exists
     if (!pluginMap.has(pkgName)) {
-      let version = 'unknown';
-      try {
-        const pkgJson = _require(`${pkgName}/package.json`) as { version?: string };
-        version = pkgJson.version ?? 'unknown';
-      } catch {
-        // Package may not be installed yet — warn but don't crash
-        console.warn(`[rig] Could not resolve package.json for "${pkgName}"`);
-      }
+      const { version } = readGuildPackageJson(guildRoot, pkgName);
       pluginMap.set(pkgName, { version, tools: [] });
     }
 
-    // Import the package and extract the matching tool
+    // Import the package and extract the matching tool.
+    // Resolve from the guild's node_modules (not rig's) since plugins are
+    // installed as guild dependencies.
     try {
-      const mod = await import(pkgName) as { default: unknown };
+      const entryPath = resolveGuildPackageEntry(guildRoot, pkgName);
+      const mod = await import(entryPath) as { default: unknown };
       const allTools = resolveAllToolsFromExport(mod.default);
 
       for (const toolDef of allTools) {
@@ -188,12 +247,17 @@ async function loadAllPlugins(
     }
   }
 
-  return Array.from(pluginMap.entries()).map(([packageName, { version, tools }]) => ({
-    packageName,
-    key: derivePluginKey(packageName),
-    version,
-    tools,
-  }));
+  // Append installed plugins after the rig built-in
+  for (const [packageName, { version, tools }] of pluginMap.entries()) {
+    plugins.push({
+      packageName,
+      key: derivePluginKey(packageName),
+      version,
+      tools,
+    });
+  }
+
+  return plugins;
 }
 
 /**

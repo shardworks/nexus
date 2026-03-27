@@ -17,7 +17,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@shardworks/nexus-core": "workspace:*"
+    "@shardworks/nexus-core": "workspace:*",
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@types/node": "25.5.0"

@@ -15,7 +15,8 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "cli": "pnpm --filter @shardworks/nexus cli"
+    "nsg": "node --disable-warning=ExperimentalWarning --experimental-transform-types packages/cli/src/cli.ts",
+    "nsg1": "node --disable-warning=ExperimentalWarning --experimental-transform-types packages/cli/src/v1/cli.ts"
   },
   "devDependencies": {
     "@tsconfig/node24": "24.0.4",
