@@ -211,7 +211,7 @@ export function initGuild(home: string, name: string, model: string): void {
     },
     standingOrders: [
       { on: 'writ.posted', run: 'workshop-prepare' },
-      { on: 'writ.workspace-ready', summon: 'artificer', prompt: 'You have been assigned a commission.\n\n{{writ.title}}\n\n{{writ.description}}' },
+      { on: 'writ.workspace-ready', summon: 'artificer', prompt: 'You have been assigned a writ.\n\n{{writ.title}}\n\n{{writ.description}}' },
       { on: 'writ.completed', run: 'workshop-merge' },
     ],
   };

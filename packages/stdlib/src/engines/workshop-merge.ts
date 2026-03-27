@@ -47,6 +47,12 @@ export default engine({
       return;
     }
 
+    // Only merge top-level patron-posted writs — child writs inherit workshop
+    // from their parent but do not have their own worktrees or branches.
+    if (writ.parentId) {
+      return;
+    }
+
     const workshop = writ.workshop;
     const branch = `writ-${writId}`;
     const bareRepo = workshopBarePath(home, workshop);

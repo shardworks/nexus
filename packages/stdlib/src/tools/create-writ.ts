@@ -19,9 +19,6 @@ export default tool({
   handler: (params, { home }) => {
     const resolvedParent = params.parentId ?? process.env.NEXUS_WRIT_ID ?? undefined;
 
-    // Resolve source ID from the calling anima's session writ
-    const sourceId = process.env.NEXUS_WRIT_ID ?? null;
-
     return createWrit(home, {
       type: params.type,
       title: params.title,
@@ -29,7 +26,10 @@ export default tool({
       parentId: resolvedParent,
       workshop: params.workshop,
       sourceType: 'anima',
-      sourceId: sourceId ?? undefined,
+      // sourceId would be the anima's ID, but no anima ID is available in
+      // the tool execution context — only the writ ID (NEXUS_WRIT_ID) is
+      // injected, and storing that here would be semantically wrong.
+      // Left null until session context exposes the anima identity.
     });
   },
 });

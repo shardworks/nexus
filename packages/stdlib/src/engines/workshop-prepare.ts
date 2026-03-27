@@ -36,9 +36,11 @@ export default engine({
       throw new Error(`Writ "${writId}" not found.`);
     }
 
-    // If no workshop on the writ, nothing to prepare — skip silently.
-    // The summon-engine will handle workshopless writs differently.
+    // If no workshop on the writ, signal workspace-ready with null worktreePath
+    // so the summon-engine standing order still fires and can launch a
+    // restricted (read-only tool) session for knowledge/planning work.
     if (!writ.workshop) {
+      signalEvent(home, 'writ.workspace-ready', { writId, workshop: null, worktreePath: null }, 'framework');
       return;
     }
 

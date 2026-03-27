@@ -309,13 +309,15 @@ describe('full init sequence', () => {
     const db = new Database(path.join(home, '.nexus', 'nexus.db'));
     try {
       const rows = db.prepare('SELECT * FROM _migrations ORDER BY sequence').all() as { sequence: number; filename: string }[];
-      assert.equal(rows.length, 3);
+      assert.equal(rows.length, 4);
       assert.equal(rows[0]!.sequence, 1);
       assert.equal(rows[0]!.filename, '001-schema.sql');
       assert.equal(rows[1]!.sequence, 2);
       assert.equal(rows[1]!.filename, '002-writs.sql');
       assert.equal(rows[2]!.sequence, 3);
       assert.equal(rows[2]!.filename, '003-conversations.sql');
+      assert.equal(rows[3]!.sequence, 4);
+      assert.equal(rows[3]!.filename, '004-remove-commissions.sql');
     } finally {
       db.close();
     }
@@ -407,7 +409,7 @@ describe('full init sequence', () => {
     assert.ok(config.clockworks.events['craft.debt'].schema.workshop, 'craft.debt missing workshop in schema');
     assert.equal(config.clockworks.standingOrders.length, 3, 'should have 3 writ lifecycle standing orders');
     assert.deepEqual(config.clockworks.standingOrders[0], { on: 'writ.posted', run: 'workshop-prepare' });
-    assert.deepEqual(config.clockworks.standingOrders[1], { on: 'writ.workspace-ready', summon: 'artificer', prompt: 'You have been assigned a commission.\n\n{{writ.title}}\n\n{{writ.description}}' });
+    assert.deepEqual(config.clockworks.standingOrders[1], { on: 'writ.workspace-ready', summon: 'artificer', prompt: 'You have been assigned a writ.\n\n{{writ.title}}\n\n{{writ.description}}' });
     assert.deepEqual(config.clockworks.standingOrders[2], { on: 'writ.completed', run: 'workshop-merge' });
   });
 });
