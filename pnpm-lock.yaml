@@ -37,8 +37,8 @@ importers:
         specifier: workspace:*
         version: link:../claude-code-session-provider
       '@shardworks/guild-monitor':
-        specifier: 0.1.14
-        version: 0.1.14
+        specifier: 0.1.15
+        version: 0.1.15
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../core
@@ -116,8 +116,8 @@ packages:
       '@cfworker/json-schema':
         optional: true
 
-  '@shardworks/guild-monitor@0.1.14':
-    resolution: {integrity: sha512-lNQjtgKYhtYNoU4xkuQaJbio8xkpvOil1Kw9MaUUAyGjjiWztEadyfxE51WBOgAbif44EulYmL4hmq0sIJndGw==}
+  '@shardworks/guild-monitor@0.1.15':
+    resolution: {integrity: sha512-tFZzDrZ6oQUWT90BgF+02yU1gM4+y0cCE+TcfLqYb3lckCerxB0JYyKJEe7vAKMAlJCvhKO9LtMoeyVuMYoPlw==}
 
   '@shardworks/nexus-core@0.1.86':
     resolution: {integrity: sha512-YWRDwbnewhumh15cdXGBizIrk4Hi3rImwfV6+4e88/PqcY/rQZInanI3L5qJag7LB7l3tkDZdcmjE6El8afO6Q==}
@@ -651,7 +651,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@shardworks/guild-monitor@0.1.14':
+  '@shardworks/guild-monitor@0.1.15':
     dependencies:
       '@shardworks/nexus-core': 0.1.86
       better-sqlite3: 12.8.0
