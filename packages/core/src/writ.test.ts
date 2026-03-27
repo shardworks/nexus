@@ -10,9 +10,11 @@ import {
   listWrits,
   activateWrit,
   completeWrit,
+  adminCompleteWrit,
   failWrit,
   cancelWrit,
   interruptWrit,
+  reopenFailedWrit,
   getWritChildren,
   rollupParent,
   buildProgressAppendix,
@@ -796,6 +798,194 @@ describe('validateWritType', () => {
     assert.throws(
       () => validateWritType(home, 'mandate'),
       /not declared in guild.json/,
+    );
+  });
+});
+
+// ── Admin Complete ─────────────────────────────────────────────────────
+
+describe('adminCompleteWrit', () => {
+  it('completes a pending writ', () => {
+    const home = setupTestGuild();
+    const parent = createWrit(home, { type: 'summon', title: 'Parent' });
+    createWrit(home, { type: 'summon', title: 'Child', parentId: parent.id });
+
+    activateWrit(home, parent.id, 'ses-p');
+    completeWrit(home, parent.id); // → pending (child incomplete)
+
+    const before = readWrit(home, parent.id);
+    assert.equal(before!.status, 'pending');
+
+    const result = adminCompleteWrit(home, parent.id);
+    assert.equal(result.status, 'completed');
+    assert.equal(result.sessionId, null);
+  });
+
+  it('completes an active writ', () => {
+    const home = setupTestGuild();
+    const w = createWrit(home, { type: 'summon', title: 'Active writ' });
+    activateWrit(home, w.id, 'ses-1');
+
+    const result = adminCompleteWrit(home, w.id);
+    assert.equal(result.status, 'completed');
+  });
+
+  it('fires completion events for type=writ', () => {
+    const home = setupTestGuild();
+    const w = createWrit(home, { title: 'Type-writ' });
+    activateWrit(home, w.id, 'ses-1');
+    adminCompleteWrit(home, w.id);
+
+    const events = listEvents(home, { name: 'writ.completed' });
+    const matching = events.filter(e => {
+      const p = e.payload as Record<string, unknown> | null;
+      return p?.writId === w.id;
+    });
+    assert.equal(matching.length, 1, 'Expected one writ.completed event');
+  });
+
+  it('fires both type-specific and generic events for custom types', () => {
+    const home = setupTestGuild({ writTypes: { task: { description: 'A task' } } });
+    const w = createWrit(home, { type: 'task', title: 'Custom type' });
+    activateWrit(home, w.id, 'ses-1');
+    adminCompleteWrit(home, w.id);
+
+    const taskEvents = listEvents(home, { name: 'task.completed' });
+    const writEvents = listEvents(home, { name: 'writ.completed' });
+    assert.equal(
+      taskEvents.filter(e => (e.payload as Record<string, unknown> | null)?.writId === w.id).length,
+      1, 'Expected one task.completed event',
+    );
+    assert.equal(
+      writEvents.filter(e => (e.payload as Record<string, unknown> | null)?.writId === w.id).length,
+      1, 'Expected one writ.completed event',
+    );
+  });
+
+  it('triggers parent rollup', () => {
+    const home = setupTestGuild();
+    const grandparent = createWrit(home, { type: 'summon', title: 'GP' });
+    const parent = createWrit(home, { type: 'summon', title: 'Parent', parentId: grandparent.id });
+
+    // Get grandparent to pending
+    activateWrit(home, grandparent.id, 'ses-gp');
+    completeWrit(home, grandparent.id); // → pending (parent incomplete)
+
+    // Admin-complete the parent
+    activateWrit(home, parent.id, 'ses-p');
+    adminCompleteWrit(home, parent.id);
+
+    // Grandparent should auto-complete via rollup
+    const gp = readWrit(home, grandparent.id);
+    assert.equal(gp!.status, 'completed');
+  });
+
+  it('throws on ready writ', () => {
+    const home = setupTestGuild();
+    const w = createWrit(home, { type: 'summon', title: 'Ready' });
+    assert.throws(
+      () => adminCompleteWrit(home, w.id),
+      /expected "pending" or "active"/,
+    );
+  });
+
+  it('throws on terminal writ (completed)', () => {
+    const home = setupTestGuild();
+    const w = createWrit(home, { type: 'summon', title: 'Done' });
+    activateWrit(home, w.id, 'ses-1');
+    completeWrit(home, w.id);
+    assert.throws(
+      () => adminCompleteWrit(home, w.id),
+      /expected "pending" or "active"/,
+    );
+  });
+
+  it('throws on terminal writ (failed)', () => {
+    const home = setupTestGuild();
+    const w = createWrit(home, { type: 'summon', title: 'Failed' });
+    activateWrit(home, w.id, 'ses-1');
+    failWrit(home, w.id);
+    assert.throws(
+      () => adminCompleteWrit(home, w.id),
+      /expected "pending" or "active"/,
+    );
+  });
+});
+
+// ── Reopen Failed ─────────────────────────────────────────────────────
+
+describe('reopenFailedWrit', () => {
+  it('transitions failed → ready', () => {
+    const home = setupTestGuild();
+    const w = createWrit(home, { type: 'summon', title: 'Reopen me' });
+    activateWrit(home, w.id, 'ses-1');
+    failWrit(home, w.id);
+
+    const result = reopenFailedWrit(home, w.id);
+    assert.equal(result.status, 'ready');
+    assert.equal(result.sessionId, null);
+  });
+
+  it('fires <type>.ready event', () => {
+    const home = setupTestGuild({ writTypes: { task: { description: 'A task' } } });
+    const w = createWrit(home, { type: 'task', title: 'Failed task' });
+
+    // createWrit fires task.ready on creation — count events before reopening
+    const eventsBefore = listEvents(home, { name: 'task.ready' });
+    const countBefore = eventsBefore.filter(e => {
+      const p = e.payload as Record<string, unknown> | null;
+      return p?.writId === w.id;
+    }).length;
+
+    activateWrit(home, w.id, 'ses-1');
+    failWrit(home, w.id);
+    reopenFailedWrit(home, w.id);
+
+    const eventsAfter = listEvents(home, { name: 'task.ready' });
+    const countAfter = eventsAfter.filter(e => {
+      const p = e.payload as Record<string, unknown> | null;
+      return p?.writId === w.id;
+    }).length;
+    assert.equal(countAfter - countBefore, 1, 'Expected exactly one new task.ready event from reopenFailedWrit');
+  });
+
+  it('throws on non-failed writ (active)', () => {
+    const home = setupTestGuild();
+    const w = createWrit(home, { type: 'summon', title: 'Active' });
+    activateWrit(home, w.id, 'ses-1');
+    assert.throws(
+      () => reopenFailedWrit(home, w.id),
+      /expected "failed"/,
+    );
+  });
+
+  it('throws on non-failed writ (ready)', () => {
+    const home = setupTestGuild();
+    const w = createWrit(home, { type: 'summon', title: 'Ready' });
+    assert.throws(
+      () => reopenFailedWrit(home, w.id),
+      /expected "failed"/,
+    );
+  });
+
+  it('throws on non-failed writ (completed)', () => {
+    const home = setupTestGuild();
+    const w = createWrit(home, { type: 'summon', title: 'Done' });
+    activateWrit(home, w.id, 'ses-1');
+    completeWrit(home, w.id);
+    assert.throws(
+      () => reopenFailedWrit(home, w.id),
+      /expected "failed"/,
+    );
+  });
+
+  it('throws on non-failed writ (cancelled)', () => {
+    const home = setupTestGuild();
+    const w = createWrit(home, { type: 'summon', title: 'Cancelled' });
+    cancelWrit(home, w.id);
+    assert.throws(
+      () => reopenFailedWrit(home, w.id),
+      /expected "failed"/,
     );
   });
 });

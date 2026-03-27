@@ -431,6 +431,98 @@ export function cancelWrit(home: string, writId: string): WritRecord {
 }
 
 /**
+ * Administratively complete a writ in pending or active state.
+ * Fires <type>.completed (and writ.completed for custom types) and triggers
+ * parent rollup, exactly as the normal completion path does.
+ * Use case: unsticking a pending writ whose children were all cancelled.
+ */
+export function adminCompleteWrit(home: string, writId: string): WritRecord {
+  const db = new Database(booksPath(home));
+  db.pragma('foreign_keys = ON');
+  try {
+    const current = readWritById(db, writId);
+    if (!current) throw new Error(`Writ "${writId}" not found.`);
+    if (current.status !== 'pending' && current.status !== 'active') {
+      throw new Error(
+        `Cannot administratively complete writ "${writId}" — status is "${current.status}", expected "pending" or "active".`,
+      );
+    }
+
+    db.prepare(
+      `UPDATE writs SET status = 'completed', session_id = NULL, updated_at = datetime('now') WHERE id = ?`,
+    ).run(writId);
+
+    db.prepare(
+      `INSERT INTO audit_log (id, actor, action, target_type, target_id, detail) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(generateId('aud'), 'steward', 'writ_admin_completed', 'writ', writId, null);
+
+    // Fire type-specific completion event
+    signalEvent(home, `${current.type}.completed`, {
+      writId,
+      parentId: current.parentId,
+      type: current.type,
+      workshop: current.workshop,
+    }, 'framework');
+
+    // Fire generic writ.completed event (skip when type is 'writ' to avoid duplicate)
+    if (current.type !== 'writ') {
+      signalEvent(home, 'writ.completed', {
+        writId,
+        parentId: current.parentId,
+        type: current.type,
+        workshop: current.workshop,
+      }, 'framework');
+    }
+
+    // Trigger rollup on parent
+    if (current.parentId) {
+      rollupParent(home, current.parentId);
+    }
+
+    return readWritById(db, writId)!;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Reopen a failed writ: failed → ready. Fires <type>.ready for re-dispatch.
+ * Use case: recovering from a failed writ without having to cancel and recreate it.
+ */
+export function reopenFailedWrit(home: string, writId: string): WritRecord {
+  const db = new Database(booksPath(home));
+  db.pragma('foreign_keys = ON');
+  try {
+    const current = readWritById(db, writId);
+    if (!current) throw new Error(`Writ "${writId}" not found.`);
+    if (current.status !== 'failed') {
+      throw new Error(
+        `Cannot reopen-failed writ "${writId}" — status is "${current.status}", expected "failed".`,
+      );
+    }
+
+    db.prepare(
+      `UPDATE writs SET status = 'ready', session_id = NULL, updated_at = datetime('now') WHERE id = ?`,
+    ).run(writId);
+
+    db.prepare(
+      `INSERT INTO audit_log (id, actor, action, target_type, target_id, detail) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(generateId('aud'), 'steward', 'writ_reopened_from_failed', 'writ', writId, null);
+
+    // Fire ready event for re-dispatch
+    signalEvent(home, `${current.type}.ready`, {
+      writId,
+      parentId: current.parentId,
+      type: current.type,
+    }, 'framework');
+
+    return readWritById(db, writId)!;
+  } finally {
+    db.close();
+  }
+}
+
+/**
  * Interrupt a writ: active → ready. Session ended without complete-session
  * or fail-writ. Fires <type>.ready for re-dispatch.
  */

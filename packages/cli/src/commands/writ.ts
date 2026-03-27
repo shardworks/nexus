@@ -2,7 +2,7 @@ import { createCommand } from 'commander';
 import {
   createWrit, readWrit, listWrits, failWrit, cancelWrit,
   getWritChildren, signalEvent, readGuildConfig,
-  interruptWrit,
+  interruptWrit, adminCompleteWrit, reopenFailedWrit,
 } from '@shardworks/nexus-core';
 import { resolveHome } from '../resolve-home.ts';
 
@@ -155,7 +155,7 @@ export function makeWritCommand() {
     createCommand('update')
       .description('Update a writ status')
       .argument('<id>', 'Writ ID')
-      .requiredOption('--action <action>', 'Action: fail, cancel, or reopen')
+      .requiredOption('--action <action>', 'Action: fail, cancel, reopen, complete, or reopen-failed')
       .action((id: string, options: { action: string }, cmd) => {
         const home = resolveHome(cmd);
         try {
@@ -172,8 +172,16 @@ export function makeWritCommand() {
               interruptWrit(home, id);
               console.log(`Writ ${id} reopened (status: ready).`);
               break;
+            case 'complete':
+              adminCompleteWrit(home, id);
+              console.log(`Writ ${id} administratively completed.`);
+              break;
+            case 'reopen-failed':
+              reopenFailedWrit(home, id);
+              console.log(`Writ ${id} reopened from failed (status: ready).`);
+              break;
             default:
-              console.error(`Error: unknown action "${options.action}". Use: fail, cancel, reopen.`);
+              console.error(`Error: unknown action "${options.action}". Use: fail, cancel, reopen, complete, reopen-failed.`);
               process.exitCode = 1;
           }
         } catch (err) {
