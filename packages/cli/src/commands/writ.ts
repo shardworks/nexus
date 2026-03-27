@@ -1,4 +1,5 @@
 import { createCommand } from 'commander';
+import { readFileSync } from 'node:fs';
 import {
   createWrit, readWrit, listWrits, failWrit, cancelWrit,
   getWritChildren, signalEvent, readGuildConfig,
@@ -11,16 +12,44 @@ export function makeWritCommand() {
     .description('Manage writs');
 
   // nsg writ post <spec> --workshop <name>
+  // nsg writ post --file <path> --workshop <name>
   // nsg writ post <spec> --no-workshop
   const postCmd = createCommand('post')
     .description('Post a new writ to the guild')
-    .argument('<spec>', 'Writ specification — what needs to be done')
+    .argument('[spec]', 'Writ specification — what needs to be done')
+    .option('--file <path>', 'Read spec from a file instead of inline argument')
     .option('--workshop <workshop>', 'Target workshop (workspace-bound work)')
     .option('--no-workshop', 'Knowledge/planning work (no workspace)')
     .option('--type <type>', 'Writ type (default: uses first declared type or "summon")')
-    .action((spec: string, options: { workshop?: string | boolean; type?: string }, cmd) => {
+    .action((spec: string | undefined, options: { file?: string; workshop?: string | boolean; type?: string }, cmd) => {
       const home = resolveHome(cmd);
       try {
+        // Validate spec source: exactly one of inline <spec> or --file required
+        if (spec && options.file) {
+          console.error('Error: provide either an inline <spec> argument or --file <path>, not both.');
+          process.exitCode = 1;
+          return;
+        }
+        if (!spec && !options.file) {
+          console.error('Error: provide a <spec> argument or --file <path>.');
+          process.exitCode = 1;
+          return;
+        }
+
+        // Read spec from file if --file provided
+        let resolvedSpec: string;
+        if (options.file) {
+          try {
+            resolvedSpec = readFileSync(options.file, 'utf-8');
+          } catch (err) {
+            console.error(`Error: could not read file "${options.file}": ${(err as Error).message}`);
+            process.exitCode = 1;
+            return;
+          }
+        } else {
+          resolvedSpec = spec!;
+        }
+
         // Validate workshop option: one of --workshop <name> or --no-workshop required
         const workshop = options.workshop;
         if (workshop === undefined) {
@@ -43,11 +72,11 @@ export function makeWritCommand() {
           }
         }
 
-        const title = spec.split('\n')[0]!.substring(0, 200);
+        const title = resolvedSpec.split('\n')[0]!.substring(0, 200);
         const writ = createWrit(home, {
           type: options.type,  // undefined → createWrit defaults to 'writ'
           title,
-          description: spec,
+          description: resolvedSpec,
           workshop: workshopName,
           sourceType: 'patron',
         });

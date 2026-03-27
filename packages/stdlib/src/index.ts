@@ -21,6 +21,7 @@ export { default as clockStop } from './tools/clock-stop.ts';
 export { default as signal } from './tools/signal.ts';
 export { default as nexusVersion } from './tools/nexus-version.ts';
 export { default as createWrit } from './tools/create-writ.ts';
+export { default as postWrit } from './tools/post-writ.ts';
 export { default as listWrits } from './tools/list-writs.ts';
 export { default as showWrit } from './tools/show-writ.ts';
 export { default as completeSession } from './tools/complete-session.ts';
@@ -63,6 +64,7 @@ import clockStopTool from './tools/clock-stop.ts';
 import signal from './tools/signal.ts';
 import nexusVersion from './tools/nexus-version.ts';
 import createWritTool from './tools/create-writ.ts';
+import postWritTool from './tools/post-writ.ts';
 import listWritsTool from './tools/list-writs.ts';
 import showWritTool from './tools/show-writ.ts';
 import completeSessionTool from './tools/complete-session.ts';
@@ -86,7 +88,7 @@ export default [
   toolInstall, toolRemove, toolList,
   clockList, clockTick, clockRun, clockStatus, clockStartTool, clockStopTool,
   signal, nexusVersion,
-  createWritTool, listWritsTool, showWritTool, completeSessionTool, failWritTool, updateWritTool,
+  createWritTool, postWritTool, listWritsTool, showWritTool, completeSessionTool, failWritTool, updateWritTool,
   conversationListTool, conversationShowTool, conversationEndTool, conveneTool,
   sessionListTool, sessionShowTool, eventListTool, eventShowTool,
   workshopPrepare, workshopMerge, summonEngine,
