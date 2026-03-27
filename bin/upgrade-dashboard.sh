@@ -58,8 +58,15 @@ if git -C "$PROJECT_ROOT" diff --cached --quiet; then
   echo "  (nothing to commit — $PACKAGE was already at $VERSION)"
 else
   git -C "$PROJECT_ROOT" commit -m "chore: bump $PACKAGE to $VERSION"
-  echo "→ Pushing…"
+fi
+
+# Always push — there may be unpushed commits even if nothing new to commit
+UNPUSHED=$(git -C "$PROJECT_ROOT" log origin/HEAD..HEAD --oneline 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$UNPUSHED" -gt 0 ]]; then
+  echo "→ Pushing $UNPUSHED unpushed commit(s)…"
   git -C "$PROJECT_ROOT" push
+else
+  echo "  (nothing to push — already up to date with origin)"
 fi
 
 # ── 5. Wait for nexus publish and upgrade the guild ───────────
