@@ -13,6 +13,7 @@ import {
   failWrit,
   cancelWrit,
   interruptWrit,
+  getWritChildren,
   rollupParent,
   buildProgressAppendix,
   hydratePromptTemplate,
@@ -463,6 +464,65 @@ describe('interruptWrit', () => {
       () => interruptWrit(home, w.id),
       /expected "active"/,
     );
+  });
+});
+
+// ── Children-aware Interruption (summon-engine step 9 pattern) ─────────
+
+describe('children-aware session-end', () => {
+  it('completeWrit (→ pending) when active writ has incomplete children', () => {
+    const home = setupTestGuild();
+    const parent = createWrit(home, { type: 'summon', title: 'Parent' });
+    createWrit(home, { type: 'summon', title: 'Child in ready', parentId: parent.id });
+
+    activateWrit(home, parent.id, 'ses-p');
+
+    // Simulate summon-engine step 9: check children before deciding
+    const children = getWritChildren(home, parent.id);
+    const hasIncomplete = children.some(c =>
+      c.status !== 'completed' && c.status !== 'cancelled',
+    );
+    assert.ok(hasIncomplete, 'should detect incomplete child');
+
+    // With incomplete children → completeWrit (transitions to pending)
+    const result = completeWrit(home, parent.id);
+    assert.equal(result.status, 'pending');
+    assert.equal(result.sessionId, null);
+  });
+
+  it('interruptWrit (→ ready) when active writ has no children', () => {
+    const home = setupTestGuild();
+    const w = createWrit(home, { type: 'summon', title: 'No children' });
+    activateWrit(home, w.id, 'ses-1');
+
+    const children = getWritChildren(home, w.id);
+    const hasIncomplete = children.some(c =>
+      c.status !== 'completed' && c.status !== 'cancelled',
+    );
+    assert.ok(!hasIncomplete, 'should have no incomplete children');
+
+    const result = interruptWrit(home, w.id);
+    assert.equal(result.status, 'ready');
+  });
+
+  it('interruptWrit (→ ready) when all children are completed', () => {
+    const home = setupTestGuild();
+    const parent = createWrit(home, { type: 'summon', title: 'Parent' });
+    const child = createWrit(home, { type: 'summon', title: 'Done child', parentId: parent.id });
+
+    activateWrit(home, child.id, 'ses-c');
+    completeWrit(home, child.id);
+
+    activateWrit(home, parent.id, 'ses-p');
+
+    const children = getWritChildren(home, parent.id);
+    const hasIncomplete = children.some(c =>
+      c.status !== 'completed' && c.status !== 'cancelled',
+    );
+    assert.ok(!hasIncomplete, 'all children should be complete');
+
+    const result = interruptWrit(home, parent.id);
+    assert.equal(result.status, 'ready');
   });
 });
 

@@ -33,8 +33,10 @@ import {
   createWrit,
   readWrit,
   activateWrit,
+  completeWrit,
   interruptWrit,
   failWrit,
+  getWritChildren,
   hydratePromptTemplate,
   buildProgressAppendix,
 } from '@shardworks/nexus-core';
@@ -52,13 +54,15 @@ const DESTRUCTIVE_TOOL_PATTERNS = [
 ];
 
 /** Protocol block injected into the system prompt for all writ-bound sessions. */
-const WRIT_SESSION_PROTOCOL = `## Session Protocol
+function writSessionProtocol(writId: string): string {
+  return `## Session Protocol
 
-You are working on a writ (tracked work item). You MUST signal completion before your session ends:
+You are working on writ \`${writId}\`. You MUST signal completion before your session ends:
 
-- Call \`complete-session\` when you have finished your work. If you created child writs, the system will wait for them to complete automatically.
+- Call \`complete-session\` when you have finished all the work you can do in this session. If you created child writs, the system will wait for them to complete automatically.
 - Call \`fail-writ\` with a reason if the work cannot be completed.
-- If your session ends without calling either tool, the system treats it as an interruption and will re-dispatch the work to a new session.`;
+- If your session ends without calling either tool, the system treats it as an interruption and will re-dispatch the work to a new session. However, if you have created child writs that are still in progress, the system will transition your writ to pending and let the children complete — it will not re-dispatch.`;
+}
 
 export default engine({
   name: 'summon-engine',
@@ -167,7 +171,7 @@ export default engine({
         trigger: 'summon',
         writId,
         sessionId,
-        systemPromptAppendix: WRIT_SESSION_PROTOCOL,
+        systemPromptAppendix: writSessionProtocol(writId),
       });
     } finally {
       if (prevWritId !== undefined) {
@@ -180,8 +184,21 @@ export default engine({
     // Step 9: Handle session end — check writ status
     const finalWrit = readWrit(home, writId);
     if (finalWrit && finalWrit.status === 'active') {
-      // Session ended without complete-session or fail-writ → interrupted
-      interruptWrit(home, writId);
+      // Session ended without complete-session or fail-writ.
+      // Check for incomplete children before deciding what to do.
+      const children = getWritChildren(home, writId);
+      const hasIncomplete = children.some(c =>
+        c.status !== 'completed' && c.status !== 'cancelled',
+      );
+
+      if (hasIncomplete) {
+        // Children are still in progress — transition to pending so the
+        // rollup engine can complete the writ when children finish.
+        completeWrit(home, writId);
+      } else {
+        // No incomplete children — genuine interruption, re-dispatch.
+        interruptWrit(home, writId);
+      }
     }
     // If status is completed, pending, or failed — the tool already handled it
   },
