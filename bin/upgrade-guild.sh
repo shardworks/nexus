@@ -34,7 +34,20 @@ npm uninstall -g "$PACKAGE"
 # --prefer-online forces a fresh registry lookup on the next install, ensuring
 # we pull the newly published version rather than any cached resolution.
 echo "→ Installing $PACKAGE@$VERSION globally (--prefer-online)…"
-npm install -g "$PACKAGE@$VERSION" --prefer-online
+INSTALL_ATTEMPTS=5
+INSTALL_DELAY=10
+for attempt in $(seq 1 $INSTALL_ATTEMPTS); do
+  if npm install -g "$PACKAGE@$VERSION" --prefer-online; then
+    break
+  fi
+  if [[ $attempt -lt $INSTALL_ATTEMPTS ]]; then
+    echo "  (attempt $attempt failed — retrying in ${INSTALL_DELAY}s…)"
+    sleep $INSTALL_DELAY
+  else
+    echo "✗ Failed to install $PACKAGE@$VERSION after $INSTALL_ATTEMPTS attempts." >&2
+    exit 1
+  fi
+done
 
 nsg --version
 
