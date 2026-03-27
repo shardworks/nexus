@@ -22,10 +22,14 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 WORKFLOW_FILE="publish.yml"
 
-# ── 1. Resolve HEAD SHA ────────────────────────────────────────
+# ── 1. Fetch origin and resolve remote HEAD SHA ───────────────
+# Fetch before resolving so we see commits pushed from other clones.
 
-COMMIT_SHA="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
-echo "→ HEAD: $COMMIT_SHA" >&2
+echo "→ Fetching origin…" >&2
+git -C "$PROJECT_ROOT" fetch origin --quiet
+
+COMMIT_SHA="$(git -C "$PROJECT_ROOT" rev-parse origin/HEAD)"
+echo "→ origin/HEAD: $COMMIT_SHA" >&2
 echo "→ Looking for a '$WORKFLOW_FILE' run on this commit…" >&2
 
 # ── 2. Poll for the workflow run (up to 30s) ──────────────────
