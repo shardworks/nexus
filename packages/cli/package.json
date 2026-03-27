@@ -10,12 +10,13 @@
   "description": "Nexus Mk 2.1 — CLI for the guild system",
   "type": "module",
   "bin": {
-    "nexus": "./src/cli.ts",
-    "nsg": "./src/cli.ts"
+    "nexus": "./src/v1/cli.ts",
+    "nsg": "./src/cli.ts",
+    "nsg1": "./src/v1/cli.ts"
   },
   "exports": {
-    ".": "./src/index.ts",
-    "./commands/*": "./src/commands/*.ts"
+    ".": "./src/v1/index.ts",
+    "./commands/*": "./src/v1/commands/*.ts"
   },
   "scripts": {
     "build": "tsc",
@@ -27,9 +28,11 @@
     "@shardworks/claude-code-session-provider": "workspace:*",
     "@shardworks/guild-monitor": "0.1.16",
     "@shardworks/nexus-core": "workspace:*",
+    "@shardworks/nexus-rig": "workspace:*",
     "@shardworks/nexus-stdlib": "workspace:*",
     "better-sqlite3": "12.8.0",
-    "commander": "14.0.3"
+    "commander": "14.0.3",
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@commander-js/extra-typings": "14.0.0",
@@ -42,17 +45,18 @@
   "publishConfig": {
     "exports": {
       ".": {
-        "types": "./dist/index.d.ts",
-        "import": "./dist/index.js"
+        "types": "./dist/v1/index.d.ts",
+        "import": "./dist/v1/index.js"
       },
       "./commands/*": {
-        "types": "./dist/commands/*.d.ts",
-        "import": "./dist/commands/*.js"
+        "types": "./dist/v1/commands/*.d.ts",
+        "import": "./dist/v1/commands/*.js"
       }
     },
     "bin": {
-      "nexus": "./dist/cli.js",
-      "nsg": "./dist/cli.js"
+      "nexus": "./dist/v1/cli.js",
+      "nsg": "./dist/cli.js",
+      "nsg1": "./dist/v1/cli.js"
     }
   }
 }
