@@ -179,8 +179,8 @@ This lets animas decompose work into sub-items without managing the coordination
 
 ### Workspace-Bound Writ Lifecycle
 
-1. **Posted** — the patron runs `nsg writ post <spec> --workshop <name>`. This creates the writ with `sourceType: 'patron'` and signals `writ.posted`.
-2. **Worktree prepared** — the `workshop-prepare` engine (triggered by `writ.posted`) creates a branch and worktree, then signals `writ.workspace-ready`.
+1. **Posted** — the patron runs `nsg writ post <spec> --workshop <name>`. This creates the writ with `sourceType: 'patron'` and signals `writ.ready`.
+2. **Worktree prepared** — the `workshop-prepare` engine (triggered by `writ.ready`) creates a branch and worktree (or reuses an existing one for interrupted/rolled-up writs), then signals `writ.workspace-ready`.
 3. **Dispatched** — the Clockworks matches `writ.workspace-ready` and summons an artificer, hydrating the prompt template with writ fields.
 4. **In Progress** — the artificer works on the writ. They may create child writs for sub-tasks using `create-writ`.
 5. **Session ended** — the artificer calls `complete-session` when done. If child writs exist and are incomplete, the writ goes to `pending`. If the session ends without `complete-session`, the writ is interrupted and re-dispatched.
@@ -301,7 +301,7 @@ Engines are automated mechanical processes with no AI involvement. Two kinds:
 
 **Clockwork engines** — purpose-built to respond to events via standing orders. Use the `engine()` SDK factory from `@shardworks/nexus-core`. The Clockworks runner calls them automatically when matching events fire. Packaged in `@shardworks/nexus-stdlib`:
 
-- **workshop-prepare** — creates a worktree when a writ is posted (`writ.posted` → `writ.workspace-ready`)
+- **workshop-prepare** — creates a worktree when a writ is ready (`writ.ready` → `writ.workspace-ready`)
 - **workshop-merge** — merges the writ branch after the writ completes (`writ.completed` → `writ.merged` or `writ.merge-failed`)
 
 ### Session Providers
@@ -349,12 +349,12 @@ Two kinds:
 
 | Event | When it fires | Typical standing order |
 |-------|--------------|----------------------|
-| `writ.posted` | A patron posts a writ | `run: workshop-prepare` |
+| `writ.ready` | A writ needs work (new, interrupted, or rolled up) | `run: workshop-prepare` |
 | `writ.workspace-ready` | Worktree prepared for a writ | `summon: artificer` |
 | `writ.completed` | Any writ completed (generic) | `run: workshop-merge` |
 | `writ.merged` | Writ branch merged to main | (guild-defined) |
 | `writ.merge-failed` | Writ branch merge failed | (guild-defined) |
-| `<type>.ready` | A writ of given type is ready | (guild-defined) |
+| `<type>.ready` | A writ of given type is ready | Fires for all types including `writ` |
 | `<type>.completed` | A writ of given type completed | (guild-defined) |
 | `<type>.failed` | A writ of given type failed | (guild-defined) |
 | `session.started` | Any session begins | (guild-defined) |
@@ -389,7 +389,7 @@ Example `guild.json` configuration:
       }
     },
     "standingOrders": [
-      { "on": "writ.posted",           "run": "workshop-prepare" },
+      { "on": "writ.ready",            "run": "workshop-prepare" },
       { "on": "writ.workspace-ready",  "summon": "artificer",
         "prompt": "You have been assigned a writ.\n\n{{writ.title}}\n\n{{writ.description}}" },
       { "on": "writ.completed",         "run": "workshop-merge" },

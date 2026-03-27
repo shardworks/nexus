@@ -1,18 +1,24 @@
 /**
  * Workshop Prepare Engine (clockwork)
  *
- * Standing order handler for writ.posted events. Creates an isolated
+ * Standing order handler for writ.ready events. Creates an isolated
  * git worktree for the writ and signals writ.workspace-ready so the next
  * standing order (summon artificer) can launch the session.
  *
+ * Idempotent: if the worktree already exists (interrupted or rolled-up
+ * writs being re-dispatched), skips git setup and fires
+ * writ.workspace-ready immediately.
+ *
  * Event flow:
- *   writ.posted { writId, workshop }
+ *   writ.ready { writId, ... }
  *     → reads writ record for workshop
- *     → creates worktree from workshop bare repo
+ *     → creates worktree from workshop bare repo (or reuses existing)
  *     → signals writ.workspace-ready { writId, workshop, worktreePath }
  */
 import { execFileSync } from 'node:child_process';
-import { engine, signalEvent, readWrit, workshopBarePath } from '@shardworks/nexus-core';
+import fs from 'node:fs';
+import path from 'node:path';
+import { engine, signalEvent, readWrit, workshopBarePath, worktreesPath } from '@shardworks/nexus-core';
 import { setupWorktree } from '@shardworks/nexus-core';
 
 function git(args: string[], cwd: string): string {
@@ -50,6 +56,20 @@ export default engine({
     }
 
     const workshop = writ.workshop;
+
+    // Check if the worktree already exists (interrupted or rolled-up writs).
+    // If so, skip git setup and re-enter the dispatch pipeline directly.
+    const branch = `writ-${writId}`;
+    const existingWorktree = path.join(worktreesPath(home), workshop, branch);
+    if (fs.existsSync(existingWorktree)) {
+      signalEvent(
+        home,
+        'writ.workspace-ready',
+        { writId, workshop, worktreePath: existingWorktree },
+        'framework',
+      );
+      return;
+    }
 
     // Fetch the latest state from the remote so the writ branch starts from
     // the freshest available main. This minimises divergence between the

@@ -2,7 +2,7 @@ import { createCommand } from 'commander';
 import { readFileSync } from 'node:fs';
 import {
   createWrit, readWrit, listWrits, failWrit, cancelWrit,
-  getWritChildren, signalEvent, readGuildConfig,
+  getWritChildren, readGuildConfig,
   interruptWrit, adminCompleteWrit, reopenFailedWrit,
 } from '@shardworks/nexus-core';
 import { resolveHome } from '../resolve-home.ts';
@@ -81,11 +81,7 @@ export function makeWritCommand() {
           sourceType: 'patron',
         });
 
-        // Signal writ.posted for the Clockworks
-        signalEvent(home, 'writ.posted', {
-          writId: writ.id,
-          workshop: writ.workshop,
-        }, 'framework');
+        // createWrit already fires writ.ready — no additional signal needed.
 
         console.log(`Writ ${writ.id} posted${writ.workshop ? ` to workshop "${writ.workshop}"` : ' (no workspace)'}`);
         console.log(`  Run \`nsg clock run\` to process through Clockworks.`);

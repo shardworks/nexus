@@ -59,7 +59,7 @@ export function validateCustomEvent(home: string, name: string): void {
  * Does not process the event. The Clockworks runner processes separately.
  *
  * @param home - Absolute path to the guild root.
- * @param name - Event name (e.g. "writ.posted", "code.reviewed").
+ * @param name - Event name (e.g. "writ.ready", "code.reviewed").
  * @param payload - Event-specific data (JSON-serializable).
  * @param emitter - Who signaled it: anima name, engine name, or "framework".
  * @returns The event id.

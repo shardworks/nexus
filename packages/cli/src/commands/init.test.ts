@@ -408,7 +408,7 @@ describe('full init sequence', () => {
     assert.ok(config.clockworks.events['craft.question'].schema.workshop, 'craft.question missing workshop in schema');
     assert.ok(config.clockworks.events['craft.debt'].schema.workshop, 'craft.debt missing workshop in schema');
     assert.equal(config.clockworks.standingOrders.length, 3, 'should have 3 writ lifecycle standing orders');
-    assert.deepEqual(config.clockworks.standingOrders[0], { on: 'writ.posted', run: 'workshop-prepare' });
+    assert.deepEqual(config.clockworks.standingOrders[0], { on: 'writ.ready', run: 'workshop-prepare' });
     assert.deepEqual(config.clockworks.standingOrders[1], { on: 'writ.workspace-ready', summon: 'artificer', prompt: 'You have been assigned a writ.\n\n{{writ.title}}\n\n{{writ.description}}' });
     assert.deepEqual(config.clockworks.standingOrders[2], { on: 'writ.completed', run: 'workshop-merge' });
   });
