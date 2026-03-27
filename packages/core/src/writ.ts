@@ -39,7 +39,7 @@ export interface WritRecord {
 }
 
 export interface CreateWritOptions {
-  type: string;
+  type?: string;  // defaults to 'writ' if omitted
   title: string;
   description?: string;
   parentId?: string;
@@ -66,8 +66,12 @@ export interface WritChildSummary {
 
 // ── Constants ──────────────────────────────────────────────────────────
 
-/** Built-in writ types that don't need guild.json declaration. */
-export const BUILTIN_WRIT_TYPES = ['summon'] as const;
+/**
+ * Built-in writ types that don't need guild.json declaration.
+ * - 'writ'   — the universal default for patron-posted and anima-created work
+ * - 'summon' — internal tracking type for engine-synthesized sessions
+ */
+export const BUILTIN_WRIT_TYPES = ['writ', 'summon'] as const;
 
 // ── Internal helpers ───────────────────────────────────────────────────
 
@@ -139,13 +143,16 @@ export function validateWritType(home: string, type: string): void {
 /**
  * Create a writ. Validates type against guild.json. Fires `<type>.ready`.
  *
+ * Type defaults to `'writ'` if omitted — the universal builtin type.
+ *
  * Workshop inheritance: if `workshop` is omitted and `parentId` is provided,
  * the parent's workshop is copied. If both are omitted, workshop is null.
  *
  * Source defaults: `sourceType` defaults to `'engine'` if not provided.
  */
 export function createWrit(home: string, opts: CreateWritOptions): WritRecord {
-  validateWritType(home, opts.type);
+  const type = opts.type ?? 'writ';
+  validateWritType(home, type);
 
   const db = new Database(booksPath(home));
   db.pragma('foreign_keys = ON');
@@ -164,7 +171,7 @@ export function createWrit(home: string, opts: CreateWritOptions): WritRecord {
 
     db.prepare(
       `INSERT INTO writs (id, type, title, description, parent_id, workshop, source_type, source_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, opts.type, opts.title, opts.description ?? null, opts.parentId ?? null, workshop, sourceType, sourceId);
+    ).run(id, type, opts.title, opts.description ?? null, opts.parentId ?? null, workshop, sourceType, sourceId);
 
     db.prepare(
       `INSERT INTO audit_log (id, actor, action, target_type, target_id, detail) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -172,10 +179,10 @@ export function createWrit(home: string, opts: CreateWritOptions): WritRecord {
 
     const record = readWritById(db, id)!;
 
-    signalEvent(home, `${opts.type}.ready`, {
+    signalEvent(home, `${type}.ready`, {
       writId: id,
       parentId: opts.parentId ?? null,
-      type: opts.type,
+      type,
     }, 'framework');
 
     return record;

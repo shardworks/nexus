@@ -8,9 +8,10 @@ export default tool({
   instructions:
     'Use this to break your work into trackable sub-items. Each child writ fires a ' +
     '<type>.ready event that can trigger standing orders (e.g. summon an artificer for a task). ' +
-    'If parentId is omitted, the child is created under the current session writ.',
+    'If parentId is omitted, the child is created under the current session writ. ' +
+    'Type defaults to "writ" if omitted; use a guild-declared type if the guild has defined custom types.',
   params: {
-    type: z.string().describe('Writ type (must be declared in guild.json writTypes)'),
+    type: z.string().optional().describe('Writ type (defaults to "writ"; guild-declared types also accepted)'),
     title: z.string().describe('Short title describing what needs to be done'),
     description: z.string().optional().describe('Detailed description of the work'),
     parentId: z.string().optional().describe('Parent writ ID (defaults to current session writ)'),

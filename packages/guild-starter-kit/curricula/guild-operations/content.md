@@ -146,7 +146,7 @@ The `remoteUrl` is the source of truth. The bare clone on disk is ephemeral and 
 
 A writ is the sole work primitive — the system's record of an outstanding obligation. Every summoned session is bound to a writ. Writs have:
 
-- A **type** — guild-defined (e.g. `task`, `feature`, `step`) or built-in (`summon`)
+- A **type** — built-in (`writ`, `summon`) or guild-defined (e.g. `task`, `feature`, `step`). Defaults to `writ` when not specified.
 - A **status** — `ready`, `active`, `pending`, `completed`, `failed`, `cancelled`
 - Optional **parent/child** relationships — forming trees of arbitrary depth
 - A **title** and optional **description** — the description serves as the prompt template content

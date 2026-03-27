@@ -1,7 +1,7 @@
 import { createCommand } from 'commander';
 import {
   createWrit, readWrit, listWrits, failWrit, cancelWrit,
-  getWritChildren, readGuildConfig, signalEvent,
+  getWritChildren, signalEvent,
   interruptWrit,
 } from '@shardworks/nexus-core';
 import { resolveHome } from '../resolve-home.ts';
@@ -43,12 +43,9 @@ export function makeWritCommand() {
           }
         }
 
-        // Resolve type
-        const type = options.type ?? resolveDefaultWritType(home);
-
         const title = spec.split('\n')[0]!.substring(0, 200);
         const writ = createWrit(home, {
-          type,
+          type: options.type,  // undefined → createWrit defaults to 'writ'
           title,
           description: spec,
           workshop: workshopName,
@@ -189,12 +186,3 @@ export function makeWritCommand() {
   return cmd;
 }
 
-/**
- * Resolve a sensible default writ type. Looks for the first declared
- * writType in guild.json; falls back to 'summon'.
- */
-function resolveDefaultWritType(home: string): string {
-  const config = readGuildConfig(home);
-  const declared = Object.keys(config.writTypes ?? {});
-  return declared.length > 0 ? declared[0]! : 'summon';
-}
