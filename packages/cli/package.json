@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "@shardworks/claude-code-session-provider": "workspace:*",
-    "@shardworks/guild-monitor": "0.1.15",
+    "@shardworks/guild-monitor": "0.1.16",
     "@shardworks/nexus-core": "workspace:*",
     "@shardworks/nexus-stdlib": "workspace:*",
     "better-sqlite3": "12.8.0",
