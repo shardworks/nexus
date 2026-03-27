@@ -6,6 +6,7 @@
  * between rig built-ins and plugin tools.
  */
 
+import init from './init.ts';
 import version from './version.ts';
 import status from './status.ts';
 import upgrade from './upgrade.ts';
@@ -13,6 +14,7 @@ import { pluginList, pluginInstall, pluginRemove, pluginUpgrade } from './plugin
 
 /** All rig built-in tools. */
 export const builtinTools = [
+  init,
   version,
   status,
   upgrade,

@@ -12,13 +12,11 @@
  * that returns its inter-plugin API surface.
  */
 
-import { createRequire } from 'node:module';
-import fs from 'node:fs';
-import path from 'node:path';
 import { readGuildConfig, resolveAllToolsFromExport, VERSION } from '@shardworks/nexus-core';
 import type { GuildConfig, ToolDefinition } from '@shardworks/nexus-core';
 import type { ToolChannel } from '@shardworks/nexus-core';
 import { builtinTools } from './tools/index.ts';
+import { readGuildPackageJson, resolveGuildPackageEntry } from './resolve-package.ts';
 
 // ── Plugin key derivation ──────────────────────────────────────────────
 
@@ -144,54 +142,6 @@ export interface Rig {
 }
 
 // ── Implementation ─────────────────────────────────────────────────────
-
-/**
- * Read a package.json from the guild's node_modules.
- * Returns the parsed JSON and version. Falls back gracefully.
- */
-function readGuildPackageJson(
-  guildRoot: string,
-  pkgName: string,
-): { version: string; pkgJson: Record<string, unknown> | null } {
-  const pkgJsonPath = path.join(guildRoot, 'node_modules', pkgName, 'package.json');
-  try {
-    const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8')) as Record<string, unknown>;
-    return { version: (pkgJson.version as string) ?? 'unknown', pkgJson };
-  } catch {
-    console.warn(`[rig] Could not resolve package.json for "${pkgName}"`);
-    return { version: 'unknown', pkgJson: null };
-  }
-}
-
-/**
- * Resolve the entry point for a guild-installed package.
- *
- * Reads the package's exports map to find the ESM entry point,
- * since guild packages are ESM-only and createRequire() can't resolve them.
- * Returns an absolute path suitable for dynamic import().
- */
-function resolveGuildPackageEntry(guildRoot: string, pkgName: string): string {
-  const pkgDir = path.join(guildRoot, 'node_modules', pkgName);
-  const { pkgJson } = readGuildPackageJson(guildRoot, pkgName);
-
-  if (pkgJson) {
-    // Try exports['.'].import, then exports['.'] as string, then main
-    const exports = pkgJson.exports as Record<string, unknown> | string | undefined;
-    if (exports) {
-      if (typeof exports === 'string') return path.join(pkgDir, exports);
-      const main = (exports as Record<string, unknown>)['.'];
-      if (typeof main === 'string') return path.join(pkgDir, main);
-      if (main && typeof main === 'object') {
-        const importPath = (main as Record<string, string>).import;
-        if (importPath) return path.join(pkgDir, importPath);
-      }
-    }
-    if (pkgJson.main) return path.join(pkgDir, pkgJson.main as string);
-  }
-
-  // Last resort
-  return path.join(pkgDir, 'index.js');
-}
 
 /** Build the rig's own plugin entry from its built-in tools. */
 function rigPlugin(): NexusPlugin {

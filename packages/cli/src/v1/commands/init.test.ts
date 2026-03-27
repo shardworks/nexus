@@ -25,7 +25,7 @@ function stripCliDep(home: string): void {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** Root of the monorepo packages directory. */
-const PACKAGES_DIR = path.resolve(__dirname, '../../../../packages');
+const PACKAGES_DIR = path.resolve(__dirname, '../../../../../packages');
 
 /** Path to the guild-starter-kit package in the workspace. */
 const STARTER_KIT_DIR = path.join(PACKAGES_DIR, 'guild-starter-kit');

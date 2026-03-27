@@ -26,8 +26,21 @@ type ZodShape = Record<string, z.ZodTypeAny>;
  * Convert camelCase key to kebab-case CLI flag.
  * e.g. 'writId' → '--writ-id'
  */
-function toFlag(key: string): string {
+export function toFlag(key: string): string {
   return `--${key.replace(/([A-Z])/g, (c) => `-${c.toLowerCase()}`)}`;
+}
+
+/**
+ * Detect whether a Zod schema accepts booleans (and only booleans).
+ * Used to register Commander flags without <value> for boolean params.
+ */
+export function isBooleanSchema(schema: z.ZodTypeAny): boolean {
+  return (
+    schema.safeParse(true).success &&
+    schema.safeParse(false).success &&
+    !schema.safeParse(42).success &&
+    !schema.safeParse('test').success
+  );
 }
 
 /**
@@ -51,7 +64,10 @@ function buildToolCommand(
     const flag = toFlag(key);
     const description = schema.description ?? key;
 
-    if (schema.isOptional()) {
+    if (isBooleanSchema(schema)) {
+      // Boolean flags: --flag (no <value>), sets to true when present
+      cmd.option(flag, description);
+    } else if (schema.isOptional()) {
       cmd.option(`${flag} <value>`, description);
     } else {
       cmd.requiredOption(`${flag} <value>`, description);
@@ -83,7 +99,7 @@ function buildToolCommand(
  * 'plugin-list' + 'plugin-install' → 'plugin' is a group.
  * 'show-writ' alone → 'show' is NOT a group.
  */
-function findGroupPrefixes(tools: NexusTool[]): Set<string> {
+export function findGroupPrefixes(tools: NexusTool[]): Set<string> {
   const prefixCounts = new Map<string, number>();
 
   for (const t of tools) {

@@ -113,6 +113,8 @@ export interface GuildConfig {
   writTypes?: Record<string, WritTypeDeclaration>;
   /** Guild-level settings — operational flags and preferences. */
   settings?: GuildSettings;
+  /** Installed plugin keys (derived from npm package names). */
+  plugins?: string[];
 }
 
 /**
