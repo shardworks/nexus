@@ -6,6 +6,7 @@ const _pkg = _require('../package.json');
 export const VERSION: string = _pkg.version;
 
 export {
+  type ToolChannel,
   type ToolContext,
   type ToolDefinition,
   tool,

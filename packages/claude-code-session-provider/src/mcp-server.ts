@@ -70,6 +70,14 @@ async function loadTool(spec: ToolSpec): Promise<ToolDefinition | null> {
       return null;
     }
 
+    // Filter by allowedContexts — only serve tools that include 'mcp'.
+    // Tools with no allowedContexts default to all channels (available everywhere).
+    const contexts = def.allowedContexts;
+    if (contexts && !contexts.includes('mcp')) {
+      // Tool explicitly excludes MCP — skip silently
+      return null;
+    }
+
     return def;
   } catch (err) {
     console.error(`[mcp-server] ${spec.name}: failed to load module "${spec.modulePath}":`, err);

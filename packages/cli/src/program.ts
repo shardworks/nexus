@@ -1,87 +1,120 @@
-import { createCommand } from 'commander';
-import { VERSION, registerSessionProvider } from '@shardworks/nexus-core';
-import { claudeCodeProvider } from '@shardworks/claude-code-session-provider';
-import { makeInitCommand } from './commands/init.ts';
-import { makeToolCommand } from './commands/tool.ts';
-import { makeRestoreCommand } from './commands/rehydrate.ts';
-import { makeWritCommand } from './commands/writ.ts';
-import { makeStatusCommand } from './commands/status.ts';
-import { makeConsultCommand } from './commands/consult.ts';
-import { makeSignalCommand } from './commands/signal.ts';
-import { makeClockCommand } from './commands/clock.ts';
-import { makeWorkshopCommand } from './commands/workshop.ts';
-import { makeAnimaCommand } from './commands/anima.ts';
-import { makeSessionCommand } from './commands/session.ts';
-import { makeEventCommand } from './commands/event.ts';
-import { makeDispatchCommand } from './commands/dispatch.ts';
-import { makeAuditCommand } from './commands/audit.ts';
-import { makeDashboardCommand } from './commands/dashboard.ts';
-import { makeUpgradeCommand } from './commands/upgrade.ts';
-import { makeConversationCommand } from './commands/conversation.ts';
-import { makeConveneCommand } from './commands/convene.ts';
-import { makeUpgradeBooksCommand } from './commands/upgrade-books.ts';
-import { makeVersionCommand } from './commands/version.ts';
+/**
+ * nsg program — dynamic Commander setup via rig tool resolution.
+ *
+ * Discovers installed tools at startup via resolveGuildCommands(), then
+ * registers each as a Commander command with auto-generated options from
+ * its Zod param schema.
+ *
+ * Commander lives here; rig handles all manifest and import logic.
+ */
 
-// Register the Claude Code session provider so core's session funnel
-// can launch claude sessions.
-registerSessionProvider(claudeCodeProvider);
+import path from 'node:path';
+import { Command } from 'commander';
+import { z } from 'zod';
+import { findGuildRoot, createRig } from '@shardworks/nexus-rig';
+import type { NexusTool } from '@shardworks/nexus-rig';
 
-export const program = createCommand('nsg')
-  .description('Nexus Mk 2.1 — experimental multi-agent AI system')
-  .version(VERSION)
-  .option('--guild-root <path>', 'Path to guild root (default: auto-detect from cwd)');
+type ZodShape = Record<string, z.ZodTypeAny>;
 
-// ── Top-level commands (special operations, not noun-verb) ─────────────
-program.addCommand(makeInitCommand());
-program.addCommand(makeConsultCommand());
-program.addCommand(makeConveneCommand());
-program.addCommand(makeStatusCommand());
-program.addCommand(makeSignalCommand());
+// ── Helpers ────────────────────────────────────────────────────────────
 
-// ── Noun groups ────────────────────────────────────────────────────────
+/**
+ * Convert camelCase key to kebab-case CLI flag.
+ * e.g. 'writId' → '--writ-id'
+ */
+function toFlag(key: string): string {
+  return `--${key.replace(/([A-Z])/g, (c) => `-${c.toLowerCase()}`)}`;
+}
 
-// nsg guild [restore]
-const guildGroup = createCommand('guild')
-  .description('Guild-wide operations');
-guildGroup.addCommand(makeRestoreCommand());
-guildGroup.addCommand(makeUpgradeBooksCommand());
-program.addCommand(guildGroup);
+/**
+ * Register a NexusTool as a Commander subcommand.
+ *
+ * Generates options from the Zod param shape. Commander converts kebab-case
+ * flags back to camelCase in opts(), matching the tool's schema keys directly.
+ *
+ * The action handler validates params through the tool's Zod schema before
+ * calling the handler — Zod error messages are surfaced cleanly.
+ */
+function registerToolCommand(
+  program: Command,
+  toolDef: NexusTool,
+  home: string,
+): void {
+  const cmd = new Command(toolDef.name).description(toolDef.description);
 
-// nsg workshop [create|register|list|show|remove]
-program.addCommand(makeWorkshopCommand());
+  const shape = toolDef.params.shape as ZodShape;
+  for (const [key, schema] of Object.entries(shape)) {
+    const flag = toFlag(key);
+    const description = schema.description ?? key;
 
-// nsg tool [install|remove|list]
-program.addCommand(makeToolCommand());
+    // Optional fields get .option(); required fields get .requiredOption().
+    // The tool's Zod schema does the actual validation before the handler runs.
+    if (schema.isOptional()) {
+      cmd.option(`${flag} <value>`, description);
+    } else {
+      cmd.requiredOption(`${flag} <value>`, description);
+    }
+  }
 
-// nsg anima [create|list|show|update|remove|manifest]
-program.addCommand(makeAnimaCommand());
+  cmd.action(async (opts: Record<string, string | undefined>) => {
+    try {
+      const validated = toolDef.params.parse(opts);
+      const result = await toolDef.handler(validated, { home });
 
-// nsg writ [post|list|show|update]
-program.addCommand(makeWritCommand());
+      const output =
+        typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+      console.log(output);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`Error: ${message}`);
+      process.exit(1);
+    }
+  });
 
-// nsg clock [list|tick|run|start|stop|status]
-program.addCommand(makeClockCommand());
+  program.addCommand(cmd);
+}
 
-// nsg session [list|show]
-program.addCommand(makeSessionCommand());
+// ── Entry ──────────────────────────────────────────────────────────────
 
-// nsg event [list|show]
-program.addCommand(makeEventCommand());
+export async function main(): Promise<void> {
+  // Pre-parse to extract --guild-root before tool discovery.
+  // Commander can't load tool commands without the guild root, so we need
+  // this value before building the full program.
+  const pre = new Command()
+    .option('--guild-root <path>', 'Guild root directory')
+    .allowUnknownOption()
+    .exitOverride();
 
-// nsg dispatch [list]
-program.addCommand(makeDispatchCommand());
+  try {
+    pre.parse(process.argv);
+  } catch {
+    // Ignore errors — we only care about --guild-root
+  }
 
-// nsg audit [list]
-program.addCommand(makeAuditCommand());
+  const preOpts = pre.opts() as { guildRoot?: string };
 
-// nsg conversation [list|show|end]
-program.addCommand(makeConversationCommand());
+  const program = new Command('nsg')
+    .description('Nexus Mk 2.1 — rig-powered guild CLI')
+    .option('--guild-root <path>', 'Guild root directory (default: auto-detect from cwd)');
 
-// nsg dashboard
-program.addCommand(makeDashboardCommand());
+  // Discover guild and load tools. Failing gracefully keeps nsg usable
+  // outside of a guild (e.g. for nsg init in a future commission).
+  let home: string | undefined;
+  try {
+    home = preOpts.guildRoot
+      ? path.resolve(preOpts.guildRoot)
+      : findGuildRoot();
+  } catch {
+    // Not in a guild — no tool commands available
+  }
 
-// nsg upgrade [--dry-run]
-program.addCommand(makeUpgradeCommand());
+  if (home) {
+    const rig = createRig(home);
+    const tools = await rig.listTools({ channel: 'cli' });
+    for (const toolDef of tools) {
+      registerToolCommand(program, toolDef, home);
+    }
+  }
 
-// nsg version [--all] [--json]
-program.addCommand(makeVersionCommand());
+  program.parse(process.argv);
+}
