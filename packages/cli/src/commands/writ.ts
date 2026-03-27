@@ -1,7 +1,7 @@
 import { createCommand } from 'commander';
 import {
   createWrit, readWrit, listWrits, failWrit, cancelWrit,
-  getWritChildren, signalEvent,
+  getWritChildren, signalEvent, readGuildConfig,
   interruptWrit,
 } from '@shardworks/nexus-core';
 import { resolveHome } from '../resolve-home.ts';
