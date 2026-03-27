@@ -20,6 +20,7 @@ import { makeUpgradeCommand } from './commands/upgrade.ts';
 import { makeConversationCommand } from './commands/conversation.ts';
 import { makeConveneCommand } from './commands/convene.ts';
 import { makeUpgradeBooksCommand } from './commands/upgrade-books.ts';
+import { makeVersionCommand } from './commands/version.ts';
 
 // Register the Claude Code session provider so core's session funnel
 // can launch claude sessions.
@@ -81,3 +82,6 @@ program.addCommand(makeDashboardCommand());
 
 // nsg upgrade [--dry-run]
 program.addCommand(makeUpgradeCommand());
+
+// nsg version [--all] [--json]
+program.addCommand(makeVersionCommand());
