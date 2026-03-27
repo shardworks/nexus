@@ -14,14 +14,22 @@ export default tool({
     title: z.string().describe('Short title describing what needs to be done'),
     description: z.string().optional().describe('Detailed description of the work'),
     parentId: z.string().optional().describe('Parent writ ID (defaults to current session writ)'),
+    workshop: z.string().optional().describe('Workshop name (inherits from parent if omitted)'),
   },
   handler: (params, { home }) => {
     const resolvedParent = params.parentId ?? process.env.NEXUS_WRIT_ID ?? undefined;
+
+    // Resolve source ID from the calling anima's session writ
+    const sourceId = process.env.NEXUS_WRIT_ID ?? null;
+
     return createWrit(home, {
       type: params.type,
       title: params.title,
       description: params.description,
       parentId: resolvedParent,
+      workshop: params.workshop,
+      sourceType: 'anima',
+      sourceId: sourceId ?? undefined,
     });
   },
 });

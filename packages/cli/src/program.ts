@@ -4,7 +4,7 @@ import { claudeCodeProvider } from '@shardworks/claude-code-session-provider';
 import { makeInitCommand } from './commands/init.ts';
 import { makeToolCommand } from './commands/tool.ts';
 import { makeRestoreCommand } from './commands/rehydrate.ts';
-import { makeCommissionCommand } from './commands/commission.ts';
+import { makeWritCommand } from './commands/writ.ts';
 import { makeStatusCommand } from './commands/status.ts';
 import { makeConsultCommand } from './commands/consult.ts';
 import { makeSignalCommand } from './commands/signal.ts';
@@ -55,8 +55,8 @@ program.addCommand(makeToolCommand());
 // nsg anima [create|list|show|update|remove|manifest]
 program.addCommand(makeAnimaCommand());
 
-// nsg commission [create|list|show|update]
-program.addCommand(makeCommissionCommand());
+// nsg writ [post|list|show|update]
+program.addCommand(makeWritCommand());
 
 // nsg clock [list|tick|run|start|stop|status]
 program.addCommand(makeClockCommand());

@@ -73,9 +73,9 @@ function setupTestGuild(clockworksConfig?: Record<string, unknown>): string {
 describe('isFrameworkEvent', () => {
   it('identifies framework namespaces', () => {
     assert.equal(isFrameworkEvent('anima.instantiated'), true);
-    assert.equal(isFrameworkEvent('commission.sealed'), true);
-    assert.equal(isFrameworkEvent('mandate.ready'), true);
-    assert.equal(isFrameworkEvent('mandate.completed'), true);
+    assert.equal(isFrameworkEvent('writ.posted'), true);
+    assert.equal(isFrameworkEvent('writ.completed'), true);
+    assert.equal(isFrameworkEvent('writ.workspace-ready'), true);
     assert.equal(isFrameworkEvent('summon.completed'), true);
     assert.equal(isFrameworkEvent('tool.installed'), true);
     assert.equal(isFrameworkEvent('migration.applied'), true);

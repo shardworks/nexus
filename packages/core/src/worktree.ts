@@ -1,31 +1,29 @@
 /**
- * Commission worktree management — creates isolated git worktrees for
- * commission sessions.
+ * Writ worktree management — creates isolated git worktrees for
+ * writ sessions.
  *
- * When an anima is dispatched to work on a commission, this module:
- * 1. Creates a new git branch for the commission
+ * When an anima is dispatched to work on a writ, this module:
+ * 1. Creates a new git branch for the writ
  * 2. Sets up a git worktree pointing at that branch
  * 3. Returns the worktree path so the session can launch in the correct cwd
  *
- * Worktrees provide isolation — each commission gets its own working copy
+ * Worktrees provide isolation — each writ gets its own working copy
  * of the repo, so multiple animas can work concurrently without conflicts
  * in the working directory.
  *
- * Absorbed from the former `engine-worktree-setup` package.
- *
  * ## Directory layout
  *
- * Commission worktrees are created from workshop bare clones:
+ * Writ worktrees are created from workshop bare clones:
  *
  *   GUILD_ROOT/
  *     .nexus/
  *       workshops/
- *         workshop-a.git/          ← bare clone (source for worktrees)
+ *         workshop-a.git/          <- bare clone (source for worktrees)
  *       worktrees/
  *         workshop-a/
- *           commission-42/         ← worktree for commission #42
+ *           writ-42/               <- worktree for writ #42
  *         workshop-b/
- *           commission-17/         ← worktree for commission #17
+ *           writ-17/               <- worktree for writ #17
  */
 
 import { execFileSync } from 'node:child_process';
@@ -38,8 +36,8 @@ export interface WorktreeConfig {
   home: string;
   /** Workshop name — the bare clone source for the worktree. */
   workshop: string;
-  /** Commission ID — used to derive branch name and worktree directory. */
-  commissionId: string;
+  /** Writ ID — used to derive branch name and worktree directory. */
+  writId: string;
   /** Base branch to create the worktree from (default: 'main'). */
   baseBranch?: string;
 }
@@ -49,8 +47,8 @@ export interface WorktreeResult {
   path: string;
   /** Branch name created for the worktree. */
   branch: string;
-  /** Commission ID this worktree serves. */
-  commissionId: string;
+  /** Writ ID this worktree serves. */
+  writId: string;
 }
 
 function git(args: string[], cwd: string): string {
@@ -58,23 +56,23 @@ function git(args: string[], cwd: string): string {
 }
 
 /**
- * Create a git worktree for a commission session.
+ * Create a git worktree for a writ session.
  *
  * Creates a new branch from the base branch and sets up a worktree in
- * .nexus/worktrees/{workshop}/commission-{id}/.
+ * .nexus/worktrees/{workshop}/writ-{id}/.
  *
  * @throws If the worktree or branch already exists.
  */
 export function setupWorktree(config: WorktreeConfig): WorktreeResult {
-  const { home, workshop, commissionId, baseBranch = 'main' } = config;
+  const { home, workshop, writId, baseBranch = 'main' } = config;
   const bareRepo = workshopBarePath(home, workshop);
-  const branch = `commission-${commissionId}`;
+  const branch = `writ-${writId}`;
   const worktreeDir = path.join(worktreesPath(home), workshop, branch);
 
   if (fs.existsSync(worktreeDir)) {
     throw new Error(
       `Worktree directory already exists: ${worktreeDir}. ` +
-      `Commission ${commissionId} may already have an active worktree.`,
+      `Writ ${writId} may already have an active worktree.`,
     );
   }
 
@@ -85,24 +83,24 @@ export function setupWorktree(config: WorktreeConfig): WorktreeResult {
   // git worktree add -b <branch> <path> <base>
   git(['worktree', 'add', '-b', branch, worktreeDir, baseBranch], bareRepo);
 
-  return { path: worktreeDir, branch, commissionId };
+  return { path: worktreeDir, branch, writId };
 }
 
 /**
- * Remove a worktree after a commission session completes.
+ * Remove a worktree after a writ session completes.
  *
  * Removes the worktree directory and prunes it from git's tracking.
  * Does NOT delete the branch — the branch should be kept for history
  * until explicitly merged or pruned.
  */
-export function teardownWorktree(home: string, workshop: string, commissionId: string): void {
+export function teardownWorktree(home: string, workshop: string, writId: string): void {
   const bareRepo = workshopBarePath(home, workshop);
-  const branch = `commission-${commissionId}`;
+  const branch = `writ-${writId}`;
   const worktreeDir = path.join(worktreesPath(home), workshop, branch);
 
   if (!fs.existsSync(worktreeDir)) {
     throw new Error(
-      `Worktree not found: ${worktreeDir}. Commission ${commissionId} may not have an active worktree.`,
+      `Worktree not found: ${worktreeDir}. Writ ${writId} may not have an active worktree.`,
     );
   }
 
@@ -117,7 +115,7 @@ export function teardownWorktree(home: string, workshop: string, commissionId: s
 }
 
 /**
- * List active commission worktrees.
+ * List active writ worktrees.
  */
 export function listWorktrees(home: string, workshop?: string): WorktreeResult[] {
   const wtRoot = worktreesPath(home);
@@ -140,13 +138,16 @@ export function listWorktrees(home: string, workshop?: string): WorktreeResult[]
     for (const entry of fs.readdirSync(wsDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
 
-      const match = entry.name.match(/^commission-(.+)$/);
+      // Match both new writ- and legacy commission- prefixes
+      const writMatch = entry.name.match(/^writ-(.+)$/);
+      const legacyMatch = entry.name.match(/^commission-(.+)$/);
+      const match = writMatch ?? legacyMatch;
       if (!match) continue;
 
       results.push({
         path: path.join(wsDir, entry.name),
         branch: entry.name,
-        commissionId: match[1]!,
+        writId: match[1]!,
       });
     }
   }

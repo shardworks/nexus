@@ -95,20 +95,6 @@ export {
   removeTool,
 } from './remove-tool.ts';
 export {
-  type CommissionOptions,
-  type CommissionResult,
-  type CommissionSummary,
-  type CommissionDetail,
-  type ListCommissionsOptions,
-  commission,
-  updateCommissionStatus,
-  readCommission,
-  showCommission,
-  listCommissions,
-  checkCommissionCompletion,
-  completeCommissionIfReady,
-} from './commission.ts';
-export {
   type InstantiateOptions,
   type InstantiateResult,
   instantiate,

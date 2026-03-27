@@ -31,6 +31,9 @@ export interface WritRecord {
   status: WritStatus;
   parentId: string | null;
   sessionId: string | null;
+  workshop: string | null;
+  sourceType: 'patron' | 'anima' | 'engine';
+  sourceId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -40,12 +43,16 @@ export interface CreateWritOptions {
   title: string;
   description?: string;
   parentId?: string;
+  workshop?: string;
+  sourceType?: 'patron' | 'anima' | 'engine';
+  sourceId?: string;
 }
 
 export interface ListWritsOptions {
   parentId?: string;
   type?: string;
   status?: WritStatus;
+  workshop?: string;
 }
 
 export interface WritChildSummary {
@@ -60,7 +67,7 @@ export interface WritChildSummary {
 // ── Constants ──────────────────────────────────────────────────────────
 
 /** Built-in writ types that don't need guild.json declaration. */
-export const BUILTIN_WRIT_TYPES = ['mandate', 'summon'] as const;
+export const BUILTIN_WRIT_TYPES = ['summon'] as const;
 
 // ── Internal helpers ───────────────────────────────────────────────────
 
@@ -72,6 +79,9 @@ interface WritRow {
   status: string;
   parent_id: string | null;
   session_id: string | null;
+  workshop: string | null;
+  source_type: string;
+  source_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -85,12 +95,15 @@ function rowToRecord(row: WritRow): WritRecord {
     status: row.status as WritStatus,
     parentId: row.parent_id,
     sessionId: row.session_id,
+    workshop: row.workshop,
+    sourceType: row.source_type as WritRecord['sourceType'],
+    sourceId: row.source_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-const SELECT_COLS = `id, type, title, description, status, parent_id, session_id, created_at, updated_at`;
+const SELECT_COLS = `id, type, title, description, status, parent_id, session_id, workshop, source_type, source_id, created_at, updated_at`;
 
 function readWritById(db: Database.Database, writId: string): WritRecord | null {
   const row = db.prepare(
@@ -125,6 +138,11 @@ export function validateWritType(home: string, type: string): void {
 
 /**
  * Create a writ. Validates type against guild.json. Fires `<type>.ready`.
+ *
+ * Workshop inheritance: if `workshop` is omitted and `parentId` is provided,
+ * the parent's workshop is copied. If both are omitted, workshop is null.
+ *
+ * Source defaults: `sourceType` defaults to `'engine'` if not provided.
  */
 export function createWrit(home: string, opts: CreateWritOptions): WritRecord {
   validateWritType(home, opts.type);
@@ -134,9 +152,19 @@ export function createWrit(home: string, opts: CreateWritOptions): WritRecord {
   try {
     const id = generateId('wrt');
 
+    // Resolve workshop: explicit > inherit from parent > null
+    let workshop = opts.workshop ?? null;
+    if (workshop === null && opts.parentId) {
+      const parent = readWritById(db, opts.parentId);
+      if (parent) workshop = parent.workshop;
+    }
+
+    const sourceType = opts.sourceType ?? 'engine';
+    const sourceId = opts.sourceId ?? null;
+
     db.prepare(
-      `INSERT INTO writs (id, type, title, description, parent_id) VALUES (?, ?, ?, ?, ?)`,
-    ).run(id, opts.type, opts.title, opts.description ?? null, opts.parentId ?? null);
+      `INSERT INTO writs (id, type, title, description, parent_id, workshop, source_type, source_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, opts.type, opts.title, opts.description ?? null, opts.parentId ?? null, workshop, sourceType, sourceId);
 
     db.prepare(
       `INSERT INTO audit_log (id, actor, action, target_type, target_id, detail) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -195,6 +223,14 @@ export function listWrits(home: string, opts: ListWritsOptions = {}): WritRecord
     if (opts.status) {
       conditions.push(`status = ?`);
       params.push(opts.status);
+    }
+    if (opts.workshop !== undefined) {
+      if (opts.workshop === null) {
+        conditions.push(`workshop IS NULL`);
+      } else {
+        conditions.push(`workshop = ?`);
+        params.push(opts.workshop);
+      }
     }
 
     if (conditions.length > 0) query += ` WHERE ${conditions.join(' AND ')}`;
@@ -283,17 +319,21 @@ export function completeWrit(home: string, writId: string): WritRecord {
       `INSERT INTO audit_log (id, actor, action, target_type, target_id, detail) VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(generateId('aud'), 'framework', 'writ_completed', 'writ', writId, null);
 
-    // Fire completion event
+    // Fire type-specific completion event
     signalEvent(home, `${current.type}.completed`, {
       writId,
       parentId: current.parentId,
       type: current.type,
+      workshop: current.workshop,
     }, 'framework');
 
-    // Handle mandate → commission completion
-    if (current.type === 'mandate') {
-      completeMandateCommission(db, home, writId);
-    }
+    // Fire generic writ.completed event (used by workshop-merge and other cross-type handlers)
+    signalEvent(home, 'writ.completed', {
+      writId,
+      parentId: current.parentId,
+      type: current.type,
+      workshop: current.workshop,
+    }, 'framework');
 
     // Trigger rollup on parent
     if (current.parentId) {
@@ -332,12 +372,8 @@ export function failWrit(home: string, writId: string): WritRecord {
       writId,
       parentId: current.parentId,
       type: current.type,
+      workshop: current.workshop,
     }, 'framework');
-
-    // Handle mandate → commission failure
-    if (current.type === 'mandate') {
-      failMandateCommission(db, home, writId);
-    }
 
     // Cascade: cancel incomplete children (not active ones — let them finish)
     cascadeCancelChildren(db, home, writId);
@@ -481,12 +517,15 @@ export function rollupParent(home: string, parentId: string): void {
         writId: parentId,
         parentId: parent.parentId,
         type: parent.type,
+        workshop: parent.workshop,
       }, 'framework');
 
-      // Handle mandate → commission completion
-      if (parent.type === 'mandate') {
-        completeMandateCommission(db, home, parentId);
-      }
+      signalEvent(home, 'writ.completed', {
+        writId: parentId,
+        parentId: parent.parentId,
+        type: parent.type,
+        workshop: parent.workshop,
+      }, 'framework');
 
       // Continue rollup up the tree
       if (parent.parentId) {
@@ -616,6 +655,7 @@ export function hydratePromptTemplate(
  * Cancel all non-terminal children of a writ (recursive).
  * Active children are left alone — they'll be cancelled when their session reports back.
  */
+
 function cascadeCancelChildren(db: Database.Database, home: string, parentId: string): void {
   const children = db.prepare(
     `SELECT id, type, status FROM writs WHERE parent_id = ?`,
@@ -650,47 +690,3 @@ function cascadeCancelChildren(db: Database.Database, home: string, parentId: st
   }
 }
 
-/**
- * When a mandate writ completes, mark its commission as completed.
- */
-function completeMandateCommission(db: Database.Database, home: string, writId: string): void {
-  const row = db.prepare(
-    `SELECT id FROM commissions WHERE writ_id = ?`,
-  ).get(writId) as { id: string } | undefined;
-
-  if (row) {
-    db.prepare(
-      `UPDATE commissions SET status = 'completed', status_reason = 'mandate completed', updated_at = datetime('now') WHERE id = ?`,
-    ).run(row.id);
-
-    db.prepare(
-      `INSERT INTO audit_log (id, actor, action, target_type, target_id, detail) VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(generateId('aud'), 'framework', 'commission_completed', 'commission', row.id,
-      JSON.stringify({ mandateWritId: writId }));
-
-    signalEvent(home, 'commission.completed', { commissionId: row.id }, 'framework');
-  }
-}
-
-/**
- * When a mandate writ fails, mark its commission as failed.
- * Mirror of completeMandateCommission.
- */
-function failMandateCommission(db: Database.Database, home: string, writId: string): void {
-  const row = db.prepare(
-    `SELECT id FROM commissions WHERE writ_id = ?`,
-  ).get(writId) as { id: string } | undefined;
-
-  if (row) {
-    db.prepare(
-      `UPDATE commissions SET status = 'failed', status_reason = 'mandate failed', updated_at = datetime('now') WHERE id = ?`,
-    ).run(row.id);
-
-    db.prepare(
-      `INSERT INTO audit_log (id, actor, action, target_type, target_id, detail) VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(generateId('aud'), 'framework', 'commission_failed', 'commission', row.id,
-      JSON.stringify({ mandateWritId: writId }));
-
-    signalEvent(home, 'commission.failed', { commissionId: row.id }, 'framework');
-  }
-}

@@ -1,17 +1,17 @@
 /**
  * Workshop Prepare Engine (clockwork)
  *
- * Standing order handler for commission.posted events. Creates an isolated
- * git worktree for the commission and signals commission.ready so the next
+ * Standing order handler for writ.posted events. Creates an isolated
+ * git worktree for the writ and signals writ.workspace-ready so the next
  * standing order (summon artificer) can launch the session.
  *
  * Event flow:
- *   commission.posted { commissionId, workshop }
+ *   writ.posted { writId, workshop }
+ *     → reads writ record for workshop
  *     → creates worktree from workshop bare repo
- *     → updates commission status → in_progress
- *     → signals commission.ready { commissionId, workshop, worktreePath }
+ *     → signals writ.workspace-ready { writId, workshop, worktreePath }
  */
-import { engine, signalEvent, updateCommissionStatus, readCommission } from '@shardworks/nexus-core';
+import { engine, signalEvent, readWrit } from '@shardworks/nexus-core';
 import { setupWorktree } from '@shardworks/nexus-core';
 
 export default engine({
@@ -22,41 +22,40 @@ export default engine({
     }
 
     const payload = event.payload as Record<string, unknown> | null;
-    if (!payload || typeof payload.commissionId !== 'string' || typeof payload.workshop !== 'string') {
+    if (!payload || typeof payload.writId !== 'string') {
       throw new Error(
-        `workshop-prepare expected payload with { commissionId, workshop }, got: ${JSON.stringify(payload)}`,
+        `workshop-prepare expected payload with { writId }, got: ${JSON.stringify(payload)}`,
       );
     }
 
-    const commissionId = payload.commissionId as string;
-    const workshop = payload.workshop as string;
+    const writId = payload.writId as string;
 
-    // Verify commission exists
-    const commission = readCommission(home, commissionId);
-    if (!commission) {
-      throw new Error(`Commission #${commissionId} not found in the Ledger.`);
+    // Read writ record to get workshop
+    const writ = readWrit(home, writId);
+    if (!writ) {
+      throw new Error(`Writ "${writId}" not found.`);
     }
+
+    // If no workshop on the writ, nothing to prepare — skip silently.
+    // The summon-engine will handle workshopless writs differently.
+    if (!writ.workshop) {
+      return;
+    }
+
+    const workshop = writ.workshop;
 
     // Create the worktree
     const worktree = setupWorktree({
       home,
       workshop,
-      commissionId,
+      writId,
     });
-
-    // Update commission status
-    updateCommissionStatus(
-      home,
-      commissionId,
-      'in_progress',
-      `worktree ready on branch ${worktree.branch}`,
-    );
 
     // Signal ready for the next standing order (summon artificer)
     signalEvent(
       home,
-      'commission.ready',
-      { commissionId, workshop, worktreePath: worktree.path },
+      'writ.workspace-ready',
+      { writId, workshop, worktreePath: worktree.path },
       'framework',
     );
   },

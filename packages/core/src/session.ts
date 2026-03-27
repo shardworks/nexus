@@ -1,7 +1,7 @@
 /**
  * Session infrastructure — the unified session funnel.
  *
- * ALL sessions (interactive, commissioned, briefed) flow through
+ * ALL sessions (interactive, summoned, briefed) flow through
  * `launchSession()`. This provides unified logging, events, metrics,
  * workspace lifecycle, and session record persistence.
  *
@@ -267,7 +267,7 @@ export interface SessionProviderLaunchOptions {
   home: string;
   /** The manifest result — system prompt + resolved tools. */
   manifest: ManifestResult;
-  /** The user-facing prompt (commission spec, consultation topic, brief). */
+  /** The user-facing prompt (writ spec, consultation topic, brief). */
   prompt: string | null;
   /** Whether the session is interactive (human at keyboard) or autonomous. */
   interactive: boolean;
@@ -313,7 +313,7 @@ export interface SessionLaunchOptions {
   home: string;
   /** The manifest result — system prompt + resolved tools. */
   manifest: ManifestResult;
-  /** The user-facing prompt (commission spec, consultation topic, brief). */
+  /** The user-facing prompt (writ spec, consultation topic, brief). */
   prompt: string | null;
   /** Whether the session is interactive (human at keyboard) or autonomous. */
   interactive: boolean;

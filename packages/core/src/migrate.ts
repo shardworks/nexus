@@ -206,7 +206,7 @@ function applyMigrationFiles(
  * Apply pending core framework migrations to the guild's Books.
  *
  * Core migrations are bundled with the nexus-core package and define
- * the framework's required schema (sessions, commissions, writs, etc.).
+ * the framework's required schema (sessions, writs, events, etc.).
  *
  * @param home - Absolute path to the guild root.
  * @returns Summary of what was applied and skipped.

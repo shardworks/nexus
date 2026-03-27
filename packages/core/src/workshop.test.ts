@@ -142,7 +142,7 @@ describe('removeWorkshop', () => {
     addWorkshop({ home, name: 'my-repo', remoteUrl: remotePath });
 
     // Simulate a worktree directory
-    const wtDir = path.join(worktreesPath(home), 'my-repo', 'commission-1');
+    const wtDir = path.join(worktreesPath(home), 'my-repo', 'writ-1');
     fs.mkdirSync(wtDir, { recursive: true });
 
     removeWorkshop({ home, name: 'my-repo' });
@@ -205,8 +205,8 @@ describe('listWorkshops', () => {
 
     // Simulate worktree directories
     const wtDir = path.join(worktreesPath(home), 'my-repo');
-    fs.mkdirSync(path.join(wtDir, 'commission-1'), { recursive: true });
-    fs.mkdirSync(path.join(wtDir, 'commission-2'), { recursive: true });
+    fs.mkdirSync(path.join(wtDir, 'writ-1'), { recursive: true });
+    fs.mkdirSync(path.join(wtDir, 'writ-2'), { recursive: true });
 
     const result = listWorkshops(home);
     assert.equal(result[0]!.activeWorktrees, 2);

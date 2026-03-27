@@ -1,8 +1,4 @@
 // ── Tools (named exports) ──────────────────────────────────────────────
-export { default as commissionCreate } from './tools/commission.ts';
-export { default as commissionList } from './tools/commission-list.ts';
-export { default as commissionShow } from './tools/commission-show.ts';
-export { default as commissionUpdate } from './tools/commission-update.ts';
 export { default as animaCreate } from './tools/instantiate.ts';
 export { default as animaList } from './tools/anima-list.ts';
 export { default as animaShow } from './tools/anima-show.ts';
@@ -45,10 +41,6 @@ export { default as workshopMerge } from './engines/workshop-merge.ts';
 export { default as summonEngine } from './engines/summon.ts';
 
 // ── Default export: all tools + engines as flat array ──────────────────
-import commissionCreate from './tools/commission.ts';
-import commissionList from './tools/commission-list.ts';
-import commissionShow from './tools/commission-show.ts';
-import commissionUpdate from './tools/commission-update.ts';
 import animaCreate from './tools/instantiate.ts';
 import animaList from './tools/anima-list.ts';
 import animaShow from './tools/anima-show.ts';
@@ -89,7 +81,6 @@ import workshopMerge from './engines/workshop-merge.ts';
 import summonEngine from './engines/summon.ts';
 
 export default [
-  commissionCreate, commissionList, commissionShow, commissionUpdate,
   animaCreate, animaList, animaShow, animaUpdate, animaRemove,
   workshopCreate, workshopRegister, workshopList, workshopShow, workshopRemove,
   toolInstall, toolRemove, toolList,

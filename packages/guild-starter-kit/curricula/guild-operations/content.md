@@ -4,7 +4,7 @@ This curriculum teaches how a Nexus guild operates — its structure, workflows,
 
 ## What Is a Guild
 
-A guild is a self-contained multi-agent AI system. It has members (animas), tools (tools and engines), workshops (repositories where work happens), and a body of institutional knowledge (the codex). The guild is managed by a human patron who commissions work and judges results.
+A guild is a self-contained multi-agent AI system. It has members (animas), tools (tools and engines), workshops (repositories where work happens), and a body of institutional knowledge (the codex). The guild is managed by a human patron who posts writs (work requests) and judges results.
 
 The guildhall is the guild's institutional center — a repository that holds configuration, tools, training content, and the Ledger. Work does not happen in the guildhall; it happens in workshops.
 
@@ -20,10 +20,10 @@ An anima is the fundamental unit of identity in the guild. Animas are animated b
 | **Active** | On the roster, available for work |
 | **Retired** | No longer active, record preserved |
 
-### Standing vs. Commissioned
+### Standing vs. Summoned
 
 - **Standing** animas persist on the roster indefinitely, called on by name. The steward is a standing anima.
-- **Commissioned** animas are created for a specific commission and their tenure ends when the commission completes.
+- **Summoned** animas are created for a specific writ and their tenure ends when the writ completes.
 
 ## Roles
 
@@ -33,10 +33,10 @@ This guild uses the following roles:
 
 | Role | Function |
 |------|----------|
-| **Steward** | The patron's right hand. Advises on guild state and administers the guild — manages the roster, workshops, commissions, tools, and the Clockworks. Does not build works. |
+| **Steward** | The patron's right hand. Advises on guild state and administers the guild — manages the roster, workshops, writs, tools, and the Clockworks. Does not build works. |
 | **Artificer** | Executes writs — receives planned work and builds the thing. Works in workshops. Creates child writs for sub-task tracking. |
-| **Sage** | Plans work. Decomposes commissions into concrete writs with acceptance criteria. |
-| **Master Sage** | Senior sage. If active, reviews incoming commissions to determine scope and planning approach. |
+| **Sage** | Plans work. Decomposes writs into concrete child writs with acceptance criteria. |
+| **Master Sage** | Senior sage. If active, reviews incoming writs to determine scope and planning approach. |
 
 Other roles may emerge as the guild evolves.
 
@@ -44,7 +44,7 @@ Other roles may emerge as the guild evolves.
 
 A workshop is a repository where animas do their work. Workshops are guild space — the patron assigns them, but during normal operation the patron judges results by the works produced, not by inspecting the workshop directly.
 
-Each workshop is registered in `guild.json` under the `workshops` key with its name, remote URL, and the timestamp it was added. On disk, the guild maintains a bare clone of each workshop at `.nexus/workshops/{name}.git`. Worktrees are created from these bare clones, giving each job an isolated working directory.
+Each workshop is registered in `guild.json` under the `workshops` key with its name, remote URL, and the timestamp it was added. On disk, the guild maintains a bare clone of each workshop at `.nexus/workshops/{name}.git`. Worktrees are created from these bare clones, giving each writ an isolated working directory.
 
 ### Managing Workshops
 
@@ -119,13 +119,13 @@ This deletes the bare clone, any job worktrees for that workshop, and removes th
 
 ### How Workshops Are Used
 
-When a job is dispatched to a workshop, the workshop-prepare engine:
+When a workspace-bound writ is posted, the workshop-prepare engine:
 
-1. Creates a job-specific branch from `main` in the workshop's bare clone
-2. Checks out a git worktree at `.nexus/worktrees/{workshop}/commission-{id}/`
+1. Creates a writ-specific branch from `main` in the workshop's bare clone
+2. Checks out a git worktree at `.nexus/worktrees/{workshop}/writ-{id}/`
 3. The anima works in this isolated directory
 
-This means multiple jobs can run concurrently in the same workshop without interfering with each other — each gets its own branch and working directory.
+This means multiple writs can run concurrently in the same workshop without interfering with each other — each gets its own branch and working directory.
 
 ### guild.json Shape
 
@@ -142,18 +142,16 @@ This means multiple jobs can run concurrently in the same workshop without inter
 
 The `remoteUrl` is the source of truth. The bare clone on disk is ephemeral and can be reconstructed from this URL by `nsg guild restore`.
 
-## Commissions and Writs
+## Writs
 
-A commission is the patron's act of requesting work. The guild receives commissions and tracks the resulting labor through **writs** — typed, tree-structured work items.
+A writ is the sole work primitive — the system's record of an outstanding obligation. Every summoned session is bound to a writ. Writs have:
 
-### Writs
-
-A writ is the system's record of an outstanding obligation. Every summoned session is bound to a writ. Writs have:
-
-- A **type** — guild-defined (e.g. `task`, `feature`, `step`) or built-in (`mandate`, `summon`)
+- A **type** — guild-defined (e.g. `task`, `feature`, `step`) or built-in (`summon`)
 - A **status** — `ready`, `active`, `pending`, `completed`, `failed`, `cancelled`
 - Optional **parent/child** relationships — forming trees of arbitrary depth
 - A **title** and optional **description** — the description serves as the prompt template content
+- An optional **workshop** — present for workspace-bound writs, null for knowledge/planning writs
+- A **source** — `patron` (posted by the human), `anima` (created by an anima), or `engine` (created by the framework)
 
 ### Writ Lifecycle
 
@@ -167,7 +165,7 @@ ready → active → completed
 - **ready** — dispatchable, waiting to be picked up by a standing order
 - **active** — an anima is working on it in a session
 - **pending** — the anima called `complete-session` but child writs are still incomplete
-- **completed** — all work finished (fires `<type>.completed`)
+- **completed** — all work finished (fires `<type>.completed` and `writ.completed`)
 - **failed** — unrecoverable failure (fires `<type>.failed`, cancels incomplete children)
 - **cancelled** — cancelled by the system or cascade
 
@@ -179,15 +177,19 @@ When all children of a pending writ complete, the parent automatically transitio
 
 This lets animas decompose work into sub-items without managing the coordination.
 
-### Commission Lifecycle
+### Workspace-Bound Writ Lifecycle
 
-1. **Posted** — the patron runs `nsg commission create <spec> --workshop <name>`. This creates the commission and a `mandate` writ in the Ledger, and signals `commission.posted`.
-2. **Worktree prepared** — the `workshop-prepare` engine (triggered by `commission.posted`) creates a branch and worktree, then signals `commission.ready`.
-3. **Dispatched** — the Clockworks matches `mandate.ready` and summons an artificer, hydrating the prompt template with writ fields.
+1. **Posted** — the patron runs `nsg writ post <spec> --workshop <name>`. This creates the writ with `sourceType: 'patron'` and signals `writ.posted`.
+2. **Worktree prepared** — the `workshop-prepare` engine (triggered by `writ.posted`) creates a branch and worktree, then signals `writ.workspace-ready`.
+3. **Dispatched** — the Clockworks matches `writ.workspace-ready` and summons an artificer, hydrating the prompt template with writ fields.
 4. **In Progress** — the artificer works on the writ. They may create child writs for sub-tasks using `create-writ`.
 5. **Session ended** — the artificer calls `complete-session` when done. If child writs exist and are incomplete, the writ goes to `pending`. If the session ends without `complete-session`, the writ is interrupted and re-dispatched.
-6. **Rollup** — as child writs complete, the parent rolls up. When all children are done, the mandate completes.
-7. **Merged or Failed** — the `workshop-merge` engine (triggered by `mandate.completed`) merges the branch back to main.
+6. **Rollup** — as child writs complete, the parent rolls up. When all children are done, the writ completes.
+7. **Merged or Failed** — the `workshop-merge` engine (triggered by `writ.completed`) merges the branch back to main.
+
+### Knowledge/Planning Writs
+
+Writs posted with `--no-workshop` have no workspace. The summon-engine strips destructive tools (bash, file writes, etc.) for these sessions, restricting the anima to read-only operations and writ management.
 
 ### Staged Sessions
 
@@ -196,13 +198,6 @@ Work may span multiple sessions when the context window fills up. The writ syste
 - If a session ends without `complete-session` or `fail-writ`, the writ is interrupted (active → ready) and re-dispatched
 - The next session receives the prompt template plus a **progress appendix** — a structured summary of child writ statuses
 - The anima picks up where the previous session left off
-
-### Commission Status Flow
-
-```
-posted → in_progress → completed
-                     → failed
-```
 
 ## Sessions
 
@@ -249,17 +244,11 @@ The `sessions` table tracks every session with:
 - Start/end times, exit code, token usage, cost, and duration
 - A link to the full session record JSON on disk
 
-Every summoned session is bound to a writ via the `writ_id` column. A commission's work may span multiple sessions — the writ tracks continuity across them.
+Every summoned session is bound to a writ via the `writ_id` column. A writ's work may span multiple sessions — the writ tracks continuity across them.
 
 ## Tools
 
 Tools that animas wield during work. Each tool ships with instructions delivered to the anima at manifest time. Tools follow a `<noun>-<verb>` naming convention. All tools are packaged in `@shardworks/nexus-stdlib`:
-
-### Commission Tools
-- **commission-create** — post a commission to the guild
-- **commission-list** — list commissions with optional filters
-- **commission-show** — show details of a specific commission
-- **commission-update** — update a commission's status
 
 ### Anima Tools
 - **anima-create** — create a new anima with assigned training and roles
@@ -281,11 +270,12 @@ Tools that animas wield during work. Each tool ships with instructions delivered
 - **tool-list** — list installed tools
 
 ### Writ Tools
+- **create-writ** — create a writ or child writ for work tracking
+- **list-writs** — list writs with optional filters (type, status, parent, workshop)
+- **show-writ** — show details of a specific writ
+- **update-writ** — administrative status changes (fail, cancel, reopen)
 - **complete-session** — signal that the current writ's work is done. Mandatory before session end.
 - **fail-writ** — signal that the current writ cannot be completed. Terminal.
-- **create-writ** — create a child writ for sub-task tracking
-- **list-writs** — list writs with optional filters (type, status, parent)
-- **show-writ** — show details of a specific writ
 
 ### Clockworks Tools
 - **clock-list** — show pending events
@@ -306,13 +296,13 @@ Engines are automated mechanical processes with no AI involvement. Two kinds:
 **Core engines** — fundamental capabilities absorbed into the Nexus framework itself (`@shardworks/nexus-core`). These are not registered in `guild.json` as engines — they are framework internals that the system calls directly:
 
 - **manifest** — assembles an anima's identity for a session (codex, curriculum, temperament, tool instructions → system prompt)
-- **worktree** — creates and manages git worktrees for commissions
+- **worktree** — creates and manages git worktrees for writs
 - **migrate** — applies database migrations to the Ledger
 
 **Clockwork engines** — purpose-built to respond to events via standing orders. Use the `engine()` SDK factory from `@shardworks/nexus-core`. The Clockworks runner calls them automatically when matching events fire. Packaged in `@shardworks/nexus-stdlib`:
 
-- **workshop-prepare** — creates a worktree when a commission is posted (`commission.posted` → `commission.ready`)
-- **workshop-merge** — merges the commission branch after the mandate completes (`mandate.completed` → `commission.completed` or `commission.failed`)
+- **workshop-prepare** — creates a worktree when a writ is posted (`writ.posted` → `writ.workspace-ready`)
+- **workshop-merge** — merges the writ branch after the writ completes (`writ.completed` → `writ.merged` or `writ.merge-failed`)
 
 ### Session Providers
 
@@ -328,7 +318,7 @@ Role-specific codex entries live in `codex/roles/` and are delivered only to ani
 
 ## The Ledger
 
-The guild's operational database (SQLite). Holds anima records, roster, commission history, writs, session history, compositions, events, and the audit trail. Lives at `.nexus/nexus.db` in the guildhall. Managed by the migrate engine in core.
+The guild's operational database (SQLite). Holds anima records, roster, writs, session history, compositions, events, and the audit trail. Lives at `.nexus/nexus.db` in the guildhall. Managed by the migrate engine in core.
 
 ### Key Tables
 
@@ -336,9 +326,7 @@ The guild's operational database (SQLite). Holds anima records, roster, commissi
 |-------|--------------|
 | `animas` | Every anima that has ever existed — name, status, composition |
 | `roster` | Active role assignments (filtered view of active animas) |
-| `commissions` | Commission records with status, content, workshop, and linked mandate writ |
-| `commission_assignments` | Which anima was assigned to which commission |
-| `writs` | Tracked work items — type, status, parent/child hierarchy, bound session |
+| `writs` | Tracked work items — type, status, parent/child hierarchy, workshop, source, bound session |
 | `sessions` | Every session — anima, provider, trigger, metrics, cost, bound writ |
 | `events` | The Clockworks event queue — every event signaled |
 | `event_dispatches` | Standing order execution records |
@@ -354,21 +342,21 @@ An event is an immutable fact: *this happened*. Events are recorded in the Ledge
 
 Two kinds:
 
-- **Framework events** — signaled automatically by the system. Animas cannot signal these. Reserved namespaces: `anima.*`, `commission.*`, `writ.*`, `tool.*`, `migration.*`, `guild.*`, `standing-order.*`, `session.*`. Note: writ lifecycle events like `task.ready` use guild-defined type names but are emitted by the framework.
+- **Framework events** — signaled automatically by the system. Animas cannot signal these. Reserved namespaces: `anima.*`, `writ.*`, `tool.*`, `migration.*`, `guild.*`, `standing-order.*`, `session.*`. Note: writ lifecycle events like `task.ready` use guild-defined type names but are emitted by the framework.
 - **Custom events** — declared by the guild in `guild.json` under `clockworks.events`. Animas signal these using the `signal` tool.
 
 ### Key Framework Events
 
 | Event | When it fires | Typical standing order |
 |-------|--------------|----------------------|
-| `commission.posted` | A new commission is created | `run: workshop-prepare` |
-| `commission.completed` | Commission completed (mandate finished) | (guild-defined) |
-| `commission.failed` | Commission failed | (guild-defined) |
-| `mandate.ready` | Mandate writ is ready for dispatch | `summon: artificer` |
-| `mandate.completed` | Mandate writ completed | `run: workshop-merge` |
-| `<type>.ready` | A writ of guild-defined type is ready | (guild-defined) |
-| `<type>.completed` | A writ of guild-defined type completed | (guild-defined) |
-| `<type>.failed` | A writ of guild-defined type failed | (guild-defined) |
+| `writ.posted` | A patron posts a writ | `run: workshop-prepare` |
+| `writ.workspace-ready` | Worktree prepared for a writ | `summon: artificer` |
+| `writ.completed` | Any writ completed (generic) | `run: workshop-merge` |
+| `writ.merged` | Writ branch merged to main | (guild-defined) |
+| `writ.merge-failed` | Writ branch merge failed | (guild-defined) |
+| `<type>.ready` | A writ of given type is ready | (guild-defined) |
+| `<type>.completed` | A writ of given type completed | (guild-defined) |
+| `<type>.failed` | A writ of given type failed | (guild-defined) |
 | `session.started` | Any session begins | (guild-defined) |
 | `session.ended` | Any session ends (with metrics) | (guild-defined) |
 | `standing-order.failed` | A standing order execution failed | (guild-defined) |
@@ -401,12 +389,11 @@ Example `guild.json` configuration:
       }
     },
     "standingOrders": [
-      { "on": "commission.posted",   "run": "workshop-prepare" },
-      { "on": "mandate.ready",      "summon": "artificer",
+      { "on": "writ.posted",           "run": "workshop-prepare" },
+      { "on": "writ.workspace-ready",  "summon": "artificer",
         "prompt": "You have been assigned a commission.\n\n{{writ.title}}\n\n{{writ.description}}" },
-      { "on": "mandate.completed",   "run": "workshop-merge" },
-      { "on": "commission.failed",   "summon": "steward" },
-      { "on": "code.reviewed",       "summon": "steward" }
+      { "on": "writ.completed",         "run": "workshop-merge" },
+      { "on": "code.reviewed",          "summon": "steward" }
     ]
   },
   "writTypes": {}
@@ -550,7 +537,7 @@ The command is idempotent — safe to run at any time. If everything is already 
 ### What Restore Does NOT Do
 
 - It does not create the Ledger (that's done by `nsg init` and the migrate engine)
-- It does not re-create animas or commissions — those live in the Ledger
+- It does not re-create animas or writs — those live in the Ledger
 - It does not push or pull workshop repos — it only clones them fresh if missing
 
 ## CLI Reference
@@ -566,13 +553,14 @@ The primary interface is the `nsg` command, organized by noun groups:
 | `nsg signal <name>` | Signal a custom guild event |
 | `nsg guild restore` | Restore runtime state after a fresh clone |
 
-### Commission
+### Writ
 | Command | Purpose |
 |---------|---------|
-| `nsg commission create <spec> --workshop <name>` | Post a commission |
-| `nsg commission list` | List commissions |
-| `nsg commission show <id>` | Show commission details |
-| `nsg commission update <id>` | Update a commission |
+| `nsg writ post <spec> --workshop <name>` | Post a workspace-bound writ |
+| `nsg writ post <spec> --no-workshop` | Post a knowledge/planning writ |
+| `nsg writ list` | List writs |
+| `nsg writ show <id>` | Show writ details |
+| `nsg writ update <id> --action <fail\|cancel\|reopen>` | Update a writ |
 
 ### Anima
 | Command | Purpose |

@@ -3,7 +3,7 @@
  *
  * Workshops are repositories where the guild does its work. Each workshop
  * is stored as a bare git clone in .nexus/workshops/{name}.git, with
- * commission worktrees created from it by the worktree-setup engine.
+ * writ worktrees created from it by the workshop-prepare engine.
  *
  * This module provides:
  * - addWorkshop: clone a remote repo and register it in guild.json
@@ -54,7 +54,7 @@ export interface WorkshopInfo {
   addedAt: string;
   /** Whether the bare clone exists on disk. */
   cloned: boolean;
-  /** Number of active commission worktrees. */
+  /** Number of active writ worktrees. */
   activeWorktrees: number;
 }
 
@@ -141,7 +141,7 @@ export function addWorkshop(opts: AddWorkshopOptions): AddWorkshopResult {
 }
 
 /**
- * Remove a workshop — deletes the bare clone, any commission worktrees,
+ * Remove a workshop — deletes the bare clone, any writ worktrees,
  * and the guild.json entry.
  *
  * @throws If the workshop doesn't exist in guild.json.
@@ -156,7 +156,7 @@ export function removeWorkshop(opts: RemoveWorkshopOptions): void {
     );
   }
 
-  // Remove commission worktrees for this workshop
+  // Remove writ worktrees for this workshop
   const wtDir = path.join(worktreesPath(home), name);
   if (fs.existsSync(wtDir)) {
     fs.rmSync(wtDir, { recursive: true, force: true });

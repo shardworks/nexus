@@ -7,15 +7,12 @@
  *
  * Prefixes by entity type:
  *   a-     anima
- *   c-     commission
+ *   wrt-   writ
  *   conv-  conversation
  *   cpart- conversation participant
  *   evt-   event
  *   ses-   session
- *   w-     work
- *   p-     piece
- *   j-     job
- *   s-     stroke
+ *   aud-   audit log entry
  */
 import { randomBytes } from 'node:crypto';
 

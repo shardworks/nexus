@@ -185,7 +185,7 @@ describe('installBundle with starter kit', () => {
     // Implements registered
     const expectedImplements = [
       'tool-install', 'tool-remove', 'tool-list',
-      'commission-create', 'commission-list', 'commission-show', 'commission-update', 'commission-check',
+      'update-writ',
       'anima-create', 'anima-list', 'anima-show', 'anima-update', 'anima-remove',
       'workshop-create', 'workshop-register', 'workshop-list', 'workshop-show', 'workshop-remove',
       'clock-list', 'clock-tick', 'clock-run', 'clock-start', 'clock-stop', 'clock-status',
@@ -221,7 +221,7 @@ describe('installBundle with starter kit', () => {
     assert.equal(result.artifacts.migrations.length, 0, 'bundle should not deliver migrations');
 
     // Bundle provenance recorded
-    assert.ok(config.tools['commission-create'].bundle, 'bundle provenance missing');
+    assert.ok(config.tools['update-writ'].bundle, 'bundle provenance missing');
   });
 
   it('creates a single commit when commit=true', () => {
@@ -261,7 +261,7 @@ describe('full init sequence', () => {
     assert.deepEqual(config.workshops, {});
 
     // Tools registered
-    assert.ok(config.tools['commission-create'], 'commission-create not registered');
+    assert.ok(config.tools['create-writ'], 'create-writ not registered');
     assert.ok(config.engines['workshop-prepare'], 'expected engines not registered');
 
     // Training registered
@@ -284,14 +284,14 @@ describe('full init sequence', () => {
       assert.ok(names.includes('_migrations'), '_migrations tracking table missing');
       assert.ok(names.includes('animas'), 'animas table missing');
       assert.ok(names.includes('anima_compositions'), 'anima_compositions table missing');
-      assert.ok(names.includes('commissions'), 'commissions table missing');
-      assert.ok(names.includes('commission_assignments'), 'commission_assignments table missing');
+      assert.ok(!names.includes('commissions'), 'commissions table should be dropped');
+      assert.ok(!names.includes('commission_assignments'), 'commission_assignments table should be dropped');
+      assert.ok(!names.includes('commission_sessions'), 'commission_sessions table should be dropped');
       assert.ok(names.includes('roster'), 'roster table missing');
       assert.ok(names.includes('audit_log'), 'audit_log table missing');
       assert.ok(names.includes('events'), 'events table missing');
       assert.ok(names.includes('event_dispatches'), 'event_dispatches table missing');
       assert.ok(names.includes('sessions'), 'sessions table missing');
-      assert.ok(names.includes('commission_sessions'), 'commission_sessions table missing');
       assert.ok(names.includes('writs'), 'writs table missing');
       assert.ok(names.includes('conversations'), 'conversations table missing');
       assert.ok(names.includes('conversation_participants'), 'conversation_participants table missing');
@@ -405,9 +405,9 @@ describe('full init sequence', () => {
     assert.ok(config.clockworks.events['craft.debt'], 'craft.debt event missing');
     assert.ok(config.clockworks.events['craft.question'].schema.workshop, 'craft.question missing workshop in schema');
     assert.ok(config.clockworks.events['craft.debt'].schema.workshop, 'craft.debt missing workshop in schema');
-    assert.equal(config.clockworks.standingOrders.length, 3, 'should have 3 commission lifecycle standing orders');
-    assert.deepEqual(config.clockworks.standingOrders[0], { on: 'commission.posted', run: 'workshop-prepare' });
-    assert.deepEqual(config.clockworks.standingOrders[1], { on: 'mandate.ready', summon: 'artificer', prompt: 'You have been assigned a commission.\n\n{{writ.title}}\n\n{{writ.description}}' });
-    assert.deepEqual(config.clockworks.standingOrders[2], { on: 'mandate.completed', run: 'workshop-merge' });
+    assert.equal(config.clockworks.standingOrders.length, 3, 'should have 3 writ lifecycle standing orders');
+    assert.deepEqual(config.clockworks.standingOrders[0], { on: 'writ.posted', run: 'workshop-prepare' });
+    assert.deepEqual(config.clockworks.standingOrders[1], { on: 'writ.workspace-ready', summon: 'artificer', prompt: 'You have been assigned a commission.\n\n{{writ.title}}\n\n{{writ.description}}' });
+    assert.deepEqual(config.clockworks.standingOrders[2], { on: 'writ.completed', run: 'workshop-merge' });
   });
 });

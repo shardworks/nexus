@@ -86,23 +86,17 @@ function setupTestGuild(opts?: {
                   CHECK(status IN ('ready', 'active', 'pending', 'completed', 'failed', 'cancelled')),
       parent_id   TEXT REFERENCES writs(id),
       session_id  TEXT,
+      workshop    TEXT,
+      source_type TEXT NOT NULL DEFAULT 'engine'
+                  CHECK(source_type IN ('patron', 'anima', 'engine')),
+      source_id   TEXT,
       created_at  TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX idx_writs_parent ON writs(parent_id);
     CREATE INDEX idx_writs_status ON writs(status);
     CREATE INDEX idx_writs_type_status ON writs(type, status);
-
-    CREATE TABLE commissions (
-      id            TEXT PRIMARY KEY,
-      content       TEXT NOT NULL,
-      status        TEXT NOT NULL CHECK(status IN ('posted', 'assigned', 'in_progress', 'completed', 'failed')),
-      workshop      TEXT NOT NULL,
-      status_reason TEXT,
-      writ_id       TEXT REFERENCES writs(id),
-      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+    CREATE INDEX idx_writs_workshop ON writs(workshop);
 
     CREATE TABLE audit_log (
       id          TEXT PRIMARY KEY,
@@ -122,23 +116,19 @@ function setupTestGuild(opts?: {
 // ── Create & Validate ──────────────────────────────────────────────────
 
 describe('createWrit', () => {
-  it('creates a writ with built-in type (mandate)', () => {
-    const home = setupTestGuild();
-    const writ = createWrit(home, { type: 'mandate', title: 'Test mandate' });
-
-    assert.ok(writ.id.startsWith('wrt-'));
-    assert.equal(writ.type, 'mandate');
-    assert.equal(writ.title, 'Test mandate');
-    assert.equal(writ.status, 'ready');
-    assert.equal(writ.parentId, null);
-    assert.equal(writ.sessionId, null);
-  });
-
   it('creates a writ with built-in type (summon)', () => {
     const home = setupTestGuild();
     const writ = createWrit(home, { type: 'summon', title: 'Test summon' });
+
+    assert.ok(writ.id.startsWith('wrt-'));
     assert.equal(writ.type, 'summon');
+    assert.equal(writ.title, 'Test summon');
     assert.equal(writ.status, 'ready');
+    assert.equal(writ.parentId, null);
+    assert.equal(writ.sessionId, null);
+    assert.equal(writ.workshop, null);
+    assert.equal(writ.sourceType, 'engine');
+    assert.equal(writ.sourceId, null);
   });
 
   it('creates a writ with guild-defined type', () => {
@@ -157,7 +147,7 @@ describe('createWrit', () => {
 
   it('creates a writ with description and parent', () => {
     const home = setupTestGuild();
-    const parent = createWrit(home, { type: 'mandate', title: 'Parent' });
+    const parent = createWrit(home, { type: 'summon', title: 'Parent' });
     const child = createWrit(home, {
       type: 'summon',
       title: 'Child',
@@ -168,12 +158,61 @@ describe('createWrit', () => {
     assert.equal(child.description, 'Some description');
     assert.equal(child.parentId, parent.id);
   });
+
+  it('creates a writ with explicit workshop', () => {
+    const home = setupTestGuild();
+    const writ = createWrit(home, {
+      type: 'summon',
+      title: 'Workshop writ',
+      workshop: 'my-app',
+    });
+    assert.equal(writ.workshop, 'my-app');
+  });
+
+  it('inherits workshop from parent when omitted', () => {
+    const home = setupTestGuild();
+    const parent = createWrit(home, {
+      type: 'summon',
+      title: 'Parent',
+      workshop: 'my-app',
+    });
+    const child = createWrit(home, {
+      type: 'summon',
+      title: 'Child',
+      parentId: parent.id,
+    });
+    assert.equal(child.workshop, 'my-app');
+  });
+
+  it('workshop is null when no parent and not specified', () => {
+    const home = setupTestGuild();
+    const writ = createWrit(home, { type: 'summon', title: 'No workshop' });
+    assert.equal(writ.workshop, null);
+  });
+
+  it('sets sourceType and sourceId', () => {
+    const home = setupTestGuild();
+    const writ = createWrit(home, {
+      type: 'summon',
+      title: 'Patron writ',
+      sourceType: 'patron',
+      sourceId: null,
+    });
+    assert.equal(writ.sourceType, 'patron');
+    assert.equal(writ.sourceId, null);
+  });
+
+  it('defaults sourceType to engine', () => {
+    const home = setupTestGuild();
+    const writ = createWrit(home, { type: 'summon', title: 'Default source' });
+    assert.equal(writ.sourceType, 'engine');
+  });
 });
 
 describe('readWrit', () => {
   it('reads an existing writ', () => {
     const home = setupTestGuild();
-    const created = createWrit(home, { type: 'mandate', title: 'Read me' });
+    const created = createWrit(home, { type: 'summon', title: 'Read me' });
     const read = readWrit(home, created.id);
     assert.ok(read);
     assert.equal(read.id, created.id);
@@ -188,25 +227,25 @@ describe('readWrit', () => {
 
 describe('listWrits', () => {
   it('lists all writs', () => {
-    const home = setupTestGuild();
-    createWrit(home, { type: 'mandate', title: 'A' });
+    const home = setupTestGuild({ writTypes: { task: { description: 'A task' } } });
+    createWrit(home, { type: 'task', title: 'A' });
     createWrit(home, { type: 'summon', title: 'B' });
     const all = listWrits(home);
     assert.equal(all.length, 2);
   });
 
   it('filters by type', () => {
-    const home = setupTestGuild();
-    createWrit(home, { type: 'mandate', title: 'A' });
+    const home = setupTestGuild({ writTypes: { task: { description: 'A task' } } });
+    createWrit(home, { type: 'task', title: 'A' });
     createWrit(home, { type: 'summon', title: 'B' });
-    const mandates = listWrits(home, { type: 'mandate' });
-    assert.equal(mandates.length, 1);
-    assert.equal(mandates[0]!.type, 'mandate');
+    const tasks = listWrits(home, { type: 'task' });
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]!.type, 'task');
   });
 
   it('filters by status', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'A' });
+    const w = createWrit(home, { type: 'summon', title: 'A' });
     createWrit(home, { type: 'summon', title: 'B' });
     activateWrit(home, w.id, 'ses-1');
 
@@ -218,7 +257,7 @@ describe('listWrits', () => {
 
   it('filters by parentId', () => {
     const home = setupTestGuild();
-    const parent = createWrit(home, { type: 'mandate', title: 'Parent' });
+    const parent = createWrit(home, { type: 'summon', title: 'Parent' });
     createWrit(home, { type: 'summon', title: 'Child', parentId: parent.id });
     createWrit(home, { type: 'summon', title: 'Orphan' });
 
@@ -229,6 +268,17 @@ describe('listWrits', () => {
     const roots = listWrits(home, { parentId: null as unknown as undefined });
     assert.equal(roots.length, 2); // parent + orphan
   });
+
+  it('filters by workshop', () => {
+    const home = setupTestGuild();
+    createWrit(home, { type: 'summon', title: 'A', workshop: 'ws-a' });
+    createWrit(home, { type: 'summon', title: 'B', workshop: 'ws-b' });
+    createWrit(home, { type: 'summon', title: 'C' }); // no workshop
+
+    const wsA = listWrits(home, { workshop: 'ws-a' });
+    assert.equal(wsA.length, 1);
+    assert.equal(wsA[0]!.title, 'A');
+  });
 });
 
 // ── Status Transitions ─────────────────────────────────────────────────
@@ -236,7 +286,7 @@ describe('listWrits', () => {
 describe('activateWrit', () => {
   it('transitions ready → active', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'Activate me' });
+    const w = createWrit(home, { type: 'summon', title: 'Activate me' });
     const result = activateWrit(home, w.id, 'ses-1');
     assert.equal(result.status, 'active');
     assert.equal(result.sessionId, 'ses-1');
@@ -244,7 +294,7 @@ describe('activateWrit', () => {
 
   it('throws on non-ready writ', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'X' });
+    const w = createWrit(home, { type: 'summon', title: 'X' });
     activateWrit(home, w.id, 'ses-1');
     assert.throws(
       () => activateWrit(home, w.id, 'ses-2'),
@@ -264,7 +314,7 @@ describe('activateWrit', () => {
 describe('completeWrit', () => {
   it('completes active writ with no children', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'Complete me' });
+    const w = createWrit(home, { type: 'summon', title: 'Complete me' });
     activateWrit(home, w.id, 'ses-1');
     const result = completeWrit(home, w.id);
     assert.equal(result.status, 'completed');
@@ -272,7 +322,7 @@ describe('completeWrit', () => {
 
   it('completes active writ with all children completed', () => {
     const home = setupTestGuild();
-    const parent = createWrit(home, { type: 'mandate', title: 'Parent' });
+    const parent = createWrit(home, { type: 'summon', title: 'Parent' });
     const child = createWrit(home, { type: 'summon', title: 'Child', parentId: parent.id });
 
     // Complete the child first
@@ -287,7 +337,7 @@ describe('completeWrit', () => {
 
   it('transitions to pending when children are incomplete', () => {
     const home = setupTestGuild();
-    const parent = createWrit(home, { type: 'mandate', title: 'Parent' });
+    const parent = createWrit(home, { type: 'summon', title: 'Parent' });
     createWrit(home, { type: 'summon', title: 'Child', parentId: parent.id });
 
     activateWrit(home, parent.id, 'ses-p');
@@ -298,7 +348,7 @@ describe('completeWrit', () => {
 
   it('treats cancelled children as complete for pending check', () => {
     const home = setupTestGuild();
-    const parent = createWrit(home, { type: 'mandate', title: 'Parent' });
+    const parent = createWrit(home, { type: 'summon', title: 'Parent' });
     const child = createWrit(home, { type: 'summon', title: 'Child', parentId: parent.id });
 
     cancelWrit(home, child.id);
@@ -309,7 +359,7 @@ describe('completeWrit', () => {
 
   it('throws on non-active writ', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'X' });
+    const w = createWrit(home, { type: 'summon', title: 'X' });
     assert.throws(
       () => completeWrit(home, w.id),
       /expected "active"/,
@@ -320,7 +370,7 @@ describe('completeWrit', () => {
 describe('failWrit', () => {
   it('fails an active writ', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'Fail me' });
+    const w = createWrit(home, { type: 'summon', title: 'Fail me' });
     activateWrit(home, w.id, 'ses-1');
     const result = failWrit(home, w.id);
     assert.equal(result.status, 'failed');
@@ -328,7 +378,7 @@ describe('failWrit', () => {
 
   it('fails a ready writ (not yet active)', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'X' });
+    const w = createWrit(home, { type: 'summon', title: 'X' });
     assert.equal(w.status, 'ready');
     const result = failWrit(home, w.id);
     assert.equal(result.status, 'failed');
@@ -336,7 +386,7 @@ describe('failWrit', () => {
 
   it('throws on terminal writ', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'X' });
+    const w = createWrit(home, { type: 'summon', title: 'X' });
     activateWrit(home, w.id, 'ses-1');
     failWrit(home, w.id);
     assert.throws(
@@ -349,14 +399,14 @@ describe('failWrit', () => {
 describe('cancelWrit', () => {
   it('cancels a ready writ', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'Cancel me' });
+    const w = createWrit(home, { type: 'summon', title: 'Cancel me' });
     const result = cancelWrit(home, w.id);
     assert.equal(result.status, 'cancelled');
   });
 
   it('cancels an active writ', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'X' });
+    const w = createWrit(home, { type: 'summon', title: 'X' });
     activateWrit(home, w.id, 'ses-1');
     const result = cancelWrit(home, w.id);
     assert.equal(result.status, 'cancelled');
@@ -364,7 +414,7 @@ describe('cancelWrit', () => {
 
   it('cancels a pending writ', () => {
     const home = setupTestGuild();
-    const parent = createWrit(home, { type: 'mandate', title: 'Parent' });
+    const parent = createWrit(home, { type: 'summon', title: 'Parent' });
     createWrit(home, { type: 'summon', title: 'Child', parentId: parent.id });
     activateWrit(home, parent.id, 'ses-1');
     completeWrit(home, parent.id); // → pending
@@ -375,7 +425,7 @@ describe('cancelWrit', () => {
 
   it('throws on terminal writ (completed)', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'X' });
+    const w = createWrit(home, { type: 'summon', title: 'X' });
     activateWrit(home, w.id, 'ses-1');
     completeWrit(home, w.id);
     assert.throws(
@@ -386,7 +436,7 @@ describe('cancelWrit', () => {
 
   it('throws on terminal writ (failed)', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'X' });
+    const w = createWrit(home, { type: 'summon', title: 'X' });
     activateWrit(home, w.id, 'ses-1');
     failWrit(home, w.id);
     assert.throws(
@@ -399,7 +449,7 @@ describe('cancelWrit', () => {
 describe('interruptWrit', () => {
   it('interrupts active → ready', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'Interrupt me' });
+    const w = createWrit(home, { type: 'summon', title: 'Interrupt me' });
     activateWrit(home, w.id, 'ses-1');
     const result = interruptWrit(home, w.id);
     assert.equal(result.status, 'ready');
@@ -408,7 +458,7 @@ describe('interruptWrit', () => {
 
   it('throws on non-active writ', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'X' });
+    const w = createWrit(home, { type: 'summon', title: 'X' });
     assert.throws(
       () => interruptWrit(home, w.id),
       /expected "active"/,
@@ -461,7 +511,7 @@ describe('rollupParent', () => {
 
   it('does nothing when parent is not pending', () => {
     const home = setupTestGuild();
-    const parent = createWrit(home, { type: 'mandate', title: 'Parent' });
+    const parent = createWrit(home, { type: 'summon', title: 'Parent' });
     const child = createWrit(home, { type: 'summon', title: 'Child', parentId: parent.id });
 
     // Parent is still ready (not activated, not pending)
@@ -509,7 +559,7 @@ describe('rollupParent', () => {
 describe('cascade cancellation', () => {
   it('cancels ready/pending children when parent fails', () => {
     const home = setupTestGuild();
-    const parent = createWrit(home, { type: 'mandate', title: 'Parent' });
+    const parent = createWrit(home, { type: 'summon', title: 'Parent' });
     const readyChild = createWrit(home, { type: 'summon', title: 'Ready', parentId: parent.id });
     const completedChild = createWrit(home, { type: 'summon', title: 'Done', parentId: parent.id });
 
@@ -529,7 +579,7 @@ describe('cascade cancellation', () => {
 
   it('leaves active children alone when parent fails', () => {
     const home = setupTestGuild();
-    const parent = createWrit(home, { type: 'mandate', title: 'Parent' });
+    const parent = createWrit(home, { type: 'summon', title: 'Parent' });
     const activeChild = createWrit(home, { type: 'summon', title: 'Active', parentId: parent.id });
 
     activateWrit(home, activeChild.id, 'ses-ac');
@@ -542,7 +592,7 @@ describe('cascade cancellation', () => {
 
   it('cascades cancellation to nested children', () => {
     const home = setupTestGuild();
-    const root = createWrit(home, { type: 'mandate', title: 'Root' });
+    const root = createWrit(home, { type: 'summon', title: 'Root' });
     const mid = createWrit(home, { type: 'summon', title: 'Mid', parentId: root.id });
     const leaf = createWrit(home, { type: 'summon', title: 'Leaf', parentId: mid.id });
 
@@ -554,96 +604,18 @@ describe('cascade cancellation', () => {
   });
 });
 
-// ── Mandate Bridge ─────────────────────────────────────────────────────
-
-describe('mandate → commission completion', () => {
-  it('marks commission completed when mandate completes', () => {
-    const home = setupTestGuild();
-
-    // Create a mandate writ
-    const mandate = createWrit(home, { type: 'mandate', title: 'Build it' });
-
-    // Link a commission to it
-    const db = new Database(path.join(home, '.nexus', 'nexus.db'));
-    db.pragma('foreign_keys = ON');
-    db.prepare(`INSERT INTO commissions (id, content, status, workshop, writ_id) VALUES (?, ?, ?, ?, ?)`).run(
-      'com-test', 'Build the thing', 'posted', 'test-ws', mandate.id,
-    );
-    db.close();
-
-    // Complete the mandate
-    activateWrit(home, mandate.id, 'ses-1');
-    completeWrit(home, mandate.id);
-
-    // Commission should be completed
-    const db2 = new Database(path.join(home, '.nexus', 'nexus.db'));
-    const row = db2.prepare(`SELECT status FROM commissions WHERE id = ?`).get('com-test') as { status: string };
-    db2.close();
-    assert.equal(row.status, 'completed');
-  });
-});
-
-describe('mandate → commission failure', () => {
-  it('marks commission failed when mandate fails', () => {
-    const home = setupTestGuild();
-
-    // Create a mandate writ
-    const mandate = createWrit(home, { type: 'mandate', title: 'Build it' });
-
-    // Link a commission to it
-    const db = new Database(path.join(home, '.nexus', 'nexus.db'));
-    db.pragma('foreign_keys = ON');
-    db.prepare(`INSERT INTO commissions (id, content, status, workshop, writ_id) VALUES (?, ?, ?, ?, ?)`).run(
-      'com-fail-test', 'Build the thing', 'in_progress', 'test-ws', mandate.id,
-    );
-    db.close();
-
-    // Fail the mandate (from active state)
-    activateWrit(home, mandate.id, 'ses-1');
-    failWrit(home, mandate.id);
-
-    // Commission should be failed
-    const db2 = new Database(path.join(home, '.nexus', 'nexus.db'));
-    const row = db2.prepare(`SELECT status, status_reason FROM commissions WHERE id = ?`).get('com-fail-test') as { status: string; status_reason: string };
-    db2.close();
-    assert.equal(row.status, 'failed');
-    assert.equal(row.status_reason, 'mandate failed');
-  });
-
-  it('marks commission failed when mandate fails from ready state', () => {
-    const home = setupTestGuild();
-
-    const mandate = createWrit(home, { type: 'mandate', title: 'Build it' });
-
-    const db = new Database(path.join(home, '.nexus', 'nexus.db'));
-    db.pragma('foreign_keys = ON');
-    db.prepare(`INSERT INTO commissions (id, content, status, workshop, writ_id) VALUES (?, ?, ?, ?, ?)`).run(
-      'com-fail-ready', 'Build the thing', 'posted', 'test-ws', mandate.id,
-    );
-    db.close();
-
-    // Fail directly from ready (no activation needed — failWrit accepts any non-terminal state)
-    failWrit(home, mandate.id);
-
-    const db2 = new Database(path.join(home, '.nexus', 'nexus.db'));
-    const row = db2.prepare(`SELECT status FROM commissions WHERE id = ?`).get('com-fail-ready') as { status: string };
-    db2.close();
-    assert.equal(row.status, 'failed');
-  });
-});
-
 // ── Progress Appendix ──────────────────────────────────────────────────
 
 describe('buildProgressAppendix', () => {
   it('returns null when writ has no children', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'Solo' });
+    const w = createWrit(home, { type: 'summon', title: 'Solo' });
     assert.equal(buildProgressAppendix(home, w.id), null);
   });
 
   it('builds markdown appendix with child statuses', () => {
     const home = setupTestGuild();
-    const parent = createWrit(home, { type: 'mandate', title: 'Parent' });
+    const parent = createWrit(home, { type: 'summon', title: 'Parent' });
     const done = createWrit(home, { type: 'summon', title: 'Done task', parentId: parent.id });
     createWrit(home, { type: 'summon', title: 'Pending task', parentId: parent.id });
 
@@ -653,13 +625,13 @@ describe('buildProgressAppendix', () => {
     const appendix = buildProgressAppendix(home, parent.id);
     assert.ok(appendix);
     assert.ok(appendix.includes('Prior Progress'));
-    assert.ok(appendix.includes('✓ Done task'));
-    assert.ok(appendix.includes('○ Pending task'));
+    assert.ok(appendix.includes('Done task'));
+    assert.ok(appendix.includes('Pending task'));
   });
 
   it('includes nested child counts in summary', () => {
     const home = setupTestGuild({ writTypes: { task: { description: 'A task' } } });
-    const parent = createWrit(home, { type: 'mandate', title: 'Parent' });
+    const parent = createWrit(home, { type: 'summon', title: 'Parent' });
     const mid = createWrit(home, { type: 'task', title: 'Mid', parentId: parent.id });
     createWrit(home, { type: 'summon', title: 'Leaf 1', parentId: mid.id });
     createWrit(home, { type: 'summon', title: 'Leaf 2', parentId: mid.id });
@@ -676,13 +648,13 @@ describe('buildProgressAppendix', () => {
 describe('hydratePromptTemplate', () => {
   it('returns null when no template provided', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'X' });
+    const w = createWrit(home, { type: 'summon', title: 'X' });
     assert.equal(hydratePromptTemplate(home, undefined, {}, w.id), null);
   });
 
   it('substitutes payload fields', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'X' });
+    const w = createWrit(home, { type: 'summon', title: 'X' });
     const result = hydratePromptTemplate(
       home,
       'Hello {{name}}, workshop is {{workshop}}',
@@ -695,7 +667,7 @@ describe('hydratePromptTemplate', () => {
   it('substitutes writ fields', () => {
     const home = setupTestGuild();
     const w = createWrit(home, {
-      type: 'mandate',
+      type: 'summon',
       title: 'Build feature X',
       description: 'Detailed spec here',
     });
@@ -710,7 +682,7 @@ describe('hydratePromptTemplate', () => {
 
   it('substitutes writ.parent fields', () => {
     const home = setupTestGuild();
-    const parent = createWrit(home, { type: 'mandate', title: 'Parent Title' });
+    const parent = createWrit(home, { type: 'summon', title: 'Parent Title' });
     const child = createWrit(home, { type: 'summon', title: 'Child', parentId: parent.id });
 
     const result = hydratePromptTemplate(
@@ -724,7 +696,7 @@ describe('hydratePromptTemplate', () => {
 
   it('replaces missing values with empty string', () => {
     const home = setupTestGuild();
-    const w = createWrit(home, { type: 'mandate', title: 'X' });
+    const w = createWrit(home, { type: 'summon', title: 'X' });
     const result = hydratePromptTemplate(
       home,
       '{{nonexistent}} and {{writ.parent.title}}',
@@ -754,6 +726,14 @@ describe('validateWritType', () => {
     const home = setupTestGuild();
     assert.throws(
       () => validateWritType(home, 'unknown'),
+      /not declared in guild.json/,
+    );
+  });
+
+  it('rejects mandate type (no longer built-in)', () => {
+    const home = setupTestGuild();
+    assert.throws(
+      () => validateWritType(home, 'mandate'),
       /not declared in guild.json/,
     );
   });

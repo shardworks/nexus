@@ -39,7 +39,7 @@ export function ledgerPath(home: string): string {
   return booksPath(home);
 }
 
-/** Path to the top-level worktrees directory (for commission worktrees). */
+/** Path to the top-level worktrees directory (for writ worktrees). */
 export function worktreesPath(home: string): string {
   return path.join(home, '.nexus', 'worktrees');
 }

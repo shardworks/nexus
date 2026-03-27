@@ -2,7 +2,7 @@
  * Summon Engine — dispatches anima sessions in response to standing orders.
  *
  * This is the engine behind the `summon` verb in standing orders. When an
- * operator writes `{ "on": "mandate.ready", "summon": "artificer", "prompt": "..." }`,
+ * operator writes `{ "on": "writ.workspace-ready", "summon": "artificer", "prompt": "..." }`,
  * the clockworks desugars it to `{ "run": "summon-engine", "role": "artificer", "prompt": "..." }`
  * and this engine handles the rest:
  *
@@ -11,13 +11,15 @@
  *   3. Circuit-breaker check (if maxSessions param is set)
  *   4. Manifest the anima
  *   5. Hydrate prompt template and build progress appendix
- *   6. Launch session via the session funnel
- *   7. Post-session writ lifecycle (completion, pending, interruption)
+ *   6. For workshopless writs, strip destructive tools from manifest
+ *   7. Launch session via the session funnel
+ *   8. Post-session writ lifecycle (completion, pending, interruption)
  *
  * Standing order params:
  *   - `role` (required) — the role to summon (set automatically by desugar)
  *   - `prompt` — prompt template with {{writ.title}}, {{writ.description}} etc.
  *   - `maxSessions` — circuit breaker: max session attempts per writ before auto-fail (default: 10)
+ *   - `workshop` — optional workshop for synthesized writs (when no writId in payload)
  */
 import {
   engine,
@@ -36,6 +38,18 @@ import {
   hydratePromptTemplate,
   buildProgressAppendix,
 } from '@shardworks/nexus-core';
+
+/**
+ * Tools that are destructive — not safe for workshopless (knowledge/planning) sessions.
+ * These are stripped from the manifest when the writ has no workshop.
+ */
+const DESTRUCTIVE_TOOL_PATTERNS = [
+  'Bash', 'bash', 'computer',
+  'Write', 'write_file', 'write',
+  'Edit', 'edit_file', 'edit',
+  'NotebookEdit', 'notebook_edit',
+  'workshop-create', 'workshop-register', 'workshop-remove',
+];
 
 /** Protocol block injected into the system prompt for all writ-bound sessions. */
 const WRIT_SESSION_PROTOCOL = `## Session Protocol
@@ -87,10 +101,14 @@ export default engine({
       writId = existingWritId;
     } else {
       // Synthesize a summon writ for non-writ events
+      const workshopParam = params.workshop as string | undefined;
       const writ = createWrit(home, {
         type: 'summon',
         title: `Summon ${role}: ${event.name}`,
         description: JSON.stringify(event.payload),
+        workshop: workshopParam ?? undefined,
+        sourceType: 'engine',
+        sourceId: 'summon-engine',
       });
       writId = writ.id;
     }
@@ -107,10 +125,19 @@ export default engine({
     // Step 4: Manifest the anima
     const manifestResult = await manifest(home, animaName);
 
-    // Step 5: Resolve workspace from event payload
+    // Step 5: Check writ workshop to decide tool set
+    const writ = readWrit(home, writId);
+    if (writ && !writ.workshop) {
+      // Strip destructive tools for workshopless sessions
+      manifestResult.tools = manifestResult.tools.filter(t =>
+        !DESTRUCTIVE_TOOL_PATTERNS.includes(t.name),
+      );
+    }
+
+    // Step 6: Resolve workspace from event payload
     const workspace = resolveWorkspace(payload);
 
-    // Step 6: Hydrate prompt template
+    // Step 7: Hydrate prompt template
     let userPrompt = hydratePromptTemplate(home, promptTemplate, payload, writId);
 
     // Append progress appendix for resumed sessions
@@ -121,7 +148,7 @@ export default engine({
       userPrompt = appendix;
     }
 
-    // Step 7: Pre-generate session ID so we can activate the writ with the
+    // Step 8: Pre-generate session ID so we can activate the writ with the
     // real ID before the provider launches. No placeholder, no post-launch swap.
     const sessionId = generateId('ses');
     activateWrit(home, writId, sessionId);
@@ -150,7 +177,7 @@ export default engine({
       }
     }
 
-    // Step 8: Handle session end — check writ status
+    // Step 9: Handle session end — check writ status
     const finalWrit = readWrit(home, writId);
     if (finalWrit && finalWrit.status === 'active') {
       // Session ended without complete-session or fail-writ → interrupted

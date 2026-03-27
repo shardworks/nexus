@@ -16,7 +16,7 @@ function git(args: string[], cwd?: string): void {
  * initial git commit.
  *
  * The .nexus/ directory (gitignored) holds framework-managed state: the Books database,
- * workshop bare clones, and commission worktrees.
+ * workshop bare clones, and writ worktrees.
  *
  * This creates only the skeleton. After this, the caller should install a
  * bundle (which delivers tools, training, and migrations) and apply migrations:
@@ -82,16 +82,16 @@ export function initGuild(home: string, name: string, model: string): void {
     '### Advisory',
     '',
     '- **Answer questions** about guild structure, capabilities, and current state.',
-    '- **Report status** — animas on the roster, active commissions, writ progress, tool inventory, pending events.',
-    '- **Help frame commissions** — when the patron has a vague idea, help them refine it into a clear brief.',
-    '- **Explain outcomes** — when a commission completes or fails, help the patron understand what happened and what to do next.',
-    '- **Suggest actions** — if you see something that needs attention (a failed commission, a missing tool, an empty roster), proactively surface it.',
+    '- **Report status** — animas on the roster, active writs, work progress, tool inventory, pending events.',
+    '- **Help frame writs** — when the patron has a vague idea, help them refine it into a clear brief.',
+    '- **Explain outcomes** — when a writ completes or fails, help the patron understand what happened and what to do next.',
+    '- **Suggest actions** — if you see something that needs attention (a failed writ, a missing tool, an empty roster), proactively surface it.',
     '',
     '### Administration',
     '',
     '- **Manage the roster** — create, update, and retire animas as directed by the patron.',
     '- **Manage workshops** — register, create, and remove workshops.',
-    '- **Post commissions** — translate the patron\'s intent into commissions and post them.',
+    '- **Post writs** — translate the patron\'s intent into writs and post them using `create-writ`.',
     '- **Operate the Clockworks** — list pending events, tick and run the clock to process the event queue.',
     '- **Manage tools** — install and remove tools and bundles.',
     '- **Monitor writs** — use `list-writs` and `show-writ` to track work progress. Cancel stuck writs when needed.',
@@ -108,7 +108,7 @@ export function initGuild(home: string, name: string, model: string): void {
     '- **failed** → unrecoverable failure',
     '- **cancelled** → cancelled by the system or cascade',
     '',
-    'When a commission is posted, the framework creates a `mandate` writ. The mandate completes when the anima calls `complete-session`. If the anima created child writs, the mandate waits for them to complete first.',
+    'When a writ is posted (via `nsg writ post` or `create-writ`), the Clockworks processes it through standing orders. Workspace-bound writs get a worktree prepared, then an artificer is summoned. The writ completes when the anima calls `complete-session`. If the anima created child writs, the parent waits for them to complete first.',
     '',
     '### Upgrades & Staleness',
     '',
@@ -122,7 +122,7 @@ export function initGuild(home: string, name: string, model: string): void {
     '1. Remove the stale anima (`anima-remove`)',
     '2. Create a fresh anima with the same name, roles, curriculum, and temperament (`anima-create`)',
     '',
-    'The new anima will pick up the latest training content. The old anima\'s history (commissions, sessions) remains in the Books under its original ID.',
+    'The new anima will pick up the latest training content. The old anima\'s history (writs, sessions) remains in the Books under its original ID.',
     '',
     'When you notice stale animas during routine status checks, proactively inform the patron and offer to recompose them.',
     '',
@@ -148,7 +148,7 @@ export function initGuild(home: string, name: string, model: string): void {
     '## What You Do',
     '',
     '- **Execute writs** — receive a writ (tracked work item), understand the requirements, and deliver working results.',
-    '- **Work in workshops** — your work happens in commission worktrees. Each commission gives you an isolated workspace branched from main.',
+    '- **Work in workshops** — your work happens in writ worktrees. Each workspace-bound writ gives you an isolated workspace branched from main.',
     '- **Decompose when needed** — use `create-writ` to break large tasks into trackable sub-items. Each child writ tracks progress and provides continuity if your session is interrupted.',
     '- **Signal completion** — call `complete-session` when you have finished your work. This is mandatory. If you created child writs, the system will wait for them to complete automatically.',
     '- **Signal failure** — call `fail-writ` if the work cannot be completed. This is terminal — incomplete child writs will be cancelled.',
@@ -166,7 +166,7 @@ export function initGuild(home: string, name: string, model: string): void {
     '',
     '## What You Don\'t Do',
     '',
-    '- **You do not plan work decomposition at scale.** That\'s the sage\'s job. You may create child writs for your own sub-tasks, but if the commission scope is unclear, signal `craft.question` rather than inventing requirements.',
+    '- **You do not plan work decomposition at scale.** That\'s the sage\'s job. You may create child writs for your own sub-tasks, but if the writ scope is unclear, signal `craft.question` rather than inventing requirements.',
     '- **You do not modify guild infrastructure.** You work in workshops, not in the guildhall. Tools, roles, and configuration are not your concern.',
     '- **You do not contradict sage advice.** If a sage has provided a plan, follow it. If you believe the plan has a flaw, record your concern in a commit message or signal `craft.question`, but execute the plan as given.',
     '',
@@ -178,12 +178,11 @@ export function initGuild(home: string, name: string, model: string): void {
     steward: {
       seats: 1,
       tools: [
-        'commission-create', 'commission-list', 'commission-show', 'commission-update', 'commission-check',
+        'create-writ', 'list-writs', 'show-writ', 'update-writ',
         'anima-create', 'anima-list', 'anima-show', 'anima-update', 'anima-remove',
         'workshop-create', 'workshop-register', 'workshop-list', 'workshop-show', 'workshop-remove',
         'tool-install', 'tool-remove', 'tool-list',
         'clock-list', 'clock-tick', 'clock-run', 'clock-start', 'clock-stop', 'clock-status',
-        'list-writs', 'show-writ',
         'session-list', 'session-show',
         'event-list', 'event-show',
         'nexus-version', 'signal',
@@ -193,7 +192,6 @@ export function initGuild(home: string, name: string, model: string): void {
     artificer: {
       seats: null,
       tools: [
-        'commission-show',
         'complete-session', 'fail-writ', 'create-writ', 'list-writs', 'show-writ',
         'signal',
       ],
@@ -203,18 +201,18 @@ export function initGuild(home: string, name: string, model: string): void {
   config.clockworks = {
     events: {
       'craft.question': {
-        description: 'An artificer encountered a design decision outside the commission scope that needs attention.',
-        schema: { summary: 'string', workshop: 'string', commission: 'string?', context: 'string?' },
+        description: 'An artificer encountered a design decision outside the writ scope that needs attention.',
+        schema: { summary: 'string', workshop: 'string?', writ: 'string?', context: 'string?' },
       },
       'craft.debt': {
         description: 'An artificer observed tech debt or a code smell but intentionally did not address it.',
-        schema: { summary: 'string', workshop: 'string', commission: 'string?', location: 'string?' },
+        schema: { summary: 'string', workshop: 'string?', writ: 'string?', location: 'string?' },
       },
     },
     standingOrders: [
-      { on: 'commission.posted', run: 'workshop-prepare' },
-      { on: 'mandate.ready', summon: 'artificer', prompt: 'You have been assigned a commission.\n\n{{writ.title}}\n\n{{writ.description}}' },
-      { on: 'mandate.completed', run: 'workshop-merge' },
+      { on: 'writ.posted', run: 'workshop-prepare' },
+      { on: 'writ.workspace-ready', summon: 'artificer', prompt: 'You have been assigned a commission.\n\n{{writ.title}}\n\n{{writ.description}}' },
+      { on: 'writ.completed', run: 'workshop-merge' },
     ],
   };
   config.writTypes = {};
