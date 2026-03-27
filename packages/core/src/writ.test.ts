@@ -20,6 +20,7 @@ import {
   validateWritType,
   BUILTIN_WRIT_TYPES,
 } from './writ.ts';
+import { listEvents } from './events.ts';
 
 /**
  * Set up a minimal guild with Ledger including writs tables.
@@ -796,5 +797,67 @@ describe('validateWritType', () => {
       () => validateWritType(home, 'mandate'),
       /not declared in guild.json/,
     );
+  });
+});
+
+// ── Duplicate Event Prevention ─────────────────────────────────────────
+
+describe('duplicate writ.completed prevention', () => {
+  it('fires writ.completed exactly once for type=writ writs', () => {
+    const home = setupTestGuild();
+    const w = createWrit(home, { title: 'Type-writ writ' });
+    activateWrit(home, w.id, 'ses-1');
+    completeWrit(home, w.id);
+
+    // Count writ.completed events for this writ
+    const events = listEvents(home, { name: 'writ.completed' });
+    const matching = events.filter(e => {
+      const p = e.payload as Record<string, unknown> | null;
+      return p?.writId === w.id;
+    });
+    assert.equal(matching.length, 1,
+      'Expected exactly one writ.completed event for a type=writ writ');
+  });
+
+  it('fires both type-specific and generic events for custom types', () => {
+    const home = setupTestGuild({ writTypes: { task: { description: 'A task' } } });
+    const w = createWrit(home, { type: 'task', title: 'Custom type writ' });
+    activateWrit(home, w.id, 'ses-1');
+    completeWrit(home, w.id);
+
+    // Should have task.completed AND writ.completed
+    const taskEvents = listEvents(home, { name: 'task.completed' });
+    const writEvents = listEvents(home, { name: 'writ.completed' });
+    const taskMatching = taskEvents.filter(e => {
+      const p = e.payload as Record<string, unknown> | null;
+      return p?.writId === w.id;
+    });
+    const writMatching = writEvents.filter(e => {
+      const p = e.payload as Record<string, unknown> | null;
+      return p?.writId === w.id;
+    });
+    assert.equal(taskMatching.length, 1, 'Expected one task.completed event');
+    assert.equal(writMatching.length, 1, 'Expected one writ.completed event');
+  });
+
+  it('rollupParent auto-complete fires writ.completed exactly once for type=writ parent', () => {
+    const home = setupTestGuild();
+    const parent = createWrit(home, { title: 'Parent' });
+    const child = createWrit(home, { title: 'Child', parentId: parent.id });
+
+    activateWrit(home, parent.id, 'ses-p');
+    completeWrit(home, parent.id); // → pending (child incomplete)
+
+    activateWrit(home, child.id, 'ses-c');
+    completeWrit(home, child.id); // → triggers rollup → parent auto-completes
+
+    // Count writ.completed events for the PARENT
+    const events = listEvents(home, { name: 'writ.completed' });
+    const parentEvents = events.filter(e => {
+      const p = e.payload as Record<string, unknown> | null;
+      return p?.writId === parent.id;
+    });
+    assert.equal(parentEvents.length, 1,
+      'Expected exactly one writ.completed event for auto-completed parent');
   });
 });

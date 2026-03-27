@@ -334,13 +334,17 @@ export function completeWrit(home: string, writId: string): WritRecord {
       workshop: current.workshop,
     }, 'framework');
 
-    // Fire generic writ.completed event (used by workshop-merge and other cross-type handlers)
-    signalEvent(home, 'writ.completed', {
-      writId,
-      parentId: current.parentId,
-      type: current.type,
-      workshop: current.workshop,
-    }, 'framework');
+    // Fire generic writ.completed event (used by workshop-merge and other cross-type handlers).
+    // Skip when type is 'writ' — the type-specific event above already IS writ.completed,
+    // so firing it again would produce a duplicate that triggers standing orders twice.
+    if (current.type !== 'writ') {
+      signalEvent(home, 'writ.completed', {
+        writId,
+        parentId: current.parentId,
+        type: current.type,
+        workshop: current.workshop,
+      }, 'framework');
+    }
 
     // Trigger rollup on parent
     if (current.parentId) {
@@ -527,12 +531,16 @@ export function rollupParent(home: string, parentId: string): void {
         workshop: parent.workshop,
       }, 'framework');
 
-      signalEvent(home, 'writ.completed', {
-        writId: parentId,
-        parentId: parent.parentId,
-        type: parent.type,
-        workshop: parent.workshop,
-      }, 'framework');
+      // Fire generic writ.completed only when the type-specific event is different.
+      // When type is 'writ', the event above already IS writ.completed.
+      if (parent.type !== 'writ') {
+        signalEvent(home, 'writ.completed', {
+          writId: parentId,
+          parentId: parent.parentId,
+          type: parent.type,
+          workshop: parent.workshop,
+        }, 'framework');
+      }
 
       // Continue rollup up the tree
       if (parent.parentId) {

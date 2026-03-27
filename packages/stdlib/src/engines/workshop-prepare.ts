@@ -11,8 +11,13 @@
  *     → creates worktree from workshop bare repo
  *     → signals writ.workspace-ready { writId, workshop, worktreePath }
  */
-import { engine, signalEvent, readWrit } from '@shardworks/nexus-core';
+import { execFileSync } from 'node:child_process';
+import { engine, signalEvent, readWrit, workshopBarePath } from '@shardworks/nexus-core';
 import { setupWorktree } from '@shardworks/nexus-core';
+
+function git(args: string[], cwd: string): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+}
 
 export default engine({
   name: 'workshop-prepare',
@@ -45,6 +50,17 @@ export default engine({
     }
 
     const workshop = writ.workshop;
+
+    // Fetch the latest state from the remote so the writ branch starts from
+    // the freshest available main. This minimises divergence between the
+    // writ's work and anything that lands on main while the artificer runs.
+    const bareRepo = workshopBarePath(home, workshop);
+    try {
+      git(['fetch', 'origin'], bareRepo);
+    } catch {
+      // Fetch failure is non-fatal — we can still branch from the local main.
+      // The merge engine will fetch again before merging.
+    }
 
     // Create the worktree
     const worktree = setupWorktree({
