@@ -37,8 +37,8 @@ importers:
         specifier: workspace:*
         version: link:../claude-code-session-provider
       '@shardworks/guild-monitor':
-        specifier: 0.1.10
-        version: 0.1.10
+        specifier: 0.1.11
+        version: 0.1.11
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../core
@@ -116,11 +116,11 @@ packages:
       '@cfworker/json-schema':
         optional: true
 
-  '@shardworks/guild-monitor@0.1.10':
-    resolution: {integrity: sha512-djL/wHw89IDC5WFe4fYxfHU4oVHZSW2A4QWT6N5QTTdDJTjvfrFG3LJOcnZ0YThY2mUEl8APANZPC61hElVKKA==}
+  '@shardworks/guild-monitor@0.1.11':
+    resolution: {integrity: sha512-6F4hPWqUFzbl3tWRR8zMPb95LQw/McBDWE/UNKHIensmig1nm6yDQFyySAbm4P5j4yIkP8WylU42MW14QoffJA==}
 
-  '@shardworks/nexus-core@0.1.79':
-    resolution: {integrity: sha512-Jtca5PJNK1unzHcyiPhGM1H/Q6FnALV0yv7iqAPCf9I9zhiIUXKGUla1DUL3Gs2IQmdQzxcy0Vna0xl8zN6UIA==}
+  '@shardworks/nexus-core@0.1.86':
+    resolution: {integrity: sha512-YWRDwbnewhumh15cdXGBizIrk4Hi3rImwfV6+4e88/PqcY/rQZInanI3L5qJag7LB7l3tkDZdcmjE6El8afO6Q==}
 
   '@tsconfig/node24@24.0.4':
     resolution: {integrity: sha512-2A933l5P5oCbv6qSxHs7ckKwobs8BDAe9SJ/Xr2Hy+nDlwmLE1GhFh/g/vXGRZWgxBg9nX/5piDtHR9Dkw/XuA==}
@@ -651,13 +651,13 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@shardworks/guild-monitor@0.1.10':
+  '@shardworks/guild-monitor@0.1.11':
     dependencies:
-      '@shardworks/nexus-core': 0.1.79
+      '@shardworks/nexus-core': 0.1.86
       better-sqlite3: 12.8.0
       marked: 15.0.12
 
-  '@shardworks/nexus-core@0.1.79':
+  '@shardworks/nexus-core@0.1.86':
     dependencies:
       better-sqlite3: 12.8.0
       zod: 4.3.6
