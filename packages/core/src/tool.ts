@@ -42,13 +42,13 @@ import type { RigContext } from './rig-context.ts';
 type ZodShape = Record<string, z.ZodType>;
 
 /**
- * The deployment channels a tool is available in.
+ * The caller types a tool can be invoked from.
  * - `'cli'` — accessible via `nsg` commands (human-facing)
  * - `'mcp'` — accessible via MCP server (anima-facing)
  *
- * Defaults to `['cli', 'mcp']` if unspecified — available in all channels.
+ * Defaults to all caller types if `callableFrom` is unspecified.
  */
-export type ToolChannel = 'cli' | 'mcp';
+export type ToolCaller = 'cli' | 'mcp';
 
 /**
  * A fully-defined tool — the return type of `tool()`.
@@ -71,10 +71,10 @@ export interface ToolDefinition<TShape extends ZodShape = ZodShape> {
    */
   readonly instructionsFile?: string;
   /**
-   * Channels where this tool is available.
-   * Defaults to `['cli', 'mcp']` if unspecified — available in all channels.
+   * Caller types this tool is available to.
+   * Always a normalized array. Absent means available to all callers.
    */
-  readonly allowedChannels?: ToolChannel[];
+  readonly callableFrom?: ToolCaller[];
   readonly params: z.ZodObject<TShape>;
   readonly handler: (
     params: z.infer<z.ZodObject<TShape>>,
@@ -91,8 +91,11 @@ type ToolInput<TShape extends ZodShape> = {
     params: z.infer<z.ZodObject<TShape>>,
     context: RigContext,
   ) => unknown | Promise<unknown>;
-  /** Channels where this tool is available. Defaults to all channels if unspecified. */
-  allowedChannels?: ToolChannel[];
+  /**
+   * Caller types this tool is available to.
+   * Accepts a single caller or an array. Normalized to an array in the returned definition.
+   */
+  callableFrom?: ToolCaller | ToolCaller[];
 } & (
   | { instructions?: string; instructionsFile?: never }
   | { instructions?: never; instructionsFile?: string }
@@ -122,7 +125,9 @@ export function tool<TShape extends ZodShape>(def: ToolInput<TShape>): ToolDefin
     description: def.description,
     ...(def.instructions ? { instructions: def.instructions } : {}),
     ...(def.instructionsFile ? { instructionsFile: def.instructionsFile } : {}),
-    ...(def.allowedChannels ? { allowedChannels: def.allowedChannels } : {}),
+    ...(def.callableFrom !== undefined
+      ? { callableFrom: Array.isArray(def.callableFrom) ? def.callableFrom : [def.callableFrom] }
+      : {}),
     params: z.object(def.params),
     handler: def.handler,
   };

@@ -11,7 +11,7 @@ export {
 } from './plugin-descriptor.ts';
 
 export {
-  type ToolChannel,
+  type ToolCaller,
   type ToolContext,
   type ToolDefinition,
   tool,

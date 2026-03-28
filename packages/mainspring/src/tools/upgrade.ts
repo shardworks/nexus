@@ -18,7 +18,7 @@ import { z } from 'zod';
 export default tool({
   name: 'upgrade',
   description: 'Upgrade the guild framework and run pending plugin migrations',
-  allowedChannels: ['cli'],
+  callableFrom: ['cli'],
   params: {
     dryRun: z.boolean().optional().describe('Show what would be done without applying changes'),
   },

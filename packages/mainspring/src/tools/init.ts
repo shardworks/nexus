@@ -19,7 +19,7 @@ const DEFAULT_MODEL = 'sonnet';
 export default tool({
   name: 'init',
   description: 'Create a new guild — directory structure, guild.json, and package.json',
-  allowedChannels: ['cli'],
+  callableFrom: ['cli'],
   params: {
     path: z.string().describe('Directory path for the new guild'),
     name: z.string().optional().describe('Guild name (defaults to directory basename)'),

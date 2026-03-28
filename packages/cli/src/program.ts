@@ -217,7 +217,7 @@ export async function main(): Promise<void> {
   const mainspringPackageName = '@shardworks/nexus-mainspring';
   const mainspringRigId = deriveRigKey(mainspringPackageName);
   const builtins = builtinTools
-    .filter((t) => !t.allowedChannels || t.allowedChannels.includes('cli'))
+    .filter((t) => !t.callableFrom || t.callableFrom.includes('cli'))
     .map((t) => ({ ...t, rigId: mainspringRigId }) as Tool);
 
   const builtinHome = home ?? process.cwd();

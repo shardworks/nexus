@@ -27,7 +27,7 @@ export {
 } from './rig-context.ts';
 
 export {
-  type ToolChannel,
+  type ToolCaller,
   type ToolDefinition,
   tool,
   isToolDefinition,

@@ -118,7 +118,7 @@ async function discoverRigTools(
 export const rigList = tool({
   name: 'rig-list',
   description: 'List installed rigs',
-  allowedChannels: ['cli'],
+  callableFrom: ['cli'],
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },
@@ -156,7 +156,7 @@ export const rigList = tool({
 export const rigInstall = tool({
   name: 'rig-install',
   description: 'Install a rig into the guild',
-  allowedChannels: ['cli'],
+  callableFrom: ['cli'],
   params: {
     source: z.string().describe('Package name or git URL, e.g. "@shardworks/nexus-stdlib", "foo@1.0", or "git+https://..."'),
     roles: z.string().optional().describe('Comma-separated role names to assign tools to (default: baseTools)'),
@@ -268,7 +268,7 @@ export const rigInstall = tool({
 export const rigRemove = tool({
   name: 'rig-remove',
   description: 'Remove a rig from the guild',
-  allowedChannels: ['cli'],
+  callableFrom: ['cli'],
   params: {
     name: z.string().describe('Rig key or package name to remove'),
   },
@@ -329,7 +329,7 @@ export const rigRemove = tool({
 export const rigUpgrade = tool({
   name: 'rig-upgrade',
   description: 'Upgrade a rig to a newer version and run its migrations',
-  allowedChannels: ['cli'],
+  callableFrom: ['cli'],
   params: {
     name: z.string().describe('Rig key or package name to upgrade'),
     version: z.string().optional().describe('Target version (default: latest)'),

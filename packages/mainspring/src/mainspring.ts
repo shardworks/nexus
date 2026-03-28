@@ -14,7 +14,7 @@
 
 import { readGuildConfig, resolveAllToolsFromExport, isRig, VERSION } from '@shardworks/nexus-core';
 import type { Rig, GuildConfig, ToolDefinition, RigContext, ReadOnlyBook, Book } from '@shardworks/nexus-core';
-import type { ToolChannel } from '@shardworks/nexus-core';
+import type { ToolCaller } from '@shardworks/nexus-core';
 import { builtinTools } from './tools/index.ts';
 import { readGuildPackageJson, resolveGuildPackageEntry } from './resolve-package.ts';
 import { openBooksDatabase, type BooksDatabase } from './db/sqlite-adapter.ts';
@@ -87,9 +87,9 @@ export interface Tool extends ToolDefinition {
 export interface ListToolsOptions {
   /**
    * If set, only return tools available in this channel.
-   * Tools with no allowedChannels are available everywhere and always pass.
+   * Tools with no callableFrom are available everywhere and always pass.
    */
-  channel?: ToolChannel;
+  channel?: ToolCaller;
   /**
    * If set, only return tools accessible to these roles.
    * Collected from baseTools + role.tools in guild.json.
@@ -315,11 +315,11 @@ export function createMainspring(guildRoot: string): Mainspring {
       const rigs = await getRigs();
       let tools: Tool[] = rigs.flatMap((r) => r.tools);
 
-      // Filter by channel (allowedChannels)
+      // Filter by caller type (callableFrom)
       if (options?.channel) {
         const channel = options.channel;
         tools = tools.filter(
-          (t) => !t.allowedChannels || t.allowedChannels.includes(channel),
+          (t) => !t.callableFrom || t.callableFrom.includes(channel),
         );
       }
 
