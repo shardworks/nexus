@@ -23,9 +23,6 @@ importers:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../core
-      '@shardworks/nexus-sessions':
-        specifier: workspace:*
-        version: link:../nexus-sessions
       zod:
         specifier: 4.3.6
         version: 4.3.6
@@ -48,9 +45,6 @@ importers:
       '@shardworks/nexus-mainspring':
         specifier: workspace:*
         version: link:../mainspring
-      '@shardworks/nexus-sessions':
-        specifier: workspace:*
-        version: link:../nexus-sessions
       '@shardworks/nexus-stdlib':
         specifier: workspace:*
         version: link:../stdlib
@@ -135,9 +129,6 @@ importers:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../core
-      '@shardworks/nexus-sessions':
-        specifier: workspace:*
-        version: link:../nexus-sessions
       zod:
         specifier: ^4.0.0
         version: 4.3.6

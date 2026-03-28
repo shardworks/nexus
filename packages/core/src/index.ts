@@ -213,18 +213,45 @@ export {
   manifest,
 } from './legacy/1/manifest.ts';
 
-// Session provider registry — kept in core to avoid circular dependency with
-// clock-daemon.ts (also in core), which registers the provider at startup.
-// `launchSession` and all other session/conversation functions live in
-// @shardworks/nexus-sessions. Import from there for new code.
 export {
-  type SessionChunk,
   type SessionProvider,
   type SessionProviderLaunchOptions,
   type SessionProviderResult,
+  type SessionLaunchOptions,
+  type SessionResult,
+  type SessionChunk,
+  type WorkspaceContext,
+  type ResolvedWorkspace,
+  type SessionRecord,
+  type SessionSummary,
+  type SessionDetail,
+  type ListSessionsOptions,
   registerSessionProvider,
   getSessionProvider,
-} from './session-provider.ts';
+  resolveWorkspace,
+  createTempWorktree,
+  removeTempWorktree,
+  launchSession,
+  listSessions,
+  countSessionsForWrit,
+  showSession,
+} from './legacy/1/session.ts';
+
+export {
+  type ConversationChunk,
+  type CreateConversationOptions,
+  type CreateConversationResult,
+  type ConversationSummary,
+  type ConversationDetail,
+  type ListConversationsOptions,
+  createConversation,
+  takeTurn,
+  endConversation,
+  nextParticipant,
+  listConversations,
+  showConversation,
+  formatConveneMessage,
+} from './legacy/1/conversation.ts';
 
 export {
   type UpgradePlan,

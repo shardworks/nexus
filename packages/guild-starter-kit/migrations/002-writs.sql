@@ -29,6 +29,12 @@ CREATE INDEX idx_writs_type_status ON writs(type, status);
 ALTER TABLE commissions ADD COLUMN writ_id TEXT REFERENCES writs(id);
 
 -- ════════════════════════════════════════════════════════════════════════
+-- Link sessions to their bound writ
+-- ════════════════════════════════════════════════════════════════════════
+
+ALTER TABLE sessions ADD COLUMN writ_id TEXT REFERENCES writs(id);
+
+-- ════════════════════════════════════════════════════════════════════════
 -- Drop old hierarchy tables (never populated in production)
 -- ════════════════════════════════════════════════════════════════════════
 

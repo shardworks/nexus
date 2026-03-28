@@ -9,7 +9,7 @@
  * Handles SIGTERM for graceful shutdown.
  */
 import { clockRun } from './clockworks.ts';
-import { registerSessionProvider } from '../../session-provider.ts';
+import { registerSessionProvider } from './session.ts';
 
 // Dynamically load the session provider so the daemon can dispatch anima sessions
 // (summon/brief standing orders). The provider package is not a compile-time

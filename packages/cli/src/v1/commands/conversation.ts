@@ -13,7 +13,7 @@ import {
   listConversations,
   showConversation,
   endConversation,
-} from '@shardworks/nexus-sessions';
+} from '@shardworks/nexus-core';
 import { resolveHome } from '../resolve-home.ts';
 
 export function makeConversationCommand() {

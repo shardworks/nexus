@@ -140,3 +140,38 @@ CREATE TABLE event_dispatches (
     error        TEXT
 );
 
+-- ════════════════════════════════════════════════════════════════════════
+-- Sessions — session tracking and commission linkage
+-- ════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE sessions (
+    id                  TEXT PRIMARY KEY,
+    anima_id            TEXT NOT NULL REFERENCES animas(id),
+    provider            TEXT NOT NULL,
+    model               TEXT,
+    trigger             TEXT NOT NULL,
+    workshop            TEXT,
+    workspace_kind      TEXT NOT NULL,
+    curriculum_name     TEXT,
+    curriculum_version  TEXT,
+    temperament_name    TEXT,
+    temperament_version TEXT,
+    roles               TEXT,
+    started_at          TEXT NOT NULL,
+    ended_at            TEXT,
+    exit_code           INTEGER,
+    input_tokens        INTEGER,
+    output_tokens       INTEGER,
+    cache_read_tokens   INTEGER,
+    cache_write_tokens  INTEGER,
+    cost_usd            REAL,
+    duration_ms         INTEGER,
+    provider_session_id TEXT,
+    record_path         TEXT
+);
+
+CREATE TABLE commission_sessions (
+    commission_id TEXT NOT NULL REFERENCES commissions(id),
+    session_id    TEXT NOT NULL REFERENCES sessions(id),
+    PRIMARY KEY (commission_id, session_id)
+);

@@ -28,8 +28,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { VERSION, resolveToolFromExport } from '@shardworks/nexus-core';
-import { registerSessionProvider } from '@shardworks/nexus-sessions';
+import { VERSION, resolveToolFromExport, registerSessionProvider } from '@shardworks/nexus-core';
 import type { ToolDefinition, RigContext } from '@shardworks/nexus-core';
 import { claudeCodeProvider } from './index.ts';
 

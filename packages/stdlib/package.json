@@ -18,7 +18,6 @@
   },
   "dependencies": {
     "@shardworks/nexus-core": "workspace:*",
-    "@shardworks/nexus-sessions": "workspace:*",
     "zod": "^4.0.0"
   },
   "devDependencies": {
