@@ -1,6 +1,6 @@
 # `@shardworks/nexus-core`
 
-The public SDK for Nexus Mk 2.1. Rig authors import from this package to define tools, read guild configuration, and resolve file paths.
+The public SDK for Nexus Mk 2.1. Rig authors import from this package to define tools, declare books, and read guild configuration.
 
 This package is a dependency of every rig. It does not depend on mainspring or the CLI — the dependency graph runs one way: rigs → core.
 
@@ -20,41 +20,31 @@ export default tool({
   params: {
     name: z.string().describe('Anima name'),
   },
-  handler: async ({ name }, { home }) => {
-    return `Hello, ${name}! Guild root: ${home}`;
+  handler: async ({ name }, ctx) => {
+    return `Hello, ${name}! Guild root: ${ctx.home}`;
   },
 });
 ```
 
-A rig package exports a single tool or an array of tools as its default export. Mainspring discovers them automatically at install time.
-
-### `ToolContext`
-
-Injected into every handler call by the framework:
-
-```typescript
-interface ToolContext {
-  home: string;  // absolute path to the guild root
-}
-```
+A rig package exports a `Rig` object, a single tool, or an array of tools as its default export. Mainspring discovers them automatically at install time.
 
 ### `ToolDefinition`
 
 The return type of `tool()`. MCP, CLI, and engines all consume this shape.
 
-### `ToolChannel`
+### `ToolCaller`
 
-`'cli' | 'mcp'` — controls which surfaces a tool appears on. Set via `allowedContexts`:
+`'cli' | 'mcp'` — controls which surfaces a tool appears on. Set via `callableFrom`:
 
 ```typescript
 tool({
-  name: 'plugin-install',
-  allowedContexts: ['cli'],   // CLI only — not exposed to animas via MCP
+  name: 'rig-install',
+  callableFrom: ['cli'],   // CLI only — not exposed to animas via MCP
   ...
 });
 ```
 
-Defaults to both channels if omitted.
+Defaults to all callers if omitted.
 
 ### Resolution helpers
 
@@ -71,42 +61,133 @@ isToolDefinition(obj)
 
 ---
 
+## `Rig` — Rig Export Type
+
+The author-facing export type for a rig package. Rig packages export this as their default export. Mainspring reads it at load time to discover the rig's contributions.
+
+```typescript
+import { type Rig, tool } from '@shardworks/nexus-core';
+
+const myTool = tool({ ... });
+
+export default {
+  tools: [myTool],
+  books: {
+    writs: { indexes: ['status', 'createdAt', 'parent.id'] },
+  },
+} satisfies Rig;
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `tools?` | `ToolDefinition[]` | Tools this rig contributes to the guild |
+| `books?` | `Record<string, BookOptions>` | Named document collections — mainspring creates SQLite tables and indexes at startup |
+
+Backward-compatible: rigs may still export a bare `ToolDefinition` or `ToolDefinition[]` directly.
+
+### `BookOptions`
+
+Schema declaration for a single book:
+
+```typescript
+interface BookOptions {
+  indexes?: string[];  // field names to index (plain or dot-notation)
+}
+```
+
+### `isRig(obj)`
+
+Type guard distinguishing a `Rig` export from a bare tool or array.
+
+---
+
+## `RigContext` — Handler Context
+
+Injected into every tool and engine handler. Scoped to the rig that owns the handler.
+
+```typescript
+interface RigContext {
+  home: string;
+
+  book<T extends { id: string }>(name: string): Book<T>;
+  rigBook<T extends { id: string }>(rigId: string, name: string): ReadOnlyBook<T>;
+}
+```
+
+| Member | Returns | Description |
+|---|---|---|
+| `home` | `string` | Absolute path to the guild root |
+| `book(name)` | `Book<T>` | Read-write handle to one of this rig's declared books |
+| `rigBook(rigId, name)` | `ReadOnlyBook<T>` | Read-only handle to another rig's book |
+
+`ToolContext` is a deprecated alias for `RigContext`, re-exported from legacy for backward compatibility.
+
+---
+
+## `Book<T>` — Document Store
+
+The NoSQL document store primitive for rig authors. `T` must extend `{ id: string }` — rig authors own ID generation.
+
+| Method | Description |
+|---|---|
+| `put(content)` | Upsert a document (creates or replaces entirely by `content.id`) |
+| `get(id)` | Retrieve by id, or `null` |
+| `delete(id)` | Remove by id (silent no-op if absent) |
+| `find(query)` | Query with `where`, `orderBy`, `order`, `limit`, `offset` |
+| `list(options?)` | List all documents, optionally paginated and sorted |
+| `count(where?)` | Count documents matching an optional filter |
+
+### `BookQuery`
+
+```typescript
+type BookQuery = {
+  where?: Record<string, unknown>;  // field equality filters, ANDed
+  orderBy?: string;                 // plain name or dot-notation
+  order?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;                  // requires limit
+}
+```
+
+### `ReadOnlyBook<T>`
+
+Returned by `rigBook()` for cross-rig access. Same as `Book<T>` minus `put` and `delete`.
+
+---
+
 ## `guild-config` — Guild Configuration
 
 Read and write `guild.json`, the guild's central configuration file.
 
 ```typescript
-import { readGuildConfig, writeGuildConfig } from '@shardworks/nexus-core';
+import { readGuildConfigV2, writeGuildConfigV2 } from '@shardworks/nexus-core';
 
-const config = readGuildConfig(home);
+const config = readGuildConfigV2(home);
 config.baseTools.push('my-tool');
-writeGuildConfig(home, config);
+writeGuildConfigV2(home, config);
 ```
 
-### `GuildConfig`
+### `GuildConfigV2`
 
-The shape of `guild.json`:
+The shape of `guild.json` for V2 guilds:
 
 | Field | Type | Description |
 |---|---|---|
 | `name` | `string` | Guild name |
 | `nexus` | `string` | Framework version at last init/upgrade |
-| `model` | `string` | Default model for anima sessions |
-| `plugins` | `string[]` | Installed rig keys |
-| `roles` | `Record<string, RoleDefinition>` | Guild roles |
+| `rigs` | `string[]` | Installed rig keys (derived from npm package names) |
 | `baseTools` | `string[]` | Tools available to all animas |
-| `tools` | `Record<string, ToolEntry>` | Registered tools with provenance |
-| `engines` | `Record<string, ToolEntry>` | Registered engines |
+| `roles` | `Record<string, RoleDefinition>` | Guild roles with seats, tools, instructions |
 | `workshops` | `Record<string, WorkshopEntry>` | Registered workshops |
-| `curricula` | `Record<string, TrainingEntry>` | Installed curricula |
-| `temperaments` | `Record<string, TrainingEntry>` | Installed temperaments |
+| `settings?` | `GuildSettings` | Operational flags including default `model` |
 | `clockworks?` | `ClockworksConfig` | Standing orders and custom events |
+| `writTypes?` | `Record<string, WritTypeDeclaration>` | Custom writ type declarations |
 
 ### Other exports
 
 ```typescript
-guildConfigPath(home)           // path to guild.json
-createInitialGuildConfig(...)   // default config for nsg init
+guildConfigPath(home)              // path to guild.json
+createInitialGuildConfigV2(...)    // default config for nsg init
 ```
 
 ---
@@ -116,10 +197,9 @@ createInitialGuildConfig(...)   // default config for nsg init
 Resolve standard paths within a guild's `.nexus/` directory.
 
 ```typescript
-import { findGuildRoot, booksPath, nexusDir } from '@shardworks/nexus-core';
+import { findGuildRoot, nexusDir } from '@shardworks/nexus-core';
 
 const home = findGuildRoot();          // walks up from cwd to find guild.json
-const db   = booksPath(home);          // .nexus/nexus.db
 const dir  = nexusDir(home);           // .nexus/
 ```
 
@@ -129,7 +209,6 @@ const dir  = nexusDir(home);           // .nexus/
 |---|---|
 | `findGuildRoot(startDir?)` | Guild root (walks up from cwd, throws if not found) |
 | `nexusDir(home)` | `.nexus/` |
-| `booksPath(home)` | `.nexus/nexus.db` |
 | `worktreesPath(home)` | `.nexus/worktrees/` |
 | `workshopsPath(home)` | `.nexus/workshops/` |
 | `workshopBarePath(home, name)` | `.nexus/workshops/<name>.git` |
@@ -138,7 +217,7 @@ const dir  = nexusDir(home);           // .nexus/
 
 ---
 
-## `plugin-descriptor` — Rig Descriptor Types
+## `rig-descriptor` — Rig Descriptor Types
 
 Types for `rig.json`, the optional descriptor a rig package can include at its root to declare dependencies on other rigs.
 
