@@ -9,6 +9,11 @@ export const VERSION: string = _pkg.version;
 // ── Promoted modules — canonical source lives here at top-level ────────
 
 export {
+  type Rig,
+  isRig,
+} from './rig.ts';
+
+export {
   type ToolChannel,
   type ToolContext,
   type ToolDefinition,
@@ -48,9 +53,9 @@ export {
 } from './guild-config.ts';
 
 export {
-  type PluginDescriptor,
-  type PluginDependency,
-} from './plugin-descriptor.ts';
+  type RigDescriptor,
+  type RigDependency,
+} from './rig-descriptor.ts';
 
 // ── Legacy modules — not yet promoted, still live in legacy/1 ─────────
 

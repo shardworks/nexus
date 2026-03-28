@@ -25,7 +25,7 @@ export {
   createMainspring,
   deriveRigKey,
   type Mainspring,
-  type Rig,
+  type LoadedRig,
   type Tool,
   type ListToolsOptions,
 } from './mainspring.ts';

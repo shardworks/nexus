@@ -13,7 +13,7 @@ import {
   writeGuildConfig,
   resolveAllToolsFromExport,
 } from '@shardworks/nexus-core';
-import type { ToolEntry, PluginDescriptor } from '@shardworks/nexus-core';
+import type { ToolEntry, RigDescriptor } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { deriveRigKey } from '../mainspring.ts';
 import { readGuildPackageJson, resolveGuildPackageEntry } from '../resolve-package.ts';
@@ -70,12 +70,12 @@ function detectInstalledPackage(guildRoot: string): string {
 function readRigDescriptor(
   guildRoot: string,
   packageName: string,
-): PluginDescriptor | null {
+): RigDescriptor | null {
   const descriptorPath = path.join(
     guildRoot, 'node_modules', packageName, 'rig.json',
   );
   if (!fs.existsSync(descriptorPath)) return null;
-  return JSON.parse(fs.readFileSync(descriptorPath, 'utf-8')) as PluginDescriptor;
+  return JSON.parse(fs.readFileSync(descriptorPath, 'utf-8')) as RigDescriptor;
 }
 
 /**
@@ -83,7 +83,7 @@ function readRigDescriptor(
  * Returns an array of missing rig keys. Empty = all satisfied.
  */
 function checkRigDependencies(
-  descriptor: PluginDescriptor,
+  descriptor: RigDescriptor,
   installedRigs: string[],
 ): string[] {
   if (!descriptor.dependencies?.length) return [];
@@ -91,8 +91,8 @@ function checkRigDependencies(
   const installed = new Set(installedRigs);
   const missing: string[] = [];
   for (const dep of descriptor.dependencies) {
-    if (!installed.has(dep.plugin)) {
-      missing.push(dep.plugin);
+    if (!installed.has(dep.rig)) {
+      missing.push(dep.rig);
     }
   }
   return missing;

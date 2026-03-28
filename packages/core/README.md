@@ -4,10 +4,6 @@ The public SDK for Nexus Mk 2.1. Rig authors import from this package to define 
 
 This package is a dependency of every rig. It does not depend on mainspring or the CLI — the dependency graph runs one way: rigs → core.
 
-## What's here
-
-Only the modules promoted out of `legacy/` are documented here. Additional exports exist for internal framework use and will be documented as they are promoted.
-
 ---
 
 ## `tool()` — Tool SDK
@@ -144,26 +140,25 @@ const dir  = nexusDir(home);           // .nexus/
 
 ## `plugin-descriptor` — Rig Descriptor Types
 
-Types for `rig.json`, the optional descriptor a rig package can include at its root to declare dependencies and migrations.
+Types for `rig.json`, the optional descriptor a rig package can include at its root to declare dependencies on other rigs.
 
 ```typescript
-import type { PluginDescriptor } from '@shardworks/nexus-core';
+import type { RigDescriptor } from '@shardworks/nexus-core';
 ```
 
-### `PluginDescriptor`
+### `RigDescriptor`
 
 ```typescript
-interface PluginDescriptor {
+interface RigDescriptor {
   description?: string;
-  dependencies?: PluginDependency[];
-  migrations?: string;   // path to migrations dir, relative to package root
+  dependencies?: RigDependency[];
 }
 
-interface PluginDependency {
-  plugin: string;   // rig key, e.g. 'nexus-stdlib'
+interface RigDependency {
+  rig: string;   // rig key, e.g. 'nexus-stdlib'
 }
 ```
 
-Mainspring reads `rig.json` at install time. If declared dependencies aren't installed, `nsg rig install` fails with a clear error. The `migrations` field is reserved for a future commission.
+Mainspring reads `rig.json` at install time. If declared dependencies aren't installed, `nsg rig install` fails with a clear error.
 
 A rig with no dependencies needs no `rig.json` at all.

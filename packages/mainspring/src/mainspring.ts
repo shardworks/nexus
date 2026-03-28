@@ -12,8 +12,8 @@
  * factory that returns its inter-rig API surface.
  */
 
-import { readGuildConfig, resolveAllToolsFromExport, VERSION } from '@shardworks/nexus-core';
-import type { GuildConfig, ToolDefinition } from '@shardworks/nexus-core';
+import { readGuildConfig, resolveAllToolsFromExport, isRig, VERSION } from '@shardworks/nexus-core';
+import type { Rig, GuildConfig, ToolDefinition } from '@shardworks/nexus-core';
 import type { ToolChannel } from '@shardworks/nexus-core';
 import { builtinTools } from './tools/index.ts';
 import { readGuildPackageJson, resolveGuildPackageEntry } from './resolve-package.ts';
@@ -46,21 +46,26 @@ export function deriveRigKey(packageName: string): string {
 // ── Public types ───────────────────────────────────────────────────────
 
 /**
- * A rig as seen by the mainspring runtime.
+ * A rig as seen by the mainspring runtime — an installed rig package with
+ * its module instance and resolved tools.
  *
- * Groups the tools (and future contribution types) registered by a single
- * installed npm package. `packageName` is the full npm package name;
- * `key` is the derived guild-facing identifier used in guild.json,
- * CLI commands, and config sections.
+ * `instance` is the raw `Rig` object from the package's default export
+ * (normalized to `{ tools }` shape if the package exported a bare tool
+ * or array). `tools` is the flattened, annotated list used by CLI/MCP.
+ *
+ * `packageName` is the full npm package name; `key` is the derived
+ * guild-facing identifier used in guild.json, CLI commands, and config.
  */
-export interface Rig {
+export interface LoadedRig {
   /** Full npm package name, e.g. '@shardworks/nexus-ledger'. Source of truth. */
   readonly packageName: string;
   /** Derived guild-facing key, e.g. 'nexus-ledger'. Used in guild.json and config. */
   readonly key: string;
   /** Version resolved from the installed package's package.json. */
   readonly version: string;
-  /** Tools this rig contributes. */
+  /** The rig's module export — normalized to Rig shape. */
+  readonly instance: Rig;
+  /** Tools this rig contributes (ToolDefinition + provenance). */
   readonly tools: Tool[];
 }
 
@@ -114,14 +119,14 @@ export interface Mainspring {
    * List all installed rigs.
    * Loads and caches rig modules on first call.
    */
-  listRigs(): Promise<Rig[]>;
+  listRigs(): Promise<LoadedRig[]>;
 
   /**
    * Find a rig by key or full package name. Returns null if not installed.
    * Accepts either the derived key ('nexus-ledger') or the full package name
    * ('@shardworks/nexus-ledger').
    */
-  findRig(name: string): Promise<Rig | null>;
+  findRig(name: string): Promise<LoadedRig | null>;
 
   /**
    * List installed tools, optionally filtered by channel and/or roles.
@@ -143,14 +148,16 @@ export interface Mainspring {
 
 // ── Implementation ─────────────────────────────────────────────────────
 
-/** Build the mainspring's own rig entry from its built-in tools. */
-function mainspringRig(): Rig {
+/** Build the mainspring's own LoadedRig entry from its built-in tools. */
+function mainspringRig(): LoadedRig {
   const mainspringPackageName = '@shardworks/nexus-mainspring';
+  const tools: Tool[] = builtinTools.map((t) => ({ ...t, rigName: mainspringPackageName }) as Tool);
   return {
     packageName: mainspringPackageName,
     key: deriveRigKey(mainspringPackageName),
     version: VERSION,
-    tools: builtinTools.map((t) => ({ ...t, rigName: mainspringPackageName }) as Tool),
+    instance: { tools: builtinTools as ToolDefinition[] },
+    tools,
   };
 }
 
@@ -158,51 +165,56 @@ function mainspringRig(): Rig {
 async function loadAllRigs(
   guildRoot: string,
   config: GuildConfig,
-): Promise<Rig[]> {
+): Promise<LoadedRig[]> {
   // Start with mainspring's own built-in tools — always present
-  const rigs: Rig[] = [mainspringRig()];
+  const rigs: LoadedRig[] = [mainspringRig()];
 
-  // Group installed tools by their npm package name
-  const rigMap = new Map<string, { version: string; tools: Tool[] }>();
+  // Group installed tools by their npm package name.
+  // instance is populated on first module load for each package.
+  const rigMap = new Map<string, { version: string; instance: Rig; tools: Tool[] }>();
 
   for (const [toolName, entry] of Object.entries(config.tools)) {
     if (!entry.package) continue;
 
     const pkgName = entry.package;
 
-    // Ensure the rig entry exists
+    // Ensure the rig entry exists — load the module once per package
     if (!rigMap.has(pkgName)) {
       const { version } = readGuildPackageJson(guildRoot, pkgName);
-      rigMap.set(pkgName, { version, tools: [] });
+      let instance: Rig = {};
+
+      try {
+        const entryPath = resolveGuildPackageEntry(guildRoot, pkgName);
+        const mod = await import(entryPath) as { default: unknown };
+        const rawExport = mod.default;
+        // Normalize to Rig shape regardless of export style (bare tool, array, or Rig object)
+        instance = isRig(rawExport)
+          ? rawExport
+          : { tools: resolveAllToolsFromExport(rawExport) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[mainspring] Failed to load rig "${pkgName}": ${message}`);
+      }
+
+      rigMap.set(pkgName, { version, instance, tools: [] });
     }
 
-    // Import the package and extract the matching tool.
-    // Resolve from the guild's node_modules (not mainspring's) since rigs are
-    // installed as guild dependencies.
-    try {
-      const entryPath = resolveGuildPackageEntry(guildRoot, pkgName);
-      const mod = await import(entryPath) as { default: unknown };
-      const allTools = resolveAllToolsFromExport(mod.default);
-
-      for (const toolDef of allTools) {
-        if (toolDef.name !== toolName) continue;
-        rigMap.get(pkgName)!.tools.push({
-          ...toolDef,
-          rigName: pkgName,
-        });
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[mainspring] Failed to load tool "${toolName}" from "${pkgName}": ${message}`);
+    // Match the registered tool name to a tool in the rig's instance
+    const rigEntry = rigMap.get(pkgName)!;
+    const allTools = rigEntry.instance.tools ?? [];
+    const toolDef = allTools.find((t) => t.name === toolName);
+    if (toolDef) {
+      rigEntry.tools.push({ ...toolDef, rigName: pkgName });
     }
   }
 
   // Append installed rigs after the mainspring built-ins
-  for (const [packageName, { version, tools }] of rigMap.entries()) {
+  for (const [packageName, { version, instance, tools }] of rigMap.entries()) {
     rigs.push({
       packageName,
       key: deriveRigKey(packageName),
       version,
+      instance,
       tools,
     });
   }
@@ -224,9 +236,9 @@ export function createMainspring(guildRoot: string): Mainspring {
 
   // Lazy load cache — a single Promise shared across all callers.
   // Set on first access; all concurrent callers await the same Promise.
-  let rigsPromise: Promise<Rig[]> | null = null;
+  let rigsPromise: Promise<LoadedRig[]> | null = null;
 
-  function getRigs(): Promise<Rig[]> {
+  function getRigs(): Promise<LoadedRig[]> {
     if (!rigsPromise) {
       rigsPromise = loadAllRigs(guildRoot, config);
     }

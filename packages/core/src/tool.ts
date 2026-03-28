@@ -34,6 +34,7 @@
  * ```
  */
 import { z } from 'zod';
+import { isRig } from './rig.ts';
 
 // Zod shape type — a record of string keys to Zod schemas.
 // Using a local alias keeps our public API stable across Zod versions.
@@ -175,12 +176,18 @@ export function resolveToolFromExport(
 /**
  * Resolve all ToolDefinitions from a module's default export.
  *
- * Handles both single-tool and array-of-tools exports.
- * Returns an array in either case.
+ * Handles three export shapes:
+ * - `Rig` object: `{ tools: [...] }` — preferred form
+ * - `ToolDefinition[]` — bare array, backward compatible
+ * - `ToolDefinition` — single tool, backward compatible
  */
 export function resolveAllToolsFromExport(
   moduleDefault: unknown,
 ): ToolDefinition[] {
+  if (isRig(moduleDefault)) {
+    return (moduleDefault.tools ?? []).filter(isToolDefinition);
+  }
+
   if (isToolDefinition(moduleDefault)) {
     return [moduleDefault];
   }

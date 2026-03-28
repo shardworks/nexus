@@ -28,23 +28,26 @@ const ms = createMainspring('/path/to/guild');
 | `ms.home` | `string` | Absolute path to the guild root |
 | `ms.getGuildConfig()` | `GuildConfig` | Parsed `guild.json`, read at construction time |
 | `ms.getRigConfig(name)` | `Record<string, unknown>` | Rig-specific config section from `guild.json`. Accepts key (`'nexus-stdlib'`) or full package name |
-| `ms.listRigs()` | `Promise<Rig[]>` | All installed rigs, including mainspring's own built-ins. Lazy-loaded and cached |
-| `ms.findRig(name)` | `Promise<Rig \| null>` | Find a rig by key or full package name |
+| `ms.listRigs()` | `Promise<LoadedRig[]>` | All installed rigs, including mainspring's own built-ins. Lazy-loaded and cached |
+| `ms.findRig(name)` | `Promise<LoadedRig \| null>` | Find a rig by key or full package name |
 | `ms.listTools(options?)` | `Promise<Tool[]>` | All tools, optionally filtered by `channel` and/or `roles` |
 | `ms.findTool(name)` | `Promise<Tool \| null>` | Find a tool by name, across all rigs |
 
-### `Rig`
+### `LoadedRig`
 
-Represents an installed rig (npm package) as seen by the mainspring:
+An installed rig package as seen by the mainspring — its identity, module instance, and resolved tool list:
 
 ```typescript
-interface Rig {
+interface LoadedRig {
   packageName: string;  // full npm name, e.g. '@shardworks/nexus-stdlib'
   key: string;          // guild-facing key, e.g. 'nexus-stdlib'
   version: string;
-  tools: Tool[];
+  instance: Rig;        // the package's default export, normalized to Rig shape
+  tools: Tool[];        // tools with rigName provenance
 }
 ```
+
+`instance` is the raw `Rig` object from the package's default export (see `nexus-core` SDK). Backward-compatible exports (bare `ToolDefinition` or `ToolDefinition[]`) are normalized to `{ tools: [...] }` on load.
 
 ### `Tool`
 
@@ -149,12 +152,12 @@ A rig package may include a `rig.json` at its root to declare dependencies on ot
 {
   "description": "My rig",
   "dependencies": [
-    { "plugin": "nexus-stdlib" }
+    { "rig": "nexus-stdlib" }
   ]
 }
 ```
 
-All fields are optional. A rig with no dependencies or migrations needs no `rig.json`.
+All fields are optional. A rig with no dependencies needs no `rig.json`.
 
 ## Lazy loading
 
