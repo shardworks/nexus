@@ -26,12 +26,14 @@ const ms = createMainspring('/path/to/guild');
 | Method | Returns | Description |
 |---|---|---|
 | `ms.home` | `string` | Absolute path to the guild root |
-| `ms.getGuildConfig()` | `GuildConfig` | Parsed `guild.json`, read at construction time |
+| `ms.getGuildConfig()` | `GuildConfigV2` | Parsed `guild.json`, read at construction time |
 | `ms.getRigConfig(name)` | `Record<string, unknown>` | Rig-specific config section from `guild.json`. Accepts key (`'nexus-stdlib'`) or full package name |
 | `ms.listRigs()` | `Promise<LoadedRig[]>` | All installed rigs, including mainspring's own built-ins. Lazy-loaded and cached |
 | `ms.findRig(name)` | `Promise<LoadedRig \| null>` | Find a rig by key or full package name |
 | `ms.listTools(options?)` | `Promise<Tool[]>` | All tools, optionally filtered by `channel` and/or `roles` |
 | `ms.findTool(name)` | `Promise<Tool \| null>` | Find a tool by name, across all rigs |
+| `ms.getDatabase()` | `BooksDatabase` | Lazily-opened SQLite connection to `.nexus/nexus.db`. Cached for process lifetime |
+| `ms.createRigContext(rigId)` | `RigContext` | Scoped context with `book(name)` (read-write) and `rigBook(otherRigId, name)` (read-only) handles |
 
 ### `LoadedRig`
 
@@ -68,9 +70,9 @@ interface ListToolsOptions {
 }
 ```
 
-### `deriveRigKey(packageName)`
+### `deriveRigId(packageName)`
 
-Converts an npm package name to the guild-facing rig key used in `guild.json`, CLI commands, and config sections:
+Converts an npm package name to the guild-facing rig id used in `guild.json`, CLI commands, and config sections:
 
 ```
 @shardworks/nexus-stdlib  →  nexus-stdlib   (official scope stripped)
@@ -92,7 +94,7 @@ These ship with mainspring itself and are always available via `nsg`, regardless
 | `nsg version` | Show Nexus framework version and installed rig versions |
 | `nsg status` | Show guild identity, installed rigs, and configured roles |
 | `nsg upgrade` | Upgrade framework and run pending rig migrations *(stub)* |
-| `nsg rig list` | List installed rigs and tool counts |
+| `nsg rig list` | List installed rigs |
 | `nsg rig install <source>` | Install a rig from npm, a git URL, or a local directory |
 | `nsg rig remove <name>` | Remove a rig and unregister its tools |
 | `nsg rig upgrade <name>` | Upgrade a rig to a newer version *(stub)* |
@@ -158,6 +160,58 @@ A rig package may include a `rig.json` at its root to declare dependencies on ot
 ```
 
 All fields are optional. A rig with no dependencies needs no `rig.json`.
+
+## Books database
+
+Mainspring manages a SQLite database at `.nexus/nexus.db` (WAL mode, foreign keys enabled) that provides document storage for rigs.
+
+### Schema reconciliation
+
+On first rig load, `reconcileBooks()` iterates each rig's declared `books` schema and creates tables and indexes. This is additive only — tables are never dropped or altered.
+
+Each book gets a table named `books_<rigId>_<bookName>`:
+
+```sql
+CREATE TABLE IF NOT EXISTS "books_nexus_stdlib_writs" (
+  id      TEXT PRIMARY KEY,
+  content TEXT NOT NULL      -- JSON document
+);
+```
+
+Indexed fields use `json_extract(content, '$.field')`.
+
+### `BookStore<T>`
+
+The document store backing each book. Implements `Book<T>` from `nexus-core`.
+
+| Method | Description |
+|---|---|
+| `put(content)` | Upsert a document (JSON-serialized, keyed by `content.id`) |
+| `get(id)` | Retrieve by id, or `null` |
+| `delete(id)` | Remove by id |
+| `find(query)` | Query with `where`, `orderBy`, `order`, `limit`, `offset` |
+| `list(options?)` | Alias for `find()` |
+| `count(where?)` | Count documents, optionally filtered |
+
+All queries are parameterized. Field names in `where` and `orderBy` are validated against `^[A-Za-z0-9_.-]+$`.
+
+### `BooksDatabase`
+
+Low-level SQL interface returned by `ms.getDatabase()`. Exposes a single `execute(sql, args?)` method returning `{ rows, columns, rowsAffected, lastInsertRowid }`.
+
+### Public exports
+
+```typescript
+import {
+  openBooksDatabase,    // factory: (guildRoot) => BooksDatabase
+  BookStore,            // BookStore<T> class
+  booksTableName,       // (rigId, bookName) => qualified table name
+  reconcileBooks,       // (db, rigs) => Promise<void>
+  type BooksDatabase,
+  type SqlRow,
+  type SqlResult,
+} from '@shardworks/nexus-mainspring';
+```
 
 ## Lazy loading
 
