@@ -63,7 +63,7 @@ function detectInstalledPackage(guildRoot: string): string {
 }
 
 /**
- * Read nexus-rig.json from an installed rig package, if it exists.
+ * Read rig.json from an installed rig package, if it exists.
  * Returns null if the package has no descriptor (which is fine —
  * tools are discovered from exports, descriptor is optional).
  */
@@ -72,7 +72,7 @@ function readRigDescriptor(
   packageName: string,
 ): PluginDescriptor | null {
   const descriptorPath = path.join(
-    guildRoot, 'node_modules', packageName, 'nexus-rig.json',
+    guildRoot, 'node_modules', packageName, 'rig.json',
   );
   if (!fs.existsSync(descriptorPath)) return null;
   return JSON.parse(fs.readFileSync(descriptorPath, 'utf-8')) as PluginDescriptor;
@@ -201,7 +201,7 @@ export const rigInstall = tool({
 
     const rigKey = deriveRigKey(packageName);
 
-    // 2. Check rig dependencies (if nexus-rig.json declares any)
+    // 2. Check rig dependencies (if rig.json declares any)
     const config = readGuildConfig(home);
     const descriptor = readRigDescriptor(home, packageName);
     if (descriptor) {
