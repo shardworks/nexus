@@ -13,7 +13,7 @@ import {
   writeGuildConfig,
   resolveAllToolsFromExport,
 } from '@shardworks/nexus-core';
-import type { ToolEntry } from '@shardworks/nexus-core';
+import type { ToolEntry, PluginDescriptor } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { derivePluginKey } from '../rig.ts';
 import { readGuildPackageJson, resolveGuildPackageEntry } from '../resolve-package.ts';
@@ -28,23 +28,74 @@ function npm(args: string[], cwd: string): string {
  * Parse a source specifier to extract the npm package name.
  * e.g. "@shardworks/nexus-stdlib@1.0" → "@shardworks/nexus-stdlib"
  *      "nexus-stdlib" → "nexus-stdlib"
+ *
+ * Returns null for git URLs — the package name must be read from
+ * the guild's package.json after npm install.
  */
-function parsePackageName(source: string): string {
+function parsePackageName(source: string): string | null {
+  // Git URLs: can't parse name, must detect after install
+  if (source.startsWith('git+') || source.startsWith('git://') || source.endsWith('.git')) {
+    return null;
+  }
   if (source.startsWith('@')) {
-    // Scoped package: @scope/name or @scope/name@version
     const lastAt = source.lastIndexOf('@');
-    if (lastAt > 0) {
-      // Has version: @scope/name@1.0 → @scope/name
-      return source.substring(0, lastAt);
-    }
-    // No version: @scope/name → @scope/name
+    if (lastAt > 0) return source.substring(0, lastAt);
     return source;
   }
-  // Unscoped: name@version → name, or bare name
   if (source.includes('@')) {
     return source.split('@')[0]!;
   }
   return source;
+}
+
+/**
+ * Find the most recently added dependency in the guild's package.json.
+ * Used after `npm install <git-url>` where we can't parse the name from the source.
+ */
+function detectInstalledPackage(guildRoot: string): string {
+  const pkgPath = path.join(guildRoot, 'package.json');
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+  const deps = pkg.dependencies as Record<string, string> | undefined ?? {};
+  const names = Object.keys(deps);
+  const last = names[names.length - 1];
+  if (!last) throw new Error('Could not determine package name after npm install.');
+  return last;
+}
+
+/**
+ * Read nexus-plugin.json from an installed package, if it exists.
+ * Returns null if the package has no descriptor (which is fine —
+ * tools are discovered from exports, descriptor is optional).
+ */
+function readPluginDescriptor(
+  guildRoot: string,
+  packageName: string,
+): PluginDescriptor | null {
+  const descriptorPath = path.join(
+    guildRoot, 'node_modules', packageName, 'nexus-plugin.json',
+  );
+  if (!fs.existsSync(descriptorPath)) return null;
+  return JSON.parse(fs.readFileSync(descriptorPath, 'utf-8')) as PluginDescriptor;
+}
+
+/**
+ * Check that all declared plugin dependencies are installed in the guild.
+ * Returns an array of missing plugin keys. Empty = all satisfied.
+ */
+function checkPluginDependencies(
+  descriptor: PluginDescriptor,
+  installedPlugins: string[],
+): string[] {
+  if (!descriptor.dependencies?.length) return [];
+
+  const installed = new Set(installedPlugins);
+  const missing: string[] = [];
+  for (const dep of descriptor.dependencies) {
+    if (!installed.has(dep.plugin)) {
+      missing.push(dep.plugin);
+    }
+  }
+  return missing;
 }
 
 /**
@@ -107,7 +158,7 @@ export const pluginInstall = tool({
   description: 'Install a plugin into the guild',
   allowedContexts: ['cli'],
   params: {
-    source: z.string().describe('Package name, e.g. "@shardworks/nexus-stdlib" or "nexus-stdlib@1.0"'),
+    source: z.string().describe('Package name or git URL, e.g. "@shardworks/nexus-stdlib", "foo@1.0", or "git+https://..."'),
     roles: z.string().optional().describe('Comma-separated role names to assign tools to (default: baseTools)'),
     type: z.enum(['registry', 'link']).optional().describe('Install type: "registry" (npm install, default) or "link" (symlink local dir)'),
   },
@@ -137,8 +188,9 @@ export const pluginInstall = tool({
       }
       fs.symlinkSync(sourceDir, linkTarget, 'dir');
     } else {
+      // npm install handles both registry specifiers and git URLs
       npm(['install', '--save', source], home);
-      packageName = parsePackageName(source);
+      packageName = parsePackageName(source) ?? detectInstalledPackage(home);
 
       // Verify it actually installed
       const { pkgJson } = readGuildPackageJson(home, packageName);
@@ -149,11 +201,24 @@ export const pluginInstall = tool({
 
     const pluginKey = derivePluginKey(packageName);
 
-    // 2. Discover tools from the package's exports
+    // 2. Check plugin dependencies (if nexus-plugin.json declares any)
+    const config = readGuildConfig(home);
+    const descriptor = readPluginDescriptor(home, packageName);
+    if (descriptor) {
+      const installedPlugins = config.plugins ?? [];
+      const missing = checkPluginDependencies(descriptor, installedPlugins);
+      if (missing.length > 0) {
+        throw new Error(
+          `Plugin "${pluginKey}" requires plugins that are not installed: ${missing.join(', ')}. ` +
+          `Install them first with: nsg plugin install <name>`,
+        );
+      }
+    }
+
+    // 3. Discover tools from the package's exports
     const toolNames = await discoverPluginTools(home, packageName);
 
-    // 3. Update guild.json
-    const config = readGuildConfig(home);
+    // 4. Update guild.json
     const now = new Date().toISOString();
 
     // Add to plugins array

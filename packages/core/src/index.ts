@@ -6,6 +6,11 @@ const _pkg = _require('../package.json');
 export const VERSION: string = _pkg.version;
 
 export {
+  type PluginDescriptor,
+  type PluginDependency,
+} from './plugin-descriptor.ts';
+
+export {
   type ToolChannel,
   type ToolContext,
   type ToolDefinition,
