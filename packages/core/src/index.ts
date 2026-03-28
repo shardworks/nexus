@@ -1,6 +1,7 @@
 // @shardworks/nexus-core — public SDK surface
 
 import { createRequire } from 'node:module';
+
 const _require = createRequire(import.meta.url);
 const _pkg = _require('../package.json');
 export const VERSION: string = _pkg.version;
