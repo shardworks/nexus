@@ -1,13 +1,13 @@
 {
-  "name": "@shardworks/nexus-rig",
+  "name": "@shardworks/nexus-mainspring",
   "version": "0.0.0",
   "license": "ISC",
   "repository": {
     "type": "git",
     "url": "https://github.com/shardworks/nexus",
-    "directory": "packages/rig"
+    "directory": "packages/mainspring"
   },
-  "description": "Nexus Mk 2.1 — guild machinery (plugin host, tool resolution)",
+  "description": "Nexus Mk 2.1 — mainspring (plugin host, tool resolution)",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

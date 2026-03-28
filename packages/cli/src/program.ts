@@ -1,11 +1,11 @@
 /**
- * nsg program — dynamic Commander setup via rig tool resolution.
+ * nsg program — dynamic Commander setup via mainspring tool resolution.
  *
- * Discovers installed tools at startup via the Rig, then registers each
+ * Discovers installed tools at startup via the Mainspring, then registers each
  * as a Commander command with auto-generated options from its Zod param schema.
  *
  * Tool names are auto-grouped when multiple tools share a hyphen prefix:
- * 'plugin-list' + 'plugin-install' → 'nsg plugin list' / 'nsg plugin install'.
+ * 'rig-list' + 'rig-install' → 'nsg rig list' / 'nsg rig install'.
  * A tool like 'show-writ' stays flat ('nsg show-writ') since no other tool
  * starts with 'show-'.
  *
@@ -15,8 +15,8 @@
 import path from 'node:path';
 import { Command } from 'commander';
 import { z } from 'zod';
-import { findGuildRoot, createRig, builtinTools } from '@shardworks/nexus-rig';
-import type { NexusTool } from '@shardworks/nexus-rig';
+import { findGuildRoot, createMainspring, builtinTools } from '@shardworks/nexus-mainspring';
+import type { Tool } from '@shardworks/nexus-mainspring';
 
 type ZodShape = Record<string, z.ZodTypeAny>;
 
@@ -44,7 +44,7 @@ export function isBooleanSchema(schema: z.ZodTypeAny): boolean {
 }
 
 /**
- * Build a Commander command from a NexusTool.
+ * Build a Commander command from a Tool.
  *
  * Generates options from the Zod param shape. Commander converts kebab-case
  * flags back to camelCase in opts(), matching the tool's schema keys directly.
@@ -54,7 +54,7 @@ export function isBooleanSchema(schema: z.ZodTypeAny): boolean {
  */
 function buildToolCommand(
   commandName: string,
-  toolDef: NexusTool,
+  toolDef: Tool,
   home: string,
 ): Command {
   const cmd = new Command(commandName).description(toolDef.description);
@@ -96,10 +96,10 @@ function buildToolCommand(
  * Determine which hyphen prefixes have enough tools to warrant a group.
  *
  * Returns a Set of prefixes that have 2+ tools sharing them.
- * 'plugin-list' + 'plugin-install' → 'plugin' is a group.
+ * 'rig-list' + 'rig-install' → 'rig' is a group.
  * 'show-writ' alone → 'show' is NOT a group.
  */
-export function findGroupPrefixes(tools: NexusTool[]): Set<string> {
+export function findGroupPrefixes(tools: Tool[]): Set<string> {
   const prefixCounts = new Map<string, number>();
 
   for (const t of tools) {
@@ -120,7 +120,7 @@ export function findGroupPrefixes(tools: NexusTool[]): Set<string> {
  * Register all tools as Commander commands.
  *
  * Tools whose hyphen prefix appears in `groupPrefixes` are nested:
- * 'plugin-list' → 'nsg plugin list'.
+ * 'rig-list' → 'nsg rig list'.
  *
  * All other tools are registered flat:
  * 'show-writ' → 'nsg show-writ'.
@@ -128,7 +128,7 @@ export function findGroupPrefixes(tools: NexusTool[]): Set<string> {
  */
 function registerAllTools(
   program: Command,
-  tools: NexusTool[],
+  tools: Tool[],
   home: string,
 ): void {
   const groupPrefixes = findGroupPrefixes(tools);
@@ -194,19 +194,19 @@ export async function main(): Promise<void> {
 
   // Always register rig built-in tools (version, status, plugin, upgrade).
   // These are framework commands that work with or without a guild.
-  const rigPluginName = '@shardworks/nexus-rig';
+  const mainspringPackageName = '@shardworks/nexus-mainspring';
   const builtins = builtinTools
     .filter((t) => !t.allowedContexts || t.allowedContexts.includes('cli'))
-    .map((t) => ({ ...t, pluginName: rigPluginName }) as NexusTool);
+    .map((t) => ({ ...t, rigName: mainspringPackageName }) as Tool);
   registerAllTools(program, builtins, home ?? process.cwd());
 
-  // Load guild plugin tools when inside a guild
+  // Load guild rig tools when inside a guild
   if (home) {
-    const rig = createRig(home);
-    const tools = await rig.listTools({ channel: 'cli' });
-    // Filter out rig built-ins (already registered above)
-    const pluginTools = tools.filter((t) => t.pluginName !== rigPluginName);
-    registerAllTools(program, pluginTools, home);
+    const ms = createMainspring(home);
+    const tools = await ms.listTools({ channel: 'cli' });
+    // Filter out mainspring built-ins (already registered above)
+    const rigTools = tools.filter((t) => t.rigName !== mainspringPackageName);
+    registerAllTools(program, rigTools, home);
   }
 
   program.parse(process.argv);

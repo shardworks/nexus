@@ -1,15 +1,15 @@
 /**
- * Rig — the guild runtime object.
+ * Mainspring — the guild runtime object.
  *
- * `createRig(guildRoot)` is the primary entry point. It reads guild.json
- * synchronously and returns a Rig instance. Plugin loading is lazy — modules
- * are imported on first call to `listPlugins()` or `listTools()`, then cached.
+ * `createMainspring(guildRoot)` is the primary entry point. It reads guild.json
+ * synchronously and returns a Mainspring instance. Rig loading is lazy — modules
+ * are imported on first call to `listRigs()` or `listTools()`, then cached.
  *
- * The Rig object is the natural dependency-injection carrier for the guild
+ * The Mainspring object is the natural dependency-injection carrier for the guild
  * runtime: CLI and MCP server each create one at startup and hold it for the
- * session's lifetime. Plugin authors access other plugins via the `fromRig()`
- * convention — each plugin package exports a typed `fromRig(rig: Rig)` factory
- * that returns its inter-plugin API surface.
+ * session's lifetime. Rig authors access other rigs via the `fromMainspring()`
+ * convention — each rig package exports a typed `fromMainspring(ms: Mainspring)`
+ * factory that returns its inter-rig API surface.
  */
 
 import { readGuildConfig, resolveAllToolsFromExport, VERSION } from '@shardworks/nexus-core';
@@ -18,22 +18,22 @@ import type { ToolChannel } from '@shardworks/nexus-core';
 import { builtinTools } from './tools/index.ts';
 import { readGuildPackageJson, resolveGuildPackageEntry } from './resolve-package.ts';
 
-// ── Plugin key derivation ──────────────────────────────────────────────
+// ── Rig key derivation ─────────────────────────────────────────────────
 
 /**
- * Derive the guild-facing plugin key from an npm package name.
+ * Derive the guild-facing rig key from an npm package name.
  *
  * Convention:
  * - `@shardworks/nexus-ledger` → `nexus-ledger`  (official scope stripped)
- * - `@acme/my-plugin`          → `acme/my-plugin` (third-party: drop @ only)
- * - `my-plugin`                → `my-plugin`      (unscoped: unchanged)
+ * - `@acme/my-rig`             → `acme/my-rig`   (third-party: drop @ only)
+ * - `my-rig`                   → `my-rig`         (unscoped: unchanged)
  *
- * The `@shardworks` scope is the official Nexus namespace — its plugins are
+ * The `@shardworks` scope is the official Nexus namespace — its rigs are
  * referenced by bare name in guild.json, CLI commands, and config keys.
  * Third-party scoped packages retain the scope as a prefix (without @) to
  * prevent collisions between `@acme/foo` and `@other/foo`.
  */
-export function derivePluginKey(packageName: string): string {
+export function deriveRigKey(packageName: string): string {
   if (packageName.startsWith('@shardworks/')) {
     return packageName.slice('@shardworks/'.length);
   }
@@ -46,33 +46,33 @@ export function derivePluginKey(packageName: string): string {
 // ── Public types ───────────────────────────────────────────────────────
 
 /**
- * A plugin as seen by the rig runtime.
+ * A rig as seen by the mainspring runtime.
  *
  * Groups the tools (and future contribution types) registered by a single
  * installed npm package. `packageName` is the full npm package name;
  * `key` is the derived guild-facing identifier used in guild.json,
  * CLI commands, and config sections.
  */
-export interface NexusPlugin {
+export interface Rig {
   /** Full npm package name, e.g. '@shardworks/nexus-ledger'. Source of truth. */
   readonly packageName: string;
   /** Derived guild-facing key, e.g. 'nexus-ledger'. Used in guild.json and config. */
   readonly key: string;
   /** Version resolved from the installed package's package.json. */
   readonly version: string;
-  /** Tools this plugin contributes. */
-  readonly tools: NexusTool[];
+  /** Tools this rig contributes. */
+  readonly tools: Tool[];
 }
 
 /**
- * A tool as seen by the rig runtime — a ToolDefinition with provenance.
+ * A tool as seen by the mainspring runtime — a ToolDefinition with provenance.
  *
- * Extends ToolDefinition (the plugin-author SDK type) with the name of
- * the plugin that owns it. Used by CLI and MCP surfaces to register tools.
+ * Extends ToolDefinition (the rig-author SDK type) with the name of
+ * the rig that owns it. Used by CLI and MCP surfaces to register tools.
  */
-export interface NexusTool extends ToolDefinition {
-  /** npm package name of the plugin that owns this tool */
-  readonly pluginName: string;
+export interface Tool extends ToolDefinition {
+  /** npm package name of the rig that owns this tool */
+  readonly rigName: string;
 }
 
 /** Options for filtering the tool list. */
@@ -91,12 +91,12 @@ export interface ListToolsOptions {
 }
 
 /**
- * The guild runtime. Created once per process via `createRig()`.
+ * The guild runtime. Created once per process via `createMainspring()`.
  *
- * Holds the initialized guild state and provides typed access to plugins,
- * tools, and configuration. Plugin loading is lazy and cached.
+ * Holds the initialized guild state and provides typed access to rigs,
+ * tools, and configuration. Rig loading is lazy and cached.
  */
-export interface Rig {
+export interface Mainspring {
   /** Absolute path to the guild root. */
   readonly home: string;
 
@@ -104,80 +104,80 @@ export interface Rig {
   getGuildConfig(): GuildConfig;
 
   /**
-   * Get the plugin-specific section of guild.json.
-   * Plugin configs are stored as named keys in guild.json.
-   * Returns an empty object if the plugin has no config section.
+   * Get the rig-specific section of guild.json.
+   * Rig configs are stored as named keys in guild.json.
+   * Returns an empty object if the rig has no config section.
    */
-  getPluginConfig(pluginName: string): Record<string, unknown>;
+  getRigConfig(rigName: string): Record<string, unknown>;
 
   /**
-   * List all installed plugins.
-   * Loads and caches plugin modules on first call.
+   * List all installed rigs.
+   * Loads and caches rig modules on first call.
    */
-  listPlugins(): Promise<NexusPlugin[]>;
+  listRigs(): Promise<Rig[]>;
 
   /**
-   * Find a plugin by key or full package name. Returns null if not installed.
+   * Find a rig by key or full package name. Returns null if not installed.
    * Accepts either the derived key ('nexus-ledger') or the full package name
    * ('@shardworks/nexus-ledger').
    */
-  findPlugin(name: string): Promise<NexusPlugin | null>;
+  findRig(name: string): Promise<Rig | null>;
 
   /**
    * List installed tools, optionally filtered by channel and/or roles.
    *
    * @example All CLI tools:
-   *   rig.listTools({ channel: 'cli' })
+   *   mainspring.listTools({ channel: 'cli' })
    *
    * @example MCP tools for a specific role:
-   *   rig.listTools({ channel: 'mcp', roles: ['artificer'] })
+   *   mainspring.listTools({ channel: 'mcp', roles: ['artificer'] })
    */
-  listTools(options?: ListToolsOptions): Promise<NexusTool[]>;
+  listTools(options?: ListToolsOptions): Promise<Tool[]>;
 
   /**
    * Find a tool by name. Returns null if not installed.
    * Searches all installed tools regardless of channel or role.
    */
-  findTool(name: string): Promise<NexusTool | null>;
+  findTool(name: string): Promise<Tool | null>;
 }
 
 // ── Implementation ─────────────────────────────────────────────────────
 
-/** Build the rig's own plugin entry from its built-in tools. */
-function rigPlugin(): NexusPlugin {
-  const rigPackageName = '@shardworks/nexus-rig';
+/** Build the mainspring's own rig entry from its built-in tools. */
+function mainspringRig(): Rig {
+  const mainspringPackageName = '@shardworks/nexus-mainspring';
   return {
-    packageName: rigPackageName,
-    key: derivePluginKey(rigPackageName),
+    packageName: mainspringPackageName,
+    key: deriveRigKey(mainspringPackageName),
     version: VERSION,
-    tools: builtinTools.map((t) => ({ ...t, pluginName: rigPackageName }) as NexusTool),
+    tools: builtinTools.map((t) => ({ ...t, rigName: mainspringPackageName }) as Tool),
   };
 }
 
-/** Load and cache all plugins from the guild.json tools catalog. */
-async function loadAllPlugins(
+/** Load and cache all rigs from the guild.json tools catalog. */
+async function loadAllRigs(
   guildRoot: string,
   config: GuildConfig,
-): Promise<NexusPlugin[]> {
-  // Start with rig's own built-in tools — always present
-  const plugins: NexusPlugin[] = [rigPlugin()];
+): Promise<Rig[]> {
+  // Start with mainspring's own built-in tools — always present
+  const rigs: Rig[] = [mainspringRig()];
 
   // Group installed tools by their npm package name
-  const pluginMap = new Map<string, { version: string; tools: NexusTool[] }>();
+  const rigMap = new Map<string, { version: string; tools: Tool[] }>();
 
   for (const [toolName, entry] of Object.entries(config.tools)) {
     if (!entry.package) continue;
 
     const pkgName = entry.package;
 
-    // Ensure the plugin entry exists
-    if (!pluginMap.has(pkgName)) {
+    // Ensure the rig entry exists
+    if (!rigMap.has(pkgName)) {
       const { version } = readGuildPackageJson(guildRoot, pkgName);
-      pluginMap.set(pkgName, { version, tools: [] });
+      rigMap.set(pkgName, { version, tools: [] });
     }
 
     // Import the package and extract the matching tool.
-    // Resolve from the guild's node_modules (not rig's) since plugins are
+    // Resolve from the guild's node_modules (not mainspring's) since rigs are
     // installed as guild dependencies.
     try {
       const entryPath = resolveGuildPackageEntry(guildRoot, pkgName);
@@ -186,81 +186,81 @@ async function loadAllPlugins(
 
       for (const toolDef of allTools) {
         if (toolDef.name !== toolName) continue;
-        pluginMap.get(pkgName)!.tools.push({
+        rigMap.get(pkgName)!.tools.push({
           ...toolDef,
-          pluginName: pkgName,
+          rigName: pkgName,
         });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[rig] Failed to load tool "${toolName}" from "${pkgName}": ${message}`);
+      console.warn(`[mainspring] Failed to load tool "${toolName}" from "${pkgName}": ${message}`);
     }
   }
 
-  // Append installed plugins after the rig built-in
-  for (const [packageName, { version, tools }] of pluginMap.entries()) {
-    plugins.push({
+  // Append installed rigs after the mainspring built-ins
+  for (const [packageName, { version, tools }] of rigMap.entries()) {
+    rigs.push({
       packageName,
-      key: derivePluginKey(packageName),
+      key: deriveRigKey(packageName),
       version,
       tools,
     });
   }
 
-  return plugins;
+  return rigs;
 }
 
 /**
- * Create a Rig for the given guild root.
+ * Create a Mainspring for the given guild root.
  *
- * Reads guild.json synchronously. Plugin modules are loaded lazily on first
- * access to `listPlugins()` or `listTools()`, then cached for the lifetime
- * of the Rig instance.
+ * Reads guild.json synchronously. Rig modules are loaded lazily on first
+ * access to `listRigs()` or `listTools()`, then cached for the lifetime
+ * of the Mainspring instance.
  *
  * @param guildRoot - Absolute path to the guild root (contains guild.json).
  */
-export function createRig(guildRoot: string): Rig {
+export function createMainspring(guildRoot: string): Mainspring {
   const config = readGuildConfig(guildRoot);
 
   // Lazy load cache — a single Promise shared across all callers.
   // Set on first access; all concurrent callers await the same Promise.
-  let pluginsPromise: Promise<NexusPlugin[]> | null = null;
+  let rigsPromise: Promise<Rig[]> | null = null;
 
-  function getPlugins(): Promise<NexusPlugin[]> {
-    if (!pluginsPromise) {
-      pluginsPromise = loadAllPlugins(guildRoot, config);
+  function getRigs(): Promise<Rig[]> {
+    if (!rigsPromise) {
+      rigsPromise = loadAllRigs(guildRoot, config);
     }
-    return pluginsPromise;
+    return rigsPromise;
   }
 
-  const rig: Rig = {
+  const mainspring: Mainspring = {
     home: guildRoot,
 
     getGuildConfig() {
       return config;
     },
 
-    getPluginConfig(name: string) {
+    getRigConfig(name: string) {
       // Normalize to key — accepts either full package name or short key
-      const key = name.startsWith('@') ? derivePluginKey(name) : name;
+      const key = name.startsWith('@') ? deriveRigKey(name) : name;
       const cfg = config as unknown as Record<string, unknown>;
       return (cfg[key] as Record<string, unknown>) ?? {};
     },
 
-    async listPlugins() {
-      return getPlugins();
+    async listRigs() {
+      return getRigs();
     },
 
-    async findPlugin(name: string) {
-      const plugins = await getPlugins();
+    async findRig(name: string) {
+      const rigs = await getRigs();
       // Normalize the input to a key for comparison
-      const targetKey = name.startsWith('@') ? derivePluginKey(name) : name;
-      return plugins.find((p) => p.key === targetKey || p.packageName === name) ?? null;
+      const targetKey = name.startsWith('@') ? deriveRigKey(name) : name;
+      return rigs.find((r) => r.key === targetKey || r.packageName === name) ?? null;
     },
 
     async listTools(options?: ListToolsOptions) {
-      const plugins = await getPlugins();
-      let tools: NexusTool[] = plugins.flatMap((p) => p.tools);
+      const rigs = await getRigs();
+      let tools: Tool[] = rigs.flatMap((r) => r.tools);
 
       // Filter by channel (allowedContexts)
       if (options?.channel) {
@@ -288,11 +288,11 @@ export function createRig(guildRoot: string): Rig {
     },
 
     async findTool(name: string) {
-      const plugins = await getPlugins();
-      const allTools = plugins.flatMap((p) => p.tools);
+      const rigs = await getRigs();
+      const allTools = rigs.flatMap((r) => r.tools);
       return allTools.find((t) => t.name === name) ?? null;
     },
   };
 
-  return rig;
+  return mainspring;
 }

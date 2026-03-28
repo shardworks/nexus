@@ -1,7 +1,7 @@
 /**
- * nsg plugin — manage guild plugins.
+ * nsg rig — manage guild rigs.
  *
- * Rig built-in commands for plugin lifecycle. Available via CLI only (not MCP).
+ * Mainspring built-in commands for rig lifecycle. Available via CLI only (not MCP).
  */
 
 import fs from 'node:fs';
@@ -15,7 +15,7 @@ import {
 } from '@shardworks/nexus-core';
 import type { ToolEntry, PluginDescriptor } from '@shardworks/nexus-core';
 import { z } from 'zod';
-import { derivePluginKey } from '../rig.ts';
+import { deriveRigKey } from '../mainspring.ts';
 import { readGuildPackageJson, resolveGuildPackageEntry } from '../resolve-package.ts';
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -63,32 +63,32 @@ function detectInstalledPackage(guildRoot: string): string {
 }
 
 /**
- * Read nexus-plugin.json from an installed package, if it exists.
+ * Read nexus-rig.json from an installed rig package, if it exists.
  * Returns null if the package has no descriptor (which is fine —
  * tools are discovered from exports, descriptor is optional).
  */
-function readPluginDescriptor(
+function readRigDescriptor(
   guildRoot: string,
   packageName: string,
 ): PluginDescriptor | null {
   const descriptorPath = path.join(
-    guildRoot, 'node_modules', packageName, 'nexus-plugin.json',
+    guildRoot, 'node_modules', packageName, 'nexus-rig.json',
   );
   if (!fs.existsSync(descriptorPath)) return null;
   return JSON.parse(fs.readFileSync(descriptorPath, 'utf-8')) as PluginDescriptor;
 }
 
 /**
- * Check that all declared plugin dependencies are installed in the guild.
- * Returns an array of missing plugin keys. Empty = all satisfied.
+ * Check that all declared rig dependencies are installed in the guild.
+ * Returns an array of missing rig keys. Empty = all satisfied.
  */
-function checkPluginDependencies(
+function checkRigDependencies(
   descriptor: PluginDescriptor,
-  installedPlugins: string[],
+  installedRigs: string[],
 ): string[] {
   if (!descriptor.dependencies?.length) return [];
 
-  const installed = new Set(installedPlugins);
+  const installed = new Set(installedRigs);
   const missing: string[] = [];
   for (const dep of descriptor.dependencies) {
     if (!installed.has(dep.plugin)) {
@@ -99,11 +99,11 @@ function checkPluginDependencies(
 }
 
 /**
- * Discover tools exported by an installed npm package.
+ * Discover tools exported by an installed rig package.
  * Imports the package from the guild's node_modules and returns
  * all ToolDefinitions found in its default export.
  */
-async function discoverPluginTools(
+async function discoverRigTools(
   guildRoot: string,
   packageName: string,
 ): Promise<string[]> {
@@ -115,32 +115,32 @@ async function discoverPluginTools(
 
 // ── Commands ───────────────────────────────────────────────────────────
 
-export const pluginList = tool({
-  name: 'plugin-list',
-  description: 'List installed plugins',
+export const rigList = tool({
+  name: 'rig-list',
+  description: 'List installed rigs',
   allowedContexts: ['cli'],
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },
   handler: async (_params, { home }) => {
     const config = readGuildConfig(home);
-    const pluginKeys = config.plugins ?? [];
+    const rigKeys = config.plugins ?? [];
 
-    if (pluginKeys.length === 0) {
+    if (rigKeys.length === 0) {
       if (_params.json) return [];
-      return 'No plugins installed.';
+      return 'No rigs installed.';
     }
 
-    // Collect tool counts per plugin from the tools catalog
-    const pluginToolCounts = new Map<string, number>();
+    // Collect tool counts per rig from the tools catalog
+    const rigToolCounts = new Map<string, number>();
     for (const entry of Object.values(config.tools)) {
       if (!entry.package) continue;
-      const key = derivePluginKey(entry.package);
-      pluginToolCounts.set(key, (pluginToolCounts.get(key) ?? 0) + 1);
+      const key = deriveRigKey(entry.package);
+      rigToolCounts.set(key, (rigToolCounts.get(key) ?? 0) + 1);
     }
 
-    const results = pluginKeys.map((key) => {
-      const toolCount = pluginToolCounts.get(key) ?? 0;
+    const results = rigKeys.map((key) => {
+      const toolCount = rigToolCounts.get(key) ?? 0;
       return { key, toolCount };
     });
 
@@ -153,9 +153,9 @@ export const pluginList = tool({
   },
 });
 
-export const pluginInstall = tool({
-  name: 'plugin-install',
-  description: 'Install a plugin into the guild',
+export const rigInstall = tool({
+  name: 'rig-install',
+  description: 'Install a rig into the guild',
   allowedContexts: ['cli'],
   params: {
     source: z.string().describe('Package name or git URL, e.g. "@shardworks/nexus-stdlib", "foo@1.0", or "git+https://..."'),
@@ -199,32 +199,32 @@ export const pluginInstall = tool({
       }
     }
 
-    const pluginKey = derivePluginKey(packageName);
+    const rigKey = deriveRigKey(packageName);
 
-    // 2. Check plugin dependencies (if nexus-plugin.json declares any)
+    // 2. Check rig dependencies (if nexus-rig.json declares any)
     const config = readGuildConfig(home);
-    const descriptor = readPluginDescriptor(home, packageName);
+    const descriptor = readRigDescriptor(home, packageName);
     if (descriptor) {
-      const installedPlugins = config.plugins ?? [];
-      const missing = checkPluginDependencies(descriptor, installedPlugins);
+      const installedRigs = config.plugins ?? [];
+      const missing = checkRigDependencies(descriptor, installedRigs);
       if (missing.length > 0) {
         throw new Error(
-          `Plugin "${pluginKey}" requires plugins that are not installed: ${missing.join(', ')}. ` +
-          `Install them first with: nsg plugin install <name>`,
+          `Rig "${rigKey}" requires rigs that are not installed: ${missing.join(', ')}. ` +
+          `Install them first with: nsg rig install <name>`,
         );
       }
     }
 
-    // 3. Discover tools from the package's exports
-    const toolNames = await discoverPluginTools(home, packageName);
+    // 3. Discover tools from the rig's exports
+    const toolNames = await discoverRigTools(home, packageName);
 
     // 4. Update guild.json
     const now = new Date().toISOString();
 
     // Add to plugins array
     if (!config.plugins) config.plugins = [];
-    if (!config.plugins.includes(pluginKey)) {
-      config.plugins.push(pluginKey);
+    if (!config.plugins.includes(rigKey)) {
+      config.plugins.push(rigKey);
     }
 
     // Register each tool
@@ -253,7 +253,7 @@ export const pluginInstall = tool({
     writeGuildConfig(home, config);
 
     const lines = [
-      `Installed plugin: ${pluginKey} (${packageName})`,
+      `Installed rig: ${rigKey} (${packageName})`,
       `Registered ${toolNames.length} tool${toolNames.length === 1 ? '' : 's'}: ${toolNames.join(', ')}`,
     ];
     if (roles && roles.length > 0) {
@@ -265,29 +265,29 @@ export const pluginInstall = tool({
   },
 });
 
-export const pluginRemove = tool({
-  name: 'plugin-remove',
-  description: 'Remove a plugin from the guild',
+export const rigRemove = tool({
+  name: 'rig-remove',
+  description: 'Remove a rig from the guild',
   allowedContexts: ['cli'],
   params: {
-    name: z.string().describe('Plugin key or package name to remove'),
+    name: z.string().describe('Rig key or package name to remove'),
   },
   handler: async (params, { home }) => {
     const config = readGuildConfig(home);
-    const targetKey = params.name.startsWith('@') ? derivePluginKey(params.name) : params.name;
+    const targetKey = params.name.startsWith('@') ? deriveRigKey(params.name) : params.name;
 
-    // Find the plugin in guild.json
+    // Find the rig in guild.json
     if (!config.plugins?.includes(targetKey)) {
-      throw new Error(`Plugin "${targetKey}" is not installed.`);
+      throw new Error(`Rig "${targetKey}" is not installed.`);
     }
 
-    // Find all tools owned by this plugin
+    // Find all tools owned by this rig
     const toolsToRemove: string[] = [];
     let packageName: string | null = null;
 
     for (const [toolName, entry] of Object.entries(config.tools)) {
       if (!entry.package) continue;
-      if (derivePluginKey(entry.package) === targetKey) {
+      if (deriveRigKey(entry.package) === targetKey) {
         toolsToRemove.push(toolName);
         packageName = entry.package;
       }
@@ -322,16 +322,16 @@ export const pluginRemove = tool({
       }
     }
 
-    return `Removed plugin: ${targetKey} (${toolsToRemove.length} tool${toolsToRemove.length === 1 ? '' : 's'} unregistered)`;
+    return `Removed rig: ${targetKey} (${toolsToRemove.length} tool${toolsToRemove.length === 1 ? '' : 's'} unregistered)`;
   },
 });
 
-export const pluginUpgrade = tool({
-  name: 'plugin-upgrade',
-  description: 'Upgrade a plugin to a newer version and run its migrations',
+export const rigUpgrade = tool({
+  name: 'rig-upgrade',
+  description: 'Upgrade a rig to a newer version and run its migrations',
   allowedContexts: ['cli'],
   params: {
-    name: z.string().describe('Plugin key or package name to upgrade'),
+    name: z.string().describe('Rig key or package name to upgrade'),
     version: z.string().optional().describe('Target version (default: latest)'),
   },
   handler: async () => {

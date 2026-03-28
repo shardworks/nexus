@@ -42,9 +42,9 @@ importers:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../core
-      '@shardworks/nexus-rig':
+      '@shardworks/nexus-mainspring':
         specifier: workspace:*
-        version: link:../rig
+        version: link:../mainspring
       '@shardworks/nexus-stdlib':
         specifier: workspace:*
         version: link:../stdlib
@@ -86,7 +86,7 @@ importers:
 
   packages/guild-starter-kit: {}
 
-  packages/rig:
+  packages/mainspring:
     dependencies:
       '@shardworks/nexus-core':
         specifier: workspace:*
