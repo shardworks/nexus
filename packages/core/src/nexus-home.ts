@@ -29,16 +29,6 @@ export function nexusDir(home: string): string {
   return path.join(home, '.nexus');
 }
 
-/** Path to the guild's Books SQLite database (Register, Ledger, Daybook, Clockworks). */
-export function booksPath(home: string): string {
-  return path.join(home, '.nexus', 'nexus.db');
-}
-
-/** @deprecated Use booksPath() instead. */
-export function ledgerPath(home: string): string {
-  return booksPath(home);
-}
-
 /** Path to the top-level worktrees directory (for writ worktrees). */
 export function worktreesPath(home: string): string {
   return path.join(home, '.nexus', 'worktrees');

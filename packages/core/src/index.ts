@@ -10,8 +10,20 @@ export const VERSION: string = _pkg.version;
 
 export {
   type Rig,
+  type BookSchema,
   isRig,
 } from './rig.ts';
+
+export {
+  type Book,
+  type ReadOnlyBook,
+  type BookQuery,
+  type ListOptions,
+} from './book.ts';
+
+export {
+  type RigContext,
+} from './rig-context.ts';
 
 export {
   type ToolChannel,
@@ -22,12 +34,11 @@ export {
   resolveToolFromExport,
   resolveAllToolsFromExport,
 } from './tool.ts';
+// Note: RigContext is also exported above from rig-context.ts (the canonical source).
 
 export {
   findGuildRoot,
   nexusDir,
-  booksPath,
-  ledgerPath,
   worktreesPath,
   workshopsPath,
   workshopBarePath,

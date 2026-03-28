@@ -14,8 +14,8 @@
  * is internal to the framework.
  */
 
+import path from 'node:path';
 import Database from 'better-sqlite3';
-import { booksPath } from '@shardworks/nexus-core';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -111,6 +111,19 @@ export class SqliteAdapter implements BooksDatabase {
       });
     }
   }
+}
+
+// ── Path helpers ───────────────────────────────────────────────────────
+
+/**
+ * Absolute path to the guild's Books SQLite database.
+ *
+ * Canonical definition lives here — this is an internal mainspring detail.
+ * Do not re-export from the core public barrel; consumers should go through
+ * the Books abstraction (RigContext.book()), not the raw path.
+ */
+export function booksPath(home: string): string {
+  return path.join(home, '.nexus', 'nexus.db');
 }
 
 // ── Factory ────────────────────────────────────────────────────────────

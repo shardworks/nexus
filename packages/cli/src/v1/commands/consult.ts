@@ -6,11 +6,21 @@
  *
  * Uses the unified session funnel in core for setup, metrics, and cleanup.
  */
+import path from 'node:path';
 import { createCommand } from 'commander';
 import Database from 'better-sqlite3';
-import { manifest, launchSession, ledgerPath } from '@shardworks/nexus-core';
+import { manifest, launchSession } from '@shardworks/nexus-core';
 import type { ResolvedWorkspace } from '@shardworks/nexus-core';
 import { resolveHome } from '../resolve-home.ts';
+
+/**
+ * @deprecated Direct DB path access — bypasses the Books abstraction.
+ * Replace with a proper anima query API once Books-based anima lookup exists
+ * (see RigContext.book() / the planned anima service layer).
+ */
+function _booksPath(home: string): string {
+  return path.join(home, '.nexus', 'nexus.db');
+}
 
 /**
  * Look up the name of the first active anima holding a given role.
@@ -19,7 +29,7 @@ import { resolveHome } from '../resolve-home.ts';
  * Throws if no active anima holds the role.
  */
 export function resolveAnimaByRole(home: string, role: string): string {
-  const db = new Database(ledgerPath(home));
+  const db = new Database(_booksPath(home));
   db.pragma('foreign_keys = ON');
   try {
     const row = db.prepare(`
