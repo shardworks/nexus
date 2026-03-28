@@ -30,4 +30,11 @@ export {
   type ListToolsOptions,
 } from './mainspring.ts';
 
+export {
+  type SqlRow,
+  type SqlResult,
+  type BooksDatabase,
+  openBooksDatabase,
+} from './db/sqlite-adapter.ts';
+
 export { builtinTools } from './tools/index.ts';

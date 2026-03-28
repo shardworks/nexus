@@ -17,6 +17,7 @@ import type { Rig, GuildConfig, ToolDefinition } from '@shardworks/nexus-core';
 import type { ToolChannel } from '@shardworks/nexus-core';
 import { builtinTools } from './tools/index.ts';
 import { readGuildPackageJson, resolveGuildPackageEntry } from './resolve-package.ts';
+import { openBooksDatabase, type BooksDatabase } from './db/sqlite-adapter.ts';
 
 // ── Rig key derivation ─────────────────────────────────────────────────
 
@@ -144,6 +145,18 @@ export interface Mainspring {
    * Searches all installed tools regardless of channel or role.
    */
   findTool(name: string): Promise<Tool | null>;
+
+  /**
+   * Get an open connection to the guild's Books database.
+   *
+   * Lazily initialized on first call; the same instance is returned on
+   * all subsequent calls for the lifetime of this Mainspring. Callers
+   * do not need to close the connection — it lives as long as the process.
+   *
+   * The returned `BooksDatabase` is what the framework injects into
+   * `ToolContext.booksDatabase` for every tool handler invocation.
+   */
+  getDatabase(): BooksDatabase;
 }
 
 // ── Implementation ─────────────────────────────────────────────────────
@@ -245,6 +258,16 @@ export function createMainspring(guildRoot: string): Mainspring {
     return rigsPromise;
   }
 
+  // Lazy database — opened on first call, reused for the process lifetime.
+  let db: BooksDatabase | null = null;
+
+  function getDatabase(): BooksDatabase {
+    if (!db) {
+      db = openBooksDatabase(guildRoot);
+    }
+    return db;
+  }
+
   const mainspring: Mainspring = {
     home: guildRoot,
 
@@ -304,6 +327,8 @@ export function createMainspring(guildRoot: string): Mainspring {
       const allTools = rigs.flatMap((r) => r.tools);
       return allTools.find((t) => t.name === name) ?? null;
     },
+
+    getDatabase,
   };
 
   return mainspring;
