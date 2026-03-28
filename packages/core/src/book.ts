@@ -14,9 +14,20 @@
  */
 
 /**
- * Query options for `Book.find()` and `Book.list()`.
+ * Pagination options for `Book.find()` and `Book.list()`.
+ *
+ * `offset` requires `limit` — passing offset alone is a type error.
+ * This mirrors SQLite's requirement and makes the constraint explicit at
+ * the call site rather than silently patching it in the adapter.
  */
-export interface BookQuery {
+export type Pagination =
+  | { limit: number; offset?: number }
+  | { limit?: never; offset?: never };
+
+/**
+ * Query options for `Book.find()`.
+ */
+export type BookQuery = {
   /**
    * Field equality filters, ANDed together.
    *
@@ -37,13 +48,13 @@ export interface BookQuery {
 
   /** Sort direction. Defaults to 'asc'. */
   order?: 'asc' | 'desc';
-
-  limit?: number;
-  offset?: number;
-}
+} & Pagination;
 
 /** Options for `Book.list()` — pagination and sorting without a where clause. */
-export type ListOptions = Pick<BookQuery, 'orderBy' | 'order' | 'limit' | 'offset'>;
+export type ListOptions = {
+  orderBy?: string;
+  order?: 'asc' | 'desc';
+} & Pagination;
 
 /**
  * A document collection — the primary Books API surface for rig authors.
@@ -53,7 +64,7 @@ export type ListOptions = Pick<BookQuery, 'orderBy' | 'order' | 'limit' | 'offse
  * and include them in the content passed to `put()`.
  *
  * Obtained via `RigContext.book<T>(name)` for own-rig books or
- * `RigContext.rigBook<T>(rigKey, name)` for cross-rig read access.
+ * `RigContext.rigBook<T>(rigId, name)` for cross-rig read access.
  */
 export interface Book<T extends { id: string }> {
   /**

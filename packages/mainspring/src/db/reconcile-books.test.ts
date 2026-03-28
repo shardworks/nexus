@@ -11,12 +11,12 @@ function makeDb(): SqliteAdapter {
 }
 
 function makeRig(
-  key: string,
+  id: string,
   books: Record<string, { indexes?: string[] }> = {},
 ): LoadedRig {
   return {
-    packageName: `@test/${key}`,
-    key,
+    packageName: `@test/${id}`,
+    id,
     version: '0.0.0',
     instance: { books },
     tools: [],
@@ -82,7 +82,7 @@ describe('reconcileBooks', () => {
     assert.ok(await tableExists(db, 'books_my_rig_items'));
   });
 
-  it('uses normalizeRigKey — slash becomes double underscore', async () => {
+  it('uses normalizeRigId — slash becomes double underscore', async () => {
     const db = makeDb();
     await reconcileBooks(db, [makeRig('acme/my-rig', { data: {} })]);
     assert.ok(await tableExists(db, 'books_acme__my_rig_data'));
@@ -101,7 +101,7 @@ describe('reconcileBooks', () => {
     const db = makeDb();
     const rig: LoadedRig = {
       packageName: '@test/empty',
-      key: 'empty',
+      id: 'empty',
       version: '0.0.0',
       instance: {},
       tools: [],

@@ -136,9 +136,6 @@ export class BookStore<T extends { id: string }> implements Book<T> {
     if (query.limit !== undefined) {
       sql += ' LIMIT ?';
       args.push(query.limit);
-    } else if (query.offset !== undefined) {
-      // SQLite requires LIMIT when OFFSET is present. Use -1 to mean "no limit".
-      sql += ' LIMIT -1';
     }
 
     if (query.offset !== undefined) {
@@ -194,28 +191,28 @@ const SAFE_BOOK_NAME_RE = /^[A-Za-z0-9_-]+$/;
  * All remaining characters outside `[a-z0-9_]` are replaced with `_`.
  * The result is safe as either a plain or double-quoted SQL identifier.
  *
- * @example normalizeRigKey('nexus-ledger') → 'nexus_ledger'
- * @example normalizeRigKey('acme/my-rig')  → 'acme__my_rig'
+ * @example normalizeRigId('nexus-ledger') → 'nexus_ledger'
+ * @example normalizeRigId('acme/my-rig')  → 'acme__my_rig'
  */
-function normalizeRigKey(rigKey: string): string {
-  return rigKey.replace(/\//g, '__').replace(/[^a-z0-9_]/g, '_');
+function normalizeRigId(rigId: string): string {
+  return rigId.replace(/\//g, '__').replace(/[^a-z0-9_]/g, '_');
 }
 
 /**
  * Derive the SQLite table name for a rig book.
  *
- * Format: books_<normalized-rig-key>_<book-name>
+ * Format: books_<normalized-rig-id>_<book-name>
  *
- * The rig key is normalized via `normalizeRigKey()` — slashes, hyphens, and
+ * The rig id is normalized via `normalizeRigId()` — slashes, hyphens, and
  * other non-identifier characters become underscores. Book names are validated
  * against SAFE_BOOK_NAME_RE and must already be safe identifiers.
  *
  * @example booksTableName('nexus-ledger', 'writs') → 'books_nexus_ledger_writs'
  * @example booksTableName('acme/my-rig', 'data')   → 'books_acme__my_rig_data'
  */
-export function booksTableName(rigKey: string, bookName: string): string {
+export function booksTableName(rigId: string, bookName: string): string {
   if (!SAFE_BOOK_NAME_RE.test(bookName)) {
     throw new Error(`BookStore: unsafe book name rejected: "${bookName}"`);
   }
-  return `books_${normalizeRigKey(rigKey)}_${bookName}`;
+  return `books_${normalizeRigId(rigId)}_${bookName}`;
 }

@@ -162,7 +162,7 @@ describe('BookStore', () => {
     });
 
     it('respects offset', async () => {
-      const results = await store.find({ orderBy: 'score', order: 'asc', offset: 1 });
+      const results = await store.find({ orderBy: 'score', order: 'asc', limit: 100, offset: 1 });
       assert.equal(results.length, 2);
       assert.deepEqual(results.map((w) => w.id), ['c', 'a']);
     });

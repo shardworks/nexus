@@ -19,6 +19,7 @@ export {
   type ReadOnlyBook,
   type BookQuery,
   type ListOptions,
+  type Pagination,
 } from './book.ts';
 
 export {
