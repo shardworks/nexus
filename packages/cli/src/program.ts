@@ -215,9 +215,10 @@ export async function main(): Promise<void> {
   // Always register rig built-in tools (version, status, rig, upgrade).
   // These are framework commands that work with or without a guild.
   const mainspringPackageName = '@shardworks/nexus-mainspring';
+  const mainspringRigId = deriveRigKey(mainspringPackageName);
   const builtins = builtinTools
     .filter((t) => !t.allowedContexts || t.allowedContexts.includes('cli'))
-    .map((t) => ({ ...t, rigName: mainspringPackageName }) as Tool);
+    .map((t) => ({ ...t, rigId: mainspringRigId }) as Tool);
 
   const builtinHome = home ?? process.cwd();
   registerAllTools(program, builtins, () => createMinimalRigContext(builtinHome));
@@ -227,9 +228,9 @@ export async function main(): Promise<void> {
     const ms = createMainspring(home);
     const tools = await ms.listTools({ channel: 'cli' });
     // Filter out mainspring built-ins (already registered above)
-    const rigTools = tools.filter((t) => t.rigName !== mainspringPackageName);
+    const rigTools = tools.filter((t) => t.rigId !== mainspringRigId);
     registerAllTools(program, rigTools, (tool) =>
-      ms.createRigContext(deriveRigKey(tool.rigName)),
+      ms.createRigContext(tool.rigId),
     );
   }
 

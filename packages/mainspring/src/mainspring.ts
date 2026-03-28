@@ -56,14 +56,14 @@ export function deriveRigKey(packageName: string): string {
  * (normalized to `{ tools }` shape if the package exported a bare tool
  * or array). `tools` is the flattened, annotated list used by CLI/MCP.
  *
- * `packageName` is the full npm package name; `key` is the derived
+ * `packageName` is the full npm package name; `id` is the derived
  * guild-facing identifier used in guild.json, CLI commands, and config.
  */
 export interface LoadedRig {
   /** Full npm package name, e.g. '@shardworks/nexus-ledger'. Source of truth. */
   readonly packageName: string;
-  /** Derived guild-facing key, e.g. 'nexus-ledger'. Used in guild.json and config. */
-  readonly key: string;
+  /** Derived guild-facing id, e.g. 'nexus-ledger'. Used in guild.json and config. */
+  readonly id: string;
   /** Version resolved from the installed package's package.json. */
   readonly version: string;
   /** The rig's module export — normalized to Rig shape. */
@@ -75,12 +75,12 @@ export interface LoadedRig {
 /**
  * A tool as seen by the mainspring runtime — a ToolDefinition with provenance.
  *
- * Extends ToolDefinition (the rig-author SDK type) with the name of
+ * Extends ToolDefinition (the rig-author SDK type) with the derived id of
  * the rig that owns it. Used by CLI and MCP surfaces to register tools.
  */
 export interface Tool extends ToolDefinition {
-  /** npm package name of the rig that owns this tool */
-  readonly rigName: string;
+  /** Derived rig id of the rig that owns this tool (e.g. 'nexus-ledger') */
+  readonly rigId: string;
 }
 
 /** Options for filtering the tool list. */
@@ -158,18 +158,18 @@ export interface Mainspring {
   getDatabase(): BooksDatabase;
 
   /**
-   * Create a `RigContext` scoped to the given rig key.
+   * Create a `RigContext` scoped to the given rig id.
    *
    * The returned context's `book()` method returns `Book<T>` handles scoped
-   * to `rigKey`. `rigBook()` returns read-only handles scoped to the
-   * specified foreign rig key.
+   * to `rigId`. `rigBook()` returns read-only handles scoped to the
+   * specified foreign rig id.
    *
    * Called by the CLI and MCP server when constructing the context to pass
    * to tool and engine handlers.
    *
-   * @param rigKey - The derived rig key (e.g. 'nexus-ledger', not the npm package name).
+   * @param rigId - The derived rig id (e.g. 'nexus-ledger', not the npm package name).
    */
-  createRigContext(rigKey: string): RigContext;
+  createRigContext(rigId: string): RigContext;
 }
 
 // ── Implementation ─────────────────────────────────────────────────────
@@ -177,10 +177,11 @@ export interface Mainspring {
 /** Build the mainspring's own LoadedRig entry from its built-in tools. */
 function mainspringRig(): LoadedRig {
   const mainspringPackageName = '@shardworks/nexus-mainspring';
-  const tools: Tool[] = builtinTools.map((t) => ({ ...t, rigName: mainspringPackageName }) as Tool);
+  const mainspringId = deriveRigKey(mainspringPackageName);
+  const tools: Tool[] = builtinTools.map((t) => ({ ...t, rigId: mainspringId }) as Tool);
   return {
     packageName: mainspringPackageName,
-    key: deriveRigKey(mainspringPackageName),
+    id: mainspringId,
     version: VERSION,
     instance: { tools: builtinTools as ToolDefinition[] },
     tools,
@@ -230,7 +231,7 @@ async function loadAllRigs(
     const allTools = rigEntry.instance.tools ?? [];
     const toolDef = allTools.find((t) => t.name === toolName);
     if (toolDef) {
-      rigEntry.tools.push({ ...toolDef, rigName: pkgName });
+      rigEntry.tools.push({ ...toolDef, rigId: deriveRigKey(pkgName) });
     }
   }
 
@@ -238,7 +239,7 @@ async function loadAllRigs(
   for (const [packageName, { version, instance, tools }] of rigMap.entries()) {
     rigs.push({
       packageName,
-      key: deriveRigKey(packageName),
+      id: deriveRigKey(packageName),
       version,
       instance,
       tools,
@@ -305,9 +306,9 @@ export function createMainspring(guildRoot: string): Mainspring {
 
     async findRig(name: string) {
       const rigs = await getRigs();
-      // Normalize the input to a key for comparison
-      const targetKey = name.startsWith('@') ? deriveRigKey(name) : name;
-      return rigs.find((r) => r.key === targetKey || r.packageName === name) ?? null;
+      // Normalize the input to an id for comparison
+      const targetId = name.startsWith('@') ? deriveRigKey(name) : name;
+      return rigs.find((r) => r.id === targetId || r.packageName === name) ?? null;
     },
 
     async listTools(options?: ListToolsOptions) {
@@ -347,21 +348,21 @@ export function createMainspring(guildRoot: string): Mainspring {
 
     getDatabase,
 
-    createRigContext(rigKey: string): RigContext {
+    createRigContext(rigId: string): RigContext {
       return {
         home: guildRoot,
 
         book<T extends { id: string }>(name: string): Book<T> {
-          return new BookStore<T>(getDatabase(), booksTableName(rigKey, name));
+          return new BookStore<T>(getDatabase(), booksTableName(rigId, name));
         },
 
         rigBook<T extends { id: string }>(
-          otherRigKey: string,
+          otherRigId: string,
           name: string,
         ): ReadOnlyBook<T> {
           const store = new BookStore<T>(
             getDatabase(),
-            booksTableName(otherRigKey, name),
+            booksTableName(otherRigId, name),
           );
           return {
             get: store.get.bind(store),

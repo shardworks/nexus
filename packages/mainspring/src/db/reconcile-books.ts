@@ -52,7 +52,7 @@ export async function reconcileBooks(
     const books = rig.instance.books ?? {};
 
     for (const [bookName, schema] of Object.entries(books)) {
-      const table = booksTableName(rig.key, bookName);
+      const table = booksTableName(rig.id, bookName);
 
       // Create the table if it doesn't exist.
       // `id` is extracted from content and stored as the primary key.

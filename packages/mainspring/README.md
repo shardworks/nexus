@@ -40,10 +40,10 @@ An installed rig package as seen by the mainspring — its identity, module inst
 ```typescript
 interface LoadedRig {
   packageName: string;  // full npm name, e.g. '@shardworks/nexus-stdlib'
-  key: string;          // guild-facing key, e.g. 'nexus-stdlib'
+  id: string;           // guild-facing id, e.g. 'nexus-stdlib'
   version: string;
   instance: Rig;        // the package's default export, normalized to Rig shape
-  tools: Tool[];        // tools with rigName provenance
+  tools: Tool[];        // tools with rigId provenance
 }
 ```
 
@@ -55,7 +55,7 @@ A `ToolDefinition` (from `nexus-core`) with provenance:
 
 ```typescript
 interface Tool extends ToolDefinition {
-  rigName: string;  // npm package name of the rig that owns this tool
+  rigId: string;  // derived rig id of the rig that owns this tool (e.g. 'nexus-ledger')
 }
 ```
 

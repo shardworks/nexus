@@ -42,7 +42,7 @@ export interface RigContext {
    *   const writs = ctx.rigBook<Writ>('nexus-ledger', 'writs');
    *   const active = await writs.find({ where: { status: 'active' } });
    */
-  rigBook<T extends { id: string }>(rigKey: string, name: string): ReadOnlyBook<T>;
+  rigBook<T extends { id: string }>(rigId: string, name: string): ReadOnlyBook<T>;
 
   // Cross-rig capabilities grow here as the runtime expands.
 }

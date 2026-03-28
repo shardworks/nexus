@@ -8,7 +8,7 @@ import type { Tool } from '@shardworks/nexus-mainspring';
 function fakeTool(name: string): Tool {
   return {
     name,
-    rigName: '@shardworks/test',
+    rigId: 'test',
     description: `test tool ${name}`,
     params: z.object({}),
     handler: async () => null,

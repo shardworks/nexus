@@ -20,17 +20,17 @@ export default tool({
   handler: async (_params, { home }) => {
     const config = readGuildConfig(home);
 
-    // Collect unique rig keys
-    const rigKeys = new Set<string>();
+    // Collect unique rig ids
+    const rigIds = new Set<string>();
     for (const entry of Object.values(config.tools)) {
-      if (entry.package) rigKeys.add(deriveRigKey(entry.package));
+      if (entry.package) rigIds.add(deriveRigKey(entry.package));
     }
 
     const result = {
       guild: config.name,
       nexus: VERSION,
       home,
-      rigs: Array.from(rigKeys).sort(),
+      rigs: Array.from(rigIds).sort(),
       roles: Object.keys(config.roles).sort(),
     };
 

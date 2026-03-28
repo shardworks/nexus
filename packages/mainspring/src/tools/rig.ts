@@ -124,9 +124,9 @@ export const rigList = tool({
   },
   handler: async (_params, { home }) => {
     const config = readGuildConfig(home);
-    const rigKeys = config.plugins ?? [];
+    const rigIds = config.plugins ?? [];
 
-    if (rigKeys.length === 0) {
+    if (rigIds.length === 0) {
       if (_params.json) return [];
       return 'No rigs installed.';
     }
@@ -135,19 +135,19 @@ export const rigList = tool({
     const rigToolCounts = new Map<string, number>();
     for (const entry of Object.values(config.tools)) {
       if (!entry.package) continue;
-      const key = deriveRigKey(entry.package);
-      rigToolCounts.set(key, (rigToolCounts.get(key) ?? 0) + 1);
+      const id = deriveRigKey(entry.package);
+      rigToolCounts.set(id, (rigToolCounts.get(id) ?? 0) + 1);
     }
 
-    const results = rigKeys.map((key) => {
-      const toolCount = rigToolCounts.get(key) ?? 0;
-      return { key, toolCount };
+    const results = rigIds.map((id) => {
+      const toolCount = rigToolCounts.get(id) ?? 0;
+      return { id, toolCount };
     });
 
     if (_params.json) return results;
 
     const lines = results.map(
-      (r) => `${r.key}  (${r.toolCount} tool${r.toolCount === 1 ? '' : 's'})`,
+      (r) => `${r.id}  (${r.toolCount} tool${r.toolCount === 1 ? '' : 's'})`,
     );
     return lines.join('\n');
   },
@@ -199,7 +199,7 @@ export const rigInstall = tool({
       }
     }
 
-    const rigKey = deriveRigKey(packageName);
+    const rigId = deriveRigKey(packageName);
 
     // 2. Check rig dependencies (if rig.json declares any)
     const config = readGuildConfig(home);
@@ -209,7 +209,7 @@ export const rigInstall = tool({
       const missing = checkRigDependencies(descriptor, installedRigs);
       if (missing.length > 0) {
         throw new Error(
-          `Rig "${rigKey}" requires rigs that are not installed: ${missing.join(', ')}. ` +
+          `Rig "${rigId}" requires rigs that are not installed: ${missing.join(', ')}. ` +
           `Install them first with: nsg rig install <name>`,
         );
       }
@@ -223,8 +223,8 @@ export const rigInstall = tool({
 
     // Add to plugins array
     if (!config.plugins) config.plugins = [];
-    if (!config.plugins.includes(rigKey)) {
-      config.plugins.push(rigKey);
+    if (!config.plugins.includes(rigId)) {
+      config.plugins.push(rigId);
     }
 
     // Register each tool
@@ -253,7 +253,7 @@ export const rigInstall = tool({
     writeGuildConfig(home, config);
 
     const lines = [
-      `Installed rig: ${rigKey} (${packageName})`,
+      `Installed rig: ${rigId} (${packageName})`,
       `Registered ${toolNames.length} tool${toolNames.length === 1 ? '' : 's'}: ${toolNames.join(', ')}`,
     ];
     if (roles && roles.length > 0) {
