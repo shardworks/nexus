@@ -7,11 +7,6 @@
  * Named exports: the TypeScript API surface for framework-internal callers
  * (engines, CLI commands, MCP server startup). These functions accept
  * `home: string` so they can be called without a RigContext.
- *
- * Migration note (Option A): Existing guilds retain their data in the legacy
- * SQL tables (sessions, conversations, conversation_participants). New guilds
- * use the Books tables exclusively. Legacy tables are not dropped here —
- * they can be removed in a future migration once all guilds have migrated.
  */
 
 import type { Rig, ToolDefinition } from '@shardworks/nexus-core';

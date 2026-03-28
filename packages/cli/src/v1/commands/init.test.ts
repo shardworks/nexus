@@ -286,15 +286,15 @@ describe('full init sequence', () => {
       assert.ok(names.includes('anima_compositions'), 'anima_compositions table missing');
       assert.ok(!names.includes('commissions'), 'commissions table should be dropped');
       assert.ok(!names.includes('commission_assignments'), 'commission_assignments table should be dropped');
-      assert.ok(!names.includes('commission_sessions'), 'commission_sessions table should be dropped');
+      assert.ok(!names.includes('commission_sessions'), 'commission_sessions table should not exist');
+      assert.ok(!names.includes('sessions'), 'sessions table should not exist (moved to nexus-sessions Books)');
+      assert.ok(!names.includes('conversations'), 'conversations table should not exist (moved to nexus-sessions Books)');
+      assert.ok(!names.includes('conversation_participants'), 'conversation_participants table should not exist (moved to nexus-sessions Books)');
       assert.ok(names.includes('roster'), 'roster table missing');
       assert.ok(names.includes('audit_log'), 'audit_log table missing');
       assert.ok(names.includes('events'), 'events table missing');
       assert.ok(names.includes('event_dispatches'), 'event_dispatches table missing');
-      assert.ok(names.includes('sessions'), 'sessions table missing');
       assert.ok(names.includes('writs'), 'writs table missing');
-      assert.ok(names.includes('conversations'), 'conversations table missing');
-      assert.ok(names.includes('conversation_participants'), 'conversation_participants table missing');
     } finally {
       db.close();
     }
@@ -309,15 +309,13 @@ describe('full init sequence', () => {
     const db = new Database(path.join(home, '.nexus', 'nexus.db'));
     try {
       const rows = db.prepare('SELECT * FROM _migrations ORDER BY sequence').all() as { sequence: number; filename: string }[];
-      assert.equal(rows.length, 4);
+      assert.equal(rows.length, 3);
       assert.equal(rows[0]!.sequence, 1);
       assert.equal(rows[0]!.filename, '001-schema.sql');
       assert.equal(rows[1]!.sequence, 2);
       assert.equal(rows[1]!.filename, '002-writs.sql');
-      assert.equal(rows[2]!.sequence, 3);
-      assert.equal(rows[2]!.filename, '003-conversations.sql');
-      assert.equal(rows[3]!.sequence, 4);
-      assert.equal(rows[3]!.filename, '004-remove-commissions.sql');
+      assert.equal(rows[2]!.sequence, 4);
+      assert.equal(rows[2]!.filename, '004-remove-commissions.sql');
     } finally {
       db.close();
     }

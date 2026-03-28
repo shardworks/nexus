@@ -134,8 +134,8 @@ export function createConversation(
     for (const p of options.participants) {
       const participantId = generateId('cpart');
 
-      // Look up animaId for anima participants from the legacy animas table.
-      // TODO: once nexus-roster is riggified, look up from the participants book.
+      // Look up animaId for anima participants from the animas table.
+      // TODO: once nexus-roster is riggified, look up from the roster book.
       let animaId: string | null = null;
       if (p.kind === 'anima') {
         const row = db.prepare(

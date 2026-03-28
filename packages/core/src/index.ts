@@ -215,15 +215,16 @@ export {
 
 // Session provider registry — kept in core to avoid circular dependency with
 // clock-daemon.ts (also in core), which registers the provider at startup.
-// `launchSession` and all other session/conversation functions have moved to
+// `launchSession` and all other session/conversation functions live in
 // @shardworks/nexus-sessions. Import from there for new code.
 export {
+  type SessionChunk,
   type SessionProvider,
   type SessionProviderLaunchOptions,
   type SessionProviderResult,
   registerSessionProvider,
   getSessionProvider,
-} from './legacy/1/session.ts';
+} from './session-provider.ts';
 
 export {
   type UpgradePlan,

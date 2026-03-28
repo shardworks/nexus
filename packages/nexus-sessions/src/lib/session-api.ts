@@ -12,14 +12,13 @@
  * and avoids the overhead of creating a full RigContext for each call.
  *
  * Provider registry: `registerSessionProvider` and `getSessionProvider` live in
- * `@shardworks/nexus-core` (legacy/1/session.ts) to avoid a circular dependency
- * with `clock-daemon.ts` in core which also registers the provider. This module
- * re-exports them so callers can import from either package.
+ * `core/src/session-provider.ts` to avoid a circular dependency — `clock-daemon.ts`
+ * (also in core) imports them at startup. This module re-exports them so callers
+ * can import from either package.
  *
- * Event signalling: `signalEvent` is imported from `@shardworks/nexus-core`,
- * which re-exports it from the clockworks legacy module. Once nexus-clockworks
- * is committed and widely available, this should be imported from
- * `@shardworks/nexus-clockworks` directly.
+ * Event signalling: `signalEvent` is imported from `@shardworks/nexus-core`.
+ * Once nexus-clockworks is committed and widely available, this should be imported
+ * from `@shardworks/nexus-clockworks` directly.
  */
 
 import crypto from 'node:crypto';

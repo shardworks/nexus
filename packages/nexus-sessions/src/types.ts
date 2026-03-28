@@ -1,73 +1,53 @@
 /**
  * Document types for the nexus-sessions rig.
  *
- * These are the TypeScript shapes stored in the Books (SQLite JSON documents).
+ * These are the TypeScript shapes stored in Books (SQLite JSON documents).
  * All types satisfy the Books requirement that `id: string` is a top-level field.
  *
- * SQL → TypeScript conventions:
+ * Conventions:
  *   snake_case → camelCase
- *   TEXT NOT NULL DEFAULT (datetime('now')) → string (ISO-8601)
- *   TEXT nullable → string | null
- *   INTEGER nullable → number | null
- *   REAL nullable → number | null
- *   TEXT (JSON-serialized array) → string[] (deserialized on read, serialized on write)
+ *   nullable string → string | null
+ *   nullable number → number | null
+ *   string arrays → string[] (stored as JSON array in the content blob)
  *
- * ─── Pre-flight analysis ──────────────────────────────────────────────────────
+ * ─── Schema summary ───────────────────────────────────────────────────────────
  *
- * Tables owned by this subsystem:
+ * Books owned by this rig:
  *
- * sessions (001-schema.sql + ALTER in 002-writs.sql + ALTER in 003-conversations.sql)
- *   - id, anima_id, provider, model, trigger, workshop, workspace_kind,
- *     curriculum_name, curriculum_version, temperament_name, temperament_version,
- *     roles (JSON text), started_at, ended_at, exit_code, input_tokens,
- *     output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms,
- *     provider_session_id, record_path, writ_id, conversation_id, turn_number
+ * sessions (6 indexes: animaId, writId, conversationId, workshop, trigger, startedAt)
+ *   - id, animaId, provider, trigger, workshop, workspaceKind,
+ *     curriculumName, curriculumVersion, temperamentName, temperamentVersion,
+ *     roles, startedAt, endedAt, exitCode, inputTokens, outputTokens,
+ *     cacheReadTokens, cacheWriteTokens, costUsd, durationMs,
+ *     providerSessionId, recordPath, writId, conversationId, turnNumber
  *
- * conversations (003-conversations.sql)
- *   - id, status, kind, topic, turn_limit, created_at, ended_at, event_id
+ * conversations (3 indexes: status, kind, createdAt)
+ *   - id, status, kind, topic, turnLimit, createdAt, endedAt, eventId
  *
- * conversation_participants (003-conversations.sql)
- *   - id, conversation_id, kind, name, anima_id, claude_session_id
+ * participants (2 indexes: conversationId, animaId)
+ *   - id, conversationId, kind, name, animaId, claudeSessionId
  *
- * Denormalization strategy:
- *
- * sessions → flat table, no joins needed (anima_id is a plain string ref)
- *   Strategy: none (already flat). Stored as SessionDoc.
- *
- * conversations → flat table, no joins within this subsystem
- *   Strategy: none. Stored as ConversationDoc.
- *
- * conversation_participants → one-to-many with conversations; queried by
- *   conversationId independently; updated individually (claude_session_id).
- *   Strategy B — separate `participants` book with conversationId indexed.
- *
- * Cross-subsystem references (string-only, no FK enforcement in Books):
- *   sessions.anima_id → animas (nexus-roster, future)
- *   sessions.writ_id → writs (nexus-writs, future)
- *   participants.anima_id → animas (nexus-roster, future)
- *
- * Query patterns:
- *   sessions: filter by animaId, writId, conversationId, workshop, trigger, status
- *     (active = no endedAt, completed = has endedAt), order by startedAt desc
- *   conversations: filter by status, kind, order by createdAt desc
- *   participants: filter by conversationId, animaId
+ * Cross-subsystem references (string IDs, no FK enforcement in Books):
+ *   sessions.animaId  → animas (nexus-roster, not yet riggified)
+ *   sessions.writId   → writs (nexus-writs, not yet riggified)
+ *   participants.animaId → animas (nexus-roster, not yet riggified)
  *
  * Events signalled (via signalEvent from nexus-core):
- *   session.started — when a session row is inserted
- *   session.ended   — when a session row is updated at end
- *   session.record-failed — when session row write fails
+ *   session.started       — when a session doc is first inserted
+ *   session.ended         — when a session doc is updated at completion
+ *   session.record-failed — when session doc write fails
  *
- * Framework dependencies:
- *   launchSession()           — called by summon engine, consult CLI, convene CLI
- *   registerSessionProvider() — called at startup by mcp-server.ts, clock-daemon.ts
- *   getSessionProvider()      — called by summon.ts engine
- *   resolveWorkspace()        — called by summon.ts engine
- *   countSessionsForWrit()    — called by summon.ts engine (circuit breaker)
- *   createConversation()      — called by convene tool, convene CLI
- *   takeTurn()                — called by convene tool, convene CLI
- *   nextParticipant()         — called by convene tool, convene CLI
- *   formatConveneMessage()    — called by convene tool, convene CLI
- *   showConversation()        — called by convene tool, convene CLI
+ * Framework callers:
+ *   launchSession()           — summon engine, consult CLI, convene CLI
+ *   registerSessionProvider() — mcp-server.ts, clock-daemon.ts (startup)
+ *   getSessionProvider()      — summon engine
+ *   resolveWorkspace()        — summon engine
+ *   countSessionsForWrit()    — summon engine (circuit breaker)
+ *   createConversation()      — convene tool, convene CLI
+ *   takeTurn()                — convene tool, convene CLI
+ *   nextParticipant()         — convene tool, convene CLI
+ *   formatConveneMessage()    — convene tool, convene CLI
+ *   showConversation()        — convene tool, convene CLI
  */
 
 // ── Session document ───────────────────────────────────────────────────────
@@ -77,9 +57,6 @@
  *
  * Stored in the `sessions` book. Represents one invocation of an anima
  * through the session funnel.
- *
- * Maps from legacy SQL tables: `sessions` (core), with columns added by
- * migrations 002-writs.sql and 003-conversations.sql.
  */
 export interface SessionDoc {
   /** Prefixed ID, e.g. "ses-a3f7b2c1". */
@@ -142,8 +119,6 @@ export interface SessionDoc {
  * Stored in the `conversations` book. Groups multiple sessions (turns) into
  * a single logical interaction. Kind is either "consult" (human + anima) or
  * "convene" (anima + anima).
- *
- * Maps from legacy SQL table: `conversations` (003-conversations.sql).
  */
 export interface ConversationDoc {
   /** Prefixed ID, e.g. "conv-a3f7b2c1". */
@@ -172,8 +147,6 @@ export interface ConversationDoc {
  * Stored in the `participants` book. One document per participant per
  * conversation. For anima participants, `animaId` and `claudeSessionId`
  * track the anima identity and the running claude session for --resume.
- *
- * Maps from legacy SQL table: `conversation_participants` (003-conversations.sql).
  */
 export interface ParticipantDoc {
   /** Prefixed ID, e.g. "cpart-a3f7b2c1". */

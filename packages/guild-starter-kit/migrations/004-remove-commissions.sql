@@ -19,6 +19,5 @@ CREATE INDEX idx_writs_workshop ON writs(workshop);
 -- Drop commission tables and linkage
 -- ════════════════════════════════════════════════════════════════════════
 
-DROP TABLE IF EXISTS commission_sessions;
 DROP TABLE IF EXISTS commission_assignments;
 DROP TABLE IF EXISTS commissions;
