@@ -15,8 +15,9 @@
 import path from 'node:path';
 import { Command } from 'commander';
 import { z } from 'zod';
-import { findGuildRoot, createMainspring, builtinTools } from '@shardworks/nexus-mainspring';
-import type { Tool } from '@shardworks/nexus-mainspring';
+import { findGuildRoot, createMainspring, builtinTools, deriveRigKey } from '@shardworks/nexus-mainspring';
+import type { Tool, Mainspring } from '@shardworks/nexus-mainspring';
+import type { RigContext } from '@shardworks/nexus-core';
 
 type ZodShape = Record<string, z.ZodTypeAny>;
 
@@ -55,7 +56,7 @@ export function isBooleanSchema(schema: z.ZodTypeAny): boolean {
 function buildToolCommand(
   commandName: string,
   toolDef: Tool,
-  home: string,
+  ctx: RigContext,
 ): Command {
   const cmd = new Command(commandName).description(toolDef.description);
 
@@ -77,7 +78,7 @@ function buildToolCommand(
   cmd.action(async (opts: Record<string, string | undefined>) => {
     try {
       const validated = toolDef.params.parse(opts);
-      const result = await toolDef.handler(validated, { home });
+      const result = await toolDef.handler(validated, ctx);
 
       const output =
         typeof result === 'string' ? result : JSON.stringify(result, null, 2);
@@ -90,6 +91,24 @@ function buildToolCommand(
   });
 
   return cmd;
+}
+
+/**
+ * Create a minimal RigContext for built-in tools that run without a full guild.
+ *
+ * Built-in tools (version, status, rig-*) don't use book access. If they
+ * ever try, an informative error is thrown rather than a cryptic failure.
+ */
+function createMinimalRigContext(home: string): RigContext {
+  return {
+    home,
+    book() {
+      throw new Error('book() is not available outside a guild context.');
+    },
+    rigBook() {
+      throw new Error('rigBook() is not available outside a guild context.');
+    },
+  };
 }
 
 /**
@@ -129,17 +148,18 @@ export function findGroupPrefixes(tools: Tool[]): Set<string> {
 function registerAllTools(
   program: Command,
   tools: Tool[],
-  home: string,
+  ctxFactory: (tool: Tool) => RigContext,
 ): void {
   const groupPrefixes = findGroupPrefixes(tools);
   const groups = new Map<string, Command>();
 
   for (const toolDef of tools) {
+    const ctx = ctxFactory(toolDef);
     const idx = toolDef.name.indexOf('-');
 
     // No hyphen, or prefix doesn't qualify as a group → flat command
     if (idx === -1 || !groupPrefixes.has(toolDef.name.slice(0, idx))) {
-      program.addCommand(buildToolCommand(toolDef.name, toolDef, home));
+      program.addCommand(buildToolCommand(toolDef.name, toolDef, ctx));
       continue;
     }
 
@@ -154,7 +174,7 @@ function registerAllTools(
       groups.set(groupName, group);
     }
 
-    group.addCommand(buildToolCommand(subName, toolDef, home));
+    group.addCommand(buildToolCommand(subName, toolDef, ctx));
   }
 }
 
@@ -192,13 +212,15 @@ export async function main(): Promise<void> {
     // Not in a guild
   }
 
-  // Always register rig built-in tools (version, status, plugin, upgrade).
+  // Always register rig built-in tools (version, status, rig, upgrade).
   // These are framework commands that work with or without a guild.
   const mainspringPackageName = '@shardworks/nexus-mainspring';
   const builtins = builtinTools
     .filter((t) => !t.allowedContexts || t.allowedContexts.includes('cli'))
     .map((t) => ({ ...t, rigName: mainspringPackageName }) as Tool);
-  registerAllTools(program, builtins, home ?? process.cwd());
+
+  const builtinHome = home ?? process.cwd();
+  registerAllTools(program, builtins, () => createMinimalRigContext(builtinHome));
 
   // Load guild rig tools when inside a guild
   if (home) {
@@ -206,7 +228,9 @@ export async function main(): Promise<void> {
     const tools = await ms.listTools({ channel: 'cli' });
     // Filter out mainspring built-ins (already registered above)
     const rigTools = tools.filter((t) => t.rigName !== mainspringPackageName);
-    registerAllTools(program, rigTools, home);
+    registerAllTools(program, rigTools, (tool) =>
+      ms.createRigContext(deriveRigKey(tool.rigName)),
+    );
   }
 
   program.parse(process.argv);

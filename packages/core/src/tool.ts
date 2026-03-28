@@ -35,20 +35,11 @@
  */
 import { z } from 'zod';
 import { isRig } from './rig.ts';
+import type { RigContext } from './rig-context.ts';
 
 // Zod shape type — a record of string keys to Zod schemas.
 // Using a local alias keeps our public API stable across Zod versions.
 type ZodShape = Record<string, z.ZodType>;
-
-/**
- * Framework-provided context injected into every tool handler call.
- * The tool author doesn't construct this — the framework (MCP engine, CLI,
- * or calling engine) provides it.
- */
-export interface ToolContext {
-  /** Absolute path to the guild root. */
-  home: string;
-}
 
 /**
  * The deployment channels a tool is available in.
@@ -87,7 +78,7 @@ export interface ToolDefinition<TShape extends ZodShape = ZodShape> {
   readonly params: z.ZodObject<TShape>;
   readonly handler: (
     params: z.infer<z.ZodObject<TShape>>,
-    context: ToolContext,
+    context: RigContext,
   ) => unknown | Promise<unknown>;
 }
 
@@ -98,7 +89,7 @@ type ToolInput<TShape extends ZodShape> = {
   params: TShape;
   handler: (
     params: z.infer<z.ZodObject<TShape>>,
-    context: ToolContext,
+    context: RigContext,
   ) => unknown | Promise<unknown>;
   /** Channels where this tool is available. Defaults to all channels if unspecified. */
   allowedContexts?: ToolChannel[];

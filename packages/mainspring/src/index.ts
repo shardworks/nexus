@@ -37,4 +37,7 @@ export {
   openBooksDatabase,
 } from './db/sqlite-adapter.ts';
 
+export { BookStore, booksTableName } from './db/book-store.ts';
+export { reconcileBooks } from './db/reconcile-books.ts';
+
 export { builtinTools } from './tools/index.ts';

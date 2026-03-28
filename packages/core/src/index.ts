@@ -27,14 +27,15 @@ export {
 
 export {
   type ToolChannel,
-  type ToolContext,
   type ToolDefinition,
   tool,
   isToolDefinition,
   resolveToolFromExport,
   resolveAllToolsFromExport,
 } from './tool.ts';
-// Note: RigContext is also exported above from rig-context.ts (the canonical source).
+
+// ToolContext is a backward-compat alias for RigContext — lives in legacy/1.
+export { type ToolContext } from './legacy/1/tool.ts';
 
 export {
   findGuildRoot,

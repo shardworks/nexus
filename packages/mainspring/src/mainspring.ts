@@ -13,11 +13,13 @@
  */
 
 import { readGuildConfig, resolveAllToolsFromExport, isRig, VERSION } from '@shardworks/nexus-core';
-import type { Rig, GuildConfig, ToolDefinition } from '@shardworks/nexus-core';
+import type { Rig, GuildConfig, ToolDefinition, RigContext, ReadOnlyBook, Book } from '@shardworks/nexus-core';
 import type { ToolChannel } from '@shardworks/nexus-core';
 import { builtinTools } from './tools/index.ts';
 import { readGuildPackageJson, resolveGuildPackageEntry } from './resolve-package.ts';
 import { openBooksDatabase, type BooksDatabase } from './db/sqlite-adapter.ts';
+import { BookStore, booksTableName } from './db/book-store.ts';
+import { reconcileBooks } from './db/reconcile-books.ts';
 
 // ── Rig key derivation ─────────────────────────────────────────────────
 
@@ -152,11 +154,22 @@ export interface Mainspring {
    * Lazily initialized on first call; the same instance is returned on
    * all subsequent calls for the lifetime of this Mainspring. Callers
    * do not need to close the connection — it lives as long as the process.
-   *
-   * The returned `BooksDatabase` is what the framework injects into
-   * `ToolContext.booksDatabase` for every tool handler invocation.
    */
   getDatabase(): BooksDatabase;
+
+  /**
+   * Create a `RigContext` scoped to the given rig key.
+   *
+   * The returned context's `book()` method returns `Book<T>` handles scoped
+   * to `rigKey`. `rigBook()` returns read-only handles scoped to the
+   * specified foreign rig key.
+   *
+   * Called by the CLI and MCP server when constructing the context to pass
+   * to tool and engine handlers.
+   *
+   * @param rigKey - The derived rig key (e.g. 'nexus-ledger', not the npm package name).
+   */
+  createRigContext(rigKey: string): RigContext;
 }
 
 // ── Implementation ─────────────────────────────────────────────────────
@@ -249,11 +262,15 @@ export function createMainspring(guildRoot: string): Mainspring {
 
   // Lazy load cache — a single Promise shared across all callers.
   // Set on first access; all concurrent callers await the same Promise.
+  // Reconciles book schemas after rigs are loaded.
   let rigsPromise: Promise<LoadedRig[]> | null = null;
 
   function getRigs(): Promise<LoadedRig[]> {
     if (!rigsPromise) {
-      rigsPromise = loadAllRigs(guildRoot, config);
+      rigsPromise = loadAllRigs(guildRoot, config).then(async (rigs) => {
+        await reconcileBooks(getDatabase(), rigs);
+        return rigs;
+      });
     }
     return rigsPromise;
   }
@@ -329,6 +346,32 @@ export function createMainspring(guildRoot: string): Mainspring {
     },
 
     getDatabase,
+
+    createRigContext(rigKey: string): RigContext {
+      return {
+        home: guildRoot,
+
+        book<T extends { id: string }>(name: string): Book<T> {
+          return new BookStore<T>(getDatabase(), booksTableName(rigKey, name));
+        },
+
+        rigBook<T extends { id: string }>(
+          otherRigKey: string,
+          name: string,
+        ): ReadOnlyBook<T> {
+          const store = new BookStore<T>(
+            getDatabase(),
+            booksTableName(otherRigKey, name),
+          );
+          return {
+            get: store.get.bind(store),
+            find: store.find.bind(store),
+            list: store.list.bind(store),
+            count: store.count.bind(store),
+          };
+        },
+      };
+    },
   };
 
   return mainspring;

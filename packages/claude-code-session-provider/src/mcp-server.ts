@@ -29,7 +29,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { VERSION, resolveToolFromExport, registerSessionProvider } from '@shardworks/nexus-core';
-import type { ToolDefinition, ToolContext } from '@shardworks/nexus-core';
+import type { ToolDefinition, RigContext } from '@shardworks/nexus-core';
 import { claudeCodeProvider } from './index.ts';
 
 /** A single tool to load into the MCP server. */
@@ -98,7 +98,19 @@ export async function createMcpServer(config: McpServerConfig): Promise<McpServe
     version: VERSION,
   });
 
-  const context: ToolContext = { home: config.home };
+  // Minimal RigContext — the MCP server predates the Books API and does not
+  // have a Mainspring wired in. book() / rigBook() are stubs that throw;
+  // MCP tools that need book access will require a Mainspring-aware refactor
+  // of the MCP server config and launch path.
+  const context: RigContext = {
+    home: config.home,
+    book() {
+      throw new Error('book() is not yet supported in the MCP server context.');
+    },
+    rigBook() {
+      throw new Error('rigBook() is not yet supported in the MCP server context.');
+    },
+  };
 
   for (const spec of config.tools) {
     const def = await loadTool(spec);
