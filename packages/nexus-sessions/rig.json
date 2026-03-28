@@ -1,0 +1,6 @@
+{
+  "description": "Nexus Sessions — session funnel, conversation tracking, and workspace lifecycle management",
+  "dependencies": [
+    { "rig": "nexus-clockworks" }
+  ]
+}

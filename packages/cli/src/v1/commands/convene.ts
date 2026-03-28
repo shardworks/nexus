@@ -14,7 +14,7 @@ import {
   nextParticipant,
   formatConveneMessage,
   showConversation,
-} from '@shardworks/nexus-core';
+} from '@shardworks/nexus-sessions';
 import { resolveHome } from '../resolve-home.ts';
 
 export function makeConveneCommand() {

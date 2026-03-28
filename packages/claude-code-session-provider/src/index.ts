@@ -20,7 +20,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ResolvedTool, ManifestResult } from '@shardworks/nexus-core';
 import type { McpServerConfig } from './mcp-server.ts';
-import type { SessionProvider, SessionProviderLaunchOptions, SessionProviderResult, SessionChunk } from '@shardworks/nexus-core';
+import type { SessionProvider, SessionProviderLaunchOptions, SessionProviderResult } from '@shardworks/nexus-core';
+import type { SessionChunk } from '@shardworks/nexus-sessions';
 
 // ── MCP Config Generation ──────────────────────────────────────────────
 

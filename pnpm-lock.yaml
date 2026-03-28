@@ -23,6 +23,9 @@ importers:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../core
+      '@shardworks/nexus-sessions':
+        specifier: workspace:*
+        version: link:../nexus-sessions
       zod:
         specifier: 4.3.6
         version: 4.3.6
@@ -45,6 +48,9 @@ importers:
       '@shardworks/nexus-mainspring':
         specifier: workspace:*
         version: link:../mainspring
+      '@shardworks/nexus-sessions':
+        specifier: workspace:*
+        version: link:../nexus-sessions
       '@shardworks/nexus-stdlib':
         specifier: workspace:*
         version: link:../stdlib
@@ -105,11 +111,33 @@ importers:
         specifier: 25.5.0
         version: 25.5.0
 
+  packages/nexus-sessions:
+    dependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../core
+      better-sqlite3:
+        specifier: 12.8.0
+        version: 12.8.0
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: 7.6.13
+        version: 7.6.13
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
   packages/stdlib:
     dependencies:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../core
+      '@shardworks/nexus-sessions':
+        specifier: workspace:*
+        version: link:../nexus-sessions
       zod:
         specifier: ^4.0.0
         version: 4.3.6

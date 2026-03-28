@@ -7,6 +7,12 @@
  *
  * Session providers (e.g. claude-code, claude-api) implement the
  * `SessionProvider` interface and are registered at startup.
+ *
+ * @deprecated Most functions in this module have been superseded by
+ * `@shardworks/nexus-sessions`. Only `registerSessionProvider` and
+ * `getSessionProvider` remain exported from core (to avoid a circular
+ * dependency with clock-daemon.ts). All other callers should import
+ * from `@shardworks/nexus-sessions` instead.
  */
 
 import crypto from 'node:crypto';

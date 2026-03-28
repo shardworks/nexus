@@ -1,11 +1,20 @@
+/**
+ * conversation-list tool — list conversations with optional filters.
+ *
+ * Replaces the stdlib conversation-list tool that called listConversations()
+ * from @shardworks/nexus-core. The rig now owns this operation.
+ */
+
 import { tool } from '@shardworks/nexus-core';
-import { listConversations } from '@shardworks/nexus-sessions';
 import { z } from 'zod';
+import { listConversations } from '../lib/conversation-api.js';
 
 export default tool({
   name: 'conversation-list',
   description: 'List conversations (multi-turn interactions with animas)',
-  instructions: 'Returns conversation summaries including participants, turn count, and cost. Use for reviewing active or past consultations and convene sessions.',
+  instructions:
+    'Returns conversation summaries including participants, turn count, and cost. ' +
+    'Use for reviewing active or past consultations and convene sessions.',
   params: {
     status: z.enum(['active', 'concluded', 'abandoned']).optional().describe('Filter by status'),
     kind: z.enum(['consult', 'convene']).optional().describe('Filter by kind'),

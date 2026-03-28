@@ -9,8 +9,9 @@
 import path from 'node:path';
 import { createCommand } from 'commander';
 import Database from 'better-sqlite3';
-import { manifest, launchSession } from '@shardworks/nexus-core';
-import type { ResolvedWorkspace } from '@shardworks/nexus-core';
+import { manifest } from '@shardworks/nexus-core';
+import { launchSession } from '@shardworks/nexus-sessions';
+import type { ResolvedWorkspace } from '@shardworks/nexus-sessions';
 import { resolveHome } from '../resolve-home.ts';
 
 /**

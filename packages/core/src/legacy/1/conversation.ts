@@ -1,4 +1,8 @@
 /**
+ * @deprecated Superseded by `@shardworks/nexus-sessions`. All functions in
+ * this module are now exported from `nexus-sessions`. This file is retained
+ * for data continuity (legacy SQL tables); callers should migrate to the rig.
+ *
  * Conversation — multi-turn interaction with animas.
  *
  * Conversations group multiple sessions (turns) into a single logical

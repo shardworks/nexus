@@ -1,4 +1,5 @@
-import { tool, createConversation, takeTurn, nextParticipant, formatConveneMessage, showConversation } from '@shardworks/nexus-core';
+import { tool } from '@shardworks/nexus-core';
+import { createConversation, takeTurn, nextParticipant, formatConveneMessage, showConversation } from '@shardworks/nexus-sessions';
 import { z } from 'zod';
 
 export default tool({

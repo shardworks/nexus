@@ -1,4 +1,5 @@
-import { tool, showSession } from '@shardworks/nexus-core';
+import { tool } from '@shardworks/nexus-core';
+import { showSession } from '@shardworks/nexus-sessions';
 import { z } from 'zod';
 
 export default tool({

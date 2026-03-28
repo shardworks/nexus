@@ -1,13 +1,13 @@
 {
-  "name": "@shardworks/claude-code-session-provider",
+  "name": "@shardworks/nexus-sessions",
   "version": "0.0.0",
   "license": "ISC",
   "repository": {
     "type": "git",
     "url": "https://github.com/shardworks/nexus",
-    "directory": "packages/claude-code-session-provider"
+    "directory": "packages/nexus-sessions"
   },
-  "description": "Claude Code session provider — launches claude sessions with MCP tool serving",
+  "description": "Nexus Mk 2.1 — Sessions rig (session funnel, conversation tracking, workspace lifecycle)",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
@@ -18,12 +18,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.27.1",
     "@shardworks/nexus-core": "workspace:*",
-    "@shardworks/nexus-sessions": "workspace:*",
+    "better-sqlite3": "12.8.0",
     "zod": "4.3.6"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
     "@types/node": "25.5.0"
   },
   "files": [
