@@ -39,7 +39,12 @@ export interface SqlResult {
   columns: string[];
   /** Number of rows affected by an INSERT/UPDATE/DELETE. Zero for SELECT. */
   rowsAffected: number;
-  /** Last inserted row ID for INSERT statements. `undefined` for all other statement types. */
+  /**
+   * Last insert row ID as reported by SQLite after a mutation or DDL statement.
+   * For INSERT, this is the rowid of the inserted row. For UPDATE, DELETE, and
+   * DDL, SQLite returns the last INSERT rowid on the connection (which may be 0n
+   * if no INSERT has occurred). Always `undefined` for SELECT.
+   */
   lastInsertRowid: bigint | undefined;
 }
 
@@ -84,12 +89,13 @@ export class SqliteAdapter implements BooksDatabase {
   execute(sql: string, args: unknown[] = []): Promise<SqlResult> {
     const stmt = this.db.prepare(sql);
 
-    // `stmt.columns()` returns result columns for SELECT-like statements and
-    // an empty array for INSERT/UPDATE/DELETE — use it to branch without
-    // parsing the SQL text.
-    const columns = stmt.columns().map((c) => c.name);
+    // `stmt.reader` is true for SELECT-like statements (returns rows) and false
+    // for mutations and DDL. We use it to branch without parsing the SQL text.
+    // Note: `stmt.columns()` cannot be used here — it throws for DDL statements
+    // like CREATE TABLE / CREATE INDEX, not just for mutations.
+    const columns = stmt.reader ? stmt.columns().map((c) => c.name) : [];
 
-    if (columns.length > 0) {
+    if (stmt.reader) {
       // Query — return rows
       const rows = stmt.all(...(args as Parameters<typeof stmt.all>)) as SqlRow[];
       return Promise.resolve({
@@ -105,9 +111,7 @@ export class SqliteAdapter implements BooksDatabase {
         rows: [],
         columns: [],
         rowsAffected: result.changes,
-        lastInsertRowid: result.lastInsertRowid !== undefined
-          ? BigInt(result.lastInsertRowid)
-          : undefined,
+        lastInsertRowid: BigInt(result.lastInsertRowid),
       });
     }
   }

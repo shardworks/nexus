@@ -17,6 +17,30 @@ import type { BooksDatabase } from './sqlite-adapter.ts';
 // ── Field → JSONPath translation ───────────────────────────────────────
 
 /**
+ * Allowlist pattern for field names / dot-notation paths.
+ *
+ * Permits alphanumeric characters, underscores, hyphens, and dots (for
+ * nested paths like 'parent.id'). Anything else is rejected before it can
+ * reach a SQL string interpolation site.
+ */
+const SAFE_FIELD_RE = /^[A-Za-z0-9_.-]+$/;
+
+/**
+ * Validate a field name or dot-notation path against the allowlist.
+ * Throws immediately if the value contains characters outside the safe set,
+ * preventing injection through json_extract() path interpolation.
+ *
+ * Exported for use by other db-layer modules (e.g. reconcile-books) that also
+ * interpolate field names into SQL strings. Not part of the public API barrel.
+ */
+export function validateFieldName(field: string): string {
+  if (!SAFE_FIELD_RE.test(field)) {
+    throw new Error(`BookStore: unsafe field name rejected: "${field}"`);
+  }
+  return field;
+}
+
+/**
  * Translate a plain field name or dot-notation path to a JSONPath expression.
  *
  * 'status'    → '$.status'
@@ -24,9 +48,12 @@ import type { BooksDatabase } from './sqlite-adapter.ts';
  *
  * This is the sole place where the SQLite json_extract() path format leaks
  * from storage into application logic. Callers use plain field names only.
+ *
+ * The field is validated against SAFE_FIELD_RE before interpolation to
+ * prevent SQL injection through the json_extract() path argument.
  */
 function toJsonPath(field: string): string {
-  return '$.' + field;
+  return '$.' + validateFieldName(field);
 }
 
 // ── Query builder ──────────────────────────────────────────────────────
@@ -102,12 +129,16 @@ export class BookStore<T extends { id: string }> implements Book<T> {
 
     if (query.orderBy) {
       const dir = query.order === 'desc' ? 'DESC' : 'ASC';
+      // toJsonPath() validates query.orderBy against SAFE_FIELD_RE before interpolation.
       sql += ` ORDER BY json_extract(content, '${toJsonPath(query.orderBy)}') ${dir}`;
     }
 
     if (query.limit !== undefined) {
       sql += ' LIMIT ?';
       args.push(query.limit);
+    } else if (query.offset !== undefined) {
+      // SQLite requires LIMIT when OFFSET is present. Use -1 to mean "no limit".
+      sql += ' LIMIT -1';
     }
 
     if (query.offset !== undefined) {
@@ -141,16 +172,50 @@ export class BookStore<T extends { id: string }> implements Book<T> {
 // ── Table name utilities ───────────────────────────────────────────────
 
 /**
+ * Allowlist pattern for book names.
+ *
+ * Book names are framework-controlled identifiers (declared in rig manifests)
+ * and should always be safe. We validate rather than normalize so that a
+ * malformed book name surfaces as a loud error rather than a silent mutation.
+ */
+const SAFE_BOOK_NAME_RE = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Normalize a rig key into a string safe for use as a SQLite table-name segment.
+ *
+ * Rig keys are derived from npm package names by `deriveRigKey()` and may
+ * contain characters that are awkward in SQL identifiers:
+ *   - `/`  — scope separator in third-party keys  (e.g. 'acme/my-rig')
+ *   - `-`  — standard in npm package names
+ *   - `.`  — rare but valid in npm package names
+ *
+ * `/` is mapped to `__` (double underscore) to preserve the structural
+ * distinction between the scope separator and ordinary hyphens/underscores.
+ * All remaining characters outside `[a-z0-9_]` are replaced with `_`.
+ * The result is safe as either a plain or double-quoted SQL identifier.
+ *
+ * @example normalizeRigKey('nexus-ledger') → 'nexus_ledger'
+ * @example normalizeRigKey('acme/my-rig')  → 'acme__my_rig'
+ */
+function normalizeRigKey(rigKey: string): string {
+  return rigKey.replace(/\//g, '__').replace(/[^a-z0-9_]/g, '_');
+}
+
+/**
  * Derive the SQLite table name for a rig book.
  *
- * Format: books_<rig-key>_<book-name>
+ * Format: books_<normalized-rig-key>_<book-name>
  *
- * The table name is always used quoted ("tableName") in SQL, so hyphens and
- * slashes in rig keys are safe. No sanitization needed.
+ * The rig key is normalized via `normalizeRigKey()` — slashes, hyphens, and
+ * other non-identifier characters become underscores. Book names are validated
+ * against SAFE_BOOK_NAME_RE and must already be safe identifiers.
  *
- * @example booksTableName('nexus-ledger', 'writs') → 'books_nexus-ledger_writs'
- * @example booksTableName('acme/my-rig', 'data')  → 'books_acme/my-rig_data'
+ * @example booksTableName('nexus-ledger', 'writs') → 'books_nexus_ledger_writs'
+ * @example booksTableName('acme/my-rig', 'data')   → 'books_acme__my_rig_data'
  */
 export function booksTableName(rigKey: string, bookName: string): string {
-  return `books_${rigKey}_${bookName}`;
+  if (!SAFE_BOOK_NAME_RE.test(bookName)) {
+    throw new Error(`BookStore: unsafe book name rejected: "${bookName}"`);
+  }
+  return `books_${normalizeRigKey(rigKey)}_${bookName}`;
 }

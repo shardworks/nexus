@@ -12,21 +12,28 @@
 
 import type { BooksDatabase } from './sqlite-adapter.ts';
 import type { LoadedRig } from '../mainspring.ts';
-import { booksTableName } from './book-store.ts';
+import { booksTableName, validateFieldName } from './book-store.ts';
 
 /**
  * Translate a plain field name or dot-notation path to a JSONPath expression.
  * Kept local — reconciliation is the only place that writes index DDL.
+ *
+ * Validates the field against the shared allowlist before interpolation to
+ * prevent SQL injection through the json_extract() path argument.
  */
 function toJsonPath(field: string): string {
-  return '$.' + field;
+  return '$.' + validateFieldName(field);
 }
 
 /**
  * Derive a safe index name from a table name and field path.
  * Dots in field names (nested paths) are replaced with underscores.
  *
- * @example indexName('books_nexus-ledger_writs', 'parent.id') → 'idx_books_nexus-ledger_writs_parent_id'
+ * Field names are validated by toJsonPath() before this is called, so the
+ * field segment is guaranteed to contain only [A-Za-z0-9_.-] — no characters
+ * that could escape the double-quoted identifier.
+ *
+ * @example indexName('books_nexus_ledger_writs', 'parent.id') → 'idx_books_nexus_ledger_writs_parent_id'
  */
 function indexName(tableName: string, field: string): string {
   return `idx_${tableName}_${field.replace(/\./g, '_')}`;
