@@ -17,13 +17,19 @@ export interface RoleDefinition {
   instructions?: string;
 }
 
-/** A reference to a tool or engine registered in guild.json. */
-export interface ToolEntry {
-  /** Upstream package identifier, e.g. "@shardworks/tool-commission@1.11.3". Null for locally-built tools. */
+/**
+ * Registry entry for any installed guild capability — tools, engines, curricula, temperaments.
+ *
+ * All four capability registries in `GuildConfig` use this type. The `package` field
+ * is populated for capabilities that require runtime module resolution (tools, engines).
+ * Training artifacts (curricula, temperaments) are content-only and omit `package`.
+ */
+export interface InstalledCapability {
+  /** Upstream package identifier, e.g. "@shardworks/tool-commission@1.11.3". Null for locally-built artifacts. */
   upstream: string | null;
-  /** ISO-8601 timestamp of when the tool was installed. */
+  /** ISO-8601 timestamp of when this capability was installed. */
   installedAt: string;
-  /** npm package name for runtime resolution via node_modules. Omitted for script-only tools. */
+  /** npm package name for runtime resolution via node_modules. Omitted for content-only capabilities (curricula, temperaments). */
   package?: string;
   /** Bundle that delivered this artifact, e.g. "@shardworks/guild-starter-kit@0.1.0". */
   bundle?: string;
@@ -55,16 +61,6 @@ export interface ClockworksConfig {
   events?: Record<string, EventDeclaration>;
   /** Standing orders — event → action mappings. */
   standingOrders?: StandingOrder[];
-}
-
-/** A reference to a curriculum or temperament registered in guild.json. */
-export interface TrainingEntry {
-  /** Upstream package identifier, or null for locally-authored content. */
-  upstream: string | null;
-  /** ISO-8601 timestamp of when the content was installed. */
-  installedAt: string;
-  /** Bundle that delivered this artifact, e.g. "@shardworks/guild-starter-kit@0.1.0". */
-  bundle?: string;
 }
 
 /** A registered workshop — a repository where the guild does its work. */
@@ -100,21 +96,21 @@ export interface GuildConfig {
   /** Tools available to all animas regardless of role. */
   baseTools: string[];
   /** Active tools indexed by name. */
-  tools: Record<string, ToolEntry>;
+  tools: Record<string, InstalledCapability>;
   /** Active engines indexed by name. */
-  engines: Record<string, ToolEntry>;
+  engines: Record<string, InstalledCapability>;
   /** Available curricula indexed by name. */
-  curricula: Record<string, TrainingEntry>;
+  curricula: Record<string, InstalledCapability>;
   /** Available temperaments indexed by name. */
-  temperaments: Record<string, TrainingEntry>;
+  temperaments: Record<string, InstalledCapability>;
   /** Clockworks configuration — events, standing orders. */
   clockworks?: ClockworksConfig;
   /** Writ types declared by this guild. Built-in types (mandate, summon) are implicit. */
   writTypes?: Record<string, WritTypeDeclaration>;
   /** Guild-level settings — operational flags and preferences. */
   settings?: GuildSettings;
-  /** Installed plugin keys (derived from npm package names). */
-  plugins?: string[];
+  /** Installed rig keys (derived from npm package names). */
+  rigs?: string[];
 }
 
 /**

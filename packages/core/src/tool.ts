@@ -74,7 +74,7 @@ export interface ToolDefinition<TShape extends ZodShape = ZodShape> {
    * Channels where this tool is available.
    * Defaults to `['cli', 'mcp']` if unspecified — available in all channels.
    */
-  readonly allowedContexts?: ToolChannel[];
+  readonly allowedChannels?: ToolChannel[];
   readonly params: z.ZodObject<TShape>;
   readonly handler: (
     params: z.infer<z.ZodObject<TShape>>,
@@ -92,7 +92,7 @@ type ToolInput<TShape extends ZodShape> = {
     context: RigContext,
   ) => unknown | Promise<unknown>;
   /** Channels where this tool is available. Defaults to all channels if unspecified. */
-  allowedContexts?: ToolChannel[];
+  allowedChannels?: ToolChannel[];
 } & (
   | { instructions?: string; instructionsFile?: never }
   | { instructions?: never; instructionsFile?: string }
@@ -122,7 +122,7 @@ export function tool<TShape extends ZodShape>(def: ToolInput<TShape>): ToolDefin
     description: def.description,
     ...(def.instructions ? { instructions: def.instructions } : {}),
     ...(def.instructionsFile ? { instructionsFile: def.instructionsFile } : {}),
-    ...(def.allowedContexts ? { allowedContexts: def.allowedContexts } : {}),
+    ...(def.allowedChannels ? { allowedChannels: def.allowedChannels } : {}),
     params: z.object(def.params),
     handler: def.handler,
   };

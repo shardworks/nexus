@@ -5,7 +5,7 @@
  * package.json, .gitignore. Does NOT git init, install bundles, create
  * the database, or instantiate animas — those are separate steps.
  *
- * After init, the user runs `nsg plugin install` to add capabilities.
+ * After init, the user runs `nsg rig install` to add capabilities.
  */
 
 import fs from 'node:fs';
@@ -19,7 +19,7 @@ const DEFAULT_MODEL = 'sonnet';
 export default tool({
   name: 'init',
   description: 'Create a new guild — directory structure, guild.json, and package.json',
-  allowedContexts: ['cli'],
+  allowedChannels: ['cli'],
   params: {
     path: z.string().describe('Directory path for the new guild'),
     name: z.string().optional().describe('Guild name (defaults to directory basename)'),
@@ -55,12 +55,12 @@ export default tool({
       fs.writeFileSync(path.join(full, '.gitkeep'), '');
     }
 
-    // guild.json — clean config with empty plugin list
+    // guild.json — clean config with empty rig list
     const guildConfig = {
       name,
       nexus: VERSION,
       model,
-      plugins: [] as string[],
+      rigs: [] as string[],
       roles: {} as Record<string, unknown>,
       baseTools: [] as string[],
       tools: {} as Record<string, unknown>,
@@ -74,7 +74,7 @@ export default tool({
       JSON.stringify(guildConfig, null, 2) + '\n',
     );
 
-    // package.json — makes the guild an npm project so plugins install as deps.
+    // package.json — makes the guild an npm project so rigs install as deps.
     // If running from a published version, pin @shardworks/nexus so nsg is
     // available in the guild's node_modules/.bin without a global install.
     const dependencies: Record<string, string> = {};

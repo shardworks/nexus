@@ -5,7 +5,7 @@
  * must include `id: string` — rig authors own ID generation and include it
  * as part of their domain type. No framework-managed envelope or timestamps.
  *
- * Books are declared in the rig's `Rig` export via `books?: Record<string, BookSchema>`.
+ * Books are declared in the rig's `Rig` export via `books?: Record<string, BookOptions>`.
  * Mainspring creates the backing SQLite tables and indexes at startup.
  *
  * Rig authors access books through `RigContext.book()` and `RigContext.rigBook()`.

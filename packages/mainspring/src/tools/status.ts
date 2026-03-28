@@ -13,7 +13,7 @@ import { deriveRigKey } from '../mainspring.ts';
 export default tool({
   name: 'status',
   description: 'Show guild identity and installed rig summary',
-  allowedContexts: ['cli'],
+  allowedChannels: ['cli'],
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },

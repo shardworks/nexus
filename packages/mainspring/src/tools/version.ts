@@ -13,7 +13,7 @@ const _require = createRequire(import.meta.url);
 export default tool({
   name: 'version',
   description: 'Show Nexus framework and plugin version information',
-  allowedContexts: ['cli'],
+  allowedChannels: ['cli'],
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },

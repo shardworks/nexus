@@ -70,10 +70,10 @@ async function loadTool(spec: ToolSpec): Promise<ToolDefinition | null> {
       return null;
     }
 
-    // Filter by allowedContexts — only serve tools that include 'mcp'.
-    // Tools with no allowedContexts default to all channels (available everywhere).
-    const contexts = def.allowedContexts;
-    if (contexts && !contexts.includes('mcp')) {
+    // Filter by allowedChannels — only serve tools that include 'mcp'.
+    // Tools with no allowedChannels default to all channels (available everywhere).
+    const channels = def.allowedChannels;
+    if (channels && !channels.includes('mcp')) {
       // Tool explicitly excludes MCP — skip silently
       return null;
     }

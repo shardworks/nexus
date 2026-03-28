@@ -6,7 +6,7 @@
  * Dynamically discovers installed tools via rig, registers them as Commander
  * commands, and delegates argument parsing and invocation to Commander.
  *
- * Tools are filtered to those with 'cli' in allowedContexts (or no allowedContexts
+ * Tools are filtered to those with 'cli' in allowedChannels (or no allowedChannels
  * set, which defaults to all channels). Tools marked 'mcp'-only are invisible here.
  *
  * nsg1 is the legacy entry point (src/v1/cli.ts) — fully preserved and functional.

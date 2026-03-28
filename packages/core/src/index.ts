@@ -10,7 +10,7 @@ export const VERSION: string = _pkg.version;
 
 export {
   type Rig,
-  type BookSchema,
+  type BookOptions,
   isRig,
 } from './rig.ts';
 
@@ -51,8 +51,7 @@ export {
 export {
   type GuildConfig,
   type RoleDefinition,
-  type ToolEntry,
-  type TrainingEntry,
+  type InstalledCapability,
   type WorkshopEntry,
   type EventDeclaration,
   type StandingOrder,

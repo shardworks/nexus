@@ -12,7 +12,7 @@ import type { ToolDefinition } from './tool.ts';
  *     writs: { indexes: ['status', 'createdAt', 'parent.id'] },
  *   }
  */
-export interface BookSchema {
+export interface BookOptions {
   /**
    * Field names to index for efficient querying.
    *
@@ -60,7 +60,7 @@ export interface Rig {
    *     writs: { indexes: ['status', 'createdAt'] },
    *   }
    */
-  books?: Record<string, BookSchema>;
+  books?: Record<string, BookOptions>;
 }
 
 /**

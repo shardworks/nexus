@@ -2,7 +2,7 @@
  * Package resolution utilities for guild-installed npm packages.
  *
  * Resolves entry points from the guild's node_modules by reading package.json
- * exports maps directly. Needed because guild plugins are ESM-only packages
+ * exports maps directly. Needed because guild rigs are ESM-only packages
  * and createRequire() can't resolve their exports.
  */
 

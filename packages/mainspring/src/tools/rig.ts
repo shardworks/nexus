@@ -13,7 +13,7 @@ import {
   writeGuildConfig,
   resolveAllToolsFromExport,
 } from '@shardworks/nexus-core';
-import type { ToolEntry, RigDescriptor } from '@shardworks/nexus-core';
+import type { InstalledCapability, RigDescriptor } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { deriveRigKey } from '../mainspring.ts';
 import { readGuildPackageJson, resolveGuildPackageEntry } from '../resolve-package.ts';
@@ -118,15 +118,15 @@ async function discoverRigTools(
 export const rigList = tool({
   name: 'rig-list',
   description: 'List installed rigs',
-  allowedContexts: ['cli'],
+  allowedChannels: ['cli'],
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },
   handler: async (_params, { home }) => {
     const config = readGuildConfig(home);
-    const rigIds = config.plugins ?? [];
+    const rigKeys = config.rigs ?? [];
 
-    if (rigIds.length === 0) {
+    if (rigKeys.length === 0) {
       if (_params.json) return [];
       return 'No rigs installed.';
     }
@@ -135,19 +135,19 @@ export const rigList = tool({
     const rigToolCounts = new Map<string, number>();
     for (const entry of Object.values(config.tools)) {
       if (!entry.package) continue;
-      const id = deriveRigKey(entry.package);
-      rigToolCounts.set(id, (rigToolCounts.get(id) ?? 0) + 1);
+      const key = deriveRigKey(entry.package);
+      rigToolCounts.set(key, (rigToolCounts.get(key) ?? 0) + 1);
     }
 
-    const results = rigIds.map((id) => {
-      const toolCount = rigToolCounts.get(id) ?? 0;
-      return { id, toolCount };
+    const results = rigKeys.map((key) => {
+      const toolCount = rigToolCounts.get(key) ?? 0;
+      return { key, toolCount };
     });
 
     if (_params.json) return results;
 
     const lines = results.map(
-      (r) => `${r.id}  (${r.toolCount} tool${r.toolCount === 1 ? '' : 's'})`,
+      (r) => `${r.key}  (${r.toolCount} tool${r.toolCount === 1 ? '' : 's'})`,
     );
     return lines.join('\n');
   },
@@ -156,7 +156,7 @@ export const rigList = tool({
 export const rigInstall = tool({
   name: 'rig-install',
   description: 'Install a rig into the guild',
-  allowedContexts: ['cli'],
+  allowedChannels: ['cli'],
   params: {
     source: z.string().describe('Package name or git URL, e.g. "@shardworks/nexus-stdlib", "foo@1.0", or "git+https://..."'),
     roles: z.string().optional().describe('Comma-separated role names to assign tools to (default: baseTools)'),
@@ -205,7 +205,7 @@ export const rigInstall = tool({
     const config = readGuildConfig(home);
     const descriptor = readRigDescriptor(home, packageName);
     if (descriptor) {
-      const installedRigs = config.plugins ?? [];
+      const installedRigs = config.rigs ?? [];
       const missing = checkRigDependencies(descriptor, installedRigs);
       if (missing.length > 0) {
         throw new Error(
@@ -221,15 +221,15 @@ export const rigInstall = tool({
     // 4. Update guild.json
     const now = new Date().toISOString();
 
-    // Add to plugins array
-    if (!config.plugins) config.plugins = [];
-    if (!config.plugins.includes(rigId)) {
-      config.plugins.push(rigId);
+    // Add to rigs array
+    if (!config.rigs) config.rigs = [];
+    if (!config.rigs.includes(rigId)) {
+      config.rigs.push(rigId);
     }
 
     // Register each tool
     for (const toolName of toolNames) {
-      const entry: ToolEntry = {
+      const entry: InstalledCapability = {
         upstream: `${packageName}@${readGuildPackageJson(home, packageName).version}`,
         installedAt: now,
         package: packageName,
@@ -268,7 +268,7 @@ export const rigInstall = tool({
 export const rigRemove = tool({
   name: 'rig-remove',
   description: 'Remove a rig from the guild',
-  allowedContexts: ['cli'],
+  allowedChannels: ['cli'],
   params: {
     name: z.string().describe('Rig key or package name to remove'),
   },
@@ -277,7 +277,7 @@ export const rigRemove = tool({
     const targetKey = params.name.startsWith('@') ? deriveRigKey(params.name) : params.name;
 
     // Find the rig in guild.json
-    if (!config.plugins?.includes(targetKey)) {
+    if (!config.rigs?.includes(targetKey)) {
       throw new Error(`Rig "${targetKey}" is not installed.`);
     }
 
@@ -308,8 +308,8 @@ export const rigRemove = tool({
       }
     }
 
-    // Remove from plugins array
-    config.plugins = config.plugins.filter((k) => k !== targetKey);
+    // Remove from rigs array
+    config.rigs = config.rigs!.filter((k) => k !== targetKey);
 
     writeGuildConfig(home, config);
 
@@ -329,7 +329,7 @@ export const rigRemove = tool({
 export const rigUpgrade = tool({
   name: 'rig-upgrade',
   description: 'Upgrade a rig to a newer version and run its migrations',
-  allowedContexts: ['cli'],
+  allowedChannels: ['cli'],
   params: {
     name: z.string().describe('Rig key or package name to upgrade'),
     version: z.string().optional().describe('Target version (default: latest)'),

@@ -34,7 +34,7 @@ describe('nsg init', () => {
     const config = JSON.parse(fs.readFileSync(path.join(guildPath, 'guild.json'), 'utf-8'));
     assert.equal(config.name, 'my-guild');
     assert.equal(config.model, 'sonnet');
-    assert.deepEqual(config.plugins, []);
+    assert.deepEqual(config.rigs, []);
     assert.deepEqual(config.tools, {});
     assert.deepEqual(config.baseTools, []);
     assert.deepEqual(config.roles, {});

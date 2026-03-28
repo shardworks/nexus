@@ -87,7 +87,7 @@ export interface Tool extends ToolDefinition {
 export interface ListToolsOptions {
   /**
    * If set, only return tools available in this channel.
-   * Tools with no allowedContexts are available everywhere and always pass.
+   * Tools with no allowedChannels are available everywhere and always pass.
    */
   channel?: ToolChannel;
   /**
@@ -315,11 +315,11 @@ export function createMainspring(guildRoot: string): Mainspring {
       const rigs = await getRigs();
       let tools: Tool[] = rigs.flatMap((r) => r.tools);
 
-      // Filter by channel (allowedContexts)
+      // Filter by channel (allowedChannels)
       if (options?.channel) {
         const channel = options.channel;
         tools = tools.filter(
-          (t) => !t.allowedContexts || t.allowedContexts.includes(channel),
+          (t) => !t.allowedChannels || t.allowedChannels.includes(channel),
         );
       }
 
