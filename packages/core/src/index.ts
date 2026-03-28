@@ -49,7 +49,12 @@ export {
 } from './nexus-home.ts';
 
 export {
-  type GuildConfig,
+  // V2 — rig-centric model (canonical for new guilds)
+  type GuildConfigV2,
+  createInitialGuildConfigV2,
+  readGuildConfigV2,
+  writeGuildConfigV2,
+  // Shared types (V1 and V2)
   type RoleDefinition,
   type InstalledCapability,
   type WorkshopEntry,
@@ -58,16 +63,23 @@ export {
   type ClockworksConfig,
   type WritTypeDeclaration,
   type GuildSettings,
-  createInitialGuildConfig,
   guildConfigPath,
-  readGuildConfig,
-  writeGuildConfig,
 } from './guild-config.ts';
 
 export {
   type RigDescriptor,
   type RigDependency,
 } from './rig-descriptor.ts';
+
+// ── V1 guild config — deprecated; legacy code only ────────────────────
+// Exported for backward compatibility with cli/v1 and other pre-V2 callers.
+// New code should use GuildConfigV2 and the V2 functions above.
+export {
+  type GuildConfig,
+  createInitialGuildConfig,
+  readGuildConfig,
+  writeGuildConfig,
+} from './legacy/1/guild-config.ts';
 
 // ── Legacy modules — not yet promoted, still live in legacy/1 ─────────
 

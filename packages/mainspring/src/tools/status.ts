@@ -6,9 +6,8 @@
  * to rigs, not here.
  */
 
-import { tool, VERSION, readGuildConfig } from '@shardworks/nexus-core';
+import { tool, VERSION, readGuildConfigV2 } from '@shardworks/nexus-core';
 import { z } from 'zod';
-import { deriveRigKey } from '../mainspring.ts';
 
 export default tool({
   name: 'status',
@@ -18,19 +17,14 @@ export default tool({
     json: z.boolean().optional().describe('Output as JSON'),
   },
   handler: async (_params, { home }) => {
-    const config = readGuildConfig(home);
-
-    // Collect unique rig ids
-    const rigIds = new Set<string>();
-    for (const entry of Object.values(config.tools)) {
-      if (entry.package) rigIds.add(deriveRigKey(entry.package));
-    }
+    const config = readGuildConfigV2(home);
 
     const result = {
       guild: config.name,
       nexus: VERSION,
       home,
-      rigs: Array.from(rigIds).sort(),
+      model: config.settings?.model ?? '(not set)',
+      rigs: [...config.rigs].sort(),
       roles: Object.keys(config.roles).sort(),
     };
 
@@ -42,6 +36,7 @@ export default tool({
       `Guild:   ${result.guild}`,
       `Nexus:   ${result.nexus}`,
       `Home:    ${result.home}`,
+      `Model:   ${result.model}`,
       `Rigs:    ${result.rigs.length > 0 ? result.rigs.join(', ') : '(none)'}`,
       `Roles:   ${result.roles.length > 0 ? result.roles.join(', ') : '(none)'}`,
     ];

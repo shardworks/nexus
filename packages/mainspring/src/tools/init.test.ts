@@ -33,11 +33,13 @@ describe('nsg init', () => {
 
     const config = JSON.parse(fs.readFileSync(path.join(guildPath, 'guild.json'), 'utf-8'));
     assert.equal(config.name, 'my-guild');
-    assert.equal(config.model, 'sonnet');
+    assert.equal(config.settings?.model, 'sonnet');
     assert.deepEqual(config.rigs, []);
-    assert.deepEqual(config.tools, {});
     assert.deepEqual(config.baseTools, []);
     assert.deepEqual(config.roles, {});
+    // V2: no tools/engines/curricula/temperaments registries
+    assert.equal(config.tools, undefined);
+    assert.equal(config.engines, undefined);
   });
 
   it('creates package.json', async () => {
@@ -91,7 +93,7 @@ describe('nsg init', () => {
     await initTool.handler({ path: guildPath, model: 'opus' }, { home: process.cwd() });
 
     const config = JSON.parse(fs.readFileSync(path.join(guildPath, 'guild.json'), 'utf-8'));
-    assert.equal(config.model, 'opus');
+    assert.equal(config.settings?.model, 'opus');
   });
 
   it('fails on non-empty directory', async () => {

@@ -499,7 +499,7 @@ describe('installBundle', () => {
     // curriculum, and migration files from the starter kit.
     const starterKitDir = path.resolve(
       path.dirname(new URL(import.meta.url).pathname),
-      '..', '..', 'guild-starter-kit',
+      '..', '..', '..', '..', 'guild-starter-kit',
     );
 
     // Create a content-only version of the manifest for testing

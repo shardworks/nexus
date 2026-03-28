@@ -27,6 +27,39 @@ export function readGuildPackageJson(
 }
 
 /**
+ * Resolve the npm package name for a rig key by consulting the guild's root package.json.
+ *
+ * Reverses the `deriveRigKey()` mapping:
+ * - Key containing `/`  → `@key`          (e.g. `acme/my-rig` → `@acme/my-rig`)
+ * - Key without `/`     → prefer `@shardworks/key` in deps; fall back to unscoped `key`
+ *
+ * Returns null if no matching dependency is found — the rig may not be npm-tracked
+ * (e.g. manually placed in node_modules without a package.json entry).
+ */
+export function resolvePackageNameForRigKey(guildRoot: string, rigKey: string): string | null {
+  const pkgPath = path.join(guildRoot, 'package.json');
+  let deps: string[] = [];
+  try {
+    const pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as Record<string, unknown>;
+    deps = Object.keys((pkgJson.dependencies as Record<string, string> | undefined) ?? {});
+  } catch {
+    return null;
+  }
+
+  // Key with / came from @scope/name → scope/name; reverse is prepend @
+  if (rigKey.includes('/')) {
+    const pkg = '@' + rigKey;
+    return deps.includes(pkg) ? pkg : null;
+  }
+
+  // Key without /: prefer the official @shardworks/ scope; fall back to unscoped
+  const official = '@shardworks/' + rigKey;
+  if (deps.includes(official)) return official;
+  if (deps.includes(rigKey)) return rigKey;
+  return null;
+}
+
+/**
  * Resolve the entry point for a guild-installed package.
  *
  * Reads the package's exports map to find the ESM entry point.

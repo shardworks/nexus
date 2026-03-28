@@ -9,14 +9,14 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   tool,
-  readGuildConfig,
-  writeGuildConfig,
+  readGuildConfigV2,
+  writeGuildConfigV2,
   resolveAllToolsFromExport,
 } from '@shardworks/nexus-core';
-import type { InstalledCapability, RigDescriptor } from '@shardworks/nexus-core';
+import type { RigDescriptor } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { deriveRigKey } from '../mainspring.ts';
-import { readGuildPackageJson, resolveGuildPackageEntry } from '../resolve-package.ts';
+import { readGuildPackageJson, resolveGuildPackageEntry, resolvePackageNameForRigKey } from '../resolve-package.ts';
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -123,33 +123,16 @@ export const rigList = tool({
     json: z.boolean().optional().describe('Output as JSON'),
   },
   handler: async (_params, { home }) => {
-    const config = readGuildConfig(home);
-    const rigKeys = config.rigs ?? [];
+    const config = readGuildConfigV2(home);
+    const rigKeys = config.rigs;
 
     if (rigKeys.length === 0) {
       if (_params.json) return [];
       return 'No rigs installed.';
     }
 
-    // Collect tool counts per rig from the tools catalog
-    const rigToolCounts = new Map<string, number>();
-    for (const entry of Object.values(config.tools)) {
-      if (!entry.package) continue;
-      const key = deriveRigKey(entry.package);
-      rigToolCounts.set(key, (rigToolCounts.get(key) ?? 0) + 1);
-    }
-
-    const results = rigKeys.map((key) => {
-      const toolCount = rigToolCounts.get(key) ?? 0;
-      return { key, toolCount };
-    });
-
-    if (_params.json) return results;
-
-    const lines = results.map(
-      (r) => `${r.key}  (${r.toolCount} tool${r.toolCount === 1 ? '' : 's'})`,
-    );
-    return lines.join('\n');
+    if (_params.json) return rigKeys.map((key) => ({ key }));
+    return rigKeys.join('\n');
   },
 });
 
@@ -171,22 +154,15 @@ export const rigInstall = tool({
     let packageName: string;
 
     if (installType === 'link') {
-      // Link mode: symlink a local directory into node_modules
+      // Link mode: use `npm install --save file:path` — symlinks the local dir into
+      // node_modules AND tracks it in package.json so the reverse key lookup works.
       const sourceDir = path.resolve(source);
       if (!fs.existsSync(path.join(sourceDir, 'package.json'))) {
         throw new Error(`No package.json found in ${sourceDir}. --link requires a directory with a package.json.`);
       }
-      const pkgJson = JSON.parse(fs.readFileSync(path.join(sourceDir, 'package.json'), 'utf-8'));
-      packageName = pkgJson.name;
-
-      const nodeModules = path.join(home, 'node_modules');
-      fs.mkdirSync(nodeModules, { recursive: true });
-      const linkTarget = path.join(nodeModules, packageName);
-      fs.mkdirSync(path.dirname(linkTarget), { recursive: true });
-      if (fs.existsSync(linkTarget)) {
-        fs.rmSync(linkTarget, { recursive: true });
-      }
-      fs.symlinkSync(sourceDir, linkTarget, 'dir');
+      const pkgJson = JSON.parse(fs.readFileSync(path.join(sourceDir, 'package.json'), 'utf-8')) as Record<string, unknown>;
+      packageName = pkgJson.name as string;
+      npm(['install', '--save', `file:${sourceDir}`], home);
     } else {
       // npm install handles both registry specifiers and git URLs
       npm(['install', '--save', source], home);
@@ -202,11 +178,10 @@ export const rigInstall = tool({
     const rigId = deriveRigKey(packageName);
 
     // 2. Check rig dependencies (if rig.json declares any)
-    const config = readGuildConfig(home);
+    const config = readGuildConfigV2(home);
     const descriptor = readRigDescriptor(home, packageName);
     if (descriptor) {
-      const installedRigs = config.rigs ?? [];
-      const missing = checkRigDependencies(descriptor, installedRigs);
+      const missing = checkRigDependencies(descriptor, config.rigs);
       if (missing.length > 0) {
         throw new Error(
           `Rig "${rigId}" requires rigs that are not installed: ${missing.join(', ')}. ` +
@@ -218,25 +193,13 @@ export const rigInstall = tool({
     // 3. Discover tools from the rig's exports
     const toolNames = await discoverRigTools(home, packageName);
 
-    // 4. Update guild.json
-    const now = new Date().toISOString();
-
-    // Add to rigs array
-    if (!config.rigs) config.rigs = [];
+    // 4. Update guild.json — add to rigs list and update access control
     if (!config.rigs.includes(rigId)) {
       config.rigs.push(rigId);
     }
 
-    // Register each tool
+    // Register tool names in access control lists (no per-tool registry entry in V2)
     for (const toolName of toolNames) {
-      const entry: InstalledCapability = {
-        upstream: `${packageName}@${readGuildPackageJson(home, packageName).version}`,
-        installedAt: now,
-        package: packageName,
-      };
-      config.tools[toolName] = entry;
-
-      // Assign to roles or baseTools
       if (roles && roles.length > 0) {
         for (const role of roles) {
           if (config.roles[role] && !config.roles[role].tools.includes(toolName)) {
@@ -250,11 +213,11 @@ export const rigInstall = tool({
       }
     }
 
-    writeGuildConfig(home, config);
+    writeGuildConfigV2(home, config);
 
     const lines = [
       `Installed rig: ${rigId} (${packageName})`,
-      `Registered ${toolNames.length} tool${toolNames.length === 1 ? '' : 's'}: ${toolNames.join(', ')}`,
+      `Discovered ${toolNames.length} tool${toolNames.length === 1 ? '' : 's'}: ${toolNames.join(', ')}`,
     ];
     if (roles && roles.length > 0) {
       lines.push(`Assigned to roles: ${roles.join(', ')}`);
@@ -273,47 +236,43 @@ export const rigRemove = tool({
     name: z.string().describe('Rig key or package name to remove'),
   },
   handler: async (params, { home }) => {
-    const config = readGuildConfig(home);
+    const config = readGuildConfigV2(home);
     const targetKey = params.name.startsWith('@') ? deriveRigKey(params.name) : params.name;
 
-    // Find the rig in guild.json
-    if (!config.rigs?.includes(targetKey)) {
+    if (!config.rigs.includes(targetKey)) {
       throw new Error(`Rig "${targetKey}" is not installed.`);
     }
 
-    // Find all tools owned by this rig
-    const toolsToRemove: string[] = [];
-    let packageName: string | null = null;
+    // Resolve package name before we uninstall — package.json still has it now
+    const packageName = resolvePackageNameForRigKey(home, targetKey);
 
-    for (const [toolName, entry] of Object.entries(config.tools)) {
-      if (!entry.package) continue;
-      if (deriveRigKey(entry.package) === targetKey) {
-        toolsToRemove.push(toolName);
-        packageName = entry.package;
+    // Discover tools from the rig module to clean up access control lists
+    let toolsToRemove: string[] = [];
+    if (packageName) {
+      try {
+        toolsToRemove = await discoverRigTools(home, packageName);
+      } catch {
+        console.warn(`[mainspring] Could not load rig "${targetKey}" — access control lists may need manual cleanup`);
       }
     }
 
-    // Remove tools from guild.json
+    // Remove tool names from access control
     for (const toolName of toolsToRemove) {
-      delete config.tools[toolName];
-
-      // Remove from baseTools
       const baseIdx = config.baseTools.indexOf(toolName);
       if (baseIdx !== -1) config.baseTools.splice(baseIdx, 1);
 
-      // Remove from role tool lists
       for (const role of Object.values(config.roles)) {
         const roleIdx = role.tools.indexOf(toolName);
         if (roleIdx !== -1) role.tools.splice(roleIdx, 1);
       }
     }
 
-    // Remove from rigs array
-    config.rigs = config.rigs!.filter((k) => k !== targetKey);
+    // Remove from rigs list
+    config.rigs = config.rigs.filter((k) => k !== targetKey);
 
-    writeGuildConfig(home, config);
+    writeGuildConfigV2(home, config);
 
-    // npm uninstall
+    // npm uninstall — after guild.json is updated
     if (packageName) {
       try {
         npm(['uninstall', packageName], home);

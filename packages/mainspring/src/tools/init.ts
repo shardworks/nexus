@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { tool, VERSION } from '@shardworks/nexus-core';
+import { tool, VERSION, createInitialGuildConfigV2, writeGuildConfigV2 } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 const DEFAULT_MODEL = 'sonnet';
@@ -55,24 +55,9 @@ export default tool({
       fs.writeFileSync(path.join(full, '.gitkeep'), '');
     }
 
-    // guild.json — clean config with empty rig list
-    const guildConfig = {
-      name,
-      nexus: VERSION,
-      model,
-      rigs: [] as string[],
-      roles: {} as Record<string, unknown>,
-      baseTools: [] as string[],
-      tools: {} as Record<string, unknown>,
-      engines: {} as Record<string, unknown>,
-      workshops: {} as Record<string, unknown>,
-      curricula: {} as Record<string, unknown>,
-      temperaments: {} as Record<string, unknown>,
-    };
-    fs.writeFileSync(
-      path.join(home, 'guild.json'),
-      JSON.stringify(guildConfig, null, 2) + '\n',
-    );
+    // guild.json — V2 format: rig-centric, model in settings
+    const guildConfig = createInitialGuildConfigV2(name, VERSION, model);
+    writeGuildConfigV2(home, guildConfig);
 
     // package.json — makes the guild an npm project so rigs install as deps.
     // If running from a published version, pin @shardworks/nexus so nsg is

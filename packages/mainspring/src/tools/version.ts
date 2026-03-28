@@ -1,18 +1,16 @@
 /**
- * nsg version — show framework and plugin version info.
+ * nsg version — show framework and rig version info.
  *
- * A rig built-in command. Available via CLI only (not MCP).
+ * A mainspring built-in command. Available via CLI only (not MCP).
  */
 
-import { createRequire } from 'node:module';
-import { tool, VERSION, readGuildConfig } from '@shardworks/nexus-core';
+import { tool, VERSION, readGuildConfigV2 } from '@shardworks/nexus-core';
 import { z } from 'zod';
-
-const _require = createRequire(import.meta.url);
+import { resolvePackageNameForRigKey, readGuildPackageJson } from '../resolve-package.ts';
 
 export default tool({
   name: 'version',
-  description: 'Show Nexus framework and plugin version information',
+  description: 'Show Nexus framework and installed rig version information',
   callableFrom: ['cli'],
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
@@ -23,19 +21,14 @@ export default tool({
       node: process.version,
     };
 
-    // Read installed plugin versions from guild.json
+    // Read installed rig versions by resolving each rig key → package name
     try {
-      const config = readGuildConfig(home);
-      const seen = new Set<string>();
-      for (const entry of Object.values(config.tools)) {
-        if (!entry.package || seen.has(entry.package)) continue;
-        seen.add(entry.package);
-        try {
-          const pkg = _require(`${entry.package}/package.json`) as { version?: string };
-          result[entry.package] = pkg.version ?? 'unknown';
-        } catch {
-          result[entry.package] = 'not installed';
-        }
+      const config = readGuildConfigV2(home);
+      for (const rigKey of config.rigs) {
+        const packageName = resolvePackageNameForRigKey(home, rigKey);
+        if (!packageName) continue;
+        const { version } = readGuildPackageJson(home, packageName);
+        result[rigKey] = version;
       }
     } catch {
       // Not in a guild or guild.json unreadable — just show framework version

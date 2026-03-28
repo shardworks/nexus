@@ -74,6 +74,11 @@ export interface WorkshopEntry {
 /** Guild-level settings — operational flags and preferences. */
 export interface GuildSettings {
   /**
+   * Default LLM model for anima sessions (e.g. 'sonnet', 'opus').
+   * Replaces the top-level `model` field from GuildConfig V1.
+   */
+  model?: string;
+  /**
    * Automatically apply pending database migrations when the Books are opened.
    * Defaults to `true` when not specified. Set to `false` to require explicit
    * migration via `nsg guild upgrade-books`.
@@ -81,55 +86,64 @@ export interface GuildSettings {
   autoMigrate?: boolean;
 }
 
-/** The guild's central configuration file shape (`guild.json`). */
-export interface GuildConfig {
+/**
+ * Guild configuration — V2.
+ *
+ * The rig-centric model: rigs are npm packages; capabilities (tools, engines,
+ * training content) are declared by rigs and discovered dynamically at runtime.
+ * No per-capability registries — `config.rigs` + `node_modules` is the source
+ * of truth. The default model moves into `settings`.
+ *
+ * Breaking change from GuildConfig (V1): drops `tools`, `engines`, `curricula`,
+ * `temperaments`, and top-level `model`. Requires `rigs` (was optional).
+ */
+export interface GuildConfigV2 {
   /** Guild name — used as the guildhall npm package name. */
   name: string;
   /** Installed Nexus framework version. */
   nexus: string;
-  /** Default model for anima sessions. */
-  model: string;
   /** Registered workshops indexed by name. */
   workshops: Record<string, WorkshopEntry>;
   /** Guild roles — structural positions that animas fill. */
   roles: Record<string, RoleDefinition>;
-  /** Tools available to all animas regardless of role. */
+  /** Tool names available to all animas regardless of role. */
   baseTools: string[];
-  /** Active tools indexed by name. */
-  tools: Record<string, InstalledCapability>;
-  /** Active engines indexed by name. */
-  engines: Record<string, InstalledCapability>;
-  /** Available curricula indexed by name. */
-  curricula: Record<string, InstalledCapability>;
-  /** Available temperaments indexed by name. */
-  temperaments: Record<string, InstalledCapability>;
+  /** Installed rig keys (derived from npm package names). Always present; starts empty. */
+  rigs: string[];
   /** Clockworks configuration — events, standing orders. */
   clockworks?: ClockworksConfig;
   /** Writ types declared by this guild. Built-in types (mandate, summon) are implicit. */
   writTypes?: Record<string, WritTypeDeclaration>;
-  /** Guild-level settings — operational flags and preferences. */
+  /** Guild-level settings — operational flags and preferences. Includes default model. */
   settings?: GuildSettings;
-  /** Installed rig keys (derived from npm package names). */
-  rigs?: string[];
 }
 
 /**
- * Create the default guild.json content for a new guild.
- * All registries start empty. Roles and baseTools populated by the init sequence.
+ * Create the default guild.json content for a new V2 guild.
+ * All collections start empty. The default model is stored in settings.
  */
-export function createInitialGuildConfig(name: string, nexusVersion: string, model: string): GuildConfig {
+export function createInitialGuildConfigV2(name: string, nexusVersion: string, model: string): GuildConfigV2 {
   return {
     name,
     nexus: nexusVersion,
-    model,
     workshops: {},
     roles: {},
     baseTools: [],
-    tools: {},
-    engines: {},
-    curricula: {},
-    temperaments: {},
+    rigs: [],
+    settings: { model },
   };
+}
+
+/** Read and parse a V2 guild.json from the guild root. */
+export function readGuildConfigV2(home: string): GuildConfigV2 {
+  const configFile = guildConfigPath(home);
+  return JSON.parse(fs.readFileSync(configFile, 'utf-8')) as GuildConfigV2;
+}
+
+/** Write a V2 guild.json to the guild root. */
+export function writeGuildConfigV2(home: string, config: GuildConfigV2): void {
+  const configFile = guildConfigPath(home);
+  fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n');
 }
 
 /** Resolve the path to guild.json in the guild root. */
@@ -137,14 +151,3 @@ export function guildConfigPath(home: string): string {
   return path.join(home, 'guild.json');
 }
 
-/** Read and parse guild.json from the guild root. */
-export function readGuildConfig(home: string): GuildConfig {
-  const configFile = guildConfigPath(home);
-  return JSON.parse(fs.readFileSync(configFile, 'utf-8')) as GuildConfig;
-}
-
-/** Write guild.json to the guild root. */
-export function writeGuildConfig(home: string, config: GuildConfig): void {
-  const configFile = guildConfigPath(home);
-  fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n');
-}

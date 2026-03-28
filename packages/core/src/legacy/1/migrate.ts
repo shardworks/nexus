@@ -70,17 +70,14 @@ function coreMigrationsDir(): string {
   const thisFile = fileURLToPath(import.meta.url);
   const thisDir = path.dirname(thisFile);
 
-  // Published layout: dist/migrate.js → ../migrations/
-  const fromDist = path.resolve(thisDir, '..', 'migrations');
-  if (fs.existsSync(fromDist)) return fromDist;
-
-  // Dev layout: src/migrate.ts → ../migrations/
-  const fromSrc = path.resolve(thisDir, '..', 'migrations');
-  if (fs.existsSync(fromSrc)) return fromSrc;
+  // This file lives at src/legacy/1/migrate.ts (or dist/legacy/1/migrate.js).
+  // The core migrations directory is three levels up at the package root.
+  const fromRoot = path.resolve(thisDir, '..', '..', '..', 'migrations');
+  if (fs.existsSync(fromRoot)) return fromRoot;
 
   // Shouldn't happen, but don't crash — return a nonexistent path
   // and let discoverMigrations() handle it gracefully.
-  return fromDist;
+  return fromRoot;
 }
 
 /**
