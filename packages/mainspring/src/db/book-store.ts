@@ -180,7 +180,7 @@ const SAFE_BOOK_NAME_RE = /^[A-Za-z0-9_-]+$/;
 /**
  * Normalize a rig key into a string safe for use as a SQLite table-name segment.
  *
- * Rig keys are derived from npm package names by `deriveRigKey()` and may
+ * Rig ids are derived from npm package names by `deriveRigId()` and may
  * contain characters that are awkward in SQL identifiers:
  *   - `/`  — scope separator in third-party keys  (e.g. 'acme/my-rig')
  *   - `-`  — standard in npm package names

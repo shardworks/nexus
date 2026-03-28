@@ -10,7 +10,8 @@
   "description": "Nexus core library — shared infrastructure for the guild system",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./legacy/1": "./src/legacy/1/index.ts"
   },
   "scripts": {
     "build": "tsc",
@@ -34,6 +35,10 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
+      },
+      "./legacy/1": {
+        "types": "./dist/legacy/1/index.d.ts",
+        "import": "./dist/legacy/1/index.js"
       }
     }
   }

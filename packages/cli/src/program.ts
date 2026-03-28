@@ -15,7 +15,7 @@
 import path from 'node:path';
 import { Command } from 'commander';
 import { z } from 'zod';
-import { findGuildRoot, createMainspring, builtinTools, deriveRigKey } from '@shardworks/nexus-mainspring';
+import { findGuildRoot, createMainspring, builtinTools, deriveRigId } from '@shardworks/nexus-mainspring';
 import type { Tool, Mainspring } from '@shardworks/nexus-mainspring';
 import type { RigContext } from '@shardworks/nexus-core';
 
@@ -215,7 +215,7 @@ export async function main(): Promise<void> {
   // Always register rig built-in tools (version, status, rig, upgrade).
   // These are framework commands that work with or without a guild.
   const mainspringPackageName = '@shardworks/nexus-mainspring';
-  const mainspringRigId = deriveRigKey(mainspringPackageName);
+  const mainspringRigId = deriveRigId(mainspringPackageName);
   const builtins = builtinTools
     .filter((t) => !t.callableFrom || t.callableFrom.includes('cli'))
     .map((t) => ({ ...t, rigId: mainspringRigId }) as Tool);

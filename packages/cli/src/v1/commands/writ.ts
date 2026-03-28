@@ -4,7 +4,7 @@ import {
   createWrit, readWrit, listWrits, failWrit, cancelWrit,
   getWritChildren, readGuildConfig,
   interruptWrit, adminCompleteWrit, reopenFailedWrit,
-} from '@shardworks/nexus-core';
+} from '@shardworks/nexus-core/legacy/1';
 import { resolveHome } from '../resolve-home.ts';
 
 export function makeWritCommand() {

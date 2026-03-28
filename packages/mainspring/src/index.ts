@@ -23,7 +23,7 @@ export { findGuildRoot } from '@shardworks/nexus-core';
 
 export {
   createMainspring,
-  deriveRigKey,
+  deriveRigId,
   type Mainspring,
   type LoadedRig,
   type Tool,

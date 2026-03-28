@@ -2,7 +2,7 @@ import { createCommand } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { planUpgrade, applyUpgrade, readGuildConfig, writeGuildConfig, clockStatus, clockStop, clockStart } from '@shardworks/nexus-core';
+import { planUpgrade, applyUpgrade, readGuildConfig, writeGuildConfig, clockStatus, clockStop, clockStart } from '@shardworks/nexus-core/legacy/1';
 import { resolveHome } from '../resolve-home.ts';
 
 const DEFAULT_BUNDLE = '@shardworks/guild-starter-kit';

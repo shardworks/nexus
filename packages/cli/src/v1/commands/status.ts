@@ -1,12 +1,12 @@
 import { createCommand } from 'commander';
+import { VERSION } from '@shardworks/nexus-core';
 import {
   readGuildConfig,
   checkAllPreconditions,
   listAnimas,
   checkAllAnimaStaleness,
-  VERSION,
-} from '@shardworks/nexus-core';
-import type { ToolPreconditionResult } from '@shardworks/nexus-core';
+} from '@shardworks/nexus-core/legacy/1';
+import type { ToolPreconditionResult } from '@shardworks/nexus-core/legacy/1';
 import { resolveHome } from '../resolve-home.ts';
 
 export function makeStatusCommand() {
