@@ -70,17 +70,6 @@ export {
   type RigDependency,
 } from './rig-descriptor.ts';
 
-// ── V1 guild config — deprecated; legacy code only ────────────────────
-// Exported for backward compatibility with cli/v1 and other pre-V2 callers.
-// New code should use GuildConfigV2 and the V2 functions above.
-export {
-  type GuildConfig,
-  type InstalledCapability,
-  createInitialGuildConfig,
-  readGuildConfig,
-  writeGuildConfig,
-} from './legacy/1/guild-config.ts';
-
 // ── Legacy modules — not yet promoted, still live in legacy/1 ─────────
 
 export {

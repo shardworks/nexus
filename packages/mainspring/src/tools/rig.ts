@@ -9,8 +9,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   tool,
-  readGuildConfig,
-  writeGuildConfig,
+  readGuildConfigV2,
+  writeGuildConfigV2,
   resolveAllToolsFromExport,
 } from '@shardworks/nexus-core';
 import type { RigDescriptor } from '@shardworks/nexus-core';
@@ -122,32 +122,18 @@ export const rigList = tool({
     json: z.boolean().optional().describe('Output as JSON'),
   },
   handler: async (_params, { home }) => {
-    const config = readGuildConfig(home);
-    const rigKeys = config.rigs ?? [];
+    const config = readGuildConfigV2(home);
+    const rigKeys = config.rigs;
 
     if (rigKeys.length === 0) {
       if (_params.json) return [];
       return 'No rigs installed.';
     }
 
-    // Count tools per rig key from the tool registry
-    const toolCounts = new Map<string, number>(rigKeys.map((k) => [k, 0]));
-    for (const entry of Object.values(config.tools ?? {})) {
-      if (entry.package) {
-        const key = deriveRigId(entry.package);
-        if (toolCounts.has(key)) {
-          toolCounts.set(key, (toolCounts.get(key) ?? 0) + 1);
-        }
-      }
-    }
-
     if (_params.json) {
-      return [...rigKeys].sort().map((key) => ({ key, toolCount: toolCounts.get(key) ?? 0 }));
+      return [...rigKeys].sort().map((key) => ({ key }));
     }
-    return [...rigKeys].sort().map((key) => {
-      const count = toolCounts.get(key) ?? 0;
-      return `${key} (${count} ${count === 1 ? 'tool' : 'tools'})`;
-    }).join('\n');
+    return [...rigKeys].sort().join('\n');
   },
 });
 
@@ -193,10 +179,10 @@ export const rigInstall = tool({
     const rigId = deriveRigId(packageName);
 
     // 2. Check rig dependencies (if rig.json declares any)
-    const config = readGuildConfig(home);
+    const config = readGuildConfigV2(home);
     const descriptor = readRigDescriptor(home, packageName);
     if (descriptor) {
-      const missing = checkRigDependencies(descriptor, config.rigs ?? []);
+      const missing = checkRigDependencies(descriptor, config.rigs);
       if (missing.length > 0) {
         throw new Error(
           `Rig "${rigId}" requires rigs that are not installed: ${missing.join(', ')}. ` +
@@ -208,18 +194,9 @@ export const rigInstall = tool({
     // 3. Discover tools from the rig's exports
     const toolNames = await discoverRigTools(home, packageName);
 
-    // 4. Update guild.json — add to rigs list, register per-tool entries, update access control
-    if (!config.rigs) config.rigs = [];
+    // 4. Update guild.json — add to rigs list, update access control
     if (!config.rigs.includes(rigId)) {
       config.rigs.push(rigId);
-    }
-
-    // Write per-tool registry entries (V1 format) for lookup by version/status tools
-    const { version: pkgVersion } = readGuildPackageJson(home, packageName);
-    const upstreamRef = `${packageName}@${pkgVersion}`;
-    const installedAt = new Date().toISOString();
-    for (const toolName of toolNames) {
-      config.tools[toolName] = { upstream: upstreamRef, installedAt, package: packageName };
     }
 
     // Register tool names in access control lists
@@ -237,7 +214,7 @@ export const rigInstall = tool({
       }
     }
 
-    writeGuildConfig(home, config);
+    writeGuildConfigV2(home, config);
 
     const lines = [
       `Installed rig: ${rigId} (${packageName})`,
@@ -260,24 +237,24 @@ export const rigRemove = tool({
     name: z.string().describe('Rig key or package name to remove'),
   },
   handler: async (params, { home }) => {
-    const config = readGuildConfig(home);
+    const config = readGuildConfigV2(home);
     const targetKey = params.name.startsWith('@') ? deriveRigId(params.name) : params.name;
 
-    if (!(config.rigs ?? []).includes(targetKey)) {
+    if (!config.rigs.includes(targetKey)) {
       throw new Error(`Rig "${targetKey}" is not installed.`);
     }
 
     // Resolve package name before we uninstall — package.json still has it now
     const packageName = resolvePackageNameForRigKey(home, targetKey);
 
-    // Identify tools owned by this rig from the tool registry (faster than loading the module)
-    const toolsToRemove = Object.entries(config.tools ?? {})
-      .filter(([, entry]) => entry.package && deriveRigId(entry.package) === targetKey)
-      .map(([name]) => name);
-
-    // Remove per-tool registry entries
-    for (const toolName of toolsToRemove) {
-      delete config.tools[toolName];
+    // Discover tools by loading the rig module (package still installed at this point)
+    let toolsToRemove: string[] = [];
+    if (packageName) {
+      try {
+        toolsToRemove = await discoverRigTools(home, packageName);
+      } catch {
+        // Can't load module — skip access control cleanup; tools may be orphaned
+      }
     }
 
     // Remove tool names from access control
@@ -292,9 +269,9 @@ export const rigRemove = tool({
     }
 
     // Remove from rigs list
-    config.rigs = (config.rigs ?? []).filter((k) => k !== targetKey);
+    config.rigs = config.rigs.filter((k) => k !== targetKey);
 
-    writeGuildConfig(home, config);
+    writeGuildConfigV2(home, config);
 
     // npm uninstall — after guild.json is updated
     if (packageName) {

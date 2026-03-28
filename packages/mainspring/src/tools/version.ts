@@ -4,9 +4,9 @@
  * A mainspring built-in command. Available via CLI only (not MCP).
  */
 
-import { tool, VERSION, readGuildConfig } from '@shardworks/nexus-core';
+import { tool, VERSION, readGuildConfigV2 } from '@shardworks/nexus-core';
 import { z } from 'zod';
-import { readGuildPackageJson } from '../resolve-package.ts';
+import { readGuildPackageJson, resolvePackageNameForRigKey } from '../resolve-package.ts';
 
 export default tool({
   name: 'version',
@@ -21,16 +21,17 @@ export default tool({
       node: process.version,
     };
 
-    // Collect installed package versions from tool entries in guild.json.
-    // Tools share packages (multiple tools can come from one package), so
-    // we deduplicate before resolving. Missing packages show "not installed".
+    // Collect installed package versions from config.rigs.
+    // Resolve each rig key to its package name via the guild's package.json,
+    // then read the version from node_modules. Missing packages show "not installed".
     try {
-      const config = readGuildConfig(home);
-      const packages = new Set<string>();
-      for (const entry of Object.values(config.tools ?? {})) {
-        if (entry.package) packages.add(entry.package);
-      }
-      for (const packageName of packages) {
+      const config = readGuildConfigV2(home);
+      for (const rigKey of config.rigs) {
+        const packageName = resolvePackageNameForRigKey(home, rigKey);
+        if (!packageName) {
+          result[rigKey] = 'not installed';
+          continue;
+        }
         const { pkgJson } = readGuildPackageJson(home, packageName);
         result[packageName] = pkgJson
           ? ((pkgJson.version as string) ?? 'unknown')
