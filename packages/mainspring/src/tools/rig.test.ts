@@ -2,11 +2,14 @@
  * Tests for the rig built-in tools: rig-list, rig-install, rig-remove, rig-upgrade.
  *
  * Tests the handlers directly — no CLI layer involved.
+ * V2: rigs are tracked as string keys in config.rigs; config.tools is gone.
  *
  * `rig-install` (link mode) is tested end-to-end by creating a minimal fake rig
- * package in a tmp directory and symlinking it, then checking the resulting
- * guild.json and node_modules state. Registry mode (npm install) is not tested
- * as it requires network access.
+ * package in a tmp directory and installing it via npm, then checking the resulting
+ * guild.json state. Registry mode (npm install from network) is not tested.
+ *
+ * `rig-remove` tests manually pre-populate node_modules and guild/package.json so
+ * that `resolvePackageNameForRigKey` and dynamic tool discovery work without npm.
  */
 
 import { describe, it, afterEach } from 'node:test';
@@ -24,27 +27,29 @@ function makeTmpDir(): string {
   return dir;
 }
 
-/** Write a minimal guild.json to dir, with optional overrides. */
+/** Write a minimal V2 guild.json to dir, with optional overrides. */
 function makeGuild(dir: string, overrides: Record<string, unknown> = {}): void {
   const config = {
     name: 'test-guild',
     nexus: '0.0.0',
-    model: 'sonnet',
     workshops: {},
     roles: {},
     baseTools: [],
-    tools: {},
-    engines: {},
-    curricula: {},
-    temperaments: {},
     rigs: [],
+    settings: { model: 'sonnet' },
     ...overrides,
   };
   fs.writeFileSync(path.join(dir, 'guild.json'), JSON.stringify(config, null, 2) + '\n');
 }
 
+/** Write a guild-root package.json declaring the given npm dependencies. */
+function makeGuildPackageJson(dir: string, deps: Record<string, string>): void {
+  const pkg = { name: 'test-guild', version: '1.0.0', dependencies: deps };
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
+}
+
 /**
- * Create a minimal fake rig package directory.
+ * Create a minimal fake rig package directory suitable for `rig-install --type link`.
  *
  * Exports a valid ToolDefinition (or array of them) so that
  * `resolveAllToolsFromExport` recognises them as tools.
@@ -65,7 +70,6 @@ function makeFakeRig(parentDir: string, packageName: string, toolNames: string[]
   };
   fs.writeFileSync(path.join(rigDir, 'package.json'), JSON.stringify(pkgJson, null, 2));
 
-  // Export a single tool or an array of tools, each satisfying isToolDefinition
   const toolObjects = toolNames.map(
     (n) => `{ name: '${n}', description: 'Tool ${n}', params: {}, handler: async () => {} }`,
   );
@@ -73,6 +77,30 @@ function makeFakeRig(parentDir: string, packageName: string, toolNames: string[]
   fs.writeFileSync(path.join(rigDir, 'index.js'), `export default ${exportExpr};\n`);
 
   return rigDir;
+}
+
+/**
+ * Create a fake rig package directly inside the guild's node_modules.
+ * Used to set up pre-installed rigs for rig-remove tests without going through npm.
+ * Supports scoped package names (e.g. "@shardworks/nexus-stdlib").
+ */
+function makeNodeModuleRig(guildRoot: string, packageName: string, toolNames: string[]): void {
+  const pkgDir = path.join(guildRoot, 'node_modules', packageName);
+  fs.mkdirSync(pkgDir, { recursive: true });
+
+  const pkgJson = {
+    name: packageName,
+    version: '1.0.0',
+    type: 'module',
+    exports: { '.': './index.js' },
+  };
+  fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify(pkgJson, null, 2));
+
+  const toolObjects = toolNames.map(
+    (n) => `{ name: '${n}', description: 'Tool ${n}', params: {}, handler: async () => {} }`,
+  );
+  const exportExpr = toolObjects.length === 1 ? toolObjects[0] : `[${toolObjects.join(', ')}]`;
+  fs.writeFileSync(path.join(pkgDir, 'index.js'), `export default ${exportExpr};\n`);
 }
 
 afterEach(() => {
@@ -123,116 +151,40 @@ describe('rig-list handler', () => {
 
   it('shows installed rig keys in text output', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      rigs: ['nexus-stdlib'],
-      tools: {
-        commission: {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-      },
-    });
+    makeGuild(tmp, { rigs: ['nexus-stdlib'] });
 
     const result = await rigList.handler({}, { home: tmp } as never) as string;
     assert.ok(result.includes('nexus-stdlib'));
   });
 
-  it('shows correct tool count for each rig', async () => {
+  it('returns sorted rig keys one per line in text mode', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      rigs: ['nexus-stdlib'],
-      tools: {
-        commission: {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-        signal: {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-      },
-    });
+    makeGuild(tmp, { rigs: ['nexus-stdlib', 'nexus-ledger'] });
 
     const result = await rigList.handler({}, { home: tmp } as never) as string;
-    assert.ok(result.includes('2 tools'));
+    const lines = result.split('\n').filter(Boolean);
+    assert.deepEqual(lines, ['nexus-ledger', 'nexus-stdlib']);
   });
 
-  it('uses singular "tool" when rig has exactly one tool', async () => {
+  it('returns array of { key } objects in json mode', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      rigs: ['nexus-stdlib'],
-      tools: {
-        commission: {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-      },
-    });
-
-    const result = await rigList.handler({}, { home: tmp } as never) as string;
-    assert.ok(result.includes('1 tool)'));
-    assert.ok(!result.includes('1 tools'));
-  });
-
-  it('shows 0 tools for a rig with no matching tool entries', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      rigs: ['empty-rig'],
-      tools: {},
-    });
-
-    const result = await rigList.handler({}, { home: tmp } as never) as string;
-    assert.ok(result.includes('empty-rig'));
-    assert.ok(result.includes('0 tools'));
-  });
-
-  it('returns array of { key, toolCount } in json mode', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      rigs: ['nexus-stdlib'],
-      tools: {
-        commission: {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-      },
-    });
+    makeGuild(tmp, { rigs: ['nexus-stdlib'] });
 
     const result = await rigList.handler({ json: true }, { home: tmp } as never);
     assert.ok(Array.isArray(result));
-    const arr = result as Array<{ key: string; toolCount: number }>;
+    const arr = result as Array<{ key: string }>;
     assert.equal(arr.length, 1);
     assert.equal(arr[0]!.key, 'nexus-stdlib');
-    assert.equal(arr[0]!.toolCount, 1);
   });
 
-  it('lists multiple rigs', async () => {
+  it('json output is sorted by key', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      rigs: ['nexus-stdlib', 'nexus-ledger'],
-      tools: {
-        commission: {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-        'create-writ': {
-          upstream: '@shardworks/nexus-ledger@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-ledger',
-        },
-      },
-    });
+    makeGuild(tmp, { rigs: ['nexus-stdlib', 'nexus-ledger'] });
 
     const result = await rigList.handler({ json: true }, { home: tmp } as never);
-    const arr = result as Array<{ key: string; toolCount: number }>;
+    const arr = result as Array<{ key: string }>;
     assert.equal(arr.length, 2);
-    const keys = arr.map((r) => r.key).sort();
+    const keys = arr.map((r) => r.key);
     assert.deepEqual(keys, ['nexus-ledger', 'nexus-stdlib']);
   });
 });
@@ -240,30 +192,6 @@ describe('rig-list handler', () => {
 // ── rig-install (link mode) ────────────────────────────────────────────────
 
 describe('rig-install handler — link mode', () => {
-  it('creates a symlink in node_modules', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp);
-    const rigDir = makeFakeRig(tmp, 'my-fake-rig', ['fake-tool']);
-
-    await rigInstall.handler({ source: rigDir, type: 'link' }, { home: tmp } as never);
-
-    const linkPath = path.join(tmp, 'node_modules', 'my-fake-rig');
-    assert.ok(fs.existsSync(linkPath));
-    assert.ok(fs.lstatSync(linkPath).isSymbolicLink());
-  });
-
-  it('symlink points to the source directory', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp);
-    const rigDir = makeFakeRig(tmp, 'my-fake-rig', ['fake-tool']);
-
-    await rigInstall.handler({ source: rigDir, type: 'link' }, { home: tmp } as never);
-
-    const linkPath = path.join(tmp, 'node_modules', 'my-fake-rig');
-    const resolved = fs.realpathSync(linkPath);
-    assert.equal(resolved, fs.realpathSync(rigDir));
-  });
-
   it('adds the rig key to config.rigs', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
@@ -274,32 +202,6 @@ describe('rig-install handler — link mode', () => {
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
     assert.ok(Array.isArray(config.rigs));
     assert.ok(config.rigs.includes('my-fake-rig'));
-  });
-
-  it('registers discovered tools in config.tools', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp);
-    const rigDir = makeFakeRig(tmp, 'my-fake-rig', ['fake-tool']);
-
-    await rigInstall.handler({ source: rigDir, type: 'link' }, { home: tmp } as never);
-
-    const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
-    assert.ok('fake-tool' in config.tools);
-    assert.equal(config.tools['fake-tool'].package, 'my-fake-rig');
-  });
-
-  it('sets installedAt on each registered tool', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp);
-    const rigDir = makeFakeRig(tmp, 'my-fake-rig', ['fake-tool']);
-
-    const before = Date.now();
-    await rigInstall.handler({ source: rigDir, type: 'link' }, { home: tmp } as never);
-    const after = Date.now();
-
-    const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
-    const installedAt = new Date(config.tools['fake-tool'].installedAt).getTime();
-    assert.ok(installedAt >= before && installedAt <= after);
   });
 
   it('adds tools to baseTools when no roles are specified', async () => {
@@ -347,7 +249,7 @@ describe('rig-install handler — link mode', () => {
     assert.ok(config.roles.scribe.tools.includes('fake-tool'));
   });
 
-  it('registers all tools from a multi-tool rig', async () => {
+  it('adds all tools from a multi-tool rig to baseTools', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
     const rigDir = makeFakeRig(tmp, 'multi-rig', ['tool-alpha', 'tool-beta', 'tool-gamma']);
@@ -355,9 +257,6 @@ describe('rig-install handler — link mode', () => {
     await rigInstall.handler({ source: rigDir, type: 'link' }, { home: tmp } as never);
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
-    assert.ok('tool-alpha' in config.tools);
-    assert.ok('tool-beta' in config.tools);
-    assert.ok('tool-gamma' in config.tools);
     assert.ok(config.baseTools.includes('tool-alpha'));
     assert.ok(config.baseTools.includes('tool-beta'));
     assert.ok(config.baseTools.includes('tool-gamma'));
@@ -432,14 +331,21 @@ describe('rig-install handler — link mode', () => {
     await rigInstall.handler({ source: rigDir, type: 'link' }, { home: tmp } as never);
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
-    assert.ok('dep-tool' in config.tools);
+    assert.ok(config.rigs.includes('dependent-rig'));
+    assert.ok(config.baseTools.includes('dep-tool'));
   });
 });
 
 // ── rig-remove ─────────────────────────────────────────────────────────────
 
 describe('rig-remove handler', () => {
-  /** Set up a guild with nexus-stdlib already installed (2 tools, 1 in a role). */
+  /**
+   * Set up a guild with nexus-stdlib already installed.
+   *
+   * Manually creates node_modules and guild/package.json so that
+   * `resolvePackageNameForRigKey` and dynamic tool discovery work
+   * without running npm install.
+   */
   function makeInstalledGuild(dir: string): void {
     makeGuild(dir, {
       rigs: ['nexus-stdlib'],
@@ -447,19 +353,9 @@ describe('rig-remove handler', () => {
       roles: {
         artificer: { seats: null, tools: ['commission'] },
       },
-      tools: {
-        commission: {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-        signal: {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-      },
     });
+    makeGuildPackageJson(dir, { '@shardworks/nexus-stdlib': '^1.0.0' });
+    makeNodeModuleRig(dir, '@shardworks/nexus-stdlib', ['commission', 'signal']);
   }
 
   it('removes the rig from config.rigs', async () => {
@@ -470,17 +366,6 @@ describe('rig-remove handler', () => {
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
     assert.ok(!config.rigs.includes('nexus-stdlib'));
-  });
-
-  it('removes all rig-owned tools from config.tools', async () => {
-    const tmp = makeTmpDir();
-    makeInstalledGuild(tmp);
-
-    await rigRemove.handler({ name: 'nexus-stdlib' }, { home: tmp } as never);
-
-    const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
-    assert.ok(!('commission' in config.tools));
-    assert.ok(!('signal' in config.tools));
   });
 
   it('removes tools from baseTools', async () => {
@@ -504,30 +389,23 @@ describe('rig-remove handler', () => {
     assert.ok(!config.roles.artificer.tools.includes('commission'));
   });
 
-  it('does not remove tools that belong to a different rig', async () => {
+  it('does not affect tools or rigs belonging to a different rig', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, {
       rigs: ['nexus-stdlib', 'nexus-ledger'],
       baseTools: ['commission', 'create-writ'],
       roles: {},
-      tools: {
-        commission: {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-        'create-writ': {
-          upstream: '@shardworks/nexus-ledger@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-ledger',
-        },
-      },
     });
+    makeGuildPackageJson(tmp, {
+      '@shardworks/nexus-stdlib': '^1.0.0',
+      '@shardworks/nexus-ledger': '^1.0.0',
+    });
+    makeNodeModuleRig(tmp, '@shardworks/nexus-stdlib', ['commission']);
+    makeNodeModuleRig(tmp, '@shardworks/nexus-ledger', ['create-writ']);
 
     await rigRemove.handler({ name: 'nexus-stdlib' }, { home: tmp } as never);
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
-    assert.ok('create-writ' in config.tools);
     assert.ok(config.baseTools.includes('create-writ'));
     assert.ok(config.rigs.includes('nexus-ledger'));
   });
@@ -536,7 +414,6 @@ describe('rig-remove handler', () => {
     const tmp = makeTmpDir();
     makeInstalledGuild(tmp);
 
-    // Pass full package name instead of derived key
     await rigRemove.handler({ name: '@shardworks/nexus-stdlib' }, { home: tmp } as never);
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
@@ -553,7 +430,7 @@ describe('rig-remove handler', () => {
 
   it('reports the count of unregistered tools (plural)', async () => {
     const tmp = makeTmpDir();
-    makeInstalledGuild(tmp);
+    makeInstalledGuild(tmp); // 2 tools: commission, signal
 
     const result = await rigRemove.handler({ name: 'nexus-stdlib' }, { home: tmp } as never) as string;
     assert.ok(result.includes('2 tools'));
@@ -565,14 +442,9 @@ describe('rig-remove handler', () => {
       rigs: ['solo-rig'],
       baseTools: ['only-tool'],
       roles: {},
-      tools: {
-        'only-tool': {
-          upstream: 'solo-rig@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: 'solo-rig',
-        },
-      },
     });
+    makeGuildPackageJson(tmp, { 'solo-rig': '^1.0.0' });
+    makeNodeModuleRig(tmp, 'solo-rig', ['only-tool']);
 
     const result = await rigRemove.handler({ name: 'solo-rig' }, { home: tmp } as never) as string;
     assert.ok(result.includes('1 tool '));

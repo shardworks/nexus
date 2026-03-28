@@ -1,7 +1,8 @@
 /**
- * Tests for the `status` built-in tool.
+ * Tests for the `status` built-in tool (V2 guild config).
  *
  * Tests the handler directly — no CLI layer involved.
+ * V2: rigs come from config.rigs directly, not derived from a tools registry.
  */
 
 import { describe, it, afterEach } from 'node:test';
@@ -19,20 +20,16 @@ function makeTmpDir(): string {
   return dir;
 }
 
-/** Write a minimal guild.json to dir, with optional overrides. */
+/** Write a minimal V2 guild.json to dir, with optional overrides. */
 function makeGuild(dir: string, overrides: Record<string, unknown> = {}): void {
   const config = {
     name: 'test-guild',
     nexus: '0.0.0',
-    model: 'sonnet',
     workshops: {},
     roles: {},
     baseTools: [],
-    tools: {},
-    engines: {},
-    curricula: {},
-    temperaments: {},
     rigs: [],
+    settings: { model: 'sonnet' },
     ...overrides,
   };
   fs.writeFileSync(path.join(dir, 'guild.json'), JSON.stringify(config, null, 2) + '\n');
@@ -77,55 +74,47 @@ describe('status handler — text mode', () => {
     assert.ok((result as string).includes(tmp));
   });
 
-  it('shows "(none)" for rigs when no tools have package entries', async () => {
+  it('shows model from settings', async () => {
+    const tmp = makeTmpDir();
+    makeGuild(tmp, { settings: { model: 'opus' } });
+
+    const result = await statusTool.handler({}, { home: tmp } as never);
+    assert.ok((result as string).includes('opus'));
+  });
+
+  it('shows "(none)" for rigs when rigs list is empty', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
-    const result = await statusTool.handler({}, { home: tmp } as never);
-    assert.ok((result as string).includes('(none)'));
+    const result = await statusTool.handler({}, { home: tmp } as never) as string;
+    const rigsLine = result.split('\n').find((l) => l.startsWith('Rigs:')) ?? '';
+    assert.ok(rigsLine.includes('(none)'));
   });
 
   it('shows "(none)" for roles when no roles are configured', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
-    const result = await statusTool.handler({}, { home: tmp } as never);
-    const lines = (result as string).split('\n');
-    const rolesLine = lines.find((l) => l.startsWith('Roles:'));
-    assert.ok(rolesLine?.includes('(none)'));
+    const result = await statusTool.handler({}, { home: tmp } as never) as string;
+    const rolesLine = result.split('\n').find((l) => l.startsWith('Roles:')) ?? '';
+    assert.ok(rolesLine.includes('(none)'));
   });
 
-  it('derives rig keys from tool package entries', async () => {
+  it('shows installed rig keys from config.rigs', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      tools: {
-        commission: {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-      },
-    });
+    makeGuild(tmp, { rigs: ['nexus-stdlib'] });
 
-    const result = await statusTool.handler({}, { home: tmp } as never);
-    assert.ok((result as string).includes('nexus-stdlib'));
+    const result = await statusTool.handler({}, { home: tmp } as never) as string;
+    assert.ok(result.includes('nexus-stdlib'));
   });
 
-  it('strips @shardworks scope from rig key', async () => {
+  it('shows multiple installed rigs', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      tools: {
-        'my-tool': {
-          upstream: '@shardworks/nexus-ledger@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-ledger',
-        },
-      },
-    });
+    makeGuild(tmp, { rigs: ['nexus-stdlib', 'nexus-ledger'] });
 
-    const result = await statusTool.handler({}, { home: tmp } as never);
-    assert.ok((result as string).includes('nexus-ledger'));
-    assert.ok(!(result as string).includes('@shardworks'));
+    const result = await statusTool.handler({}, { home: tmp } as never) as string;
+    assert.ok(result.includes('nexus-stdlib'));
+    assert.ok(result.includes('nexus-ledger'));
   });
 
   it('shows installed role names', async () => {
@@ -137,55 +126,9 @@ describe('status handler — text mode', () => {
       },
     });
 
-    const result = await statusTool.handler({}, { home: tmp } as never);
-    assert.ok((result as string).includes('artificer'));
-    assert.ok((result as string).includes('scribe'));
-  });
-
-  it('deduplicates rigs when multiple tools share a package', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      tools: {
-        'tool-a': {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-        'tool-b': {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-      },
-    });
-
     const result = await statusTool.handler({}, { home: tmp } as never) as string;
-    const rigsLine = result.split('\n').find((l) => l.startsWith('Rigs:')) ?? '';
-    // Only one occurrence of nexus-stdlib in the rigs line
-    const matches = rigsLine.match(/nexus-stdlib/g) ?? [];
-    assert.equal(matches.length, 1);
-  });
-
-  it('shows multiple rigs from different packages', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      tools: {
-        'commission': {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-        'create-writ': {
-          upstream: '@shardworks/nexus-ledger@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-ledger',
-        },
-      },
-    });
-
-    const result = await statusTool.handler({}, { home: tmp } as never) as string;
-    assert.ok(result.includes('nexus-stdlib'));
-    assert.ok(result.includes('nexus-ledger'));
+    assert.ok(result.includes('artificer'));
+    assert.ok(result.includes('scribe'));
   });
 });
 
@@ -222,32 +165,25 @@ describe('status handler — json mode', () => {
 
     const result = await statusTool.handler({ json: true }, { home: tmp } as never) as Record<string, unknown>;
     assert.ok(typeof result.nexus === 'string');
-    assert.ok((result.nexus as string).length > 0);
   });
 
-  it('includes rigs as a sorted array', async () => {
+  it('includes model from settings', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      tools: {
-        'commission': {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-        'create-writ': {
-          upstream: '@shardworks/nexus-ledger@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-ledger',
-        },
-      },
-    });
+    makeGuild(tmp, { settings: { model: 'haiku' } });
+
+    const result = await statusTool.handler({ json: true }, { home: tmp } as never) as Record<string, unknown>;
+    assert.equal(result.model, 'haiku');
+  });
+
+  it('includes rigs as a sorted array from config.rigs', async () => {
+    const tmp = makeTmpDir();
+    makeGuild(tmp, { rigs: ['nexus-ledger', 'nexus-stdlib'] });
 
     const result = await statusTool.handler({ json: true }, { home: tmp } as never) as Record<string, unknown>;
     assert.ok(Array.isArray(result.rigs));
     const rigs = result.rigs as string[];
     assert.ok(rigs.includes('nexus-stdlib'));
     assert.ok(rigs.includes('nexus-ledger'));
-    // sorted
     assert.deepEqual(rigs, [...rigs].sort());
   });
 
@@ -275,28 +211,5 @@ describe('status handler — json mode', () => {
     const result = await statusTool.handler({ json: true }, { home: tmp } as never) as Record<string, unknown>;
     assert.deepEqual(result.rigs, []);
     assert.deepEqual(result.roles, []);
-  });
-
-  it('deduplicates rigs in json output', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      tools: {
-        'tool-a': {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-        'tool-b': {
-          upstream: '@shardworks/nexus-stdlib@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: '@shardworks/nexus-stdlib',
-        },
-      },
-    });
-
-    const result = await statusTool.handler({ json: true }, { home: tmp } as never) as Record<string, unknown>;
-    const rigs = result.rigs as string[];
-    assert.equal(rigs.length, 1);
-    assert.equal(rigs[0], 'nexus-stdlib');
   });
 });

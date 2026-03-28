@@ -1,7 +1,9 @@
 /**
- * Tests for the `version` built-in tool.
+ * Tests for the `version` built-in tool (V2 guild config).
  *
  * Tests the handler directly — no CLI layer involved.
+ * V2: rigs come from config.rigs; package versions are resolved via
+ * the guild's package.json and node_modules.
  */
 
 import { describe, it, afterEach } from 'node:test';
@@ -19,23 +21,38 @@ function makeTmpDir(): string {
   return dir;
 }
 
-/** Write a minimal guild.json to dir, with optional overrides. */
+/** Write a minimal V2 guild.json to dir, with optional overrides. */
 function makeGuild(dir: string, overrides: Record<string, unknown> = {}): void {
   const config = {
     name: 'test-guild',
     nexus: '0.0.0',
-    model: 'sonnet',
     workshops: {},
     roles: {},
     baseTools: [],
-    tools: {},
-    engines: {},
-    curricula: {},
-    temperaments: {},
     rigs: [],
+    settings: { model: 'sonnet' },
     ...overrides,
   };
   fs.writeFileSync(path.join(dir, 'guild.json'), JSON.stringify(config, null, 2) + '\n');
+}
+
+/** Write a guild-root package.json declaring the given npm dependencies. */
+function makeGuildPackageJson(dir: string, deps: Record<string, string>): void {
+  const pkg = { name: 'test-guild', version: '1.0.0', dependencies: deps };
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
+}
+
+/**
+ * Create a minimal fake package in node_modules with the given version.
+ * Only writes a package.json — no exports needed for version lookups.
+ */
+function makeFakeNodeModule(guildRoot: string, packageName: string, version: string): void {
+  const pkgDir = path.join(guildRoot, 'node_modules', packageName);
+  fs.mkdirSync(pkgDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(pkgDir, 'package.json'),
+    JSON.stringify({ name: packageName, version }, null, 2) + '\n',
+  );
 }
 
 afterEach(() => {
@@ -92,65 +109,41 @@ describe('version handler — text mode', () => {
     }
   });
 
-  it('shows package as "not installed" when not resolvable from mainspring', async () => {
+  it('shows rig key as "not installed" when guild has no package.json', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      tools: {
-        'some-tool': {
-          upstream: 'some-nonexistent-pkg@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: 'some-nonexistent-pkg',
-        },
-      },
-    });
+    makeGuild(tmp, { rigs: ['nexus-stdlib'] }); // no guild package.json — resolvePackageNameForRigKey returns null
 
     const result = await versionTool.handler({}, { home: tmp } as never) as string;
-    assert.ok(result.includes('some-nonexistent-pkg'));
+    assert.ok(result.includes('nexus-stdlib'));
     assert.ok(result.includes('not installed'));
   });
 
-  it('does not duplicate a package when multiple tools share it', async () => {
+  it('shows the npm package name and version when rig is resolvable', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      tools: {
-        'tool-a': {
-          upstream: 'some-nonexistent-pkg@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: 'some-nonexistent-pkg',
-        },
-        'tool-b': {
-          upstream: 'some-nonexistent-pkg@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: 'some-nonexistent-pkg',
-        },
-      },
-    });
+    makeGuild(tmp, { rigs: ['nexus-stdlib'] });
+    makeGuildPackageJson(tmp, { '@shardworks/nexus-stdlib': '^1.2.3' });
+    makeFakeNodeModule(tmp, '@shardworks/nexus-stdlib', '1.2.3');
 
     const result = await versionTool.handler({}, { home: tmp } as never) as string;
-    const lines = result.split('\n').filter((l) => l.startsWith('some-nonexistent-pkg'));
-    assert.equal(lines.length, 1);
+    assert.ok(result.includes('@shardworks/nexus-stdlib'));
+    assert.ok(result.includes('1.2.3'));
   });
 
-  it('shows packages for multiple distinct rigs', async () => {
+  it('shows package versions for multiple installed rigs', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      tools: {
-        'tool-a': {
-          upstream: 'pkg-alpha@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: 'pkg-alpha',
-        },
-        'tool-b': {
-          upstream: 'pkg-beta@2.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: 'pkg-beta',
-        },
-      },
+    makeGuild(tmp, { rigs: ['nexus-stdlib', 'nexus-ledger'] });
+    makeGuildPackageJson(tmp, {
+      '@shardworks/nexus-stdlib': '^1.0.0',
+      '@shardworks/nexus-ledger': '^2.0.0',
     });
+    makeFakeNodeModule(tmp, '@shardworks/nexus-stdlib', '1.0.0');
+    makeFakeNodeModule(tmp, '@shardworks/nexus-ledger', '2.0.0');
 
     const result = await versionTool.handler({}, { home: tmp } as never) as string;
-    assert.ok(result.includes('pkg-alpha'));
-    assert.ok(result.includes('pkg-beta'));
+    assert.ok(result.includes('@shardworks/nexus-stdlib'));
+    assert.ok(result.includes('@shardworks/nexus-ledger'));
+    assert.ok(result.includes('1.0.0'));
+    assert.ok(result.includes('2.0.0'));
   });
 });
 
@@ -179,52 +172,45 @@ describe('version handler — json mode', () => {
     assert.equal(result.node, process.version);
   });
 
-  it('marks unknown packages as "not installed"', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      tools: {
-        'some-tool': {
-          upstream: 'some-nonexistent-pkg@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: 'some-nonexistent-pkg',
-        },
-      },
-    });
-
-    const result = await versionTool.handler({ json: true }, { home: tmp } as never) as Record<string, string>;
-    assert.equal(result['some-nonexistent-pkg'], 'not installed');
-  });
-
-  it('deduplicates packages in json output', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      tools: {
-        'tool-a': {
-          upstream: 'some-nonexistent-pkg@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: 'some-nonexistent-pkg',
-        },
-        'tool-b': {
-          upstream: 'some-nonexistent-pkg@1.0.0',
-          installedAt: '2026-01-01T00:00:00Z',
-          package: 'some-nonexistent-pkg',
-        },
-      },
-    });
-
-    const result = await versionTool.handler({ json: true }, { home: tmp } as never) as Record<string, string>;
-    const pkgEntries = Object.keys(result).filter((k) => k === 'some-nonexistent-pkg');
-    assert.equal(pkgEntries.length, 1);
-  });
-
-  it('succeeds gracefully when guild.json is missing (no tools section)', async () => {
+  it('succeeds gracefully when guild.json is missing', async () => {
     const tmp = makeTmpDir(); // no guild.json
 
     const result = await versionTool.handler({ json: true }, { home: tmp } as never) as Record<string, string>;
-    // Should still have nexus and node
     assert.ok('nexus' in result);
     assert.ok('node' in result);
-    // No package entries
     assert.equal(Object.keys(result).length, 2);
+  });
+
+  it('marks rig key as "not installed" when guild has no package.json', async () => {
+    const tmp = makeTmpDir();
+    makeGuild(tmp, { rigs: ['nexus-stdlib'] }); // no guild package.json
+
+    const result = await versionTool.handler({ json: true }, { home: tmp } as never) as Record<string, string>;
+    assert.equal(result['nexus-stdlib'], 'not installed');
+  });
+
+  it('includes resolved package name and version for an installed rig', async () => {
+    const tmp = makeTmpDir();
+    makeGuild(tmp, { rigs: ['nexus-stdlib'] });
+    makeGuildPackageJson(tmp, { '@shardworks/nexus-stdlib': '^1.2.3' });
+    makeFakeNodeModule(tmp, '@shardworks/nexus-stdlib', '1.2.3');
+
+    const result = await versionTool.handler({ json: true }, { home: tmp } as never) as Record<string, string>;
+    assert.equal(result['@shardworks/nexus-stdlib'], '1.2.3');
+  });
+
+  it('includes both package versions for two installed rigs', async () => {
+    const tmp = makeTmpDir();
+    makeGuild(tmp, { rigs: ['nexus-stdlib', 'nexus-ledger'] });
+    makeGuildPackageJson(tmp, {
+      '@shardworks/nexus-stdlib': '^1.0.0',
+      '@shardworks/nexus-ledger': '^2.0.0',
+    });
+    makeFakeNodeModule(tmp, '@shardworks/nexus-stdlib', '1.0.0');
+    makeFakeNodeModule(tmp, '@shardworks/nexus-ledger', '2.0.0');
+
+    const result = await versionTool.handler({ json: true }, { home: tmp } as never) as Record<string, string>;
+    assert.equal(result['@shardworks/nexus-stdlib'], '1.0.0');
+    assert.equal(result['@shardworks/nexus-ledger'], '2.0.0');
   });
 });

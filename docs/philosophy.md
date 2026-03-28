@@ -1,5 +1,7 @@
 # Nexus Mk 2.1 — Project Philosophy
 
+> The whole project is an experiment in whether that relationship — patron directing a guild — is genuinely achievable with AI. Not "AI as a tool the human wields" (that's Mk 2.0, that's every IDE plugin, that's most of the industry). But AI as a workforce that the human directs by intent and judges by output.   
+
 ## What Is This
 
 Nexus Mk 2.1 is an experimental multi-agent AI system — and a deliberate departure from its predecessor.
