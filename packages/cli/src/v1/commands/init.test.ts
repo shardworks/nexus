@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { initGuild, installBundle, instantiate, VERSION, applyCoreMigrations, applyMigrations } from '@shardworks/nexus-core';
+import { initGuild, installBundle, instantiate, VERSION, applyCoreMigrations } from '@shardworks/nexus-core';
 
 /**
  * Strip the @shardworks/nexus dependency from a guild's package.json.
@@ -77,7 +77,6 @@ function fullInit(home: string, model: string, bundleDir: string): void {
   stripCliDep(home);
   installBundle({ home, bundleDir, commit: false });
   applyCoreMigrations(home);
-  applyMigrations(home);
   instantiate({ home, name: 'Steward', roles: ['steward'], curriculum: 'guild-operations', temperament: 'guide' });
   instantiate({ home, name: 'Unnamed Artificer', roles: ['artificer'], curriculum: 'guild-operations', temperament: 'artisan' });
   execFileSync('git', ['add', '-A'], { cwd: home, stdio: 'pipe' });

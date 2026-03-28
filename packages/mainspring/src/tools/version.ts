@@ -4,9 +4,9 @@
  * A mainspring built-in command. Available via CLI only (not MCP).
  */
 
-import { tool, VERSION, readGuildConfigV2 } from '@shardworks/nexus-core';
+import { tool, VERSION, readGuildConfig } from '@shardworks/nexus-core';
 import { z } from 'zod';
-import { resolvePackageNameForRigKey, readGuildPackageJson } from '../resolve-package.ts';
+import { readGuildPackageJson } from '../resolve-package.ts';
 
 export default tool({
   name: 'version',
@@ -21,14 +21,20 @@ export default tool({
       node: process.version,
     };
 
-    // Read installed rig versions by resolving each rig key → package name
+    // Collect installed package versions from tool entries in guild.json.
+    // Tools share packages (multiple tools can come from one package), so
+    // we deduplicate before resolving. Missing packages show "not installed".
     try {
-      const config = readGuildConfigV2(home);
-      for (const rigKey of config.rigs) {
-        const packageName = resolvePackageNameForRigKey(home, rigKey);
-        if (!packageName) continue;
-        const { version } = readGuildPackageJson(home, packageName);
-        result[rigKey] = version;
+      const config = readGuildConfig(home);
+      const packages = new Set<string>();
+      for (const entry of Object.values(config.tools ?? {})) {
+        if (entry.package) packages.add(entry.package);
+      }
+      for (const packageName of packages) {
+        const { pkgJson } = readGuildPackageJson(home, packageName);
+        result[packageName] = pkgJson
+          ? ((pkgJson.version as string) ?? 'unknown')
+          : 'not installed';
       }
     } catch {
       // Not in a guild or guild.json unreadable — just show framework version

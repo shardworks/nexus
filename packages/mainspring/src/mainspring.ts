@@ -16,35 +16,15 @@ import { readGuildConfigV2, resolveAllToolsFromExport, isRig, isToolDefinition, 
 import type { Rig, GuildConfigV2, ToolDefinition, RigContext, ReadOnlyBook, Book } from '@shardworks/nexus-core';
 import type { ToolCaller } from '@shardworks/nexus-core';
 import { builtinTools } from './tools/index.ts';
-import { readGuildPackageJson, resolveGuildPackageEntry, resolvePackageNameForRigKey } from './resolve-package.ts';
+import { deriveRigId, readGuildPackageJson, resolveGuildPackageEntry, resolvePackageNameForRigKey } from './resolve-package.ts';
 import { openBooksDatabase, type BooksDatabase } from './db/sqlite-adapter.ts';
 import { BookStore, booksTableName } from './db/book-store.ts';
 import { reconcileBooks } from './db/reconcile-books.ts';
 
-// ── Rig key derivation ─────────────────────────────────────────────────
-
-/**
- * Derive the guild-facing rig key from an npm package name.
- *
- * Convention:
- * - `@shardworks/nexus-ledger` → `nexus-ledger`  (official scope stripped)
- * - `@acme/my-rig`             → `acme/my-rig`   (third-party: drop @ only)
- * - `my-rig`                   → `my-rig`         (unscoped: unchanged)
- *
- * The `@shardworks` scope is the official Nexus namespace — its rigs are
- * referenced by bare name in guild.json, CLI commands, and config keys.
- * Third-party scoped packages retain the scope as a prefix (without @) to
- * prevent collisions between `@acme/foo` and `@other/foo`.
- */
-export function deriveRigKey(packageName: string): string {
-  if (packageName.startsWith('@shardworks/')) {
-    return packageName.slice('@shardworks/'.length);
-  }
-  if (packageName.startsWith('@')) {
-    return packageName.slice(1); // @acme/foo → acme/foo
-  }
-  return packageName;
-}
+// ── Rig id derivation ──────────────────────────────────────────────────
+// Re-exported from resolve-package.ts to avoid circular imports: tool modules
+// need deriveRigId but also get imported by mainspring.ts via builtinTools.
+export { deriveRigId } from './resolve-package.ts';
 
 // ── Public types ───────────────────────────────────────────────────────
 
@@ -177,7 +157,7 @@ export interface Mainspring {
 /** Build the mainspring's own LoadedRig entry from its built-in tools. */
 function mainspringRig(): LoadedRig {
   const mainspringPackageName = '@shardworks/nexus-mainspring';
-  const mainspringId = deriveRigKey(mainspringPackageName);
+  const mainspringId = deriveRigId(mainspringPackageName);
   const tools: Tool[] = builtinTools.map((t) => ({ ...t, rigId: mainspringId }) as Tool);
   return {
     packageName: mainspringPackageName,
@@ -281,7 +261,7 @@ export function createMainspring(guildRoot: string): Mainspring {
 
     getRigConfig(name: string) {
       // Normalize to key — accepts either full package name or short key
-      const key = name.startsWith('@') ? deriveRigKey(name) : name;
+      const key = name.startsWith('@') ? deriveRigId(name) : name;
       const cfg = config as unknown as Record<string, unknown>;
       return (cfg[key] as Record<string, unknown>) ?? {};
     },
@@ -293,7 +273,7 @@ export function createMainspring(guildRoot: string): Mainspring {
     async findRig(name: string) {
       const rigs = await getRigs();
       // Normalize the input to an id for comparison
-      const targetId = name.startsWith('@') ? deriveRigKey(name) : name;
+      const targetId = name.startsWith('@') ? deriveRigId(name) : name;
       return rigs.find((r) => r.id === targetId || r.packageName === name) ?? null;
     },
 
