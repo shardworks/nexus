@@ -17,24 +17,6 @@ export interface RoleDefinition {
   instructions?: string;
 }
 
-/**
- * Registry entry for any installed guild capability — tools, engines, curricula, temperaments.
- *
- * All four capability registries in `GuildConfig` use this type. The `package` field
- * is populated for capabilities that require runtime module resolution (tools, engines).
- * Training artifacts (curricula, temperaments) are content-only and omit `package`.
- */
-export interface InstalledCapability {
-  /** Upstream package identifier, e.g. "@shardworks/tool-commission@1.11.3". Null for locally-built artifacts. */
-  upstream: string | null;
-  /** ISO-8601 timestamp of when this capability was installed. */
-  installedAt: string;
-  /** npm package name for runtime resolution via node_modules. Omitted for content-only capabilities (curricula, temperaments). */
-  package?: string;
-  /** Bundle that delivered this artifact, e.g. "@shardworks/guild-starter-kit@0.1.0". */
-  bundle?: string;
-}
-
 /** A custom event declaration in guild.json clockworks.events. */
 export interface EventDeclaration {
   /** Human-readable description of what this event means. */

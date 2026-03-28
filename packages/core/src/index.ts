@@ -56,7 +56,6 @@ export {
   writeGuildConfigV2,
   // Shared types (V1 and V2)
   type RoleDefinition,
-  type InstalledCapability,
   type WorkshopEntry,
   type EventDeclaration,
   type StandingOrder,
@@ -76,6 +75,7 @@ export {
 // New code should use GuildConfigV2 and the V2 functions above.
 export {
   type GuildConfig,
+  type InstalledCapability,
   createInitialGuildConfig,
   readGuildConfig,
   writeGuildConfig,

@@ -14,7 +14,6 @@
 import fs from 'node:fs';
 import { guildConfigPath } from '../../guild-config.ts';
 import type {
-  InstalledCapability,
   WorkshopEntry,
   RoleDefinition,
   ClockworksConfig,
@@ -22,11 +21,28 @@ import type {
   GuildSettings,
 } from '../../guild-config.ts';
 
+/**
+ * Registry entry for an installed guild capability — tools, engines, curricula, temperaments.
+ *
+ * V1 concept: the four explicit capability registries in GuildConfig used this type.
+ * Removed in GuildConfigV2 — capabilities are discovered dynamically from rig modules.
+ */
+export interface InstalledCapability {
+  /** Upstream package identifier. Null for locally-built artifacts. */
+  upstream: string | null;
+  /** ISO-8601 timestamp of when this capability was installed. */
+  installedAt: string;
+  /** npm package name for runtime resolution. Omitted for content-only artifacts (curricula, temperaments). */
+  package?: string;
+  /** Bundle that delivered this artifact, e.g. "@shardworks/guild-starter-kit@0.1.0". */
+  bundle?: string;
+}
+
 // Re-export all shared types so legacy code can import them from this module
 export * from '../../guild-config.ts';
 
 // Backward-compat aliases — ToolEntry and TrainingEntry were merged into InstalledCapability.
-export type { InstalledCapability as ToolEntry, InstalledCapability as TrainingEntry } from '../../guild-config.ts';
+export type { InstalledCapability as ToolEntry, InstalledCapability as TrainingEntry };
 
 /**
  * Guild configuration — V1 (legacy).
