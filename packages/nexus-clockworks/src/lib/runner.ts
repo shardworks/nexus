@@ -6,25 +6,22 @@
  * Each event is marked processed after all its matching standing orders run.
  *
  * Standing orders have one canonical form: `{ on, run, ...params }`.
- * The `summon` and `brief` verbs are syntactic sugar desugared at dispatch time.
+ * The `summon` verb is syntactic sugar desugared at dispatch time.
  *
- * ## Engine resolution (V2 guilds)
+ * ## Engine resolution
  *
- * In V2 guild config, engines are no longer registered in `guild.json engines`.
- * The runner resolves them by scanning installed rigs in `node_modules`:
+ * Engines are resolved by scanning installed rigs in `node_modules`:
  *   1. Iterate config.rigs (installed rig keys)
- *   2. Resolve each key to its npm package name via package.json
- *   3. Import the package and scan for matching engine exports
+ *   2. Resolve each rig key to its npm package name (via guild package.json deps)
+ *   3. Import the package and scan its default export for a matching engine
  *
- * Fallback: if no V2 resolution succeeds, the runner throws with a clear message.
- * For guilds still using V1 format (config.engines present), the V1 registry
- * is checked first as a compatibility shim.
+ * Throws with a clear message if the engine is not found in any installed rig.
  */
 
 import path from 'node:path';
 import fs from 'node:fs';
 import { readGuildConfigV2 } from '@shardworks/nexus-core';
-import { isClockworkEngine, resolveEngineFromExport } from '@shardworks/nexus-core';
+import { resolveEngineFromExport } from '@shardworks/nexus-core';
 import type { StandingOrder, GuildConfigV2 } from '@shardworks/nexus-core';
 import type { GuildEvent, EngineDefinition } from '@shardworks/nexus-core';
 import {
@@ -45,7 +42,6 @@ const RESERVED_KEYS = new Set(['on', 'run', 'summon', 'brief']);
  *
  * - `{ on, run, ... }` — passes through unchanged
  * - `{ on, summon, prompt?, ... }` → `{ on, run: "summon-engine", role: <summon>, ... }`
- * - `{ on, brief, ... }` → `{ on, run: "summon-engine", role: <brief>, ... }` (legacy)
  */
 export function desugarOrder(order: StandingOrder): Record<string, unknown> {
   const raw = order as Record<string, unknown>;
@@ -53,11 +49,6 @@ export function desugarOrder(order: StandingOrder): Record<string, unknown> {
   if ('summon' in raw && typeof raw.summon === 'string') {
     const { summon, ...rest } = raw;
     return { ...rest, run: 'summon-engine', role: summon };
-  }
-
-  if ('brief' in raw && typeof raw.brief === 'string') {
-    const { brief, ...rest } = raw;
-    return { ...rest, run: 'summon-engine', role: brief };
   }
 
   return raw;
@@ -101,51 +92,27 @@ export interface ClockRunResult {
 // ── Engine resolution ─────────────────────────────────────────────────
 
 /**
- * Resolve a guild root from a home path: walk up looking for package.json
- * to find where node_modules lives (the guild package root).
- */
-function guildPackageRoot(home: string): string {
-  // Guild package.json sits alongside guild.json at the guild root.
-  return home;
-}
-
-/**
- * Resolve an EngineDefinition from installed rig packages.
+ * Resolve an EngineDefinition by scanning installed rig packages.
  *
- * Resolution order:
- *  1. V1 compat: if config has an `engines` registry (cast — V1 format), use it.
- *  2. V2: scan config.rigs — resolve each rig key to its package name, import,
- *     and look for a matching engine export.
- *  3. Throw if not found.
+ * For each rig key in config.rigs:
+ *  1. Check guild package.json dependencies for a matching package name.
+ *  2. Fall back to treating the rig key as the package name directly,
+ *     or as `@shardworks/<key>` for scoped packages.
+ *  3. Import the package and scan its default export for the engine.
+ *
+ * Throws if the engine is not found in any installed rig.
  */
 async function resolveEngine(
   home: string,
   config: GuildConfigV2,
   engineName: string,
 ): Promise<EngineDefinition> {
-  // V1 compat: check for config.engines registry (present in V1 format guilds)
-  const configAny = config as unknown as Record<string, unknown>;
-  if (typeof configAny.engines === 'object' && configAny.engines !== null) {
-    const registry = configAny.engines as Record<string, { package?: string }>;
-    const entry = registry[engineName];
-    if (entry?.package) {
-      const mod = await import(entry.package);
-      const def = resolveEngineFromExport(mod.default, engineName);
-      if (def) return def;
-    }
-  }
+  const nodeModules = path.join(home, 'node_modules');
 
-  // V2: scan installed rigs for an engine with this name
-  const nodeModules = path.join(guildPackageRoot(home), 'node_modules');
   for (const rigKey of config.rigs) {
-    // Rig key → package name: try reading guild/package.json dependencies
-    // Fallback: treat rigKey as package name directly (scoped: @shardworks/nexus-<key>)
-    const candidates = [
-      rigKey,
-      `@shardworks/${rigKey}`,
-    ];
+    const candidates = [rigKey, `@shardworks/${rigKey}`];
 
-    // Check if there's a package.json that maps this key
+    // Check guild package.json for a dependency that maps to this rig key
     const guildPkgPath = path.join(home, 'package.json');
     if (fs.existsSync(guildPkgPath)) {
       try {
@@ -153,10 +120,9 @@ async function resolveEngine(
           dependencies?: Record<string, string>;
         };
         const deps = guildPkg.dependencies ?? {};
-        // Find a dep whose package name ends with the rig key
         const match = Object.keys(deps).find(pkg => pkg.endsWith(rigKey) || pkg === rigKey);
         if (match) candidates.unshift(match);
-      } catch { /* ignore */ }
+      } catch { /* ignore malformed package.json */ }
     }
 
     for (const pkgName of candidates) {

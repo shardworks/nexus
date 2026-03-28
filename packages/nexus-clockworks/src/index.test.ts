@@ -452,14 +452,6 @@ describe('desugarOrder', () => {
     assert.equal(result.summon, undefined);
   });
 
-  it('desugars brief to summon-engine with role (legacy)', () => {
-    const order = { on: 'code.reviewed', brief: 'steward' } as StandingOrder;
-    const result = desugarOrder(order);
-    assert.equal(result.run, 'summon-engine');
-    assert.equal(result.role, 'steward');
-    assert.equal(result.brief, undefined);
-  });
-
   it('preserves extra keys through desugar', () => {
     const order = { on: 'mandate.ready', summon: 'artificer', prompt: 'Do this', maxSessions: 3 } as unknown as StandingOrder;
     const result = desugarOrder(order);
@@ -487,7 +479,7 @@ describe('extractParams', () => {
   });
 
   it('does not include reserved keys', () => {
-    const result = extractParams({ on: 'x', run: 'y', summon: 'z', brief: 'w', extra: true });
+    const result = extractParams({ on: 'x', run: 'y', summon: 'z', extra: true });
     assert.deepEqual(result, { extra: true });
   });
 });
