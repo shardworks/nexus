@@ -280,11 +280,9 @@ CREATE TABLE event_dispatches (
 
 ## Relay Contract
 
-The Clockworks needs a standard invocation contract to call relays generically. The framework's existing processes — manifest, mcp-server, ledger-migrate — each have bespoke module signatures (`manifest(home, animaName)`, `applyMigrations(home, provenance?)`, etc.) and are called directly by specific framework code. That works for bespoke framework machinery but is incompatible with the Clockworks — a generic runner cannot invoke a relay if every relay has a different signature.
+The Clockworks needs a standard invocation contract to call relays generically. The framework's existing processes — manifest, mcp-server, ledger-migrate — each have bespoke module signatures and are called directly by specific framework code. That works for bespoke machinery but is incompatible with the Clockworks — a generic runner cannot invoke a relay if every relay has a different signature.
 
-### The `relay()` factory
-
-A new SDK export from `nexus-core`, parallel to `tool()`:
+Relays solve this by exporting a default using the `relay()` SDK factory from `nexus-core`, parallel to `tool()`:
 
 ```typescript
 import { relay } from '@shardworks/nexus-core';
@@ -298,13 +296,9 @@ export default relay({
 });
 ```
 
-The Clockworks runner calls `module.default.handler(event, { home, params })`. This is the only contract the runner needs to know. Params are extracted from the standing order at dispatch time — any key that isn't `on` or `run` becomes a param.
+The Clockworks runner calls `module.default.handler(event, { home, params })`. Params are extracted from the standing order at dispatch time — any key that isn't `on` or `run` becomes a param. Relays can be named in `run:` standing orders; bespoke framework processes cannot.
 
-Relays can be named in `run:` standing orders. Bespoke framework processes (manifest, mcp-server, ledger-migrate) cannot — attempting to do so is a configuration error caught at validation time.
-
-### `nexus-relay.json` is unchanged
-
-No new fields needed. The descriptor's `entry` field already points to the module. Whether that module exports a `relay()` default is discovered at load time, not in the descriptor. The distinction between framework processes and relays is in the module shape, not the configuration.
+The descriptor is `nexus-relay.json` with the same shape as other artifact descriptors — only `entry` is required. Whether a module exports a `relay()` default is discovered at load time, not in the descriptor.
 
 ---
 
