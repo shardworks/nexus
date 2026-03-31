@@ -72,134 +72,189 @@ A guild is a directory — a regular git repository with a `guild.json` at its r
 
 ### Directory Structure
 
-<!-- TODO: full annotated directory tree, similar to what's in the outdated overview but updated for the current apparatus/kit model -->
-
 ```
 GUILD_ROOT/
-  guild.json                    ← central configuration
-  package.json
-  node_modules/                 ← gitignored; plugin runtime code lives here
+  guild.json                    ← central configuration (versioned)
+  package.json                  ← npm package; plugins are npm dependencies
+  package-lock.json
+  node_modules/                 ← gitignored; plugin code lives here
+  <guild content>/              ← versioned guild files (roles/, training/,
+                                   tools/, engines/, etc.) — structure is
+                                   guild-specific, not framework-prescribed
   .nexus/                       ← runtime state, gitignored
-    nexus.db                    ← The Books (SQLite)
+    nexus.db                    ← persistence database (SQLite)
     clock.pid                   ← Clockworks daemon PID
     clock.log                   ← Clockworks daemon log
-    workshops/                  ← bare clones of registered codexes
-    worktrees/                  ← commission worktrees
+    sessions/                   ← per-session working files
+    workshops/                  ← bare git clones of registered workshops
+    worktrees/                  ← git worktrees for active commissions
 ```
+
+The versioned files — `guild.json`, `package.json`, and the guild's own content — are the guild's identity. `.nexus/` is operational territory: it can be deleted and rebuilt without losing configuration. Nothing in `.nexus/` is committed; everything that matters is in the versioned files.
 
 ### `guild.json`
 
-`guild.json` is the guild's central configuration file and the index of everything installed. Arbor reads it at startup; nothing in the guild system runs without it.
+`guild.json` is the guild's central configuration file. Arbor reads it at startup; nothing in the guild system runs without it. It has a small number of framework-level keys that Arbor reads directly, plus any number of **plugin configuration sections** — top-level keys owned by individual plugins, keyed by their derived plugin id.
 
 ```json
 {
   "name": "my-guild",
-  "version": "...",
-  "nexusVersion": "...",
-  "defaultModel": "claude-opus-4-5",
-  "plugins": ["nexus-stacks", "nexus-clockworks", "nexus-sessions", "..."],
-  "roles": { ... },
-  "baseTools": [...],
+  "nexus": "0.1.x",
+  "plugins": ["books", "clockworks", "sessions", "..."],
+  "settings": {
+    "model": "claude-opus-4-5"
+  },
+
   "clockworks": {
-    "events": { ... },
-    "standingOrders": [...]
+    "events": {
+      "craft.question": { "description": "An artificer hit a decision outside commission scope." }
+    },
+    "standingOrders": [
+      { "on": "writ.ready",            "run": "workshop-prepare" },
+      { "on": "writ.workspace-ready",  "summon": "artificer", "prompt": "..." },
+      { "on": "writ.completed",        "run": "workshop-merge" }
+    ]
   }
 }
 ```
 
-<!-- TODO: walk through each top-level key with brief descriptions — plugins array, roles, baseTools, clockworks, and any apparatus-specific keys contributed at install time -->
+#### Framework keys
+
+**`name`** — the guild's identifier, used as the npm package name for the guild's own content package.
+
+**`nexus`** — the installed framework version. Written by `nsg init` and `nsg upgrade`; not edited by hand.
+
+**`plugins`** — ordered list of installed plugin ids. Arbor loads them in this order, respecting the dependency graph. `nsg install` and `nsg remove` manage this list. Starts empty on `nsg init`; the standard guild adds the default set.
+
+**`settings`** — operational configuration. Currently holds `model` (the default LLM model for anima sessions) and `autoMigrate` (whether to apply database migrations automatically on startup).
+
+#### Plugin configuration
+
+All remaining top-level keys are plugin configuration sections, keyed by derived plugin id (see [Plugin IDs](#plugin-ids)). Each apparatus reads its own section via `ctx.config()` at startup or handler invocation time.
+
+In the standard guild, `clockworks` contains events and standing orders; `workshops` tracks registered repositories; `roles` and `baseTools` define anima role assignments and tool access. These are all plugin config — not framework-owned fields — they just get natural top-level keys because of the `@shardworks/` naming convention. See [Configuration](plugins.md#configuration) for the full model.
 
 ### Runtime State (`.nexus/`)
 
-<!-- TODO: describe .nexus/ as gitignored runtime territory — the Books database, daemon state, bare clones of workshops, and commission worktrees. Nothing in .nexus/ is part of the guild's versioned configuration; everything in guild.json and the filesystem is. -->
+`.nexus/` is entirely gitignored. It is created on first run and can be deleted safely — the guild will rebuild it from `guild.json` and the versioned content files.
+
+**`nexus.db`** — the SQLite database owned by The Stacks. All guild state that needs to survive process restarts lives here: anima records, writ history, session records, event and dispatch logs.
+
+**`clock.pid` / `clock.log`** — daemon bookkeeping for The Clockworks. `clock.pid` holds the PID of the running daemon process; `clock.log` is its output. Both are absent when the daemon is not running.
+
+**`sessions/`** — working files for active and recently-completed sessions. Each session gets a JSON record here at launch; The Summoner writes the result back when the session exits.
+
+**`workshops/`** — bare git clones of every registered workshop, named `<workshop-name>.git`. Git worktrees are checked out from these clones rather than from the remotes directly, keeping network operations to `fetch` calls rather than repeated clones.
+
+**`worktrees/`** — git worktrees for active commissions. Each commission that requires file changes gets a dedicated worktree here, isolated from other concurrent work. Worktrees are created when a commission's workspace is prepared and removed when the work is merged or abandoned.
 
 ---
 
 ## Plugin Architecture
 
-Everything operational in a guild is contributed by a **plugin** — there is no privileged built-in layer. Arbor, the guild runtime, is only a plugin loader, a dependency graph, and the startup/shutdown lifecycle for what gets loaded. The Clockworks, the Books, anima sessions, writ tracking — all of it is contributed by plugins.
+The apparatus described in §2 — The Stacks, The Clockworks, The Clerk, The Walker, and the rest — are all plugins. There is no privileged built-in layer. Arbor, the guild runtime, is only a plugin loader, a dependency graph, and the startup/shutdown lifecycle for what gets loaded. Every piece of operational infrastructure is contributed by a plugin package; the standard guild is simply a particular set of those packages.
 
-Plugins come in two kinds:
+Plugins come in two kinds: **kits** and **apparatus**. This section introduces them; [Plugin Architecture](plugins.md) is the full specification.
 
 ### Kit
 
-A **kit** is a passive package contributing capabilities to the guild. Kits have no lifecycle — they are read at load time and their contributions are forwarded to consuming apparatuses. Nothing about a kit participates in `start`/`stop` or requires a running system.
+A **kit** is a passive package contributing capabilities to the guild. Kits have no lifecycle — they are read at load time and their contributions are forwarded to consuming apparatus. Nothing about a kit participates in `start`/`stop` or requires a running system.
 
 ```typescript
-// A kit's default export — an open record, contributions defined
-// by the apparatus packages that consume them.
+// @shardworks/nexus-git — a kit contributing git-related tools, engines, and relays
 export default {
-  name: "nexus-git",
   kit: {
+    requires:   ["books"],
+    recommends: ["clockworks", "walker"],
     engines: [createBranchEngine, mergeBranchEngine],
     relays:  [onMergeRelay],
     tools:   [statusTool, diffTool],
-    recommends: ["nexus-clockworks", "nexus-walker"],
   },
 } satisfies Plugin
 ```
 
-<!-- TODO: explain the open record model — kit field names (engines, relays, tools, etc.) are defined by consuming apparatus, not the framework. Explain recommends. Link to plugins.md for full detail. -->
+A kit is an **open record**: the contribution fields (`engines`, `relays`, `tools`, etc.) are defined by the apparatus packages that consume them, not by the framework. The framework only reads `requires` (hard dependency on an apparatus — validated at startup) and `recommends` (advisory — generates a startup warning if absent). Everything else is forwarded opaquely to consuming apparatus via the `plugin:initialized` lifecycle event.
+
+Type safety for contribution fields is opt-in — each apparatus publishes a kit interface (`ClockworksKit`, `WalkerKit`, etc.) that kit authors can import and `satisfies` against.
 
 ### Apparatus
 
-An **apparatus** is a package contributing persistent running infrastructure to the guild. It implements a `start`/`stop` lifecycle. The Clockworks, Walker, Stacks — all are apparatuses.
+An **apparatus** is a package contributing persistent running infrastructure. It has a `start`/`stop` lifecycle, may declare dependencies on other apparatus, and may expose a runtime API.
 
 ```typescript
-export default {
-  name:     "nexus-clockworks",
-  requires: ["nexus-stacks"],
-  provides: clockworksApi,
+// @shardworks/clockworks — the guild's event-driven nervous system
+const clockworksApi: ClockworksApi = { ... }
 
+export default {
   apparatus: {
+    requires: ["books"],
+    provides: clockworksApi,
+
     start: (ctx) => {
-      const stacks = ctx.plugin<StacksApi>("nexus-stacks")
-      clockworksApi.init(stacks)
+      const books = ctx.apparatus<BooksApi>("books")
+      clockworksApi.init(books)
     },
-    stop:   () => clockworksApi.shutdown(),
-    health: () => clockworksApi.isHealthy() ? "ok" : "degraded",
+    stop: () => clockworksApi.shutdown(),
 
     supportKit: {
       relays: [signalRelay, drainRelay],
       tools:  [signalTool, clockStatusTool],
     },
+
+    consumes: ["relays"],
   },
 } satisfies Plugin
 ```
 
-<!-- TODO: explain start/stop lifecycle, supportKit (an apparatus's own kit contributions), provides (the inter-plugin API surface), health reporting. -->
+**`requires`** declares apparatus that must be started first — validated at startup, determines start ordering. **`provides`** is the runtime API other plugins retrieve via `ctx.apparatus<T>(name)`. **`supportKit`** is the apparatus's own kit contributions (tools, relays, etc.) — treated identically to standalone kit contributions by consumers. **`consumes`** declares which kit contribution types this apparatus scans for, enabling startup warnings when kits contribute types no apparatus consumes.
 
-### Arbor and GuildContext
+### Plugin IDs
 
-**Arbor** is the runtime object created at guild startup. It reads `guild.json`, imports all declared plugins, validates the dependency graph, and starts each apparatus in dependency-resolved order. Arbor is the natural dependency-injection carrier for the guild runtime — the CLI, MCP server, and daemon each create one Arbor instance at startup and hold it for the session's lifetime.
+Plugin names are never declared in the manifest — they are derived from the npm package name at load time:
 
-Each apparatus's `start(ctx)` receives a **GuildContext** — the interface through which apparatus access their dependencies, inspect loaded plugins, and subscribe to lifecycle events:
+1. Strip the `@shardworks/` scope (the official Nexus namespace)
+2. Retain other scopes as a prefix without `@` (`@acme/foo` → `acme/foo`)
+3. Strip a trailing `-(plugin|apparatus|kit)` suffix
+
+So `@shardworks/clockworks` → `clockworks`, `@shardworks/books-apparatus` → `books`, `@acme/cache-kit` → `acme/cache`. Plugin ids are used in `requires` arrays, `ctx.apparatus()` calls, and as the key for plugin-specific configuration in `guild.json`. See [Plugin IDs](plugins.md#plugin-ids) for the full derivation table.
+
+### Arbor and Contexts
+
+**Arbor** is the runtime object. It reads `guild.json`, imports all declared plugins, validates the dependency graph, and starts each apparatus in dependency-resolved order. The CLI, MCP server, and Clockworks daemon each create one Arbor instance at startup; it lives for the process's lifetime.
+
+Each apparatus's `start(ctx)` receives a **GuildContext**. Tool and engine handlers receive a **HandlerContext** at invocation time. Both expose the same core methods:
 
 ```typescript
 interface GuildContext {
-  plugin<T>(name: string): T               // retrieve a dependency's provides object
-  kits():        LoadedKit[]               // snapshot of loaded kits
-  apparatuses(): LoadedApparatus[]         // snapshot of started apparatuses
-  plugins():     LoadedPlugin[]            // union of kits and apparatuses
-  on(event: string, handler: fn): void     // subscribe to lifecycle events
+  home:       string                                        // guild root path
+  config<T>(pluginId?: string): T                           // plugin config from guild.json
+  guildConfig(): GuildConfigV2                               // full guild.json (escape hatch)
+  apparatus<T>(name: string): T                              // retrieve a dependency's API
+  kits():        LoadedKit[]                                 // snapshot of loaded kits
+  apparatuses(): LoadedApparatus[]                           // snapshot of started apparatus
+  plugins():     LoadedPlugin[]                              // union of kits and apparatus
+  on(event: string, handler: (...args: unknown[]) => void | Promise<void>): void
+}
+
+interface HandlerContext {
+  home:       string
+  config<T>(pluginId?: string): T
+  guildConfig(): GuildConfigV2
+  apparatus<T>(name: string): T
 }
 ```
 
-<!-- TODO: explain startup validation (missing required plugins fail loud before any start() runs), dependency ordering, plugin:initialized lifecycle event for reactive kit consumption. -->
+**`ctx.apparatus()`** is validated against the calling plugin's `requires` — calling it for an undeclared dependency fails at startup, not at runtime. **`ctx.config()`** returns the plugin's configuration section from `guild.json` (or another plugin's, if a plugin id is passed). **`ctx.guildConfig()`** returns the full parsed config for cases where framework-level fields (`roles`, `workshops`, `settings`) are needed directly. See [Configuration](plugins.md#configuration) for detail.
+
+Startup validation is strict: missing dependencies, undeclared `ctx.apparatus()` calls, and circular dependency graphs all fail loudly before any apparatus starts. Kit contributions are forwarded to consuming apparatus reactively via the `plugin:initialized` lifecycle event, ensuring load-order independence. See [Plugin Architecture](plugins.md) for the full specification.
 
 ### Installation
 
-Plugins are declared in `guild.json` as an ordered list of package names. The framework determines whether each is a kit or apparatus at load time by inspecting the package manifest — no user-side declaration needed.
+Plugins are listed in `guild.json` by their plugin id. The framework determines whether each is a kit or apparatus at load time from the package manifest — no user-side declaration needed.
 
 ```json
 {
-  "plugins": [
-    "nexus-stacks",
-    "nexus-clockworks",
-    "nexus-walker",
-    "nexus-sessions",
-    "nexus-git"
-  ]
+  "plugins": ["books", "clockworks", "walker", "sessions", "nexus-git"]
 }
 ```
 
@@ -209,9 +264,7 @@ nsg remove  nexus-git     # remove a plugin
 nsg status                # show apparatus health + kit inventory
 ```
 
-`nsg init` populates the default plugin set for a new guild. See [Plugin Architecture](plugins.md) for full detail on the Kit/Apparatus contracts, reactive consumption, startup warnings, and failure modes.
-
----
+`nsg init` populates the default plugin set for a new guild.
 
 ---
 
@@ -221,33 +274,29 @@ The plugin architecture described above is general-purpose: any guild can instal
 
 Each section introduces one or more apparatus or kits from the default set. Understanding that they are plugins — replaceable, independently testable, authored against the same contracts as any community extension — is the main thing §4 provides. The remaining sections don't repeat it.
 
-> **Note:** The list below is provisional. The standard guild configuration is still being finalized as individual apparatus are built out. Treat this as a working inventory, not a commitment.
-
 ### Default Apparatus
 
-| Apparatus | Layer | Function |
-|-----------|-------|----------|
-| **Stacks** | Foundation | Persistence substrate — owns and provides the Books (Register, Ledger, Daybook) backed by SQLite |
-| **Guildhall** | Foundation | Configuration and training content access — the charter, installed curricula, temperaments, tool definitions |
-| **Clockworks** | Reactive | Event-driven nervous system — standing orders, event queue, the summon relay |
-| **Surveyor** | Reactive | Codex knowledge — surveys registered codexes so the guild knows what work applies to each |
-| **Clerk** | Obligation | Commission intake and writ lifecycle — receives commissions, creates and manages writs, signals Walker on ready |
-| **Manifester** | Session | Anima session assembly — deterministic composition of curriculum, temperament, charter, tool instructions into a session context |
-| **Summoner** | Session | AI session lifecycle — launches, monitors, and records anima sessions on behalf of the Executor and Clockworks |
-| **Formulary** | Execution | Engine design registry — answers "what engine chain satisfies this need?" from installed kits |
-| **Walker** | Execution | Rig lifecycle — spawns, traverses, extends, and strikes rigs as work progresses |
-| **Executor** | Execution | Engine runner — executes clockwork and quick engines against a configured substrate |
-| **Warden** | Observability | Health aggregation — surfaces apparatus health for `nsg status`; optional |
+| Apparatus | Plugin id | Function |
+|-----------|-----------|----------|
+| **The Stacks** | `books` | Persistence substrate — SQLite-backed document store and change-data-capture events |
+| **The Clockworks** | `clockworks` | Event-driven nervous system — standing orders, event queue, the summon relay |
+| **The Surveyor** | `surveyor` | Codex knowledge — surveys registered codexes so the guild knows what work applies to each |
+| **The Clerk** | `clerk` | Commission intake and writ lifecycle — receives commissions, creates writs, signals when work is ready |
+| **The Manifester** | `manifester` | Anima session assembly — deterministic composition of curriculum, temperament, charter, tool instructions |
+| **The Summoner** | `summoner` | AI session lifecycle — launches, monitors, and records anima sessions |
+| **The Formulary** | `formulary` | Engine design registry — answers "what engine chain satisfies this need?" from installed kits |
+| **The Walker** | `walker` | Rig lifecycle — spawns, traverses, extends, and strikes rigs as work progresses |
+| **The Executor** | `executor` | Engine runner — executes clockwork and quick engines against a configured substrate |
 
 ### Default Kits
 
 | Kit | Contributes |
 |-----|-------------|
 | **nexus-stdlib** | Base tools (commission-create, tool-install, anima-create, signal, writ/session CRUD, etc.) and the summon relay |
-| **nexus-clockworks** (kit portion) | Clockworks tools (clock-start, clock-stop, clock-status, event-list, signal) and the events/dispatches Books |
-| **nexus-sessions** (kit portion) | Session tools (session-list, session-show, conversation-list) and the sessions Book |
+| **clockworks** (supportKit) | Clockworks tools (clock-start, clock-stop, clock-status, event-list, signal) |
+| **sessions** (supportKit) | Session tools (session-list, session-show, conversation-list) |
 
-<!-- TODO: confirm the kit split as individual apparatus are riggified — some current "rigs" (in the code sense) will become apparatus with supportKits once the apparatus model is fully implemented -->
+> **Note:** The list above is provisional. The standard guild configuration is still being finalized as individual apparatus are built out. Some entries listed as apparatus are not yet implemented as separate packages — see [What's Implemented vs. Aspirational](_agent-context.md#whats-implemented-vs-aspirational) for the current state. Treat this as a working inventory, not a commitment.
 
 ---
 

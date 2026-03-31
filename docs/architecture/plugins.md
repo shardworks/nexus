@@ -156,6 +156,31 @@ const clockworks = ctx.apparatus<ClockworksApi>("nexus-clockworks")
 
 ---
 
+## Plugin IDs
+
+Every plugin has a derived **plugin id** — the name used in `guild.json`, `requires` arrays, `ctx.apparatus()` calls, and configuration keys. The id is derived from the npm package name at load time and never declared in the manifest.
+
+Derivation rules, applied in order:
+
+1. **Strip the `@shardworks/` scope** — the official Nexus namespace. `@shardworks/clockworks` → `clockworks`. Plugins in this scope are referenced by bare name everywhere.
+2. **Retain other scopes as a prefix** — `@acme/my-relay` → `acme/my-relay`. Preserves uniqueness across third-party publishers without special registry entries.
+3. **Strip a trailing `-(plugin|apparatus|kit)` suffix** — allows package authors to use descriptive npm names without polluting the plugin id. `my-relay-kit` → `my-relay`. `@acme/cache-apparatus` → `acme/cache`.
+
+Examples:
+
+| npm package name              | Plugin id         |
+|-------------------------------|-------------------|
+| `@shardworks/clockworks`      | `clockworks`      |
+| `@shardworks/books-apparatus` | `books`           |
+| `@shardworks/nexus-git`       | `nexus-git`       |
+| `@acme/cache-apparatus`       | `acme/cache`      |
+| `my-relay-kit`                | `my-relay`        |
+| `my-plugin`                   | `my-plugin`       |
+
+Plugin ids are also the keys under which plugin-specific configuration lives in `guild.json` — see [Configuration](#configuration).
+
+---
+
 ## The Plugin Type
 
 ```typescript
@@ -280,11 +305,14 @@ The context passed to an apparatus's `start(ctx)`. Provides access to the plugin
 
 ```typescript
 interface GuildContext {
+  home:       string
+  config<T = Record<string, unknown>>(pluginId?: string): T
+  guildConfig(): GuildConfigV2
   apparatus<T>(name: string): T         // retrieve a started apparatus's provides object
   kits():         LoadedKit[]           // snapshot of loaded kits
   apparatuses():  LoadedApparatus[]     // snapshot of started apparatuses
   plugins():      LoadedPlugin[]        // union of kits and apparatuses
-  on(event: string, handler: (...args: unknown[]) => void): void
+  on(event: string, handler: (...args: unknown[]) => void | Promise<void>): void
 }
 ```
 
@@ -294,6 +322,8 @@ If a plugin is present but declares no `provides`, `ctx.apparatus()` returns a s
 
 `ctx.kits()`, `ctx.apparatuses()`, and `ctx.plugins()` return snapshots of the currently loaded state. These are most useful during apparatus `start()` for inspecting what has already been loaded.
 
+`ctx.config()` and `ctx.guildConfig()` are covered in [Configuration](#configuration) below.
+
 ---
 
 ## HandlerContext
@@ -302,12 +332,88 @@ The context injected into tool and engine handlers at invocation time. Distinct 
 
 ```typescript
 interface HandlerContext {
-  home:              string
+  home:       string
+  config<T = Record<string, unknown>>(pluginId?: string): T
+  guildConfig(): GuildConfigV2
   apparatus<T>(name: string): T    // retrieve a started apparatus's provides object
 }
 ```
 
 `apparatus<T>(name)` provides runtime access to the same `provides` objects that GuildContext surfaces during startup. Kit `requires` declarations guarantee that declared apparatus dependencies are running before any handler is invoked — calling `ctx.apparatus("nexus-books")` in a handler is safe as long as the owning kit declared `requires: ["nexus-books"]`.
+
+`ctx.config()` and `ctx.guildConfig()` are covered in [Configuration](#configuration) below.
+
+---
+
+## Configuration
+
+Plugin-specific configuration lives in `guild.json` under the plugin's derived id — the same id used in `requires` arrays and `ctx.apparatus()` calls. Both `GuildContext` and `HandlerContext` expose the same config API.
+
+### `ctx.config<T>(pluginId?)`
+
+Returns the configuration object for a plugin, read from `guild.json[pluginId]`. Returns `{}` if no section exists.
+
+**With no argument** — returns the config for the calling plugin (the apparatus or kit whose context this is):
+
+```typescript
+// @shardworks/clockworks apparatus — id: "clockworks"
+// guild.json: { "clockworks": { "maxConcurrent": 4 } }
+
+start: (ctx) => {
+  const { maxConcurrent = 2 } = ctx.config<ClockworksConfig>()
+}
+```
+
+**With a plugin id argument** — reads config for a different installed plugin. Useful for meta-apparatus or tooling that needs to inspect peer configuration:
+
+```typescript
+const surveyorCfg = ctx.config<SurveyorConfig>("surveyor")
+```
+
+The generic type parameter is a cast — the framework does not validate config shape. Apparatus authors are responsible for defining and documenting their own config types.
+
+### `ctx.guildConfig()`
+
+Returns the full parsed `GuildConfigV2` — the escape hatch for cases where framework-level fields are needed directly (`roles`, `workshops`, `settings`, etc.):
+
+```typescript
+start: (ctx) => {
+  const { roles } = ctx.guildConfig()
+}
+```
+
+### Config in `guild.json`
+
+Plugin config sections sit alongside the framework-level keys at the top level of `guild.json`. Because plugin ids are derived from package names, the standard apparatus get natural short keys — no special handling required:
+
+```json
+{
+  "name":     "my-guild",
+  "nexus":    "0.1.x",
+  "plugins":  ["clockworks", "books", "surveyor", "..."],
+  "roles":    { ... },
+  "workshops": { ... },
+  "settings": { "model": "claude-opus-4-5" },
+
+  "clockworks": {
+    "events":        { ... },
+    "standingOrders": [...]
+  },
+  "surveyor": {
+    "scanDepth": 3
+  }
+}
+```
+
+Third-party apparatus follow the same pattern under their derived id:
+
+```json
+{
+  "acme/cache": {
+    "ttl": 3600
+  }
+}
+```
 
 ---
 

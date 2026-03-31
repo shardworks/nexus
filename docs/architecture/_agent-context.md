@@ -139,26 +139,15 @@ If you're working on a specific section of the architecture doc, start with:
 
 ---
 
-## guild.json Shape (Current)
+## guild.json Shape
 
-The current `guild.json` top-level keys as of the scan:
+The V2 type (`GuildConfigV2` in `packages/core/src/guild-config.ts`) defines the framework keys. All other top-level keys are plugin configuration sections, keyed by derived plugin id.
 
-```json
-{
-  "name": "...",
-  "nexusVersion": "...",
-  "defaultModel": "...",
-  "rigs": { ... },          ← current name for installed plugins; moving to "plugins"
-  "roles": { ... },
-  "baseTools": [...],
-  "clockworks": {
-    "events": { ... },
-    "standingOrders": [...]
-  }
-}
-```
+**Framework keys:** `name`, `nexus`, `plugins` (string array), `settings` (object with `model`, `autoMigrate`).
 
-Note: the `plugins.md` architecture doc shows `"plugins": [...]` as a simple array of package names. The current implementation may differ — verify against `packages/core/src/guild-config.ts` before writing `guild.json` examples.
+**Plugin config keys (standard guild):** `clockworks`, `workshops`, `roles`, `baseTools` — owned by their respective apparatus, not by the framework. They sit at the top level because `@shardworks/clockworks` → `clockworks`, etc.
+
+Note: the live guild at `/workspace/shardworks/` is still running the V1 config shape (per-capability registries: `tools`, `engines`, `curricula`, `temperaments` as objects, no `plugins` array). V2 has `plugins` as a flat string array and drops per-capability registries. The architecture docs describe V2.
 
 ---
 
@@ -168,12 +157,11 @@ Note: the `plugins.md` architecture doc shows `"plugins": [...]` as a simple arr
 |-----------------|----------------------|----------------------------|
 | Rig (execution scaffold) | (not yet implemented) | Rig |
 | Kit / Apparatus | Rig (plugin package) | Kit / Apparatus |
-| Guildhall | Guild root / home | Guildhall apparatus |
-| The Books | nexus.db / SQLite tables | Stacks apparatus |
+| The Books | nexus.db / SQLite tables | The Stacks (`books` apparatus) |
 | Summon relay | built-in clockworks dispatch | summon relay (installed via nexus-stdlib) |
 | Arbor | Arbor | Arbor |
-| Walker | (not yet implemented) | Walker apparatus |
-| Formulary | (not yet implemented) | Formulary apparatus |
+| Walker | (not yet implemented) | The Walker (`walker` apparatus) |
+| Formulary | (not yet implemented) | The Formulary (`formulary` apparatus) |
 
 ---
 
@@ -182,3 +170,64 @@ Note: the `plugins.md` architecture doc shows `"plugins": [...]` as a simple arr
 - **2026-03-31 (session 1):** Initial scaffold session. Wrote §1–4 scaffold + "Standard Guild" bridge section. Created this context doc. Architecture doc is at `docs/architecture/index.md`. Companion detailed docs are already written for clockworks, plugins, kit-components, and rigging — they're good references even if partially aspirational.
 
 - **2026-03-31 (session 2):** Wrote §2 content (intro paragraph, ASCII diagram, narrative subsections). Scoped §2 explicitly as the "standard guild" — blockquote caveat added before the intro paragraph. Established the intended narrative arc: §2 gives the standard-guild mental model → §4 peels it back ("everything in §2 is a plugin, there is no privileged built-in layer") → Standard Guild bridge lists the defaults → detail sections proceed without hedging. **When writing §4**, open with a callback to §2: *"The apparatus described in §2 — Clerk, Walker, Clockworks, and the rest — are all plugins..."* This converts §2 into setup and §4 into the architectural reveal.
+
+- **2026-03-31 (session 3):** Completed §3 (Guild Root) and §4 (Plugin Architecture). Corrected `guild.json` key names from real V2 type. Documented real `.nexus/` contents. Identified and resolved a plugin configuration specification gap — see design decisions below. Rewrote §4 with the §2 callback opening, corrected Kit/Apparatus examples (new naming convention, correct manifest shape), added Plugin IDs and Configuration subsections, updated GuildContext/HandlerContext interfaces with `config<T>()` and `guildConfig()`. Cleaned up Standard Guild table (dropped Guildhall, dropped layer column, added plugin id column, updated Stacks description). Restructured `guild.json` section to separate framework keys (`name`, `nexus`, `plugins`, `settings`) from plugin config sections (everything else, keyed by plugin id). Updated `plugins.md` spec with Plugin IDs section, Configuration section, and updated context interfaces.
+
+---
+
+## Design Decisions (session 3)
+
+### Plugin name derivation
+
+Plugin ids are derived from npm package names with three rules applied in order:
+1. Strip `@shardworks/` scope entirely (bare name)
+2. Retain other scopes as prefix without `@` (`@acme/foo` → `acme/foo`)
+3. Strip trailing `-(plugin|apparatus|kit)` suffix
+
+This means `@shardworks/clockworks` → `clockworks`, `@shardworks/books-apparatus` → `books`, `@acme/cache-apparatus` → `acme/cache`. Documented in `plugins.md` (Plugin IDs section). **Not yet implemented** — see implementation plan.
+
+### Plugin configuration access
+
+**Problem identified:** `plugins.md` and the context type docs had no specification for how apparatus access their own configuration from `guild.json`. The implementation had an undocumented `getPluginConfig(pluginId)` on Arbor that was never used.
+
+**Decision:** Remove `getPluginConfig` from Arbor. Add to both `GuildContext` and `HandlerContext`:
+- `ctx.config<T>(pluginId?: string): T` — returns `guild.json[pluginId]` (defaults to the calling plugin's id if no arg). Returns `{}` if no config section. Generic is a cast, not validated.
+- `ctx.guildConfig(): GuildConfigV2` — escape hatch for full config (roles, workshops, settings, etc.)
+
+Config sections live at the top level of `guild.json` under the plugin's derived id. Because `@shardworks/clockworks` → `clockworks`, the Clockworks apparatus gets `guild.json["clockworks"]` naturally — no privileged handling.
+
+For `HandlerContext`, `ctx.config()` with no args requires knowing which plugin owns the handler. `createHandlerContext(owningPluginId?)` takes an optional plugin id; callers dispatching a specific tool pass `tool.pluginId`.
+
+Documented in `plugins.md` (Plugin IDs section + Configuration section). **Not yet implemented** — implementation plan at `.scratch/arbor-config-impl-plan.md` in the sanctum.
+
+---
+
+## Next Steps for Architecture Doc (`index.md`)
+
+### Completed sections
+- **§1 Introduction** ✅
+- **§2 System at a Glance** ✅ — scoped as standard guild, ASCII diagram, narrative subsections
+- **§3 The Guild Root** ✅ — directory structure, guild.json (framework keys + plugin config), .nexus/ runtime state
+- **§4 Plugin Architecture** ✅ — §2 callback opening, Kit/Apparatus with correct examples, Plugin IDs, Arbor and Contexts (with config/guildConfig), Installation
+- **The Standard Guild** ✅ — bridge section with apparatus table (plugin ids) and kit table
+
+### Remaining stub sections
+All are `<!-- TODO -->` blocks. In rough priority order:
+
+1. **The Books** — The Stacks apparatus (`books`). SQLite at `.nexus/nexus.db`. Generic persistence layer + CDC events. Avoid naming specific books (Register, Ledger, Daybook) — those are deemphasised. Describe the Book API. Note: persistence is owned by the apparatus, not the framework. Link to `reference/schema.md`.
+
+2. **Work Model** — Commission → Mandate writ → child writs → Rigs. Writ lifecycle states (`ready → active → pending → completed/failed/cancelled`). Writ hierarchy and completion rollup. Brief rig intro (Walker assembles from engine designs via Formulary). Link to `rigging.md`.
+
+3. **The Clockworks** — Abbreviate; `clockworks.md` is detailed and current. Cover: events as immutable facts, standing orders as guild policy, summon verb, framework vs custom events, runner (manual vs daemon), error handling. Link to `clockworks.md`.
+
+4. **Animas** — Identity model (name + curriculum + temperament + role assignments). Composition: curriculum (what you know), temperament (who you are) — both versioned, immutable per version. Manifester assembles at session time. States: active / retired. Link to forthcoming `anima-composition.md`.
+
+5. **Kit Components** — Tools, engines, relays. Abbreviate; `kit-components.md` covers this well. Role gating for tools, clockwork vs quick for engines, relay contract. Descriptor files. Installation.
+
+6. **Sessions** — Session funnel. Triggered by summon relay or `nsg consult`. Manifester → Summoner → AI process with MCP server → result recorded. Session providers (pluggable). System prompt vs initial prompt. Bare mode. Link to `reference/conversations.md`.
+
+7. **Core Apparatus Reference** — Quick-reference table with plugin ids, package names, API surface hints, links to detailed docs.
+
+### Implementation work (not architecture doc)
+- **Arbor config API** — implementation plan at `nexus-mk2/.scratch/arbor-config-impl-plan.md`. Updates `derivePluginId`, adds `ctx.config()` / `ctx.guildConfig()` to GuildContext/HandlerContext, removes `getPluginConfig` from Arbor. Not yet commissioned.
+- **Plugin rename** — standard apparatus packages should be renamed to match new naming convention (e.g. `@shardworks/nexus-clockworks` → `@shardworks/clockworks`). Not yet commissioned. Scope TBD.
