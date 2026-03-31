@@ -29,7 +29,7 @@ function makeGuild(dir: string, overrides: Record<string, unknown> = {}): void {
     workshops: {},
     roles: {},
     baseTools: [],
-    rigs: [],
+    plugins: [],
     settings: { model: 'sonnet' },
     ...overrides,
   };
@@ -111,7 +111,7 @@ describe('version handler — text mode', () => {
 
   it('shows rig key as "not installed" when guild has no package.json', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, { rigs: ['nexus-stdlib'] }); // no guild package.json — resolvePackageNameForRigKey returns null
+    makeGuild(tmp, { plugins: ['nexus-stdlib'] }); // no guild package.json — resolvePackageNameForRigKey returns null
 
     const result = await versionTool.handler({}, { home: tmp } as never) as string;
     assert.ok(result.includes('nexus-stdlib'));
@@ -120,7 +120,7 @@ describe('version handler — text mode', () => {
 
   it('shows the npm package name and version when rig is resolvable', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, { rigs: ['nexus-stdlib'] });
+    makeGuild(tmp, { plugins: ['nexus-stdlib'] });
     makeGuildPackageJson(tmp, { '@shardworks/nexus-stdlib': '^1.2.3' });
     makeFakeNodeModule(tmp, '@shardworks/nexus-stdlib', '1.2.3');
 
@@ -131,7 +131,7 @@ describe('version handler — text mode', () => {
 
   it('shows package versions for multiple installed rigs', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, { rigs: ['nexus-stdlib', 'nexus-ledger'] });
+    makeGuild(tmp, { plugins: ['nexus-stdlib', 'nexus-ledger'] });
     makeGuildPackageJson(tmp, {
       '@shardworks/nexus-stdlib': '^1.0.0',
       '@shardworks/nexus-ledger': '^2.0.0',
@@ -183,7 +183,7 @@ describe('version handler — json mode', () => {
 
   it('marks rig key as "not installed" when guild has no package.json', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, { rigs: ['nexus-stdlib'] }); // no guild package.json
+    makeGuild(tmp, { plugins: ['nexus-stdlib'] }); // no guild package.json
 
     const result = await versionTool.handler({ json: true }, { home: tmp } as never) as Record<string, string>;
     assert.equal(result['nexus-stdlib'], 'not installed');
@@ -191,7 +191,7 @@ describe('version handler — json mode', () => {
 
   it('includes resolved package name and version for an installed rig', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, { rigs: ['nexus-stdlib'] });
+    makeGuild(tmp, { plugins: ['nexus-stdlib'] });
     makeGuildPackageJson(tmp, { '@shardworks/nexus-stdlib': '^1.2.3' });
     makeFakeNodeModule(tmp, '@shardworks/nexus-stdlib', '1.2.3');
 
@@ -201,7 +201,7 @@ describe('version handler — json mode', () => {
 
   it('includes both package versions for two installed rigs', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, { rigs: ['nexus-stdlib', 'nexus-ledger'] });
+    makeGuild(tmp, { plugins: ['nexus-stdlib', 'nexus-ledger'] });
     makeGuildPackageJson(tmp, {
       '@shardworks/nexus-stdlib': '^1.0.0',
       '@shardworks/nexus-ledger': '^2.0.0',

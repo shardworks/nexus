@@ -28,7 +28,7 @@ function makeGuild(dir: string, overrides: Record<string, unknown> = {}): void {
     workshops: {},
     roles: {},
     baseTools: [],
-    rigs: [],
+    plugins: [],
     settings: { model: 'sonnet' },
     ...overrides,
   };
@@ -82,13 +82,13 @@ describe('status handler — text mode', () => {
     assert.ok((result as string).includes('opus'));
   });
 
-  it('shows "(none)" for rigs when rigs list is empty', async () => {
+  it('shows "(none)" for plugins when plugins list is empty', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
     const result = await statusTool.handler({}, { home: tmp } as never) as string;
-    const rigsLine = result.split('\n').find((l) => l.startsWith('Rigs:')) ?? '';
-    assert.ok(rigsLine.includes('(none)'));
+    const pluginsLine = result.split('\n').find((l) => l.startsWith('Plugins:')) ?? '';
+    assert.ok(pluginsLine.includes('(none)'));
   });
 
   it('shows "(none)" for roles when no roles are configured', async () => {
@@ -100,17 +100,17 @@ describe('status handler — text mode', () => {
     assert.ok(rolesLine.includes('(none)'));
   });
 
-  it('shows installed rig keys from config.rigs', async () => {
+  it('shows installed plugin ids from config.plugins', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, { rigs: ['nexus-stdlib'] });
+    makeGuild(tmp, { plugins: ['nexus-stdlib'] });
 
     const result = await statusTool.handler({}, { home: tmp } as never) as string;
     assert.ok(result.includes('nexus-stdlib'));
   });
 
-  it('shows multiple installed rigs', async () => {
+  it('shows multiple installed plugins', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, { rigs: ['nexus-stdlib', 'nexus-ledger'] });
+    makeGuild(tmp, { plugins: ['nexus-stdlib', 'nexus-ledger'] });
 
     const result = await statusTool.handler({}, { home: tmp } as never) as string;
     assert.ok(result.includes('nexus-stdlib'));
@@ -175,16 +175,16 @@ describe('status handler — json mode', () => {
     assert.equal(result.model, 'haiku');
   });
 
-  it('includes rigs as a sorted array from config.rigs', async () => {
+  it('includes plugins as a sorted array from config.plugins', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, { rigs: ['nexus-ledger', 'nexus-stdlib'] });
+    makeGuild(tmp, { plugins: ['nexus-ledger', 'nexus-stdlib'] });
 
     const result = await statusTool.handler({ json: true }, { home: tmp } as never) as Record<string, unknown>;
-    assert.ok(Array.isArray(result.rigs));
-    const rigs = result.rigs as string[];
-    assert.ok(rigs.includes('nexus-stdlib'));
-    assert.ok(rigs.includes('nexus-ledger'));
-    assert.deepEqual(rigs, [...rigs].sort());
+    assert.ok(Array.isArray(result.plugins));
+    const plugins = result.plugins as string[];
+    assert.ok(plugins.includes('nexus-stdlib'));
+    assert.ok(plugins.includes('nexus-ledger'));
+    assert.deepEqual(plugins, [...plugins].sort());
   });
 
   it('includes roles as a sorted array', async () => {
@@ -209,7 +209,7 @@ describe('status handler — json mode', () => {
     makeGuild(tmp);
 
     const result = await statusTool.handler({ json: true }, { home: tmp } as never) as Record<string, unknown>;
-    assert.deepEqual(result.rigs, []);
+    assert.deepEqual(result.plugins, []);
     assert.deepEqual(result.roles, []);
   });
 });

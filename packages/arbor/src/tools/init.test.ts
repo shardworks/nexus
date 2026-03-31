@@ -34,7 +34,7 @@ describe('nsg init', () => {
     const config = JSON.parse(fs.readFileSync(path.join(guildPath, 'guild.json'), 'utf-8'));
     assert.equal(config.name, 'my-guild');
     assert.equal(config.settings?.model, 'sonnet');
-    assert.deepEqual(config.rigs, []);
+    assert.deepEqual(config.plugins, []);
     assert.deepEqual(config.baseTools, []);
     assert.deepEqual(config.roles, {});
     // V2: no tools/engines/curricula/temperaments registries
