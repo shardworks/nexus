@@ -8,13 +8,11 @@ This document describes the artifact model for the guild's installable capabilit
 
 **Tools** are instruments wielded by animas during work — operations that animas invoke to interact with guild systems, query information, record notes, and perform operations. A tool can optionally ship with an instruction document (`instructions.md`) that is delivered to the anima when manifested for a session.
 
-Tools are accessible through multiple paths: animas invoke them as MCP tools during sessions; humans invoke them via the `nexus` CLI; engines and relays import them programmatically. All paths execute the same logic with the same inputs and outputs — the tool author writes the logic once.
+Tools are accessible through multiple paths: animas invoke them as MCP tools during sessions; humans invoke them via the `nexus` CLI; relays and other tools can import them programmatically. All paths execute the same logic with the same inputs and outputs — the tool author writes the logic once.
 
-**Engines** are static infrastructure processes — deterministic, bespoke, called by specific framework code. The manifest engine, mcp-server, and ledger-migrate are engines. They handle the guild's core machinery: assembling animas for sessions, setting up worktrees, running migrations. Engines have no standard invocation contract and are not triggerable by standing orders. They do not have instruction documents because no anima wields them directly.
+**Engines** are the workhorse components of rigs — the units of work the Walker mounts and sets in motion. An engine does one bounded piece of work, runs when its upstream dependencies are satisfied, and produces a yield when done. Kits contribute engine designs; the Walker draws on them to extend rigs as needed. An engine may be clockwork (deterministic, no anima required) or quick (inhabited by an anima for work requiring judgment). Engines are described by a `nexus-engine.json` descriptor.
 
-**Relays** are Clockworks handlers — purpose-built to respond to events via standing orders. A relay exports a standard `relay()` contract that the Clockworks runner calls. All relays are clockwork (no anima is required to run one — the summon relay, which dispatches animas, is itself a relay). See [clockworks.md](clockworks.md) for the relay contract and standing order mechanics.
-
-Both engines and relays use `nexus-engine.json` as their descriptor. The distinction between them is in the module shape: an engine has a bespoke API; a relay exports a `relay()` default.
+**Relays** are Clockworks handlers — purpose-built to respond to events via standing orders. A relay exports a standard `relay()` contract that the Clockworks runner calls. All relays are clockwork. See [clockworks.md](clockworks.md) for the relay contract and standing order mechanics. Relays are described by a `nexus-relay.json` descriptor.
 
 ---
 
@@ -223,14 +221,15 @@ GUILD_ROOT/
       nexus-tool.json
       instructions.md
   engines/
-    manifest/
+    sealing/
+      nexus-engine.json         →  { "entry": "index.js", ... }
+    open-draft-binding/
       nexus-engine.json
-    mcp-server/
-    worktree-setup/
-    ledger-migrate/
+    ci-check/
+      nexus-engine.json
   relays/
     summon/
-      nexus-engine.json         →  exports relay() default
+      nexus-relay.json          →  exports relay() default
     notify-patron/
     cleanup-worktree/
   nexus/
@@ -295,14 +294,19 @@ Anima "Valdris" has roles: [artificer, steward]
 
 The MCP engine is launched with this resolved set. The anima sees exactly the tools its combined roles permit — no more, no less.
 
-Engines and relays do not have role gating — they are infrastructure, not tools wielded by animas. Their `guild.json` entries have no role assignments:
+Engines and relays do not have role gating — they are not wielded by animas directly. Their `guild.json` entries have no role assignments:
 
 ```json
 {
   "engines": {
-    "manifest": {
-      "upstream": "@shardworks/engine-manifest@0.1.11",
-      "package": "@shardworks/engine-manifest",
+    "sealing": {
+      "upstream": "@acme/sealing-engine@1.0.0",
+      "package": "@acme/sealing-engine",
+      "installedAt": "2026-03-23T12:00:00Z"
+    },
+    "open-draft-binding": {
+      "upstream": "@acme/open-draft-engine@1.0.0",
+      "package": "@acme/open-draft-engine",
       "installedAt": "2026-03-23T12:00:00Z"
     }
   },
@@ -403,11 +407,11 @@ The guildhall is never a workspace — artifacts flow in through deliberate inst
 
 | | Tools | Engines | Relays |
 |---|---|---|---|
-| Purpose | Instruments animas wield | Static infrastructure | Clockworks handlers |
-| Executed by | Animas (MCP), humans (CLI), code (import) | Framework code directly | Clockworks runner (event-driven) |
-| Descriptor | `nexus-tool.json` | `nexus-engine.json` | `nexus-engine.json` |
-| SDK factory | `tool()` | bespoke API | `relay()` |
+| Purpose | Instruments animas wield | Rig workhorses (Walker mounts them) | Clockworks handlers |
+| Invoked by | Animas (MCP), humans (CLI), code (import) | Walker (event-driven within a rig) | Clockworks runner (standing order) |
+| Descriptor | `nexus-tool.json` | `nexus-engine.json` | `nexus-relay.json` |
+| SDK factory | `tool()` | none required (engine logic is the rig work) | `relay()` |
 | Instructions doc? | Optional (anima guidance) | No | No |
 | Role gating? | Yes | No | No |
-| Standard contract? | Yes (MCP) | No | Yes (`relay()`) |
+| Standard contract? | Yes (MCP) | via rig yield/needs interface | Yes (`relay()`) |
 | Triggerable by standing orders? | No | No | Yes (`run:`) |

@@ -280,9 +280,7 @@ CREATE TABLE event_dispatches (
 
 ## Relay Contract
 
-The Clockworks needs a standard invocation contract to call relays generically. Previously, engines were plain TypeScript modules with bespoke exported functions — each with its own specific signature (`manifest(home, animaName)`, `applyMigrations(home, provenance?)`, etc.), called directly by the CLI or other framework code that knew the API. The `nexus-engine.json` descriptor was used only at install time.
-
-This works for static infrastructure engines but is incompatible with the Clockworks — a generic runner cannot invoke a relay if every relay has a different signature.
+The Clockworks needs a standard invocation contract to call relays generically. The framework's existing processes — manifest, mcp-server, ledger-migrate — each have bespoke module signatures (`manifest(home, animaName)`, `applyMigrations(home, provenance?)`, etc.) and are called directly by specific framework code. That works for bespoke framework machinery but is incompatible with the Clockworks — a generic runner cannot invoke a relay if every relay has a different signature.
 
 ### The `relay()` factory
 
@@ -302,17 +300,17 @@ export default relay({
 
 The Clockworks runner calls `module.default.handler(event, { home, params })`. This is the only contract the runner needs to know. Params are extracted from the standing order at dispatch time — any key that isn't `on` or `run` becomes a param.
 
-Relays can be named in `run:` standing orders. Static engines cannot — attempting to do so is a configuration error caught at validation time.
+Relays can be named in `run:` standing orders. Bespoke framework processes (manifest, mcp-server, ledger-migrate) cannot — attempting to do so is a configuration error caught at validation time.
 
 ### `nexus-relay.json` is unchanged
 
-No new fields needed. The descriptor's `entry` field already points to the module. Whether that module exports a `relay()` default is discovered at load time, not in the descriptor. The distinction between static engines and relays is in the module shape, not the configuration.
+No new fields needed. The descriptor's `entry` field already points to the module. Whether that module exports a `relay()` default is discovered at load time, not in the descriptor. The distinction between framework processes and relays is in the module shape, not the configuration.
 
 ---
 
 ## Relationship to Existing Concepts
 
-**Engines** — static infrastructure engines (manifest, mcp-server, ledger-migrate) are unchanged. A new class of engine — **relays** — is introduced: purpose-built Clockworks handlers that export a standard `relay()` contract and can be named in `run:` standing orders. No changes to `nexus-engine.json`.
+**Relays** — a new artifact type, distinct from tools and existing framework machinery. Relays are purpose-built Clockworks handlers that export a standard `relay()` contract and can be named in `run:` standing orders. Framework processes (manifest, mcp-server, ledger-migrate) are unchanged.
 
 **Tools** — `signal` is a new base tool. All other tools unchanged.
 
