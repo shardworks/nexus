@@ -302,7 +302,57 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 
 ## The Books
 
-<!-- TODO: Persistence model. Stacks apparatus; SQLite at .nexus/nexus.db; four Books — Register (who exists), Ledger (what work is happening), Daybook (what happened), Clockworks (event/dispatch operational state). The Book API (arbor.book() / RigContext.rigBook()). Note: Books are owned by apparatus, not the framework — Stacks provides Register/Ledger/Daybook; Clockworks owns its own event tables. Link to schema.md. -->
+**The Stacks** (plugin id: `books`) is the guild's persistence layer — a document store backed by SQLite at `.nexus/nexus.db`, with change data capture (CDC) as its primary integration mechanism.
+
+### Document Model
+
+The Stacks stores JSON documents in named collections called **books**. Every document must include an `id: string` field; the framework adds nothing else — no envelopes, timestamps, or revision tracking. Domain types own their own fields.
+
+Plugins declare the books they need via a `books` contribution field in their kit export:
+
+```typescript
+export default {
+  kit: {
+    requires: ['stacks'],
+    books: {
+      writs:    { indexes: ['status', 'createdAt', 'parent.id'] },
+      sessions: { indexes: ['writId', 'startedAt', 'animaId'] },
+    },
+  },
+} satisfies Plugin
+```
+
+The Stacks reads these declarations at startup and creates or reconciles the backing tables. Schema changes are additive only — new books and indexes are safe; nothing is dropped automatically.
+
+### API Surface
+
+Plugins access persistence through `ctx.apparatus<StacksApi>('stacks')`, which exposes four methods:
+
+- **`book<T>(ownerId, name)`** — returns a writable handle for the named book. Supports `put()` (upsert), `patch()` (top-level field merge), `delete()`, and the full read API (`get`, `find`, `list`, `count`). Queries support equality, range, pattern matching (`LIKE`), set membership (`IN`), null checks, multi-field sorting, and offset/limit pagination.
+
+- **`readBook<T>(ownerId, name)`** — returns a read-only handle for another plugin's book. Cross-plugin writes are not supported; they go through the owning plugin's tools.
+
+- **`watch(ownerId, bookName, handler, options?)`** — registers a CDC handler that fires on every write to the named book. CDC events carry the document's previous state (`prev`) for updates and deletes, enabling diff-based logic.
+
+- **`transaction(fn)`** — executes a function within an atomic transaction. All writes inside `fn` commit or roll back together. Reads inside the transaction see uncommitted writes (read-your-writes).
+
+### Change Data Capture
+
+All writes go through The Stacks API — there is no raw SQL escape hatch. This is what makes CDC reliable: if the API is the only write path, the event stream is complete.
+
+CDC handlers execute in two phases:
+
+**Phase 1 (cascade)** — runs inside the transaction, before commit. The handler's writes join the same atomic unit. If the handler throws, everything rolls back — the triggering write, the handler's writes, and all nested cascades. This is the correct phase for maintaining referential integrity (e.g. cancelling child writs when a parent is cancelled).
+
+**Phase 2 (notification)** — runs after the transaction commits. Data is already persisted. Handler failures are logged as warnings but cannot affect committed data. This is the correct phase for external notifications like Clockworks event emission.
+
+Within a transaction, multiple writes to the same document are coalesced into a single CDC event reflecting the net change. External observers never see intermediate states.
+
+### Backend
+
+The Stacks depends on a `StacksBackend` interface, not SQLite directly. The default implementation uses SQLite via `better-sqlite3`; alternative backends (in-memory for tests, libSQL for edge) implement the same interface. No SQLite types leak into the public API.
+
+See [The Stacks — API Contract](apparatus/stacks.md) for the full specification: complete type signatures, query language, transaction semantics, coalescing rules, use case coverage matrix, and backend interface.
 
 ---
 
