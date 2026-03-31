@@ -1,6 +1,6 @@
 # `@shardworks/nexus-arbor`
 
-The guild runtime host for Nexus Mk 2.1. The arbor loads installed rigs, assembles the tool surface, and injects guild context into the CLI and MCP server.
+The guild runtime host for Nexus Mk 2.1. The arbor loads installed plugins, assembles the tool surface, and injects context into the CLI and MCP server.
 
 ## Package roles
 
@@ -8,10 +8,10 @@ The guild runtime host for Nexus Mk 2.1. The arbor loads installed rigs, assembl
 @shardworks/nexus-core   — public SDK, types, tool() factory
 @shardworks/nexus-arbor  — guild host, createArbor(), Arbor object
 @shardworks/nexus (cli)  — nsg binary, maps Tool[] → Commander commands
-rigs                     — import from nexus-core only
+plugins                  — import from nexus-core only
 ```
 
-Rig authors import from `@shardworks/nexus-core`. The arbor is an internal concern of the CLI and session provider — not something rigs depend on directly.
+Plugin authors import from `@shardworks/nexus-core`. The arbor is an internal concern of the CLI and session provider — plugins never depend on it directly.
 
 ## Runtime API
 
@@ -27,29 +27,40 @@ const arbor = createArbor('/path/to/guild');
 |---|---|---|
 | `arbor.home` | `string` | Absolute path to the guild root |
 | `arbor.getGuildConfig()` | `GuildConfigV2` | Parsed `guild.json`, read at construction time |
-| `arbor.getRigConfig(name)` | `Record<string, unknown>` | Rig-specific config section from `guild.json`. Accepts key (`'nexus-stdlib'`) or full package name |
-| `arbor.listRigs()` | `Promise<LoadedRig[]>` | All installed rigs, including the arbor's own built-ins. Lazy-loaded and cached |
-| `arbor.findRig(name)` | `Promise<LoadedRig \| null>` | Find a rig by key or full package name |
+| `arbor.getPluginConfig(pluginId)` | `Record<string, unknown>` | Plugin-specific config section from `guild.json`. Accepts derived id (`'nexus-stdlib'`) or full package name. Returns `{}` if absent |
+| `arbor.listKits()` | `Promise<LoadedKit[]>` | All installed kits, including the arbor's own built-ins. Lazy-loaded and cached |
+| `arbor.listApparatuses()` | `Promise<LoadedApparatus[]>` | All installed apparatuses. Lazy-loaded and cached |
+| `arbor.listPlugins()` | `Promise<LoadedPlugin[]>` | All installed plugins (kits + apparatuses). Lazy-loaded and cached |
+| `arbor.findPlugin(name)` | `Promise<LoadedPlugin \| null>` | Find a plugin by derived id or full package name |
 | `arbor.listTools(options?)` | `Promise<Tool[]>` | All tools, optionally filtered by `channel` and/or `roles` |
-| `arbor.findTool(name)` | `Promise<Tool \| null>` | Find a tool by name, across all rigs |
-| `arbor.getDatabase()` | `BooksDatabase` | Lazily-opened SQLite connection to `.nexus/nexus.db`. Cached for process lifetime |
-| `arbor.createRigContext(rigId)` | `RigContext` | Scoped context with `book(name)` (read-write) and `rigBook(otherRigId, name)` (read-only) handles |
+| `arbor.findTool(name)` | `Promise<Tool \| null>` | Find a tool by name, across all plugins |
+| `arbor.createHandlerContext()` | `HandlerContext` | Create context for dispatching a tool or engine handler. Requires plugins to be loaded first |
+| `arbor.getDatabase()` | `BooksDatabase` | Lazily-opened SQLite connection to `.nexus/nexus.db`. **Transitional** — will move to the nexus-books apparatus |
 
-### `LoadedRig`
+### `LoadedKit` and `LoadedApparatus`
 
-An installed rig package as seen by the arbor — its identity, module instance, and resolved tool list:
+Installed plugin packages as seen by the arbor runtime:
 
 ```typescript
-interface LoadedRig {
+interface LoadedKit {
   packageName: string;  // full npm name, e.g. '@shardworks/nexus-stdlib'
-  id: string;           // guild-facing id, e.g. 'nexus-stdlib'
-  version: string;
-  instance: Rig;        // the package's default export, normalized to Rig shape
-  tools: Tool[];        // tools with rigId provenance
+  id:          string;  // derived plugin id, e.g. 'nexus-stdlib'
+  version:     string;
+  kit:         Kit;     // the package's Kit object
 }
+
+interface LoadedApparatus {
+  packageName: string;
+  id:          string;
+  version:     string;
+  apparatus:   Apparatus;  // the package's Apparatus object
+}
+
+// Union type
+type LoadedPlugin = LoadedKit | LoadedApparatus;
 ```
 
-`instance` is the raw `Rig` object from the package's default export (see `nexus-core` SDK). Backward-compatible exports (bare `ToolDefinition` or `ToolDefinition[]`) are normalized to `{ tools: [...] }` on load.
+Type guards: `isLoadedKit(p)` and `isLoadedApparatus(p)` from `@shardworks/nexus-core`.
 
 ### `Tool`
 
@@ -57,7 +68,7 @@ A `ToolDefinition` (from `nexus-core`) with provenance:
 
 ```typescript
 interface Tool extends ToolDefinition {
-  rigId: string;  // derived rig id of the rig that owns this tool (e.g. 'nexus-ledger')
+  pluginId: string;  // derived plugin id of the owning plugin (e.g. 'nexus-ledger')
 }
 ```
 
@@ -65,39 +76,55 @@ interface Tool extends ToolDefinition {
 
 ```typescript
 interface ListToolsOptions {
-  channel?: 'cli' | 'mcp';   // filter to tools available in this channel
-  roles?: string[];           // filter to tools accessible to these roles
+  channel?: 'cli' | 'mcp';  // filter to tools available in this channel
+  roles?:   string[];        // filter to tools accessible to these roles
 }
 ```
 
-### `deriveRigId(packageName)`
+### `derivePluginId(packageName)`
 
-Converts an npm package name to the guild-facing rig id used in `guild.json`, CLI commands, and config sections:
+Converts an npm package name to the guild-facing plugin id used in `guild.json`, CLI commands, and config sections:
 
 ```
 @shardworks/nexus-stdlib  →  nexus-stdlib   (official scope stripped)
-@acme/my-rig              →  acme/my-rig    (third-party: @ dropped)
-my-rig                    →  my-rig         (unscoped: unchanged)
+@acme/my-plugin           →  acme/my-plugin (third-party: @ dropped)
+my-plugin                 →  my-plugin      (unscoped: unchanged)
 ```
 
 ### `findGuildRoot()`
 
 Re-exported from `nexus-core` for convenience — walks up from `cwd` to find the nearest guild root (directory containing `guild.json`).
 
+---
+
+## Plugin loading
+
+The arbor's `loadAndStart()` runs in five phases on the first call to any listing method:
+
+1. **Load** — imports all declared plugin packages from `node_modules`, discriminates kit vs. apparatus
+2. **Validate** — checks `requires` declarations, detects circular apparatus dependencies
+3. **Warn** — advisory warnings for mismatched kit contributions vs. apparatus `consumes`
+4. **Start** — calls `start(ctx)` on each apparatus in dependency-resolved order; fires `plugin:initialized` after each
+5. **Reconcile** — scans kit `books` contributions and creates SQLite tables
+
+Apparatus start order is determined by topological sort on `apparatus.requires`. Circular dependencies throw with a descriptive error. Kit `requires` validate that the named apparatuses are installed but do not affect start order (kits have no lifecycle).
+
+---
+
 ## Built-in CLI commands
 
-These ship with the arbor itself and are always available via `nsg`, regardless of what rigs are installed.
+These ship with the arbor itself and are always available via `nsg`, regardless of what plugins are installed.
 
 | Command | Description |
 |---|---|
 | `nsg init <path>` | Create a new guild: directory structure, `guild.json`, `package.json`, `.gitignore` |
-| `nsg version` | Show Nexus framework version and installed rig versions |
-| `nsg status` | Show guild identity, installed rigs, and configured roles |
-| `nsg upgrade` | Upgrade framework and run pending rig migrations *(stub)* |
-| `nsg rig list` | List installed rigs |
-| `nsg rig install <source>` | Install a rig from npm, a git URL, or a local directory |
-| `nsg rig remove <name>` | Remove a rig and unregister its tools |
-| `nsg rig upgrade <name>` | Upgrade a rig to a newer version *(stub)* |
+| `nsg version` | Show Nexus framework version and installed plugin versions |
+| `nsg status` | Show guild identity, installed plugins, and configured roles |
+| `nsg upgrade` | Upgrade framework and run pending plugin migrations *(stub)* |
+| `nsg rig list` | List installed plugins |
+| `nsg rig install <source>` | Install a plugin from npm, a git URL, or a local directory |
+| `nsg rig remove <name>` | Remove a plugin and unregister its tools |
+| `nsg rig upgrade <name>` | Upgrade a plugin to a newer version *(stub)* |
 
 ### `nsg init`
 
@@ -116,10 +143,10 @@ Accepts npm package specifiers, version pins, and git URLs:
 ```sh
 nsg rig install @shardworks/nexus-stdlib
 nsg rig install nexus-stdlib@1.2.0
-nsg rig install git+https://github.com/acme/my-rig.git
+nsg rig install git+https://github.com/acme/my-plugin.git
 
 # Symlink a local directory (dev workflow)
-nsg rig install ./path/to/my-rig --type link
+nsg rig install ./path/to/my-plugin --type link
 ```
 
 Tools are added to `baseTools` by default (available to all animas). Pass `--roles` to assign to specific roles instead:
@@ -128,48 +155,19 @@ Tools are added to `baseTools` by default (available to all animas). Pass `--rol
 nsg rig install @shardworks/nexus-stdlib --roles artificer,scribe
 ```
 
-## Inter-rig API convention
-
-Rigs that expose a typed API to other rigs export a `fromArbor` factory:
-
-```typescript
-// In a rig package
-import type { Arbor } from '@shardworks/nexus-arbor';
-
-export function fromArbor(arbor: Arbor) {
-  const config = arbor.getRigConfig('my-rig');
-  return {
-    doSomething() { ... }
-  };
-}
-```
-
-Callers import the rig package and call `fromArbor(arbor)` to get a typed, initialized reference.
-
-## Rig descriptor (`rig.json`)
-
-A rig package may include a `rig.json` at its root to declare dependencies on other rigs. Checked at install time — missing dependencies cause `nsg rig install` to fail with a clear error.
-
-```json
-{
-  "description": "My rig",
-  "dependencies": [
-    { "rig": "nexus-stdlib" }
-  ]
-}
-```
-
-All fields are optional. A rig with no dependencies needs no `rig.json`.
+---
 
 ## Books database
 
-The arbor manages a SQLite database at `.nexus/nexus.db` (WAL mode, foreign keys enabled) that provides document storage for rigs.
+The arbor manages a SQLite database at `.nexus/nexus.db` (WAL mode, foreign keys enabled).
+
+> **Transitional:** Books database management will move to the `nexus-books` apparatus when it ships. `arbor.getDatabase()` is marked `@deprecated` and will be removed at that point.
 
 ### Schema reconciliation
 
-On first rig load, `reconcileBooks()` iterates each rig's declared `books` schema and creates tables and indexes. This is additive only — tables are never dropped or altered.
+On plugin load, `reconcileBooks()` scans each kit's `books` contribution field and creates tables and indexes. This is additive only — tables are never dropped or altered.
 
-Each book gets a table named `books_<rigId>_<bookName>`:
+Each book gets a table named `books_<pluginId>_<bookName>`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS "books_nexus_stdlib_writs" (
@@ -205,14 +203,16 @@ Low-level SQL interface returned by `arbor.getDatabase()`. Exposes a single `exe
 import {
   openBooksDatabase,    // factory: (guildRoot) => BooksDatabase
   BookStore,            // BookStore<T> class
-  booksTableName,       // (rigId, bookName) => qualified table name
-  reconcileBooks,       // (db, rigs) => Promise<void>
+  booksTableName,       // (pluginId, bookName) => qualified table name
+  reconcileBooks,       // (db, kits) => Promise<void>
   type BooksDatabase,
   type SqlRow,
   type SqlResult,
 } from '@shardworks/nexus-arbor';
 ```
 
+---
+
 ## Lazy loading
 
-Rig modules are imported dynamically from the guild's `node_modules` on the first call to `listRigs()` or `listTools()`, then cached for the lifetime of the `Arbor` instance. This keeps startup fast — the arbor reads `guild.json` synchronously at construction and defers all module I/O until tools are actually needed.
+Plugin modules are imported dynamically from the guild's `node_modules` on the first call to `listKits()`, `listApparatuses()`, `listPlugins()`, or `listTools()`, then cached for the lifetime of the `Arbor` instance. This keeps startup fast — the arbor reads `guild.json` synchronously at construction and defers all module I/O until plugins are actually needed.
