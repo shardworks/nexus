@@ -1,7 +1,7 @@
 /**
  * reconcileBooks — ensure SQLite tables and indexes exist for all declared books.
  *
- * Called by the Mainspring after rigs are loaded. Additive only:
+ * Called by the Arbor after rigs are loaded. Additive only:
  * - Creates tables that don't yet exist (IF NOT EXISTS).
  * - Creates indexes that don't yet exist (IF NOT EXISTS).
  * - Never drops or modifies existing tables or indexes.
@@ -11,7 +11,7 @@
  */
 
 import type { BooksDatabase } from './sqlite-adapter.ts';
-import type { LoadedRig } from '../mainspring.ts';
+import type { LoadedRig } from '../arbor.ts';
 import { booksTableName, validateFieldName } from './book-store.ts';
 
 /**

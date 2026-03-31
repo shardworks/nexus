@@ -1,7 +1,7 @@
 /**
  * nsg status — minimal guild status.
  *
- * Mainspring built-in. Shows guild identity, framework version, installed rigs.
+ * Arbor built-in. Shows guild identity, framework version, installed rigs.
  * Domain-specific status (writ counts, session history, clock state) belongs
  * to rigs, not here.
  */

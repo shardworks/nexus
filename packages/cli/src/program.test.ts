@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { toFlag, isBooleanSchema, findGroupPrefixes } from './program.ts';
-import type { Tool } from '@shardworks/nexus-mainspring';
+import type { Tool } from '@shardworks/nexus-arbor';
 
 // Helper to create a minimal Tool for testing
 function fakeTool(name: string): Tool {

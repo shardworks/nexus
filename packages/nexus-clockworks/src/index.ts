@@ -3,7 +3,7 @@
  *
  * ## Rig export (default)
  *
- * The default export satisfies the `Rig` interface. Mainspring reads it
+ * The default export satisfies the `Rig` interface. Arbor reads it
  * at startup to register tools and create Books tables.
  *
  * ## TypeScript API (named exports)

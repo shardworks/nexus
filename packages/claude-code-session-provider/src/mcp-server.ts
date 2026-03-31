@@ -99,8 +99,8 @@ export async function createMcpServer(config: McpServerConfig): Promise<McpServe
   });
 
   // Minimal RigContext — the MCP server predates the Books API and does not
-  // have a Mainspring wired in. book() / rigBook() are stubs that throw;
-  // MCP tools that need book access will require a Mainspring-aware refactor
+  // have a Arbor wired in. book() / rigBook() are stubs that throw;
+  // MCP tools that need book access will require a Arbor-aware refactor
   // of the MCP server config and launch path.
   const context: RigContext = {
     home: config.home,

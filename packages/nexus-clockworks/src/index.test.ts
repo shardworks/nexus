@@ -2,7 +2,7 @@
  * nexus-clockworks rig — test suite.
  *
  * Tests the events API, runner, and tool handlers. Uses temp directories
- * as guild roots with Books tables created in-process (no mainspring needed).
+ * as guild roots with Books tables created in-process (no arbor needed).
  *
  * Table setup mirrors what reconcileBooks() would create at runtime:
  *   books_nexus_clockworks_events    (id TEXT PK, content TEXT)

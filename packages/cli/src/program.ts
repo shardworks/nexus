@@ -1,7 +1,7 @@
 /**
- * nsg program — dynamic Commander setup via mainspring tool resolution.
+ * nsg program — dynamic Commander setup via arbor tool resolution.
  *
- * Discovers installed tools at startup via the Mainspring, then registers each
+ * Discovers installed tools at startup via the Arbor, then registers each
  * as a Commander command with auto-generated options from its Zod param schema.
  *
  * Tool names are auto-grouped when multiple tools share a hyphen prefix:
@@ -15,8 +15,8 @@
 import path from 'node:path';
 import { Command } from 'commander';
 import { z } from 'zod';
-import { findGuildRoot, createMainspring, builtinTools, deriveRigId } from '@shardworks/nexus-mainspring';
-import type { Tool, Mainspring } from '@shardworks/nexus-mainspring';
+import { findGuildRoot, createArbor, builtinTools, deriveRigId } from '@shardworks/nexus-arbor';
+import type { Tool, Arbor } from '@shardworks/nexus-arbor';
 import type { RigContext } from '@shardworks/nexus-core';
 
 type ZodShape = Record<string, z.ZodTypeAny>;
@@ -214,23 +214,23 @@ export async function main(): Promise<void> {
 
   // Always register rig built-in tools (version, status, rig, upgrade).
   // These are framework commands that work with or without a guild.
-  const mainspringPackageName = '@shardworks/nexus-mainspring';
-  const mainspringRigId = deriveRigId(mainspringPackageName);
+  const arborPackageName = '@shardworks/nexus-arbor';
+  const arborRigId = deriveRigId(arborPackageName);
   const builtins = builtinTools
     .filter((t) => !t.callableFrom || t.callableFrom.includes('cli'))
-    .map((t) => ({ ...t, rigId: mainspringRigId }) as Tool);
+    .map((t) => ({ ...t, rigId: arborRigId }) as Tool);
 
   const builtinHome = home ?? process.cwd();
   registerAllTools(program, builtins, () => createMinimalRigContext(builtinHome));
 
   // Load guild rig tools when inside a guild
   if (home) {
-    const ms = createMainspring(home);
-    const tools = await ms.listTools({ channel: 'cli' });
-    // Filter out mainspring built-ins (already registered above)
-    const rigTools = tools.filter((t) => t.rigId !== mainspringRigId);
+    const arbor = createArbor(home);
+    const tools = await arbor.listTools({ channel: 'cli' });
+    // Filter out arbor built-ins (already registered above)
+    const rigTools = tools.filter((t) => t.rigId !== arborRigId);
     registerAllTools(program, rigTools, (tool) =>
-      ms.createRigContext(tool.rigId),
+      arbor.createRigContext(tool.rigId),
     );
   }
 

@@ -10,14 +10,14 @@
  *   booksTableName('nexus-clockworks', 'events')    → books_nexus_clockworks_events
  *   booksTableName('nexus-clockworks', 'dispatches') → books_nexus_clockworks_dispatches
  *
- * This matches the convention in packages/mainspring/src/db/book-store.ts.
+ * This matches the convention in packages/arbor/src/db/book-store.ts.
  */
 
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { Database as DB } from 'better-sqlite3';
 
-/** SQLite file path — matches mainspring's booksPath convention. */
+/** SQLite file path — matches arbor's booksPath convention. */
 export function booksPath(home: string): string {
   return path.join(home, '.nexus', 'nexus.db');
 }

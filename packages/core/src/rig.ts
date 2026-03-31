@@ -3,7 +3,7 @@ import type { ToolDefinition } from './tool.ts';
 /**
  * Schema declaration for a single Book in a rig's `books` map.
  *
- * Rig authors declare which fields they want to query on — mainspring
+ * Rig authors declare which fields they want to query on — arbor
  * creates the backing SQLite indexes at startup. No SQL, no JSONPath
  * syntax; field names are plain or dot-notation for nested fields.
  *
@@ -27,7 +27,7 @@ export interface BookOptions {
 /**
  * The author-facing export type for a rig package.
  *
- * Rig packages export this as their default export. Mainspring reads
+ * Rig packages export this as their default export. Arbor reads
  * it at load time to discover the rig's contributions.
  *
  * All fields are optional — a rig may contribute tools, future engine
@@ -51,7 +51,7 @@ export interface Rig {
   /**
    * Books this rig declares — named document collections backed by SQLite.
    *
-   * Mainspring reads these declarations at startup and creates tables and
+   * Arbor reads these declarations at startup and creates tables and
    * indexes for any that don't yet exist. Additive only — no destructive
    * migrations.
    *

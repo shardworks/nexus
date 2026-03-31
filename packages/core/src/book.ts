@@ -6,7 +6,7 @@
  * as part of their domain type. No framework-managed envelope or timestamps.
  *
  * Books are declared in the rig's `Rig` export via `books?: Record<string, BookOptions>`.
- * Mainspring creates the backing SQLite tables and indexes at startup.
+ * Arbor creates the backing SQLite tables and indexes at startup.
  *
  * Rig authors access books through `RigContext.book()` and `RigContext.rigBook()`.
  * The storage backend (SQLite) is an implementation detail — field names in

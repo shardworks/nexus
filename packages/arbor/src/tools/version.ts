@@ -1,7 +1,7 @@
 /**
  * nsg version — show framework and rig version info.
  *
- * A mainspring built-in command. Available via CLI only (not MCP).
+ * An arbor built-in command. Available via CLI only (not MCP).
  */
 
 import { tool, VERSION, readGuildConfigV2 } from '@shardworks/nexus-core';

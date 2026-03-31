@@ -1,7 +1,7 @@
 /**
  * nsg rig — manage guild rigs.
  *
- * Mainspring built-in commands for rig lifecycle. Available via CLI only (not MCP).
+ * Arbor built-in commands for rig lifecycle. Available via CLI only (not MCP).
  */
 
 import fs from 'node:fs';

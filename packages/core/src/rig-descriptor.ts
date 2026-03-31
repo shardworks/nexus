@@ -2,10 +2,10 @@
  * rig.json — the rig descriptor format.
  *
  * Declared by rig packages to advertise their capabilities and
- * requirements. Read by mainspring at install time.
+ * requirements. Read by arbor at install time.
  *
  * A rig package MAY include a rig.json at its root.
- * If absent, mainspring discovers tools from the package's exports
+ * If absent, arbor discovers tools from the package's exports
  * and assumes no dependencies.
  */
 
@@ -25,7 +25,7 @@ export interface RigDependency {
  * The rig.json descriptor shape.
  *
  * All fields are optional — a minimal descriptor is just `{}`.
- * Mainspring uses this for dependency checking at install time.
+ * Arbor uses this for dependency checking at install time.
  */
 export interface RigDescriptor {
   /**

@@ -5,8 +5,8 @@
  * exports maps directly. Needed because guild rigs are ESM-only packages
  * and createRequire() can't resolve their exports.
  *
- * Also owns deriveRigId — kept here (not mainspring.ts) so that tool modules
- * can import it without creating a circular dependency through mainspring.
+ * Also owns deriveRigId — kept here (not arbor.ts) so that tool modules
+ * can import it without creating a circular dependency through arbor.
  */
 
 import fs from 'node:fs';

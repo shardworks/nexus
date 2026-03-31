@@ -1,7 +1,7 @@
 /**
  * nexus-sessions — Sessions rig for Nexus Mk 2.1
  *
- * Default export: the Rig descriptor (books + tools). Mainspring reads this
+ * Default export: the Rig descriptor (books + tools). Arbor reads this
  * at startup to create the Books tables and register the tools.
  *
  * Named exports: the TypeScript API surface for framework-internal callers

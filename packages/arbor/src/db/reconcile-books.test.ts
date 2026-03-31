@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { SqliteAdapter } from './sqlite-adapter.ts';
 import { reconcileBooks } from './reconcile-books.ts';
-import type { LoadedRig } from '../mainspring.ts';
+import type { LoadedRig } from '../arbor.ts';
 
 // ── Helpers ────────────────────────────────────────────────────────────
 

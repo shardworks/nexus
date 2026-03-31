@@ -6,7 +6,7 @@
  *
  * ## Usage
  *
- * Framework internals access the database through `Mainspring.getDatabase()`.
+ * Framework internals access the database through `Arbor.getDatabase()`.
  * The returned `BooksDatabase` instance is cached for the process lifetime.
  *
  * The higher-level Books (NoSQL document store) API will be exposed to
@@ -71,7 +71,7 @@ export interface BooksDatabase {
  * SQLite adapter for BooksDatabase backed by better-sqlite3.
  *
  * Wraps better-sqlite3's synchronous API in resolved Promises.
- * One instance per process — share via `Mainspring.getDatabase()`.
+ * One instance per process — share via `Arbor.getDatabase()`.
  *
  * Connection settings applied at open time:
  * - `foreign_keys = ON`  — enforce referential integrity
@@ -122,7 +122,7 @@ export class SqliteAdapter implements BooksDatabase {
 /**
  * Absolute path to the guild's Books SQLite database.
  *
- * Canonical definition lives here — this is an internal mainspring detail.
+ * Canonical definition lives here — this is an internal arbor detail.
  * Do not re-export from the core public barrel; consumers should go through
  * the Books abstraction (RigContext.book()), not the raw path.
  */
@@ -136,7 +136,7 @@ export function booksPath(home: string): string {
  * Open the guild's Books database for the given guild root.
  *
  * Creates a `SqliteAdapter` pointed at `.nexus/nexus.db` with standard
- * connection pragmas applied. The Mainspring caches the returned instance
+ * connection pragmas applied. The Arbor caches the returned instance
  * for the process lifetime.
  */
 export function openBooksDatabase(home: string): BooksDatabase {

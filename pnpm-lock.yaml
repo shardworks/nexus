@@ -15,6 +15,25 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
+  packages/arbor:
+    dependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../core
+      better-sqlite3:
+        specifier: 12.8.0
+        version: 12.8.0
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: 7.6.13
+        version: 7.6.13
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
   packages/claude-code-session-provider:
     dependencies:
       '@modelcontextprotocol/sdk':
@@ -39,12 +58,12 @@ importers:
       '@shardworks/guild-monitor':
         specifier: 0.1.16
         version: 0.1.16
+      '@shardworks/nexus-arbor':
+        specifier: workspace:*
+        version: link:../arbor
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../core
-      '@shardworks/nexus-mainspring':
-        specifier: workspace:*
-        version: link:../mainspring
       '@shardworks/nexus-stdlib':
         specifier: workspace:*
         version: link:../stdlib
@@ -85,25 +104,6 @@ importers:
         version: 25.5.0
 
   packages/guild-starter-kit: {}
-
-  packages/mainspring:
-    dependencies:
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../core
-      better-sqlite3:
-        specifier: 12.8.0
-        version: 12.8.0
-      zod:
-        specifier: 4.3.6
-        version: 4.3.6
-    devDependencies:
-      '@types/better-sqlite3':
-        specifier: 7.6.13
-        version: 7.6.13
-      '@types/node':
-        specifier: 25.5.0
-        version: 25.5.0
 
   packages/nexus-clockworks:
     dependencies:

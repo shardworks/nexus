@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveRigId } from './mainspring.ts';
+import { deriveRigId } from './arbor.ts';
 
 describe('deriveRigId', () => {
   it('strips @shardworks scope', () => {

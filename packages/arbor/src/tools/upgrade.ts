@@ -1,8 +1,8 @@
 /**
  * nsg upgrade — upgrade the guild framework and run pending migrations.
  *
- * Mainspring built-in. In the rig world, this means:
- * 1. Run mainspring's own framework migrations (core schema, event tables, etc.)
+ * Arbor built-in. In the rig world, this means:
+ * 1. Run the arbor's own framework migrations (core schema, event tables, etc.)
  * 2. Walk each installed rig and run its pending migrations
  * 3. Reconcile guild.json if the schema has changed
  *

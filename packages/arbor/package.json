@@ -1,13 +1,13 @@
 {
-  "name": "@shardworks/nexus-mainspring",
+  "name": "@shardworks/nexus-arbor",
   "version": "0.0.0",
   "license": "ISC",
   "repository": {
     "type": "git",
     "url": "https://github.com/shardworks/nexus",
-    "directory": "packages/mainspring"
+    "directory": "packages/arbor"
   },
-  "description": "Nexus Mk 2.1 — mainspring (plugin host, tool resolution)",
+  "description": "Nexus Mk 2.1 — arbor (plugin host, tool resolution)",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

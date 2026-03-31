@@ -2,7 +2,7 @@
 
 The public SDK for Nexus Mk 2.1. Rig authors import from this package to define tools, declare books, and read guild configuration.
 
-This package is a dependency of every rig. It does not depend on mainspring or the CLI — the dependency graph runs one way: rigs → core.
+This package is a dependency of every rig. It does not depend on arbor or the CLI — the dependency graph runs one way: rigs → core.
 
 ---
 
@@ -26,7 +26,7 @@ export default tool({
 });
 ```
 
-A rig package exports a `Rig` object, a single tool, or an array of tools as its default export. Mainspring discovers them automatically at install time.
+A rig package exports a `Rig` object, a single tool, or an array of tools as its default export. Arbor discovers them automatically at install time.
 
 ### `ToolDefinition`
 
@@ -63,7 +63,7 @@ isToolDefinition(obj)
 
 ## `Rig` — Rig Export Type
 
-The author-facing export type for a rig package. Rig packages export this as their default export. Mainspring reads it at load time to discover the rig's contributions.
+The author-facing export type for a rig package. Rig packages export this as their default export. Arbor reads it at load time to discover the rig's contributions.
 
 ```typescript
 import { type Rig, tool } from '@shardworks/nexus-core';
@@ -81,7 +81,7 @@ export default {
 | Field | Type | Description |
 |---|---|---|
 | `tools?` | `ToolDefinition[]` | Tools this rig contributes to the guild |
-| `books?` | `Record<string, BookOptions>` | Named document collections — mainspring creates SQLite tables and indexes at startup |
+| `books?` | `Record<string, BookOptions>` | Named document collections — arbor creates SQLite tables and indexes at startup |
 
 Backward-compatible: rigs may still export a bare `ToolDefinition` or `ToolDefinition[]` directly.
 
@@ -238,6 +238,6 @@ interface RigDependency {
 }
 ```
 
-Mainspring reads `rig.json` at install time. If declared dependencies aren't installed, `nsg rig install` fails with a clear error.
+Arbor reads `rig.json` at install time. If declared dependencies aren't installed, `nsg rig install` fails with a clear error.
 
 A rig with no dependencies needs no `rig.json` at all.

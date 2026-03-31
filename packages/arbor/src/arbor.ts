@@ -1,14 +1,14 @@
 /**
- * Mainspring — the guild runtime object.
+ * Arbor — the guild runtime object.
  *
- * `createMainspring(guildRoot)` is the primary entry point. It reads guild.json
- * synchronously and returns a Mainspring instance. Rig loading is lazy — modules
+ * `createArbor(guildRoot)` is the primary entry point. It reads guild.json
+ * synchronously and returns an Arbor instance. Rig loading is lazy — modules
  * are imported on first call to `listRigs()` or `listTools()`, then cached.
  *
- * The Mainspring object is the natural dependency-injection carrier for the guild
+ * The Arbor object is the natural dependency-injection carrier for the guild
  * runtime: CLI and MCP server each create one at startup and hold it for the
- * session's lifetime. Rig authors access other rigs via the `fromMainspring()`
- * convention — each rig package exports a typed `fromMainspring(ms: Mainspring)`
+ * session's lifetime. Rig authors access other rigs via the `fromArbor()`
+ * convention — each rig package exports a typed `fromArbor(arbor: Arbor)`
  * factory that returns its inter-rig API surface.
  */
 
@@ -23,13 +23,13 @@ import { reconcileBooks } from './db/reconcile-books.ts';
 
 // ── Rig id derivation ──────────────────────────────────────────────────
 // Re-exported from resolve-package.ts to avoid circular imports: tool modules
-// need deriveRigId but also get imported by mainspring.ts via builtinTools.
+// need deriveRigId but also get imported by arbor.ts via builtinTools.
 export { deriveRigId } from './resolve-package.ts';
 
 // ── Public types ───────────────────────────────────────────────────────
 
 /**
- * A rig as seen by the mainspring runtime — an installed rig package with
+ * A rig as seen by the arbor runtime — an installed rig package with
  * its module instance and resolved tools.
  *
  * `instance` is the raw `Rig` object from the package's default export
@@ -53,7 +53,7 @@ export interface LoadedRig {
 }
 
 /**
- * A tool as seen by the mainspring runtime — a ToolDefinition with provenance.
+ * A tool as seen by the arbor runtime — a ToolDefinition with provenance.
  *
  * Extends ToolDefinition (the rig-author SDK type) with the derived id of
  * the rig that owns it. Used by CLI and MCP surfaces to register tools.
@@ -79,12 +79,12 @@ export interface ListToolsOptions {
 }
 
 /**
- * The guild runtime. Created once per process via `createMainspring()`.
+ * The guild runtime. Created once per process via `createArbor()`.
  *
  * Holds the initialized guild state and provides typed access to rigs,
  * tools, and configuration. Rig loading is lazy and cached.
  */
-export interface Mainspring {
+export interface Arbor {
   /** Absolute path to the guild root. */
   readonly home: string;
 
@@ -115,10 +115,10 @@ export interface Mainspring {
    * List installed tools, optionally filtered by channel and/or roles.
    *
    * @example All CLI tools:
-   *   mainspring.listTools({ channel: 'cli' })
+   *   arbor.listTools({ channel: 'cli' })
    *
    * @example MCP tools for a specific role:
-   *   mainspring.listTools({ channel: 'mcp', roles: ['artificer'] })
+   *   arbor.listTools({ channel: 'mcp', roles: ['artificer'] })
    */
   listTools(options?: ListToolsOptions): Promise<Tool[]>;
 
@@ -132,7 +132,7 @@ export interface Mainspring {
    * Get an open connection to the guild's Books database.
    *
    * Lazily initialized on first call; the same instance is returned on
-   * all subsequent calls for the lifetime of this Mainspring. Callers
+   * all subsequent calls for the lifetime of this Arbor. Callers
    * do not need to close the connection — it lives as long as the process.
    */
   getDatabase(): BooksDatabase;
@@ -154,14 +154,14 @@ export interface Mainspring {
 
 // ── Implementation ─────────────────────────────────────────────────────
 
-/** Build the mainspring's own LoadedRig entry from its built-in tools. */
-function mainspringRig(): LoadedRig {
-  const mainspringPackageName = '@shardworks/nexus-mainspring';
-  const mainspringId = deriveRigId(mainspringPackageName);
-  const tools: Tool[] = builtinTools.map((t) => ({ ...t, rigId: mainspringId }) as Tool);
+/** Build the arbor's own LoadedRig entry from its built-in tools. */
+function arborRig(): LoadedRig {
+  const arborPackageName = '@shardworks/nexus-arbor';
+  const arborId = deriveRigId(arborPackageName);
+  const tools: Tool[] = builtinTools.map((t) => ({ ...t, rigId: arborId }) as Tool);
   return {
-    packageName: mainspringPackageName,
-    id: mainspringId,
+    packageName: arborPackageName,
+    id: arborId,
     version: VERSION,
     instance: { tools: builtinTools as ToolDefinition[] },
     tools,
@@ -177,14 +177,14 @@ async function loadAllRigs(
   guildRoot: string,
   config: GuildConfigV2,
 ): Promise<LoadedRig[]> {
-  // Start with mainspring's own built-in tools — always present
-  const rigs: LoadedRig[] = [mainspringRig()];
+  // Start with the arbor's own built-in tools — always present
+  const rigs: LoadedRig[] = [arborRig()];
 
   for (const rigKey of config.rigs) {
     // Reverse-map rig key → npm package name via the guild's package.json deps
     const packageName = resolvePackageNameForRigKey(guildRoot, rigKey);
     if (!packageName) {
-      console.warn(`[mainspring] No package found in package.json for rig key "${rigKey}" — skipping`);
+      console.warn(`[arbor] No package found in package.json for rig key "${rigKey}" — skipping`);
       continue;
     }
 
@@ -201,7 +201,7 @@ async function loadAllRigs(
         : { tools: resolveAllToolsFromExport(rawExport) };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[mainspring] Failed to load rig "${packageName}": ${message}`);
+      console.warn(`[arbor] Failed to load rig "${packageName}": ${message}`);
     }
 
     // Annotate each tool with its rig's id
@@ -216,15 +216,15 @@ async function loadAllRigs(
 }
 
 /**
- * Create a Mainspring for the given guild root.
+ * Create an Arbor for the given guild root.
  *
  * Reads guild.json synchronously. Rig modules are loaded lazily on first
  * access to `listRigs()` or `listTools()`, then cached for the lifetime
- * of the Mainspring instance.
+ * of the Arbor instance.
  *
  * @param guildRoot - Absolute path to the guild root (contains guild.json).
  */
-export function createMainspring(guildRoot: string): Mainspring {
+export function createArbor(guildRoot: string): Arbor {
   const config = readGuildConfigV2(guildRoot);
 
   // Lazy load cache — a single Promise shared across all callers.
@@ -252,7 +252,7 @@ export function createMainspring(guildRoot: string): Mainspring {
     return db;
   }
 
-  const mainspring: Mainspring = {
+  const arbor: Arbor = {
     home: guildRoot,
 
     getGuildConfig() {
@@ -341,5 +341,5 @@ export function createMainspring(guildRoot: string): Mainspring {
     },
   };
 
-  return mainspring;
+  return arbor;
 }

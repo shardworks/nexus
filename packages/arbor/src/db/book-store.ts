@@ -83,7 +83,7 @@ function buildWhereClause(where: Record<string, unknown>): QueryParts {
 /**
  * SQLite-backed Book<T> implementation.
  *
- * Constructed by `Mainspring.createRigContext()` — not instantiated directly
+ * Constructed by `Arbor.createRigContext()` — not instantiated directly
  * by rig authors.
  */
 export class BookStore<T extends { id: string }> implements Book<T> {

@@ -1,10 +1,10 @@
 /**
  * Book schema declarations for the nexus-clockworks rig.
  *
- * Mainspring reads these at startup and creates the backing SQLite tables
+ * Arbor reads these at startup and creates the backing SQLite tables
  * and indexes if they don't exist. Additive only — no destructive migrations.
  *
- * Table names (derived by mainspring from rig ID + book name):
+ * Table names (derived by arbor from rig ID + book name):
  *   events    → books_nexus_clockworks_events
  *   dispatches → books_nexus_clockworks_dispatches
  */
