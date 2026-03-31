@@ -19,18 +19,18 @@ export default tool({
 
     if (params.verbose) {
       return {
-        nexus: VERSION,
-        model: config.settings?.model,
-        rigs: config.rigs,
-        roles: Object.keys(config.roles),
+        nexus:    VERSION,
+        model:    config.settings?.model,
+        plugins:  config.plugins,
+        roles:    Object.keys(config.roles),
         settings: config.settings,
       };
     }
 
     return {
-      nexus: VERSION,
-      model: config.settings?.model,
-      rigs: config.rigs,
+      nexus:   VERSION,
+      model:   config.settings?.model,
+      plugins: config.plugins,
     };
   },
 });

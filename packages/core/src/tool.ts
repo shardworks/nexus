@@ -34,8 +34,8 @@
  * ```
  */
 import { z } from 'zod';
-import { isRig } from './rig.ts';
-import type { RigContext } from './rig-context.ts';
+import { isKit, isApparatus } from './plugin.ts';
+import type { HandlerContext } from './plugin.ts';
 
 // Zod shape type — a record of string keys to Zod schemas.
 // Using a local alias keeps our public API stable across Zod versions.
@@ -78,7 +78,7 @@ export interface ToolDefinition<TShape extends ZodShape = ZodShape> {
   readonly params: z.ZodObject<TShape>;
   readonly handler: (
     params: z.infer<z.ZodObject<TShape>>,
-    context: RigContext,
+    context: HandlerContext,
   ) => unknown | Promise<unknown>;
 }
 
@@ -89,7 +89,7 @@ type ToolInput<TShape extends ZodShape> = {
   params: TShape;
   handler: (
     params: z.infer<z.ZodObject<TShape>>,
-    context: RigContext,
+    context: HandlerContext,
   ) => unknown | Promise<unknown>;
   /**
    * Caller types this tool is available to.
@@ -172,27 +172,53 @@ export function resolveToolFromExport(
 /**
  * Resolve all ToolDefinitions from a module's default export.
  *
- * Handles three export shapes:
- * - `Rig` object: `{ tools: [...] }` — preferred form
- * - `ToolDefinition[]` — bare array, backward compatible
- * - `ToolDefinition` — single tool, backward compatible
+ * Handles the current plugin export shapes:
+ * - `{ kit: { tools: [...] } }` — kit plugin (canonical)
+ * - `{ apparatus: { supportKit: { tools: [...] } } }` — apparatus with supportKit
+ * - `ToolDefinition[]` — bare array (legacy)
+ * - `ToolDefinition` — single tool (legacy)
+ * - `{ tools: [...] }` — legacy Rig object shape
  */
 export function resolveAllToolsFromExport(
   moduleDefault: unknown,
 ): ToolDefinition[] {
-  if (isRig(moduleDefault)) {
-    return (moduleDefault.tools ?? []).filter(isToolDefinition);
+  // Kit plugin: { kit: { tools: [...], ... } }
+  if (isKit(moduleDefault)) {
+    const t = (moduleDefault.kit as Record<string, unknown>).tools
+    return Array.isArray(t) ? t.filter(isToolDefinition) : []
   }
 
+  // Apparatus plugin: extract tools from supportKit if present
+  if (isApparatus(moduleDefault)) {
+    const sk = moduleDefault.apparatus.supportKit
+    if (sk) {
+      const t = (sk as Record<string, unknown>).tools
+      return Array.isArray(t) ? t.filter(isToolDefinition) : []
+    }
+    return []
+  }
+
+  // Legacy: { tools: [...] } bare object (old Rig shape)
+  if (
+    typeof moduleDefault === 'object' &&
+    moduleDefault !== null &&
+    'tools' in moduleDefault
+  ) {
+    const t = (moduleDefault as Record<string, unknown>).tools
+    return Array.isArray(t) ? t.filter(isToolDefinition) : []
+  }
+
+  // Legacy: single ToolDefinition
   if (isToolDefinition(moduleDefault)) {
-    return [moduleDefault];
+    return [moduleDefault]
   }
 
+  // Legacy: array of ToolDefinitions
   if (Array.isArray(moduleDefault)) {
-    return moduleDefault.filter(isToolDefinition);
+    return moduleDefault.filter(isToolDefinition)
   }
 
-  return [];
+  return []
 }
 
 /** Type guard: is this value a ToolDefinition? */

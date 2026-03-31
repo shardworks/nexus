@@ -15,9 +15,9 @@
 import path from 'node:path';
 import { Command } from 'commander';
 import { z } from 'zod';
-import { findGuildRoot, createArbor, builtinTools, deriveRigId } from '@shardworks/nexus-arbor';
+import { findGuildRoot, createArbor, builtinTools, derivePluginId } from '@shardworks/nexus-arbor';
 import type { Tool, Arbor } from '@shardworks/nexus-arbor';
-import type { RigContext } from '@shardworks/nexus-core';
+import type { HandlerContext } from '@shardworks/nexus-core';
 
 type ZodShape = Record<string, z.ZodTypeAny>;
 
@@ -56,7 +56,7 @@ export function isBooleanSchema(schema: z.ZodTypeAny): boolean {
 function buildToolCommand(
   commandName: string,
   toolDef: Tool,
-  ctx: RigContext,
+  ctx: HandlerContext,
 ): Command {
   const cmd = new Command(commandName).description(toolDef.description);
 
@@ -94,19 +94,19 @@ function buildToolCommand(
 }
 
 /**
- * Create a minimal RigContext for built-in tools that run without a full guild.
+ * Create a minimal HandlerContext for built-in tools that run without a full guild.
  *
- * Built-in tools (version, status, rig-*) don't use book access. If they
- * ever try, an informative error is thrown rather than a cryptic failure.
+ * Built-in tools (version, status, rig-*) don't access apparatus provides.
+ * If they ever try, an informative error is thrown.
  */
-function createMinimalRigContext(home: string): RigContext {
+function createMinimalHandlerContext(home: string): HandlerContext {
   return {
     home,
-    book() {
-      throw new Error('book() is not available outside a guild context.');
-    },
-    rigBook() {
-      throw new Error('rigBook() is not available outside a guild context.');
+    apparatus<T>(name: string): T {
+      throw new Error(
+        `ctx.apparatus("${name}") is not available in built-in tool context. ` +
+        `Built-in tools run before the plugin graph is started.`,
+      );
     },
   };
 }
@@ -148,7 +148,7 @@ export function findGroupPrefixes(tools: Tool[]): Set<string> {
 function registerAllTools(
   program: Command,
   tools: Tool[],
-  ctxFactory: (tool: Tool) => RigContext,
+  ctxFactory: (tool: Tool) => HandlerContext,
 ): void {
   const groupPrefixes = findGroupPrefixes(tools);
   const groups = new Map<string, Command>();
@@ -215,22 +215,22 @@ export async function main(): Promise<void> {
   // Always register rig built-in tools (version, status, rig, upgrade).
   // These are framework commands that work with or without a guild.
   const arborPackageName = '@shardworks/nexus-arbor';
-  const arborRigId = deriveRigId(arborPackageName);
+  const arborPluginId = derivePluginId(arborPackageName);
   const builtins = builtinTools
     .filter((t) => !t.callableFrom || t.callableFrom.includes('cli'))
-    .map((t) => ({ ...t, rigId: arborRigId }) as Tool);
+    .map((t) => ({ ...t, pluginId: arborPluginId }) as Tool);
 
   const builtinHome = home ?? process.cwd();
-  registerAllTools(program, builtins, () => createMinimalRigContext(builtinHome));
+  registerAllTools(program, builtins, () => createMinimalHandlerContext(builtinHome));
 
-  // Load guild rig tools when inside a guild
+  // Load guild plugin tools when inside a guild
   if (home) {
     const arbor = createArbor(home);
     const tools = await arbor.listTools({ channel: 'cli' });
     // Filter out arbor built-ins (already registered above)
-    const rigTools = tools.filter((t) => t.rigId !== arborRigId);
-    registerAllTools(program, rigTools, (tool) =>
-      arbor.createRigContext(tool.rigId),
+    const pluginTools = tools.filter((t) => t.pluginId !== arborPluginId);
+    registerAllTools(program, pluginTools, () =>
+      arbor.createHandlerContext(),
     );
   }
 

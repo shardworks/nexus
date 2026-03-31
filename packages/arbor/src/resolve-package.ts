@@ -2,10 +2,10 @@
  * Package resolution utilities for guild-installed npm packages.
  *
  * Resolves entry points from the guild's node_modules by reading package.json
- * exports maps directly. Needed because guild rigs are ESM-only packages
+ * exports maps directly. Needed because guild plugins are ESM-only packages
  * and createRequire() can't resolve their exports.
  *
- * Also owns deriveRigId — kept here (not arbor.ts) so that tool modules
+ * Also owns derivePluginId — kept here (not arbor.ts) so that tool modules
  * can import it without creating a circular dependency through arbor.
  */
 
@@ -13,19 +13,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * Derive the guild-facing rig id from an npm package name.
+ * Derive the guild-facing plugin id from an npm package name.
  *
  * Convention:
  * - `@shardworks/nexus-ledger` → `nexus-ledger`  (official scope stripped)
- * - `@acme/my-rig`             → `acme/my-rig`   (third-party: drop @ only)
- * - `my-rig`                   → `my-rig`         (unscoped: unchanged)
+ * - `@acme/my-plugin`          → `acme/my-plugin` (third-party: drop @ only)
+ * - `my-plugin`                → `my-plugin`       (unscoped: unchanged)
  *
- * The `@shardworks` scope is the official Nexus namespace — its rigs are
+ * The `@shardworks` scope is the official Nexus namespace — its plugins are
  * referenced by bare name in guild.json, CLI commands, and config keys.
  * Third-party scoped packages retain the scope as a prefix (without @) to
  * prevent collisions between `@acme/foo` and `@other/foo`.
  */
-export function deriveRigId(packageName: string): string {
+export function derivePluginId(packageName: string): string {
   if (packageName.startsWith('@shardworks/')) {
     return packageName.slice('@shardworks/'.length);
   }
@@ -53,16 +53,15 @@ export function readGuildPackageJson(
 }
 
 /**
- * Resolve the npm package name for a rig key by consulting the guild's root package.json.
+ * Resolve the npm package name for a plugin id by consulting the guild's root package.json.
  *
- * Reverses the `deriveRigId()` mapping:
- * - Key containing `/`  → `@key`          (e.g. `acme/my-rig` → `@acme/my-rig`)
- * - Key without `/`     → prefer `@shardworks/key` in deps; fall back to unscoped `key`
+ * Reverses the `derivePluginId()` mapping:
+ * - Id containing `/`  → `@id`           (e.g. `acme/my-plugin` → `@acme/my-plugin`)
+ * - Id without `/`     → prefer `@shardworks/id` in deps; fall back to unscoped `id`
  *
- * Returns null if no matching dependency is found — the rig may not be npm-tracked
- * (e.g. manually placed in node_modules without a package.json entry).
+ * Returns null if no matching dependency is found.
  */
-export function resolvePackageNameForRigKey(guildRoot: string, rigKey: string): string | null {
+export function resolvePackageNameForPluginId(guildRoot: string, pluginId: string): string | null {
   const pkgPath = path.join(guildRoot, 'package.json');
   let deps: string[] = [];
   try {
@@ -72,16 +71,16 @@ export function resolvePackageNameForRigKey(guildRoot: string, rigKey: string): 
     return null;
   }
 
-  // Key with / came from @scope/name → scope/name; reverse is prepend @
-  if (rigKey.includes('/')) {
-    const pkg = '@' + rigKey;
+  // Id with / came from @scope/name → scope/name; reverse is prepend @
+  if (pluginId.includes('/')) {
+    const pkg = '@' + pluginId;
     return deps.includes(pkg) ? pkg : null;
   }
 
-  // Key without /: prefer the official @shardworks/ scope; fall back to unscoped
-  const official = '@shardworks/' + rigKey;
+  // Id without /: prefer the official @shardworks/ scope; fall back to unscoped
+  const official = '@shardworks/' + pluginId;
   if (deps.includes(official)) return official;
-  if (deps.includes(rigKey)) return rigKey;
+  if (deps.includes(pluginId)) return pluginId;
   return null;
 }
 

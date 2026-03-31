@@ -2,65 +2,56 @@
  * Arbor — the guild runtime object.
  *
  * `createArbor(guildRoot)` is the primary entry point. It reads guild.json
- * synchronously and returns an Arbor instance. Rig loading is lazy — modules
- * are imported on first call to `listRigs()` or `listTools()`, then cached.
+ * synchronously and returns an Arbor instance. Plugin loading is lazy —
+ * modules are imported on first access to any listing method, then cached.
  *
- * The Arbor object is the natural dependency-injection carrier for the guild
- * runtime: CLI and MCP server each create one at startup and hold it for the
- * session's lifetime. Rig authors access other rigs via the `fromArbor()`
- * convention — each rig package exports a typed `fromArbor(arbor: Arbor)`
- * factory that returns its inter-rig API surface.
+ * The Arbor manages the full plugin lifecycle:
+ *   1. Load    — imports all declared plugin packages, discriminates kit vs apparatus
+ *   2. Validate — checks `requires` declarations, detects circular dependencies
+ *   3. Start   — calls start(ctx) on each apparatus in dependency-resolved order
+ *   4. Events  — fires `plugin:initialized` after each plugin loads
+ *   5. Warn    — advisory warnings for mismatched kit contributions / recommends
  */
 
-import { readGuildConfigV2, resolveAllToolsFromExport, isRig, isToolDefinition, VERSION } from '@shardworks/nexus-core';
-import type { Rig, GuildConfigV2, ToolDefinition, RigContext, ReadOnlyBook, Book } from '@shardworks/nexus-core';
+import {
+  readGuildConfigV2,
+  resolveAllToolsFromExport,
+  isToolDefinition,
+  isKit,
+  isApparatus,
+  VERSION,
+} from '@shardworks/nexus-core';
+import type {
+  GuildConfigV2,
+  ToolDefinition,
+  HandlerContext,
+  GuildContext,
+  Kit,
+  LoadedKit,
+  LoadedApparatus,
+  LoadedPlugin,
+} from '@shardworks/nexus-core';
 import type { ToolCaller } from '@shardworks/nexus-core';
 import { builtinTools } from './tools/index.ts';
-import { deriveRigId, readGuildPackageJson, resolveGuildPackageEntry, resolvePackageNameForRigKey } from './resolve-package.ts';
+import { derivePluginId, readGuildPackageJson, resolveGuildPackageEntry, resolvePackageNameForPluginId } from './resolve-package.ts';
 import { openBooksDatabase, type BooksDatabase } from './db/sqlite-adapter.ts';
 import { BookStore, booksTableName } from './db/book-store.ts';
 import { reconcileBooks } from './db/reconcile-books.ts';
 
-// ── Rig id derivation ──────────────────────────────────────────────────
-// Re-exported from resolve-package.ts to avoid circular imports: tool modules
-// need deriveRigId but also get imported by arbor.ts via builtinTools.
-export { deriveRigId } from './resolve-package.ts';
+// Re-export for consumers that need the id derivation function
+export { derivePluginId } from './resolve-package.ts';
 
 // ── Public types ───────────────────────────────────────────────────────
 
 /**
- * A rig as seen by the arbor runtime — an installed rig package with
- * its module instance and resolved tools.
- *
- * `instance` is the raw `Rig` object from the package's default export
- * (normalized to `{ tools }` shape if the package exported a bare tool
- * or array). `tools` is the flattened, annotated list used by CLI/MCP.
- *
- * `packageName` is the full npm package name; `id` is the derived
- * guild-facing identifier used in guild.json, CLI commands, and config.
- */
-export interface LoadedRig {
-  /** Full npm package name, e.g. '@shardworks/nexus-ledger'. Source of truth. */
-  readonly packageName: string;
-  /** Derived guild-facing id, e.g. 'nexus-ledger'. Used in guild.json and config. */
-  readonly id: string;
-  /** Version resolved from the installed package's package.json. */
-  readonly version: string;
-  /** The rig's module export — normalized to Rig shape. */
-  readonly instance: Rig;
-  /** Tools this rig contributes (ToolDefinition + provenance). */
-  readonly tools: Tool[];
-}
-
-/**
  * A tool as seen by the arbor runtime — a ToolDefinition with provenance.
  *
- * Extends ToolDefinition (the rig-author SDK type) with the derived id of
- * the rig that owns it. Used by CLI and MCP surfaces to register tools.
+ * Extends ToolDefinition (the plugin-author SDK type) with the derived id of
+ * the plugin that owns it. Used by CLI and MCP surfaces to register tools.
  */
 export interface Tool extends ToolDefinition {
-  /** Derived rig id of the rig that owns this tool (e.g. 'nexus-ledger') */
-  readonly rigId: string;
+  /** Derived plugin id of the plugin that owns this tool (e.g. 'nexus-ledger') */
+  readonly pluginId: string;
 }
 
 /** Options for filtering the tool list. */
@@ -81,8 +72,8 @@ export interface ListToolsOptions {
 /**
  * The guild runtime. Created once per process via `createArbor()`.
  *
- * Holds the initialized guild state and provides typed access to rigs,
- * tools, and configuration. Rig loading is lazy and cached.
+ * Holds the initialized guild state and provides typed access to plugins,
+ * tools, and configuration. Plugin loading is lazy and cached.
  */
 export interface Arbor {
   /** Absolute path to the guild root. */
@@ -92,33 +83,39 @@ export interface Arbor {
   getGuildConfig(): GuildConfigV2;
 
   /**
-   * Get the rig-specific section of guild.json.
-   * Rig configs are stored as named keys in guild.json.
-   * Returns an empty object if the rig has no config section.
+   * Get the plugin-specific section of guild.json.
+   * Plugin configs are stored as named keys in guild.json.
+   * Returns an empty object if the plugin has no config section.
    */
-  getRigConfig(rigName: string): Record<string, unknown>;
+  getPluginConfig(pluginId: string): Record<string, unknown>;
 
   /**
-   * List all installed rigs.
-   * Loads and caches rig modules on first call.
+   * List all installed kits.
+   * Loads, validates, and starts plugins on first call.
    */
-  listRigs(): Promise<LoadedRig[]>;
+  listKits(): Promise<LoadedKit[]>;
 
   /**
-   * Find a rig by key or full package name. Returns null if not installed.
-   * Accepts either the derived key ('nexus-ledger') or the full package name
+   * List all installed apparatuses.
+   * Loads, validates, and starts plugins on first call.
+   */
+  listApparatuses(): Promise<LoadedApparatus[]>;
+
+  /**
+   * List all installed plugins (kits + apparatuses).
+   * Loads, validates, and starts plugins on first call.
+   */
+  listPlugins(): Promise<LoadedPlugin[]>;
+
+  /**
+   * Find a plugin by id or full package name. Returns null if not installed.
+   * Accepts either the derived id ('nexus-ledger') or the full package name
    * ('@shardworks/nexus-ledger').
    */
-  findRig(name: string): Promise<LoadedRig | null>;
+  findPlugin(name: string): Promise<LoadedPlugin | null>;
 
   /**
    * List installed tools, optionally filtered by channel and/or roles.
-   *
-   * @example All CLI tools:
-   *   arbor.listTools({ channel: 'cli' })
-   *
-   * @example MCP tools for a specific role:
-   *   arbor.listTools({ channel: 'mcp', roles: ['artificer'] })
    */
   listTools(options?: ListToolsOptions): Promise<Tool[]>;
 
@@ -129,118 +126,386 @@ export interface Arbor {
   findTool(name: string): Promise<Tool | null>;
 
   /**
-   * Get an open connection to the guild's Books database.
+   * Create a HandlerContext for use when dispatching a tool or engine handler.
    *
-   * Lazily initialized on first call; the same instance is returned on
-   * all subsequent calls for the lifetime of this Arbor. Callers
-   * do not need to close the connection — it lives as long as the process.
+   * The returned context provides `home` and `apparatus<T>(name)` access to
+   * started apparatus provides objects. Must be called after plugin loading
+   * has completed (i.e., after any listing method has been awaited).
    */
-  getDatabase(): BooksDatabase;
+  createHandlerContext(): HandlerContext;
 
   /**
-   * Create a `RigContext` scoped to the given rig id.
+   * Get an open connection to the guild's Books database.
    *
-   * The returned context's `book()` method returns `Book<T>` handles scoped
-   * to `rigId`. `rigBook()` returns read-only handles scoped to the
-   * specified foreign rig id.
+   * Transitional: Books database management will move to the nexus-books
+   * apparatus once implemented. Lazily initialized; lives for the process lifetime.
    *
-   * Called by the CLI and MCP server when constructing the context to pass
-   * to tool and engine handlers.
-   *
-   * @param rigId - The derived rig id (e.g. 'nexus-ledger', not the npm package name).
+   * @deprecated Will be removed when nexus-books apparatus ships.
    */
-  createRigContext(rigId: string): RigContext;
+  getDatabase(): BooksDatabase;
+}
+
+// ── Internal manifest ──────────────────────────────────────────────────
+
+interface GuildManifest {
+  kits:        LoadedKit[]
+  apparatuses: LoadedApparatus[]
+  /** Flat tool list extracted from all kits and apparatus supportKits. */
+  tools:       Tool[]
+  /** Map from apparatus id → provides object, populated as each apparatus starts. */
+  provides:    Map<string, unknown>
 }
 
 // ── Implementation ─────────────────────────────────────────────────────
 
-/** Build the arbor's own LoadedRig entry from its built-in tools. */
-function arborRig(): LoadedRig {
-  const arborPackageName = '@shardworks/nexus-arbor';
-  const arborId = deriveRigId(arborPackageName);
-  const tools: Tool[] = builtinTools.map((t) => ({ ...t, rigId: arborId }) as Tool);
+/** Build the arbor's own LoadedKit entry from its built-in tools. */
+function arborKit(): LoadedKit {
+  const packageName = '@shardworks/nexus-arbor';
+  const id = derivePluginId(packageName);
   return {
-    packageName: arborPackageName,
-    id: arborId,
+    packageName,
+    id,
     version: VERSION,
-    instance: { tools: builtinTools as ToolDefinition[] },
-    tools,
+    kit: { tools: builtinTools as ToolDefinition[] },
   };
 }
 
 /**
- * Load all installed rigs by iterating config.rigs and resolving package names
- * from the guild's package.json. Each rig module is imported and introspected
- * to discover its tools — no per-tool registry in guild.json required.
+ * Validate all `requires` declarations and detect circular dependencies.
+ * Throws with a descriptive error on the first problem found.
  */
-async function loadAllRigs(
-  guildRoot: string,
-  config: GuildConfigV2,
-): Promise<LoadedRig[]> {
-  // Start with the arbor's own built-in tools — always present
-  const rigs: LoadedRig[] = [arborRig()];
+function validateRequires(
+  kits: LoadedKit[],
+  apparatuses: LoadedApparatus[],
+): void {
+  const apparatusIds = new Set(apparatuses.map((a) => a.id));
+  const allIds = new Set([
+    ...kits.map((k) => k.id),
+    ...apparatuses.map((a) => a.id),
+  ]);
 
-  for (const rigKey of config.rigs) {
-    // Reverse-map rig key → npm package name via the guild's package.json deps
-    const packageName = resolvePackageNameForRigKey(guildRoot, rigKey);
+  // Check apparatus requires
+  for (const app of apparatuses) {
+    for (const dep of app.apparatus.requires ?? []) {
+      if (!allIds.has(dep)) {
+        throw new Error(
+          `[arbor] "${app.id}" requires "${dep}", which is not installed.`,
+        );
+      }
+    }
+  }
+
+  // Check kit requires (must be apparatus names — kits can't depend on kits)
+  for (const kit of kits) {
+    for (const dep of kit.kit.requires ?? []) {
+      if (!apparatusIds.has(dep)) {
+        if (!allIds.has(dep)) {
+          throw new Error(
+            `[arbor] kit "${kit.id}" requires "${dep}", which is not installed.`,
+          );
+        }
+        throw new Error(
+          `[arbor] kit "${kit.id}" requires "${dep}", but that plugin is a kit, not an apparatus. ` +
+          `Kit requires must name apparatus plugins.`,
+        );
+      }
+    }
+  }
+
+  // Detect circular dependencies among apparatuses
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+
+  function visit(id: string, chain: string[]): void {
+    if (visited.has(id)) return;
+    if (visiting.has(id)) {
+      const cycle = [...chain, id].join(' → ');
+      throw new Error(`[arbor] Circular dependency detected: ${cycle}`);
+    }
+    visiting.add(id);
+    const app = apparatuses.find((a) => a.id === id);
+    if (app) {
+      for (const dep of app.apparatus.requires ?? []) {
+        visit(dep, [...chain, id]);
+      }
+    }
+    visiting.delete(id);
+    visited.add(id);
+  }
+
+  for (const app of apparatuses) {
+    visit(app.id, []);
+  }
+}
+
+/**
+ * Sort apparatuses in dependency-resolved order using topological sort.
+ * validateRequires() must be called first to ensure the graph is acyclic.
+ */
+function topoSort(apparatuses: LoadedApparatus[]): LoadedApparatus[] {
+  const sorted: LoadedApparatus[] = [];
+  const visited = new Set<string>();
+
+  function visit(id: string): void {
+    if (visited.has(id)) return;
+    const app = apparatuses.find((a) => a.id === id);
+    if (!app) return;
+    for (const dep of app.apparatus.requires ?? []) {
+      visit(dep);
+    }
+    visited.add(id);
+    sorted.push(app);
+  }
+
+  for (const app of apparatuses) {
+    visit(app.id);
+  }
+
+  return sorted;
+}
+
+/**
+ * Build a GuildContext scoped to a specific apparatus.
+ * ctx.apparatus() validates the call against the apparatus's requires list.
+ */
+function buildGuildContext(
+  forApparatus: LoadedApparatus,
+  manifest:     GuildManifest,
+  eventHandlers: Map<string, Array<(...args: unknown[]) => void | Promise<void>>>,
+): GuildContext {
+  const allowed = new Set(forApparatus.apparatus.requires ?? []);
+
+  return {
+    apparatus<T>(name: string): T {
+      if (!allowed.has(name)) {
+        throw new Error(
+          `[arbor] "${forApparatus.id}" called ctx.apparatus("${name}") without declaring ` +
+          `it in requires. Add "${name}" to this apparatus's requires array.`,
+        );
+      }
+      const provides = manifest.provides.get(name);
+      if (provides === undefined) {
+        // Return a sentinel that throws on access
+        return new Proxy({} as T, {
+          get(_target, prop) {
+            throw new Error(
+              `[arbor] ctx.apparatus("${name}") has no provides. ` +
+              `Accessing .${String(prop)} is not available.`,
+            );
+          },
+        });
+      }
+      return provides as T;
+    },
+
+    kits()        { return [...manifest.kits] },
+    apparatuses() { return [...manifest.apparatuses] },
+    plugins()     { return [...manifest.kits, ...manifest.apparatuses] },
+
+    on(event: string, handler: (...args: unknown[]) => void | Promise<void>) {
+      const list = eventHandlers.get(event) ?? [];
+      list.push(handler);
+      eventHandlers.set(event, list);
+    },
+  };
+}
+
+/**
+ * Fire a lifecycle event, awaiting each handler sequentially.
+ */
+async function fireEvent(
+  eventHandlers: Map<string, Array<(...args: unknown[]) => void | Promise<void>>>,
+  event:         string,
+  ...args: unknown[]
+): Promise<void> {
+  const handlers = eventHandlers.get(event) ?? [];
+  for (const h of handlers) {
+    await h(...args);
+  }
+}
+
+/**
+ * Emit advisory warnings for kit contributions that no apparatus consumes,
+ * and for missing recommended apparatuses.
+ */
+function emitStartupWarnings(
+  kits:        LoadedKit[],
+  apparatuses: LoadedApparatus[],
+): void {
+  const consumedTypes = new Set<string>();
+  const installedIds  = new Set(apparatuses.map((a) => a.id));
+
+  for (const app of apparatuses) {
+    for (const token of app.apparatus.consumes ?? []) {
+      consumedTypes.add(token);
+    }
+  }
+
+  for (const kit of kits) {
+    // Check recommends
+    for (const rec of kit.kit.recommends ?? []) {
+      if (!installedIds.has(rec)) {
+        console.warn(
+          `[arbor] warn: "${kit.id}" recommends "${rec}" but it is not installed.`,
+        );
+      }
+    }
+
+    // Check contribution types against consumes
+    for (const key of Object.keys(kit.kit)) {
+      if (key === 'requires' || key === 'recommends') continue;
+      if (!consumedTypes.has(key)) {
+        console.warn(
+          `[arbor] warn: "${kit.id}" contributes "${key}" but no installed apparatus declares consumes: ["${key}"]`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Extract Tool[] from a LoadedKit, annotating with pluginId.
+ */
+function extractTools(pluginId: string, kit: Kit): Tool[] {
+  const rawTools = (kit as Record<string, unknown>).tools;
+  if (!Array.isArray(rawTools)) return [];
+  return rawTools
+    .filter(isToolDefinition)
+    .map((t) => ({ ...t, pluginId }) as Tool);
+}
+
+/**
+ * Load all installed plugins, start apparatuses, and return the manifest.
+ */
+async function loadAndStart(
+  guildRoot: string,
+  config:    GuildConfigV2,
+  db:        BooksDatabase,
+): Promise<GuildManifest> {
+  const kits:        LoadedKit[]        = [arborKit()];
+  const apparatuses: LoadedApparatus[]  = [];
+  const eventHandlers = new Map<
+    string,
+    Array<(...args: unknown[]) => void | Promise<void>>
+  >();
+
+  // ── Load phase ─────────────────────────────────────────────────────
+
+  for (const pluginId of config.plugins) {
+    const packageName = resolvePackageNameForPluginId(guildRoot, pluginId);
     if (!packageName) {
-      console.warn(`[arbor] No package found in package.json for rig key "${rigKey}" — skipping`);
+      console.warn(`[arbor] No package found in package.json for plugin "${pluginId}" — skipping`);
       continue;
     }
 
     const { version } = readGuildPackageJson(guildRoot, packageName);
-    let instance: Rig = {};
 
     try {
       const entryPath = resolveGuildPackageEntry(guildRoot, packageName);
       const mod = await import(entryPath) as { default: unknown };
-      const rawExport = mod.default;
-      // Normalize to Rig shape regardless of export style (bare tool, array, or Rig object)
-      instance = isRig(rawExport)
-        ? rawExport
-        : { tools: resolveAllToolsFromExport(rawExport) };
+      const raw = mod.default;
+
+      if (isApparatus(raw)) {
+        apparatuses.push({ packageName, id: pluginId, version, apparatus: raw.apparatus });
+      } else if (isKit(raw)) {
+        kits.push({ packageName, id: pluginId, version, kit: raw.kit });
+      } else {
+        // Legacy export format (bare tool, array, or { tools: [...] }) —
+        // wrap in a synthetic kit so it participates in the plugin model.
+        const tools = resolveAllToolsFromExport(raw);
+        kits.push({
+          packageName,
+          id:      pluginId,
+          version,
+          kit:     { tools },
+        });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[arbor] Failed to load rig "${packageName}": ${message}`);
+      console.warn(`[arbor] Failed to load plugin "${packageName}": ${message}`);
     }
-
-    // Annotate each tool with its rig's id
-    const tools: Tool[] = (instance.tools ?? [])
-      .filter(isToolDefinition)
-      .map((t) => ({ ...t, rigId: rigKey }));
-
-    rigs.push({ packageName, id: rigKey, version, instance, tools });
   }
 
-  return rigs;
+  // ── Validation phase ───────────────────────────────────────────────
+
+  validateRequires(kits, apparatuses);
+
+  // ── Startup warnings ───────────────────────────────────────────────
+
+  emitStartupWarnings(kits, apparatuses);
+
+  // ── Start phase ────────────────────────────────────────────────────
+
+  const orderedApparatuses = topoSort(apparatuses);
+  const provides = new Map<string, unknown>();
+
+  const manifest: GuildManifest = {
+    kits,
+    apparatuses: orderedApparatuses,
+    tools: [],
+    provides,
+  };
+
+  // Fire plugin:initialized for all kits before starting any apparatus
+  for (const kit of kits) {
+    await fireEvent(eventHandlers, 'plugin:initialized', kit);
+  }
+
+  // Start each apparatus in dependency order
+  for (const app of orderedApparatuses) {
+    // Register provides before start() so apparatuses that declare provides can
+    // populate the object from within start() and it's visible to later startups.
+    if (app.apparatus.provides !== undefined) {
+      provides.set(app.id, app.apparatus.provides);
+    }
+
+    const ctx = buildGuildContext(app, manifest, eventHandlers);
+    await app.apparatus.start(ctx);
+
+    await fireEvent(eventHandlers, 'plugin:initialized', app);
+  }
+
+  // ── Books reconciliation (transitional) ───────────────────────────
+  // Scans kit `books` contribution fields and ensures SQLite tables/indexes
+  // exist. Moves to the nexus-books apparatus when that ships.
+
+  await reconcileBooks(db, kits);
+
+  // ── Build flat tool list ──────────────────────────────────────────
+
+  const allTools: Tool[] = [];
+
+  for (const kit of kits) {
+    allTools.push(...extractTools(kit.id, kit.kit));
+    // Also extract from apparatus supportKits where applicable
+  }
+  for (const app of orderedApparatuses) {
+    if (app.apparatus.supportKit) {
+      allTools.push(...extractTools(app.id, app.apparatus.supportKit));
+    }
+  }
+
+  manifest.tools = allTools;
+
+  return manifest;
 }
 
 /**
  * Create an Arbor for the given guild root.
  *
- * Reads guild.json synchronously. Rig modules are loaded lazily on first
- * access to `listRigs()` or `listTools()`, then cached for the lifetime
- * of the Arbor instance.
+ * Reads guild.json synchronously. Plugin modules are loaded and apparatuses
+ * started lazily on first access to any listing method, then cached.
  *
  * @param guildRoot - Absolute path to the guild root (contains guild.json).
  */
 export function createArbor(guildRoot: string): Arbor {
   const config = readGuildConfigV2(guildRoot);
 
-  // Lazy load cache — a single Promise shared across all callers.
-  // Set on first access; all concurrent callers await the same Promise.
-  // Reconciles book schemas after rigs are loaded.
-  let rigsPromise: Promise<LoadedRig[]> | null = null;
-
-  function getRigs(): Promise<LoadedRig[]> {
-    if (!rigsPromise) {
-      rigsPromise = loadAllRigs(guildRoot, config).then(async (rigs) => {
-        await reconcileBooks(getDatabase(), rigs);
-        return rigs;
-      });
-    }
-    return rigsPromise;
-  }
+  // Lazy manifest — a single Promise shared across all callers.
+  // `resolvedManifest` is set synchronously once the Promise resolves,
+  // enabling synchronous access inside HandlerContext.apparatus().
+  let manifestPromise:  Promise<GuildManifest> | null = null;
+  let resolvedManifest: GuildManifest | null = null;
 
   // Lazy database — opened on first call, reused for the process lifetime.
   let db: BooksDatabase | null = null;
@@ -252,6 +517,16 @@ export function createArbor(guildRoot: string): Arbor {
     return db;
   }
 
+  function getManifest(): Promise<GuildManifest> {
+    if (!manifestPromise) {
+      manifestPromise = loadAndStart(guildRoot, config, getDatabase()).then((m) => {
+        resolvedManifest = m;
+        return m;
+      });
+    }
+    return manifestPromise;
+  }
+
   const arbor: Arbor = {
     home: guildRoot,
 
@@ -259,29 +534,38 @@ export function createArbor(guildRoot: string): Arbor {
       return config;
     },
 
-    getRigConfig(name: string) {
-      // Normalize to key — accepts either full package name or short key
-      const key = name.startsWith('@') ? deriveRigId(name) : name;
+    getPluginConfig(pluginId: string) {
+      const key = pluginId.startsWith('@') ? derivePluginId(pluginId) : pluginId;
       const cfg = config as unknown as Record<string, unknown>;
       return (cfg[key] as Record<string, unknown>) ?? {};
     },
 
-    async listRigs() {
-      return getRigs();
+    async listKits() {
+      return (await getManifest()).kits;
     },
 
-    async findRig(name: string) {
-      const rigs = await getRigs();
-      // Normalize the input to an id for comparison
-      const targetId = name.startsWith('@') ? deriveRigId(name) : name;
-      return rigs.find((r) => r.id === targetId || r.packageName === name) ?? null;
+    async listApparatuses() {
+      return (await getManifest()).apparatuses;
+    },
+
+    async listPlugins() {
+      const m = await getManifest();
+      return [...m.kits, ...m.apparatuses];
+    },
+
+    async findPlugin(name: string) {
+      const m      = await getManifest();
+      const target = name.startsWith('@') ? derivePluginId(name) : name;
+      const all    = [...m.kits, ...m.apparatuses];
+      return all.find(
+        (p) => p.id === target || p.packageName === name,
+      ) ?? null;
     },
 
     async listTools(options?: ListToolsOptions) {
-      const rigs = await getRigs();
-      let tools: Tool[] = rigs.flatMap((r) => r.tools);
+      const m = await getManifest();
+      let tools = m.tools;
 
-      // Filter by caller type (callableFrom)
       if (options?.channel) {
         const channel = options.channel;
         tools = tools.filter(
@@ -289,7 +573,6 @@ export function createArbor(guildRoot: string): Arbor {
         );
       }
 
-      // Filter by roles (baseTools + role-specific tools)
       if (options?.roles && options.roles.length > 0) {
         const toolNames = new Set<string>(config.baseTools ?? []);
         for (const role of options.roles) {
@@ -307,38 +590,39 @@ export function createArbor(guildRoot: string): Arbor {
     },
 
     async findTool(name: string) {
-      const rigs = await getRigs();
-      const allTools = rigs.flatMap((r) => r.tools);
-      return allTools.find((t) => t.name === name) ?? null;
+      const m = await getManifest();
+      return m.tools.find((t) => t.name === name) ?? null;
     },
 
-    getDatabase,
-
-    createRigContext(rigId: string): RigContext {
+    createHandlerContext(): HandlerContext {
       return {
         home: guildRoot,
 
-        book<T extends { id: string }>(name: string): Book<T> {
-          return new BookStore<T>(getDatabase(), booksTableName(rigId, name));
-        },
-
-        rigBook<T extends { id: string }>(
-          otherRigId: string,
-          name: string,
-        ): ReadOnlyBook<T> {
-          const store = new BookStore<T>(
-            getDatabase(),
-            booksTableName(otherRigId, name),
-          );
-          return {
-            get: store.get.bind(store),
-            find: store.find.bind(store),
-            list: store.list.bind(store),
-            count: store.count.bind(store),
-          };
+        apparatus<T>(name: string): T {
+          if (!resolvedManifest) {
+            throw new Error(
+              `[arbor] ctx.apparatus("${name}") called before plugins were loaded. ` +
+              `Ensure listPlugins() or listTools() has been awaited before invoking handlers.`,
+            );
+          }
+          const provides = resolvedManifest.provides.get(name);
+          if (provides === undefined) {
+            return new Proxy({} as T, {
+              get(_target, prop) {
+                throw new Error(
+                  `[arbor] ctx.apparatus("${name}") has no provides. ` +
+                  `Accessing .${String(prop)} is not available. ` +
+                  `Does "${name}" declare a provides object?`,
+                );
+              },
+            });
+          }
+          return provides as T;
         },
       };
     },
+
+    getDatabase,
   };
 
   return arbor;

@@ -9,10 +9,23 @@ export const VERSION: string = _pkg.version;
 // ── Promoted modules — canonical source lives here at top-level ────────
 
 export {
-  type Rig,
-  type BookOptions,
-  isRig,
-} from './rig.ts';
+  // Plugin/Kit/Apparatus model
+  type Kit,
+  type Apparatus,
+  type Plugin,
+  type LoadedKit,
+  type LoadedApparatus,
+  type LoadedPlugin,
+  type GuildContext,
+  type HandlerContext,
+  isKit,
+  isApparatus,
+  isLoadedKit,
+  isLoadedApparatus,
+} from './plugin.ts';
+
+// Transitional: BookOptions moves to nexus-books apparatus when that ships.
+export { type BookOptions } from './books.ts';
 
 export {
   type Book,
@@ -22,9 +35,8 @@ export {
   type Pagination,
 } from './book.ts';
 
-export {
-  type RigContext,
-} from './rig-context.ts';
+// HandlerContext supersedes RigContext — re-exported from rig-context.ts for continuity.
+export { type HandlerContext as RigContext } from './rig-context.ts';
 
 export {
   type ToolCaller,
@@ -34,9 +46,6 @@ export {
   resolveToolFromExport,
   resolveAllToolsFromExport,
 } from './tool.ts';
-
-// ToolContext is a backward-compat alias for RigContext — lives in legacy/1.
-export { type ToolContext } from './legacy/1/tool.ts';
 
 export {
   findGuildRoot,
@@ -49,7 +58,7 @@ export {
 } from './nexus-home.ts';
 
 export {
-  // V2 — rig-centric model (canonical for new guilds)
+  // V2 — plugin-centric model (canonical for new guilds)
   type GuildConfigV2,
   createInitialGuildConfigV2,
   readGuildConfigV2,
@@ -64,11 +73,6 @@ export {
   type GuildSettings,
   guildConfigPath,
 } from './guild-config.ts';
-
-export {
-  type RigDescriptor,
-  type RigDependency,
-} from './rig-descriptor.ts';
 
 // ── Legacy modules — not yet promoted, still live in legacy/1 ─────────
 

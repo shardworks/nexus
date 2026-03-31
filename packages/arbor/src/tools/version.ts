@@ -6,7 +6,7 @@
 
 import { tool, VERSION, readGuildConfigV2 } from '@shardworks/nexus-core';
 import { z } from 'zod';
-import { readGuildPackageJson, resolvePackageNameForRigKey } from '../resolve-package.ts';
+import { readGuildPackageJson, resolvePackageNameForPluginId } from '../resolve-package.ts';
 
 export default tool({
   name: 'version',
@@ -21,15 +21,12 @@ export default tool({
       node: process.version,
     };
 
-    // Collect installed package versions from config.rigs.
-    // Resolve each rig key to its package name via the guild's package.json,
-    // then read the version from node_modules. Missing packages show "not installed".
     try {
       const config = readGuildConfigV2(home);
-      for (const rigKey of config.rigs) {
-        const packageName = resolvePackageNameForRigKey(home, rigKey);
+      for (const pluginId of config.plugins) {
+        const packageName = resolvePackageNameForPluginId(home, pluginId);
         if (!packageName) {
-          result[rigKey] = 'not installed';
+          result[pluginId] = 'not installed';
           continue;
         }
         const { pkgJson } = readGuildPackageJson(home, packageName);

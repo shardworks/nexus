@@ -71,13 +71,13 @@ export interface GuildSettings {
 /**
  * Guild configuration — V2.
  *
- * The rig-centric model: rigs are npm packages; capabilities (tools, engines,
- * training content) are declared by rigs and discovered dynamically at runtime.
- * No per-capability registries — `config.rigs` + `node_modules` is the source
+ * The plugin-centric model: plugins are npm packages; capabilities (tools, engines,
+ * training content) are declared by plugins and discovered dynamically at runtime.
+ * No per-capability registries — `config.plugins` + `node_modules` is the source
  * of truth. The default model moves into `settings`.
  *
  * Breaking change from GuildConfig (V1): drops `tools`, `engines`, `curricula`,
- * `temperaments`, and top-level `model`. Requires `rigs` (was optional).
+ * `temperaments`, and top-level `model`. Requires `plugins` (was optional `rigs`).
  */
 export interface GuildConfigV2 {
   /** Guild name — used as the guildhall npm package name. */
@@ -90,8 +90,8 @@ export interface GuildConfigV2 {
   roles: Record<string, RoleDefinition>;
   /** Tool names available to all animas regardless of role. */
   baseTools: string[];
-  /** Installed rig keys (derived from npm package names). Always present; starts empty. */
-  rigs: string[];
+  /** Installed plugin ids (derived from npm package names). Always present; starts empty. */
+  plugins: string[];
   /** Clockworks configuration — events, standing orders. */
   clockworks?: ClockworksConfig;
   /** Writ types declared by this guild. Built-in types (mandate, summon) are implicit. */
@@ -111,7 +111,7 @@ export function createInitialGuildConfigV2(name: string, nexusVersion: string, m
     workshops: {},
     roles: {},
     baseTools: [],
-    rigs: [],
+    plugins: [],
     settings: { model },
   };
 }

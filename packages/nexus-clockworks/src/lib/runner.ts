@@ -10,12 +10,12 @@
  *
  * ## Engine resolution
  *
- * Engines are resolved by scanning installed rigs in `node_modules`:
- *   1. Iterate config.rigs (installed rig keys)
- *   2. Resolve each rig key to its npm package name (via guild package.json deps)
+ * Engines are resolved by scanning installed plugins in `node_modules`:
+ *   1. Iterate config.plugins (installed plugin ids)
+ *   2. Resolve each plugin id to its npm package name (via guild package.json deps)
  *   3. Import the package and scan its default export for a matching engine
  *
- * Throws with a clear message if the engine is not found in any installed rig.
+ * Throws with a clear message if the engine is not found in any installed plugin.
  */
 
 import path from 'node:path';
@@ -109,10 +109,10 @@ async function resolveEngine(
 ): Promise<EngineDefinition> {
   const nodeModules = path.join(home, 'node_modules');
 
-  for (const rigKey of config.rigs) {
-    const candidates = [rigKey, `@shardworks/${rigKey}`];
+  for (const pluginId of config.plugins) {
+    const candidates = [pluginId, `@shardworks/${pluginId}`];
 
-    // Check guild package.json for a dependency that maps to this rig key
+    // Check guild package.json for a dependency that maps to this plugin id
     const guildPkgPath = path.join(home, 'package.json');
     if (fs.existsSync(guildPkgPath)) {
       try {
@@ -120,7 +120,7 @@ async function resolveEngine(
           dependencies?: Record<string, string>;
         };
         const deps = guildPkg.dependencies ?? {};
-        const match = Object.keys(deps).find(pkg => pkg.endsWith(rigKey) || pkg === rigKey);
+        const match = Object.keys(deps).find(pkg => pkg.endsWith(pluginId) || pkg === pluginId);
         if (match) candidates.unshift(match);
       } catch { /* ignore malformed package.json */ }
     }
@@ -132,14 +132,14 @@ async function resolveEngine(
         const mod = await import(pkgName);
         const def = resolveEngineFromExport(mod.default, engineName);
         if (def) return def;
-      } catch { /* not this rig */ }
+      } catch { /* not this plugin */ }
     }
   }
 
   throw new Error(
     `Engine "${engineName}" not found. ` +
-    `Checked ${config.rigs.length} installed rig(s). ` +
-    `Ensure the rig that provides this engine is installed and listed in guild.json rigs.`,
+    `Checked ${config.plugins.length} installed plugin(s). ` +
+    `Ensure the plugin that provides this engine is installed and listed in guild.json plugins.`,
   );
 }
 

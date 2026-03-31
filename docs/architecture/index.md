@@ -8,18 +8,72 @@ For the conceptual vocabulary — what guilds, animas, commissions, writs, and a
 
 ## System at a Glance
 
-<!-- TODO: prose intro paragraph describing the system in one pass: patron commissions work, guild is a runtime loaded from guild.json, apparatus provide the operational fabric, animas do the work, results flow back -->
+> This section describes the **standard guild** — the configuration `nsg init` produces. The framework itself is a plugin loader; every apparatus named below is part of the default plugin set, not a hard requirement. §4 ([Plugin Architecture](#plugin-architecture)) explains the underlying model; the [Standard Guild](#the-standard-guild) section catalogues what the default set includes.
 
-<!-- TODO: ASCII system diagram showing the layers:
-  - Patron (outside)
-  - Guild (guild.json + .nexus/)
-    - Arbor (the runtime)
-    - Apparatus layer (Stacks, Clerk, Clockworks, Walker, ...)
-    - Anima sessions (launched by Summoner / Clockworks summon relay)
-  - Works (codexes, workshops, documents)
--->
+A Nexus guild is a git repository with a `guild.json` at its root and a `.nexus/` directory holding runtime state. When the system starts, **Arbor** — the guild runtime — reads `guild.json`, loads the declared plugins, validates their dependencies, and starts each apparatus in order. From that point, the guild operates: the patron commissions work; **The Clerk** receives it and issues writs; **The Walker** assembles rigs and drives their engines to completion; **The Clockworks** turns events into action, activating relays in response to standing orders; and **anima sessions** — AI processes launched by **The Summoner** — do the work that requires judgment. Results land in codexes and documents; the patron consumes what the guild delivers.
 
-<!-- TODO: brief narrative walking through the diagram, one paragraph per major layer -->
+```
+  PATRON
+    │  commission                                        ▲  works
+    ▼                                                    │
+  ┌──────────────────────────────────────────────────────┴──────┐
+  │  Guild  (guild.json + .nexus/)                               │
+  │                                                              │
+  │  ┌───────────────────────────────────────────────────────┐  │
+  │  │  Arbor  —  runtime · plugin loader · lifecycle        │  │
+  │  ├───────────────────────────────────────────────────────┤  │
+  │  │  Foundation   Stacks (persistence)                    │  │
+  │  ├───────────────────────────────────────────────────────┤  │
+  │  │  Reactive     Clockworks · Surveyor                   │  │
+  │  │  Obligation   Clerk                                   │  │
+  │  ├───────────────────────────────────────────────────────┤  │
+  │  │  Execution    Walker · Formulary · Executor           │  │
+  │  │  Session      Manifester · Summoner                   │  │
+  │  └─────────────────────────┬─────────────────────────────┘  │
+  │                            │                                 │
+  │  Anima Sessions  ◄─────────┘                                │
+  │  AI process · MCP server · role-gated tools                 │
+  │                   │                                          │
+  │  Works  ◄─────────┘                                         │
+  │  codexes · documents · yields                               │
+  └──────────────────────────────────────────────────────────────┘
+```
+
+### Patron
+
+The patron is the human outside the system. They commission work and consume what the guild delivers — and that is the full extent of their participation. The patron does not assign animas, orchestrate apparatus, or direct how labor is organized. The interface is intentionally narrow: commission in, works out. What happens in the guild to convert one to the other is the guild's concern.
+
+### The Guild
+
+Physically, a guild is a directory. Its configuration root is `guild.json` — a single file that declares the guild's name, the plugins it has installed, its anima roles, and the standing orders that govern its reactive behavior. Everything the guild *is* lives in that file and the versioned content alongside it. Runtime activity — the persistence database, daemon state, active worktrees — accumulates in `.nexus/`, which is gitignored. The guild's identity is versioned; its running state is not.
+
+### Arbor
+
+Arbor is the guild runtime. It reads `guild.json` at startup, imports every declared plugin, resolves the dependency graph, and starts each apparatus in dependency order. It is not a persistent server or a central process — it is a library that each entry point (the CLI, the MCP server, the Clockworks daemon) instantiates independently at startup. There is no Arbor "service" to connect to; there is an Arbor instance alive for as long as the process that created it is running.
+
+### Apparatus Layers
+
+The guild's operational fabric is provided by apparatus — plugins with a start/stop lifecycle that collectively cover three concerns:
+
+**Foundation** apparatus are always-on infrastructure that everything else depends on. **The Stacks** is the guild's persistence layer — a document store and change-data-capture substrate that all other apparatus read from and write to. It is the guild's source of truth for identity, work state, and operational history.
+
+**Reactive** apparatus drive the guild's event-driven behavior. **The Clockworks** is the guild's nervous system: it maintains an event queue, processes standing orders in response to events, and dispatches responses — including summoning animas when a standing order calls for one. **The Surveyor** maintains the guild's knowledge of its registered codexes, so the guild knows what kind of work applies to each.
+
+**Obligation** apparatus govern the work pipeline. **The Clerk** sits at commission intake: it receives incoming commissions from the patron, creates mandate writs, and signals downstream when a writ is ready to execute.
+
+### Execution and Sessions
+
+When a writ is ready — signaled by The Clerk — **The Walker** spawns a rig and begins traversal: identifying engines whose upstream work is complete, dispatching ready engines, and extending the rig with new engines (via **The Formulary**'s capability resolution) as the work unfolds. **The Executor** runs each engine: clockwork engines deterministically, quick engines by assembling an anima session.
+
+Session assembly is a two-step hand-off. **The Manifester** composes the session context deterministically — combining the anima's curriculum, temperament, the guild charter, and the tool instructions for their role into a complete system prompt. **The Summoner** then launches the AI process with that context and an MCP server carrying the role's tools, monitors the session, and records the result to the guild's persistence layer.
+
+The Clockworks also reaches The Summoner directly: when a standing order fires the summon relay, The Summoner launches an anima session without going through The Walker or rig machinery at all. From The Summoner's perspective, the caller doesn't matter — manifest, launch, record.
+
+### Anima Sessions and Works
+
+An anima session is a running AI process equipped with an MCP server carrying the role's tools. The session is ephemeral — it runs, produces output, and exits. The anima it represents is not: the anima's identity and session history persist in the guild's records. What the anima does during a session is captured; what the anima *is* outlasts any individual session.
+
+The session's output lands wherever the work requires: inscriptions to a draft binding in a codex, entries in a document, signals to the Clockworks, or structured yields for downstream engines. When rigs complete and draft bindings are sealed, the result is work the patron can consume — running software, deployed services, written documents. The guild's measure of success is whether the patron can use what it delivered.
 
 ---
 

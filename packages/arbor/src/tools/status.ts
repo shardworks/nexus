@@ -1,9 +1,10 @@
 /**
- * nsg status — minimal guild status.
+ * nsg status — guild status.
  *
- * Arbor built-in. Shows guild identity, framework version, installed rigs.
+ * Arbor built-in. Shows guild identity, framework version, and installed plugins
+ * separated into apparatuses (running infrastructure) and kits (passive capabilities).
  * Domain-specific status (writ counts, session history, clock state) belongs
- * to rigs, not here.
+ * to plugins, not here.
  */
 
 import { tool, VERSION, readGuildConfigV2 } from '@shardworks/nexus-core';
@@ -11,7 +12,7 @@ import { z } from 'zod';
 
 export default tool({
   name: 'status',
-  description: 'Show guild identity and installed rig summary',
+  description: 'Show guild identity and installed plugin summary',
   callableFrom: ['cli'],
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
@@ -19,13 +20,16 @@ export default tool({
   handler: async (_params, { home }) => {
     const config = readGuildConfigV2(home);
 
+    // Note: at status time we don't load/start plugins — we just report what's
+    // declared in guild.json. Type discrimination (kit vs apparatus) requires
+    // loading the modules, which is deferred to avoid startup cost for status.
     const result = {
-      guild: config.name,
-      nexus: VERSION,
+      guild:   config.name,
+      nexus:   VERSION,
       home,
-      model: config.settings?.model ?? '(not set)',
-      rigs: [...config.rigs].sort(),
-      roles: Object.keys(config.roles).sort(),
+      model:   config.settings?.model ?? '(not set)',
+      plugins: [...config.plugins].sort(),
+      roles:   Object.keys(config.roles).sort(),
     };
 
     if (_params.json) {
@@ -33,12 +37,12 @@ export default tool({
     }
 
     const lines = [
-      `Guild:   ${result.guild}`,
-      `Nexus:   ${result.nexus}`,
-      `Home:    ${result.home}`,
-      `Model:   ${result.model}`,
-      `Rigs:    ${result.rigs.length > 0 ? result.rigs.join(', ') : '(none)'}`,
-      `Roles:   ${result.roles.length > 0 ? result.roles.join(', ') : '(none)'}`,
+      `Guild:    ${result.guild}`,
+      `Nexus:    ${result.nexus}`,
+      `Home:     ${result.home}`,
+      `Model:    ${result.model}`,
+      `Plugins:  ${result.plugins.length > 0 ? result.plugins.join(', ') : '(none)'}`,
+      `Roles:    ${result.roles.length > 0 ? result.roles.join(', ') : '(none)'}`,
     ];
     return lines.join('\n');
   },

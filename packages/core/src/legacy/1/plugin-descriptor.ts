@@ -1,5 +1,5 @@
-export * from '../../rig-descriptor.ts';
-
-// Backward-compat aliases — code that imported PluginDescriptor/PluginDependency
-// from legacy paths still resolves correctly.
-export type { RigDescriptor as PluginDescriptor, RigDependency as PluginDependency } from '../../rig-descriptor.ts';
+/**
+ * Superseded. Rig/plugin descriptors (rig.json) are replaced by inline
+ * `requires` declarations on Kit/Apparatus manifests.
+ * See: docs/architecture/plugins.md#dependencies
+ */

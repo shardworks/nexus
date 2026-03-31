@@ -25,12 +25,17 @@ A kit is a passive package contributing capabilities to the guild. Kits have no 
 
 ```typescript
 type Kit = {
+  requires?:   string[]
   recommends?: string[]
   [key: string]:  unknown
 }
 ```
 
-A kit is an open record. The contribution fields (`relays`, `engines`, `tools`, or anything else) are defined by the apparatus packages that consume them, not by the framework. `recommends` is the only framework-level field — an advisory list of apparatus names the kit's contributions are most useful with, used to generate startup warnings when expected apparatuses are absent.
+A kit is an open record. The contribution fields (`relays`, `engines`, `tools`, or anything else) are defined by the apparatus packages that consume them, not by the framework. `requires` and `recommends` are the only framework-level fields.
+
+**`requires`** is an array of apparatus names whose runtime APIs this kit's contributions depend on at handler invocation time. If a tool contributed by this kit calls `ctx.apparatus("nexus-books")`, the kit must declare `requires: ["nexus-books"]`. Validated at startup — if a declared apparatus is not installed, the guild refuses to start with a specific error. Hard failure, not advisory.
+
+**`recommends`** is an advisory list of apparatus names the kit's contributions are most useful with, used to generate startup warnings when expected apparatuses are absent. Not enforced.
 
 A kit package exports its manifest as the default export:
 
@@ -40,12 +45,12 @@ import type { WalkerKit }     from "nexus-walker"
 import type { AnimaKit }      from "nexus-sessions"
 
 export default {
-  name: "nexus-git",
   kit: {
+    requires:   ["nexus-books"],
+    recommends: ["nexus-clockworks", "nexus-walker"],
     engines: [createBranchEngine, deleteBranchEngine, mergeBranchEngine],
     relays:  [onMergeRelay],
     tools:   [statusTool, diffTool, logTool],
-    recommends: ["nexus-clockworks", "nexus-walker"],
   } satisfies ClockworksKit & WalkerKit & AnimaKit,
 } satisfies Plugin
 ```
@@ -68,53 +73,28 @@ An apparatus is a package contributing persistent running infrastructure to the 
 
 ```typescript
 type Apparatus = {
+  requires?:   string[]
+  provides?:   unknown
   start:       (ctx: GuildContext) => void
   stop?:       () => void
-  health?:     () => "ok" | "degraded" | "down"
   supportKit?: Kit
   consumes?:   string[]
 }
 ```
 
-`start(ctx)` is where the apparatus initialises its internal state, registers lifecycle hooks, and wires up its dependencies. `stop()` tears it down. Both may be async — the framework awaits them in dependency-resolved order, so each apparatus is fully started before any apparatus that depends on it begins its own `start`.
+**`requires`** is an array of apparatus names that must be started before this apparatus's `start()` runs. Validated at startup before any `start` is called. Determines start ordering — by the time an apparatus's `start` runs, all its declared dependencies are already started with their `provides` objects populated. Circular dependencies are rejected at load time.
+
+**`provides`** is the runtime API object this apparatus exposes to other plugins. Retrieved via `ctx.apparatus<T>(name)` in both GuildContext (apparatus startup) and HandlerContext (tool and engine handlers). The reference is created at manifest-definition time and populated during `start`. See [Providing an API](#providing-an-api).
+
+`start(ctx)` is where the apparatus initialises its internal state, registers lifecycle hooks, and wires up its dependencies. `stop()` tears it down. Both may be async — the framework awaits them in dependency-resolved order.
 
 `stop` is optional for apparatuses that have no shutdown logic beyond garbage collection.
 
 A `supportKit` is a Kit that an apparatus composes to expose its capabilities to the rest of the guild — the same open record as any other kit, populated with whatever contribution fields the apparatus's own consuming peers understand. Consuming apparatuses treat `supportKit` contributions identically to standalone kit contributions; the source is an implementation detail callers never see.
 
-An apparatus without a `supportKit` is meaningful — infrastructure that exposes its capabilities only through `provides` (the inter-plugin API) rather than through the tool/relay/engine surface.
+An apparatus without a `supportKit` is meaningful — infrastructure that exposes its capabilities only through `provides` (the inter-apparatus API) rather than through the tool/relay/engine surface.
 
 **`consumes`** is an optional array of string tokens declaring which Kit contribution types this apparatus scans for and registers. The tokens correspond to Kit field names (`"engines"`, `"relays"`, `"tools"`, or custom extension types). This declaration enables the framework to generate startup warnings when kits contribute to a type that no installed apparatus consumes. See [Kit Contribution Consumption](#kit-contribution-consumption).
-
-```typescript
-export default {
-  name:     "nexus-clockworks",
-  requires: ["nexus-stacks"],
-  provides: clockworksApi,
-
-  apparatus: {
-    supportKit: {
-      relays: [signalRelay, drainRelay],
-      tools:  [signalTool, clockStatusTool],
-    },
-
-    start: (ctx) => {
-      const stacks = ctx.plugin<StacksApi>("nexus-stacks")
-      clockworksApi.init(stacks)
-    },
-
-    stop: () => {
-      clockworksApi.shutdown()
-    },
-
-    health: () => clockworksApi.isHealthy() ? "ok" : "degraded",
-  },
-} satisfies Plugin
-```
-
-### Providing an API (`provides`)
-
-An apparatus that exposes a typed API to other plugins declares it via `provides` on the plugin wrapper. This is the object returned when another plugin calls `ctx.plugin(name)`.
 
 ```typescript
 const clockworksApi: ClockworksApi = {
@@ -124,9 +104,44 @@ const clockworksApi: ClockworksApi = {
 }
 
 export default {
-  name:     "nexus-clockworks",
-  provides: clockworksApi,
-  apparatus: { ... },
+  apparatus: {
+    requires: ["nexus-stacks"],
+    provides: clockworksApi,
+
+    supportKit: {
+      relays: [signalRelay, drainRelay],
+      tools:  [signalTool, clockStatusTool],
+    },
+
+    start: (ctx) => {
+      const stacks = ctx.apparatus<StacksApi>("nexus-stacks")
+      clockworksApi.init(stacks)
+    },
+
+    stop: () => {
+      clockworksApi.shutdown()
+    },
+  },
+} satisfies Plugin
+```
+
+### Providing an API (`provides`)
+
+An apparatus that exposes a typed API to other plugins declares it via `provides` on the apparatus. This is the object returned when another plugin calls `ctx.apparatus(name)`.
+
+```typescript
+const clockworksApi: ClockworksApi = {
+  on:    (event, handler) => { ... },
+  emit:  (event, payload) => { ... },
+  drain: ()               => { ... },
+}
+
+export default {
+  apparatus: {
+    requires: ["nexus-stacks"],
+    provides: clockworksApi,
+    start: (ctx) => { ... },
+  },
 } satisfies Plugin
 ```
 
@@ -136,7 +151,7 @@ Plugin authors ship their API type alongside their package so consumers can impo
 
 ```typescript
 import type { ClockworksApi } from "nexus-clockworks"
-const clockworks = ctx.plugin<ClockworksApi>("nexus-clockworks")
+const clockworks = ctx.apparatus<ClockworksApi>("nexus-clockworks")
 ```
 
 ---
@@ -144,47 +159,48 @@ const clockworks = ctx.plugin<ClockworksApi>("nexus-clockworks")
 ## The Plugin Type
 
 ```typescript
-type Plugin = {
-  name:      string
-  requires?: string[]
-  provides?: unknown
-} & (
+type Plugin =
   | { kit:       Kit }
   | { apparatus: Apparatus }
-)
 ```
 
-A plugin is either a kit or an apparatus — the discriminating field (`kit` or `apparatus`) is required. `name`, `requires`, and `provides` are shared wrapper properties.
-
-`provides` is always on the wrapper, never on the apparatus or kit directly, because it is a cross-plugin concern — it defines what this plugin exposes to the graph, regardless of whether the plugin is passive or active.
+A plugin is either a kit or an apparatus — the discriminating field (`kit` or `apparatus`) is required. All plugin-level concerns (`requires`, `provides`) live inside the respective type where their semantics are defined. The plugin name is always inferred from the npm package name at load time — it is never declared in the manifest.
 
 ---
 
 ## Dependencies
 
-Plugins declare their dependencies by name in `requires`:
+Both kits and apparatuses may declare `requires`, but the semantics differ:
+
+**Apparatus `requires`** — two effects: validates that declared dependencies are installed, and determines start ordering. By the time the apparatus's `start()` runs, all declared dependencies are already started.
 
 ```typescript
 export default {
-  name:     "nexus-walker",
-  requires: ["nexus-clockworks", "nexus-stacks"],
   apparatus: {
+    requires: ["nexus-clockworks", "nexus-stacks"],
     start: (ctx) => {
-      const clockworks = ctx.plugin<ClockworksApi>("nexus-clockworks")
-      const stacks     = ctx.plugin<StacksApi>("nexus-stacks")
+      const clockworks = ctx.apparatus<ClockworksApi>("nexus-clockworks")
+      const stacks     = ctx.apparatus<StacksApi>("nexus-stacks")
       // ...
     },
   },
 } satisfies Plugin
 ```
 
-The framework validates `requires` at startup — before any `start` is called. If a declared dependency is not installed, the guild refuses to start with a specific error naming the missing plugin. If `ctx.plugin()` is called for a plugin not declared in `requires`, it fails at startup validation, not at runtime.
+**Kit `requires`** — one effect: validates that declared apparatuses are installed and will be started. No ordering concern (kits have no `start`). Ensures that tools contributed by the kit can safely call `ctx.apparatus(name)` at handler invocation time without a runtime failure.
 
-Dependency problems surface when the guild starts, not mid-commission when an agent is doing work.
+```typescript
+export default {
+  kit: {
+    requires: ["nexus-books"],
+    tools:    [writeNoteTool, readNoteTool],
+  },
+} satisfies Plugin
+```
 
-Dependencies determine start ordering for apparatuses. By the time an apparatus's `start` runs, all plugins in its `requires` array are loaded and — for apparatuses among them — already started, with their `provides` objects populated.
+Both produce the same operator-facing failure: a loud, early, specific error at guild startup before any agent does any work.
 
-Circular dependencies are rejected at load time.
+The framework validates all `requires` declarations at startup — before any `start` is called. If a declared dependency is not installed, the guild refuses to start with a specific error naming the missing plugin. If `ctx.apparatus()` is called inside an apparatus `start` for a plugin not declared in that apparatus's `requires`, it fails at startup validation. Circular dependencies are rejected at load time.
 
 ---
 
@@ -194,12 +210,12 @@ The framework maintains two separate internal lists — `LoadedKit[]` and `Loade
 
 ```typescript
 type GuildManifest = {
-  kits:      LoadedKit[]
-  apparatus: LoadedApparatus[]
+  kits:        LoadedKit[]
+  apparatuses: LoadedApparatus[]
 }
 ```
 
-Lifecycle management (start ordering, shutdown, health checks) operates on the apparatus list. Kit records are loaded and cached; their contributions are surfaced via `ctx.plugins()` / `ctx.kits()` for consuming apparatuses to pull from.
+Lifecycle management (start ordering, shutdown) operates on the apparatus list. Kit records are loaded and cached; their contributions are surfaced via `ctx.plugins()` / `ctx.kits()` for consuming apparatuses to pull from.
 
 Each consuming apparatus maintains its own registry of the contribution types it understands. A Clockworks apparatus maintains a relay registry populated from both standalone kit packages and apparatus `supportKit`s; callers of the Clockworks API see a single relay list regardless of source. The framework does not maintain cross-apparatus registries — contribution type semantics belong to the apparatus that defined them.
 
@@ -260,9 +276,11 @@ The chosen approach — open `Kit` record with apparatus-published interfaces fo
 
 ## GuildContext
 
+The context passed to an apparatus's `start(ctx)`. Provides access to the plugin graph during startup wiring.
+
 ```typescript
 interface GuildContext {
-  plugin<T>(name: string): T            // retrieve a dependency's provides object
+  apparatus<T>(name: string): T         // retrieve a started apparatus's provides object
   kits():         LoadedKit[]           // snapshot of loaded kits
   apparatuses():  LoadedApparatus[]     // snapshot of started apparatuses
   plugins():      LoadedPlugin[]        // union of kits and apparatuses
@@ -270,11 +288,26 @@ interface GuildContext {
 }
 ```
 
-`ctx.plugin()` is validated against `requires` at startup. Calling it for an undeclared dependency fails at startup, not at call time.
+`ctx.apparatus()` is validated against the apparatus's `requires` at startup. Calling it for an undeclared dependency fails at startup, not at call time.
 
-If a plugin is present but declares no `provides`, `ctx.plugin()` returns a sentinel that throws a useful message on access rather than silently returning `undefined`.
+If a plugin is present but declares no `provides`, `ctx.apparatus()` returns a sentinel that throws a useful message on access rather than silently returning `undefined`.
 
 `ctx.kits()`, `ctx.apparatuses()`, and `ctx.plugins()` return snapshots of the currently loaded state. These are most useful during apparatus `start()` for inspecting what has already been loaded.
+
+---
+
+## HandlerContext
+
+The context injected into tool and engine handlers at invocation time. Distinct from GuildContext — handlers run long after startup, not during it.
+
+```typescript
+interface HandlerContext {
+  home:              string
+  apparatus<T>(name: string): T    // retrieve a started apparatus's provides object
+}
+```
+
+`apparatus<T>(name)` provides runtime access to the same `provides` objects that GuildContext surfaces during startup. Kit `requires` declarations guarantee that declared apparatus dependencies are running before any handler is invoked — calling `ctx.apparatus("nexus-books")` in a handler is safe as long as the owning kit declared `requires: ["nexus-books"]`.
 
 ---
 
@@ -315,11 +348,11 @@ The Kit/Apparatus split makes this concrete: everything contributed by a kit is 
 
 **Missing dependency** — a plugin declares `requires: ["nexus-clockworks"]` and that plugin is not installed. Loud startup failure before any apparatus starts: *"nexus-walker requires nexus-clockworks, which is not installed."*
 
-**Undeclared access** — `ctx.plugin("nexus-clockworks")` called without declaring it in `requires`. Caught at startup validation, same loud failure. Never reaches `start`.
+**Undeclared access** — `ctx.apparatus("nexus-clockworks")` called inside an apparatus `start` without declaring it in `requires`. Caught at startup validation, same loud failure. Never reaches `start`.
 
-**Plugin provides nothing** — `ctx.plugin("nexus-git")` where the plugin has no `provides`. Returns a sentinel; throws with a useful message on access.
+**Plugin provides nothing** — `ctx.apparatus("nexus-git")` where the apparatus has no `provides`. Returns a sentinel; throws with a useful message on access.
 
-**Bad cast** — `ctx.plugin<WrongType>("nexus-clockworks")`. Runtime error when the wrong method is called. Accepted tradeoff: the coupling is explicit in `requires` and visible in the type import; the developer takes responsibility for getting the type right.
+**Bad cast** — `ctx.apparatus<WrongType>("nexus-clockworks")`. Runtime error when the wrong method is called. Accepted tradeoff: the coupling is explicit in `requires` and visible in the type import; the developer takes responsibility for getting the type right.
 
 ---
 
@@ -351,4 +384,24 @@ nsg install nexus-git
 nsg remove  nexus-git
 ```
 
-The `nsg install` command does not require specifying kit or apparatus — the package declares what it is. The distinction surfaces in `nsg status`, where apparatuses and kits appear in separate sections: apparatuses as running infrastructure with health status, kits as passive capability inventory.
+The `nsg install` command does not require specifying kit or apparatus — the package declares what it is. The distinction surfaces in `nsg status`, where apparatuses and kits appear in separate sections: apparatuses as running infrastructure, kits as passive capability inventory.
+
+---
+
+## Future Enhancements
+
+### Apparatus Health Checks
+
+A `health()` method on `Apparatus` is a natural addition once operational tooling matures:
+
+```typescript
+health?: () => "ok" | "degraded" | "down"
+```
+
+This would enable `nsg status` to report live apparatus health, and give operators a fast signal when infrastructure is degraded without needing to inspect logs. Deferred until there is a concrete operational need to drive the contract design.
+
+### Dynamic Kit Discovery in Handlers
+
+The current model supports tool-to-tool calls via direct import — if a handler needs the logic from another tool in a known kit, it imports that handler function directly. No framework involvement is required for this case.
+
+A second pattern — dynamic discovery of kit contributions at handler invocation time — is not yet supported. This would allow a handler to discover all installed contributions of a given type without knowing which kits are present at author time (e.g., "run all installed pre-commit hooks"). A `ctx.fromKit(type, name?)` or similar API is the likely shape. Deferred until a concrete use case motivates the contract.

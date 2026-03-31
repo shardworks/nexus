@@ -5,10 +5,7 @@ const _require = createRequire(import.meta.url);
 const _pkg = _require('../../../package.json');
 export const VERSION: string = _pkg.version;
 
-export {
-  type PluginDescriptor,
-  type PluginDependency,
-} from './plugin-descriptor.ts';
+// PluginDescriptor/PluginDependency superseded by Kit/Apparatus requires declarations
 
 export {
   type ToolCaller,

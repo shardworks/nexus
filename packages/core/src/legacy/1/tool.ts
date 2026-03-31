@@ -1,11 +1,11 @@
-import type { RigContext } from '../../rig-context.ts';
+import type { HandlerContext } from '../../plugin.ts';
 
 /**
- * ToolContext — backward-compatible alias for RigContext.
+ * ToolContext — backward-compatible alias for HandlerContext.
  *
- * New code should import `RigContext` from `@shardworks/nexus-core` directly.
- * This alias lives in legacy/1 for any code that still imports `ToolContext`.
+ * HandlerContext supersedes RigContext (which superseded ToolContext).
+ * This alias lives in legacy/1 for any code that still imports ToolContext.
  */
-export type ToolContext = RigContext;
+export type ToolContext = HandlerContext;
 
 export * from '../../tool.ts';

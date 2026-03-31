@@ -1,21 +1,20 @@
 /**
  * @shardworks/nexus-arbor — guild runtime
  *
- * The arbor is the internal guild host: rig management, tool discovery,
- * and the runtime seam between the CLI/MCP surface and installed rigs.
+ * The arbor is the internal guild host: plugin management, tool discovery,
+ * and the runtime seam between the CLI/MCP surface and installed plugins.
  *
- * Rig authors never import from arbor — they import from @shardworks/nexus-core.
+ * Plugin authors never import from arbor — they import from @shardworks/nexus-core.
  * The CLI and session provider import from arbor.
  *
  * Package dependency graph:
  *   core   — public SDK, types, tool() factory
  *   arbor  — guild host, createArbor(), Arbor object
  *   cli    — nsg binary, Commander.js, maps Tool[] → commands
- *   rigs   — import from core only
+ *   plugins — import from core only
  *
- * Inter-rig API: rig packages export a typed `fromArbor(arbor: Arbor)`
- * factory that returns their public API surface. Callers import the rig package
- * and call `fromArbor(arbor)` to get a typed, initialized reference.
+ * Inter-apparatus API: apparatus packages declare a `provides` object on their
+ * manifest. Consumers call `ctx.apparatus<T>(name)` in start() or handlers.
  */
 
 // Re-export guild root discovery from core — consumers can import from one place
@@ -23,9 +22,8 @@ export { findGuildRoot } from '@shardworks/nexus-core';
 
 export {
   createArbor,
-  deriveRigId,
+  derivePluginId,
   type Arbor,
-  type LoadedRig,
   type Tool,
   type ListToolsOptions,
 } from './arbor.ts';
