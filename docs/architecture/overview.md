@@ -18,7 +18,7 @@ See [Writs](writs.md) for the full design — lifecycle, completion rollup, prom
 
 The guild equips its members with **tools** — versioned instruments described by a `nexus-tool.json` descriptor and (for tools) an instruction document. The guildhall also houses **engines** — mechanical processes that handle the guild's automated operations (manifesting animas for sessions, setting up worktrees, running migrations), each described by a `nexus-engine.json` descriptor. **Curricula** and **temperaments** follow the same packaging model with their own descriptors. Together, these form the guild's installable, shareable artifact system.
 
-See [Tools, Engines, Curricula & Temperaments](tools-and-engines.md) for the full artifact model, packaging, and installation details.
+See [Kit Components](kit-components.md) for the artifact model, packaging, and installation details for tools, engines, and relays. See [Anima Composition](anima-composition.md) for curricula, temperaments, and oaths.
 
 ### 3. The Manifest Engine
 
@@ -107,7 +107,7 @@ GUILD_ROOT/
 
 **Guild tools and engines** are installed via `nsg tool install` from external sources (registry, git URL, tarball, or local link); the framework doesn't touch them.
 
-Both framework and guild tools follow the same artifact pattern — see [Tools, Engines, Curricula & Temperaments](tools-and-engines.md). `guild.json` indexes tools from both locations, tracking their source, installation provenance, and role access.
+Both framework and guild tools follow the same artifact pattern — see [Kit Components](kit-components.md). `guild.json` indexes tools from both locations, tracking their source, installation provenance, and role access.
 
 The manifest engine resolves tool paths based on `source` — `nexus` means look in `nexus/tools/` or `nexus/engines/`, `guild` means look in the root-level `tools/` or `engines/`. Animas don't know or care where their tools came from.
 
@@ -360,7 +360,7 @@ The Books are guild infrastructure — owned by the institution, maintained by f
 
 ## Vocabulary
 
-This document uses the guild vocabulary defined in [`guild-metaphor.md`](../guild-metaphor.md), the writ design in [`writs.md`](writs.md), and the project philosophy in [`philosophy.md`](../philosophy.md). Key metaphor concepts used throughout: guild, patron, anima, commission, writ, mandate, works, workshop, threshold, codex, curriculum, temperament, oath *(v2)*, edict *(v2)*, engine, tool, relic, guildhall, the Books (register, ledger, daybook), clockworks, standing order.
+This document uses the guild vocabulary defined in [`guild-metaphor.md`](../guild-metaphor.md), the writ design in [`writs.md`](writs.md), and the project philosophy in [`philosophy.md`](../philosophy.md). Key metaphor concepts used throughout: guild, patron, anima, commission, writ, mandate, works, workshop, threshold, codex, curriculum, temperament, engine, relay, tool, relic, guildhall, the Books (register, ledger, daybook), clockworks, standing order.
 
 One term is specific to this architecture and not defined in the metaphor:
 

@@ -75,9 +75,22 @@ When a writ is concrete enough to act on, it spawns a **rig** to carry the oblig
 
 ### Rig
 
-The working structure assembled to fulfill a commission. A rig is seeded at commission time — a minimal starting point representing what must be achieved. From there the Walker builds it out: adding engines and arranging them in sequence, each depending on the work of those before it. Some engines run autonomously; others are animated by an anima. A rig is never delivered to the patron; it is the scaffolding that enables delivery. When the work is done, the obligation is fulfilled and the rig is struck.
+The working structure assembled to fulfill a commission. A rig is seeded at commission time — a minimal starting point representing what must be achieved. From there the Walker builds it out: adding engines and arranging them in sequence, each depending on the work of those before it. Some engines are clockwork; others are quick — inhabited by an anima. A rig is never delivered to the patron; it is the scaffolding that enables delivery. When the work is done, the obligation is fulfilled and the rig is struck.
 
 Rigs are dynamic. Any engine whose work is not yet complete may be replaced with a chain of engines, allowing the rig to grow and adapt as the work unfolds. Engines that have completed their work are fixed — their yield is final.
+
+### Engine
+
+Engines are the workhorse components of a rig — purpose-built machines the guild puts to work. Each engine does one bounded piece of work: runs when its upstream work is ready, produces a yield when done. The same engine design may run in many rigs at once, each working independently. Kits bring engine designs to the guild; the Walker mounts them as each rig demands.
+
+Two kinds:
+
+- **Clockwork** — deterministic, requiring no creative judgment. The press that stamps, the bellows that blow, the mill that grinds. Runs on the yield of upstream work; produces its own yield when done.
+- **Quick** — *quick* in the guild's sense: alive, inhabited by an anima. The engine defines the work and holds the anima's context; the anima brings the judgment the work requires. When the anima seals their work, the engine's yield is complete.
+
+The distinction between anima and engine holds even for quick engines: the anima is the intelligence; the engine is the work context. A craftsman at a machine — the craftsman brings the skill; the machine defines the task.
+
+An engine moves through three states: *idle* (upstream work not yet complete), *working* (running, yield not yet ready), and *complete* (yield ready, downstream work may proceed). Completed engines are fixed — their yield is final.
 
 ### Works
 
@@ -139,29 +152,6 @@ A named, versioned, immutable personality template. A temperament governs an ani
 
 A named, persistent, deterministic system that predates any commission and outlasts any rig is an **apparatus** — the guild's operational fabric. Apparatus are always running; they hold no craft, no spirit, no judgment. Where animas are animated and engines do the work of rigs, apparatus are the guild itself in continuous operation. The Clockworks, the Walker, and the Surveyor are the guild's core apparatus. The set is not fixed — a guild may install additional apparatus as its needs grow.
 
-### Engine
-
-A machine chartered with the guild to perform a bounded piece of work. Engines are the guild's automated capabilities — deterministic, tireless, purpose-built. An engine declares what it can do; the guild puts it to work.
-
-Not everything mechanical is an engine. Libraries, ledger-keepers, and other working parts of the guild's infrastructure are just the building — they don't participate in the coordinated work of rigs or the Clockworks. The engine concept is reserved for machines chartered with the guild and put to work through its clockworks or rigs.
-
-#### Rigged Engines
-
-In a rig, an engine is the unit of work in the execution graph, mounted by the Walker. Two kinds:
-
-- **Autonomous** — deterministic, requiring no creative judgment. The press that stamps, the bellows that blow, the mill that grinds. Runs on the yield of upstream work; produces its own yield when done.
-- **Animated** — requires an anima. The engine defines the work and holds the anima's context; the anima brings the judgment the work requires. When the anima seals their work, the engine's yield is complete.
-
-The distinction between anima and engine holds even for animated engines: the anima is the intelligence; the engine is the work context. A craftsman at a machine — the craftsman brings the skill; the machine defines the task.
-
-Kits contribute engine designs; the Walker mounts them as the rig demands. The same design may run in many rigs at once, each working independently.
-
-An engine in a rig moves through three states: *idle* (upstream work not yet complete), *working* (running, yield not yet ready), and *complete* (yield ready, downstream work may proceed). Completed engines are fixed — their yield is final.
-
-#### Clockwork Engines
-
-In the Clockworks, engines are named in standing orders and set in motion when events fire. This is how the guild acts on itself: something happens, an engine responds. The summon-engine is the built-in clockwork engine that handles anima session dispatch — when a standing order calls for an anima, it is the summon-engine that resolves the role, binds a writ, and launches the session.
-
 ### Kit
 
 A bundle of engine designs and anima tools contributed to extend what the guild can build. A kit declares what needs it can meet, what prior work it requires, and what chain of engines it will assemble to meet those needs. The Walker draws from installed kits when extending a rig — a guild's installed kits determine what work it can take on.
@@ -172,13 +162,19 @@ Kits are the guild's extension points. A guild without kits can accept commissio
 
 The guild's nervous system — an event-driven layer that connects things that happen to things that should respond. The Clockworks keeps its own records of what it has seen and how it responded — these are its own working memory, not part of the guild's Books. The Clockworks processes events according to the guild's standing orders, turning the guild from a tool the patron operates into a system that operates itself.
 
+#### Relay
+
+An engine purpose-built to respond to Clockworks events. A relay does not judge whether to respond — that judgment lives in the standing order that names it. The relay is the guild's standing commitment to act.
+
+All relays are clockwork. The summon relay is the built-in relay that handles anima session dispatch — when a standing order calls for an anima, the summon relay resolves the role, binds a writ, and launches the session.
+
 #### Standing Order
 
-A registered response to an event, defined in `guild.json`. A standing order says: *whenever this event is signaled, do this*. All standing orders invoke clockwork engines via the `run` verb. The `summon` verb is syntactic sugar — it invokes the **summon-engine**, which manifests an anima in the named role and delivers the event as their context. Standing orders may carry additional params (like `maxSessions` for the circuit breaker) that configure the engine's behavior. Standing orders are guild policy — they live in configuration, not in engine code.
+A registered response to an event, defined in `guild.json`. A standing order says: *whenever this event is signaled, do this*. All standing orders invoke relays via the `run` verb. The `summon` verb is syntactic sugar — it invokes the **summon relay**, which manifests an anima in the named role and delivers the event as their context. Standing orders may carry additional params (like `maxSessions` for the circuit breaker) that configure the relay's behavior. Standing orders are guild policy — they live in configuration, not in relay code.
 
 ### The Walker
 
-The apparatus that keeps all active rigs in motion. The Walker moves continuously through every active rig — not bound to any single commission, predating and outlasting them all. When an engine is ready to run, the Walker sets it in motion: starting an autonomous engine or summoning an anima for an animated one. When an engine declares a need the rig cannot yet satisfy, the Walker extends the rig — drawing on installed kits to add the engines needed to meet it.
+The apparatus that keeps all active rigs in motion. The Walker moves continuously through every active rig — not bound to any single commission, predating and outlasting them all. When an engine is ready to run, the Walker sets it in motion: starting a clockwork engine or summoning an anima for a quick one. When an engine declares a need the rig cannot yet satisfy, the Walker extends the rig — drawing on installed kits to add the engines needed to meet it.
 
 The rig grows as it runs. The Walker is why.
 

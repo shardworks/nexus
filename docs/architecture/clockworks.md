@@ -76,11 +76,11 @@ Animas signal custom events using the `signal` tool. The tool validates the even
 
 ### Standing Orders
 
-A standing order is a registered response to an event. Standing orders are **guild policy** — they live in `guild.json` under the `clockworks` key, not in engine descriptors. The guild decides what fires when; an engine is a capability, not a policy.
+A standing order is a registered response to an event. Standing orders are **guild policy** — they live in `guild.json` under the `clockworks` key, not in relay descriptors. The guild decides what fires when; a relay is a capability, not a policy.
 
 #### Canonical form
 
-Every standing order has one canonical form: `{ on, run, ...params }`. The `on` key names the event to respond to. The `run` key names the engine to invoke. Any additional keys are **params** passed to the engine via `EngineContext.params`.
+Every standing order has one canonical form: `{ on, run, ...params }`. The `on` key names the event to respond to. The `run` key names the relay to invoke. Any additional keys are **params** passed to the relay via `RelayContext.params`.
 
 ```json
 {
@@ -97,21 +97,21 @@ Every standing order has one canonical form: `{ on, run, ...params }`. The `on` 
 
 #### The `summon` verb (syntactic sugar)
 
-The `summon` key is shorthand for invoking the **summon-engine** — the stdlib engine that handles anima session dispatch. The Clockworks desugars `summon` orders at dispatch time:
+The `summon` key is shorthand for invoking the **summon relay** — the stdlib relay that handles anima session dispatch. The Clockworks desugars `summon` orders at dispatch time:
 
 ```json
 // What the operator writes:
 { "on": "mandate.ready", "summon": "artificer", "prompt": "...", "maxSessions": 5 }
 
 // What the Clockworks dispatches:
-{ "on": "mandate.ready", "run": "summon-engine", "role": "artificer", "prompt": "...", "maxSessions": 5 }
+{ "on": "mandate.ready", "run": "summon-relay", "role": "artificer", "prompt": "...", "maxSessions": 5 }
 ```
 
-The `summon` value becomes the `role` param. All other keys pass through as engine params. This means anima dispatch is handled by a regular engine — replaceable, upgradeable, configurable — not baked into the framework.
+The `summon` value becomes the `role` param. All other keys pass through as relay params. This means anima dispatch is handled by a regular relay — replaceable, upgradeable, configurable — not baked into the framework.
 
-The **summon-engine** resolves the role to an active anima, binds or synthesizes a writ, manifests the anima, hydrates the prompt template, launches a session, and handles post-session writ lifecycle. See [Dispatch Integration](writs.md#dispatch-integration) for the full sequence.
+The **summon relay** resolves the role to an active anima, binds or synthesizes a writ, manifests the anima, hydrates the prompt template, launches a session, and handles post-session writ lifecycle. See [Dispatch Integration](writs.md#dispatch-integration) for the full sequence.
 
-**Summon-engine params:**
+**Summon relay params:**
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -119,16 +119,16 @@ The **summon-engine** resolves the role to an active anima, binds or synthesizes
 | `prompt` | string | — | Prompt template with `{{writ.title}}`, `{{writ.description}}`, etc. |
 | `maxSessions` | number | 10 | Circuit breaker: max session attempts per writ before auto-fail |
 
-**Circuit breaker:** By default, the summon-engine will fail a writ after 10 session attempts. This prevents infinite re-dispatch loops when a writ keeps getting interrupted without making progress. Override per standing order with `"maxSessions": 20` or disable with `"maxSessions": 0`.
+**Circuit breaker:** By default, the summon relay will fail a writ after 10 session attempts. This prevents infinite re-dispatch loops when a writ keeps getting interrupted without making progress. Override per standing order with `"maxSessions": 20` or disable with `"maxSessions": 0`.
 
-**Role resolution:** If no active anima fills the named role, the engine throws and the Clockworks signals `standing-order.failed`.
+**Role resolution:** If no active anima fills the named role, the relay throws and the Clockworks signals `standing-order.failed`.
 
-#### Engine params
+#### Relay params
 
-Any key on a standing order that isn't `on` or `run` (or `summon`/`brief` for sugar forms) is extracted as a param and passed to the engine:
+Any key on a standing order that isn't `on` or `run` (or `summon`/`brief` for sugar forms) is extracted as a param and passed to the relay:
 
 ```typescript
-export default engine({
+export default relay({
   name: 'deploy',
   handler: async (event, { home, params }) => {
     const environment = (params.environment as string) ?? 'production';
@@ -138,7 +138,7 @@ export default engine({
 });
 ```
 
-Params default to `{}` when no extra keys are present. Existing engines that destructure only `{ home }` from context are unaffected.
+Params default to `{}` when no extra keys are present. Existing relays that destructure only `{ home }` from context are unaffected.
 
 ---
 
@@ -170,7 +170,7 @@ A background daemon that polls the event queue and processes events automaticall
 
 The daemon spawns as a detached child process. It writes a PID file at `<home>/.nexus/clock.pid` and logs to `<home>/.nexus/clock.log` (append mode). Only event-processing cycles are logged; idle polls are silent.
 
-The daemon registers the session provider at startup, enabling the summon-engine to dispatch anima sessions autonomously.
+The daemon registers the session provider at startup, enabling the summon relay to dispatch anima sessions autonomously.
 
 Phase 1 commands (`list`, `tick`, `run`) continue to work alongside the daemon. If the daemon is running, `tick` and `run` print a warning but still execute — SQLite handles concurrent access safely.
 
@@ -193,7 +193,7 @@ Standing order failures signal a `standing-order.failed` event:
 }
 ```
 
-Guilds can respond to this event with their own standing orders — summon an anima, run a notification engine, whatever the guild needs. The error handling policy is itself configurable.
+Guilds can respond to this event with their own standing orders — summon an anima, invoke a notification relay, whatever the guild needs. The error handling policy is itself configurable.
 
 **Loop guard**: `standing-order.failed` events are tagged. The Clockworks runner will not fire standing orders in response to a `standing-order.failed` event that was itself triggered by a `standing-order.failed` event. Errors handling errors do not cascade.
 
@@ -265,10 +265,10 @@ CREATE TABLE events (
 CREATE TABLE event_dispatches (
   id           INTEGER PRIMARY KEY,
   event_id     INTEGER NOT NULL REFERENCES events(id),
-  handler_type TEXT NOT NULL,          -- 'engine' or 'anima'
-  handler_name TEXT NOT NULL,          -- engine name or resolved anima name
+  handler_type TEXT NOT NULL,          -- 'relay' or 'anima' (relays are stored as 'engine' in older schemas)
+  handler_name TEXT NOT NULL,          -- relay name or resolved anima name
   target_role  TEXT,                   -- role name (anima orders only; handler_name is the resolved anima)
-  notice_type  TEXT,                   -- 'summon' | null (historical; present on summon-engine dispatches)
+  notice_type  TEXT,                   -- 'summon' | null (historical; present on summon relay dispatches)
   started_at   DATETIME,
   ended_at     DATETIME,
   status       TEXT,                   -- 'success' | 'error'
@@ -278,28 +278,20 @@ CREATE TABLE event_dispatches (
 
 ---
 
-## Engine Contract
+## Relay Contract
 
-Today, engines are plain TypeScript modules with bespoke exported functions — no SDK wrapper, no standard invocation contract. Each static engine has its own specific signature (`manifest(home, animaName)`, `applyMigrations(home, provenance?)`, etc.) and is called directly by the CLI or other framework code that knows the API. The `nexus-engine.json` descriptor is used only at install time; nothing reads it at runtime.
+The Clockworks needs a standard invocation contract to call relays generically. Previously, engines were plain TypeScript modules with bespoke exported functions — each with its own specific signature (`manifest(home, animaName)`, `applyMigrations(home, provenance?)`, etc.), called directly by the CLI or other framework code that knew the API. The `nexus-engine.json` descriptor was used only at install time.
 
-This works for static engines but is incompatible with the Clockworks — a generic runner cannot call an engine if every engine has a different signature.
+This works for static infrastructure engines but is incompatible with the Clockworks — a generic runner cannot invoke a relay if every relay has a different signature.
 
-### Two kinds of engines
-
-The Clockworks introduces a meaningful distinction that wasn't needed before:
-
-**Static engines** — bespoke APIs, called by specific framework code. The manifest engine, mcp-server, and ledger-migrate fall here. They have no standard invocation contract and are not directly triggerable by standing orders. Nothing about them changes.
-
-**Clockwork engines** — purpose-built to respond to Clockworks events. These export a default using a new `engine()` SDK factory, giving the Clockworks runner a standard contract to call.
-
-### The `engine()` factory
+### The `relay()` factory
 
 A new SDK export from `nexus-core`, parallel to `tool()`:
 
 ```typescript
-import { engine } from '@shardworks/nexus-core';
+import { relay } from '@shardworks/nexus-core';
 
-export default engine({
+export default relay({
   handler: async (event: GuildEvent | null, { home, params }) => {
     // event  — the triggering GuildEvent when invoked by a standing order (null for direct invocation)
     // home   — absolute path to the guild root
@@ -310,23 +302,21 @@ export default engine({
 
 The Clockworks runner calls `module.default.handler(event, { home, params })`. This is the only contract the runner needs to know. Params are extracted from the standing order at dispatch time — any key that isn't `on` or `run` becomes a param.
 
-Clockwork engines can be named in `run:` standing orders. Static engines cannot — attempting to do so is a configuration error caught at validation time.
+Relays can be named in `run:` standing orders. Static engines cannot — attempting to do so is a configuration error caught at validation time.
 
-### `nexus-engine.json` is unchanged
+### `nexus-relay.json` is unchanged
 
-No new fields needed. The descriptor's `entry` field already points to the module. Whether that module exports an `engine()` default is discovered at load time, not in the descriptor. The distinction between static and clockwork engines is in the module shape, not the configuration.
+No new fields needed. The descriptor's `entry` field already points to the module. Whether that module exports a `relay()` default is discovered at load time, not in the descriptor. The distinction between static engines and relays is in the module shape, not the configuration.
 
 ---
 
 ## Relationship to Existing Concepts
 
-**Engines** — gain a new activation path (event-driven, via standing orders) alongside existing explicit invocation. Split into two kinds: static engines (unchanged, bespoke APIs) and clockwork engines (use the new `engine()` factory). No changes to `nexus-engine.json`.
+**Engines** — static infrastructure engines (manifest, mcp-server, ledger-migrate) are unchanged. A new class of engine — **relays** — is introduced: purpose-built Clockworks handlers that export a standard `relay()` contract and can be named in `run:` standing orders. No changes to `nexus-engine.json`.
 
 **Tools** — `signal` is a new base tool. All other tools unchanged.
 
 **The Books** — the Clockworks owns its event/dispatch tables as internal operational state, separate from the guild's Books (Register, Ledger, Daybook). Writs live in the Ledger — see the architecture overview.
-
-**The Manifest Engine** — invoked by the summon-engine when dispatching anima sessions. Receives event context rather than a patron-posted commission brief.
 
 **Bundles** — may ship default standing orders and custom event declarations, merged into `guild.json` on installation. Same delivery mechanism as other bundle-provided config.
 

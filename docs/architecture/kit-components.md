@@ -1,6 +1,6 @@
-# Tools, Engines, Curricula & Temperaments
+# Kit Components: Tools, Engines & Relays
 
-This document describes the artifact model for the guild system — how tools, engines, curricula, and temperaments are structured, packaged, installed, and resolved. All four follow the same packaging pattern: a descriptor file, content, and a registration entry in `guild.json`. For the broader system architecture, see [overview.md](overview.md).
+This document describes the artifact model for the guild's installable capabilities — how tools, engines, and relays are structured, packaged, installed, and resolved. All three follow the same packaging pattern: a descriptor file, an entry point, and a registration entry in `guild.json`. For the broader system architecture, see [overview.md](overview.md). For how relays work within the Clockworks, see [clockworks.md](clockworks.md). For anima composition artifacts (curricula and temperaments), see [anima-composition.md](anima-composition.md).
 
 ---
 
@@ -8,13 +8,13 @@ This document describes the artifact model for the guild system — how tools, e
 
 **Tools** are instruments wielded by animas during work — operations that animas invoke to interact with guild systems, query information, record notes, and perform operations. A tool can optionally ship with an instruction document (`instructions.md`) that is delivered to the anima when manifested for a session.
 
-Tools are accessible through multiple paths: animas invoke them as MCP tools during sessions; humans invoke them via the `nexus` CLI; engines import them programmatically. All paths execute the same logic with the same inputs and outputs — the tool author writes the logic once.
+Tools are accessible through multiple paths: animas invoke them as MCP tools during sessions; humans invoke them via the `nexus` CLI; engines and relays import them programmatically. All paths execute the same logic with the same inputs and outputs — the tool author writes the logic once.
 
-**Engines** are automated mechanical processes with no AI involvement — scripts, queue readers, and other deterministic processes built into the guild's infrastructure. Engines handle the repeatable, mechanical work: manifesting animas, setting up worktrees, running migrations. They do not have instruction documents because no anima wields them.
+**Engines** are static infrastructure processes — deterministic, bespoke, called by specific framework code. The manifest engine, mcp-server, and ledger-migrate are engines. They handle the guild's core machinery: assembling animas for sessions, setting up worktrees, running migrations. Engines have no standard invocation contract and are not triggerable by standing orders. They do not have instruction documents because no anima wields them directly.
 
-Two kinds of engines exist: **static engines** have bespoke APIs and are invoked by specific framework code; **clockwork engines** export a standard `engine()` handler and can be triggered by the Clockworks via standing orders. See [The Clockworks](clockworks.md) for the engine contract and factory details.
+**Relays** are Clockworks handlers — purpose-built to respond to events via standing orders. A relay exports a standard `relay()` contract that the Clockworks runner calls. All relays are clockwork (no anima is required to run one — the summon relay, which dispatches animas, is itself a relay). See [clockworks.md](clockworks.md) for the relay contract and standing order mechanics.
 
-Both follow the same packaging model. Curricula and temperaments also follow this model — see [below](#curricula--temperaments).
+Both engines and relays use `nexus-engine.json` as their descriptor. The distinction between them is in the module shape: an engine has a bespoke API; a relay exports a `relay()` default.
 
 ---
 
@@ -35,14 +35,14 @@ Every tool is, at its core, a **handler with a defined contract** — inputs, ou
     ┌──────────┼──────────┐
     │          │          │
   MCP        CLI       import
-  (animas)  (humans)  (engines)
+  (animas)  (humans)  (engines/relays)
     │          │          │
   same input → same code → same output
 ```
 
 - **MCP** — The manifest engine configures an MCP server that exposes tools as typed, callable tools. The anima sees them as native tools alongside built-in tools like Read, Write, and Bash.
 - **CLI** — The `nsg` CLI exposes tools as noun-verb subcommands (`nsg commission create`, `nsg tool install`, etc.).
-- **Import** — Engines and other tools can import module-based handlers directly.
+- **Import** — Engines, relays, and other tools can import module-based handlers directly.
 
 ### Two kinds of tools
 
@@ -160,7 +160,7 @@ Instructions are also **institutional, not intrinsic**. The MCP schema is the to
 Every artifact has a descriptor at its root:
 
 - **`nexus-tool.json`** for tools
-- **`nexus-engine.json`** for engines
+- **`nexus-engine.json`** for engines and relays
 
 ### Schema
 
@@ -181,7 +181,7 @@ Required fields marked with `*`:
 
 Only `entry` is required. All other fields are optional.
 
-There is no `name` field — the **directory name is the tool's identity**. After installation, the directory name (`dispatch/`, `my-engine/`) is the canonical name. During installation from npm, the directory name is derived from the package name (strip scope: `@shardworks/dispatch` → `dispatch`) or specified with `--name`.
+There is no `name` field — the **directory name is the tool's identity**. After installation, the directory name (`dispatch/`, `my-relay/`) is the canonical name. During installation from npm, the directory name is derived from the package name (strip scope: `@shardworks/dispatch` → `dispatch`) or specified with `--name`.
 
 ### Kind
 
@@ -208,14 +208,14 @@ For `entry` specifically: if absent from the descriptor, the installer falls bac
 
 ## On-disk layout
 
-Each tool occupies a single directory named after the tool:
+Each artifact occupies a single directory named after the artifact:
 
 ```
 GUILD_ROOT/
   tools/
     commission-create/
       nexus-tool.json           →  { "entry": "handler.js", ... }
-      instructions.md           →  (metadata only for npm-installed tools)
+      instructions.md
     tool-install/
     tool-remove/
     anima-create/
@@ -223,21 +223,26 @@ GUILD_ROOT/
       nexus-tool.json
       instructions.md
   engines/
-    workshop-prepare/
+    manifest/
       nexus-engine.json
-    workshop-merge/
+    mcp-server/
     worktree-setup/
     ledger-migrate/
+  relays/
+    summon/
+      nexus-engine.json         →  exports relay() default
+    notify-patron/
+    cleanup-worktree/
   nexus/
     migrations/
       001-initial-schema.sql
 ```
 
-All tools and engines share the same directory structure regardless of origin. Each tool directory contains a descriptor, and optionally instructions, handler code, and other files depending on how it was installed.
+All artifacts share the same directory structure regardless of origin. Each directory contains a descriptor, and optionally an entry point, instructions, and other files depending on the artifact type and how it was installed.
 
-For **registry** and **git-url** installs, only metadata (descriptor + instructions) is copied to the tool directory — the runtime code lives in `node_modules/`, managed by npm. For **workshop** and **tarball** installs, the full package source is copied to the tool directory for durability (these tools are not tracked in `package.json`). For **link** installs, only metadata is in the directory — the runtime code is symlinked from the developer's local directory.
+For **registry** and **git-url** installs, only metadata (descriptor + instructions) is copied to the artifact directory — the runtime code lives in `node_modules/`, managed by npm. For **workshop** and **tarball** installs, the full package source is copied for durability. For **link** installs, only metadata is in the directory — the runtime code is symlinked from the developer's local directory.
 
-All provenance and routing metadata lives in `guild.json` — including the `package` field that tells the manifest engine to resolve the tool by npm package name rather than file path. Descriptors are pristine copies of what the tool author shipped.
+All provenance and routing metadata lives in `guild.json`.
 
 ---
 
@@ -268,22 +273,10 @@ Tools are registered in `guild.json` and assigned to roles:
       "package": "@shardworks/nexus-stdlib",
       "installedAt": "2026-03-25T12:00:00Z",
       "bundle": "@shardworks/guild-starter-kit@0.1.0"
-    },
-    "my-custom-tool": {
-      "upstream": "my-custom-tool@0.3.0",
-      "package": "my-custom-tool",
-      "installedAt": "2026-03-22T09:30:00Z"
     }
   }
 }
 ```
-
-| Field | Meaning |
-|-------|---------|
-| `upstream` | npm package specifier the tool was installed from, or `null` for locally-built tools |
-| `package` | npm package name for runtime resolution via `node_modules`. Omitted for script-only tools. |
-| `installedAt` | ISO-8601 timestamp of installation |
-| `bundle` | Which bundle delivered this artifact (if any) |
 
 At manifest time, the manifest engine computes the tool set:
 
@@ -302,7 +295,7 @@ Anima "Valdris" has roles: [artificer, steward]
 
 The MCP engine is launched with this resolved set. The anima sees exactly the tools its combined roles permit — no more, no less.
 
-Engines do not have role gating — they are infrastructure, not tools wielded by animas. Their `guild.json` entries have no role assignments:
+Engines and relays do not have role gating — they are infrastructure, not tools wielded by animas. Their `guild.json` entries have no role assignments:
 
 ```json
 {
@@ -311,17 +304,22 @@ Engines do not have role gating — they are infrastructure, not tools wielded b
       "upstream": "@shardworks/engine-manifest@0.1.11",
       "package": "@shardworks/engine-manifest",
       "installedAt": "2026-03-23T12:00:00Z"
+    }
+  },
+  "relays": {
+    "summon": {
+      "upstream": "@shardworks/relay-summon@0.1.11",
+      "package": "@shardworks/relay-summon",
+      "installedAt": "2026-03-23T12:00:00Z"
     },
-    "mcp-server": {
-      "upstream": "@shardworks/engine-mcp-server@0.1.11",
-      "package": "@shardworks/engine-mcp-server",
+    "cleanup-worktree": {
+      "upstream": "@shardworks/relay-cleanup@0.1.11",
+      "package": "@shardworks/relay-cleanup",
       "installedAt": "2026-03-23T12:00:00Z"
     }
   }
 }
 ```
-
-The manifest engine resolves tool paths by name: `tools/{name}/`.
 
 ---
 
@@ -329,7 +327,7 @@ The manifest engine resolves tool paths by name: `tools/{name}/`.
 
 ### The `tool-install` tool
 
-`tool-install` is a stdlib tool for installing new tools, engines, and bundles. It accepts a polymorphic **tool source** argument and classifies it into one of five install types:
+`tool-install` is a stdlib tool for installing new tools, engines, relays, and bundles. It accepts a polymorphic **tool source** argument and classifies it into one of five install types:
 
 | Source pattern | Type | Example |
 |----------------|------|---------|
@@ -339,26 +337,20 @@ The manifest engine resolves tool paths by name: `tools/{name}/`.
 | Ends with `.tgz` or `.tar.gz` | tarball | `nsg tool install ./my-tool-1.0.0.tgz` |
 | Everything else | registry | `nsg tool install some-tool@1.0`, `nsg tool install @scope/tool` |
 
-Each type has different durability semantics — see [the building tools guide](../guides/building-tools.md) for full details on each install type and the rehydrate workflow.
-
 The install process:
 
 1. Classify the source and install via npm (or symlink for link mode)
-2. Find and validate the descriptor (`nexus-tool.json`, `nexus-engine.json`, `nexus-curriculum.json`, or `nexus-temperament.json`)
-3. Determine the tool name (from `--name`, or derived from package name)
-4. Copy metadata or full source to the tool directory (depending on install type)
-5. Register in `guild.json` (upstream, package name, timestamp, bundle provenance)
+2. Find and validate the descriptor (`nexus-tool.json` or `nexus-engine.json`)
+3. Determine the artifact name (from `--name`, or derived from package name)
+4. Copy metadata or full source to the artifact directory (depending on install type)
+5. Register in `guild.json` under `tools`, `engines`, or `relays` as appropriate (determined by descriptor type and module shape)
 6. Commit to the guild
 
 Both the CLI (`nsg tool install`) and the MCP tool (wielded by animas) share the same core logic.
 
-### The `tool-remove` tool
+### Framework artifacts: workspace packages
 
-`tool-remove` is the counterpart to `tool-install`. It deregisters a tool from `guild.json`, removes its directory, and cleans up `node_modules/`. Removal behavior depends on install type: registry/git-url tools are removed via `npm uninstall`; workshop/tarball tools are removed from `node_modules/` directly; linked tools have their symlink removed.
-
-### Framework tools: workspace packages
-
-Base tools and engines are separate packages in the Nexus monorepo — each one a complete artifact with its own descriptor, handler module, and (for tools) instructions document. They follow the same artifact shape as any guild-authored tool; they just happen to be maintained alongside the framework.
+Base tools, engines, and relays are separate packages in the Nexus monorepo — each one a complete artifact with its own descriptor, handler module, and (for tools) instructions document. They follow the same artifact shape as any guild-authored component; they just happen to be maintained alongside the framework.
 
 The monorepo is structured as a pnpm workspace:
 
@@ -366,21 +358,11 @@ The monorepo is structured as a pnpm workspace:
 packages/
   core/                          ← @shardworks/nexus-core — shared library (Books, config, paths, install logic)
   cli/                           ← @shardworks/nexus — the CLI operators run
-  stdlib/                        ← @shardworks/nexus-stdlib — all standard tools and engines
-  guild-starter-kit/             ← @shardworks/guild-starter-kit — bundle manifest + training content
+  stdlib/                        ← @shardworks/nexus-stdlib — all standard tools, engines, and relays
+  guild-starter-kit/             ← @shardworks/guild-starter-kit — bundle manifest
 ```
 
-All tools are defined using the `tool()` SDK factory in `@shardworks/nexus-stdlib`, which exports them as a collection package. Tool handlers import core functions from `@shardworks/nexus-core`. The CLI auto-generates noun-verb subcommands from tool definitions.
-
-`nsg init` installs base tools and engines via the guild starter kit bundle, registering them in `guild.json` with bundle provenance. Tools are assigned to roles, not `baseTools`.
-
-The `nsg` CLI exposes tools as noun-verb subcommands (`nsg commission create`, `nsg tool install`, etc.) — calling the same handler code. Humans use CLI subcommands; animas use MCP tools; both execute the same underlying logic.
-
-This model means:
-- **Collection package** — all stdlib tools are defined in one package, exported as an array for the manifest engine to resolve by name
-- **Clean dependency graph** — stdlib → `@shardworks/nexus-core` ← CLI. No circular dependencies
-- **Version coherence** — all tools share the framework version
-- **Anima interface** — animas see the same kind of MCP tools whether they came from the framework or the guild
+`nsg init` installs base tools, engines, and relays via the guild starter kit bundle, registering them in `guild.json` with bundle provenance.
 
 ---
 
@@ -405,97 +387,27 @@ my-tool/
 
 No SDK, no TypeScript, no build step. The framework infers `kind: "script"` from the `.sh` extension, wraps it for MCP automatically, and the anima can call it as a typed tool.
 
-When ready to share, `npm pack` creates a `.tgz` that any guild can install. Since the descriptor is the contract, sharing works regardless of whether the tool was originally built with npm in mind.
+### Animas building kit components
 
-### Animas building tools
-
-An anima commissioned to build a new tool works in a workshop worktree like any other commission. When the commission completes:
+An anima commissioned to build a new tool or relay works in a workshop worktree like any other commission. When the commission completes:
 
 1. Leadership reviews the output
 2. `nsg tool install workshop:forge#tool/my-tool@0.1.0` installs it into the guild from the workshop repo
-3. The tool is now operational — registered in `guild.json`, full source stored in the tool directory, resolved by the manifest engine
+3. The artifact is now operational — registered in `guild.json`, full source stored in the artifact directory, resolved by the manifest engine
 
-The guildhall is never a workspace — artifacts flow in through deliberate install operations. Since `tool-install` is itself a tool, animas with appropriate access (stewards) can install tools directly — enabling the guild to extend its own toolkit autonomously.
+The guildhall is never a workspace — artifacts flow in through deliberate install operations. Since `tool-install` is itself a tool, animas with appropriate access (stewards) can install artifacts directly — enabling the guild to extend its own toolkit autonomously.
 
 ---
 
-## Curricula & Temperaments
+## Comparison
 
-Curricula and temperaments follow the same packaging model as tools and engines — a descriptor file, content, and registration in `guild.json`. The key difference: they are not executed, they are **read as text** and delivered to animas as part of their composition.
-
-### Descriptors
-
-- **`nexus-curriculum.json`** — for curricula
-- **`nexus-temperament.json`** — for temperaments
-
-Schema (required fields marked with `*`):
-
-```json
-{
-  "content": "curriculum.md",    // * path to the content file
-  "version": "2.0.0",            // upstream version (semver)
-  "description": "Craft-focused builder — TDD, clean code, iterative delivery"
-}
-```
-
-Only `content` is required — the path to the markdown file within the package. As with tools, the **directory name is identity** (no `name` field), and `version`/`description` fall back to `package.json` if present.
-
-### On-disk layout
-
-```
-training/
-  curricula/
-    artificer-craft/
-      nexus-curriculum.json
-      curriculum.md
-    guild-standards/
-      nexus-curriculum.json
-      curriculum.md
-  temperaments/
-    stoic/
-      nexus-temperament.json
-      temperament.md
-    candid/
-      nexus-temperament.json
-      temperament.md
-```
-
-### guild.json registration
-
-Curricula and temperaments have simpler registry entries than tools — no roles (they are composition, not access control):
-
-```json
-{
-  "curricula": {
-    "artificer-craft": {
-      "upstream": "@shardworks/curriculum-artificer@2.0.0",
-      "installedAt": "2026-03-23T12:00:00Z"
-    },
-    "guild-standards": {
-      "upstream": null,
-      "installedAt": "2026-03-23T10:00:00Z"
-    }
-  },
-  "temperaments": {
-    "stoic": {
-      "upstream": null,
-      "installedAt": "2026-03-23T10:00:00Z"
-    }
-  }
-}
-```
-
-The registry answers "what training content is available in this guild." It does *not* assign training content to roles — that's the wrong layer. A curriculum and temperament are assigned to an individual **anima** at instantiation time (recorded in the Register). The `anima-create` tool picks from the available set.
-
-### How they differ from tools
-
-| | Tools/Engines | Curricula/Temperaments |
-|---|---|---|
-| Executed? | Yes — handler (module or script) | No — read as text |
-| Access paths? | MCP (animas), CLI (humans), import (engines) | Manifest engine only |
-| `roles` gating? | Yes (tools only) | No — assigned per-anima |
-| `source` field? | Yes (nexus vs guild) | No |
-| Instructions doc? | Optional (tools only) | N/A — they *are* the instructions |
-| Installed by | `tool-install` | `tool-install` (same command) |
-| Registered in | `guild.json` tools/engines | `guild.json` curricula/temperaments |
-| Consumed by | Animas at runtime (MCP tools) | Manifest engine at assembly time |
+| | Tools | Engines | Relays |
+|---|---|---|---|
+| Purpose | Instruments animas wield | Static infrastructure | Clockworks handlers |
+| Executed by | Animas (MCP), humans (CLI), code (import) | Framework code directly | Clockworks runner (event-driven) |
+| Descriptor | `nexus-tool.json` | `nexus-engine.json` | `nexus-engine.json` |
+| SDK factory | `tool()` | bespoke API | `relay()` |
+| Instructions doc? | Optional (anima guidance) | No | No |
+| Role gating? | Yes | No | No |
+| Standard contract? | Yes (MCP) | No | Yes (`relay()`) |
+| Triggerable by standing orders? | No | No | Yes (`run:`) |
