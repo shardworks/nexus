@@ -295,15 +295,17 @@ function buildGuildContext(
       }
       const provides = manifest.provides.get(name);
       if (provides === undefined) {
-        // Return a sentinel that throws on access
-        return new Proxy({} as T, {
+        // Return a sentinel that throws on any property access.
+        // Cast through unknown: the proxy is intentionally not a real T —
+        // any access will throw before the type matters.
+        return new Proxy({} as object, {
           get(_target, prop) {
             throw new Error(
               `[arbor] ctx.apparatus("${name}") has no provides. ` +
               `Accessing .${String(prop)} is not available.`,
             );
           },
-        });
+        }) as unknown as T;
       }
       return provides as T;
     },
@@ -622,7 +624,10 @@ export function createArbor(guildRoot: string): Arbor {
           }
           const provides = resolvedManifest.provides.get(name);
           if (provides === undefined) {
-            return new Proxy({} as T, {
+            // Return a sentinel that throws on any property access.
+            // Cast through unknown: the proxy is intentionally not a real T —
+            // any access will throw before the type matters.
+            return new Proxy({} as object, {
               get(_target, prop) {
                 throw new Error(
                   `[arbor] ctx.apparatus("${name}") has no provides. ` +
@@ -630,7 +635,7 @@ export function createArbor(guildRoot: string): Arbor {
                   `Does "${name}" declare a provides object?`,
                 );
               },
-            });
+            }) as unknown as T;
           }
           return provides as T;
         },
