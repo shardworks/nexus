@@ -16,23 +16,32 @@ import path from 'node:path';
  * Derive the guild-facing plugin id from an npm package name.
  *
  * Convention:
- * - `@shardworks/nexus-ledger` → `nexus-ledger`  (official scope stripped)
- * - `@acme/my-plugin`          → `acme/my-plugin` (third-party: drop @ only)
- * - `my-plugin`                → `my-plugin`       (unscoped: unchanged)
+ * - `@shardworks/nexus-ledger`      → `nexus-ledger`   (official scope stripped)
+ * - `@shardworks/books-apparatus`   → `books`           (descriptor suffix stripped)
+ * - `@acme/my-plugin`               → `acme/my-plugin`  (third-party: drop @ only)
+ * - `my-relay-kit`                  → `my-relay`        (descriptor suffix stripped)
+ * - `my-plugin`                     → `my-plugin`       (unscoped: unchanged)
  *
  * The `@shardworks` scope is the official Nexus namespace — its plugins are
  * referenced by bare name in guild.json, CLI commands, and config keys.
  * Third-party scoped packages retain the scope as a prefix (without @) to
  * prevent collisions between `@acme/foo` and `@other/foo`.
+ *
+ * Descriptor suffixes (`-plugin`, `-apparatus`, `-kit`) are stripped after
+ * scope resolution so that package naming conventions don't leak into ids.
  */
 export function derivePluginId(packageName: string): string {
+  // Step 1: strip scope
+  let name: string;
   if (packageName.startsWith('@shardworks/')) {
-    return packageName.slice('@shardworks/'.length);
+    name = packageName.slice('@shardworks/'.length);
+  } else if (packageName.startsWith('@')) {
+    name = packageName.slice(1); // @acme/foo → acme/foo
+  } else {
+    name = packageName;
   }
-  if (packageName.startsWith('@')) {
-    return packageName.slice(1); // @acme/foo → acme/foo
-  }
-  return packageName;
+  // Step 2: strip descriptor suffix
+  return name.replace(/-(plugin|apparatus|kit)$/, '');
 }
 
 /**

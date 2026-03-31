@@ -17,4 +17,25 @@ describe('derivePluginId', () => {
     assert.equal(derivePluginId('my-plugin'), 'my-plugin');
     assert.equal(derivePluginId('nexus-stdlib'), 'nexus-stdlib');
   });
+
+  it('strips -kit suffix', () => {
+    assert.equal(derivePluginId('my-relay-kit'), 'my-relay');
+    assert.equal(derivePluginId('@shardworks/nexus-relay-kit'), 'nexus-relay');
+  });
+
+  it('strips -apparatus suffix', () => {
+    assert.equal(derivePluginId('books-apparatus'), 'books');
+    assert.equal(derivePluginId('@shardworks/books-apparatus'), 'books');
+    assert.equal(derivePluginId('@acme/cache-apparatus'), 'acme/cache');
+  });
+
+  it('strips -plugin suffix', () => {
+    assert.equal(derivePluginId('my-thing-plugin'), 'my-thing');
+    assert.equal(derivePluginId('@shardworks/nexus-thing-plugin'), 'nexus-thing');
+  });
+
+  it('does not strip suffix-like substrings in the middle', () => {
+    assert.equal(derivePluginId('my-kit-tools'), 'my-kit-tools');
+    assert.equal(derivePluginId('apparatus-runner'), 'apparatus-runner');
+  });
 });
