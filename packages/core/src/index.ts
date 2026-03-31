@@ -217,45 +217,19 @@ export {
   manifest,
 } from './legacy/1/manifest.ts';
 
+// Session provider registry — slim singleton that lives in core so clock-daemon
+// can import it without creating a circular dependency with nexus-sessions.
+// The full session funnel (launchSession, listSessions, etc.) lives in nexus-sessions.
 export {
+  type SessionChunk,
   type SessionProvider,
   type SessionProviderLaunchOptions,
   type SessionProviderResult,
-  type SessionLaunchOptions,
-  type SessionResult,
-  type SessionChunk,
-  type WorkspaceContext,
-  type ResolvedWorkspace,
-  type SessionRecord,
-  type SessionSummary,
-  type SessionDetail,
-  type ListSessionsOptions,
   registerSessionProvider,
   getSessionProvider,
-  resolveWorkspace,
-  createTempWorktree,
-  removeTempWorktree,
-  launchSession,
-  listSessions,
-  countSessionsForWrit,
-  showSession,
-} from './legacy/1/session.ts';
+} from './session-provider.ts';
 
-export {
-  type ConversationChunk,
-  type CreateConversationOptions,
-  type CreateConversationResult,
-  type ConversationSummary,
-  type ConversationDetail,
-  type ListConversationsOptions,
-  createConversation,
-  takeTurn,
-  endConversation,
-  nextParticipant,
-  listConversations,
-  showConversation,
-  formatConveneMessage,
-} from './legacy/1/conversation.ts';
+// Conversation API moved to nexus-sessions. Import from @shardworks/nexus-sessions.
 
 export {
   type UpgradePlan,

@@ -26,10 +26,7 @@ import {
   generateId,
   resolveAnimaByRole,
   manifest,
-  resolveWorkspace,
   getSessionProvider,
-  launchSession,
-  countSessionsForWrit,
   createWrit,
   readWrit,
   activateWrit,
@@ -40,6 +37,11 @@ import {
   hydratePromptTemplate,
   buildProgressAppendix,
 } from '@shardworks/nexus-core';
+import {
+  resolveWorkspace,
+  launchSession,
+  countSessionsForWrit,
+} from '@shardworks/nexus-sessions';
 
 /**
  * Tools that are destructive — not safe for workshopless (knowledge/planning) sessions.

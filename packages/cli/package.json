@@ -28,6 +28,7 @@
     "@shardworks/claude-code-session-provider": "workspace:*",
     "@shardworks/guild-monitor": "0.1.16",
     "@shardworks/nexus-core": "workspace:*",
+    "@shardworks/nexus-sessions": "workspace:*",
     "@shardworks/nexus-arbor": "workspace:*",
     "@shardworks/nexus-stdlib": "workspace:*",
     "better-sqlite3": "12.8.0",

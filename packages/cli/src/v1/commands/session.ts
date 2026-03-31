@@ -1,5 +1,5 @@
 import { createCommand } from 'commander';
-import { listSessions, showSession } from '@shardworks/nexus-core';
+import { listSessions, showSession } from '@shardworks/nexus-sessions';
 import { resolveHome } from '../resolve-home.ts';
 
 export function makeSessionCommand() {

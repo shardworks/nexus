@@ -9,12 +9,12 @@ describe('derivePluginId', () => {
   });
 
   it('drops @ only for third-party scopes', () => {
-    assert.equal(derivePluginId('@acme/my-plugin'), 'acme/my-plugin');
+    assert.equal(derivePluginId('@acme/my-tool'), 'acme/my-tool');
     assert.equal(derivePluginId('@other/foo'), 'other/foo');
   });
 
   it('passes through unscoped names', () => {
-    assert.equal(derivePluginId('my-plugin'), 'my-plugin');
+    assert.equal(derivePluginId('my-tool'), 'my-tool');
     assert.equal(derivePluginId('nexus-stdlib'), 'nexus-stdlib');
   });
 

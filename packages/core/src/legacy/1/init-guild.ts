@@ -1,8 +1,13 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { VERSION } from './index.ts';
+import { createRequire } from 'node:module';
 import { createInitialGuildConfig } from './guild-config.ts';
+
+// Read version directly from package.json to avoid importing barrel files
+// that may reference not-yet-implemented sibling modules.
+const _require = createRequire(import.meta.url);
+const VERSION: string = (_require('../../../package.json') as { version: string }).version;
 
 function git(args: string[], cwd?: string): void {
   execFileSync('git', args, { cwd, stdio: 'pipe' });
