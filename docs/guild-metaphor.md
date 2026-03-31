@@ -200,7 +200,7 @@ The authoritative record of every anima that has ever existed. The register is t
 
 ### Roster
 
-The active subset of the register. The roster is a filtered view, not a separate store — it shows all animas currently in `active` state. The roster is the system's source of truth for "who can do what right now," including each anima's role and standing/commissioned status.
+The active subset of the register. The roster is a filtered view, not a separate store — it shows all animas currently in `active` state. The roster is the system's source of truth for "who can do what right now," including each anima's role and current assignment.
 
 ### Ledger
 
