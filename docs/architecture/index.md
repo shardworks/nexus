@@ -370,7 +370,56 @@ See [The Stacks — API Contract](apparatus/stacks.md) for the full specificatio
 
 ## Kit Components: Tools, Engines & Relays
 
-<!-- TODO: The three installable artifact types. Tools — instruments animas wield, accessible via MCP / CLI / import, role-gated, optionally ship with instructions.md. Engines — rig workhorses mounted by Walker, clockwork or quick, no role gating. Relays — Clockworks handlers invoked by standing orders via run:, export relay() contract, all clockwork. Descriptor files (nexus-tool.json, nexus-engine.json, nexus-relay.json). Installation via nsg install / tool-install tool. Link to kit-components.md. -->
+Kits contribute three kinds of installable artifacts. All three follow the same packaging pattern — a descriptor file, an entry point, and a registration entry — but they serve different roles in the guild.
+
+### Tools
+
+**Tools** are instruments animas wield during work. A tool is a handler with a defined contract (inputs in, structured result out), accessible through three paths:
+
+- **MCP** — animas invoke tools as typed MCP calls during sessions. The framework launches a single MCP engine per session loaded with the anima's permitted tools.
+- **CLI** — humans invoke tools via `nsg` subcommands.
+- **Import** — engines, relays, and other tools can import handlers programmatically.
+
+All three paths execute the same logic. Tool authors write the handler once using the `tool()` SDK factory from `@shardworks/nexus-core`, which wraps a Zod schema and handler function into a `ToolDefinition`:
+
+```typescript
+export default tool({
+  description: "Look up an anima by name",
+  params: { name: z.string() },
+  handler: async ({ name }, ctx) => { ... },
+})
+```
+
+Tools can be TypeScript modules or plain scripts (bash, Python, any executable). Script tools need no SDK — a one-line descriptor and an executable is enough. The framework infers the kind from the file extension.
+
+**Role gating:** Tools are assigned to roles in `guild.json`. An anima's available tools are the union of all tools permitted across its roles, plus `baseTools`. The Manifester resolves this set at session time; the MCP engine is launched with exactly those tools.
+
+**Instructions:** A tool can optionally ship with an `instructions.md` — a teaching document delivered to the anima as part of its system prompt. Instructions provide craft guidance (when to use the tool, when not to, workflow context) that MCP's schema metadata cannot convey.
+
+### Engines
+
+**Engines** are the workhorse components of rigs — bounded units of work the Walker mounts and sets in motion. An engine runs when its upstream dependencies are satisfied and produces a yield when done. Two kinds:
+
+- **Clockwork** — deterministic, no AI. Runs its code directly against the configured substrate.
+- **Quick** — inhabited by an anima for work requiring judgment. The engine defines the work context; the anima brings the skill.
+
+Kits contribute engine designs; the Walker draws on them (via The Formulary) to extend rigs as work progresses. Engines are not role-gated — they are not wielded by animas directly; they are the work context an anima staffs.
+
+### Relays
+
+**Relays** are Clockworks handlers — purpose-built to respond to events via standing orders. A relay exports a standard `relay()` contract that the Clockworks runner calls when a matching event fires. All relays are clockwork (no anima involvement). The built-in **summon relay** is the mechanism that dispatches anima sessions in response to standing orders.
+
+### Comparison
+
+| | Tools | Engines | Relays |
+|---|---|---|---|
+| **Purpose** | Instruments animas wield | Rig workhorses | Clockworks event handlers |
+| **Invoked by** | Animas (MCP), humans (CLI), code | Walker (within a rig) | Clockworks runner (standing order) |
+| **Role gating?** | Yes | No | No |
+| **Instructions?** | Optional | No | No |
+| **Clockwork or quick?** | Neither (runs on demand) | Either | Always clockwork |
+
+See [Kit Components](kit-components.md) for the full specification: descriptor schemas, on-disk layout, installation mechanics, the MCP engine, and local development workflow.
 
 ---
 
