@@ -278,11 +278,36 @@ CREATE TABLE event_dispatches (
 
 ---
 
-## Relay Contract
+## ClockworksKit
 
-The Clockworks needs a standard invocation contract to call relays generically. The framework's existing processes — manifest, mcp-server, ledger-migrate — each have bespoke module signatures and are called directly by specific framework code. That works for bespoke machinery but is incompatible with the Clockworks — a generic runner cannot invoke a relay if every relay has a different signature.
+The Clockworks apparatus consumes relay contributions from installed plugins. It publishes a `ClockworksKit` interface that kit authors import for type safety:
 
-Relays solve this by exporting a default using the `relay()` SDK factory from `nexus-core`, parallel to `tool()`:
+```typescript
+// Published by nexus-clockworks
+interface ClockworksKit {
+  relays?: RelayDefinition[]
+}
+```
+
+A plugin contributing relays declares itself as satisfying `ClockworksKit` and names `nexus-clockworks` in its `recommends`:
+
+```typescript
+import type { ClockworksKit } from "nexus-clockworks"
+
+export default {
+  name: "nexus-signals",
+  kit: {
+    relays:     [memberJoinedRelay, memberLeftRelay],
+    recommends: ["nexus-clockworks"],
+  } satisfies ClockworksKit,
+} satisfies Plugin
+```
+
+The Clockworks apparatus registers relays from both standalone kit packages and its own `supportKit` into a unified relay registry. Callers of the Clockworks API see a single relay list regardless of source.
+
+### Relay Contract
+
+The Clockworks needs a standard invocation contract to call relays generically. Relays export a default using the `relay()` SDK factory from `nexus-core`:
 
 ```typescript
 import { relay } from '@shardworks/nexus-core';
@@ -297,8 +322,6 @@ export default relay({
 ```
 
 The Clockworks runner calls `module.default.handler(event, { home, params })`. Params are extracted from the standing order at dispatch time — any key that isn't `on` or `run` becomes a param. Relays can be named in `run:` standing orders; bespoke framework processes cannot.
-
-The descriptor is `nexus-relay.json` with the same shape as other artifact descriptors — only `entry` is required. Whether a module exports a `relay()` default is discovered at load time, not in the descriptor.
 
 ---
 
