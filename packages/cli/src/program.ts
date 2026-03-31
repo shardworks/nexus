@@ -102,6 +102,18 @@ function buildToolCommand(
 function createMinimalHandlerContext(home: string): HandlerContext {
   return {
     home,
+    config<T = Record<string, unknown>>(): T {
+      throw new Error(
+        `ctx.config() is not available in built-in tool context. ` +
+        `Built-in tools run before the plugin graph is started.`,
+      );
+    },
+    guildConfig() {
+      throw new Error(
+        `ctx.guildConfig() is not available in built-in tool context. ` +
+        `Built-in tools run before the plugin graph is started.`,
+      );
+    },
     apparatus<T>(name: string): T {
       throw new Error(
         `ctx.apparatus("${name}") is not available in built-in tool context. ` +
@@ -229,8 +241,8 @@ export async function main(): Promise<void> {
     const tools = await arbor.listTools({ channel: 'cli' });
     // Filter out arbor built-ins (already registered above)
     const pluginTools = tools.filter((t) => t.pluginId !== arborPluginId);
-    registerAllTools(program, pluginTools, () =>
-      arbor.createHandlerContext(),
+    registerAllTools(program, pluginTools, (tool) =>
+      arbor.createHandlerContext(tool.pluginId),
     );
   }
 

@@ -27,14 +27,13 @@ const arbor = createArbor('/path/to/guild');
 |---|---|---|
 | `arbor.home` | `string` | Absolute path to the guild root |
 | `arbor.getGuildConfig()` | `GuildConfigV2` | Parsed `guild.json`, read at construction time |
-| `arbor.getPluginConfig(pluginId)` | `Record<string, unknown>` | Plugin-specific config section from `guild.json`. Accepts derived id (`'nexus-stdlib'`) or full package name. Returns `{}` if absent |
 | `arbor.listKits()` | `Promise<LoadedKit[]>` | All installed kits, including the arbor's own built-ins. Lazy-loaded and cached |
 | `arbor.listApparatuses()` | `Promise<LoadedApparatus[]>` | All installed apparatuses. Lazy-loaded and cached |
 | `arbor.listPlugins()` | `Promise<LoadedPlugin[]>` | All installed plugins (kits + apparatuses). Lazy-loaded and cached |
 | `arbor.findPlugin(name)` | `Promise<LoadedPlugin \| null>` | Find a plugin by derived id or full package name |
 | `arbor.listTools(options?)` | `Promise<Tool[]>` | All tools, optionally filtered by `channel` and/or `roles` |
 | `arbor.findTool(name)` | `Promise<Tool \| null>` | Find a tool by name, across all plugins |
-| `arbor.createHandlerContext()` | `HandlerContext` | Create context for dispatching a tool or engine handler. Requires plugins to be loaded first |
+| `arbor.createHandlerContext(owningPluginId?)` | `HandlerContext` | Create context for dispatching a tool or engine handler. Pass `tool.pluginId` so `ctx.config()` resolves the correct section. Requires plugins to be loaded first |
 | `arbor.getDatabase()` | `BooksDatabase` | Lazily-opened SQLite connection to `.nexus/nexus.db`. **Transitional** — will move to the nexus-books apparatus |
 
 ### `LoadedKit` and `LoadedApparatus`
@@ -83,12 +82,17 @@ interface ListToolsOptions {
 
 ### `derivePluginId(packageName)`
 
-Converts an npm package name to the guild-facing plugin id used in `guild.json`, CLI commands, and config sections:
+Converts an npm package name to the guild-facing plugin id used in `guild.json`, CLI commands, and config sections. Two transformations are applied:
+
+1. **Scope stripping** — the `@shardworks/` official scope is removed entirely; third-party scopes drop the `@`
+2. **Descriptor suffix stripping** — trailing `-(plugin|apparatus|kit)` is removed so packaging conventions don't leak into ids
 
 ```
-@shardworks/nexus-stdlib  →  nexus-stdlib   (official scope stripped)
-@acme/my-plugin           →  acme/my-plugin (third-party: @ dropped)
-my-plugin                 →  my-plugin      (unscoped: unchanged)
+@shardworks/nexus-stdlib     →  nexus-stdlib    (official scope stripped)
+@shardworks/books-apparatus  →  books           (scope + descriptor stripped)
+@acme/my-relay-kit           →  acme/my-relay   (@ dropped + descriptor stripped)
+my-thing-plugin              →  my-thing        (descriptor stripped)
+my-plugin                    →  my-plugin       (unscoped: unchanged)
 ```
 
 ### `findGuildRoot()`

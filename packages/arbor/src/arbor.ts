@@ -83,13 +83,6 @@ export interface Arbor {
   getGuildConfig(): GuildConfigV2;
 
   /**
-   * Get the plugin-specific section of guild.json.
-   * Plugin configs are stored as named keys in guild.json.
-   * Returns an empty object if the plugin has no config section.
-   */
-  getPluginConfig(pluginId: string): Record<string, unknown>;
-
-  /**
    * List all installed kits.
    * Loads, validates, and starts plugins on first call.
    */
@@ -128,11 +121,14 @@ export interface Arbor {
   /**
    * Create a HandlerContext for use when dispatching a tool or engine handler.
    *
-   * The returned context provides `home` and `apparatus<T>(name)` access to
-   * started apparatus provides objects. Must be called after plugin loading
-   * has completed (i.e., after any listing method has been awaited).
+   * Pass `owningPluginId` (e.g. `tool.pluginId`) so that `ctx.config()` with
+   * no args returns the correct plugin's config section. Omit for generic
+   * contexts (e.g. testing, CLI introspection) — `ctx.config()` returns `{}`.
+   *
+   * Must be called after plugin loading has completed (i.e., after any listing
+   * method has been awaited).
    */
-  createHandlerContext(): HandlerContext;
+  createHandlerContext(owningPluginId?: string): HandlerContext;
 
   /**
    * Get an open connection to the guild's Books database.
@@ -269,13 +265,27 @@ function topoSort(apparatuses: LoadedApparatus[]): LoadedApparatus[] {
  * ctx.apparatus() validates the call against the apparatus's requires list.
  */
 function buildGuildContext(
-  forApparatus: LoadedApparatus,
-  manifest:     GuildManifest,
+  forApparatus:  LoadedApparatus,
+  manifest:      GuildManifest,
+  guildRoot:     string,
+  config:        GuildConfigV2,
   eventHandlers: Map<string, Array<(...args: unknown[]) => void | Promise<void>>>,
 ): GuildContext {
   const allowed = new Set(forApparatus.apparatus.requires ?? []);
 
   return {
+    home: guildRoot,
+
+    config<T = Record<string, unknown>>(pluginId?: string): T {
+      const key = pluginId ?? forApparatus.id;
+      const cfg = config as unknown as Record<string, unknown>;
+      return (cfg[key] ?? {}) as T;
+    },
+
+    guildConfig() {
+      return config;
+    },
+
     apparatus<T>(name: string): T {
       if (!allowed.has(name)) {
         throw new Error(
@@ -459,7 +469,7 @@ async function loadAndStart(
       provides.set(app.id, app.apparatus.provides);
     }
 
-    const ctx = buildGuildContext(app, manifest, eventHandlers);
+    const ctx = buildGuildContext(app, manifest, guildRoot, config, eventHandlers);
     await app.apparatus.start(ctx);
 
     await fireEvent(eventHandlers, 'plugin:initialized', app);
@@ -534,12 +544,6 @@ export function createArbor(guildRoot: string): Arbor {
       return config;
     },
 
-    getPluginConfig(pluginId: string) {
-      const key = pluginId.startsWith('@') ? derivePluginId(pluginId) : pluginId;
-      const cfg = config as unknown as Record<string, unknown>;
-      return (cfg[key] as Record<string, unknown>) ?? {};
-    },
-
     async listKits() {
       return (await getManifest()).kits;
     },
@@ -594,9 +598,20 @@ export function createArbor(guildRoot: string): Arbor {
       return m.tools.find((t) => t.name === name) ?? null;
     },
 
-    createHandlerContext(): HandlerContext {
+    createHandlerContext(owningPluginId?: string): HandlerContext {
       return {
         home: guildRoot,
+
+        config<T = Record<string, unknown>>(pluginId?: string): T {
+          const key = pluginId ?? owningPluginId;
+          if (!key) return {} as T;
+          const cfg = config as unknown as Record<string, unknown>;
+          return (cfg[key] ?? {}) as T;
+        },
+
+        guildConfig() {
+          return config;
+        },
 
         apparatus<T>(name: string): T {
           if (!resolvedManifest) {

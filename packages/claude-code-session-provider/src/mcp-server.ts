@@ -99,10 +99,21 @@ export async function createMcpServer(config: McpServerConfig): Promise<McpServe
   });
 
   // Minimal HandlerContext — the MCP server does not have a full plugin graph
-  // wired in. ctx.apparatus() stubs throw; MCP tools that need apparatus access
-  // will require an Arbor-aware refactor of the MCP server config and launch path.
+  // wired in. ctx.apparatus(), ctx.config(), and ctx.guildConfig() stubs throw;
+  // MCP tools that need these will require an Arbor-aware refactor of the MCP
+  // server config and launch path.
   const context: HandlerContext = {
     home: config.home,
+    config<T = Record<string, unknown>>(): T {
+      throw new Error(
+        `ctx.config() is not yet supported in the MCP server context.`,
+      );
+    },
+    guildConfig() {
+      throw new Error(
+        `ctx.guildConfig() is not yet supported in the MCP server context.`,
+      );
+    },
     apparatus<T>(name: string): T {
       throw new Error(
         `ctx.apparatus("${name}") is not yet supported in the MCP server context.`,

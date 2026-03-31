@@ -10,6 +10,8 @@
  * See: docs/architecture/plugins.md
  */
 
+import type { GuildConfigV2 } from './guild-config.ts';
+
 // ── Loaded plugin descriptors ──────────────────────────────────────────
 
 /** A kit as tracked by the Arbor runtime. */
@@ -38,6 +40,17 @@ export type LoadedPlugin = LoadedKit | LoadedApparatus
  * plugin graph during startup wiring.
  */
 export interface GuildContext {
+  /** Absolute path to the guild root. */
+  home: string
+  /**
+   * Get the plugin-specific config section from guild.json.
+   * Called with no args returns the section for the calling apparatus.
+   * Called with a pluginId returns that plugin's section.
+   * Returns `{}` if the section is absent.
+   */
+  config<T = Record<string, unknown>>(pluginId?: string): T
+  /** Get the full parsed guild.json config. */
+  guildConfig(): GuildConfigV2
   /**
    * Retrieve a started apparatus's provides object.
    * Validated against the calling apparatus's requires at startup.
@@ -60,6 +73,15 @@ export interface GuildContext {
 export interface HandlerContext {
   /** Absolute path to the guild root. */
   home: string
+  /**
+   * Get the plugin-specific config section from guild.json.
+   * Called with no args returns the section for the owning plugin.
+   * Called with a pluginId returns that plugin's section.
+   * Returns `{}` if the section is absent.
+   */
+  config<T = Record<string, unknown>>(pluginId?: string): T
+  /** Get the full parsed guild.json config. */
+  guildConfig(): GuildConfigV2
   /** Retrieve a started apparatus's provides object. */
   apparatus<T>(name: string): T
 }
