@@ -72,6 +72,29 @@ Custom events use any name not in a reserved framework namespace (`anima.*`, `co
 
 Animas signal custom events using the `signal` tool. The tool validates the event name against declared events in `guild.json` before persisting.
 
+#### Book change events (Stacks auto-wiring)
+
+The Clockworks apparatus registers CDC handlers across all declared books at startup via The Stacks' `watch()` API (see [stacks.md](apparatus/stacks.md#6-change-data-capture-cdc)). This emits `book.<ownerId>.<bookName>.created`, `book.<ownerId>.<bookName>.updated`, and `book.<ownerId>.<bookName>.deleted` events into the Clockworks event stream automatically — no per-book configuration needed.
+
+```typescript
+// In clockworks apparatus start()
+const stacks = ctx.apparatus<StacksApi>('stacks')
+for (const plugin of ctx.plugins) {
+  const bookNames = Object.keys(plugin.books ?? {})
+  for (const bookName of bookNames) {
+    stacks.watch(plugin.id, bookName, async (event) => {
+      await clockworksApi.emit(`book.${event.ownerId}.${event.book}.${event.type}`, event)
+    }, { failOnError: false })  // clockworks failure must not block writes
+  }
+}
+```
+
+This means any book mutation from any plugin is observable via standing orders without the originating plugin needing to signal events explicitly. Standing orders can respond to book change events just like framework or custom events:
+
+```json
+{ "on": "book.nexus-ledger.writs.updated", "run": "audit-writ-changes" }
+```
+
 ---
 
 ### Standing Orders
