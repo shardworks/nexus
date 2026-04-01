@@ -4,8 +4,27 @@
  * These types form the contract between The Stacks apparatus and all
  * consuming plugins. No SQLite types, no implementation details.
  *
- * See: docs/architecture/apparatus/stacks.md
+ * See: docs/specification.md
  */
+
+// ── Plugin config ────────────────────────────────────────────────────
+
+/** Plugin configuration stored at guild.json["stacks"]. */
+export interface StacksConfig {
+  /**
+   * Automatically apply pending database migrations when the Books are opened.
+   * Defaults to `true` when not specified.
+   */
+  autoMigrate?: boolean;
+}
+
+// Augment GuildConfig so `guild().config('stacks')` returns StacksConfig
+// without requiring a manual type parameter at the call site.
+declare module '@shardworks/nexus-core' {
+  interface GuildConfig {
+    stacks?: StacksConfig;
+  }
+}
 
 // ── Document model ────────────────────────────────────────────────────
 

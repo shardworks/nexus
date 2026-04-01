@@ -26,8 +26,8 @@ export function getNestedField(obj: BookEntry | Record<string, unknown>, field: 
  *
  * Does NOT validate field names — callers are responsible for ensuring
  * fields have already been validated (e.g. via translateQuery) before
- * reaching this point. The query.ts normalizeOrderBy variant includes
- * validation because it sits at the untrusted-input boundary.
+ * reaching this point. translateQuery calls validateFieldName after
+ * normalizing because it sits at the untrusted-input boundary.
  */
 export function normalizeOrderBy(
   orderBy: OrderBy,
@@ -40,4 +40,28 @@ export function normalizeOrderBy(
     field,
     dir,
   }));
+}
+
+/**
+ * Compare two entries by a list of order-by entries.
+ *
+ * Shared by the memory backend's sortEntries and the apparatus-level
+ * OR query re-sort in stacks-core.ts. Null values sort before non-null
+ * in ascending order, after non-null in descending order.
+ */
+export function compareByOrderEntries(
+  a: BookEntry | Record<string, unknown>,
+  b: BookEntry | Record<string, unknown>,
+  orderEntries: Array<{ field: string; dir: 'asc' | 'desc' }>,
+): number {
+  for (const { field, dir } of orderEntries) {
+    const va = getNestedField(a, field);
+    const vb = getNestedField(b, field);
+    if (va === vb) continue;
+    if (va == null) return dir === 'asc' ? -1 : 1;
+    if (vb == null) return dir === 'asc' ? 1 : -1;
+    const cmp = va < vb ? -1 : 1;
+    return dir === 'asc' ? cmp : -cmp;
+  }
+  return 0;
 }

@@ -4,7 +4,7 @@
  * Guild persistence layer: NoSQL document store with CDC, transactions,
  * and swappable backend. Default export is the apparatus plugin.
  *
- * See: docs/architecture/apparatus/stacks.md
+ * See: docs/specification.md
  */
 
 import { createStacksApparatus } from './stacks.ts';
@@ -12,6 +12,9 @@ import { createStacksApparatus } from './stacks.ts';
 // ── Public types ──────────────────────────────────────────────────────
 
 export type {
+  // Plugin config
+  StacksConfig,
+
   // Document model
   BookEntry,
   BookSchema,

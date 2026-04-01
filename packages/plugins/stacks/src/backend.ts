@@ -5,7 +5,7 @@
  * and all consuming plugins depend only on these types. Backend
  * implementations (SQLite, in-memory) implement this interface.
  *
- * See: docs/architecture/apparatus/stacks.md §8
+ * See: docs/specification.md §8
  */
 
 import type { BookEntry, BookSchema, Scalar } from './types.ts';

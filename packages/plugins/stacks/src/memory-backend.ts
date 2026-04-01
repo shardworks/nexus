@@ -18,7 +18,7 @@ import type {
   StacksBackend,
 } from './backend.ts';
 import type { BookEntry, BookSchema, Scalar } from './types.ts';
-import { getNestedField } from './field-utils.ts';
+import { getNestedField, compareByOrderEntries } from './field-utils.ts';
 
 // ── Ref key ───────────────────────────────────────────────────────────
 
@@ -62,10 +62,9 @@ function sqlLike(value: string, pattern: string): boolean {
   const foldedPattern = foldAscii(pattern);
 
   // Convert SQL LIKE pattern to regex: % → .*, _ → .
-  const escaped = foldedPattern.replace(/[.*+?^${}()|[\]\\]/g, (m) => {
-    if (m === '%' || m === '_') return m;
-    return '\\' + m;
-  });
+  // The escape class intentionally excludes % and _ so they survive to the
+  // replacement step below where they become .* and . respectively.
+  const escaped = foldedPattern.replace(/[.*+?^${}()|[\]\\]/g, (m) => '\\' + m);
   const regex = new RegExp(
     '^' + escaped.replace(/%/g, '.*').replace(/_/g, '.') + '$',
   );
@@ -84,19 +83,7 @@ function sortEntries(
   orderBy?: Array<{ field: string; dir: 'asc' | 'desc' }>,
 ): BookEntry[] {
   if (!orderBy || orderBy.length === 0) return entries;
-
-  return [...entries].sort((a, b) => {
-    for (const { field, dir } of orderBy) {
-      const va = getNestedField(a, field);
-      const vb = getNestedField(b, field);
-      if (va === vb) continue;
-      if (va == null) return dir === 'asc' ? -1 : 1;
-      if (vb == null) return dir === 'asc' ? 1 : -1;
-      const cmp = va < vb ? -1 : 1;
-      return dir === 'asc' ? cmp : -cmp;
-    }
-    return 0;
-  });
+  return [...entries].sort((a, b) => compareByOrderEntries(a, b, orderBy));
 }
 
 // ── Pagination ────────────────────────────────────────────────────────

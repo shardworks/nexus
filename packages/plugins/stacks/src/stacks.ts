@@ -5,7 +5,7 @@
  * to provide the StacksApi `provides` object. All core read/write/
  * transaction logic lives in stacks-core.ts.
  *
- * See: docs/architecture/apparatus/stacks.md
+ * See: docs/specification.md
  */
 
 import type {
@@ -38,7 +38,7 @@ class StacksApparatus {
 
   start(_: StartupContext): void {
     const g = guild();
-    const config = g.config<{ autoMigrate?: boolean }>('stacks');
+    const config = g.guildConfig().stacks ?? {};
     const autoMigrate = config.autoMigrate ?? true;
 
     this.core.backend.open({ home: g.home });

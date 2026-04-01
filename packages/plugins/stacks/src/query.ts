@@ -5,8 +5,9 @@
  * user-facing operator strings to the backend's internal enum.
  */
 
-import type { BookQuery, OrderBy, WhereClause, WhereCondition } from './types.ts';
+import type { BookQuery, WhereClause, WhereCondition } from './types.ts';
 import type { InternalCondition, InternalQuery } from './backend.ts';
+import { normalizeOrderBy } from './field-utils.ts';
 
 // ── Field name validation ─────────────────────────────────────────────
 
@@ -41,34 +42,25 @@ function translateCondition(cond: WhereCondition): InternalCondition {
   }
 }
 
-// ── OrderBy normalization ─────────────────────────────────────────────
-
-function normalizeOrderBy(
-  orderBy: OrderBy | undefined,
-): Array<{ field: string; dir: 'asc' | 'desc' }> | undefined {
-  if (!orderBy) return undefined;
-
-  // Single tuple: ['field', 'asc']
-  if (typeof orderBy[0] === 'string') {
-    const [field, dir] = orderBy as [string, 'asc' | 'desc'];
-    return [{ field: validateFieldName(field), dir }];
-  }
-
-  // Array of tuples: [['field1', 'asc'], ['field2', 'desc']]
-  return (orderBy as Array<[string, 'asc' | 'desc']>).map(([field, dir]) => ({
-    field: validateFieldName(field),
-    dir,
-  }));
-}
-
 // ── Public translation ────────────────────────────────────────────────
 
 export function translateQuery(query: BookQuery): InternalQuery {
   // Only called for AND queries — OR queries are handled at the apparatus level
   const where = Array.isArray(query.where) ? query.where : undefined;
+
+  // Normalize orderBy via shared utility, then validate field names
+  // at the untrusted-input boundary.
+  let orderBy: Array<{ field: string; dir: 'asc' | 'desc' }> | undefined;
+  if (query.orderBy) {
+    orderBy = normalizeOrderBy(query.orderBy);
+    for (const entry of orderBy) {
+      validateFieldName(entry.field);
+    }
+  }
+
   return {
     where: where?.map(translateCondition),
-    orderBy: normalizeOrderBy(query.orderBy),
+    orderBy,
     limit: query.limit,
     offset: query.offset,
   };

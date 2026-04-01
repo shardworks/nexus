@@ -32,7 +32,7 @@ import type {
 
 import { CdcRegistry, coalesceEvents, type BufferedEvent } from './cdc.ts';
 import { translateQuery, translateWhereClause } from './query.ts';
-import { normalizeOrderBy, getNestedField } from './field-utils.ts';
+import { normalizeOrderBy, compareByOrderEntries } from './field-utils.ts';
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -418,18 +418,7 @@ export class StacksCore {
     // Apply sorting
     if (query.orderBy) {
       const orderEntries = normalizeOrderBy(query.orderBy);
-      merged.sort((a, b) => {
-        for (const { field, dir } of orderEntries) {
-          const va = getNestedField(a, field);
-          const vb = getNestedField(b, field);
-          if (va === vb) continue;
-          if (va == null) return dir === 'asc' ? -1 : 1;
-          if (vb == null) return dir === 'asc' ? 1 : -1;
-          const cmp = va < vb ? -1 : 1;
-          return dir === 'asc' ? cmp : -cmp;
-        }
-        return 0;
-      });
+      merged.sort((a, b) => compareByOrderEntries(a, b, orderEntries));
     }
 
     // Apply pagination
