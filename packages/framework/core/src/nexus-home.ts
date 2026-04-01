@@ -17,7 +17,7 @@ export function findGuildRoot(startDir?: string): string {
     const parent = path.dirname(dir);
     if (parent === dir) {
       throw new Error(
-        'Not inside a guild. Run `nexus init` to create one, or use --guild-root.',
+        'Not inside a guild. Run `nsg init` to create one, or use --guild-root.',
       );
     }
     dir = parent;

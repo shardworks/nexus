@@ -1,15 +1,9 @@
 /**
- * nsg upgrade — upgrade the guild framework and run pending migrations.
+ * nsg upgrade — upgrade the guild framework.
  *
- * A framework command:
- * 1. Run framework migrations (core schema, event tables, etc.)
- * 2. Walk each installed plugin and run its pending migrations
- * 3. Reconcile guild.json if the schema has changed
- *
- * With third-party plugins, this may need to be more controlled than
- * "upgrade everything to latest" — version pinning, dry-run, etc.
- *
- * Stub — not yet implemented.
+ * Stub — upgrade lifecycle not yet designed. Will handle framework version
+ * bumps, guild.json schema reconciliation, and plugin-specific upgrade
+ * hooks when implemented.
  */
 
 import { tool } from '@shardworks/tools-apparatus';
