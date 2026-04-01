@@ -4,58 +4,92 @@ Status: **Draft — MVP**
 
 Package: `@shardworks/loom` · Plugin id: `loom`
 
+> **⚠️ MVP scope.** This spec describes the thinnest viable Loom — just enough to get sessions running. It accepts a raw system prompt and passes it through. Role resolution, tool instructions, anima identity, curricula, temperaments, and charter composition are all future work. See [Future: Full Composition](#future-full-composition) for the target design.
+
 ---
 
 ## Purpose
 
-The Loom weaves session contexts. Given a role (and eventually an anima identity), it assembles the complete system prompt that an AI process receives at session launch: role instructions, tool instructions, and (in future) curricula, temperaments, and the guild charter.
+The Loom weaves session contexts. In its MVP form, it is essentially a pass-through: callers provide the system prompt and initial prompt directly, and The Loom packages them into a `WovenContext` that The Animator can consume.
 
-The Loom is a deterministic composition step — no AI, no network, no side effects. It reads files and config, combines them, and returns a structured context object.
+The Loom exists as a separate apparatus even at MVP so that The Animator never assembles prompts itself. As composition grows more sophisticated, The Loom's internals change but its output shape stays the same — The Animator is unaffected.
 
 ---
 
 ## Dependencies
 
 ```
-requires: ['instrumentarium']   — resolves the tool set and reads tool instructions
+requires: []    — MVP has no apparatus dependencies
 ```
-
-No dependency on The Stacks in MVP (no anima identity records). Will add `requires: ['stacks']` when anima identity is introduced.
 
 ---
 
 ## `LoomApi` Interface (`provides`)
 
-### MVP
-
 ```typescript
 interface LoomApi {
   /**
-   * Weave a session context for the given role.
+   * Weave a session context.
    *
-   * MVP: returns a fixed composition per role — role instructions file +
-   * tool instructions for the resolved tool set. No anima identity,
-   * no curriculum, no temperament.
-   *
-   * Future: accepts an anima id, resolves identity → curriculum →
-   * temperament → charter, and weaves all threads into the context.
+   * MVP: packages the caller-provided system prompt and initial prompt
+   * into a WovenContext. No composition logic — the caller is responsible
+   * for assembling the prompt content.
    */
   weave(request: WeaveRequest): Promise<WovenContext>
 }
 
 interface WeaveRequest {
-  /** The role to compose for. Determines tool set and role instructions. */
-  role: string
-  /** Optional initial prompt (e.g. the writ description or standing order payload). */
+  /** The system prompt to deliver to the AI process. */
+  systemPrompt: string
+  /** Optional initial user message (e.g. writ description, standing order payload). */
   prompt?: string
-  /** Optional writ context to include. */
-  writId?: string
 }
 
 interface WovenContext {
-  /** The assembled system prompt — everything the AI process needs to know. */
+  /** The system prompt for the AI process. */
   systemPrompt: string
   /** The initial user message, if any. */
+  initialPrompt?: string
+}
+```
+
+That's it. The MVP Loom is a data object factory — it takes strings in and returns a structured context out. The value is in the seam, not the logic.
+
+---
+
+## What The Loom does NOT do (MVP)
+
+- **Resolve roles or tools** — the caller provides the prompt content; The Loom doesn't read guild config.
+- **Read files from disk** — no role instructions, no tool instructions, no charter.
+- **Look up anima identity** — no identity records exist in MVP.
+- **Launch sessions** — that's The Animator's job.
+
+---
+
+## Future: Full Composition
+
+When the session infrastructure matures, The Loom becomes the system's composition engine. The API shape (`weave(request) → WovenContext`) remains stable; the request gains fields and the internals gain logic.
+
+### Future `WeaveRequest`
+
+```typescript
+interface WeaveRequest {
+  /** The role to compose for. Determines tool set and role instructions. */
+  role: string
+  /** Optional anima id. Resolves identity → curriculum → temperament. */
+  animaId?: string
+  /** Optional initial prompt. */
+  prompt?: string
+  /** Optional writ id. The Loom reads writ context from The Stacks. */
+  writId?: string
+}
+```
+
+### Future `WovenContext`
+
+```typescript
+interface WovenContext {
+  systemPrompt: string
   initialPrompt?: string
   /** The resolved tool set for this role. */
   tools: ResolvedTool[]
@@ -64,39 +98,22 @@ interface WovenContext {
 }
 ```
 
-### Composition order (MVP)
+### Future composition order
 
-The system prompt is assembled by concatenating, in order:
+The system prompt is woven by combining, in order:
 
-1. **Role instructions** — read from the file path in `guild.json` roles config (`roles[role].instructions`). If no instructions file is specified, this section is omitted.
-2. **Tool instructions** — for each tool in the resolved set that has an `instructions.md`, read the file and append it as a tool-specific section.
+1. **Guild charter** — institutional policy, applies to all animas
+2. **Curriculum** — what the anima knows (versioned, immutable per version)
+3. **Temperament** — who the anima is (versioned, immutable per version)
+4. **Role instructions** — read from the path in `guild.json` roles config
+5. **Tool instructions** — per-tool `instructions.md` for the resolved tool set
+6. **Writ context** — the specific work being done
 
-### Future composition threads
+### Future dependencies
 
-When anima identity and training content are introduced, the weaving order becomes:
+```
+requires: ['stacks', 'instrumentarium']
+```
 
-1. Guild charter (institutional policy — applies to all animas)
-2. Curriculum content (what the anima knows — versioned, immutable)
-3. Temperament content (who the anima is — versioned, immutable)
-4. Role instructions (role-specific guidance)
-5. Tool instructions (per-tool craft guidance)
-6. Writ context (the specific work being done)
-
-The Loom's API shape (`weave(request) → WovenContext`) does not change when these threads are added — the caller always receives a complete context regardless of how many threads were woven.
-
----
-
-## What The Loom does NOT do
-
-- **Launch sessions** — that's The Animator's job.
-- **Resolve tools** — that's The Instrumentarium's job. The Loom calls `instrumentarium.resolve()` to get the tool set.
-- **Manage anima identity** — future work. MVP has no identity records.
-- **Make judgment calls** — The Loom is purely mechanical. Same inputs always produce the same output.
-
----
-
-## Open Questions
-
-- **Writ context.** How does the writ's description/context get into the woven prompt? Does The Loom read it from The Stacks directly, or does the caller pass it in the `WeaveRequest`? MVP: caller passes it as `prompt`. Future: The Loom may read writ details from The Stacks if a `writId` is provided.
-- **Charter location.** Where does the guild charter live on disk? Currently unspecified. Likely a well-known path in the guild root (e.g. `charter.md`), read by The Loom at weave time.
-- **Caching.** Should The Loom cache role instructions and tool instructions between weave calls? Probably yes for performance, with invalidation on guild config change. Not needed for MVP.
+- **The Stacks** — reads anima identity records, writ context
+- **The Instrumentarium** — resolves the role-gated tool set and reads tool instructions
