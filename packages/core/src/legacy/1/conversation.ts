@@ -264,12 +264,12 @@ export async function* takeTurn(
   const turnNumber = currentTurnCount + 1;
 
   // 5. Launch session through the funnel
-  const workspace: ResolvedWorkspace = { kind: 'guildhall' };
+  const workspace: ResolvedWorkspace = { kind: 'guildhall', path: home };
 
   // Collect chunks from the streaming provider
   const collectedChunks: ConversationChunk[] = [];
 
-  const sessionResult = await launchSession({
+  const sessionResult: any = await launchSession({
     home,
     manifest: animaManifest,
     prompt: message,
@@ -280,7 +280,7 @@ export async function* takeTurn(
     conversationId,
     turnNumber,
     claudeSessionId: participant.claude_session_id ?? undefined,
-    onChunk: (chunk) => {
+    onChunk: (chunk: any) => {
       collectedChunks.push(chunk);
     },
   });
