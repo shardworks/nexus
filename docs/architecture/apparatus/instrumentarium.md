@@ -70,13 +70,13 @@ interface ToolConfig<T extends z.ZodRawShape> {
    */
   permission?: string
   /**
-   * Optional channel restriction. If set, the tool is only available
-   * through the listed channels. If omitted, available everywhere.
+   * Optional caller restriction. If set, the tool is only available
+   * to the listed callers. If omitted, available to everyone.
    */
-  callableFrom?: ToolCaller[]
+  callableBy?: ToolCaller[]
 }
 
-type ToolCaller = 'mcp' | 'cli' | 'import'
+type ToolCaller = 'cli' | 'anima' | 'library'
 ```
 
 ### `ToolDefinition`
@@ -95,8 +95,8 @@ interface ToolDefinition {
   handler: (params: unknown) => Promise<unknown>
   /** Permission level for access control, if any. */
   permission?: string
-  /** Channel restriction, if any. */
-  callableFrom?: ToolCaller[]
+  /** Caller restriction, if any. */
+  callableBy?: ToolCaller[]
 }
 ```
 
@@ -142,7 +142,7 @@ interface InstrumentariumApi {
    * Evaluates each registered tool against the permission grants:
    * - Tools with a `permission` field: included if any grant matches
    * - Permissionless tools: always included (default) or gated by `strict`
-   * - Channel filtering applied last
+   * - Caller filtering applied last
    */
   resolve(options: ResolveOptions): ResolvedTool[]
 
@@ -169,8 +169,8 @@ interface ResolveOptions {
    * permissionless tools are included unconditionally.
    */
   strict?: boolean
-  /** Filter by invocation channel. Tools with no callableFrom pass all channels. */
-  channel?: ToolCaller
+  /** Filter by caller type. Tools with no callableBy restriction pass all callers. */
+  caller?: ToolCaller
 }
 
 interface ResolvedTool {
@@ -204,7 +204,7 @@ Callers provide permission grants as `plugin:level` strings:
    - **Permissionless tool** (no `permission` field):
      - Default mode (`strict: false`) → always included
      - Strict mode (`strict: true`) → included only if grants contain `plugin:*` or `*:*` for the tool's plugin
-3. Filter by `channel` if specified (tools with no `callableFrom` pass all channels)
+3. Filter by `caller` if specified (tools with no `callableBy` pass all callers)
 
 ### No hierarchy
 
@@ -216,8 +216,109 @@ The Instrumentarium does not know about roles. Role definitions (mapping role na
 
 ---
 
+## Contributed Tools
+
+The Instrumentarium contributes its own tools for registry introspection. These are **admin/operator tools** — they show what's installed in the guild, not what a specific anima can use. Animas discover their own available tools through the MCP protocol's native tool listing, which reflects the already-resolved set the Loom composed for their session.
+
+### `tools-list`
+
+List all tools installed in the guild, optionally filtered. This is an administrative view of the full registry.
+
+```typescript
+tool({
+  name: 'tools-list',
+  description: 'List all tools installed in the guild. Administrative view — shows the full registry, not a permission-resolved set.',
+  permission: 'read',
+  params: {
+    caller: z.enum(['cli', 'anima', 'library']).optional()
+      .describe('Filter to tools callable by this caller type.'),
+    permission: z.string().optional()
+      .describe('Filter to tools requiring this permission level (e.g. "read", "write").'),
+    plugin: z.string().optional()
+      .describe('Filter to tools contributed by this plugin id.'),
+  },
+  handler: async ({ caller, permission, plugin }) => { /* ... */ },
+})
+```
+
+**Returns** an array of tool summaries:
+
+```typescript
+interface ToolSummary {
+  name: string
+  description: string
+  pluginId: string
+  permission: string | null
+  callableBy: ToolCaller[] | null   // null means unrestricted
+}
+```
+
+Filters are combined with AND logic. An empty/no-filter call returns all installed tools.
+
+### `tools-show`
+
+Show full details for a single tool, including its parameter schema and instructions.
+
+```typescript
+tool({
+  name: 'tools-show',
+  description: 'Show details for a tool by name, including parameter schema and instructions.',
+  permission: 'read',
+  params: {
+    name: z.string().describe('Tool name to look up.'),
+  },
+  handler: async ({ name }) => { /* ... */ },
+})
+```
+
+**Returns** the full tool detail, or null if not found:
+
+```typescript
+interface ToolDetail {
+  name: string
+  description: string
+  pluginId: string
+  permission: string | null
+  callableBy: ToolCaller[] | null
+  params: Record<string, ParamInfo>   // derived from Zod schema: type, description, optional
+  instructions: string | null
+}
+
+interface ParamInfo {
+  type: string            // JSON Schema type (string, number, boolean, array, object)
+  description: string | null
+  optional: boolean
+}
+```
+
+### Design notes
+
+- Both tools require **`tools:read` permission**. They're not in an anima's tool set by default — a role needs an explicit `tools:read` grant to see them. This keeps them out of the way for builder/scribe roles while letting admin-oriented roles (e.g. a steward) inspect the registry.
+- CLI callers get these tools through the CLI's default permission set (which includes `*:*` or equivalent).
+- `tools-list` does **not** include parameter schemas or instructions to keep the response compact. Use `tools-show` to drill in.
+- `tools-list` shows the **full registry** — all installed tools regardless of the caller's own permissions. The `caller` filter narrows by `callableBy` restriction, not by permission grants. This is an admin inventory, not a permission simulation.
+- Animas discover their *own* available tools through the MCP protocol's native tool listing at connection time, which reflects the permission-resolved set the Loom composed for their session. These admin tools answer a different question: "what's installed in the guild?"
+
+---
+
 ## Instructions
 
-A tool can optionally ship with an `instructions.md` — a teaching document that provides craft guidance beyond what the MCP schema conveys (when to use the tool, when not to, workflow context, institutional conventions). Instructions are delivered to animas as part of the session context, assembled by The Loom.
+A tool can optionally ship with instructions — a teaching document that provides craft guidance beyond what the MCP schema conveys (when to use the tool, when not to, workflow context, institutional conventions). Instructions are delivered to animas as part of the session context, assembled by The Loom.
 
-The Instrumentarium does not read or serve instructions directly — it stores the path reference. The Loom reads instruction files at composition time (future, not MVP).
+Tools provide instructions in one of two ways:
+
+- **`instructions`** — inline text on the `ToolConfig`
+- **`instructionsFile`** — a path relative to the tool's npm package root (e.g. `'./instructions.md'`)
+
+### Pre-loading at registration time
+
+The Instrumentarium resolves `instructionsFile` at registration time, not at session time. When a tool with `instructionsFile` is registered, the Instrumentarium:
+
+1. Resolves the file path: `{guildRoot}/node_modules/{packageName}/{instructionsFile}`
+2. Reads the file contents
+3. Sets `instructions` to the loaded text on its stored copy of the `ToolDefinition`
+4. Clears `instructionsFile` — it has been consumed
+
+After startup, `ResolvedTool.definition.instructions` is always a string or undefined — never a file path. Consumers (the Loom, MCP server) never do file I/O for instructions. Missing files produce a startup warning but do not prevent tool registration.
+
+This means the `ToolDefinition` stored in the registry is a **mutated copy** of the original — `instructionsFile` is an authoring-time convenience that gets resolved into `instructions` text at load time. The single source of truth for instruction content is `definition.instructions`.
