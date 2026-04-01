@@ -1,12 +1,12 @@
 # `@shardworks/loom`
 
-The Loom — the guild's session context composer. This apparatus weaves system prompts and initial prompts into a `WovenContext` that The Animator consumes to launch AI sessions. It exists as a separate apparatus so that The Animator never assembles prompts itself — as composition grows more sophisticated (charter, curricula, temperaments, role instructions), The Loom's internals change but its output shape stays the same.
+The Loom — the guild's session context composer. This apparatus owns system prompt assembly: it weaves charter, curricula, temperament, and role instructions into a `WovenContext` that The Animator consumes to launch AI sessions. Callers provide the user-facing prompt (writ description, standing order payload); The Loom produces the system prompt. The Animator never assembles prompts itself.
 
-MVP: a pass-through. The caller provides the system prompt and initial prompt directly; The Loom packages them into a structured context. No composition logic, no guild config reads, no file I/O.
+MVP: system prompt composition is not yet implemented — `weave()` returns `undefined` for `systemPrompt`. The caller-provided prompt is passed through as `initialPrompt`. The seam exists now so the contract is stable as composition logic is built out.
 
 ```
-caller (Animator, clockworks)   → weave(request)
-@shardworks/loom                → WovenContext { systemPrompt, initialPrompt? }
+caller (Animator, clockworks)   → weave({ prompt })
+@shardworks/loom                → WovenContext { systemPrompt?, initialPrompt? }
 The Animator                    → launches session with the woven context
 ```
 
@@ -44,9 +44,9 @@ interface LoomApi {
   /**
    * Weave a session context.
    *
-   * MVP: packages the caller-provided system prompt and initial prompt
-   * into a WovenContext. No composition logic — the caller is responsible
-   * for assembling the prompt content.
+   * MVP: passes the caller-provided prompt through as initialPrompt.
+   * systemPrompt is undefined — composition logic (charter, curricula,
+   * temperament, role instructions) is future work.
    */
   weave(request: WeaveRequest): Promise<WovenContext>;
 }
@@ -56,8 +56,6 @@ interface LoomApi {
 
 ```typescript
 interface WeaveRequest {
-  /** The system prompt to deliver to the AI process. */
-  systemPrompt: string;
   /** Optional initial user message (e.g. writ description, standing order payload). */
   prompt?: string;
 }
@@ -67,8 +65,8 @@ interface WeaveRequest {
 
 ```typescript
 interface WovenContext {
-  /** The system prompt for the AI process. */
-  systemPrompt: string;
+  /** The system prompt for the AI process. Undefined until composition is implemented. */
+  systemPrompt?: string;
   /** The initial user message, if any. */
   initialPrompt?: string;
 }
@@ -76,25 +74,23 @@ interface WovenContext {
 
 ### Usage Examples
 
-**Weave a context for a session (The Animator's use case):**
+**Weave a context for a commissioned session:**
 
 ```typescript
 const loom = guild().apparatus<LoomApi>('loom');
 
 const context = await loom.weave({
-  systemPrompt: 'You are an artificer in the Shardworks guild...',
   prompt: 'Commission C-042: Implement the Loom apparatus.',
 });
-// → { systemPrompt: 'You are an artificer...', initialPrompt: 'Commission C-042...' }
+// MVP → { systemPrompt: undefined, initialPrompt: 'Commission C-042...' }
+// Future → { systemPrompt: '<woven from charter + curricula + ...>', initialPrompt: 'Commission C-042...' }
 ```
 
 **Weave a context with no initial prompt (e.g. interactive session):**
 
 ```typescript
-const context = await loom.weave({
-  systemPrompt: 'You are the guild auditor. Review recent session artifacts.',
-});
-// → { systemPrompt: '...', initialPrompt: undefined }
+const context = await loom.weave({});
+// MVP → { systemPrompt: undefined, initialPrompt: undefined }
 ```
 
 ---

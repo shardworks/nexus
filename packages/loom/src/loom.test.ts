@@ -1,8 +1,8 @@
 /**
  * The Loom — unit tests.
  *
- * Tests the MVP pass-through weave: system prompt packaging,
- * optional initial prompt handling, and async contract.
+ * Tests the MVP weave: system prompt is undefined (composition not yet
+ * implemented), caller-provided prompt passed through as initialPrompt.
  */
 
 import { describe, it } from 'node:test';
@@ -40,77 +40,55 @@ describe('The Loom', () => {
   });
 
   describe('weave()', () => {
-    it('passes through systemPrompt', async () => {
+    it('returns undefined systemPrompt (composition not yet implemented)', async () => {
       const api = makeLoomApi();
-      const ctx = await api.weave({
-        systemPrompt: 'You are a helpful assistant.',
-      });
+      const ctx = await api.weave({});
 
-      assert.strictEqual(ctx.systemPrompt, 'You are a helpful assistant.');
+      assert.strictEqual(ctx.systemPrompt, undefined);
     });
 
     it('passes through prompt as initialPrompt', async () => {
       const api = makeLoomApi();
-      const ctx = await api.weave({
-        systemPrompt: 'System prompt here.',
-        prompt: 'Do the thing.',
-      });
+      const ctx = await api.weave({ prompt: 'Do the thing.' });
 
-      assert.strictEqual(ctx.systemPrompt, 'System prompt here.');
       assert.strictEqual(ctx.initialPrompt, 'Do the thing.');
     });
 
     it('omits initialPrompt when prompt is not provided', async () => {
       const api = makeLoomApi();
-      const ctx = await api.weave({
-        systemPrompt: 'System prompt here.',
-      });
+      const ctx = await api.weave({});
 
       assert.strictEqual(ctx.initialPrompt, undefined);
       assert.ok(!('initialPrompt' in ctx), 'initialPrompt key should not be present');
     });
 
-    it('preserves empty string systemPrompt', async () => {
-      const api = makeLoomApi();
-      const ctx = await api.weave({ systemPrompt: '' });
-
-      assert.strictEqual(ctx.systemPrompt, '');
-    });
-
     it('preserves empty string prompt as initialPrompt', async () => {
       const api = makeLoomApi();
-      const ctx = await api.weave({
-        systemPrompt: 'System.',
-        prompt: '',
-      });
+      const ctx = await api.weave({ prompt: '' });
 
       assert.strictEqual(ctx.initialPrompt, '');
     });
 
     it('returns a promise', () => {
       const api = makeLoomApi();
-      const result = api.weave({ systemPrompt: 'test' });
+      const result = api.weave({});
 
       assert.ok(result instanceof Promise, 'weave() should return a Promise');
     });
 
-    it('handles multiline system prompts', async () => {
+    it('handles multiline prompts', async () => {
       const api = makeLoomApi();
       const multiline = 'Line 1\nLine 2\nLine 3';
-      const ctx = await api.weave({ systemPrompt: multiline });
+      const ctx = await api.weave({ prompt: multiline });
 
-      assert.strictEqual(ctx.systemPrompt, multiline);
+      assert.strictEqual(ctx.initialPrompt, multiline);
     });
 
     it('handles very long prompts', async () => {
       const api = makeLoomApi();
       const longPrompt = 'x'.repeat(100_000);
-      const ctx = await api.weave({
-        systemPrompt: longPrompt,
-        prompt: longPrompt,
-      });
+      const ctx = await api.weave({ prompt: longPrompt });
 
-      assert.strictEqual(ctx.systemPrompt.length, 100_000);
       assert.strictEqual(ctx.initialPrompt!.length, 100_000);
     });
   });
