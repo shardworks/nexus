@@ -6,6 +6,9 @@
  * the plugin environment.
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
@@ -32,14 +35,14 @@ import {
 /** Create a minimal tool definition for testing. */
 function testTool(
   name: string,
-  opts?: { callableFrom?: ('cli' | 'mcp')[]; permission?: string },
+  opts?: { callableBy?: ('cli' | 'anima' | 'library')[]; permission?: string },
 ) {
   return tool({
     name,
     description: `Test tool: ${name}`,
     params: {},
     handler: async () => ({ ok: true }),
-    ...(opts?.callableFrom ? { callableFrom: opts.callableFrom } : {}),
+    ...(opts?.callableBy ? { callableBy: opts.callableBy } : {}),
     ...(opts?.permission !== undefined ? { permission: opts.permission } : {}),
   });
 }
@@ -74,18 +77,20 @@ function mockApparatus(
 function wireGuild(opts: {
   kits?: LoadedKit[];
   apparatuses?: LoadedApparatus[];
+  home?: string;
 }): void {
   const kits = opts.kits ?? [];
   const apparatuses = opts.apparatuses ?? [];
 
   const mockGuild: Guild = {
-    home: '/tmp/test-guild',
+    home: opts.home ?? '/tmp/test-guild',
     apparatus<T>(_name: string): T {
       throw new Error('Not implemented in test');
     },
     config<T>(_pluginId: string): T {
       return {} as T;
     },
+    writeConfig() { /* noop in test */ },
     guildConfig() {
       return {
         name: 'test',
@@ -132,6 +137,7 @@ function buildTestContext(): {
 function startInstrumentarium(opts: {
   kits?: LoadedKit[];
   apparatuses?: LoadedApparatus[];
+  home?: string;
 }): { api: InstrumentariumApi; fire: (event: string, ...args: unknown[]) => Promise<void> } {
   wireGuild(opts);
 
@@ -485,8 +491,8 @@ describe('Instrumentarium', () => {
     });
   });
 
-  describe('resolve() — channel filtering with permissions', () => {
-    it('includes tools with no callableFrom restriction', () => {
+  describe('resolve() — caller filtering with permissions', () => {
+    it('includes tools with no callableBy restriction', () => {
       const kit = mockKit('nexus-stdlib', [
         testTool('signal', { permission: 'write' }),
       ]);
@@ -495,43 +501,43 @@ describe('Instrumentarium', () => {
 
       const resolved = api.resolve({
         permissions: ['nexus-stdlib:write'],
-        channel: 'mcp',
+        caller: 'anima',
       });
       assert.equal(resolved.length, 1);
     });
 
-    it('includes tools that match the requested channel', () => {
+    it('includes tools that match the requested caller', () => {
       const kit = mockKit('nexus-stdlib', [
-        testTool('cli-only', { callableFrom: ['cli'], permission: 'read' }),
+        testTool('cli-only', { callableBy: ['cli'], permission: 'read' }),
       ]);
 
       const { api } = startInstrumentarium({ kits: [kit] });
 
       const resolved = api.resolve({
         permissions: ['nexus-stdlib:read'],
-        channel: 'cli',
+        caller: 'cli',
       });
       assert.equal(resolved.length, 1);
     });
 
-    it('excludes tools restricted to a different channel', () => {
+    it('excludes tools restricted to a different caller', () => {
       const kit = mockKit('nexus-stdlib', [
-        testTool('mcp-only', { callableFrom: ['mcp'], permission: 'read' }),
+        testTool('anima-only', { callableBy: ['anima'], permission: 'read' }),
       ]);
 
       const { api } = startInstrumentarium({ kits: [kit] });
 
       const resolved = api.resolve({
         permissions: ['nexus-stdlib:read'],
-        channel: 'cli',
+        caller: 'cli',
       });
       assert.equal(resolved.length, 0);
     });
 
-    it('does not filter by channel when channel is omitted', () => {
+    it('does not filter by caller when caller is omitted', () => {
       const kit = mockKit('nexus-stdlib', [
-        testTool('cli-only', { callableFrom: ['cli'], permission: 'read' }),
-        testTool('mcp-only', { callableFrom: ['mcp'], permission: 'read' }),
+        testTool('cli-only', { callableBy: ['cli'], permission: 'read' }),
+        testTool('anima-only', { callableBy: ['anima'], permission: 'read' }),
       ]);
 
       const { api } = startInstrumentarium({ kits: [kit] });
@@ -540,19 +546,19 @@ describe('Instrumentarium', () => {
       assert.equal(resolved.length, 2);
     });
 
-    it('channel filtering works with permissionless tools in default mode', () => {
+    it('caller filtering works with permissionless tools in default mode', () => {
       const kit = mockKit('nexus-stdlib', [
-        testTool('mcp-only-free', { callableFrom: ['mcp'] }),
+        testTool('anima-only-free', { callableBy: ['anima'] }),
       ]);
 
       const { api } = startInstrumentarium({ kits: [kit] });
 
       assert.equal(
-        api.resolve({ permissions: [], channel: 'cli' }).length,
+        api.resolve({ permissions: [], caller: 'cli' }).length,
         0,
       );
       assert.equal(
-        api.resolve({ permissions: [], channel: 'mcp' }).length,
+        api.resolve({ permissions: [], caller: 'anima' }).length,
         1,
       );
     });
@@ -602,6 +608,107 @@ describe('Instrumentarium', () => {
 
       const resolved = api.resolve({ permissions: [], strict: true });
       assert.equal(resolved.length, 0);
+    });
+  });
+
+  describe('instruction pre-loading', () => {
+    let tmpDir: string;
+
+    /** Create a temp guild root with a package directory and optional instructions file. */
+    function setupTmpGuild(packageName: string, instructionsContent?: string): string {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instrumentarium-test-'));
+      const pkgDir = path.join(tmpDir, 'node_modules', packageName);
+      fs.mkdirSync(pkgDir, { recursive: true });
+      if (instructionsContent !== undefined) {
+        fs.writeFileSync(path.join(pkgDir, 'instructions.md'), instructionsContent);
+      }
+      return tmpDir;
+    }
+
+    afterEach(() => {
+      if (tmpDir) {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('pre-loads instructionsFile into instructions text', () => {
+      const guildHome = setupTmpGuild('@test/nexus-stdlib', 'Use this tool carefully.');
+
+      const fileTool = tool({
+        name: 'careful-tool',
+        description: 'A tool with file instructions',
+        params: {},
+        handler: async () => ({}),
+        instructionsFile: './instructions.md',
+        permission: 'read',
+      });
+      const kit = mockKit('nexus-stdlib', [fileTool]);
+
+      const { api } = startInstrumentarium({ kits: [kit], home: guildHome });
+
+      const found = api.find('careful-tool');
+      assert.ok(found);
+      assert.equal(found.definition.instructions, 'Use this tool carefully.');
+      assert.equal(found.definition.instructionsFile, undefined);
+    });
+
+    it('preserves inline instructions without change', () => {
+      const guildHome = setupTmpGuild('@test/nexus-stdlib');
+
+      const inlineTool = tool({
+        name: 'inline-tool',
+        description: 'A tool with inline instructions',
+        params: {},
+        handler: async () => ({}),
+        instructions: 'Inline guidance here.',
+      });
+      const kit = mockKit('nexus-stdlib', [inlineTool]);
+
+      const { api } = startInstrumentarium({ kits: [kit], home: guildHome });
+
+      const found = api.find('inline-tool');
+      assert.ok(found);
+      assert.equal(found.definition.instructions, 'Inline guidance here.');
+    });
+
+    it('warns and registers tool when instructionsFile is missing', () => {
+      const guildHome = setupTmpGuild('@test/nexus-stdlib'); // no file created
+
+      const missingTool = tool({
+        name: 'missing-instructions',
+        description: 'Instructions file does not exist',
+        params: {},
+        handler: async () => ({}),
+        instructionsFile: './instructions.md',
+      });
+      const kit = mockKit('nexus-stdlib', [missingTool]);
+
+      // Should not throw — tool is registered without instructions
+      const { api } = startInstrumentarium({ kits: [kit], home: guildHome });
+
+      const found = api.find('missing-instructions');
+      assert.ok(found, 'tool should still be registered');
+      assert.equal(found.definition.instructions, undefined);
+      assert.equal(found.definition.instructionsFile, undefined);
+    });
+
+    it('tools without instructions or instructionsFile are unchanged', () => {
+      const guildHome = setupTmpGuild('@test/nexus-stdlib');
+
+      const plainTool = tool({
+        name: 'plain-tool',
+        description: 'No instructions at all',
+        params: {},
+        handler: async () => ({}),
+      });
+      const kit = mockKit('nexus-stdlib', [plainTool]);
+
+      const { api } = startInstrumentarium({ kits: [kit], home: guildHome });
+
+      const found = api.find('plain-tool');
+      assert.ok(found);
+      assert.equal(found.definition.instructions, undefined);
+      assert.equal(found.definition.instructionsFile, undefined);
     });
   });
 });

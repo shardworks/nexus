@@ -46,6 +46,18 @@ export interface Guild {
   config<T = Record<string, unknown>>(pluginId: string): T
 
   /**
+   * Write a plugin's configuration section to guild.json.
+   *
+   * Updates `guild.json[pluginId]` with `value` and writes the file
+   * to disk. Also updates the in-memory config so subsequent reads
+   * reflect the change.
+   *
+   * For framework-level keys (name, nexus, plugins, settings), use
+   * the standalone `writeGuildConfig()` function instead.
+   */
+  writeConfig<T = Record<string, unknown>>(pluginId: string, value: T): void
+
+  /**
    * Read the full parsed guild.json.
    *
    * Escape hatch for framework-level fields (name, nexus, plugins,

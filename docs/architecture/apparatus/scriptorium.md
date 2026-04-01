@@ -710,7 +710,35 @@ Until then, downstream consumers query the Scriptorium API directly.
 
 ## Implementation Notes
 
-- **`guild.json` writes.** The `add` and `remove` operations modify `guild.json`. The config write API (`guild().writeConfig()` or equivalent) belongs in `@shardworks/nexus-core` — no plugin should depend on Arbor. If config types currently live in Arbor, they should move to core (Arbor can import them back). The Scriptorium needs this API to exist before it can programmatically register/deregister codexes.
-- **Git operations.** All git operations should use `child_process.execFile` (not shell) for safety. Consider wrapping in a lightweight git helper that handles error parsing and provides typed results.
+- **`guild().writeConfig()`** — the Scriptorium uses `guild().writeConfig('codexes', ...)` to persist codex registry changes to `guild.json`. This API was added to the `Guild` interface in `@shardworks/nexus-core` and implemented in Arbor. It updates both the in-memory config and the disk file atomically.
+- **Git operations.** All git operations use `child_process.execFile` (not shell) via a lightweight `git.ts` helper that handles error parsing and provides typed results (`GitResult`, `GitError`).
 - **Concurrency.** Multiple animas may open/seal drafts concurrently. The bare clone's git operations need appropriate locking — git's own ref locking handles most cases, but the fetch-rebase-seal cycle should be serialized per codex to avoid ref races.
 - **No downstream coupling.** The Scriptorium has no dependency on the Surveyor, the Walker, or any other consumer of codex state. It is pure infrastructure. Downstream apparatus query or (future) subscribe to the Scriptorium's state independently.
+
+---
+
+## Future State
+
+### Draft Persistence via Stacks
+
+The current implementation tracks active drafts **in memory**, reconstructed from filesystem state at startup. This is sufficient for MVP — draft worktrees are durable on disk and the Scriptorium reconciles on restart. However, this means:
+
+- Draft metadata (`associatedWith`, `createdAt`) is approximate after a restart — the original values are lost.
+- There is no queryable history of past drafts (abandoned or sealed).
+- Other apparatus cannot subscribe to draft state changes via CDC.
+
+A future iteration should persist `DraftRecord` entries to a Stacks book (`codexes/drafts`), enabling:
+
+- Durable metadata that survives restarts
+- Historical draft records (with terminal status: `sealed`, `abandoned`)
+- CDC-driven downstream reactions (e.g. the Surveyor updating its codex-awareness when a draft is sealed)
+
+### Per-Codex Sealing Lock
+
+The sealing retry loop (fetch → rebase → ff) is not currently serialized per codex. Under high concurrency (multiple animas sealing to the same codex simultaneously), ref races are possible. Git's own ref locking prevents corruption, but the retry loop may exhaust retries unnecessarily.
+
+A per-codex async mutex around the seal operation would eliminate this. The lock should be held only during the seal attempt, not during the preceding fetch or the subsequent draft cleanup.
+
+### Clockworks Event Emission
+
+Documented in the **Future: Clockworks Events** section above. When the Clockworks apparatus exists, the Scriptorium should emit events for each lifecycle operation. This replaces the current pattern where downstream consumers poll the API directly.

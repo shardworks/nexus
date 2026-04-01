@@ -20,6 +20,7 @@ export function setupGuildAccessor(home: string): void {
     home,
     apparatus: () => { throw new Error('not available in test'); },
     config: () => ({}) as never,
+    writeConfig: () => { throw new Error('not available in test'); },
     guildConfig: () => ({}) as never,
     kits: () => [],
     apparatuses: () => [],

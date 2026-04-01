@@ -178,14 +178,6 @@ function setup(
   // Register the provider as an apparatus (same as a real guild would)
   apparatusMap.set(sessionProviderPluginId, provider);
 
-  // Optionally install The Loom (needed for summon() tests)
-  if (opts.installLoom) {
-    const loomPlugin = createLoom();
-    const loomApparatus = (loomPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-    loomApparatus.start({ on: () => {} });
-    apparatusMap.set('loom', loomApparatus.provides);
-  }
-
   const fakeGuild: Guild = {
     home: '/tmp/fake-guild',
     apparatus<T>(name: string): T {
@@ -199,6 +191,7 @@ function setup(
       }
       return {} as T;
     },
+    writeConfig() { /* noop in test */ },
     guildConfig() {
       return {
         name: 'test-guild',
@@ -215,7 +208,16 @@ function setup(
     apparatuses: () => [],
   };
 
+  // Must set guild before starting apparatus that call guild() in start()
   setGuild(fakeGuild);
+
+  // Optionally install The Loom (needed for summon() tests)
+  if (opts.installLoom) {
+    const loomPlugin = createLoom();
+    const loomApparatus = (loomPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
+    loomApparatus.start({ on: () => {} });
+    apparatusMap.set('loom', loomApparatus.provides);
+  }
 
   // Start stacks
   const stacksApparatus = (stacksPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
@@ -416,6 +418,7 @@ describe('Animator', () => {
           }
           return {} as T;
         },
+        writeConfig() { /* noop in test */ },
         guildConfig: () => ({
           name: 'test', nexus: '0.0.0', workshops: {}, roles: {},
           baseTools: [], plugins: [], settings: { model: 'sonnet' },

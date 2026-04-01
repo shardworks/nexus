@@ -18,6 +18,7 @@
 
 import {
   readGuildConfig,
+  writeGuildConfig,
   findGuildRoot,
   isKit,
   isApparatus,
@@ -137,6 +138,14 @@ export async function createGuild(root?: string): Promise<Guild> {
       // generic path remains the untyped fallback.
       const cfg = config as unknown as Record<string, unknown>;
       return (cfg[pluginId] ?? {}) as T;
+    },
+
+    writeConfig<T = Record<string, unknown>>(pluginId: string, value: T): void {
+      // Update the in-memory config so subsequent reads reflect the change,
+      // then persist to disk. The cast is the same pattern as config() above.
+      const cfg = config as unknown as Record<string, unknown>;
+      cfg[pluginId] = value;
+      writeGuildConfig(guildRoot, config);
     },
 
     guildConfig() {

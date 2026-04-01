@@ -40,6 +40,7 @@ function setup() {
     config<T>(): T {
       return {} as T;
     },
+    writeConfig() { /* noop in test */ },
     guildConfig: () => ({
       name: 'test-guild',
       nexus: '0.0.0',

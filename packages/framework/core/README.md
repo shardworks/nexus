@@ -23,6 +23,7 @@ const config = guild().config<MyConfig>('my-plugin');
 | `home` | `string` | Absolute path to the guild root |
 | `apparatus<T>(name)` | `T` | Retrieve a started apparatus's `provides` object by plugin id |
 | `config<T>(pluginId)` | `T` | Read a plugin's configuration section from guild.json |
+| `writeConfig<T>(pluginId, value)` | `void` | Write a plugin's configuration section to guild.json (updates in-memory + disk) |
 | `guildConfig()` | `GuildConfig` | Read the full parsed guild.json |
 | `kits()` | `LoadedKit[]` | Snapshot of all loaded kits (including apparatus supportKits) |
 | `apparatuses()` | `LoadedApparatus[]` | Snapshot of all started apparatuses |
