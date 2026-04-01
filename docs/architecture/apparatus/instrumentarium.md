@@ -17,7 +17,7 @@ Both the session layer (The Animator, via MCP) and the CLI depend on The Instrum
 ## Dependencies
 
 ```
-requires: ['stacks']     — may persist tool metadata in future
+requires: []
 consumes: ['tools']      — scans kit and supportKit contributions for tool definitions
 ```
 
