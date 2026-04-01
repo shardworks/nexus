@@ -8,11 +8,11 @@
  */
 
 import type {
-  GuildContext,
-  HandlerContext,
+  StartupContext,
   LoadedPlugin,
   Plugin,
 } from '@shardworks/nexus-core';
+import { guild } from '@shardworks/nexus-core';
 
 import type {
   Book,
@@ -101,14 +101,16 @@ class StacksImpl {
 
   // ── Startup ───────────────────────────────────────────────────────
 
-  start(ctx: GuildContext): void {
-    const config = ctx.config<{ autoMigrate?: boolean }>();
+  start(_: StartupContext): void {
+    const g = guild();
+    const config = g.config<{ autoMigrate?: boolean }>('stacks');
     const autoMigrate = config.autoMigrate ?? true;
 
-    this.backend.open({ home: ctx.home });
+    this.backend.open({ home: g.home });
 
     if (autoMigrate) {
-      this.reconcileSchemas(ctx.plugins());
+      const allPlugins = [...g.kits(), ...g.apparatuses()];
+      this.reconcileSchemas(allPlugins);
     }
   }
 
@@ -141,7 +143,7 @@ class StacksImpl {
 
   // ── API surface ───────────────────────────────────────────────────
 
-  createApi(contextFactory: (pluginId: string) => HandlerContext): StacksApi {
+  createApi(): StacksApi {
     const self = this;
 
     return {
@@ -163,7 +165,6 @@ class StacksImpl {
           ownerId,
           bookName,
           handler as ChangeHandler,
-          () => contextFactory(ownerId),
           options,
         );
       },
@@ -401,14 +402,9 @@ export function createStacksApparatus(
 
       get provides() { return api; },
 
-      start(ctx: GuildContext): void {
+      start(ctx: StartupContext): void {
         impl.start(ctx);
-        api = impl.createApi((_pluginId: string) => ({
-          home: ctx.home,
-          config: ctx.config.bind(ctx),
-          guildConfig: ctx.guildConfig.bind(ctx),
-          apparatus: ctx.apparatus.bind(ctx),
-        }));
+        api = impl.createApi();
       },
 
       stop(): void {

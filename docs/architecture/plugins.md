@@ -33,7 +33,7 @@ type Kit = {
 
 A kit is an open record. The contribution fields (`relays`, `engines`, `tools`, or anything else) are defined by the apparatus packages that consume them, not by the framework. `requires` and `recommends` are the only framework-level fields.
 
-**`requires`** is an array of apparatus names whose runtime APIs this kit's contributions depend on at handler invocation time. If a tool contributed by this kit calls `ctx.apparatus("nexus-books")`, the kit must declare `requires: ["nexus-books"]`. Validated at startup — if a declared apparatus is not installed, the guild refuses to start with a specific error. Hard failure, not advisory.
+**`requires`** is an array of apparatus names whose runtime APIs this kit's contributions depend on at handler invocation time. If a tool contributed by this kit calls `guild().apparatus("books")`, the kit must declare `requires: ["books"]`. Validated at startup — if a declared apparatus is not installed, the guild refuses to start with a specific error. Hard failure, not advisory.
 
 **`recommends`** is an advisory list of apparatus names the kit's contributions are most useful with, used to generate startup warnings when expected apparatuses are absent. Not enforced.
 
@@ -75,7 +75,7 @@ An apparatus is a package contributing persistent running infrastructure to the 
 type Apparatus = {
   requires?:   string[]
   provides?:   unknown
-  start:       (ctx: GuildContext) => void
+  start:       (ctx: StartupContext) => void
   stop?:       () => void
   supportKit?: Kit
   consumes?:   string[]
@@ -84,7 +84,7 @@ type Apparatus = {
 
 **`requires`** is an array of apparatus names that must be started before this apparatus's `start()` runs. Validated at startup before any `start` is called. Determines start ordering — by the time an apparatus's `start` runs, all its declared dependencies are already started with their `provides` objects populated. Circular dependencies are rejected at load time.
 
-**`provides`** is the runtime API object this apparatus exposes to other plugins. Retrieved via `ctx.apparatus<T>(name)` in both GuildContext (apparatus startup) and HandlerContext (tool and engine handlers). The reference is created at manifest-definition time and populated during `start`. See [Providing an API](#providing-an-api).
+**`provides`** is the runtime API object this apparatus exposes to other plugins. Retrieved via `guild().apparatus<T>(name)`. The reference is created at manifest-definition time and populated during `start`. See [Providing an API](#providing-an-api).
 
 `start(ctx)` is where the apparatus initialises its internal state, registers lifecycle hooks, and wires up its dependencies. `stop()` tears it down. Both may be async — the framework awaits them in dependency-resolved order.
 
@@ -114,7 +114,7 @@ export default {
     },
 
     start: (ctx) => {
-      const stacks = ctx.apparatus<StacksApi>("nexus-stacks")
+      const stacks = guild().apparatus<StacksApi>("nexus-stacks")
       clockworksApi.init(stacks)
     },
 
@@ -127,7 +127,7 @@ export default {
 
 ### Providing an API (`provides`)
 
-An apparatus that exposes a typed API to other plugins declares it via `provides` on the apparatus. This is the object returned when another plugin calls `ctx.apparatus(name)`.
+An apparatus that exposes a typed API to other plugins declares it via `provides` on the apparatus. This is the object returned when another plugin calls `guild().apparatus(name)`.
 
 ```typescript
 const clockworksApi: ClockworksApi = {
@@ -151,14 +151,14 @@ Plugin authors ship their API type alongside their package so consumers can impo
 
 ```typescript
 import type { ClockworksApi } from "nexus-clockworks"
-const clockworks = ctx.apparatus<ClockworksApi>("nexus-clockworks")
+const clockworks = guild().apparatus<ClockworksApi>("nexus-clockworks")
 ```
 
 ---
 
 ## Plugin IDs
 
-Every plugin has a derived **plugin id** — the name used in `guild.json`, `requires` arrays, `ctx.apparatus()` calls, and configuration keys. The id is derived from the npm package name at load time and never declared in the manifest.
+Every plugin has a derived **plugin id** — the name used in `guild.json`, `requires` arrays, `guild().apparatus()` calls, and configuration keys. The id is derived from the npm package name at load time and never declared in the manifest.
 
 Derivation rules, applied in order:
 
@@ -204,15 +204,15 @@ export default {
   apparatus: {
     requires: ["nexus-clockworks", "nexus-stacks"],
     start: (ctx) => {
-      const clockworks = ctx.apparatus<ClockworksApi>("nexus-clockworks")
-      const stacks     = ctx.apparatus<StacksApi>("nexus-stacks")
+      const clockworks = guild().apparatus<ClockworksApi>("nexus-clockworks")
+      const stacks     = guild().apparatus<StacksApi>("nexus-stacks")
       // ...
     },
   },
 } satisfies Plugin
 ```
 
-**Kit `requires`** — one effect: validates that declared apparatuses are installed and will be started. No ordering concern (kits have no `start`). Ensures that tools contributed by the kit can safely call `ctx.apparatus(name)` at handler invocation time without a runtime failure.
+**Kit `requires`** — one effect: validates that declared apparatuses are installed and will be started. No ordering concern (kits have no `start`). Ensures that tools contributed by the kit can safely call `guild().apparatus(name)` at handler invocation time without a runtime failure.
 
 ```typescript
 export default {
@@ -225,7 +225,7 @@ export default {
 
 Both produce the same operator-facing failure: a loud, early, specific error at guild startup before any agent does any work.
 
-The framework validates all `requires` declarations at startup — before any `start` is called. If a declared dependency is not installed, the guild refuses to start with a specific error naming the missing plugin. If `ctx.apparatus()` is called inside an apparatus `start` for a plugin not declared in that apparatus's `requires`, it fails at startup validation. Circular dependencies are rejected at load time.
+The framework validates all `requires` declarations at startup — before any `start` is called. If a declared dependency is not installed, the guild refuses to start with a specific error naming the missing plugin. Circular dependencies are rejected at load time.
 
 ---
 
@@ -240,7 +240,7 @@ type GuildManifest = {
 }
 ```
 
-Lifecycle management (start ordering, shutdown) operates on the apparatus list. Kit records are loaded and cached; their contributions are surfaced via `ctx.plugins()` / `ctx.kits()` for consuming apparatuses to pull from.
+Lifecycle management (start ordering, shutdown) operates on the apparatus list. Kit records are loaded and cached; their contributions are surfaced via `guild().kits()` and `guild().apparatuses()` for consuming apparatus to pull from.
 
 Each consuming apparatus maintains its own registry of the contribution types it understands. A Clockworks apparatus maintains a relay registry populated from both standalone kit packages and apparatus `supportKit`s; callers of the Clockworks API see a single relay list regardless of source. The framework does not maintain cross-apparatus registries — contribution type semantics belong to the apparatus that defined them.
 
@@ -259,12 +259,12 @@ Consuming apparatuses register kit contributions reactively using the `plugin:in
 ```typescript
 // inside Clockworks apparatus start()
 start: (ctx) => {
-  for (const p of ctx.plugins()) { registerRelays(p) }
+  for (const p of [...guild().kits(), ...guild().apparatuses()]) { registerRelays(p) }
   ctx.on("plugin:initialized", (p) => registerRelays(p))
 }
 ```
 
-`ctx.plugins()` returns a snapshot of everything loaded so far. `ctx.on("plugin:initialized")` fires for each subsequent plugin as it completes loading. Together they cover the full sequence without requiring load-order guarantees between the Clockworks and any particular relay kit.
+`guild().kits()` and `guild().apparatuses()` return snapshots of everything loaded so far. `ctx.on("plugin:initialized")` fires for each subsequent plugin as it completes loading. Together they cover the full sequence without requiring load-order guarantees between the Clockworks and any particular relay kit.
 
 Kits declare; apparatuses consume. Neither needs to know about the other at authoring time.
 
@@ -299,87 +299,81 @@ The chosen approach — open `Kit` record with apparatus-published interfaces fo
 
 ---
 
-## GuildContext
+## StartupContext
 
-The context passed to an apparatus's `start(ctx)`. Provides access to the plugin graph during startup wiring.
+The context passed to an apparatus's `start(ctx)`. Provides lifecycle event subscription — the only capability that is meaningful only during startup. All other guild access goes through `guild()`.
 
 ```typescript
-interface GuildContext {
-  home:       string
-  config<T = Record<string, unknown>>(pluginId?: string): T
-  guildConfig(): GuildConfigV2
-  apparatus<T>(name: string): T         // retrieve a started apparatus's provides object
-  kits():         LoadedKit[]           // snapshot of loaded kits
-  apparatuses():  LoadedApparatus[]     // snapshot of started apparatuses
-  plugins():      LoadedPlugin[]        // union of kits and apparatuses
+interface StartupContext {
   on(event: string, handler: (...args: unknown[]) => void | Promise<void>): void
 }
 ```
 
-`ctx.apparatus()` is validated against the apparatus's `requires` at startup. Calling it for an undeclared dependency fails at startup, not at call time.
-
-If a plugin is present but declares no `provides`, `ctx.apparatus()` returns a sentinel that throws a useful message on access rather than silently returning `undefined`.
-
-`ctx.kits()`, `ctx.apparatuses()`, and `ctx.plugins()` return snapshots of the currently loaded state. These are most useful during apparatus `start()` for inspecting what has already been loaded.
-
-`ctx.config()` and `ctx.guildConfig()` are covered in [Configuration](#configuration) below.
+`ctx.on('plugin:initialized', handler)` fires after each plugin completes loading. Used by consuming apparatus to register kit contributions reactively — see [Reactive Consumption](#reactive-consumption).
 
 ---
 
-## HandlerContext
+## The Guild Accessor
 
-The context injected into tool and engine handlers at invocation time. Distinct from GuildContext — handlers run long after startup, not during it.
+Tool, engine, and relay handlers access guild infrastructure through the **guild accessor** — a process-level singleton set by Arbor at startup:
 
 ```typescript
-interface HandlerContext {
-  home:       string
-  config<T = Record<string, unknown>>(pluginId?: string): T
-  guildConfig(): GuildConfigV2
-  apparatus<T>(name: string): T    // retrieve a started apparatus's provides object
+import { guild } from '@shardworks/nexus-core'
+
+// Inside a handler:
+const { home } = guild()                          // guild root path
+const stacks = guild().apparatus<StacksApi>('stacks')  // apparatus API
+const cfg = guild().config<MyConfig>('my-plugin')       // plugin config
+const full = guild().guildConfig()                       // full guild.json
+```
+
+```typescript
+interface Guild {
+  readonly home: string
+  apparatus<T>(name: string): T
+  config<T = Record<string, unknown>>(pluginId: string): T
+  guildConfig(): GuildConfig
+  kits():        LoadedKit[]
+  apparatuses(): LoadedApparatus[]
 }
 ```
 
-`apparatus<T>(name)` provides runtime access to the same `provides` objects that GuildContext surfaces during startup. Kit `requires` declarations guarantee that declared apparatus dependencies are running before any handler is invoked — calling `ctx.apparatus("nexus-books")` in a handler is safe as long as the owning kit declared `requires: ["nexus-books"]`.
+The guild instance is created by Arbor before apparatus start and is available throughout startup and at runtime. Calling `guild()` at module scope (before Arbor runs) throws with a clear error message. Always call it inside a handler or `start()`, never at import time.
 
-`ctx.config()` and `ctx.guildConfig()` are covered in [Configuration](#configuration) below.
+For testing, `setGuild()` and `clearGuild()` are exported from `@shardworks/nexus-core` to wire a mock instance.
 
 ---
 
 ## Configuration
 
-Plugin-specific configuration lives in `guild.json` under the plugin's derived id — the same id used in `requires` arrays and `ctx.apparatus()` calls. Both `GuildContext` and `HandlerContext` expose the same config API.
+Plugin-specific configuration lives in `guild.json` under the plugin's derived id — the same id used in `requires` arrays and `guild().apparatus()` calls. Configuration is accessed via `guild().config(pluginId)`, available both during apparatus startup and at handler invocation time.
 
-### `ctx.config<T>(pluginId?)`
+### `config<T>(pluginId)`
 
-Returns the configuration object for a plugin, read from `guild.json[pluginId]`. Returns `{}` if no section exists.
-
-**With no argument** — returns the config for the calling plugin (the apparatus or kit whose context this is):
+Returns the configuration object for a plugin, read from `guild.json[pluginId]`. Returns `{}` if no section exists. Always takes an explicit plugin id.
 
 ```typescript
 // @shardworks/clockworks apparatus — id: "clockworks"
 // guild.json: { "clockworks": { "maxConcurrent": 4 } }
 
 start: (ctx) => {
-  const { maxConcurrent = 2 } = ctx.config<ClockworksConfig>()
+  const { maxConcurrent = 2 } = guild().config<ClockworksConfig>('clockworks')
 }
-```
 
-**With a plugin id argument** — reads config for a different installed plugin. Useful for meta-apparatus or tooling that needs to inspect peer configuration:
-
-```typescript
-const surveyorCfg = ctx.config<SurveyorConfig>("surveyor")
+// Same pattern in tool handlers:
+handler: async (params) => {
+  const cfg = guild().config<ClockworksConfig>('clockworks')
+}
 ```
 
 The generic type parameter is a cast — the framework does not validate config shape. Apparatus authors are responsible for defining and documenting their own config types.
 
-### `ctx.guildConfig()`
+### `guildConfig()`
 
-Returns the full parsed `GuildConfigV2` — the escape hatch for cases where framework-level fields are needed directly (`roles`, `workshops`, `settings`, etc.):
+Returns the full parsed `GuildConfig` — the escape hatch for cases where framework-level fields are needed directly (`name`, `nexus`, `plugins`, `settings`):
 
 ```typescript
-start: (ctx) => {
-  const { roles } = ctx.guildConfig()
-}
+const { settings } = guild().guildConfig()
 ```
 
 ### Config in `guild.json`
@@ -454,11 +448,9 @@ The Kit/Apparatus split makes this concrete: everything contributed by a kit is 
 
 **Missing dependency** — a plugin declares `requires: ["nexus-clockworks"]` and that plugin is not installed. Loud startup failure before any apparatus starts: *"nexus-walker requires nexus-clockworks, which is not installed."*
 
-**Undeclared access** — `ctx.apparatus("nexus-clockworks")` called inside an apparatus `start` without declaring it in `requires`. Caught at startup validation, same loud failure. Never reaches `start`.
+**Plugin provides nothing** — `guild().apparatus("nexus-git")` where the apparatus has no `provides`. Returns a sentinel; throws with a useful message on access.
 
-**Plugin provides nothing** — `ctx.apparatus("nexus-git")` where the apparatus has no `provides`. Returns a sentinel; throws with a useful message on access.
-
-**Bad cast** — `ctx.apparatus<WrongType>("nexus-clockworks")`. Runtime error when the wrong method is called. Accepted tradeoff: the coupling is explicit in `requires` and visible in the type import; the developer takes responsibility for getting the type right.
+**Bad cast** — `guild().apparatus<WrongType>("nexus-clockworks")`. Runtime error when the wrong method is called. Accepted tradeoff: the coupling is explicit in `requires` and visible in the type import; the developer takes responsibility for getting the type right.
 
 ---
 
@@ -510,4 +502,4 @@ This would enable `nsg status` to report live apparatus health, and give operato
 
 The current model supports tool-to-tool calls via direct import — if a handler needs the logic from another tool in a known kit, it imports that handler function directly. No framework involvement is required for this case.
 
-A second pattern — dynamic discovery of kit contributions at handler invocation time — is not yet supported. This would allow a handler to discover all installed contributions of a given type without knowing which kits are present at author time (e.g., "run all installed pre-commit hooks"). A `ctx.fromKit(type, name?)` or similar API is the likely shape. Deferred until a concrete use case motivates the contract.
+A second pattern — dynamic discovery of kit contributions at handler invocation time — is not yet supported. This would allow a handler to discover all installed contributions of a given type without knowing which kits are present at author time (e.g., "run all installed pre-commit hooks"). A `guild().fromKit(type, name?)` or similar API is the likely shape. Deferred until a concrete use case motivates the contract.

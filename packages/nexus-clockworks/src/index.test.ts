@@ -580,9 +580,17 @@ describe('clockRun', () => {
 
 // ── Tool handlers ─────────────────────────────────────────────────────
 
-// Minimal RigContext for tool tests
-function makeCtx(home: string) {
-  return { home } as never;
+import { setGuild } from '@shardworks/nexus-core';
+
+function setupGuildAccessor(home: string): void {
+  setGuild({
+    home,
+    apparatus: () => { throw new Error('not available in test'); },
+    config: () => ({}) as never,
+    guildConfig: () => ({}) as never,
+    kits: () => [],
+    apparatuses: () => [],
+  });
 }
 
 describe('signal tool', async () => {
@@ -592,9 +600,9 @@ describe('signal tool', async () => {
     const home = setupTestGuild({
       events: { 'code.reviewed': {} },
     });
+    setupGuildAccessor(home);
     const result = signalTool.handler(
       { name: 'code.reviewed', payload: { reviewer: 'alice' } },
-      makeCtx(home),
     );
     assert.ok(typeof (result as { eventId: string }).eventId === 'string');
     assert.equal((result as { name: string }).name, 'code.reviewed');
@@ -604,16 +612,16 @@ describe('signal tool', async () => {
   it('rejects undeclared events without force', () => {
     const home = setupTestGuild({ events: {} });
     assert.throws(
-      () => signalTool.handler({ name: 'unknown.event' }, makeCtx(home)),
+      () => { setupGuildAccessor(home); return signalTool.handler({ name: 'unknown.event' }); },
       /not declared/,
     );
   });
 
   it('allows framework events with force: true', () => {
     const home = setupTestGuild();
+    setupGuildAccessor(home);
     const result = signalTool.handler(
       { name: 'writ.ready', force: true },
-      makeCtx(home),
     );
     assert.ok(typeof (result as { eventId: string }).eventId === 'string');
   });
@@ -627,7 +635,8 @@ describe('event-list tool', async () => {
     signalEvent(home, 'event.a', null, 'test');
     signalEvent(home, 'event.b', null, 'test');
 
-    const result = eventListTool.handler({ limit: 20 }, makeCtx(home)) as { name: string }[];
+    setupGuildAccessor(home);
+    const result = eventListTool.handler({ limit: 20 }) as { name: string }[];
     assert.equal(result.length, 2);
   });
 
@@ -637,7 +646,8 @@ describe('event-list tool', async () => {
     signalEvent(home, 'event.b', null, 'test');
     markEventProcessed(home, id);
 
-    const pending = eventListTool.handler({ limit: 20, pending: true }, makeCtx(home)) as { name: string }[];
+    setupGuildAccessor(home);
+    const pending = eventListTool.handler({ limit: 20, pending: true }) as { name: string }[];
     assert.equal(pending.length, 1);
     assert.equal(pending[0]!.name, 'event.b');
   });
@@ -659,7 +669,8 @@ describe('event-show tool', async () => {
       status: 'success',
     });
 
-    const result = eventShowTool.handler({ id }, makeCtx(home)) as {
+    setupGuildAccessor(home);
+    const result = eventShowTool.handler({ id }) as {
       name: string;
       dispatches: { handlerName: string }[];
     };
@@ -671,7 +682,7 @@ describe('event-show tool', async () => {
   it('throws for nonexistent event id', () => {
     const home = setupTestGuild();
     assert.throws(
-      () => eventShowTool.handler({ id: 'evt-nope' }, makeCtx(home)),
+      () => { setupGuildAccessor(home); return eventShowTool.handler({ id: 'evt-nope' }); },
       /not found/,
     );
   });

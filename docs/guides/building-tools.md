@@ -22,7 +22,7 @@ The handler is the only file that matters for execution. Everything else is meta
 Use the `tool()` factory from `@shardworks/nexus-core`:
 
 ```typescript
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -32,9 +32,10 @@ export default tool({
     name: z.string().describe('Human-readable description of this param'),
     count: z.number().optional().describe('Optional params use .optional()'),
   },
-  handler: async (params, context) => {
+  handler: async (params) => {
     // params — validated input, typed from your Zod schemas
-    // context.home — absolute path to the guild root
+    // guild() — access guild infrastructure (home path, apparatus, config)
+    const { home } = guild();
 
     // Return any JSON-serializable value
     return { result: 'done' };
@@ -46,7 +47,7 @@ export default tool({
 
 1. **Default export.** The handler must be the default export. The MCP engine does `import(modulePath)` and reads `.default`.
 2. **Zod params.** Every parameter is a Zod schema. The `.describe()` string becomes the parameter description in MCP — make it clear.
-3. **Context injection.** The framework passes `{ home: string }` as the second argument. Use `home` to find guild files, the Books database, etc. The guild root is auto-detected from cwd (walks up looking for `guild.json`).
+3. **Guild accessor.** Call `guild()` inside the handler to access guild infrastructure — `guild().home` for the guild root path, `guild().apparatus<T>(name)` for apparatus APIs, `guild().config<T>(pluginId)` for plugin config. Do not call `guild()` at module scope — it is only available after Arbor startup.
 4. **Return JSON.** The MCP engine serializes the return value as JSON. Return objects, arrays, strings, or numbers. Throw errors for failures — the engine catches them and returns an MCP error.
 5. **Sync or async.** Handlers can be sync or async. The framework `await`s either way.
 
@@ -271,16 +272,22 @@ The handler never talks MCP directly. The framework handles the protocol.
 Use Node.js built-in test runner. Handler tests can call the handler directly:
 
 ```typescript
-import { describe, it } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { setGuildAccessor, clearGuildAccessor } from '@shardworks/nexus-core';
 import handler from './handler.ts';
+
+afterEach(() => clearGuildAccessor());
 
 describe('my-tool', () => {
   it('does the thing', async () => {
-    const result = await handler.handler(
-      { name: 'test' },
-      { home: '/tmp/test-home' },
-    );
+    setGuildAccessor({
+      home: '/tmp/test-home',
+      apparatus: () => { throw new Error('not needed'); },
+      config: () => ({}) as never,
+      guildConfig: () => ({}) as never,
+    });
+    const result = await handler.handler({ name: 'test' });
     assert.deepEqual(result, { expected: 'output' });
   });
 });

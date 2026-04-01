@@ -20,15 +20,13 @@ import {
   isKit,
   isApparatus,
   VERSION,
-  setGuildAccessor,
-  clearGuildAccessor,
+  setGuild
 } from '@shardworks/nexus-core';
 import type {
   GuildConfig,
   ToolDefinition,
-  HandlerContext,
-  GuildContext,
-  GuildAccessor,
+  Guild,
+  StartupContext,
   Kit,
   LoadedKit,
   LoadedApparatus,
@@ -38,7 +36,6 @@ import type { ToolCaller } from '@shardworks/nexus-core';
 import { builtinTools } from './tools/index.ts';
 import { derivePluginId, readGuildPackageJson, resolveGuildPackageEntry, resolvePackageNameForPluginId } from './resolve-package.ts';
 import { openBooksDatabase, type BooksDatabase } from './db/sqlite-adapter.ts';
-import { BookStore, booksTableName } from './db/book-store.ts';
 import { reconcileBooks } from './db/reconcile-books.ts';
 
 // Re-export for consumers that need the id derivation function
@@ -120,18 +117,6 @@ export interface Arbor {
    * Searches all installed tools regardless of channel or role.
    */
   findTool(name: string): Promise<Tool | null>;
-
-  /**
-   * Create a HandlerContext for use when dispatching a tool or engine handler.
-   *
-   * Pass `owningPluginId` (e.g. `tool.pluginId`) so that `ctx.config()` with
-   * no args returns the correct plugin's config section. Omit for generic
-   * contexts (e.g. testing, CLI introspection) — `ctx.config()` returns `{}`.
-   *
-   * Must be called after plugin loading has completed (i.e., after any listing
-   * method has been awaited).
-   */
-  createHandlerContext(owningPluginId?: string): HandlerContext;
 
   /**
    * Get an open connection to the guild's Books database.
@@ -264,59 +249,14 @@ function topoSort(apparatuses: LoadedApparatus[]): LoadedApparatus[] {
 }
 
 /**
- * Build a GuildContext scoped to a specific apparatus.
- * ctx.apparatus() validates the call against the apparatus's requires list.
+ * Build a StartupContext for an apparatus's start() call.
+ * Only exposes lifecycle event subscription — all other guild access
+ * goes through the guild() singleton.
  */
-function buildGuildContext(
-  forApparatus:  LoadedApparatus,
-  manifest:      GuildManifest,
-  guildRoot:     string,
-  config:        GuildConfig,
+function buildStartupContext(
   eventHandlers: Map<string, Array<(...args: unknown[]) => void | Promise<void>>>,
-): GuildContext {
-  const allowed = new Set(forApparatus.apparatus.requires ?? []);
-
+): StartupContext {
   return {
-    home: guildRoot,
-
-    config<T = Record<string, unknown>>(pluginId?: string): T {
-      const key = pluginId ?? forApparatus.id;
-      const cfg = config as unknown as Record<string, unknown>;
-      return (cfg[key] ?? {}) as T;
-    },
-
-    guildConfig() {
-      return config;
-    },
-
-    apparatus<T>(name: string): T {
-      if (!allowed.has(name)) {
-        throw new Error(
-          `[arbor] "${forApparatus.id}" called ctx.apparatus("${name}") without declaring ` +
-          `it in requires. Add "${name}" to this apparatus's requires array.`,
-        );
-      }
-      const provides = manifest.provides.get(name);
-      if (provides === undefined) {
-        // Return a sentinel that throws on any property access.
-        // Cast through unknown: the proxy is intentionally not a real T —
-        // any access will throw before the type matters.
-        return new Proxy({} as object, {
-          get(_target, prop) {
-            throw new Error(
-              `[arbor] ctx.apparatus("${name}") has no provides. ` +
-              `Accessing .${String(prop)} is not available.`,
-            );
-          },
-        }) as unknown as T;
-      }
-      return provides as T;
-    },
-
-    kits()        { return [...manifest.kits] },
-    apparatuses() { return [...manifest.apparatuses] },
-    plugins()     { return [...manifest.kits, ...manifest.apparatuses] },
-
     on(event: string, handler: (...args: unknown[]) => void | Promise<void>) {
       const list = eventHandlers.get(event) ?? [];
       list.push(handler);
@@ -461,12 +401,51 @@ async function loadAndStart(
     provides,
   };
 
+  // ── Wire guild singleton ─────────────────────────────────────────
+  // Created before any apparatus starts so start() methods can call guild().
+  // The provides Map is populated progressively as each apparatus starts;
+  // dependency ordering guarantees declared deps are available.
+
+  const guildInstance: Guild = {
+    home: guildRoot,
+
+    apparatus<T>(name: string): T {
+      const p = provides.get(name);
+      if (p === undefined) {
+        const sentinel = new Proxy({} as object, {
+          get(_target, prop) {
+            throw new Error(
+              `[guild] apparatus("${name}") has no provides. ` +
+              `Accessing .${String(prop)} is not available.`,
+            );
+          },
+        });
+        return sentinel as unknown as T;
+      }
+      return p as T;
+    },
+
+    config<T = Record<string, unknown>>(pluginId: string): T {
+      const cfg = config as unknown as Record<string, unknown>;
+      return (cfg[pluginId] ?? {}) as T;
+    },
+
+    guildConfig() {
+      return config;
+    },
+
+    kits()        { return [...kits]; },
+    apparatuses() { return [...orderedApparatuses]; },
+  };
+  setGuild(guildInstance);
+
   // Fire plugin:initialized for all kits before starting any apparatus
   for (const kit of kits) {
     await fireEvent(eventHandlers, 'plugin:initialized', kit);
   }
 
   // Start each apparatus in dependency order
+  const startupCtx = buildStartupContext(eventHandlers);
   for (const app of orderedApparatuses) {
     // Register provides before start() so apparatuses that declare provides can
     // populate the object from within start() and it's visible to later startups.
@@ -474,8 +453,7 @@ async function loadAndStart(
       provides.set(app.id, app.apparatus.provides);
     }
 
-    const ctx = buildGuildContext(app, manifest, guildRoot, config, eventHandlers);
-    await app.apparatus.start(ctx);
+    await app.apparatus.start(startupCtx);
 
     await fireEvent(eventHandlers, 'plugin:initialized', app);
   }
@@ -536,39 +514,7 @@ export function createArbor(guildRoot: string): Arbor {
     if (!manifestPromise) {
       manifestPromise = loadAndStart(guildRoot, config, getDatabase()).then((m) => {
         resolvedManifest = m;
-
-        // Wire the process-level guild accessor so tool/engine/relay handlers
-        // can call guild() to access apparatus, config, and guild root.
-        const accessor: GuildAccessor = {
-          home: guildRoot,
-
-          apparatus<T>(name: string): T {
-            const provides = m.provides.get(name);
-            if (provides === undefined) {
-              const sentinel = new Proxy({} as object, {
-                get(_target, prop) {
-                  throw new Error(
-                    `[guild] apparatus("${name}") has no provides. ` +
-                    `Accessing .${String(prop)} is not available.`,
-                  );
-                },
-              });
-              return sentinel as unknown as T;
-            }
-            return provides as T;
-          },
-
-          config<T = Record<string, unknown>>(pluginId: string): T {
-            const cfg = config as unknown as Record<string, unknown>;
-            return (cfg[pluginId] ?? {}) as T;
-          },
-
-          guildConfig() {
-            return config;
-          },
-        };
-        setGuildAccessor(accessor);
-
+        // guild() singleton is already wired inside loadAndStart
         return m;
       });
     }
@@ -634,48 +580,6 @@ export function createArbor(guildRoot: string): Arbor {
     async findTool(name: string) {
       const m = await getManifest();
       return m.tools.find((t) => t.name === name) ?? null;
-    },
-
-    createHandlerContext(owningPluginId?: string): HandlerContext {
-      return {
-        home: guildRoot,
-
-        config<T = Record<string, unknown>>(pluginId?: string): T {
-          const key = pluginId ?? owningPluginId;
-          if (!key) return {} as T;
-          const cfg = config as unknown as Record<string, unknown>;
-          return (cfg[key] ?? {}) as T;
-        },
-
-        guildConfig() {
-          return config;
-        },
-
-        apparatus<T>(name: string): T {
-          if (!resolvedManifest) {
-            throw new Error(
-              `[arbor] ctx.apparatus("${name}") called before plugins were loaded. ` +
-              `Ensure listPlugins() or listTools() has been awaited before invoking handlers.`,
-            );
-          }
-          const provides = resolvedManifest.provides.get(name);
-          if (provides === undefined) {
-            // Return a sentinel that throws on any property access.
-            // Cast through unknown: the proxy is intentionally not a real T —
-            // any access will throw before the type matters.
-            return new Proxy({} as object, {
-              get(_target, prop) {
-                throw new Error(
-                  `[arbor] ctx.apparatus("${name}") has no provides. ` +
-                  `Accessing .${String(prop)} is not available. ` +
-                  `Does "${name}" declare a provides object?`,
-                );
-              },
-            }) as unknown as T;
-          }
-          return provides as T;
-        },
-      };
     },
 
     getDatabase,

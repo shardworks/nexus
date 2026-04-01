@@ -29,13 +29,13 @@ describe('upgrade tool definition', () => {
 
 describe('upgrade handler', () => {
   it('returns a "not yet implemented" message', async () => {
-    const result = await upgradeTool.handler({}, { home: '/fake' } as never);
+    const result = await upgradeTool.handler({});
     assert.ok(typeof result === 'string');
     assert.ok((result as string).toLowerCase().includes('not yet implemented'));
   });
 
   it('ignores dryRun param without error', async () => {
-    const result = await upgradeTool.handler({ dryRun: true }, { home: '/fake' } as never);
+    const result = await upgradeTool.handler({ dryRun: true });
     assert.ok(typeof result === 'string');
   });
 });

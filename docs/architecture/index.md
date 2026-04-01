@@ -130,7 +130,7 @@ The versioned files — `guild.json`, `package.json`, and the guild's own conten
 
 #### Plugin configuration
 
-All remaining top-level keys are plugin configuration sections, keyed by derived plugin id (see [Plugin IDs](#plugin-ids)). Each apparatus reads its own section via `ctx.config()` at startup or handler invocation time.
+All remaining top-level keys are plugin configuration sections, keyed by derived plugin id (see [Plugin IDs](#plugin-ids)). Each plugin reads its own section via `guild().config(pluginId)` at startup or handler invocation time.
 
 In the standard guild, `clockworks` contains events and standing orders; `workshops` tracks registered repositories; `tools` holds role definitions and base tool assignments. These are all plugin config — not framework-owned fields — they get natural short keys because of the `@shardworks/` naming convention and `-(plugin|apparatus|kit)` suffix stripping (e.g. `@shardworks/tools-apparatus` → `tools`). See [Configuration](plugins.md#configuration) for the full model.
 
@@ -191,7 +191,7 @@ export default {
     provides: clockworksApi,
 
     start: (ctx) => {
-      const books = ctx.apparatus<BooksApi>("books")
+      const books = guild().apparatus<BooksApi>("books")
       clockworksApi.init(books)
     },
     stop: () => clockworksApi.shutdown(),
@@ -206,7 +206,7 @@ export default {
 } satisfies Plugin
 ```
 
-**`requires`** declares apparatus that must be started first — validated at startup, determines start ordering. **`provides`** is the runtime API other plugins retrieve via `ctx.apparatus<T>(name)`. **`supportKit`** is the apparatus's own kit contributions (tools, relays, etc.) — treated identically to standalone kit contributions by consumers. **`consumes`** declares which kit contribution types this apparatus scans for, enabling startup warnings when kits contribute types no apparatus consumes.
+**`requires`** declares apparatus that must be started first — validated at startup, determines start ordering. **`provides`** is the runtime API other plugins retrieve via `guild().apparatus<T>(name)`. **`supportKit`** is the apparatus's own kit contributions (tools, relays, etc.) — treated identically to standalone kit contributions by consumers. **`consumes`** declares which kit contribution types this apparatus scans for, enabling startup warnings when kits contribute types no apparatus consumes.
 
 ### Plugin IDs
 
@@ -216,37 +216,15 @@ Plugin names are never declared in the manifest — they are derived from the np
 2. Retain other scopes as a prefix without `@` (`@acme/foo` → `acme/foo`)
 3. Strip a trailing `-(plugin|apparatus|kit)` suffix
 
-So `@shardworks/clockworks` → `clockworks`, `@shardworks/books-apparatus` → `books`, `@acme/cache-kit` → `acme/cache`. Plugin ids are used in `requires` arrays, `ctx.apparatus()` calls, and as the key for plugin-specific configuration in `guild.json`. See [Plugin IDs](plugins.md#plugin-ids) for the full derivation table.
+So `@shardworks/clockworks` → `clockworks`, `@shardworks/books-apparatus` → `books`, `@acme/cache-kit` → `acme/cache`. Plugin ids are used in `requires` arrays, `guild().apparatus()` calls, and as the key for plugin-specific configuration in `guild.json`. See [Plugin IDs](plugins.md#plugin-ids) for the full derivation table.
 
 ### Arbor and Contexts
 
 **Arbor** is the runtime object. It reads `guild.json`, imports all declared plugins, validates the dependency graph, and starts each apparatus in dependency-resolved order. The CLI, MCP server, and Clockworks daemon each create one Arbor instance at startup; it lives for the process's lifetime.
 
-Each apparatus's `start(ctx)` receives a **GuildContext**. Tool and engine handlers receive a **HandlerContext** at invocation time. Both expose the same core methods:
+All plugin code — apparatus `start()`, tool handlers, CDC handlers — accesses guild infrastructure through the **`guild()` singleton** from `@shardworks/nexus-core`. It provides access to apparatus APIs, plugin config, the guild root path, and the loaded plugin graph. Apparatus `start(ctx)` additionally receives a **`StartupContext`** for subscribing to lifecycle events via `ctx.on()`.
 
-```typescript
-interface GuildContext {
-  home:       string                                        // guild root path
-  config<T>(pluginId?: string): T                           // plugin config from guild.json
-  guildConfig(): GuildConfigV2                               // full guild.json (escape hatch)
-  apparatus<T>(name: string): T                              // retrieve a dependency's API
-  kits():        LoadedKit[]                                 // snapshot of loaded kits
-  apparatuses(): LoadedApparatus[]                           // snapshot of started apparatus
-  plugins():     LoadedPlugin[]                              // union of kits and apparatus
-  on(event: string, handler: (...args: unknown[]) => void | Promise<void>): void
-}
-
-interface HandlerContext {
-  home:       string
-  config<T>(pluginId?: string): T
-  guildConfig(): GuildConfigV2
-  apparatus<T>(name: string): T
-}
-```
-
-**`ctx.apparatus()`** is validated against the calling plugin's `requires` — calling it for an undeclared dependency fails at startup, not at runtime. **`ctx.config()`** returns the plugin's configuration section from `guild.json` (or another plugin's, if a plugin id is passed). **`ctx.guildConfig()`** returns the full parsed config for cases where framework-level fields (`roles`, `workshops`, `settings`) are needed directly. See [Configuration](plugins.md#configuration) for detail.
-
-Startup validation is strict: missing dependencies, undeclared `ctx.apparatus()` calls, and circular dependency graphs all fail loudly before any apparatus starts. Kit contributions are forwarded to consuming apparatus reactively via the `plugin:initialized` lifecycle event, ensuring load-order independence. See [Plugin Architecture](plugins.md) for the full specification.
+Startup validation is strict: missing dependencies and circular dependency graphs fail loudly before any apparatus starts. Kit contributions are forwarded to consuming apparatus reactively via the `plugin:initialized` lifecycle event. See [Plugin Architecture](plugins.md) for the full specification, including the [guild() singleton](plugins.md#the-guild-accessor), [StartupContext](plugins.md#startupcontext), and [Configuration](plugins.md#configuration).
 
 ### Installation
 
@@ -327,7 +305,7 @@ The Stacks reads these declarations at startup and creates or reconciles the bac
 
 ### API Surface
 
-Plugins access persistence through `ctx.apparatus<StacksApi>('stacks')`, which exposes four methods:
+Plugins access persistence through `guild().apparatus<StacksApi>('stacks')`, which exposes four methods:
 
 - **`book<T>(ownerId, name)`** — returns a writable handle for the named book. Supports `put()` (upsert), `patch()` (top-level field merge), `delete()`, and the full read API (`get`, `find`, `list`, `count`). Queries support equality, range, pattern matching (`LIKE`), set membership (`IN`), null checks, multi-field sorting, and offset/limit pagination.
 

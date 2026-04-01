@@ -11,17 +11,18 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { setGuildAccessor, clearGuildAccessor } from '@shardworks/nexus-core';
-import type { GuildAccessor } from '@shardworks/nexus-core';
+import { setGuild, clearGuild } from '@shardworks/nexus-core';
 import versionTool from './version.ts';
 
 /** Set up a minimal guild accessor pointing at the given directory. */
 function setupGuildAccessor(home: string): void {
-  setGuildAccessor({
+  setGuild({
     home,
     apparatus: () => { throw new Error('not available in test'); },
     config: () => ({}) as never,
-    guildConfig: () => ({ name: 'test', nexus: '0.0.0', plugins: [], workshops: {}, roles: {}, baseTools: [] }) as never,
+    guildConfig: () => ({}) as never,
+    kits: () => [],
+    apparatuses: () => [],
   });
 }
 
@@ -68,7 +69,7 @@ function makeFakeNodeModule(guildRoot: string, packageName: string, version: str
 }
 
 afterEach(() => {
-  clearGuildAccessor();
+  clearGuild();
   for (const dir of tmpDirs) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -93,7 +94,8 @@ describe('version handler — text mode', () => {
   it('always includes "nexus:" even with no guild', async () => {
     const tmp = makeTmpDir(); // empty dir — no guild.json
 
-    const result = setupGuildAccessor(tmp); await versionTool.handler({});
+    setupGuildAccessor(tmp);
+    const result = await versionTool.handler({});
     assert.ok(typeof result === 'string');
     assert.ok((result as string).includes('nexus:'));
   });
@@ -101,21 +103,24 @@ describe('version handler — text mode', () => {
   it('always includes "node:" even with no guild', async () => {
     const tmp = makeTmpDir();
 
-    const result = setupGuildAccessor(tmp); await versionTool.handler({});
+    setupGuildAccessor(tmp);
+    const result = await versionTool.handler({});
     assert.ok((result as string).includes('node:'));
   });
 
   it('reports the current node version', async () => {
     const tmp = makeTmpDir();
 
-    const result = setupGuildAccessor(tmp); await versionTool.handler({});
+    setupGuildAccessor(tmp);
+    const result = await versionTool.handler({});
     assert.ok((result as string).includes(process.version));
   });
 
   it('uses "key: value" format for all lines', async () => {
     const tmp = makeTmpDir();
 
-    const result = setupGuildAccessor(tmp); await versionTool.handler({}) as string;
+    setupGuildAccessor(tmp);
+    const result = await versionTool.handler({}) as string;
     for (const line of result.split('\n')) {
       if (line.trim() === '') continue;
       assert.ok(line.includes(': '), `Expected "key: value" format, got: "${line}"`);
@@ -126,7 +131,8 @@ describe('version handler — text mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { plugins: ['nexus-stdlib'] }); // no guild package.json — resolvePackageNameForRigKey returns null
 
-    const result = setupGuildAccessor(tmp); await versionTool.handler({}) as string;
+    setupGuildAccessor(tmp);
+    const result = await versionTool.handler({}) as string;
     assert.ok(result.includes('nexus-stdlib'));
     assert.ok(result.includes('not installed'));
   });
@@ -137,7 +143,8 @@ describe('version handler — text mode', () => {
     makeGuildPackageJson(tmp, { '@shardworks/nexus-stdlib': '^1.2.3' });
     makeFakeNodeModule(tmp, '@shardworks/nexus-stdlib', '1.2.3');
 
-    const result = setupGuildAccessor(tmp); await versionTool.handler({}) as string;
+    setupGuildAccessor(tmp);
+    const result = await versionTool.handler({}) as string;
     assert.ok(result.includes('@shardworks/nexus-stdlib'));
     assert.ok(result.includes('1.2.3'));
   });
@@ -152,7 +159,8 @@ describe('version handler — text mode', () => {
     makeFakeNodeModule(tmp, '@shardworks/nexus-stdlib', '1.0.0');
     makeFakeNodeModule(tmp, '@shardworks/nexus-ledger', '2.0.0');
 
-    const result = setupGuildAccessor(tmp); await versionTool.handler({}) as string;
+    setupGuildAccessor(tmp);
+    const result = await versionTool.handler({}) as string;
     assert.ok(result.includes('@shardworks/nexus-stdlib'));
     assert.ok(result.includes('@shardworks/nexus-ledger'));
     assert.ok(result.includes('1.0.0'));
@@ -166,8 +174,8 @@ describe('version handler — json mode', () => {
   it('returns an object (not a string)', async () => {
     const tmp = makeTmpDir();
 
-    const result = setupGuildAccessor(tmp);
-    const r = await versionTool.handler({ json: true }); r;
+    setupGuildAccessor(tmp);
+    const result = await versionTool.handler({ json: true });
     assert.ok(typeof result === 'object' && result !== null);
   });
 

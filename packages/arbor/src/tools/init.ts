@@ -25,7 +25,7 @@ export default tool({
     name: z.string().optional().describe('Guild name (defaults to directory basename)'),
     model: z.string().optional().describe('Default model for anima sessions (default: sonnet)'),
   },
-  handler: async (params, _context) => {
+  handler: async (params) => {
     const home = path.resolve(params.path);
     const name = params.name ?? path.basename(home);
     const model = params.model ?? DEFAULT_MODEL;

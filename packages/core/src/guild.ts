@@ -1,26 +1,29 @@
 /**
- * Guild accessor — the process-level singleton for accessing guild infrastructure.
+ * Guild — the process-level singleton for accessing guild infrastructure.
  *
- * Plugin code (tools, engines, relays, CDC handlers) imports `guild()` to access
- * apparatus APIs, plugin config, and the guild root path. Arbor populates the
- * accessor at startup via `setGuildAccessor()`.
+ * All plugin code — apparatus start(), tool handlers, engine handlers,
+ * relay handlers, CDC handlers — imports `guild()` to access apparatus APIs,
+ * plugin config, the guild root path, and the loaded plugin graph.
  *
- * This replaces the HandlerContext injection pattern — handlers no longer receive
- * context as a parameter. They call `guild()` directly.
+ * Arbor creates the Guild instance before starting apparatus and registers
+ * it via `setGuild()`. The instance is backed by live data structures
+ * (e.g. the provides Map) that are populated progressively as apparatus start.
  *
  * See: docs/architecture/plugins.md
  */
 
 import type { GuildConfig } from './guild-config.ts';
+import type { LoadedKit, LoadedApparatus } from './plugin.ts';
 
 // ── Interface ──────────────────────────────────────────────────────────
 
 /**
  * Runtime access to guild infrastructure.
  *
- * Available after Arbor startup completes. One instance per process.
+ * Available after Arbor creates the instance (before apparatus start).
+ * One instance per process.
  */
-export interface GuildAccessor {
+export interface Guild {
   /** Absolute path to the guild root (contains guild.json). */
   readonly home: string
 
@@ -28,6 +31,8 @@ export interface GuildAccessor {
    * Retrieve a started apparatus's provides object by plugin id.
    *
    * Throws if the apparatus is not installed or has no `provides`.
+   * During startup, only apparatus that have already started are visible
+   * (dependency ordering guarantees declared deps are started first).
    */
   apparatus<T>(name: string): T
 
@@ -47,42 +52,48 @@ export interface GuildAccessor {
    * settings) that don't belong to any specific plugin.
    */
   guildConfig(): GuildConfig
+
+  /** Snapshot of all loaded kits (including apparatus supportKits). */
+  kits(): LoadedKit[]
+
+  /** Snapshot of all started apparatuses. */
+  apparatuses(): LoadedApparatus[]
 }
 
 // ── Singleton ──────────────────────────────────────────────────────────
 
-let _accessor: GuildAccessor | null = null;
+let _guild: Guild | null = null;
 
 /**
- * Get the active guild accessor.
+ * Get the active guild instance.
  *
  * Throws with a clear message if called before Arbor has initialized
- * the guild (e.g. at module import time, before startup completes).
+ * the guild (e.g. at module import time, before startup begins).
  */
-export function guild(): GuildAccessor {
-  if (!_accessor) {
+export function guild(): Guild {
+  if (!_guild) {
     throw new Error(
       'Guild not initialized — guild() called before Arbor startup. ' +
-      'Ensure guild() is called inside a handler, not at module scope.',
+      'Ensure guild() is called inside a handler or start(), not at module scope.',
     );
   }
-  return _accessor;
+  return _guild;
 }
 
 /**
- * Set the guild accessor. Called by Arbor at startup.
+ * Set the guild instance. Called by Arbor before starting apparatus.
  *
  * Not for plugin use — this is framework infrastructure.
  */
-export function setGuildAccessor(accessor: GuildAccessor): void {
-  _accessor = accessor;
+export function setGuild(g: Guild): void {
+  _guild = g;
 }
 
 /**
- * Clear the guild accessor. Called by Arbor at shutdown or in tests.
+ * Clear the guild instance. Called by Arbor at shutdown or in tests.
  *
  * Not for plugin use — this is framework infrastructure.
  */
-export function clearGuildAccessor(): void {
-  _accessor = null;
+export function clearGuild(): void {
+  _guild = null;
 }

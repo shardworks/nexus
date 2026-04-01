@@ -11,6 +11,20 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import statusTool from './status.ts';
+import { setGuild, clearGuild } from '@shardworks/nexus-core';
+
+/** Set up a minimal guild accessor pointing at the given directory. */
+function setupGuildAccessor(home: string): void {
+  setGuild({
+    home,
+    apparatus: () => { throw new Error('not available in test'); },
+    config: () => ({}) as never,
+    guildConfig: () => ({}) as never,
+    kits: () => [],
+    apparatuses: () => [],
+  });
+}
+
 
 let tmpDirs: string[] = [];
 
@@ -36,6 +50,7 @@ function makeGuild(dir: string, overrides: Record<string, unknown> = {}): void {
 }
 
 afterEach(() => {
+  clearGuild();
   for (const dir of tmpDirs) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -61,7 +76,8 @@ describe('status handler — text mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
-    const result = await statusTool.handler({}, { home: tmp } as never);
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({});
     assert.ok(typeof result === 'string');
     assert.ok((result as string).includes('test-guild'));
   });
@@ -70,7 +86,8 @@ describe('status handler — text mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
-    const result = await statusTool.handler({}, { home: tmp } as never);
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({});
     assert.ok((result as string).includes(tmp));
   });
 
@@ -78,7 +95,8 @@ describe('status handler — text mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { settings: { model: 'opus' } });
 
-    const result = await statusTool.handler({}, { home: tmp } as never);
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({});
     assert.ok((result as string).includes('opus'));
   });
 
@@ -86,7 +104,8 @@ describe('status handler — text mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
-    const result = await statusTool.handler({}, { home: tmp } as never) as string;
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({}) as string;
     const pluginsLine = result.split('\n').find((l) => l.startsWith('Plugins:')) ?? '';
     assert.ok(pluginsLine.includes('(none)'));
   });
@@ -95,7 +114,8 @@ describe('status handler — text mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
-    const result = await statusTool.handler({}, { home: tmp } as never) as string;
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({}) as string;
     const rolesLine = result.split('\n').find((l) => l.startsWith('Roles:')) ?? '';
     assert.ok(rolesLine.includes('(none)'));
   });
@@ -104,7 +124,8 @@ describe('status handler — text mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { plugins: ['nexus-stdlib'] });
 
-    const result = await statusTool.handler({}, { home: tmp } as never) as string;
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({}) as string;
     assert.ok(result.includes('nexus-stdlib'));
   });
 
@@ -112,7 +133,8 @@ describe('status handler — text mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { plugins: ['nexus-stdlib', 'nexus-ledger'] });
 
-    const result = await statusTool.handler({}, { home: tmp } as never) as string;
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({}) as string;
     assert.ok(result.includes('nexus-stdlib'));
     assert.ok(result.includes('nexus-ledger'));
   });
@@ -126,7 +148,8 @@ describe('status handler — text mode', () => {
       },
     });
 
-    const result = await statusTool.handler({}, { home: tmp } as never) as string;
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({}) as string;
     assert.ok(result.includes('artificer'));
     assert.ok(result.includes('scribe'));
   });
@@ -139,7 +162,8 @@ describe('status handler — json mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
-    const result = await statusTool.handler({ json: true }, { home: tmp } as never);
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({ json: true });
     assert.ok(typeof result === 'object' && result !== null);
   });
 
@@ -147,7 +171,8 @@ describe('status handler — json mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
-    const result = await statusTool.handler({ json: true }, { home: tmp } as never) as Record<string, unknown>;
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({ json: true }) as Record<string, unknown>;
     assert.equal(result.guild, 'test-guild');
   });
 
@@ -155,7 +180,8 @@ describe('status handler — json mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
-    const result = await statusTool.handler({ json: true }, { home: tmp } as never) as Record<string, unknown>;
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({ json: true }) as Record<string, unknown>;
     assert.equal(result.home, tmp);
   });
 
@@ -163,7 +189,8 @@ describe('status handler — json mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
-    const result = await statusTool.handler({ json: true }, { home: tmp } as never) as Record<string, unknown>;
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({ json: true }) as Record<string, unknown>;
     assert.ok(typeof result.nexus === 'string');
   });
 
@@ -171,7 +198,8 @@ describe('status handler — json mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { settings: { model: 'haiku' } });
 
-    const result = await statusTool.handler({ json: true }, { home: tmp } as never) as Record<string, unknown>;
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({ json: true }) as Record<string, unknown>;
     assert.equal(result.model, 'haiku');
   });
 
@@ -179,7 +207,8 @@ describe('status handler — json mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { plugins: ['nexus-ledger', 'nexus-stdlib'] });
 
-    const result = await statusTool.handler({ json: true }, { home: tmp } as never) as Record<string, unknown>;
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({ json: true }) as Record<string, unknown>;
     assert.ok(Array.isArray(result.plugins));
     const plugins = result.plugins as string[];
     assert.ok(plugins.includes('nexus-stdlib'));
@@ -196,7 +225,8 @@ describe('status handler — json mode', () => {
       },
     });
 
-    const result = await statusTool.handler({ json: true }, { home: tmp } as never) as Record<string, unknown>;
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({ json: true }) as Record<string, unknown>;
     assert.ok(Array.isArray(result.roles));
     const roles = result.roles as string[];
     assert.ok(roles.includes('artificer'));
@@ -208,7 +238,8 @@ describe('status handler — json mode', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
-    const result = await statusTool.handler({ json: true }, { home: tmp } as never) as Record<string, unknown>;
+    setupGuildAccessor(tmp);
+    const result = await statusTool.handler({ json: true }) as Record<string, unknown>;
     assert.deepEqual(result.plugins, []);
     assert.deepEqual(result.roles, []);
   });

@@ -8,7 +8,6 @@
  * See: docs/architecture/apparatus/stacks.md §6
  */
 
-import type { HandlerContext } from '@shardworks/nexus-core';
 import type { BookEntry, ChangeEvent, ChangeHandler, WatchOptions } from './types.ts';
 
 // ── Registry entry ────────────────────────────────────────────────────
@@ -16,8 +15,6 @@ import type { BookEntry, ChangeEvent, ChangeHandler, WatchOptions } from './type
 interface WatcherEntry {
   handler: ChangeHandler;
   failOnError: boolean;
-  /** Context factory for the observing plugin. */
-  contextFactory: () => HandlerContext;
 }
 
 // ── Event buffer entry (raw, pre-coalesce) ────────────────────────────
@@ -137,7 +134,6 @@ export class CdcRegistry {
     ownerId: string,
     bookName: string,
     handler: ChangeHandler,
-    contextFactory: () => HandlerContext,
     options?: WatchOptions,
   ): void {
     if (this.locked) {
@@ -156,7 +152,6 @@ export class CdcRegistry {
     entries.push({
       handler,
       failOnError: options?.failOnError ?? true,
-      contextFactory,
     });
   }
 
@@ -194,7 +189,7 @@ export class CdcRegistry {
     event: ChangeEvent<BookEntry>,
   ): Promise<void> {
     for (const entry of this.getPhase1Handlers(ownerId, bookName)) {
-      await entry.handler(event, entry.contextFactory());
+      await entry.handler(event);
     }
   }
 
@@ -208,7 +203,7 @@ export class CdcRegistry {
 
       for (const entry of handlers) {
         try {
-          await entry.handler(event, entry.contextFactory());
+          await entry.handler(event);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           console.warn(`[stacks] Phase 2 handler error (${key}): ${msg}`);

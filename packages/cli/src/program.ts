@@ -17,7 +17,6 @@ import { Command } from 'commander';
 import { z } from 'zod';
 import { findGuildRoot, createArbor, builtinTools, derivePluginId } from '@shardworks/nexus-arbor';
 import type { Tool, Arbor } from '@shardworks/nexus-arbor';
-import type { HandlerContext } from '@shardworks/nexus-core';
 
 type ZodShape = Record<string, z.ZodTypeAny>;
 
@@ -56,7 +55,6 @@ export function isBooleanSchema(schema: z.ZodTypeAny): boolean {
 function buildToolCommand(
   commandName: string,
   toolDef: Tool,
-  ctx: HandlerContext,
 ): Command {
   const cmd = new Command(commandName).description(toolDef.description);
 
@@ -78,7 +76,7 @@ function buildToolCommand(
   cmd.action(async (opts: Record<string, string | undefined>) => {
     try {
       const validated = toolDef.params.parse(opts);
-      const result = await toolDef.handler(validated, ctx);
+      const result = await toolDef.handler(validated);
 
       const output =
         typeof result === 'string' ? result : JSON.stringify(result, null, 2);
@@ -93,35 +91,7 @@ function buildToolCommand(
   return cmd;
 }
 
-/**
- * Create a minimal HandlerContext for built-in tools that run without a full guild.
- *
- * Built-in tools (version, status, rig-*) don't access apparatus provides.
- * If they ever try, an informative error is thrown.
- */
-function createMinimalHandlerContext(home: string): HandlerContext {
-  return {
-    home,
-    config<T = Record<string, unknown>>(): T {
-      throw new Error(
-        `ctx.config() is not available in built-in tool context. ` +
-        `Built-in tools run before the plugin graph is started.`,
-      );
-    },
-    guildConfig() {
-      throw new Error(
-        `ctx.guildConfig() is not available in built-in tool context. ` +
-        `Built-in tools run before the plugin graph is started.`,
-      );
-    },
-    apparatus<T>(name: string): T {
-      throw new Error(
-        `ctx.apparatus("${name}") is not available in built-in tool context. ` +
-        `Built-in tools run before the plugin graph is started.`,
-      );
-    },
-  };
-}
+// createMinimalHandlerContext removed — handlers use guild() singleton
 
 /**
  * Determine which hyphen prefixes have enough tools to warrant a group.
@@ -160,18 +130,16 @@ export function findGroupPrefixes(tools: Tool[]): Set<string> {
 function registerAllTools(
   program: Command,
   tools: Tool[],
-  ctxFactory: (tool: Tool) => HandlerContext,
 ): void {
   const groupPrefixes = findGroupPrefixes(tools);
   const groups = new Map<string, Command>();
 
   for (const toolDef of tools) {
-    const ctx = ctxFactory(toolDef);
     const idx = toolDef.name.indexOf('-');
 
     // No hyphen, or prefix doesn't qualify as a group → flat command
     if (idx === -1 || !groupPrefixes.has(toolDef.name.slice(0, idx))) {
-      program.addCommand(buildToolCommand(toolDef.name, toolDef, ctx));
+      program.addCommand(buildToolCommand(toolDef.name, toolDef));
       continue;
     }
 
@@ -186,7 +154,7 @@ function registerAllTools(
       groups.set(groupName, group);
     }
 
-    group.addCommand(buildToolCommand(subName, toolDef, ctx));
+    group.addCommand(buildToolCommand(subName, toolDef));
   }
 }
 
@@ -233,7 +201,7 @@ export async function main(): Promise<void> {
     .map((t) => ({ ...t, pluginId: arborPluginId }) as Tool);
 
   const builtinHome = home ?? process.cwd();
-  registerAllTools(program, builtins, () => createMinimalHandlerContext(builtinHome));
+  registerAllTools(program, builtins);
 
   // Load guild plugin tools when inside a guild
   if (home) {
@@ -241,9 +209,7 @@ export async function main(): Promise<void> {
     const tools = await arbor.listTools({ channel: 'cli' });
     // Filter out arbor built-ins (already registered above)
     const pluginTools = tools.filter((t) => t.pluginId !== arborPluginId);
-    registerAllTools(program, pluginTools, (tool) =>
-      arbor.createHandlerContext(tool.pluginId),
-    );
+    registerAllTools(program, pluginTools);
   }
 
   program.parse(process.argv);

@@ -6,6 +6,7 @@ import path from 'node:path';
 
 /**
  * Exercise the init tool's handler directly, bypassing the CLI.
+ * init does not use guild() — it creates a new guild from scratch.
  */
 import initTool from './init.ts';
 
@@ -29,7 +30,7 @@ describe('nsg init', () => {
     const tmp = makeTmpDir();
     const guildPath = path.join(tmp, 'my-guild');
 
-    await initTool.handler({ path: guildPath }, { home: process.cwd() });
+    await initTool.handler({ path: guildPath });
 
     const config = JSON.parse(fs.readFileSync(path.join(guildPath, 'guild.json'), 'utf-8'));
     assert.equal(config.name, 'my-guild');
@@ -46,7 +47,7 @@ describe('nsg init', () => {
     const tmp = makeTmpDir();
     const guildPath = path.join(tmp, 'test-guild');
 
-    await initTool.handler({ path: guildPath }, { home: process.cwd() });
+    await initTool.handler({ path: guildPath });
 
     const pkg = JSON.parse(fs.readFileSync(path.join(guildPath, 'package.json'), 'utf-8'));
     assert.equal(pkg.name, 'guild-test-guild');
@@ -58,7 +59,7 @@ describe('nsg init', () => {
     const tmp = makeTmpDir();
     const guildPath = path.join(tmp, 'g');
 
-    await initTool.handler({ path: guildPath }, { home: process.cwd() });
+    await initTool.handler({ path: guildPath });
 
     const gitignore = fs.readFileSync(path.join(guildPath, '.gitignore'), 'utf-8');
     assert.ok(gitignore.includes('node_modules/'));
@@ -69,7 +70,7 @@ describe('nsg init', () => {
     const tmp = makeTmpDir();
     const guildPath = path.join(tmp, 'g');
 
-    await initTool.handler({ path: guildPath }, { home: process.cwd() });
+    await initTool.handler({ path: guildPath });
 
     assert.ok(fs.existsSync(path.join(guildPath, '.nexus')));
     assert.ok(fs.existsSync(path.join(guildPath, 'roles')));
@@ -80,7 +81,7 @@ describe('nsg init', () => {
     const tmp = makeTmpDir();
     const guildPath = path.join(tmp, 'dir-name');
 
-    await initTool.handler({ path: guildPath, name: 'custom-name' }, { home: process.cwd() });
+    await initTool.handler({ path: guildPath, name: 'custom-name' });
 
     const config = JSON.parse(fs.readFileSync(path.join(guildPath, 'guild.json'), 'utf-8'));
     assert.equal(config.name, 'custom-name');
@@ -90,7 +91,7 @@ describe('nsg init', () => {
     const tmp = makeTmpDir();
     const guildPath = path.join(tmp, 'g');
 
-    await initTool.handler({ path: guildPath, model: 'opus' }, { home: process.cwd() });
+    await initTool.handler({ path: guildPath, model: 'opus' });
 
     const config = JSON.parse(fs.readFileSync(path.join(guildPath, 'guild.json'), 'utf-8'));
     assert.equal(config.settings?.model, 'opus');
@@ -103,7 +104,7 @@ describe('nsg init', () => {
     fs.writeFileSync(path.join(guildPath, 'file.txt'), 'not empty');
 
     await assert.rejects(
-      () => initTool.handler({ path: guildPath }, { home: process.cwd() }),
+      async () => initTool.handler({ path: guildPath }),
       /not empty/,
     );
   });

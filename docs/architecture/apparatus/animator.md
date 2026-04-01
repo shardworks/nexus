@@ -218,7 +218,7 @@ animate(request)
   ├─ 3. Resolve tool set via The Instrumentarium (if role provided)
   ├─ 4. Configure MCP server:
   │     - Register each tool from the resolved set
-  │     - Each tool handler invoked with a HandlerContext from The Instrumentarium
+  │     - Each tool handler accesses guild infrastructure via guild() singleton
   │
   ├─ 5. Launch session provider (with MCP server attached)
   ├─ 6. Monitor process until exit

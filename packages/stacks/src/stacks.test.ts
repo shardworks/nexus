@@ -5,11 +5,10 @@ import type {
   BookEntry,
   StacksApi,
   ChangeEvent,
-  ChangeHandler,
 } from './types.ts';
 import type { StacksBackend, BookRef } from './backend.ts';
 import { MemoryBackend } from './memory-backend.ts';
-import { CdcRegistry, coalesceEvents, type BufferedEvent } from './cdc.ts';
+import { coalesceEvents } from './cdc.ts';
 
 // ── Test types ────────────────────────────────────────────────────────
 
@@ -20,36 +19,28 @@ interface Writ extends BookEntry {
   parent?: { id: string };
 }
 
-interface Session extends BookEntry {
-  id: string;
-  writId: string;
-  startedAt: string;
-  endedAt?: string;
-}
-
 // ── Helper: create a StacksApi from a backend ─────────────────────────
 
 // We test through the public API by importing the implementation directly.
-// This avoids needing to mock GuildContext.
 import { createStacksApparatus } from './stacks.ts';
+import { setGuild } from '@shardworks/nexus-core';
 
 function createTestStacks(backend: StacksBackend): StacksApi {
-  // The apparatus plugin — we'll call start() with a minimal mock context
   const plugin = createStacksApparatus(backend);
   const apparatus = (plugin as { apparatus: { provides: StacksApi; start: (ctx: unknown) => void } }).apparatus;
 
-  const mockCtx = {
+  // Wire guild() singleton so start() can access config, home, etc.
+  setGuild({
     home: '/tmp/test-guild',
-    config: () => ({ autoMigrate: true }),
-    guildConfig: () => ({}),
+    config: () => ({ autoMigrate: true }) as never,
+    guildConfig: () => ({}) as never,
     apparatus: () => { throw new Error('not available in test'); },
     kits: () => [],
     apparatuses: () => [],
-    plugins: () => [],
-    on: () => {},
-  };
+  });
 
-  apparatus.start(mockCtx);
+  // StartupContext only needs on()
+  apparatus.start({ on: () => {} });
   return apparatus.provides;
 }
 
@@ -440,9 +431,9 @@ describe('StacksApi (memory backend)', () => {
     assert.equal(typeof readOnly.list, 'function');
     assert.equal(typeof readOnly.count, 'function');
     // Write methods should not exist on the readonly book
-    assert.equal(typeof (readOnly as Record<string, unknown>).put, 'undefined');
-    assert.equal(typeof (readOnly as Record<string, unknown>).delete, 'undefined');
-    assert.equal(typeof (readOnly as Record<string, unknown>).patch, 'undefined');
+    assert.equal(typeof (readOnly as any).put, 'undefined');
+    assert.equal(typeof (readOnly as any).delete, 'undefined');
+    assert.equal(typeof (readOnly as any).patch, 'undefined');
   });
 
   it('explicit transaction commits atomically', async () => {
@@ -534,7 +525,7 @@ describe('StacksApi (memory backend)', () => {
 
   it('cascade: Phase 1 handler writes join the transaction', async () => {
     // Register cascade handler: when a writ is cancelled, cancel children
-    stacks.watch<Writ>(ownerId, 'writs', async (event, ctx) => {
+    stacks.watch<Writ>(ownerId, 'writs', async (event) => {
       if (event.type !== 'update') return;
       if (event.entry.status !== 'cancelled' || event.prev.status === 'cancelled') return;
 

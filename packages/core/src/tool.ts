@@ -36,9 +36,6 @@
  */
 import { z } from 'zod';
 import { isKit, isApparatus } from './plugin.ts';
-// HandlerContext retained as optional second param for backward compatibility.
-// New tools should use guild() from '@shardworks/nexus-core' instead.
-import type { HandlerContext } from './plugin.ts';
 
 // Zod shape type — a record of string keys to Zod schemas.
 // Using a local alias keeps our public API stable across Zod versions.
@@ -81,8 +78,6 @@ export interface ToolDefinition<TShape extends ZodShape = ZodShape> {
   readonly params: z.ZodObject<TShape>;
   readonly handler: (
     params: z.infer<z.ZodObject<TShape>>,
-    /** @deprecated Use guild() instead. Retained for backward compatibility. */
-    context?: HandlerContext,
   ) => unknown | Promise<unknown>;
 }
 
@@ -93,8 +88,6 @@ type ToolInput<TShape extends ZodShape> = {
   params: TShape;
   handler: (
     params: z.infer<z.ZodObject<TShape>>,
-    /** @deprecated Use guild() instead. Retained for backward compatibility. */
-    context?: HandlerContext,
   ) => unknown | Promise<unknown>;
   /**
    * Caller types this tool is available to.

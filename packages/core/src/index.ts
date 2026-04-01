@@ -16,21 +16,19 @@ export {
   type LoadedKit,
   type LoadedApparatus,
   type LoadedPlugin,
-  type GuildContext,
-  /** @deprecated Use guild() instead. */
-  type HandlerContext,
+  type StartupContext,
   isKit,
   isApparatus,
   isLoadedKit,
   isLoadedApparatus,
 } from './plugin.ts';
 
-// Guild accessor — the process-level singleton for accessing guild infrastructure.
+// Guild — the process-level singleton for accessing guild infrastructure.
 export {
-  type GuildAccessor,
+  type Guild,
   guild,
-  setGuildAccessor,
-  clearGuildAccessor,
+  setGuild,
+  clearGuild,
 } from './guild.ts';
 
 // Transitional: BookOptions moves to nexus-books apparatus when that ships.
@@ -43,9 +41,6 @@ export {
   type ListOptions,
   type Pagination,
 } from './book.ts';
-
-// HandlerContext supersedes RigContext — re-exported from rig-context.ts for continuity.
-export { type HandlerContext as RigContext } from './rig-context.ts';
 
 export {
   type ToolCaller,

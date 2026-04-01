@@ -7,8 +7,6 @@
  * See: docs/architecture/apparatus/stacks.md
  */
 
-import type { HandlerContext } from '@shardworks/nexus-core';
-
 // ── Document model ────────────────────────────────────────────────────
 
 /** Every document stored in a book must satisfy this constraint. */
@@ -120,7 +118,6 @@ export type ChangeEvent<T extends BookEntry> =
 
 export type ChangeHandler<T extends BookEntry = BookEntry> = (
   event: ChangeEvent<T>,
-  context: HandlerContext,
 ) => Promise<void> | void;
 
 export interface WatchOptions {

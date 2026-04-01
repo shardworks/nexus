@@ -57,8 +57,8 @@ interface ToolConfig<T extends z.ZodRawShape> {
   description: string
   /** Zod schema for input parameters. Validated before the handler runs. */
   params: T
-  /** The handler function. Receives validated params and a HandlerContext. */
-  handler: (params: z.infer<z.ZodObject<T>>, ctx: HandlerContext) => Promise<unknown>
+  /** The handler function. Receives validated params. */
+  handler: (params: z.infer<z.ZodObject<T>>) => Promise<unknown>
   /**
    * Optional channel restriction. If set, the tool is only available
    * through the listed channels. If omitted, available everywhere.
@@ -82,26 +82,24 @@ interface ToolDefinition {
   /** Zod object schema for input validation and MCP schema generation. */
   params: z.ZodObject<any>
   /** The handler function. */
-  handler: (params: unknown, ctx: HandlerContext) => Promise<unknown>
+  handler: (params: unknown) => Promise<unknown>
   /** Channel restriction, if any. */
   callableFrom?: ToolCaller[]
 }
 ```
 
-### `HandlerContext`
+### Guild Accessor
 
-The context injected into tool handlers at invocation time. Defined in `@shardworks/nexus-core` (re-exported by this package for convenience):
+Tool handlers access guild infrastructure through the `guild()` singleton from `@shardworks/nexus-core`. See [The Guild Accessor](../plugins.md#the-guild-accessor) for detail.
 
 ```typescript
-interface HandlerContext {
-  home:       string
-  config<T>(pluginId?: string): T
-  guildConfig(): GuildConfigV2
-  apparatus<T>(name: string): T
+import { guild } from '@shardworks/nexus-core'
+
+handler: async (params) => {
+  const { home } = guild()
+  const stacks = guild().apparatus<StacksApi>('stacks')
 }
 ```
-
-The caller (MCP engine, CLI, or programmatic invocation) is responsible for creating the `HandlerContext` with appropriate scoping. The Instrumentarium does not create contexts — it resolves tools.
 
 ---
 
@@ -169,14 +167,10 @@ Roles and base tools are plugin configuration owned by The Instrumentarium, stor
 ```json
 {
   "tools": {
+    "baseTools": ["nexus-version"],
     "roles": {
-      "artificer": {
-        "seats": null,
-        "tools": ["commission-show", "signal", "complete-session"],
-        "instructions": "roles/artificer.md"
-      }
-    },
-    "baseTools": ["nexus-version"]
+      "artificer": ["commission-show", "signal", "complete-session"]
+    }
   }
 }
 ```
@@ -197,12 +191,6 @@ The resolved set includes the `ToolDefinition` (with handler) and provenance (`p
 
 ---
 
-## Relationship to Arbor
-
-The Instrumentarium replaces Arbor's current `listTools()`, `findTool()`, and `createHandlerContext()` methods. Once The Instrumentarium ships, those methods are removed from the `Arbor` interface. Arbor returns to being purely a plugin loader and lifecycle manager.
-
----
-
 ## Instructions
 
 A tool can optionally ship with an `instructions.md` — a teaching document that provides craft guidance beyond what the MCP schema conveys (when to use the tool, when not to, workflow context, institutional conventions). Instructions are delivered to animas as part of the session context, assembled by The Loom.
@@ -211,8 +199,6 @@ The Instrumentarium does not read or serve instructions directly — it stores t
 
 ---
 
-## Open Questions
+## Implementation Notes
 
-- **Tool metadata persistence.** Should The Instrumentarium store tool metadata (install timestamps, provenance) in The Stacks, or is `guild.json` sufficient? Current implementation uses `guild.json` only.
-- **Hot reload.** Can tools be installed/removed while the guild is running, or only at startup? Current answer: startup only.
-- **`tool()` location during transition.** `tool()` currently lives in `@shardworks/nexus-core`. Migration path: re-export from `@shardworks/tools-apparatus`, deprecate the core export, remove in a future version.
+- **`tool()` location during transition.** `tool()` currently lives in `@shardworks/nexus-core`. This should be moved to the Instrumentarium package, and removed from nexus-core.

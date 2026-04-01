@@ -18,6 +18,20 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { rigList, rigInstall, rigRemove, rigUpgrade } from './rig.ts';
+import { setGuild, clearGuild } from '@shardworks/nexus-core';
+
+/** Set up a minimal guild accessor pointing at the given directory. */
+function setupGuildAccessor(home: string): void {
+  setGuild({
+    home,
+    apparatus: () => { throw new Error('not available in test'); },
+    config: () => ({}) as never,
+    guildConfig: () => ({}) as never,
+    kits: () => [],
+    apparatuses: () => [],
+  });
+}
+
 
 let tmpDirs: string[] = [];
 
@@ -104,6 +118,7 @@ function makeNodeModuleRig(guildRoot: string, packageName: string, toolNames: st
 }
 
 afterEach(() => {
+  clearGuild();
   for (const dir of tmpDirs) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -137,7 +152,9 @@ describe('rig-list handler', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
-    const result = await rigList.handler({}, { home: tmp } as never);
+    setupGuildAccessor(tmp);
+    setupGuildAccessor(tmp);
+    const result = await rigList.handler({});
     assert.equal(result, 'No plugins installed.');
   });
 
@@ -145,7 +162,8 @@ describe('rig-list handler', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
-    const result = await rigList.handler({ json: true }, { home: tmp } as never);
+    setupGuildAccessor(tmp);
+    const result = await rigList.handler({ json: true });
     assert.deepEqual(result, []);
   });
 
@@ -153,7 +171,8 @@ describe('rig-list handler', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { plugins: ['nexus-stdlib'] });
 
-    const result = await rigList.handler({}, { home: tmp } as never) as string;
+    setupGuildAccessor(tmp);
+    const result = await rigList.handler({}) as string;
     assert.ok(result.includes('nexus-stdlib'));
   });
 
@@ -161,7 +180,8 @@ describe('rig-list handler', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { plugins: ['nexus-stdlib', 'nexus-ledger'] });
 
-    const result = await rigList.handler({}, { home: tmp } as never) as string;
+    setupGuildAccessor(tmp);
+    const result = await rigList.handler({}) as string;
     const lines = result.split('\n').filter(Boolean);
     assert.deepEqual(lines, ['nexus-ledger', 'nexus-stdlib']);
   });
@@ -170,7 +190,8 @@ describe('rig-list handler', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { plugins: ['nexus-stdlib'] });
 
-    const result = await rigList.handler({ json: true }, { home: tmp } as never);
+    setupGuildAccessor(tmp);
+    const result = await rigList.handler({ json: true });
     assert.ok(Array.isArray(result));
     const arr = result as Array<{ id: string }>;
     assert.equal(arr.length, 1);
@@ -181,7 +202,8 @@ describe('rig-list handler', () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { plugins: ['nexus-stdlib', 'nexus-ledger'] });
 
-    const result = await rigList.handler({ json: true }, { home: tmp } as never);
+    setupGuildAccessor(tmp);
+    const result = await rigList.handler({ json: true });
     const arr = result as Array<{ id: string }>;
     assert.equal(arr.length, 2);
     const ids = arr.map((r) => r.id);
@@ -197,7 +219,7 @@ describe('rig-install handler — link mode', () => {
     makeGuild(tmp);
     const rigDir = makeFakeRig(tmp, 'my-fake-rig', ['fake-tool']);
 
-    await rigInstall.handler({ source: rigDir, type: 'link' }, { home: tmp } as never);
+    await rigInstall.handler({ source: rigDir, type: 'link' });
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
     assert.ok(Array.isArray(config.plugins));
@@ -209,7 +231,7 @@ describe('rig-install handler — link mode', () => {
     makeGuild(tmp);
     const rigDir = makeFakeRig(tmp, 'my-fake-rig', ['fake-tool']);
 
-    await rigInstall.handler({ source: rigDir, type: 'link' }, { home: tmp } as never);
+    await setupGuildAccessor(tmp); rigInstall.handler({ source: rigDir, type: 'link' });
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
     assert.ok(config.baseTools.includes('fake-tool'));
@@ -222,7 +244,7 @@ describe('rig-install handler — link mode', () => {
     });
     const rigDir = makeFakeRig(tmp, 'my-fake-rig', ['fake-tool']);
 
-    await rigInstall.handler({ source: rigDir, type: 'link', roles: 'artificer' }, { home: tmp } as never);
+    await setupGuildAccessor(tmp); rigInstall.handler({ source: rigDir, type: 'link', roles: 'artificer' });
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
     assert.ok(config.roles.artificer.tools.includes('fake-tool'));
@@ -239,10 +261,9 @@ describe('rig-install handler — link mode', () => {
     });
     const rigDir = makeFakeRig(tmp, 'my-fake-rig', ['fake-tool']);
 
-    await rigInstall.handler(
-      { source: rigDir, type: 'link', roles: 'artificer, scribe' },
-      { home: tmp } as never,
-    );
+    await setupGuildAccessor(tmp);
+    await setupGuildAccessor(tmp); rigInstall.handler(
+      { source: rigDir, type: 'link', roles: 'artificer, scribe' });
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
     assert.ok(config.roles.artificer.tools.includes('fake-tool'));
@@ -254,7 +275,7 @@ describe('rig-install handler — link mode', () => {
     makeGuild(tmp);
     const rigDir = makeFakeRig(tmp, 'multi-rig', ['tool-alpha', 'tool-beta', 'tool-gamma']);
 
-    await rigInstall.handler({ source: rigDir, type: 'link' }, { home: tmp } as never);
+    await rigInstall.handler({ source: rigDir, type: 'link' });
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
     assert.ok(config.baseTools.includes('tool-alpha'));
@@ -267,7 +288,7 @@ describe('rig-install handler — link mode', () => {
     makeGuild(tmp, { plugins: ['my-fake-rig'] });
     const rigDir = makeFakeRig(tmp, 'my-fake-rig', ['fake-tool']);
 
-    await rigInstall.handler({ source: rigDir, type: 'link' }, { home: tmp } as never);
+    await setupGuildAccessor(tmp); rigInstall.handler({ source: rigDir, type: 'link' });
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
     const occurrences = config.plugins.filter((r: string) => r === 'my-fake-rig').length;
@@ -281,7 +302,7 @@ describe('rig-install handler — link mode', () => {
     fs.mkdirSync(emptyDir);
 
     await assert.rejects(
-      () => rigInstall.handler({ source: emptyDir, type: 'link' }, { home: tmp } as never),
+      async () => { setupGuildAccessor(tmp); return rigInstall.handler({ source: emptyDir, type: 'link' }); },
       /No package\.json/,
     );
   });
@@ -291,7 +312,8 @@ describe('rig-install handler — link mode', () => {
     makeGuild(tmp);
     const rigDir = makeFakeRig(tmp, 'my-fake-rig', ['fake-tool']);
 
-    const result = await rigInstall.handler({ source: rigDir, type: 'link' }, { home: tmp } as never) as string;
+    setupGuildAccessor(tmp);
+    const result = await rigInstall.handler({ source: rigDir, type: 'link' }) as string;
     assert.ok(result.includes('my-fake-rig'));
   });
 
@@ -300,7 +322,8 @@ describe('rig-install handler — link mode', () => {
     makeGuild(tmp);
     const rigDir = makeFakeRig(tmp, 'my-fake-rig', ['fake-tool']);
 
-    const result = await rigInstall.handler({ source: rigDir, type: 'link' }, { home: tmp } as never) as string;
+    setupGuildAccessor(tmp);
+    const result = await rigInstall.handler({ source: rigDir, type: 'link' }) as string;
     assert.ok(result.includes('fake-tool'));
   });
 
@@ -332,7 +355,7 @@ describe('rig-remove handler', () => {
     const tmp = makeTmpDir();
     makeInstalledGuild(tmp);
 
-    await rigRemove.handler({ name: 'nexus-stdlib' }, { home: tmp } as never);
+    setupGuildAccessor(tmp); await rigRemove.handler({ name: 'nexus-stdlib' });
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
     assert.ok(!config.plugins.includes('nexus-stdlib'));
@@ -342,7 +365,7 @@ describe('rig-remove handler', () => {
     const tmp = makeTmpDir();
     makeInstalledGuild(tmp);
 
-    await rigRemove.handler({ name: 'nexus-stdlib' }, { home: tmp } as never);
+    setupGuildAccessor(tmp); await rigRemove.handler({ name: 'nexus-stdlib' });
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
     assert.ok(!config.baseTools.includes('commission'));
@@ -353,7 +376,7 @@ describe('rig-remove handler', () => {
     const tmp = makeTmpDir();
     makeInstalledGuild(tmp);
 
-    await rigRemove.handler({ name: 'nexus-stdlib' }, { home: tmp } as never);
+    setupGuildAccessor(tmp); await rigRemove.handler({ name: 'nexus-stdlib' });
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
     assert.ok(!config.roles.artificer.tools.includes('commission'));
@@ -373,7 +396,7 @@ describe('rig-remove handler', () => {
     makeNodeModuleRig(tmp, '@shardworks/nexus-stdlib', ['commission']);
     makeNodeModuleRig(tmp, '@shardworks/nexus-ledger', ['create-writ']);
 
-    await rigRemove.handler({ name: 'nexus-stdlib' }, { home: tmp } as never);
+    setupGuildAccessor(tmp); await rigRemove.handler({ name: 'nexus-stdlib' });
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
     assert.ok(config.baseTools.includes('create-writ'));
@@ -384,7 +407,7 @@ describe('rig-remove handler', () => {
     const tmp = makeTmpDir();
     makeInstalledGuild(tmp);
 
-    await rigRemove.handler({ name: '@shardworks/nexus-stdlib' }, { home: tmp } as never);
+    setupGuildAccessor(tmp); await rigRemove.handler({ name: '@shardworks/nexus-stdlib' });
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
     assert.ok(!config.plugins.includes('nexus-stdlib'));
@@ -394,7 +417,8 @@ describe('rig-remove handler', () => {
     const tmp = makeTmpDir();
     makeInstalledGuild(tmp);
 
-    const result = await rigRemove.handler({ name: 'nexus-stdlib' }, { home: tmp } as never) as string;
+    setupGuildAccessor(tmp);
+    const result = await rigRemove.handler({ name: 'nexus-stdlib' }) as string;
     assert.ok(result.includes('nexus-stdlib'));
   });
 
@@ -402,7 +426,8 @@ describe('rig-remove handler', () => {
     const tmp = makeTmpDir();
     makeInstalledGuild(tmp); // 2 tools: commission, signal
 
-    const result = await rigRemove.handler({ name: 'nexus-stdlib' }, { home: tmp } as never) as string;
+    setupGuildAccessor(tmp);
+    const result = await rigRemove.handler({ name: 'nexus-stdlib' }) as string;
     assert.ok(result.includes('2 tools'));
   });
 
@@ -416,7 +441,8 @@ describe('rig-remove handler', () => {
     makeGuildPackageJson(tmp, { 'solo-rig': '^1.0.0' });
     makeNodeModuleRig(tmp, 'solo-rig', ['only-tool']);
 
-    const result = await rigRemove.handler({ name: 'solo-rig' }, { home: tmp } as never) as string;
+    setupGuildAccessor(tmp);
+    const result = await rigRemove.handler({ name: 'solo-rig' }) as string;
     assert.ok(result.includes('1 tool '));
     assert.ok(!result.includes('1 tools'));
   });
@@ -426,7 +452,7 @@ describe('rig-remove handler', () => {
     makeGuild(tmp);
 
     await assert.rejects(
-      () => rigRemove.handler({ name: 'nonexistent-rig' }, { home: tmp } as never),
+      async () => { setupGuildAccessor(tmp); return rigRemove.handler({ name: 'nonexistent-rig' }); },
       /not installed/,
     );
   });
@@ -436,15 +462,16 @@ describe('rig-remove handler', () => {
 
 describe('rig-upgrade handler', () => {
   it('returns a "not yet implemented" message', async () => {
-    const result = await rigUpgrade.handler({ name: 'some-rig' }, { home: '/fake' } as never);
+    setupGuildAccessor('/fake');
+    const result = await rigUpgrade.handler({ name: 'some-rig' });
     assert.ok(typeof result === 'string');
     assert.ok((result as string).toLowerCase().includes('not yet implemented'));
   });
 
   it('accepts an optional version param without error', async () => {
+    setupGuildAccessor('/fake');
     const result = await rigUpgrade.handler(
       { name: 'some-rig', version: '2.0.0' },
-      { home: '/fake' } as never,
     );
     assert.ok(typeof result === 'string');
   });

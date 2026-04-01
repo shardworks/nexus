@@ -5,12 +5,10 @@
  * - Kit:       passive package contributing capabilities to consuming apparatuses.
  *              No lifecycle, no running state. Read at load time.
  * - Apparatus: package contributing persistent running infrastructure.
- *              Has a start/stop lifecycle. Receives GuildContext at start.
+ *              Has a start/stop lifecycle. Receives StartupContext at start.
  *
  * See: docs/architecture/plugins.md
  */
-
-import type { GuildConfig } from './guild-config.ts';
 
 // ── Loaded plugin descriptors ──────────────────────────────────────────
 
@@ -36,49 +34,18 @@ export type LoadedPlugin = LoadedKit | LoadedApparatus
 // ── Context types ──────────────────────────────────────────────────────
 
 /**
- * Context passed to an apparatus's start(ctx). Provides access to the
- * plugin graph during startup wiring.
- */
-export interface GuildContext {
-  /** Absolute path to the guild root. */
-  home: string
-  /**
-   * Get the plugin-specific config section from guild.json.
-   * Called with no args returns the section for the calling apparatus.
-   * Called with a pluginId returns that plugin's section.
-   * Returns `{}` if the section is absent.
-   */
-  config<T = Record<string, unknown>>(pluginId?: string): T
-  /** Get the full parsed guild.json config. */
-  guildConfig(): GuildConfig
-  /**
-   * Retrieve a started apparatus's provides object.
-   * Validated against the calling apparatus's requires at startup.
-   */
-  apparatus<T>(name: string): T
-  /** Snapshot of all loaded kits (including apparatus supportKits). */
-  kits():        LoadedKit[]
-  /** Snapshot of all started apparatuses. */
-  apparatuses(): LoadedApparatus[]
-  /** Union snapshot of all loaded plugins. */
-  plugins():     LoadedPlugin[]
-  /** Subscribe to a guild lifecycle event. Handlers may be async; run sequentially. */
-  on(event: string, handler: (...args: unknown[]) => void | Promise<void>): void
-}
-
-/**
- * @deprecated HandlerContext is replaced by the guild() singleton accessor.
- * Tool, engine, and relay handlers no longer receive context as a parameter —
- * they import `guild` from `@shardworks/nexus-core` and call `guild()` directly.
+ * Startup context passed to an apparatus's start(ctx).
  *
- * Retained temporarily for backward compatibility during migration.
+ * Provides lifecycle-event subscription — the only capability that is
+ * meaningful only during startup. All other guild access (apparatus APIs,
+ * config, home path, loaded plugins) goes through the `guild()` singleton,
+ * which is available during start() and in all handlers.
+ *
  * See: docs/architecture/plugins.md
  */
-export interface HandlerContext {
-  home: string
-  config<T = Record<string, unknown>>(pluginId?: string): T
-  guildConfig(): GuildConfig
-  apparatus<T>(name: string): T
+export interface StartupContext {
+  /** Subscribe to a guild lifecycle event. Handlers may be async; run sequentially. */
+  on(event: string, handler: (...args: unknown[]) => void | Promise<void>): void
 }
 
 // ── Kit ────────────────────────────────────────────────────────────────
@@ -106,14 +73,14 @@ export type Kit = {
 
 /**
  * An apparatus — package contributing persistent running infrastructure.
- * Has a start/stop lifecycle. Receives GuildContext at start.
+ * Has a start/stop lifecycle. Receives StartupContext at start.
  *
  * `requires`: apparatus names that must be started before this apparatus's
  *   start() runs. Determines start ordering. Hard startup validation failure
  *   if a declared apparatus is not installed.
  *
  * `provides`: the runtime API object this apparatus exposes to other plugins.
- *   Retrieved via ctx.apparatus<T>(name). Created at manifest-definition time,
+ *   Retrieved via guild().apparatus<T>(name). Created at manifest-definition time,
  *   populated during start.
  *
  * `supportKit`: kit contributions this apparatus exposes to consuming apparatuses.
@@ -125,7 +92,7 @@ export type Kit = {
 export type Apparatus = {
   requires?:   string[]
   provides?:   unknown
-  start:       (ctx: GuildContext) => void | Promise<void>
+  start:       (ctx: StartupContext) => void | Promise<void>
   stop?:       () => void | Promise<void>
   supportKit?: Kit
   consumes?:   string[]
