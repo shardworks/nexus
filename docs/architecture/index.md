@@ -283,6 +283,7 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 | **The Surveyor** | `surveyor` | Codex knowledge — surveys registered codexes so the guild knows what work applies to each |
 | **The Clerk** | `clerk` | Commission intake and writ lifecycle — receives commissions, creates writs, signals when work is ready |
 | **The Manifester** | `manifester` | Anima session assembly — deterministic composition of curriculum, temperament, charter, tool instructions |
+| **The Instrumentarium** | `instrumentarium` | Tool registry — resolves installed tools, role-gating, handler context creation |
 | **The Summoner** | `summoner` | AI session lifecycle — launches, monitors, and records anima sessions |
 | **The Formulary** | `formulary` | Engine design registry — answers "what engine chain satisfies this need?" from installed kits |
 | **The Walker** | `walker` | Rig lifecycle — spawns, traverses, extends, and strikes rigs as work progresses |

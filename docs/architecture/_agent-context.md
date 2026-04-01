@@ -231,3 +231,63 @@ All are `<!-- TODO -->` blocks. In rough priority order:
 ### Implementation work (not architecture doc)
 - **Arbor config API** — implementation plan at `nexus-mk2/.scratch/arbor-config-impl-plan.md`. Updates `derivePluginId`, adds `ctx.config()` / `ctx.guildConfig()` to GuildContext/HandlerContext, removes `getPluginConfig` from Arbor. Not yet commissioned.
 - **Plugin rename** — standard apparatus packages should be renamed to match new naming convention (e.g. `@shardworks/nexus-clockworks` → `@shardworks/clockworks`). Not yet commissioned. Scope TBD.
+- **The Instrumentarium** — new apparatus, see design decisions (session 4) below.
+- **Manifester MVP** — new apparatus, see design decisions (session 4) below.
+- **Summoner MVP** — new apparatus, see design decisions (session 4) below.
+
+---
+
+## Design Decisions (session 4)
+
+### New apparatus: The Instrumentarium (`instrumentarium`)
+
+**Problem:** Tools are currently owned by Arbor (`listTools()`, `findTool()`), but Arbor's design goal is "plugin loader only." Tools need a home that both the session layer (Manifester/Summoner) and the CLI can depend on, without coupling either to anima identity.
+
+**Decision:** Create a new apparatus — **The Instrumentarium** (`instrumentarium`, package `@shardworks/instrumentarium`). It owns:
+- Tool registry — scanning kit `tools` contributions and apparatus `supportKit` tools at startup
+- Role-gating resolution — given a set of roles + baseTools, return the resolved tool set
+- HandlerContext creation — scoped to the invoking plugin, with `config()` and `apparatus()` wired
+- CLI tool discovery — `nsg <tool>` resolves through The Instrumentarium
+
+The Instrumentarium has no dependency on animas, sessions, or composition. Both The Manifester and the CLI depend on it independently. Apparatus that need to invoke tools programmatically depend on it.
+
+`consumes: ["tools"]` — scans kit and supportKit contributions for tool definitions.
+
+### Manifester MVP — composition without identity
+
+**Problem:** Full anima composition (identity lookup → curriculum resolution → temperament resolution → charter + tool instructions) requires several systems that don't exist yet. But The Summoner needs *some* composed context to launch sessions.
+
+**Decision:** MVP Manifester returns a fixed composition for a given role:
+- Reads the role's `instructions` file from disk (the path in `guild.json` roles config)
+- Reads tool instructions from The Instrumentarium for the resolved tool set
+- Returns a composed system prompt: role instructions + tool instructions
+- No anima identity lookup, no curriculum, no temperament, no charter
+
+This is enough for The Summoner to launch useful sessions. Identity and full composition are layered on later without changing The Summoner's interface — it always receives a composed context and a tool set, regardless of how they were assembled.
+
+### Summoner MVP
+
+**Decision:** The Summoner takes a composed context (from Manifester) + a resolved tool set (from Instrumentarium) and:
+1. Launches a session provider (e.g. `claude-code-session-provider`) with the system prompt and an MCP server loaded with the tool set
+2. Monitors the process
+3. Records the session result to The Stacks (sessions book)
+
+The Summoner does not know how the context was composed or which anima is being manifested (in MVP, there are no anima identity records). It receives inputs and runs a session.
+
+### Dependency graph (MVP)
+
+```
+The Stacks (books)
+    │
+    ├── The Instrumentarium (instrumentarium)
+    │       │
+    │       ├── The Manifester (manifester)
+    │       │       │
+    │       │       └── The Summoner (summoner)
+    │       │
+    │       └── CLI (nsg)
+    │
+    └── The Clockworks (clockworks)
+            │
+            └── summon relay → The Summoner
+```
