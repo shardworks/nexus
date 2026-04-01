@@ -1,5 +1,5 @@
 /**
- * Session API — the write/read API for the nexus-sessions rig.
+ * Session API — the write/read API for the nexus-sessions plugin.
  *
  * This module contains the full session funnel (`launchSession`) and all
  * supporting functions. Functions accept `home: string` (the guild root path)
@@ -28,16 +28,16 @@ import path from 'node:path';
 import {
   nexusDir,
   workshopBarePath,
-  signalEvent,
   registerSessionProvider as _registerSessionProvider,
   getSessionProvider as _getSessionProvider,
 } from '@shardworks/nexus-core';
 import type {
-  ManifestResult,
   SessionProvider,
   SessionProviderLaunchOptions,
   SessionProviderResult,
 } from '@shardworks/nexus-core';
+import { signalEvent } from '@shardworks/nexus-core/legacy/1';
+import type { ManifestResult } from '@shardworks/nexus-core/legacy/1';
 import { openDb, SESSIONS_TABLE } from './db.ts';
 import type { SessionDoc } from '../types.ts';
 

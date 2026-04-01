@@ -2,7 +2,7 @@
  * session-show tool — show full details of a specific session.
  *
  * Replaces the stdlib session-show tool that called showSession() from
- * @shardworks/nexus-core. The rig now owns this operation.
+ * @shardworks/nexus-core. The plugin now owns this operation.
  */
 
 import { tool, guild } from '@shardworks/nexus-core';

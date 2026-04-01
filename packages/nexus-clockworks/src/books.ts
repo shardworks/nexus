@@ -1,10 +1,10 @@
 /**
- * Book schema declarations for the nexus-clockworks rig.
+ * Book schema declarations for the nexus-clockworks plugin.
  *
  * Arbor reads these at startup and creates the backing SQLite tables
  * and indexes if they don't exist. Additive only — no destructive migrations.
  *
- * Table names (derived by arbor from rig ID + book name):
+ * Table names (derived by arbor from plugin ID + book name):
  *   events    → books_nexus_clockworks_events
  *   dispatches → books_nexus_clockworks_dispatches
  */

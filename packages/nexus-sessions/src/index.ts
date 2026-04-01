@@ -1,7 +1,7 @@
 /**
- * nexus-sessions — Sessions rig for Nexus Mk 2.1
+ * nexus-sessions — Sessions kit for Nexus Mk 2.1
  *
- * Default export: the Rig descriptor (books + tools). Arbor reads this
+ * Default export: the Kit descriptor (books + tools). Arbor reads this
  * at startup to create the Books tables and register the tools.
  *
  * Named exports: the TypeScript API surface for framework-internal callers
@@ -9,7 +9,7 @@
  * `home: string` so they can be called without a RigContext.
  */
 
-import type { Rig, ToolDefinition } from '@shardworks/nexus-core';
+import type { Kit, ToolDefinition } from '@shardworks/nexus-core';
 import { books } from './books.js';
 
 import sessionList from './tools/session-list.js';
@@ -18,7 +18,7 @@ import conversationList from './tools/conversation-list.js';
 import conversationShow from './tools/conversation-show.js';
 import conversationEnd from './tools/conversation-end.js';
 
-// ── Rig default export ─────────────────────────────────────────────────────
+// ── Kit default export ─────────────────────────────────────────────────────
 
 export default {
   tools: [
@@ -29,7 +29,7 @@ export default {
     conversationEnd,
   ] as unknown as ToolDefinition[],
   books,
-} satisfies Rig;
+} satisfies Kit;
 
 // ── Session TypeScript API (re-exports for framework-internal callers) ─────
 

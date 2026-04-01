@@ -1,5 +1,5 @@
 /**
- * Document types for the nexus-sessions rig.
+ * Document types for the nexus-sessions plugin.
  *
  * These are the TypeScript shapes stored in Books (SQLite JSON documents).
  * All types satisfy the Books requirement that `id: string` is a top-level field.
@@ -12,7 +12,7 @@
  *
  * ─── Schema summary ───────────────────────────────────────────────────────────
  *
- * Books owned by this rig:
+ * Books owned by this plugin:
  *
  * sessions (6 indexes: animaId, writId, conversationId, workshop, trigger, startedAt)
  *   - id, animaId, provider, trigger, workshop, workspaceKind,

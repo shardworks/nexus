@@ -1,5 +1,5 @@
 import { createCommand } from 'commander';
-import { listTools } from '@shardworks/nexus-core';
+import { listTools } from '@shardworks/nexus-core/legacy/1';
 import { makeInstallToolCommand } from './install-tool.ts';
 import { makeRemoveToolCommand } from './remove-tool.ts';
 import { resolveHome } from '../resolve-home.ts';

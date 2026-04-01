@@ -1,5 +1,5 @@
 import { createCommand } from 'commander';
-import { rehydrate } from '@shardworks/nexus-core';
+import { rehydrate } from '@shardworks/nexus-core/legacy/1';
 import { resolveHome } from '../resolve-home.ts';
 
 export function makeRestoreCommand() {

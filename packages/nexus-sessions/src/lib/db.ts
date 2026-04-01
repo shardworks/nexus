@@ -1,12 +1,12 @@
 /**
- * Database utilities for the nexus-sessions rig.
+ * Database utilities for the nexus-sessions plugin.
  *
- * Library functions in this rig use raw SQLite access against the Books
+ * Library functions in this plugin use raw SQLite access against the Books
  * tables — they own these tables and need direct SQL for operations that
  * the Books API doesn't support (complex multi-field filters, aggregate
  * queries for conversation metrics, and reliable partial updates).
  *
- * The table names are deterministic from the rig ID and book name:
+ * The table names are deterministic from the plugin ID and book name:
  *   booksTableName('nexus-sessions', 'sessions')      → books_nexus_sessions_sessions
  *   booksTableName('nexus-sessions', 'conversations')  → books_nexus_sessions_conversations
  *   booksTableName('nexus-sessions', 'participants')   → books_nexus_sessions_participants

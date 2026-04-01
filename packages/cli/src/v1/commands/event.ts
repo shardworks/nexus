@@ -1,5 +1,5 @@
 import { createCommand } from 'commander';
-import { listEvents, readEvent } from '@shardworks/nexus-core';
+import { listEvents, readEvent } from '@shardworks/nexus-core/legacy/1';
 import { resolveHome } from '../resolve-home.ts';
 
 export function makeEventCommand() {

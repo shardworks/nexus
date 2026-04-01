@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { findGuildRoot, ensureBooks } from '@shardworks/nexus-core';
+import { findGuildRoot } from '@shardworks/nexus-core';
+import { ensureBooks } from '@shardworks/nexus-core/legacy/1';
 
 /** Minimal interface for reading global options from any Commander command. */
 interface CommandLike {

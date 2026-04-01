@@ -1,10 +1,10 @@
 /**
- * Book schema declarations for the nexus-sessions rig.
+ * Book schema declarations for the nexus-sessions plugin.
  *
  * Arbor reads these at startup and creates the backing SQLite tables
  * and indexes if they don't exist. Additive only — no destructive migrations.
  *
- * Table names (derived by arbor from rig ID + book name):
+ * Table names (derived by arbor from plugin ID + book name):
  *   sessions      → books_nexus_sessions_sessions
  *   conversations → books_nexus_sessions_conversations
  *   participants  → books_nexus_sessions_participants

@@ -2,7 +2,7 @@
  * conversation-list tool — list conversations with optional filters.
  *
  * Replaces the stdlib conversation-list tool that called listConversations()
- * from @shardworks/nexus-core. The rig now owns this operation.
+ * from @shardworks/nexus-core. The plugin now owns this operation.
  */
 
 import { tool, guild } from '@shardworks/nexus-core';

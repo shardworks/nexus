@@ -1,18 +1,18 @@
 /**
  * Events library — the write/read API for the Clockworks event queue.
  *
- * These functions are the TypeScript API surface for the nexus-clockworks rig.
+ * These functions are the TypeScript API surface for the nexus-clockworks plugin.
  * They accept `home: string` (the guild root path) so they can be called from
- * anywhere — including writ.ts and session.ts — without requiring a RigContext.
+ * anywhere — including writ.ts and session.ts — without requiring a PluginContext.
  *
  * Internal implementation note: library functions use raw SQLite against the
  * Books tables (books_nexus_clockworks_events, books_nexus_clockworks_dispatches)
  * rather than going through the Books API. This allows partial updates
  * (markEventProcessed), LIKE-based filtering (listEvents), and avoids the
- * overhead of creating a full RigContext for each call.
+ * overhead of creating a full PluginContext for each call.
  *
- * Callers outside this rig that need read-only access should use RigContext.rigBook()
- * once they have been riggified themselves.
+ * Callers outside this plugin that need read-only access should use the
+ * plugin book API once cross-plugin access is supported.
  */
 
 import { randomBytes } from 'node:crypto';

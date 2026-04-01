@@ -2,10 +2,10 @@
  * session-list tool — list recent sessions with optional filters.
  *
  * Replaces the stdlib session-list tool that called listSessions() from
- * @shardworks/nexus-core. The rig now owns this operation.
+ * @shardworks/nexus-core. The plugin now owns this operation.
  *
  * Note: the `anima` filter matches by animaId only. Name-based lookup
- * requires nexus-roster (not yet riggified). Pass an animaId, not a name.
+ * requires nexus-roster (not yet a plugin). Pass an animaId, not a name.
  */
 
 import { tool, guild } from '@shardworks/nexus-core';

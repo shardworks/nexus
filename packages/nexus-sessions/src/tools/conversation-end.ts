@@ -2,7 +2,7 @@
  * conversation-end tool — end an active conversation.
  *
  * Replaces the stdlib conversation-end tool that called endConversation()
- * from @shardworks/nexus-core. The rig now owns this operation.
+ * from @shardworks/nexus-core. The plugin now owns this operation.
  */
 
 import { tool, guild } from '@shardworks/nexus-core';

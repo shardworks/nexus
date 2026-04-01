@@ -18,7 +18,7 @@
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { manifest as assembleManifest } from '@shardworks/nexus-core';
+import { manifest as assembleManifest } from '@shardworks/nexus-core/legacy/1';
 import { openDb, SESSIONS_TABLE, CONVERSATIONS_TABLE, PARTICIPANTS_TABLE } from './db.ts';
 import { launchSession } from './session-api.ts';
 import type { SessionChunk, ResolvedWorkspace } from './session-api.ts';

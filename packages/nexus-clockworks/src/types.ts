@@ -1,5 +1,5 @@
 /**
- * Document types for the nexus-clockworks rig.
+ * Document types for the nexus-clockworks plugin.
  *
  * These are the TypeScript shapes stored in the Books (SQLite JSON documents).
  * Both types satisfy the Books requirement that `id: string` is a top-level field.

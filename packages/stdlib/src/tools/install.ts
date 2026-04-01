@@ -11,7 +11,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { tool, installTool, installBundle, classifySource, isBundleDir, guild } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
+import { installTool, installBundle, classifySource, isBundleDir } from '@shardworks/nexus-core/legacy/1';
 import { z } from 'zod';
 
 /**

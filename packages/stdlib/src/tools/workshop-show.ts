@@ -1,4 +1,5 @@
-import { tool, showWorkshop, guild } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
+import { showWorkshop } from '@shardworks/nexus-core/legacy/1';
 import { z } from 'zod';
 
 export default tool({

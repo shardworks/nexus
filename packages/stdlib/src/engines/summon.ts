@@ -21,12 +21,12 @@
  *   - `maxSessions` — circuit breaker: max session attempts per writ before auto-fail (default: 10)
  *   - `workshop` — optional workshop for synthesized writs (when no writId in payload)
  */
+import { getSessionProvider, guild } from '@shardworks/nexus-core';
 import {
   engine,
   generateId,
   resolveAnimaByRole,
   manifest,
-  getSessionProvider,
   createWrit,
   readWrit,
   activateWrit,
@@ -36,8 +36,7 @@ import {
   getWritChildren,
   hydratePromptTemplate,
   buildProgressAppendix,
-  guild,
-} from '@shardworks/nexus-core';
+} from '@shardworks/nexus-core/legacy/1';
 import {
   resolveWorkspace,
   launchSession,

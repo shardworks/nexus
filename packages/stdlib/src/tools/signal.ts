@@ -5,7 +5,8 @@
  * table and will be processed by the Clockworks runner. Validates that the
  * event name is declared in guild.json and is not in a reserved namespace.
  */
-import { tool, validateCustomEvent, signalEvent, guild } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
+import { validateCustomEvent, signalEvent } from '@shardworks/nexus-core/legacy/1';
 import { z } from 'zod';
 
 export default tool({

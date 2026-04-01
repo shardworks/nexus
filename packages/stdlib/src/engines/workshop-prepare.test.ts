@@ -6,8 +6,9 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 import workshopPrepare from './workshop-prepare.ts';
-import { createWrit, readWrit, setupWorktree, worktreesPath, workshopBarePath, listEvents } from '@shardworks/nexus-core';
-import type { GuildEvent, EngineContext } from '@shardworks/nexus-core';
+import { worktreesPath, workshopBarePath } from '@shardworks/nexus-core';
+import { createWrit, readWrit, setupWorktree, listEvents } from '@shardworks/nexus-core/legacy/1';
+import type { GuildEvent, EngineContext } from '@shardworks/nexus-core/legacy/1';
 
 function git(args: string[], cwd: string): void {
   execFileSync('git', args, { cwd, stdio: 'pipe' });

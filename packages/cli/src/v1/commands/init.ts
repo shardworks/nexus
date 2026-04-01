@@ -2,7 +2,7 @@ import { createCommand } from 'commander';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import readline from 'node:readline/promises';
-import { initGuild, installBundle, instantiate, applyCoreMigrations } from '@shardworks/nexus-core';
+import { initGuild, installBundle, instantiate, applyCoreMigrations } from '@shardworks/nexus-core/legacy/1';
 
 const DEFAULT_MODEL = 'sonnet';
 const DEFAULT_BUNDLE = '@shardworks/guild-starter-kit';

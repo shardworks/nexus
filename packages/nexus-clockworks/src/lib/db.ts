@@ -1,12 +1,12 @@
 /**
- * Database utilities for the nexus-clockworks rig.
+ * Database utilities for the nexus-clockworks plugin.
  *
- * Library functions in this rig use raw SQLite access against the Books
+ * Library functions in this plugin use raw SQLite access against the Books
  * tables — they own these tables and need direct SQL for operations that
  * the Books API doesn't support (e.g. partial updates for markEventProcessed,
  * LIKE filters for listEvents).
  *
- * The table names are deterministic from the rig ID and book name:
+ * The table names are deterministic from the plugin ID and book name:
  *   booksTableName('nexus-clockworks', 'events')    → books_nexus_clockworks_events
  *   booksTableName('nexus-clockworks', 'dispatches') → books_nexus_clockworks_dispatches
  *

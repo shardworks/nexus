@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ResolvedTool, ManifestResult } from '@shardworks/nexus-core';
+import type { ResolvedTool, ManifestResult } from '@shardworks/nexus-core/legacy/1';
 import type { McpServerConfig } from './mcp-server.ts';
 import type { SessionProvider, SessionProviderLaunchOptions, SessionProviderResult, SessionChunk } from '@shardworks/nexus-core';
 

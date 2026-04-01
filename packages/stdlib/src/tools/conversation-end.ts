@@ -1,4 +1,5 @@
-import { tool, endConversation, guild } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
+import { endConversation } from '@shardworks/nexus-core/legacy/1';
 import { z } from 'zod';
 
 export default tool({

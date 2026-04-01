@@ -6,7 +6,7 @@ import {
   clockStart,
   clockStop,
   clockStatus,
-} from '@shardworks/nexus-core';
+} from '@shardworks/nexus-core/legacy/1';
 import { resolveHome } from '../resolve-home.ts';
 
 /**

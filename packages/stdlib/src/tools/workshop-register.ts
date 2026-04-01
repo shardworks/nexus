@@ -1,4 +1,5 @@
-import { tool, addWorkshop, deriveWorkshopName, guild } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
+import { addWorkshop, deriveWorkshopName } from '@shardworks/nexus-core/legacy/1';
 import { z } from 'zod';
 
 export default tool({

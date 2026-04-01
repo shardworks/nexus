@@ -2,7 +2,7 @@ import { createCommand } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { installTool, installBundle, classifySource, isBundleDir } from '@shardworks/nexus-core';
+import { installTool, installBundle, classifySource, isBundleDir } from '@shardworks/nexus-core/legacy/1';
 import { resolveHome } from '../resolve-home.ts';
 
 /**

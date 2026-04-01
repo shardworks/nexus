@@ -5,7 +5,8 @@
  * the CLI (for humans), and importable by engines. All access paths execute
  * the same logic.
  */
-import { tool, instantiate, guild } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
+import { instantiate } from '@shardworks/nexus-core/legacy/1';
 import { z } from 'zod';
 
 export default tool({

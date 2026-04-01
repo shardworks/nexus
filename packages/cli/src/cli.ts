@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * nsg — new entry point, built on the rig architecture.
+ * nsg — new entry point, built on the plugin architecture.
  *
- * Dynamically discovers installed tools via rig, registers them as Commander
+ * Dynamically discovers installed tools via plugins, registers them as Commander
  * commands, and delegates argument parsing and invocation to Commander.
  *
  * Tools are filtered to those with 'cli' in callableFrom (or no callableFrom

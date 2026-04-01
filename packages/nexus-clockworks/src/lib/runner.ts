@@ -21,9 +21,9 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { readGuildConfig } from '@shardworks/nexus-core';
-import { resolveEngineFromExport } from '@shardworks/nexus-core';
 import type { StandingOrder, GuildConfig } from '@shardworks/nexus-core';
-import type { GuildEvent, EngineDefinition } from '@shardworks/nexus-core';
+import { resolveEngineFromExport } from '@shardworks/nexus-core/legacy/1';
+import type { GuildEvent, EngineDefinition } from '@shardworks/nexus-core/legacy/1';
 import {
   readPendingEvents,
   readEvent,
@@ -92,15 +92,15 @@ export interface ClockRunResult {
 // ── Engine resolution ─────────────────────────────────────────────────
 
 /**
- * Resolve an EngineDefinition by scanning installed rig packages.
+ * Resolve an EngineDefinition by scanning installed plugin packages.
  *
- * For each rig key in config.rigs:
+ * For each plugin id in config.plugins:
  *  1. Check guild package.json dependencies for a matching package name.
- *  2. Fall back to treating the rig key as the package name directly,
- *     or as `@shardworks/<key>` for scoped packages.
+ *  2. Fall back to treating the plugin id as the package name directly,
+ *     or as `@shardworks/<id>` for scoped packages.
  *  3. Import the package and scan its default export for the engine.
  *
- * Throws if the engine is not found in any installed rig.
+ * Throws if the engine is not found in any installed plugin.
  */
 async function resolveEngine(
   home: string,

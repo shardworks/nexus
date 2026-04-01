@@ -29,7 +29,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { VERSION, resolveToolFromExport, registerSessionProvider } from '@shardworks/nexus-core';
-import type { ToolDefinition, HandlerContext } from '@shardworks/nexus-core';
+import type { ToolDefinition } from '@shardworks/nexus-core';
 import { claudeCodeProvider } from './index.ts';
 
 /** A single tool to load into the MCP server. */
@@ -98,11 +98,11 @@ export async function createMcpServer(config: McpServerConfig): Promise<McpServe
     version: VERSION,
   });
 
-  // Minimal HandlerContext — the MCP server does not have a full plugin graph
-  // wired in. ctx.apparatus(), ctx.config(), and ctx.guildConfig() stubs throw;
-  // MCP tools that need these will require an Arbor-aware refactor of the MCP
-  // server config and launch path.
-  const context: HandlerContext = {
+  // Minimal context stub — the MCP server does not have a full plugin graph
+  // wired in. Stubs throw; tools that need guild() will require an Arbor-aware
+  // refactor of the MCP server config and launch path.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const context: any = {
     home: config.home,
     config<T = Record<string, unknown>>(): T {
       throw new Error(
@@ -135,7 +135,7 @@ export async function createMcpServer(config: McpServerConfig): Promise<McpServe
         try {
           // Validate params through Zod before passing to handler
           const validated = def.params.parse(params);
-          const result = await def.handler(validated, context);
+          const result = await (def.handler as any)(validated, context);
 
           return {
             content: [{

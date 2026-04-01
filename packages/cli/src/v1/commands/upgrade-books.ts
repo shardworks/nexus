@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { createCommand } from 'commander';
-import { findGuildRoot, applyCoreMigrations } from '@shardworks/nexus-core';
+import { findGuildRoot } from '@shardworks/nexus-core';
+import { applyCoreMigrations } from '@shardworks/nexus-core/legacy/1';
 
 export function makeUpgradeBooksCommand() {
   return createCommand('upgrade-books')

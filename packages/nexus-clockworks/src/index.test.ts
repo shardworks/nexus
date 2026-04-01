@@ -1,5 +1,5 @@
 /**
- * nexus-clockworks rig — test suite.
+ * nexus-clockworks plugin — test suite.
  *
  * Tests the events API, runner, and tool handlers. Uses temp directories
  * as guild roots with Books tables created in-process (no arbor needed).

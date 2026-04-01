@@ -2,7 +2,7 @@
  * conversation-show tool — show full detail for a conversation.
  *
  * Replaces the stdlib conversation-show tool that called showConversation()
- * from @shardworks/nexus-core. The rig now owns this operation.
+ * from @shardworks/nexus-core. The plugin now owns this operation.
  */
 
 import { tool, guild } from '@shardworks/nexus-core';

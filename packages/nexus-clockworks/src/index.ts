@@ -1,23 +1,19 @@
 /**
- * nexus-clockworks — Rig export and TypeScript API.
+ * nexus-clockworks — Kit export and TypeScript API.
  *
- * ## Rig export (default)
+ * ## Kit export (default)
  *
- * The default export satisfies the `Rig` interface. Arbor reads it
+ * The default export satisfies the `Kit` interface. Arbor reads it
  * at startup to register tools and create Books tables.
  *
  * ## TypeScript API (named exports)
  *
  * These functions are the internal API surface for other framework modules
  * (writ.ts, session.ts, etc.) that need to signal events or read the event
- * queue without a full RigContext. They accept `home: string` directly.
- *
- * Once those modules are also riggified, callers should migrate to using
- * RigContext.rigBook('nexus-clockworks', 'events') for read access, and
- * importing signalEvent with a RigContext for write access.
+ * queue. They accept `home: string` directly.
  */
 
-import type { Rig, ToolDefinition } from '@shardworks/nexus-core';
+import type { Kit, ToolDefinition } from '@shardworks/nexus-core';
 import { books } from './books.ts';
 
 // ── Tools ─────────────────────────────────────────────────────────────
@@ -31,7 +27,7 @@ import clockStartTool from './tools/clock-start.ts';
 import clockStopTool from './tools/clock-stop.ts';
 import clockStatusTool from './tools/clock-status.ts';
 
-// ── Rig export ────────────────────────────────────────────────────────
+// ── Kit export ────────────────────────────────────────────────────────
 
 export default {
   tools: [
@@ -45,7 +41,7 @@ export default {
     clockStatusTool,
   ] as ToolDefinition[],
   books,
-} satisfies Rig;
+} satisfies Kit;
 
 // ── TypeScript API — event read/write ─────────────────────────────────
 

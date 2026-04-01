@@ -1,5 +1,5 @@
-import { tool, clockStop } from '@shardworks/nexus-core';
-import { guild } from '@shardworks/nexus-core';
+import { clockStop } from '@shardworks/nexus-core/legacy/1';
+import { tool, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
