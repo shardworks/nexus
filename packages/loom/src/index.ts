@@ -8,6 +8,8 @@
  * See: docs/architecture/apparatus/loom.md
  */
 
+import { createLoom } from './loom.ts';
+
 // ── Loom API ─────────────────────────────────────────────────────────
 
 export {
@@ -19,5 +21,4 @@ export {
 
 // ── Default export: the apparatus plugin ──────────────────────────────
 
-import { createLoom } from './loom.ts';
 export default createLoom();
