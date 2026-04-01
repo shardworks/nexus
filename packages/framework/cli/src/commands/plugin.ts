@@ -83,17 +83,17 @@ export const pluginList = tool({
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },
-  handler: async (_params) => {
+  handler: async (params) => {
     const { home } = guild();
     const config = readGuildConfig(home);
     const pluginIds = config.plugins;
 
     if (pluginIds.length === 0) {
-      if (_params.json) return [];
+      if (params.json) return [];
       return 'No plugins installed.';
     }
 
-    if (_params.json) {
+    if (params.json) {
       return [...pluginIds].sort().map((id) => ({ id }));
     }
     return [...pluginIds].sort().join('\n');

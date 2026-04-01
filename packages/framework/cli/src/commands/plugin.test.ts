@@ -19,49 +19,9 @@
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { pluginList, pluginInstall, pluginRemove, pluginUpgrade } from './plugin.ts';
-import { setGuild, clearGuild } from '@shardworks/nexus-core';
-
-/** Set up a minimal guild accessor pointing at the given directory. */
-function setupGuildAccessor(home: string): void {
-  setGuild({
-    home,
-    apparatus: () => { throw new Error('not available in test'); },
-    config: () => ({}) as never,
-    guildConfig: () => ({}) as never,
-    kits: () => [],
-    apparatuses: () => [],
-  });
-}
-
-let tmpDirs: string[] = [];
-
-function makeTmpDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nsg-plugin-test-'));
-  tmpDirs.push(dir);
-  return dir;
-}
-
-/** Write a minimal guild.json to dir, with optional overrides. */
-function makeGuild(dir: string, overrides: Record<string, unknown> = {}): void {
-  const config = {
-    name: 'test-guild',
-    nexus: '0.0.0',
-    workshops: {},
-    plugins: [],
-    settings: { model: 'sonnet' },
-    ...overrides,
-  };
-  fs.writeFileSync(path.join(dir, 'guild.json'), JSON.stringify(config, null, 2) + '\n');
-}
-
-/** Write a guild-root package.json declaring the given npm dependencies. */
-function makeGuildPackageJson(dir: string, deps: Record<string, string>): void {
-  const pkg = { name: 'test-guild', version: '1.0.0', dependencies: deps };
-  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
-}
+import { setupGuildAccessor, makeTmpDir, makeGuild, makeGuildPackageJson, cleanupTestState } from './test-helpers.ts';
 
 /**
  * Create a minimal fake plugin package directory suitable for `plugin-install --type link`.
@@ -85,11 +45,7 @@ function makeFakePlugin(parentDir: string, packageName: string): string {
 }
 
 afterEach(() => {
-  clearGuild();
-  for (const dir of tmpDirs) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-  tmpDirs = [];
+  cleanupTestState();
 });
 
 // ── Tool metadata ──────────────────────────────────────────────────────────
@@ -116,7 +72,7 @@ describe('plugin tool definitions', () => {
 
 describe('plugin-list handler', () => {
   it('returns "No plugins installed." when plugins array is empty', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuild(tmp);
 
     setupGuildAccessor(tmp);
@@ -125,7 +81,7 @@ describe('plugin-list handler', () => {
   });
 
   it('returns empty array in json mode when no plugins installed', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuild(tmp);
 
     setupGuildAccessor(tmp);
@@ -134,7 +90,7 @@ describe('plugin-list handler', () => {
   });
 
   it('shows installed plugin ids in text output', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuild(tmp, { plugins: ['nexus-stdlib'] });
 
     setupGuildAccessor(tmp);
@@ -143,7 +99,7 @@ describe('plugin-list handler', () => {
   });
 
   it('returns sorted plugin ids one per line in text mode', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuild(tmp, { plugins: ['nexus-stdlib', 'nexus-ledger'] });
 
     setupGuildAccessor(tmp);
@@ -153,7 +109,7 @@ describe('plugin-list handler', () => {
   });
 
   it('returns array of { id } objects in json mode', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuild(tmp, { plugins: ['nexus-stdlib'] });
 
     setupGuildAccessor(tmp);
@@ -165,7 +121,7 @@ describe('plugin-list handler', () => {
   });
 
   it('json output is sorted by id', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuild(tmp, { plugins: ['nexus-stdlib', 'nexus-ledger'] });
 
     setupGuildAccessor(tmp);
@@ -181,7 +137,7 @@ describe('plugin-list handler', () => {
 
 describe('plugin-install handler — link mode', () => {
   it('adds the plugin id to config.plugins', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuild(tmp);
     const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin');
 
@@ -195,7 +151,7 @@ describe('plugin-install handler — link mode', () => {
   });
 
   it('does not write baseTools or roles (permission model)', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuild(tmp);
     const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin');
 
@@ -208,7 +164,7 @@ describe('plugin-install handler — link mode', () => {
   });
 
   it('does not duplicate plugin id if already in plugins array', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     // derivePluginId('my-fake-plugin') → 'my-fake'
     makeGuild(tmp, { plugins: ['my-fake'] });
     const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin');
@@ -222,7 +178,7 @@ describe('plugin-install handler — link mode', () => {
   });
 
   it('throws when source directory has no package.json', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuild(tmp);
     const emptyDir = path.join(tmp, 'empty-plugin');
     fs.mkdirSync(emptyDir);
@@ -235,7 +191,7 @@ describe('plugin-install handler — link mode', () => {
   });
 
   it('returns a success message mentioning the plugin id', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuild(tmp);
     const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin');
 
@@ -254,7 +210,7 @@ describe('plugin-remove handler', () => {
   }
 
   it('removes the plugin from config.plugins', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuildWithPlugin(tmp);
 
     setupGuildAccessor(tmp);
@@ -265,7 +221,7 @@ describe('plugin-remove handler', () => {
   });
 
   it('does not affect plugins belonging to a different plugin', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuild(tmp, { plugins: ['nexus-stdlib', 'nexus-ledger'] });
     makeGuildPackageJson(tmp, {
       '@shardworks/nexus-stdlib': '^1.0.0',
@@ -280,7 +236,7 @@ describe('plugin-remove handler', () => {
   });
 
   it('accepts full @-scoped package name and normalizes to plugin id', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuildWithPlugin(tmp);
 
     setupGuildAccessor(tmp);
@@ -291,7 +247,7 @@ describe('plugin-remove handler', () => {
   });
 
   it('returns a success message with the plugin id', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuildWithPlugin(tmp);
 
     setupGuildAccessor(tmp);
@@ -300,7 +256,7 @@ describe('plugin-remove handler', () => {
   });
 
   it('throws when the plugin is not installed', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('plugin');
     makeGuild(tmp);
 
     setupGuildAccessor(tmp);

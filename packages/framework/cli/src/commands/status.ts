@@ -20,7 +20,7 @@ export default tool({
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },
-  handler: async (_params) => {
+  handler: async (params) => {
     let g;
     try {
       g = guild();
@@ -42,7 +42,7 @@ export default tool({
       plugins: [...config.plugins].sort(),
     };
 
-    if (_params.json) {
+    if (params.json) {
       return result;
     }
 

@@ -8,51 +8,11 @@
 
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import statusTool from './status.ts';
-import { setGuild, clearGuild } from '@shardworks/nexus-core';
-
-/** Set up a minimal guild accessor pointing at the given directory. */
-function setupGuildAccessor(home: string): void {
-  setGuild({
-    home,
-    apparatus: () => { throw new Error('not available in test'); },
-    config: () => ({}) as never,
-    guildConfig: () => ({}) as never,
-    kits: () => [],
-    apparatuses: () => [],
-  });
-}
-
-let tmpDirs: string[] = [];
-
-function makeTmpDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nsg-status-test-'));
-  tmpDirs.push(dir);
-  return dir;
-}
-
-/** Write a minimal guild.json to dir, with optional overrides. */
-function makeGuild(dir: string, overrides: Record<string, unknown> = {}): void {
-  const config = {
-    name: 'test-guild',
-    nexus: '0.0.0',
-    workshops: {},
-    plugins: [],
-    settings: { model: 'sonnet' },
-    ...overrides,
-  };
-  fs.writeFileSync(path.join(dir, 'guild.json'), JSON.stringify(config, null, 2) + '\n');
-}
+import { setupGuildAccessor, makeTmpDir, makeGuild, cleanupTestState } from './test-helpers.ts';
 
 afterEach(() => {
-  clearGuild();
-  for (const dir of tmpDirs) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-  tmpDirs = [];
+  cleanupTestState();
 });
 
 // ── No guild ──────────────────────────────────────────────────────────────
@@ -82,7 +42,7 @@ describe('status tool definition', () => {
 
 describe('status handler — text mode', () => {
   it('shows guild name', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('status');
     makeGuild(tmp);
 
     setupGuildAccessor(tmp);
@@ -92,7 +52,7 @@ describe('status handler — text mode', () => {
   });
 
   it('shows guild home path', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('status');
     makeGuild(tmp);
 
     setupGuildAccessor(tmp);
@@ -101,7 +61,7 @@ describe('status handler — text mode', () => {
   });
 
   it('shows model from settings', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('status');
     makeGuild(tmp, { settings: { model: 'opus' } });
 
     setupGuildAccessor(tmp);
@@ -110,7 +70,7 @@ describe('status handler — text mode', () => {
   });
 
   it('shows "(none)" for plugins when plugins list is empty', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('status');
     makeGuild(tmp);
 
     setupGuildAccessor(tmp);
@@ -120,7 +80,7 @@ describe('status handler — text mode', () => {
   });
 
   it('shows installed plugin ids from config.plugins', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('status');
     makeGuild(tmp, { plugins: ['nexus-stdlib'] });
 
     setupGuildAccessor(tmp);
@@ -129,7 +89,7 @@ describe('status handler — text mode', () => {
   });
 
   it('shows multiple installed plugins', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('status');
     makeGuild(tmp, { plugins: ['nexus-stdlib', 'nexus-ledger'] });
 
     setupGuildAccessor(tmp);
@@ -143,7 +103,7 @@ describe('status handler — text mode', () => {
 
 describe('status handler — json mode', () => {
   it('returns an object (not a string)', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('status');
     makeGuild(tmp);
 
     setupGuildAccessor(tmp);
@@ -152,7 +112,7 @@ describe('status handler — json mode', () => {
   });
 
   it('includes guild name', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('status');
     makeGuild(tmp);
 
     setupGuildAccessor(tmp);
@@ -161,7 +121,7 @@ describe('status handler — json mode', () => {
   });
 
   it('includes home path', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('status');
     makeGuild(tmp);
 
     setupGuildAccessor(tmp);
@@ -170,7 +130,7 @@ describe('status handler — json mode', () => {
   });
 
   it('includes nexus version string', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('status');
     makeGuild(tmp);
 
     setupGuildAccessor(tmp);
@@ -179,7 +139,7 @@ describe('status handler — json mode', () => {
   });
 
   it('includes model from settings', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('status');
     makeGuild(tmp, { settings: { model: 'haiku' } });
 
     setupGuildAccessor(tmp);
@@ -188,7 +148,7 @@ describe('status handler — json mode', () => {
   });
 
   it('includes plugins as a sorted array from config.plugins', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('status');
     makeGuild(tmp, { plugins: ['nexus-ledger', 'nexus-stdlib'] });
 
     setupGuildAccessor(tmp);
@@ -201,7 +161,7 @@ describe('status handler — json mode', () => {
   });
 
   it('returns empty plugins array when nothing is installed', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('status');
     makeGuild(tmp);
 
     setupGuildAccessor(tmp);

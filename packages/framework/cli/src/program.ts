@@ -21,14 +21,10 @@ import path from 'node:path';
 import { Command } from 'commander';
 import { z } from 'zod';
 import { findGuildRoot, guild } from '@shardworks/nexus-core';
-import type { ToolDefinition } from '@shardworks/tools-apparatus';
+import type { ToolDefinition, InstrumentariumApi } from '@shardworks/tools-apparatus';
 import { createGuild } from '@shardworks/nexus-arbor';
-import type { InstrumentariumApi } from '@shardworks/tools-apparatus';
 import { frameworkCommands } from './commands/index.ts';
 import { toFlag, isBooleanSchema, findGroupPrefixes } from './helpers.ts';
-
-// Re-export helpers for backward compatibility with tests
-export { toFlag, isBooleanSchema, findGroupPrefixes } from './helpers.ts';
 
 type ZodShape = Record<string, z.ZodTypeAny>;
 

@@ -8,29 +8,18 @@
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 import initTool from './init.ts';
-
-let tmpDirs: string[] = [];
-
-function makeTmpDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nsg-init-test-'));
-  tmpDirs.push(dir);
-  return dir;
-}
+import { makeTmpDir, cleanupTestState } from './test-helpers.ts';
 
 afterEach(() => {
-  for (const dir of tmpDirs) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-  tmpDirs = [];
+  cleanupTestState();
 });
 
 describe('nsg init', () => {
   it('creates guild.json with correct shape', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('init');
     const guildPath = path.join(tmp, 'my-guild');
 
     await initTool.handler({ path: guildPath });
@@ -47,7 +36,7 @@ describe('nsg init', () => {
   });
 
   it('creates package.json', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('init');
     const guildPath = path.join(tmp, 'test-guild');
 
     await initTool.handler({ path: guildPath });
@@ -59,7 +48,7 @@ describe('nsg init', () => {
   });
 
   it('creates .gitignore', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('init');
     const guildPath = path.join(tmp, 'g');
 
     await initTool.handler({ path: guildPath });
@@ -70,7 +59,7 @@ describe('nsg init', () => {
   });
 
   it('scaffolds directories', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('init');
     const guildPath = path.join(tmp, 'g');
 
     await initTool.handler({ path: guildPath });
@@ -81,7 +70,7 @@ describe('nsg init', () => {
   });
 
   it('respects --name override', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('init');
     const guildPath = path.join(tmp, 'dir-name');
 
     await initTool.handler({ path: guildPath, name: 'custom-name' });
@@ -91,7 +80,7 @@ describe('nsg init', () => {
   });
 
   it('respects --model override', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('init');
     const guildPath = path.join(tmp, 'g');
 
     await initTool.handler({ path: guildPath, model: 'opus' });
@@ -101,7 +90,7 @@ describe('nsg init', () => {
   });
 
   it('fails on non-empty directory', async () => {
-    const tmp = makeTmpDir();
+    const tmp = makeTmpDir('init');
     const guildPath = path.join(tmp, 'exists');
     fs.mkdirSync(guildPath);
     fs.writeFileSync(path.join(guildPath, 'file.txt'), 'not empty');

@@ -9,9 +9,8 @@
  */
 
 import { tool } from '@shardworks/tools-apparatus';
-import { VERSION, readGuildConfig, guild } from '@shardworks/nexus-core';
+import { VERSION, readGuildConfig, guild, readGuildPackageJson, resolvePackageNameForPluginId } from '@shardworks/nexus-core';
 import { z } from 'zod';
-import { readGuildPackageJson, resolvePackageNameForPluginId } from '@shardworks/nexus-core';
 
 export default tool({
   name: 'version',
@@ -20,7 +19,7 @@ export default tool({
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },
-  handler: async (_params) => {
+  handler: async (params) => {
     const result: Record<string, string> = {
       nexus: VERSION,
       node: process.version,
@@ -46,7 +45,7 @@ export default tool({
       // Not in a guild or guild.json unreadable — just show framework version
     }
 
-    if (_params.json) {
+    if (params.json) {
       return result;
     }
 
