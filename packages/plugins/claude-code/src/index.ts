@@ -157,6 +157,14 @@ export function createClaudeCodeProvider(): Plugin {
 
 export default createClaudeCodeProvider();
 
+// ── MCP server re-exports ───────────────────────────────────────────
+// The MCP server module is used by the session provider (future: to
+// attach tools to sessions via --mcp-config) and can be imported
+// directly for testing or custom integrations.
+
+export { createMcpServer } from './mcp-server.ts';
+export type { McpServerProcessConfig } from './mcp-server.ts';
+
 // ── Spawn helpers ────────────────────────────────────────────────────
 
 /** Parsed result from stream-json output. @internal */

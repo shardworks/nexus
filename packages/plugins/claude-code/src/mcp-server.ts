@@ -1,148 +1,85 @@
 /**
- * MCP Server — serves guild tools as typed MCP tools during anima sessions.
+ * MCP Tool Server — serves guild tools as typed MCP tools during anima sessions.
  *
- * Absorbed from the former `engine-mcp-server` package. This is an internal
- * module of the claude-code apparatus package — not a separate package.
+ * Two entry points:
  *
- * The session provider launches this as a stdio process, configured with
- * the set of tools the anima has access to (based on role gating).
+ * 1. **`createMcpServer(tools)`** — library function. Takes an array of
+ *    ToolDefinitions (already resolved by the Instrumentarium) and returns
+ *    a configured McpServer. Used by in-process callers or by the process
+ *    entry point below.
  *
- * One process per session. All the anima's tools. Claude's runtime manages
- * the lifecycle — spawns at session start, kills at session end.
+ * 2. **`startMcpServer(config)`** — process entry point. Boots a guild
+ *    runtime, resolves the permission-gated tool set via the Instrumentarium,
+ *    creates the MCP server, and connects via stdio transport. Designed to
+ *    be spawned by Claude's runtime via `--mcp-config`.
  *
- * ## Usage
+ * The MCP server is one-per-session. Claude's runtime manages the lifecycle —
+ * spawns at session start, kills at session end.
  *
- * The server reads a JSON config from a file path passed as argv[2]:
- *
- *   node mcp-server <config.json>
- *
- * Config shape:
- *   {
- *     "home": "/absolute/path/to/guild-root",
- *     "tools": [
- *       { "name": "install-tool", "modulePath": "@shardworks/nexus-stdlib" },
- *       { "name": "my-tool", "modulePath": "/absolute/path/to/handler.ts" }
- *     ]
- *   }
+ * See: docs/architecture/apparatus/claude-code.md
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { VERSION } from '@shardworks/nexus-core';
 import type { ToolDefinition } from '@shardworks/tools-apparatus';
-import { isToolDefinition } from '@shardworks/tools-apparatus';
 
-/** A single tool to load into the MCP server. */
-export interface ToolSpec {
-  /** Tool name — how the anima sees it. */
-  name: string;
-  /** Module path — package name (for framework tools) or absolute file path (for guild tools). */
-  modulePath: string;
-}
+// ── Public types ────────────────────────────────────────────────────────
 
-/** Configuration for the MCP server. */
-export interface McpServerConfig {
+/**
+ * Configuration for the MCP server process entry point.
+ *
+ * Passed as a JSON file (path in argv[2]) when the MCP server is
+ * spawned as a standalone process by Claude's runtime.
+ */
+export interface McpServerProcessConfig {
   /** Absolute path to the guild root. */
   home: string;
-  /** Tools to register as MCP tools. */
-  tools: ToolSpec[];
-  /** Environment variables for the MCP server process. */
-  env?: Record<string, string>;
+  /**
+   * Permission grants for tool resolution (plugin:level format).
+   * Passed to instrumentarium.resolve() to determine the tool set.
+   */
+  permissions: string[];
+  /**
+   * Strict mode for permissionless tools.
+   * When true, permissionless tools are excluded unless the grants
+   * contain plugin:* or *:* for the tool's plugin.
+   */
+  strict?: boolean;
 }
 
-/**
- * Resolve a single ToolDefinition from a module's default export.
- *
- * Handles both single-tool and array-of-tools exports:
- * - Single tool: `export default tool({...})` → returned directly
- * - Array: `export default [tool({...}), tool({...})]` → find by name
- */
-function resolveToolFromExport(
-  moduleDefault: unknown,
-  toolName?: string,
-): ToolDefinition | null {
-  // Single tool export
-  if (isToolDefinition(moduleDefault)) {
-    if (!toolName || moduleDefault.name === toolName) return moduleDefault;
-    return null;
-  }
-
-  // Array of tools — find by name
-  if (Array.isArray(moduleDefault)) {
-    for (const item of moduleDefault) {
-      if (!isToolDefinition(item)) continue;
-      if (item.name === toolName) return item;
-    }
-    // If no name match but array has exactly one tool, return it
-    const tools = moduleDefault.filter(isToolDefinition);
-    if (tools.length === 1 && !toolName) return tools[0]!;
-    return null;
-  }
-
-  return null;
-}
-
-/**
- * Load a tool definition from a module path.
- *
- * Handles both single-tool and array-of-tools exports:
- * - Single: `export default tool({...})` → returned directly
- * - Array: `export default [tool({...}), ...]` → resolved by spec.name
- */
-async function loadTool(spec: ToolSpec): Promise<ToolDefinition | null> {
-  try {
-    const mod = await import(spec.modulePath);
-    const def = resolveToolFromExport(mod.default, spec.name);
-
-    if (!def) {
-      console.error(
-        `[mcp-server] ${spec.name}: could not resolve tool from "${spec.modulePath}". ` +
-        `Module must export a tool() definition or an array of tool() definitions with matching names. Skipping.`,
-      );
-      return null;
-    }
-
-    // Filter by callableFrom — only serve tools that include 'mcp'.
-    // Tools with no callableFrom default to all callers (available everywhere).
-    const channels = def.callableFrom;
-    if (channels && !channels.includes('mcp')) {
-      // Tool explicitly excludes MCP — skip silently
-      return null;
-    }
-
-    return def;
-  } catch (err) {
-    console.error(`[mcp-server] ${spec.name}: failed to load module "${spec.modulePath}":`, err);
-    return null;
-  }
-}
+// ── Library API ─────────────────────────────────────────────────────────
 
 /**
  * Create and configure an MCP server with the given tools.
  *
  * Each tool's Zod param schema is registered directly with the MCP SDK
- * (which handles JSON Schema conversion). The handler is wrapped to inject
- * the framework context and format the result as MCP tool output.
+ * (which handles JSON Schema conversion). The handler is wrapped to
+ * validate params via Zod and format the result as MCP tool output.
+ *
+ * Tools with `callableFrom` set that does not include `'mcp'` are
+ * filtered out. Tools without `callableFrom` are included (available
+ * on all channels by default).
  */
-export async function createMcpServer(config: McpServerConfig): Promise<McpServer> {
+export async function createMcpServer(tools: ToolDefinition[]): Promise<McpServer> {
   const server = new McpServer({
     name: 'nexus-guild',
     version: VERSION,
   });
 
-  for (const spec of config.tools) {
-    const def = await loadTool(spec);
-    if (!def) continue;
+  for (const def of tools) {
+    // Filter by callableFrom — only serve tools that include 'mcp'.
+    // Tools with no callableFrom default to all callers (available everywhere).
+    if (def.callableFrom && !def.callableFrom.includes('mcp')) {
+      continue;
+    }
 
-    // Register the tool as an MCP tool.
-    // The MCP SDK accepts Zod shapes directly — it handles JSON Schema conversion.
     server.tool(
-      spec.name,
+      def.name,
       def.description,
       def.params.shape,
       async (params) => {
         try {
-          // Validate params through Zod before passing to handler
           const validated = def.params.parse(params);
           const result = await def.handler(validated);
 
@@ -166,29 +103,64 @@ export async function createMcpServer(config: McpServerConfig): Promise<McpServe
   return server;
 }
 
+// ── Process entry point ─────────────────────────────────────────────────
+
 /**
- * Entry point when run as a standalone process.
+ * Start the MCP server as a standalone stdio process.
  *
- * Reads config from a JSON file (path passed as first argument),
- * creates the MCP server, and connects via stdio transport.
+ * Boots the guild runtime, resolves the permission-gated tool set via
+ * the Instrumentarium, creates the MCP server, and connects via stdio.
+ *
+ * Config is read from a JSON file whose path is passed as argv[2]:
+ *
+ *   node mcp-server.js <config.json>
+ *
+ * Config shape: McpServerProcessConfig (home, permissions, strict?)
+ *
+ * This is the entry point Claude's runtime uses when spawning the MCP
+ * server via --mcp-config. Requires @shardworks/nexus-arbor at runtime
+ * for guild boot (createGuild).
  */
-export async function main(configPath?: string): Promise<void> {
+export async function startMcpServer(configPath?: string): Promise<void> {
   const resolvedPath = configPath ?? process.argv[2];
 
   if (!resolvedPath) {
-    console.error('Usage: nexus-mcp-server <config.json>');
+    console.error('Usage: mcp-server <config.json>');
     process.exit(1);
   }
 
-  // NOTE: This MCP server module is orphaned — it predates the apparatus model
-  // and needs modernization to use the guild runtime. Tracked in:
-  // nexus-mk2/docs/future/known-gaps.md ("MCP server module orphaned in claude-code-apparatus")
-
   const fs = await import('node:fs');
   const configText = fs.readFileSync(resolvedPath, 'utf-8');
-  const config: McpServerConfig = JSON.parse(configText);
+  const config: McpServerProcessConfig = JSON.parse(configText);
 
-  const server = await createMcpServer(config);
+  // Boot the guild runtime so tool handlers can access guild().
+  // Dynamic import — nexus-arbor is not a declared dependency of this
+  // package. It will be available at runtime when the MCP server is
+  // spawned inside a guild's node_modules tree (all framework packages
+  // are co-installed). This avoids a compile-time circular dependency.
+  // @ts-expect-error — nexus-arbor is a runtime-only dependency (not in
+  // this package's package.json). Available in guild node_modules at runtime.
+  const arbor: { createGuild: (root: string) => Promise<unknown> } = await import('@shardworks/nexus-arbor');
+  await arbor.createGuild(config.home);
+
+  // Resolve the permission-gated tool set via the Instrumentarium.
+  const core = await import('@shardworks/nexus-core');
+  const instrumentarium = core.guild().apparatus<{
+    resolve(options: {
+      permissions: string[];
+      strict?: boolean;
+      channel?: string;
+    }): Array<{ definition: ToolDefinition; pluginId: string }>;
+  }>('tools');
+
+  const resolved = instrumentarium.resolve({
+    permissions: config.permissions,
+    strict: config.strict,
+    channel: 'mcp',
+  });
+
+  const tools = resolved.map((r) => r.definition);
+  const server = await createMcpServer(tools);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
