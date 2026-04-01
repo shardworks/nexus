@@ -129,6 +129,12 @@ export async function createGuild(root?: string): Promise<Guild> {
     },
 
     config<T = Record<string, unknown>>(pluginId: string): T {
+      // GuildConfig types only the framework-level keys (name, nexus, plugins, etc.).
+      // Plugin-specific config sections (e.g. "animator", "stacks") are additional
+      // top-level keys in guild.json that GuildConfig doesn't model. The cast is safe
+      // because guild.json is a plain JSON object — all keys are accessible at runtime.
+      // Plugins can use module augmentation on GuildConfig to get typed access; this
+      // generic path remains the untyped fallback.
       const cfg = config as unknown as Record<string, unknown>;
       return (cfg[pluginId] ?? {}) as T;
     },

@@ -166,6 +166,7 @@ function setup(
         baseTools: [],
         plugins: [],
         settings: { model: 'sonnet' },
+        animator: { sessionProvider: sessionProviderPluginId },
       };
     },
     kits: () => [],
@@ -368,6 +369,7 @@ describe('Animator', () => {
         guildConfig: () => ({
           name: 'test', nexus: '0.0.0', workshops: {}, roles: {},
           baseTools: [], plugins: [], settings: { model: 'sonnet' },
+          animator: { sessionProvider: 'missing-provider' },
         }),
         kits: () => [],
         apparatuses: () => [],

@@ -346,35 +346,7 @@ For testing, `setGuild()` and `clearGuild()` are exported from `@shardworks/nexu
 
 ## Configuration
 
-Plugin-specific configuration lives in `guild.json` under the plugin's derived id — the same id used in `requires` arrays and `guild().apparatus()` calls. Configuration is accessed via `guild().config(pluginId)`, available both during apparatus startup and at handler invocation time.
-
-### `config<T>(pluginId)`
-
-Returns the configuration object for a plugin, read from `guild.json[pluginId]`. Returns `{}` if no section exists. Always takes an explicit plugin id.
-
-```typescript
-// @shardworks/clockworks apparatus — id: "clockworks"
-// guild.json: { "clockworks": { "maxConcurrent": 4 } }
-
-start: (ctx) => {
-  const { maxConcurrent = 2 } = guild().config<ClockworksConfig>('clockworks')
-}
-
-// Same pattern in tool handlers:
-handler: async (params) => {
-  const cfg = guild().config<ClockworksConfig>('clockworks')
-}
-```
-
-The generic type parameter is a cast — the framework does not validate config shape. Apparatus authors are responsible for defining and documenting their own config types.
-
-### `guildConfig()`
-
-Returns the full parsed `GuildConfig` — the escape hatch for cases where framework-level fields are needed directly (`name`, `nexus`, `plugins`, `settings`):
-
-```typescript
-const { settings } = guild().guildConfig()
-```
+Plugin-specific configuration lives in `guild.json` under the plugin's derived id — the same id used in `requires` arrays and `guild().apparatus()` calls.
 
 ### Config in `guild.json`
 
@@ -384,8 +356,7 @@ Plugin config sections sit alongside the framework-level keys at the top level o
 {
   "name":     "my-guild",
   "nexus":    "0.1.x",
-  "plugins":  ["clockworks", "books", "surveyor", "..."],
-  "roles":    { ... },
+  "plugins":  ["clockworks", "stacks", "animator", "..."],
   "workshops": { ... },
   "settings": { "model": "claude-opus-4-5" },
 
@@ -393,8 +364,8 @@ Plugin config sections sit alongside the framework-level keys at the top level o
     "events":        { ... },
     "standingOrders": [...]
   },
-  "surveyor": {
-    "scanDepth": 3
+  "animator": {
+    "sessionProvider": "claude-code"
   }
 }
 ```
@@ -407,6 +378,62 @@ Third-party apparatus follow the same pattern under their derived id:
     "ttl": 3600
   }
 }
+```
+
+### Typed config via module augmentation (recommended)
+
+`GuildConfig` types only the framework-level keys (`name`, `nexus`, `plugins`, `settings`, etc.). Plugin config sections are additional top-level keys that the base type doesn't model. The recommended approach is **module augmentation**: each plugin declares its config interface and augments `GuildConfig` so the section is typed.
+
+```typescript
+// In your plugin's types file:
+
+export interface ClockworksConfig {
+  maxConcurrent?: number;
+  events?: Record<string, EventDeclaration>;
+  standingOrders?: StandingOrder[];
+}
+
+declare module '@shardworks/nexus-core' {
+  interface GuildConfig {
+    clockworks?: ClockworksConfig;
+  }
+}
+```
+
+Once augmented, code that imports your plugin's types gets typed access through `guildConfig()` with no manual cast:
+
+```typescript
+// Inside apparatus start():
+const config = guild().guildConfig().clockworks ?? {};
+const maxConcurrent = config.maxConcurrent ?? 2;
+```
+
+The augmentation is visible wherever your plugin's types are imported — which is exactly where it matters: inside the plugin itself, and in any consuming plugin that imports your types.
+
+**Guidelines:**
+- Define the config interface in your plugin's public types file, alongside the API types.
+- Export the config interface from your package barrel so consumers can import it.
+- Make the augmented property optional (`clockworks?: ClockworksConfig`) — the section may not be present in guild.json.
+- Ship the augmentation in the same file as the config interface. It takes effect when any type from that file is imported.
+
+### `config<T>(pluginId)` (untyped fallback)
+
+For cases where module augmentation is not practical (dynamic plugin ids, third-party plugins whose types you don't import), `guild().config<T>(pluginId)` provides untyped access:
+
+```typescript
+const cfg = guild().config<{ maxConcurrent?: number }>('clockworks');
+```
+
+Returns `guild.json[pluginId]` cast to `T`, or `{}` if no section exists. The generic type parameter is an unchecked assertion — the framework does not validate config shape.
+
+Prefer module augmentation over `config<T>()` for any plugin you control. The augmented path gives you type safety without a cast at every call site.
+
+### `guildConfig()`
+
+Returns the full parsed `GuildConfig` — includes both framework-level fields (`name`, `nexus`, `plugins`, `settings`) and any plugin config sections added via module augmentation:
+
+```typescript
+const { settings } = guild().guildConfig()
 ```
 
 ---
