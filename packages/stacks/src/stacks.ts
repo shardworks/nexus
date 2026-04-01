@@ -21,6 +21,7 @@ import type {
   BookSchema,
   ChangeHandler,
   ListOptions,
+  OrderBy,
   ReadOnlyBook,
   StacksApi,
   TransactionContext,
@@ -31,6 +32,7 @@ import type {
 import type {
   BackendTransaction,
   BookRef,
+  InternalQuery,
   StacksBackend,
 } from './backend.ts';
 
@@ -38,11 +40,41 @@ import { CdcRegistry, coalesceEvents, type BufferedEvent } from './cdc.ts';
 import { translateListOptions, translateQuery, translateWhereClause } from './query.ts';
 import { SqliteBackend } from './sqlite-backend.ts';
 
+// ── Constants ────────────────────────────────────────────────────────
+
+const MAX_CASCADE_DEPTH = 16;
+
 // ── Active transaction state ──────────────────────────────────────────
 
 interface ActiveTransaction {
   backendTx: BackendTransaction;
   eventBuffer: BufferedEvent[];
+  depth: number;
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+function normalizeOrderBy(
+  orderBy: OrderBy,
+): Array<{ field: string; dir: 'asc' | 'desc' }> {
+  if (typeof orderBy[0] === 'string') {
+    const [field, dir] = orderBy as [string, 'asc' | 'desc'];
+    return [{ field, dir }];
+  }
+  return (orderBy as Array<[string, 'asc' | 'desc']>).map(([field, dir]) => ({
+    field,
+    dir,
+  }));
+}
+
+function getNestedField(entry: BookEntry, field: string): unknown {
+  const parts = field.split('.');
+  let current: unknown = entry;
+  for (const part of parts) {
+    if (current == null || typeof current !== 'object') return undefined;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
 }
 
 // ── Book handle implementation ────────────────────────────────────────
@@ -58,15 +90,15 @@ function createBookHandle<T extends BookEntry>(
     },
 
     async find(query: BookQuery): Promise<T[]> {
-      return stacks.doFind(ref, translateQuery(query)) as T[];
+      return stacks.doFind(ref, query) as Promise<T[]>;
     },
 
     async list(options?: ListOptions): Promise<T[]> {
-      return stacks.doFind(ref, translateListOptions(options)) as T[];
+      return stacks.doFind(ref, { ...options } as BookQuery) as Promise<T[]>;
     },
 
-    async count(where?: WhereClause): Promise<number> {
-      return stacks.doCount(ref, translateWhereClause(where));
+    async count(where?: WhereClause | { or: WhereClause[] }): Promise<number> {
+      return stacks.doCount(ref, where);
     },
   };
 
@@ -178,7 +210,7 @@ class StacksImpl {
   // ── Transaction management ────────────────────────────────────────
 
   async runTransaction<R>(fn: (tx: TransactionContext) => Promise<R>): Promise<R> {
-    // If already in a transaction, just run (no nesting)
+    // If already in a transaction, just run (no nesting — flattened)
     if (this.activeTx) {
       const txCtx = this.createTransactionContext();
       return fn(txCtx);
@@ -187,7 +219,7 @@ class StacksImpl {
     // Create new transaction
     const backendTx = this.backend.beginTransaction();
     const eventBuffer: BufferedEvent[] = [];
-    this.activeTx = { backendTx, eventBuffer };
+    this.activeTx = { backendTx, eventBuffer, depth: 0 };
 
     try {
       const txCtx = this.createTransactionContext();
@@ -233,6 +265,15 @@ class StacksImpl {
     const tx = this.requireTx();
     this.cdc.lock();
 
+    // Check cascade depth
+    tx.depth++;
+    if (tx.depth > MAX_CASCADE_DEPTH) {
+      throw new Error(
+        `[stacks] Maximum cascade depth (${MAX_CASCADE_DEPTH}) exceeded. ` +
+        `This usually means a CDC handler is triggering itself recursively.`,
+      );
+    }
+
     const needPrev = this.cdc.hasWatchers(ref.ownerId, ref.book);
     const result = tx.backendTx.put(ref, entry, { withPrev: needPrev });
 
@@ -257,6 +298,8 @@ class StacksImpl {
         type: 'update', ownerId: ref.ownerId, book: ref.book, entry, prev: result.prev!,
       });
     }
+
+    tx.depth--;
   }
 
   async doPatch(ref: BookRef, id: string, fields: Record<string, unknown>): Promise<BookEntry> {
@@ -278,6 +321,13 @@ class StacksImpl {
     const tx = this.requireTx();
     this.cdc.lock();
 
+    tx.depth++;
+    if (tx.depth > MAX_CASCADE_DEPTH) {
+      throw new Error(
+        `[stacks] Maximum cascade depth (${MAX_CASCADE_DEPTH}) exceeded.`,
+      );
+    }
+
     const result = tx.backendTx.patch(ref, id, fields);
 
     const event: BufferedEvent = {
@@ -296,6 +346,8 @@ class StacksImpl {
       entry: result.entry, prev: result.prev,
     });
 
+    tx.depth--;
+
     return result.entry;
   }
 
@@ -310,10 +362,20 @@ class StacksImpl {
     const tx = this.requireTx();
     this.cdc.lock();
 
+    tx.depth++;
+    if (tx.depth > MAX_CASCADE_DEPTH) {
+      throw new Error(
+        `[stacks] Maximum cascade depth (${MAX_CASCADE_DEPTH}) exceeded.`,
+      );
+    }
+
     const needPrev = this.cdc.hasWatchers(ref.ownerId, ref.book);
     const result = tx.backendTx.delete(ref, id, { withPrev: needPrev });
 
-    if (!result.found) return; // Silent no-op
+    if (!result.found) {
+      tx.depth--;
+      return; // Silent no-op
+    }
 
     const event: BufferedEvent = {
       ref: `${ref.ownerId}/${ref.book}`,
@@ -328,6 +390,8 @@ class StacksImpl {
     await this.cdc.firePhase1(ref.ownerId, ref.book, {
       type: 'delete', ownerId: ref.ownerId, book: ref.book, id, prev: result.prev!,
     });
+
+    tx.depth--;
   }
 
   // ── Read operations ───────────────────────────────────────────────
@@ -348,13 +412,19 @@ class StacksImpl {
     }
   }
 
-  doFind(ref: BookRef, query: import('./backend.ts').InternalQuery): BookEntry[] {
+  async doFind(ref: BookRef, query: BookQuery): Promise<BookEntry[]> {
+    // Handle OR queries at the apparatus level
+    if (query.where && !Array.isArray(query.where) && 'or' in query.where) {
+      return this.doFindOr(ref, query);
+    }
+
+    const internal = translateQuery(query as BookQuery & { where?: WhereClause });
     if (this.activeTx) {
-      return this.activeTx.backendTx.find(ref, query);
+      return this.activeTx.backendTx.find(ref, internal);
     }
     const tx = this.backend.beginTransaction();
     try {
-      const result = tx.find(ref, query);
+      const result = tx.find(ref, internal);
       tx.commit();
       return result;
     } catch (err) {
@@ -363,13 +433,91 @@ class StacksImpl {
     }
   }
 
-  doCount(ref: BookRef, query: import('./backend.ts').InternalQuery): number {
+  /**
+   * OR queries: run each branch as a separate backend query, deduplicate
+   * by id, re-sort, and paginate the merged result set.
+   *
+   * Performance note: each branch is a separate backend query. count()
+   * with OR cannot use the backend's efficient count path since
+   * deduplication requires knowing which IDs overlap. Acceptable for v1.
+   */
+  private async doFindOr(ref: BookRef, query: BookQuery): Promise<BookEntry[]> {
+    const orClauses = (query.where as { or: WhereClause[] }).or;
+
+    if (orClauses.length === 0) return [];
+
+    const seen = new Set<string>();
+    const merged: BookEntry[] = [];
+
+    const runBranch = (branch: WhereClause): BookEntry[] => {
+      const branchQuery = translateQuery({ where: branch } as BookQuery & { where?: WhereClause });
+      if (this.activeTx) {
+        return this.activeTx.backendTx.find(ref, branchQuery);
+      }
+      const tx = this.backend.beginTransaction();
+      try {
+        const result = tx.find(ref, branchQuery);
+        tx.commit();
+        return result;
+      } catch (err) {
+        tx.rollback();
+        throw err;
+      }
+    };
+
+    for (const branch of orClauses) {
+      const results = runBranch(branch);
+      for (const entry of results) {
+        if (!seen.has(entry.id)) {
+          seen.add(entry.id);
+          merged.push(entry);
+        }
+      }
+    }
+
+    // Apply sorting
+    if (query.orderBy) {
+      const orderEntries = normalizeOrderBy(query.orderBy);
+      merged.sort((a, b) => {
+        for (const { field, dir } of orderEntries) {
+          const va = getNestedField(a, field);
+          const vb = getNestedField(b, field);
+          if (va === vb) continue;
+          if (va == null) return dir === 'asc' ? -1 : 1;
+          if (vb == null) return dir === 'asc' ? 1 : -1;
+          const cmp = va < vb ? -1 : 1;
+          return dir === 'asc' ? cmp : -cmp;
+        }
+        return 0;
+      });
+    }
+
+    // Apply pagination
+    let result = merged;
+    if (query.offset !== undefined) {
+      result = result.slice(query.offset);
+    }
+    if (query.limit !== undefined) {
+      result = result.slice(0, query.limit);
+    }
+
+    return result;
+  }
+
+  async doCount(ref: BookRef, where?: WhereClause | { or: WhereClause[] }): Promise<number> {
+    // Handle OR queries — must deduplicate, so use doFindOr
+    if (where && !Array.isArray(where) && 'or' in where) {
+      const results = await this.doFindOr(ref, { where } as BookQuery);
+      return results.length;
+    }
+
+    const internal = translateWhereClause(where as WhereClause | undefined);
     if (this.activeTx) {
-      return this.activeTx.backendTx.count(ref, query);
+      return this.activeTx.backendTx.count(ref, internal);
     }
     const tx = this.backend.beginTransaction();
     try {
-      const result = tx.count(ref, query);
+      const result = tx.count(ref, internal);
       tx.commit();
       return result;
     } catch (err) {

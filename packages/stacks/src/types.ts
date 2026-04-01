@@ -22,7 +22,7 @@ export type BookEntry = { id: string } & Record<string, unknown>;
  * fields ('parent.id'). The Stacks translates internally.
  */
 export interface BookSchema {
-  indexes?: string[];
+  indexes?: (string | string[])[];
 }
 
 // ── Query language ────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ export type Pagination =
   | { limit?: never; offset?: never };
 
 export type BookQuery = {
-  where?: WhereClause;
+  where?: WhereClause | { or: WhereClause[] };
   orderBy?: OrderBy;
 } & Pagination;
 
@@ -61,7 +61,7 @@ export interface ReadOnlyBook<T extends BookEntry> {
   get(id: string): Promise<T | null>;
   find(query: BookQuery): Promise<T[]>;
   list(options?: ListOptions): Promise<T[]>;
-  count(where?: WhereClause): Promise<number>;
+  count(where?: WhereClause | { or: WhereClause[] }): Promise<number>;
 }
 
 /** Writable book handle — returned by `book()` for own-plugin access. */

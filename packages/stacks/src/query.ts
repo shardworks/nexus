@@ -64,8 +64,10 @@ function normalizeOrderBy(
 // ── Public translation ────────────────────────────────────────────────
 
 export function translateQuery(query: BookQuery): InternalQuery {
+  // Only called for AND queries — OR queries are handled at the apparatus level
+  const where = Array.isArray(query.where) ? query.where : undefined;
   return {
-    where: query.where?.map(translateCondition),
+    where: where?.map(translateCondition),
     orderBy: normalizeOrderBy(query.orderBy),
     limit: query.limit,
     offset: query.offset,
@@ -81,7 +83,10 @@ export function translateListOptions(options?: ListOptions): InternalQuery {
   };
 }
 
-export function translateWhereClause(where?: WhereClause): InternalQuery {
-  if (!where || where.length === 0) return {};
+export function translateWhereClause(where?: WhereClause | { or: WhereClause[] }): InternalQuery {
+  if (!where) return {};
+  // Only handles AND clauses — OR is handled at the apparatus level
+  if (!Array.isArray(where)) return {};
+  if (where.length === 0) return {};
   return { where: where.map(translateCondition) };
 }

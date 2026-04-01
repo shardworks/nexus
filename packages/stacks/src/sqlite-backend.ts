@@ -309,13 +309,26 @@ export class SqliteBackend implements StacksBackend {
       )`,
     );
 
-    for (const field of schema.indexes ?? []) {
-      const idx = `idx_${table}_${validateFieldName(field).replace(/\./g, '_')}`;
-      const jsonPath = toJsonPath(field);
-      db.exec(
-        `CREATE INDEX IF NOT EXISTS "${idx}"
-         ON "${table}"(json_extract(content, '${jsonPath}'))`,
-      );
+    for (const indexDef of schema.indexes ?? []) {
+      if (Array.isArray(indexDef)) {
+        // Compound index: ['status', 'createdAt'] or ['status', 'parent.id']
+        const fields = indexDef.map(f => validateFieldName(f));
+        const idxName = `idx_${table}_${fields.map(f => f.replace(/\./g, '_')).join('_')}`;
+        const columns = fields.map(f => `json_extract(content, '${toJsonPath(f)}')`).join(', ');
+        db.exec(
+          `CREATE INDEX IF NOT EXISTS "${idxName}"
+           ON "${table}"(${columns})`,
+        );
+      } else {
+        // Single-field index
+        const field = validateFieldName(indexDef);
+        const idx = `idx_${table}_${field.replace(/\./g, '_')}`;
+        const jsonPath = toJsonPath(field);
+        db.exec(
+          `CREATE INDEX IF NOT EXISTS "${idx}"
+           ON "${table}"(json_extract(content, '${jsonPath}'))`,
+        );
+      }
     }
   }
 
