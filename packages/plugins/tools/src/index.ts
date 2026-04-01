@@ -18,7 +18,6 @@ export {
   type ToolDefinition,
   tool,
   isToolDefinition,
-  resolveToolFromExport,
 } from './tool.ts';
 
 // ── Instrumentarium API ───────────────────────────────────────────────
@@ -27,7 +26,6 @@ export {
   type InstrumentariumApi,
   type ResolvedTool,
   type ResolveOptions,
-  createInstrumentarium,
 } from './instrumentarium.ts';
 
 // ── Default export: the apparatus plugin ──────────────────────────────

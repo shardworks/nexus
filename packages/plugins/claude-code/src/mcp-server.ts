@@ -30,7 +30,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { VERSION } from '@shardworks/nexus-core';
 import type { ToolDefinition } from '@shardworks/tools-apparatus';
-import { resolveToolFromExport } from '@shardworks/tools-apparatus';
+import { isToolDefinition } from '@shardworks/tools-apparatus';
 
 /** A single tool to load into the MCP server. */
 export interface ToolSpec {
@@ -48,6 +48,38 @@ export interface McpServerConfig {
   tools: ToolSpec[];
   /** Environment variables for the MCP server process. */
   env?: Record<string, string>;
+}
+
+/**
+ * Resolve a single ToolDefinition from a module's default export.
+ *
+ * Handles both single-tool and array-of-tools exports:
+ * - Single tool: `export default tool({...})` → returned directly
+ * - Array: `export default [tool({...}), tool({...})]` → find by name
+ */
+function resolveToolFromExport(
+  moduleDefault: unknown,
+  toolName?: string,
+): ToolDefinition | null {
+  // Single tool export
+  if (isToolDefinition(moduleDefault)) {
+    if (!toolName || moduleDefault.name === toolName) return moduleDefault;
+    return null;
+  }
+
+  // Array of tools — find by name
+  if (Array.isArray(moduleDefault)) {
+    for (const item of moduleDefault) {
+      if (!isToolDefinition(item)) continue;
+      if (item.name === toolName) return item;
+    }
+    // If no name match but array has exactly one tool, return it
+    const tools = moduleDefault.filter(isToolDefinition);
+    if (tools.length === 1 && !toolName) return tools[0]!;
+    return null;
+  }
+
+  return null;
 }
 
 /**

@@ -8,8 +8,6 @@
  * The Instrumentarium is role-agnostic — it receives an already-resolved
  * permissions array from the Loom and returns the matching tool set.
  * Role definitions and permission grants are owned by the Loom.
- *
- * See: docs/architecture/apparatus/instrumentarium.md
  */
 
 import type {
