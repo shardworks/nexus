@@ -15,6 +15,25 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
+  packages/animator:
+    dependencies:
+      '@shardworks/loom':
+        specifier: workspace:*
+        version: link:../loom
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../core
+      '@shardworks/stacks':
+        specifier: workspace:*
+        version: link:../stacks
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
   packages/arbor:
     dependencies:
       '@shardworks/nexus-core':
@@ -70,6 +89,9 @@ importers:
       '@shardworks/nexus-stdlib':
         specifier: workspace:*
         version: link:../stdlib
+      '@shardworks/tools-apparatus':
+        specifier: workspace:*
+        version: link:../tools-apparatus
       better-sqlite3:
         specifier: 12.8.0
         version: 12.8.0
@@ -107,6 +129,16 @@ importers:
         version: 25.5.0
 
   packages/guild-starter-kit: {}
+
+  packages/loom:
+    dependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
 
   packages/nexus-clockworks:
     dependencies:
@@ -173,6 +205,19 @@ importers:
       zod:
         specifier: ^4.0.0
         version: 4.3.6
+    devDependencies:
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
+  packages/tools-apparatus:
+    dependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: 3.25.23
+        version: 3.25.23
     devDependencies:
       '@types/node':
         specifier: 25.5.0
@@ -700,6 +745,9 @@ packages:
     resolution: {integrity: sha512-pM/SU9d3YAggzi6MtR4h7ruuQlqKtad8e9S0fmxcMi+ueAK5Korys/aWcV9LIIHTVbj01NdzxcnXSN+O74ZIVA==}
     peerDependencies:
       zod: ^3.25 || ^4
+
+  zod@3.25.23:
+    resolution: {integrity: sha512-Od2bdMosahjSrSgJtakrwjMDb1zM1A3VIHCPGveZt/3/wlrTWBya2lmEh2OYe4OIu8mPTmmr0gnLHIWQXdtWBg==}
 
   zod@4.3.6:
     resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
@@ -1259,5 +1307,7 @@ snapshots:
   zod-to-json-schema@3.25.1(zod@4.3.6):
     dependencies:
       zod: 4.3.6
+
+  zod@3.25.23: {}
 
   zod@4.3.6: {}

@@ -1,0 +1,37 @@
+{
+  "name": "@shardworks/loom",
+  "version": "0.0.0",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shardworks/nexus",
+    "directory": "packages/loom"
+  },
+  "description": "The Loom — session context composition apparatus",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@shardworks/nexus-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "25.5.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  }
+}
