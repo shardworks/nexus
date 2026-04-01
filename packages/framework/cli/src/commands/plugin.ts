@@ -105,13 +105,18 @@ export const pluginInstall = tool({
   description: 'Install a plugin into the guild',
   callableFrom: ['cli'],
   params: {
-    source: z.string().describe('Package name or git URL, e.g. "@shardworks/nexus-stdlib", "foo@1.0", or "git+https://..."'),
-    type: z.enum(['registry', 'link']).optional().describe('Install type: "registry" (npm install, default) or "link" (symlink local dir)'),
+    source: z.string().describe('Package name, git URL, or local folder path'),
+    type: z.enum(['registry', 'link']).optional().describe('Install type: "registry" (npm install) or "link" (local folder). Auto-detected when source is a folder path.'),
   },
   handler: async (params) => {
     const { home } = guild();
     const { source } = params;
-    const installType = params.type ?? 'registry';
+
+    // Auto-detect link mode when source looks like a filesystem path
+    const sourceDir = path.resolve(source);
+    const looksLikePath = source.startsWith('.') || source.startsWith('/');
+    const isDirectory = looksLikePath && fs.existsSync(sourceDir) && fs.statSync(sourceDir).isDirectory();
+    const installType = params.type ?? (isDirectory ? 'link' : 'registry');
 
     // 1. Install the npm package into the guild
     let packageName: string;

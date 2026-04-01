@@ -266,6 +266,37 @@ describe('createGuild — apparatus loading', () => {
     assert.deepEqual(api.list(), ['tool-a']);
   });
 
+  it('exposes deferred provides set during start() via getter', async () => {
+    const tmp = makeTmpDir();
+
+    // Manually create a plugin that mirrors the Stacks pattern:
+    // provides is a getter returning a variable that's undefined until start() runs.
+    const pkgDir = path.join(tmp, 'node_modules', 'deferred-apparatus');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'deferred-apparatus', version: '1.0.0', type: 'module', exports: { '.': './index.js' } }),
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, 'index.js'),
+      `let api;
+export default {
+  apparatus: {
+    requires: undefined,
+    get provides() { return api; },
+    async start() { api = { ready: true }; },
+  },
+};\n`,
+    );
+
+    writeGuildJson(tmp, { plugins: ['deferred'] });
+    writePackageJson(tmp, { 'deferred-apparatus': '^1.0.0' });
+
+    const g = await createGuild(tmp);
+    const api = g.apparatus('deferred');
+    assert.deepEqual(api, { ready: true });
+  });
+
   it('throws immediately when apparatus has no provides', async () => {
     const tmp = makeTmpDir();
     installFakeApparatus(tmp, '@shardworks/tools-apparatus');

@@ -10,25 +10,32 @@ Package: `@shardworks/animator-apparatus` · Plugin id: `animator`
 
 ## Purpose
 
-The Animator brings animas to life. It takes a woven session context (from The Loom), launches an AI process via a session provider, monitors it until exit, and records the result to The Stacks.
+The Animator brings animas to life. It is the guild's session apparatus — the single entry point for making an anima do work. Two API levels serve different callers:
 
-The Animator does not know how the context was composed. It receives a `WovenContext` and runs a session. This separation means The Loom can evolve its composition model without changing The Animator's interface.
+- **`summon()`** — the high-level "make an anima do a thing" call. Composes context via The Loom, launches a session, records the result. This is what the summon relay, the CLI, and most callers use.
+- **`animate()`** — the low-level call for callers that compose their own `AnimaWeave` (e.g. The Parlour for multi-turn conversations).
+
+Both methods return an `AnimateHandle` synchronously — a `{ chunks, result }` pair. The `result` promise resolves when the session completes. The `chunks` async iterable yields output when `streaming: true` is set; otherwise it completes immediately with no items. There is no separate streaming method — the `streaming` flag on the request controls the behavior, and the return shape is always the same.
+
+The Animator does not assemble system prompts — that is The Loom's job. `summon()` delegates context composition to The Loom; `animate()` accepts a pre-composed `AnimaWeave` from any source. This separation means The Loom can evolve its composition model (adding role instructions, curricula, temperaments) without changing The Animator's interface.
 
 ---
 
 ## Dependencies
 
 ```
-requires: ['stacks']
+requires:   ['stacks']
+recommends: ['loom']
 ```
 
-- **The Stacks** — records session results (the `sessions` book).
+- **The Stacks** (required) — records session results (the `sessions` book).
+- **The Loom** (recommended) — composes session context for `summon()`. Not needed for `animate()`, which accepts a pre-composed context. Resolved at call time, not at startup — the Animator starts without the Loom, but `summon()` throws if it's not installed. Arbor emits a startup warning if the Loom is not installed.
 
 ---
 
 ## Kit Contribution
 
-The Animator contributes a `sessions` book and session inspection tools via its supportKit:
+The Animator contributes a `sessions` book and session tools via its supportKit:
 
 ```typescript
 supportKit: {
@@ -37,7 +44,7 @@ supportKit: {
       indexes: ['startedAt', 'status', 'conversationId', 'provider'],
     },
   },
-  tools: [sessionList, sessionShow],
+  tools: [sessionList, sessionShow, summon],
 },
 ```
 
@@ -66,6 +73,17 @@ Show full detail for a single session by id.
 
 Returns: the complete session record from The Stacks, including `tokenUsage`, `metadata`, and all indexed fields.
 
+### `summon` tool
+
+Summon an anima from the CLI. Calls `animator.summon()` with the guild home as working directory. CLI-only (`callableFrom: 'cli'`). Requires `animate` permission.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `prompt` | `string` (required) | The work prompt — what the anima should do |
+| `role` | `string` (optional) | Role to summon (e.g. `'artificer'`, `'scribe'`) |
+
+Returns: session summary (id, status, provider, durationMs, exitCode, costUsd, tokenUsage, error).
+
 ---
 
 ## `AnimatorApi` Interface (`provides`)
@@ -73,24 +91,39 @@ Returns: the complete session record from The Stacks, including `tokenUsage`, `m
 ```typescript
 interface AnimatorApi {
   /**
-   * Animate a session — launch an AI process with the given context.
+   * Summon an anima — compose context via The Loom and launch a session.
    *
-   * Blocks until the session completes (or fails/times out).
-   * Records the session result to The Stacks before returning.
+   * This is the high-level entry point. Passes the role to The Loom for
+   * identity composition, then animate() for session launch and recording.
+   * The work prompt bypasses The Loom and goes directly to the provider.
+   * Auto-populates session metadata with `trigger: 'summon'` and `role`.
+   *
+   * Returns synchronously — the async work lives inside `result` and `chunks`.
+   * Requires The Loom apparatus to be installed. Throws if not available.
    */
-  animate(request: AnimateRequest): Promise<SessionResult>
+  summon(request: SummonRequest): AnimateHandle
 
   /**
-   * Animate a session with streaming output.
+   * Animate a session — launch an AI process with the given context.
    *
-   * Returns an async iterable of chunks as the session produces output,
-   * plus a promise that resolves to the final SessionResult.
-   * The result promise resolves after recording completes.
+   * This is the low-level entry point for callers that compose their own
+   * AnimaWeave (e.g. The Parlour for multi-turn conversations).
+   *
+   * Returns synchronously — the async work lives inside `result` and `chunks`.
+   * Records the session result to The Stacks before `result` resolves.
+   *
+   * Set `streaming: true` to receive output chunks as the session runs.
+   * When streaming is disabled (default), `chunks` completes immediately.
    */
-  animateStreaming(request: AnimateRequest): {
-    chunks: AsyncIterable<SessionChunk>
-    result: Promise<SessionResult>
-  }
+  animate(request: AnimateRequest): AnimateHandle
+}
+
+/** The return value from animate() and summon(). */
+interface AnimateHandle {
+  /** Output chunks. Empty iterable when not streaming. */
+  chunks: AsyncIterable<SessionChunk>
+  /** Resolves to the final SessionResult after recording. */
+  result: Promise<SessionResult>
 }
 
 /** A chunk of output from a running session. */
@@ -99,9 +132,30 @@ type SessionChunk =
   | { type: 'tool_use'; tool: string }
   | { type: 'tool_result'; tool: string }
 
+interface SummonRequest {
+  /** The work prompt — sent directly to the provider, bypasses The Loom. */
+  prompt: string
+  /** The role to summon (e.g. 'artificer'). Passed to The Loom for composition. */
+  role?: string
+  /** Working directory for the session. */
+  cwd: string
+  /** Optional conversation id to resume a multi-turn conversation. */
+  conversationId?: string
+  /**
+   * Additional metadata recorded alongside the session.
+   * Merged with auto-generated metadata ({ trigger: 'summon', role }).
+   * See § Caller Metadata.
+   */
+  metadata?: Record<string, unknown>
+  /** Enable streaming output (default false). */
+  streaming?: boolean
+}
+
 interface AnimateRequest {
-  /** The woven context from The Loom. */
-  context: WovenContext
+  /** The anima weave — composed identity context from The Loom (or self-composed). */
+  context: AnimaWeave
+  /** The work prompt — sent directly to the provider as initialPrompt. */
+  prompt?: string
   /**
    * Working directory for the session.
    * The session provider launches the AI process here.
@@ -119,6 +173,8 @@ interface AnimateRequest {
    * See § Caller Metadata.
    */
   metadata?: Record<string, unknown>
+  /** Enable streaming output (default false). */
+  streaming?: boolean
 }
 
 interface SessionResult {
@@ -162,10 +218,26 @@ interface TokenUsage {
 
 ## Session Lifecycle
 
-Both `animate()` and `animateStreaming()` follow the same lifecycle. The only difference is step 4: `animate()` blocks silently; `animateStreaming()` yields `SessionChunk`s as they arrive from the provider.
+### `summon()` — the high-level path
 
 ```
-animate(request) / animateStreaming(request)
+summon(request)
+  │
+  ├─ 1. Resolve The Loom (throws if not installed)
+  ├─ 2. Compose identity: loom.weave({ role })
+  │     (Loom produces systemPrompt from anima identity layers;
+  │      MVP: systemPrompt is undefined — composition not yet implemented)
+  ├─ 3. Build AnimateRequest with:
+  │     - context (AnimaWeave from Loom)
+  │     - prompt (work prompt, bypasses Loom)
+  │     - auto-metadata { trigger: 'summon', role }
+  └─ 4. Delegate to animate() → full animate lifecycle below
+```
+
+### `animate()` — the low-level path
+
+```
+animate(request)  →  { chunks, result }  (returned synchronously)
   │
   ├─ 1. Generate session id, capture startedAt
   ├─ 2. Write initial session record to The Stacks (status: 'running')
@@ -177,8 +249,8 @@ animate(request) / animateStreaming(request)
   │     - Working directory                │
   │     - conversationId (if resuming)     │
   ├─ 4. Monitor process until exit        ─┘
-  │     (animateStreaming: yield chunks via provider.launchStreaming)
-  │     (animate: block silently via provider.launch)
+  │     (streaming: yield chunks via provider.launchStreaming)
+  │     (non-streaming: block via provider.launch, chunks is empty)
   │
   ├─ 5. Record result (ALWAYS — see § Error Handling Contract):
   │     - Capture endedAt, durationMs
@@ -186,10 +258,10 @@ animate(request) / animateStreaming(request)
   │       (status, endedAt, durationMs, exitCode, tokenUsage, costUsd,
   │        providerSessionId, error, metadata)
   │
-  └─ 6. Return SessionResult
+  └─ 6. result promise resolves with SessionResult
 ```
 
-If `animateStreaming()` is called but the provider does not implement `launchStreaming()`, the Animator falls back to `provider.launch()` — the `chunks` iterable completes immediately with no items, and `result` resolves normally. Callers should not assume chunks will be emitted.
+When `streaming: true` is set but the provider does not implement `launchStreaming()`, the Animator falls back to `provider.launch()` — the `chunks` iterable completes immediately with no items, and `result` resolves normally. Callers should not assume chunks will be emitted.
 
 ---
 
@@ -219,7 +291,7 @@ interface AnimatorSessionProvider {
 
   /**
    * Launch a session with streaming output. Optional — providers that
-   * don't support streaming omit this method, and animateStreaming()
+   * don't support streaming omit this method, and animate({ streaming: true })
    * falls back to launch() with no chunks emitted.
    */
   launchStreaming?(config: SessionProviderConfig): {
@@ -229,7 +301,9 @@ interface AnimatorSessionProvider {
 }
 
 interface SessionProviderConfig {
-  systemPrompt: string
+  /** System prompt from the AnimaWeave — may be undefined at MVP. */
+  systemPrompt?: string
+  /** Work prompt from AnimateRequest.prompt — what the anima should do. */
   initialPrompt?: string
   /** Model to use (from guild settings). */
   model: string
@@ -284,7 +358,7 @@ The `metadata` field on `AnimateRequest` is an opaque pass-through. The Animator
 
 ```typescript
 // Example: the summon relay attaches dispatch context
-await animator.animate({
+const { result } = animator.animate({
   context: wovenContext,
   cwd: '/path/to/worktree',
   metadata: {
@@ -295,18 +369,22 @@ await animator.animate({
     workshop: 'nexus-mk2',
     workspaceKind: 'workshop-temp',
   },
-})
+});
+const session = await result;
 
 // Example: nsg consult attaches interactive session context
-await animator.animate({
+const { chunks, result: consultResult } = animator.animate({
   context: wovenContext,
   cwd: guildHome,
+  streaming: true,
   metadata: {
     trigger: 'consult',
     animaId: 'anm-b2e8f41',
     animaName: 'coco',
   },
-})
+});
+for await (const chunk of chunks) { /* stream to terminal */ }
+const consultSession = await consultResult;
 ```
 
 The `metadata` field is indexed in The Stacks as a JSON blob. Callers that need to query by metadata fields (e.g. "all sessions for writ X") use The Stacks' JSON path queries against the stored metadata.
@@ -317,13 +395,23 @@ This design keeps the Animator focused: it launches sessions and records what ha
 
 ## Invocation Paths
 
-The Animator is called from two places:
+The Animator is called from three places:
 
-1. **The summon relay** — when a standing order fires `summon: "role"`, the relay assembles the context via The Loom, then calls The Animator. This is the Clockworks-driven path.
+1. **The summon relay** — when a standing order fires `summon: "role"`, the relay calls `animator.summon()`. This is the Clockworks-driven autonomous path.
 
-2. **`nsg consult`** — the CLI command for interactive sessions. Calls The Loom and The Animator directly, bypassing Clockworks.
+2. **`nsg summon`** — the CLI command for direct dispatch. Calls `animator.summon()` to launch a session with a work prompt.
 
-Both paths use the same `AnimatorApi.animate()` call. The Animator doesn't know or care which path invoked it.
+3. **`nsg consult`** — the CLI command for interactive multi-turn sessions. Uses The Parlour, which composes its own context and calls `animator.animate()` directly.
+
+Paths 1 and 2 use `summon()` (high-level — The Loom composes the context). Path 3 uses `animate()` (low-level — The Parlour composes the context). The Animator doesn't know or care which path invoked it — the session lifecycle is identical.
+
+### CLI streaming behavior
+
+The `nsg summon` command invokes the `summon` tool through the generic CLI tool runner, which `await`s the handler and prints the return value. The tool contract (`ToolDefinition.handler`) returns a single value — there is no streaming return type. The CLI prints the structured session summary (id, status, cost, token usage) to stdout when the session completes.
+
+However, **real-time session output is visible during execution via stderr**. The claude-code provider spawns `claude` with `--output-format stream-json` and parses NDJSON from the child process's stdout. As assistant text chunks arrive, the provider writes them to `process.stderr` as a side effect of parsing (in `parseStreamJsonMessage`). Because the CLI inherits the provider's stderr, users see streaming text output in the terminal while the session runs.
+
+This is intentional: stderr carries progress output, stdout carries the structured result. The pattern is standard for CLI tools that produce both human-readable progress and machine-readable results. The streaming output is a provider-level concern — the Animator and the tool system are not involved.
 
 ---
 
@@ -470,3 +558,67 @@ interface SessionProviderConfig {
 ```
 
 The session provider interface gains an optional `mcp` field. Providers that support MCP connect to it; providers that don't ignore it. The Animator handles MCP server lifecycle (start before launch, stop after exit).
+
+---
+
+## Future: Streaming Through the Tool Contract
+
+The current CLI streaming path works via a stderr side-channel in the provider (see § CLI streaming behavior). This is pragmatic and works well for the `nsg summon` use case, but it has limitations:
+
+- The CLI has no control over formatting or filtering of streamed output — it's raw provider text on stderr.
+- MCP callers cannot receive streaming output at all — the tool contract returns a single value.
+- Callers that want to interleave chunk types (text, tool_use, tool_result) with their own UI cannot — the stderr stream is unstructured text.
+
+The Animator already supports structured streaming internally: `animate({ streaming: true })` returns an `AnimateHandle` whose `chunks` async iterable yields typed `SessionChunk` objects in real time. The gap is that the tool system has no way to expose this to callers.
+
+### Design sketch
+
+Extend `ToolDefinition.handler` to support an `AsyncIterable` return type:
+
+```typescript
+// Current
+handler: (params: T) => unknown | Promise<unknown>
+
+// Extended
+handler: (params: T) => unknown | Promise<unknown> | AsyncIterable<unknown>
+```
+
+Each caller adapts the iterable to its transport:
+
+- **CLI** — detects `AsyncIterable`, writes chunks to stdout as they arrive (e.g. text chunks as plain text, tool_use/tool_result as structured lines). Prints the final summary after iteration completes.
+- **MCP** — maps the iterable to MCP's streaming response model (SSE or streaming content blocks, depending on MCP protocol version).
+- **Engines** — consume the iterable directly for programmatic streaming.
+
+The `summon` tool handler would change from:
+
+```typescript
+const { result } = animator.summon({ prompt, role, cwd });
+const session = await result;
+return { id: session.id, status: session.status, ... };
+```
+
+To:
+
+```typescript
+const { chunks, result } = animator.summon({ prompt, role, cwd, streaming: true });
+yield* chunks;           // stream output to caller
+const session = await result;
+return { id: session.id, status: session.status, ... };
+```
+
+(Using an async generator handler, or a dedicated streaming return wrapper — exact syntax TBD.)
+
+### What this enables
+
+- CLI users see formatted, filterable streaming output on stdout instead of raw stderr.
+- MCP clients (e.g. IDE extensions, web UIs) receive real-time session output through the standard tool response channel.
+- The stderr side-channel in the provider becomes unnecessary — streaming is a first-class concern of the tool contract.
+
+### Dependencies
+
+- Tool contract change (`ToolDefinition` in tools-apparatus)
+- CLI adapter for async iterable tool returns
+- MCP server adapter for streaming tool responses
+- Decision: should the streaming return include both chunks and a final summary, or just chunks (with the summary as the last chunk)?
+
+Blocked on: tool contract design discussion, MCP streaming support.

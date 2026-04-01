@@ -156,13 +156,19 @@ export async function createGuild(root?: string): Promise<Guild> {
   // Start each apparatus in dependency order
   const startupCtx = buildStartupContext(eventHandlers);
   for (const app of orderedApparatuses) {
-    // Register provides before start() so apparatuses that declare provides can
-    // populate the object from within start() and it's visible to later startups.
+    // Register provides before start() so apparatuses with eager provides are
+    // visible to later startups that run during this loop.
     if (app.apparatus.provides !== undefined) {
       provides.set(app.id, app.apparatus.provides);
     }
 
     await app.apparatus.start(startupCtx);
+
+    // Re-check after start() for deferred provides (e.g. Stacks uses a getter
+    // that returns undefined until start() populates the backing variable).
+    if (!provides.has(app.id) && app.apparatus.provides !== undefined) {
+      provides.set(app.id, app.apparatus.provides);
+    }
 
     await fireEvent(eventHandlers, 'plugin:initialized', app);
   }

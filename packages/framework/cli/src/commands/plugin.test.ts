@@ -199,9 +199,37 @@ describe('plugin-install handler — link mode', () => {
     const result = await pluginInstall.handler({ source: pluginDir, type: 'link' }) as string;
     assert.ok(result.includes('my-fake'));
   });
+
+  it('auto-detects link mode for absolute directory paths', async () => {
+    const tmp = makeTmpDir('plugin');
+    makeGuild(tmp);
+    const pluginDir = makeFakePlugin(tmp, 'auto-detect-plugin');
+
+    setupGuildAccessor(tmp);
+    // No --type flag — should auto-detect that pluginDir is a directory
+    await pluginInstall.handler({ source: pluginDir });
+
+    const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
+    assert.ok(config.plugins.includes('auto-detect'));
+  });
+
+  it('auto-detects link mode for relative directory paths', async () => {
+    const tmp = makeTmpDir('plugin');
+    makeGuild(tmp);
+    const pluginDir = makeFakePlugin(tmp, 'relative-detect-plugin');
+
+    // Compute a relative path from the guild root to the plugin dir
+    const relPath = './' + path.relative(process.cwd(), pluginDir);
+
+    setupGuildAccessor(tmp);
+    await pluginInstall.handler({ source: relPath });
+
+    const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
+    assert.ok(config.plugins.includes('relative-detect'));
+  });
 });
 
-// ── plugin-remove ────────────────────────────────────────────────────────
+// ── plugin-remove ─��──────────────���───────────────────────────────────────
 
 describe('plugin-remove handler', () => {
   function makeGuildWithPlugin(dir: string): void {
