@@ -176,3 +176,4 @@ export async function main(): Promise<void> {
 
   program.parse(process.argv);
 }
+

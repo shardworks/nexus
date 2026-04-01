@@ -2,17 +2,17 @@
 
 Status: **Draft — MVP**
 
-Package: `@shardworks/loom` · Plugin id: `loom`
+Package: `@shardworks/loom-apparatus` · Plugin id: `loom`
 
-> **⚠️ MVP scope.** This spec describes the thinnest viable Loom — just enough to get sessions running. It accepts a raw system prompt and passes it through. Role resolution, tool instructions, anima identity, curricula, temperaments, and charter composition are all future work. See [Future: Full Composition](#future-full-composition) for the target design.
+> **⚠️ MVP scope.** This spec describes the thinnest viable Loom — just enough to get sessions running. The Loom owns system prompt assembly, but MVP has no composition logic yet — `weave()` returns `undefined` for `systemPrompt` and passes the caller-provided prompt through as `initialPrompt`. Role resolution, tool instructions, anima identity, curricula, temperaments, and charter composition are all future work. See [Future: Full Composition](#future-full-composition) for the target design.
 
 ---
 
 ## Purpose
 
-The Loom weaves session contexts. In its MVP form, it is essentially a pass-through: callers provide the system prompt and initial prompt directly, and The Loom packages them into a `WovenContext` that The Animator can consume.
+The Loom weaves session contexts. It owns system prompt assembly: callers provide the user-facing prompt (writ description, standing order payload); The Loom produces the system prompt from anima identity, charter, curricula, temperament, and role instructions.
 
-The Loom exists as a separate apparatus even at MVP so that The Animator never assembles prompts itself. As composition grows more sophisticated, The Loom's internals change but its output shape stays the same — The Animator is unaffected.
+MVP: system prompt composition is not yet implemented — `weave()` returns `undefined` for `systemPrompt`. The caller-provided prompt is passed through as `initialPrompt`. The seam exists so The Animator never assembles prompts itself; as composition is built out, The Loom's internals change but its output shape stays the same.
 
 ---
 
@@ -31,29 +31,27 @@ interface LoomApi {
   /**
    * Weave a session context.
    *
-   * MVP: packages the caller-provided system prompt and initial prompt
-   * into a WovenContext. No composition logic — the caller is responsible
-   * for assembling the prompt content.
+   * MVP: passes the caller-provided prompt through as initialPrompt.
+   * systemPrompt is undefined — composition logic (charter, curricula,
+   * temperament, role instructions) is future work.
    */
   weave(request: WeaveRequest): Promise<WovenContext>
 }
 
 interface WeaveRequest {
-  /** The system prompt to deliver to the AI process. */
-  systemPrompt: string
   /** Optional initial user message (e.g. writ description, standing order payload). */
   prompt?: string
 }
 
 interface WovenContext {
-  /** The system prompt for the AI process. */
-  systemPrompt: string
+  /** The system prompt for the AI process. Undefined until composition is implemented. */
+  systemPrompt?: string
   /** The initial user message, if any. */
   initialPrompt?: string
 }
 ```
 
-That's it. The MVP Loom is a data object factory — it takes strings in and returns a structured context out. The value is in the seam, not the logic.
+That's it. The MVP Loom is a pass-through — the value is in the seam, not the logic. The contract is stable: as composition is built out, `systemPrompt` gains a value but the shape doesn't change.
 
 ---
 

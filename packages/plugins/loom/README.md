@@ -1,4 +1,4 @@
-# `@shardworks/loom`
+# `@shardworks/loom-apparatus`
 
 The Loom — the guild's session context composer. This apparatus owns system prompt assembly: it weaves charter, curricula, temperament, and role instructions into a `WovenContext` that The Animator consumes to launch AI sessions. Callers provide the user-facing prompt (writ description, standing order payload); The Loom produces the system prompt. The Animator never assembles prompts itself.
 
@@ -6,7 +6,7 @@ MVP: system prompt composition is not yet implemented — `weave()` returns `und
 
 ```
 caller (Animator, clockworks)   → weave({ prompt })
-@shardworks/loom                → WovenContext { systemPrompt?, initialPrompt? }
+@shardworks/loom-apparatus                → WovenContext { systemPrompt?, initialPrompt? }
 The Animator                    → launches session with the woven context
 ```
 
@@ -17,7 +17,7 @@ The Animator                    → launches session with the woven context
 ```json
 {
   "dependencies": {
-    "@shardworks/loom": "workspace:*"
+    "@shardworks/loom-apparatus": "workspace:*"
   }
 }
 ```
@@ -32,7 +32,7 @@ The Loom exposes `LoomApi` via `provides`, accessed by other plugins as:
 
 ```typescript
 import { guild } from '@shardworks/nexus-core';
-import type { LoomApi } from '@shardworks/loom';
+import type { LoomApi } from '@shardworks/loom-apparatus';
 
 const loom = guild().apparatus<LoomApi>('loom');
 ```
@@ -112,12 +112,12 @@ import {
   type WeaveRequest,
   type WovenContext,
   createLoom,
-} from '@shardworks/loom';
+} from '@shardworks/loom-apparatus';
 ```
 
 The default export is the apparatus plugin instance, ready for use in `guild.json`:
 
 ```typescript
-import loom from '@shardworks/loom';
+import loom from '@shardworks/loom-apparatus';
 // → Plugin with apparatus.provides = LoomApi
 ```

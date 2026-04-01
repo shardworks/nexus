@@ -9,6 +9,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createLoom, type LoomApi } from './loom.ts';
+import loomDefault from './index.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -36,6 +37,21 @@ describe('The Loom', () => {
     it('provides a LoomApi with weave()', () => {
       const api = makeLoomApi();
       assert.ok(typeof api.weave === 'function');
+    });
+
+    it('start() completes without error', () => {
+      const plugin = createLoom();
+      const { apparatus } = plugin as { apparatus: { start: (ctx: Record<string, unknown>) => void } };
+      apparatus.start({});
+    });
+  });
+
+  describe('default export', () => {
+    it('is a plugin with apparatus shape', () => {
+      assert.ok('apparatus' in loomDefault, 'default export should have apparatus key');
+      const { apparatus } = loomDefault as { apparatus: Record<string, unknown> };
+      assert.ok(apparatus.provides, 'should have provides');
+      assert.ok(typeof (apparatus.provides as LoomApi).weave === 'function', 'provides should have weave()');
     });
   });
 
