@@ -4,7 +4,7 @@
  * These types form the contract between The Animator apparatus and all
  * callers (summon relay, nsg consult, etc.). No implementation details.
  *
- * See: docs/architecture/apparatus/animator.md
+ * See: docs/specification.md (animator)
  */
 
 import type { WovenContext } from '@shardworks/loom-apparatus';
@@ -131,8 +131,8 @@ export interface AnimatorSessionProvider {
 }
 
 export interface SessionProviderConfig {
-  /** System prompt for the AI process. */
-  systemPrompt: string;
+  /** System prompt for the AI process. May be undefined if composition is not yet implemented. */
+  systemPrompt?: string;
   /** Initial user message (e.g. writ description). */
   initialPrompt?: string;
   /** Model to use (from guild settings). */

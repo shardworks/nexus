@@ -6,7 +6,7 @@
  *
  * The tool() factory and ToolDefinition type live here canonically.
  *
- * See: docs/architecture/apparatus/instrumentarium.md
+ * See: docs/specification.md (instrumentarium)
  */
 
 import { createInstrumentarium } from './instrumentarium.ts';

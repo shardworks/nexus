@@ -130,29 +130,6 @@ export async function createMcpServer(config: McpServerConfig): Promise<McpServe
     version: VERSION,
   });
 
-  // Minimal context stub — the MCP server does not have a full plugin graph
-  // wired in. Stubs throw; tools that need guild() will require an Arbor-aware
-  // refactor of the MCP server config and launch path.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const context: any = {
-    home: config.home,
-    config<T = Record<string, unknown>>(): T {
-      throw new Error(
-        `ctx.config() is not yet supported in the MCP server context.`,
-      );
-    },
-    guildConfig() {
-      throw new Error(
-        `ctx.guildConfig() is not yet supported in the MCP server context.`,
-      );
-    },
-    apparatus<T>(name: string): T {
-      throw new Error(
-        `ctx.apparatus("${name}") is not yet supported in the MCP server context.`,
-      );
-    },
-  };
-
   for (const spec of config.tools) {
     const def = await loadTool(spec);
     if (!def) continue;
@@ -167,7 +144,7 @@ export async function createMcpServer(config: McpServerConfig): Promise<McpServe
         try {
           // Validate params through Zod before passing to handler
           const validated = def.params.parse(params);
-          const result = await (def.handler as any)(validated, context);
+          const result = await def.handler(validated);
 
           return {
             content: [{

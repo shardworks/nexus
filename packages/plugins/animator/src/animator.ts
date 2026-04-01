@@ -5,7 +5,7 @@
  * session provider, monitors it until exit, and records the result to
  * The Stacks.
  *
- * See: docs/architecture/apparatus/animator.md
+ * See: docs/specification.md (animator)
  */
 
 import crypto from 'node:crypto';

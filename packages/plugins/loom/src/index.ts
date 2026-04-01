@@ -5,7 +5,7 @@
  * and (eventually) role instructions, curricula, and temperaments into
  * a WovenContext that The Animator can consume.
  *
- * See: docs/architecture/apparatus/loom.md
+ * See: docs/specification.md (loom)
  */
 
 import { createLoom } from './loom.ts';

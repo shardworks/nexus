@@ -4,7 +4,7 @@
  * Reads the complete session record from The Animator's `sessions` book
  * in The Stacks, including tokenUsage, metadata, and all indexed fields.
  *
- * See: docs/architecture/apparatus/animator.md § session-show tool
+ * See: docs/specification.md (animator § session-show tool)
  */
 
 import { tool } from '@shardworks/tools-apparatus';

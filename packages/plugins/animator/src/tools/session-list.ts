@@ -4,7 +4,7 @@
  * Queries The Animator's `sessions` book in The Stacks.
  * Returns session summaries ordered by startedAt descending (newest first).
  *
- * See: docs/architecture/apparatus/animator.md § session-list tool
+ * See: docs/specification.md (animator § session-list tool)
  */
 
 import { tool } from '@shardworks/tools-apparatus';

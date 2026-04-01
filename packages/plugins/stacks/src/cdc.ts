@@ -5,7 +5,7 @@
  * - Phase 1 (failOnError: true):  runs INSIDE the transaction
  * - Phase 2 (failOnError: false): runs AFTER commit with coalesced events
  *
- * See: docs/architecture/apparatus/stacks.md §6
+ * See: docs/specification.md (stacks § CDC)
  */
 
 import type { BookEntry, ChangeEvent, ChangeHandler, WatchOptions } from './types.ts';

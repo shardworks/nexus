@@ -1,15 +1,14 @@
 /**
  * tool.ts — unit tests.
  *
- * Tests the tool() factory, resolveToolFromExport(), and isToolDefinition()
- * public functions directly.
+ * Tests the tool() factory and isToolDefinition() public functions directly.
  */
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 
-import { tool, resolveToolFromExport, isToolDefinition } from './tool.ts';
+import { tool, isToolDefinition } from './tool.ts';
 
 // ── tool() factory ───────────────────────────────────────────────────
 
@@ -123,81 +122,6 @@ describe('tool()', () => {
 
     assert.equal(t.instructionsFile, './instructions.md');
     assert.equal('instructions' in t, false);
-  });
-});
-
-// ── resolveToolFromExport() ──────────────────────────────────────────
-
-describe('resolveToolFromExport()', () => {
-  const alpha = tool({
-    name: 'alpha',
-    description: 'First tool',
-    params: {},
-    handler: async () => ({}),
-  });
-
-  const beta = tool({
-    name: 'beta',
-    description: 'Second tool',
-    params: {},
-    handler: async () => ({}),
-  });
-
-  it('resolves a single tool export without name', () => {
-    const result = resolveToolFromExport(alpha);
-    assert.ok(result);
-    assert.equal(result.name, 'alpha');
-  });
-
-  it('resolves a single tool export with matching name', () => {
-    const result = resolveToolFromExport(alpha, 'alpha');
-    assert.ok(result);
-    assert.equal(result.name, 'alpha');
-  });
-
-  it('returns null for single tool export with non-matching name', () => {
-    const result = resolveToolFromExport(alpha, 'beta');
-    assert.equal(result, null);
-  });
-
-  it('resolves from array export by name', () => {
-    const result = resolveToolFromExport([alpha, beta], 'beta');
-    assert.ok(result);
-    assert.equal(result.name, 'beta');
-  });
-
-  it('returns null from array export with non-matching name', () => {
-    const result = resolveToolFromExport([alpha, beta], 'gamma');
-    assert.equal(result, null);
-  });
-
-  it('resolves single-element array without name', () => {
-    const result = resolveToolFromExport([alpha]);
-    assert.ok(result);
-    assert.equal(result.name, 'alpha');
-  });
-
-  it('returns null for multi-element array without name', () => {
-    const result = resolveToolFromExport([alpha, beta]);
-    assert.equal(result, null);
-  });
-
-  it('returns null for non-tool input', () => {
-    assert.equal(resolveToolFromExport('not a tool'), null);
-    assert.equal(resolveToolFromExport(42), null);
-    assert.equal(resolveToolFromExport(null), null);
-    assert.equal(resolveToolFromExport(undefined), null);
-  });
-
-  it('returns null for array of non-tools', () => {
-    const result = resolveToolFromExport(['a', 'b'], 'a');
-    assert.equal(result, null);
-  });
-
-  it('skips non-tool entries in mixed arrays', () => {
-    const result = resolveToolFromExport([alpha, 'not a tool', 42], 'alpha');
-    assert.ok(result);
-    assert.equal(result.name, 'alpha');
   });
 });
 

@@ -152,42 +152,6 @@ export function tool<TShape extends ZodShape>(def: ToolInput<TShape>): ToolDefin
   };
 }
 
-/**
- * Resolve a single ToolDefinition from a module's default export.
- *
- * Handles both single-tool and array-of-tools exports:
- * - Single tool: `export default tool({...})` → returned directly
- * - Array: `export default [tool({...}), tool({...})]` → find by name
- *
- * @param moduleDefault - The module's default export
- * @param toolName - The tool name to find (required for array exports)
- * @returns The matching ToolDefinition, or null if not found
- */
-export function resolveToolFromExport(
-  moduleDefault: unknown,
-  toolName?: string,
-): ToolDefinition | null {
-  // Single tool export
-  if (isToolDefinition(moduleDefault)) {
-    if (!toolName || moduleDefault.name === toolName) return moduleDefault;
-    return null;
-  }
-
-  // Array of tools — find by name
-  if (Array.isArray(moduleDefault)) {
-    for (const item of moduleDefault) {
-      if (!isToolDefinition(item)) continue;
-      if (item.name === toolName) return item;
-    }
-    // If no name match but array has exactly one tool, return it
-    const tools = moduleDefault.filter(isToolDefinition);
-    if (tools.length === 1 && !toolName) return tools[0]!;
-    return null;
-  }
-
-  return null;
-}
-
 /** Type guard: is this value a ToolDefinition? */
 export function isToolDefinition(obj: unknown): obj is ToolDefinition {
   return (

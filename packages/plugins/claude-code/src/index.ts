@@ -47,15 +47,17 @@ interface PreparedSession {
 function prepareSession(config: SessionProviderConfig): PreparedSession {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nsg-session-'));
 
-  const systemPromptPath = path.join(tmpDir, 'system-prompt.md');
-  fs.writeFileSync(systemPromptPath, config.systemPrompt);
-
   const args: string[] = [
     '--setting-sources', 'user',
     '--dangerously-skip-permissions',
-    '--system-prompt-file', systemPromptPath,
     '--model', config.model,
   ];
+
+  if (config.systemPrompt) {
+    const systemPromptPath = path.join(tmpDir, 'system-prompt.md');
+    fs.writeFileSync(systemPromptPath, config.systemPrompt);
+    args.push('--system-prompt-file', systemPromptPath);
+  }
 
   // Resume an existing conversation
   if (config.conversationId) {
@@ -157,8 +159,8 @@ export default createClaudeCodeProvider();
 
 // ── Spawn helpers ────────────────────────────────────────────────────
 
-/** Parsed result from stream-json output. */
-interface StreamJsonResult {
+/** Parsed result from stream-json output. @internal */
+export interface StreamJsonResult {
   exitCode: number;
   transcript: Record<string, unknown>[];
   costUsd?: number;
@@ -176,8 +178,10 @@ interface StreamJsonResult {
  *
  * Returns parsed chunks for streaming and accumulates data into the
  * provided accumulators (transcript, metrics).
+ *
+ * @internal Exported for testing only.
  */
-function parseStreamJsonMessage(
+export function parseStreamJsonMessage(
   msg: Record<string, unknown>,
   acc: {
     transcript: Record<string, unknown>[];
@@ -239,8 +243,10 @@ function parseStreamJsonMessage(
 /**
  * Process NDJSON buffer, calling handler for each complete line.
  * Returns the remaining incomplete buffer.
+ *
+ * @internal Exported for testing only.
  */
-function processNdjsonBuffer(
+export function processNdjsonBuffer(
   buffer: string,
   handler: (msg: Record<string, unknown>) => void,
 ): string {

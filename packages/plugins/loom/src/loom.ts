@@ -11,7 +11,7 @@
  * never assembles prompts itself; as composition is built out, The
  * Loom's internals change but its output shape stays the same.
  *
- * See: docs/architecture/apparatus/loom.md
+ * See: docs/specification.md (loom)
  */
 
 import type { Plugin } from '@shardworks/nexus-core';
