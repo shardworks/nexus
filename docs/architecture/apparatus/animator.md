@@ -189,7 +189,7 @@ When The Instrumentarium ships, The Animator gains the ability to launch session
 ### Additional dependency
 
 ```
-requires: ['stacks', 'instrumentarium']
+requires: ['stacks', 'tools']
 ```
 
 ### Updated `AnimateRequest`

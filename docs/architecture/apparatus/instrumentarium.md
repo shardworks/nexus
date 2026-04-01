@@ -2,7 +2,7 @@
 
 Status: **Draft — MVP**
 
-Package: `@shardworks/instrumentarium` · Plugin id: `instrumentarium`
+Package: `@shardworks/tools-apparatus` · Plugin id: `tools`
 
 ---
 
@@ -30,7 +30,7 @@ Kits contribute tools via a `tools` field:
 ```typescript
 export default {
   kit: {
-    requires: ['instrumentarium'],
+    requires: ['tools'],
     tools: [commissionCreateTool, signalTool, writShowTool],
   },
 } satisfies Plugin
@@ -89,9 +89,30 @@ interface ResolvedTool {
 
 ---
 
+## Configuration
+
+Roles and base tools are plugin configuration owned by The Instrumentarium, stored in `guild.json` under its plugin id:
+
+```json
+{
+  "tools": {
+    "roles": {
+      "artificer": {
+        "seats": null,
+        "tools": ["commission-show", "signal", "complete-session"],
+        "instructions": "roles/artificer.md"
+      }
+    },
+    "baseTools": ["nexus-version"]
+  }
+}
+```
+
+The Instrumentarium reads this via `ctx.config<InstrumentariumConfig>()` — no `guildConfig()` escape hatch needed.
+
 ## Role-Gating Resolution
 
-The Instrumentarium reads `roles` and `baseTools` from guild config via `ctx.guildConfig()`. Resolution logic:
+Resolution logic:
 
 1. Collect tool names from `baseTools`
 2. For each role in the request, collect tool names from `roles[role].tools`

@@ -239,11 +239,11 @@ All are `<!-- TODO -->` blocks. In rough priority order:
 
 ## Design Decisions (session 4)
 
-### New apparatus: The Instrumentarium (`instrumentarium`)
+### New apparatus: The Instrumentarium (`tools`)
 
 **Problem:** Tools are currently owned by Arbor (`listTools()`, `findTool()`), but Arbor's design goal is "plugin loader only." Tools need a home that both the session layer (Loom/Animator) and the CLI can depend on, without coupling either to anima identity.
 
-**Decision:** Create a new apparatus — **The Instrumentarium** (`instrumentarium`, package `@shardworks/instrumentarium`). It owns:
+**Decision:** Create a new apparatus — **The Instrumentarium** (plugin id `tools`, package `@shardworks/tools-apparatus`). It owns:
 - Tool registry — scanning kit `tools` contributions and apparatus `supportKit` tools at startup
 - Role-gating resolution — given a set of roles + baseTools, return the resolved tool set
 - HandlerContext creation — scoped to the invoking plugin, with `config()` and `apparatus()` wired
@@ -279,7 +279,7 @@ The Animator does not know how the context was composed or which anima is being 
 ```
 The Stacks (books)
     │
-    ├── The Instrumentarium (instrumentarium)
+    ├── The Instrumentarium (tools)
     │       │
     │       ├── The Loom (loom)
     │       │       │

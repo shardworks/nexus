@@ -132,7 +132,7 @@ The versioned files — `guild.json`, `package.json`, and the guild's own conten
 
 All remaining top-level keys are plugin configuration sections, keyed by derived plugin id (see [Plugin IDs](#plugin-ids)). Each apparatus reads its own section via `ctx.config()` at startup or handler invocation time.
 
-In the standard guild, `clockworks` contains events and standing orders; `workshops` tracks registered repositories; `roles` and `baseTools` define anima role assignments and tool access. These are all plugin config — not framework-owned fields — they just get natural top-level keys because of the `@shardworks/` naming convention. See [Configuration](plugins.md#configuration) for the full model.
+In the standard guild, `clockworks` contains events and standing orders; `workshops` tracks registered repositories; `tools` holds role definitions and base tool assignments. These are all plugin config — not framework-owned fields — they get natural short keys because of the `@shardworks/` naming convention and `-(plugin|apparatus|kit)` suffix stripping (e.g. `@shardworks/tools-apparatus` → `tools`). See [Configuration](plugins.md#configuration) for the full model.
 
 ### Runtime State (`.nexus/`)
 
@@ -283,7 +283,7 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 | **The Surveyor** | `surveyor` | Codex knowledge — surveys registered codexes so the guild knows what work applies to each |
 | **The Clerk** | `clerk` | Commission intake and writ lifecycle — receives commissions, creates writs, signals when work is ready |
 | **The Loom** | `loom` | Session context composition — weaves role instructions, tool instructions, curricula, and temperaments into a session context |
-| **The Instrumentarium** | `instrumentarium` | Tool registry — resolves installed tools, role-gating, handler context creation |
+| **The Instrumentarium** | `tools` | Tool registry — resolves installed tools, role-gating, handler context creation |
 | **The Animator** | `animator` | Session lifecycle — launches, monitors, and records anima sessions |
 | **The Formulary** | `formulary` | Engine design registry — answers "what engine chain satisfies this need?" from installed kits |
 | **The Walker** | `walker` | Rig lifecycle — spawns, traverses, extends, and strikes rigs as work progresses |

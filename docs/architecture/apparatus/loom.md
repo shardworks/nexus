@@ -112,7 +112,7 @@ The system prompt is woven by combining, in order:
 ### Future dependencies
 
 ```
-requires: ['stacks', 'instrumentarium']
+requires: ['stacks', 'tools']
 ```
 
 - **The Stacks** — reads anima identity records, writ context
