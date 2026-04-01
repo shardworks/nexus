@@ -141,7 +141,7 @@ If you're working on a specific section of the architecture doc, start with:
 
 ## guild.json Shape
 
-The V2 type (`GuildConfigV2` in `packages/core/src/guild-config.ts`) defines the framework keys. All other top-level keys are plugin configuration sections, keyed by derived plugin id.
+The V2 type (`GuildConfig` in `packages/core/src/guild-config.ts`) defines the framework keys. All other top-level keys are plugin configuration sections, keyed by derived plugin id.
 
 **Framework keys:** `name`, `nexus`, `plugins` (string array), `settings` (object with `model`, `autoMigrate`).
 
@@ -188,17 +188,35 @@ This means `@shardworks/clockworks` → `clockworks`, `@shardworks/books-apparat
 
 ### Plugin configuration access
 
-**Problem identified:** `plugins.md` and the context type docs had no specification for how apparatus access their own configuration from `guild.json`. The implementation had an undocumented `getPluginConfig(pluginId)` on Arbor that was never used.
-
-**Decision:** Remove `getPluginConfig` from Arbor. Add to both `GuildContext` and `HandlerContext`:
-- `ctx.config<T>(pluginId?: string): T` — returns `guild.json[pluginId]` (defaults to the calling plugin's id if no arg). Returns `{}` if no config section. Generic is a cast, not validated.
-- `ctx.guildConfig(): GuildConfigV2` — escape hatch for full config (roles, workshops, settings, etc.)
-
 Config sections live at the top level of `guild.json` under the plugin's derived id. Because `@shardworks/clockworks` → `clockworks`, the Clockworks apparatus gets `guild.json["clockworks"]` naturally — no privileged handling.
 
-For `HandlerContext`, `ctx.config()` with no args requires knowing which plugin owns the handler. `createHandlerContext(owningPluginId?)` takes an optional plugin id; callers dispatching a specific tool pass `tool.pluginId`.
+Access is via `guild().config<T>(pluginId)` — always requires an explicit plugin id (no implicit scoping). `guild().guildConfig()` is the escape hatch for framework-level fields.
 
-Documented in `plugins.md` (Plugin IDs section + Configuration section). **Not yet implemented** — implementation plan at `.scratch/arbor-config-impl-plan.md` in the sanctum.
+Documented in `plugins.md` (Plugin IDs section + Configuration section). **Implemented** in session 4.
+
+### guild() singleton — replaces HandlerContext
+
+**Problem identified:** `HandlerContext` was injected into tool handlers as a second parameter, but the MCP server created a broken stub (all methods threw), and the pattern required a context factory in Arbor, the CLI, and the CDC registry.
+
+**Decision:** Replace with a process-level singleton `guild()` from `@shardworks/nexus-core`. All plugin code — apparatus `start()`, tool handlers, CDC handlers — calls `guild()` to access `home`, `apparatus()`, `config()`, `guildConfig()`, `kits()`, `apparatuses()`.
+
+Arbor creates the `Guild` instance before starting any apparatus (backed by the live `provides` Map, so dependency ordering works). `setGuild()` and `clearGuild()` are exported for testing.
+
+`HandlerContext` and `GuildContext` removed from plugin.ts. `createHandlerContext` removed from Arbor interface. `createMinimalHandlerContext` removed from CLI. Tool handler signature: `(params) => unknown | Promise<unknown>` — no context parameter.
+
+### GuildContext → StartupContext
+
+**Problem:** `GuildContext` (passed to apparatus `start()`) overlapped with `guild()` — same methods (`apparatus()`, `config()`, `home`, etc.), different scoping behavior. Two contexts with similar methods but different semantics is confusing.
+
+**Decision:** Strip `GuildContext` down to `StartupContext` with a single method: `on(event, handler)` for lifecycle event subscription. All other guild access in `start()` goes through `guild()`, same as everywhere else. No overlap, no confusion.
+
+### GuildConfigV2 → GuildConfig
+
+Renamed everywhere. Dropped V2 suffixes from `createInitialGuildConfig`, `readGuildConfig`, `writeGuildConfig`. Legacy V1 `GuildConfig` untouched in its own module scope (`legacy/1/guild-config.ts`).
+
+### CDC handlers — no context injection
+
+CDC handlers (`ChangeHandler`) no longer receive a context parameter. They capture dependencies via closure from the `start()` scope where they're registered. Signature: `(event: ChangeEvent<T>) => Promise<void> | void`.
 
 ---
 
@@ -208,32 +226,32 @@ Documented in `plugins.md` (Plugin IDs section + Configuration section). **Not y
 - **§1 Introduction** ✅
 - **§2 System at a Glance** ✅ — scoped as standard guild, ASCII diagram, narrative subsections
 - **§3 The Guild Root** ✅ — directory structure, guild.json (framework keys + plugin config), .nexus/ runtime state
-- **§4 Plugin Architecture** ✅ — §2 callback opening, Kit/Apparatus with correct examples, Plugin IDs, Arbor and Contexts (with config/guildConfig), Installation
-- **The Standard Guild** ✅ — bridge section with apparatus table (plugin ids) and kit table
+- **§4 Plugin Architecture** ✅ — §2 callback, Kit/Apparatus examples, Plugin IDs, guild() singleton, StartupContext, Installation
+- **The Standard Guild** ✅ — apparatus table (plugin ids) and kit table
+- **The Books** ✅ — Stacks apparatus, document model, API surface, CDC, backend
+- **Kit Components** ✅ — tools/engines/relays, comparison table, link to kit-components.md
 
 ### Remaining stub sections
 All are `<!-- TODO -->` blocks. In rough priority order:
 
-1. **The Books** — The Stacks apparatus (`books`). SQLite at `.nexus/nexus.db`. Generic persistence layer + CDC events. Avoid naming specific books (Register, Ledger, Daybook) — those are deemphasised. Describe the Book API. Note: persistence is owned by the apparatus, not the framework. Link to `reference/schema.md`.
+1. **Work Model** — Commission → Mandate writ → child writs → Rigs. Writ lifecycle states (`ready → active → pending → completed/failed/cancelled`). Writ hierarchy and completion rollup. Brief rig intro (Walker assembles from engine designs via Formulary). Link to `rigging.md`.
 
-2. **Work Model** — Commission → Mandate writ → child writs → Rigs. Writ lifecycle states (`ready → active → pending → completed/failed/cancelled`). Writ hierarchy and completion rollup. Brief rig intro (Walker assembles from engine designs via Formulary). Link to `rigging.md`.
+2. **The Clockworks** — Abbreviate; `clockworks.md` is detailed and current. Cover: events as immutable facts, standing orders as guild policy, summon verb, framework vs custom events, runner (manual vs daemon), error handling. Link to `clockworks.md`.
 
-3. **The Clockworks** — Abbreviate; `clockworks.md` is detailed and current. Cover: events as immutable facts, standing orders as guild policy, summon verb, framework vs custom events, runner (manual vs daemon), error handling. Link to `clockworks.md`.
+3. **Animas** — MVP: no identity layer. Composition is per-role, not per-anima. The Loom weaves caller-provided system prompt into a session context (pass-through for MVP). Future: anima identity records, curricula, temperaments, states (active/retired). Keep section light on implementation since apparatus are being designed.
 
-4. **Animas** — MVP: no identity layer. Composition is per-role, not per-anima. The Loom weaves role instructions + tool instructions into a session context. Future: anima identity records, curricula, temperaments, states (active/retired). Keep section light on implementation since apparatus are being designed.
+4. **Sessions** — Session funnel. Triggered by summon relay or `nsg consult`. Loom → Animator → AI process → result recorded. Session providers (pluggable). System prompt vs initial prompt. Bare mode. Link to `reference/conversations.md`.
 
-5. **Kit Components** — Tools, engines, relays. Abbreviate; `kit-components.md` covers this well. Role gating for tools, clockwork vs quick for engines, relay contract. Descriptor files. Installation.
-
-6. **Sessions** — Session funnel. Triggered by summon relay or `nsg consult`. Loom → Animator → AI process with MCP server → result recorded. Session providers (pluggable). System prompt vs initial prompt. Bare mode. Link to `reference/conversations.md`.
-
-7. **Core Apparatus Reference** — Quick-reference table with plugin ids, package names, API surface hints, links to detailed docs.
+5. **Core Apparatus Reference** — Quick-reference table with plugin ids, package names, API surface hints, links to detailed docs.
 
 ### Implementation work (not architecture doc)
-- **Arbor config API** — implementation plan at `nexus-mk2/.scratch/arbor-config-impl-plan.md`. Updates `derivePluginId`, adds `ctx.config()` / `ctx.guildConfig()` to GuildContext/HandlerContext, removes `getPluginConfig` from Arbor. Not yet commissioned.
+- **guild() singleton** ✅ — implemented in session 4. `Guild` interface, `setGuild`/`clearGuild`, Arbor wiring, all handlers migrated.
+- **GuildContext → StartupContext** ✅ — implemented in session 4. HandlerContext removed. createHandlerContext removed from Arbor.
+- **GuildConfigV2 → GuildConfig** ✅ — renamed everywhere in session 4.
 - **Plugin rename** — standard apparatus packages should be renamed to match new naming convention (e.g. `@shardworks/nexus-clockworks` → `@shardworks/clockworks`). Not yet commissioned. Scope TBD.
-- **The Instrumentarium** — new apparatus, see design decisions (session 4) below.
-- **Loom MVP** — new apparatus, see design decisions (session 4) below.
-- **Animator MVP** — new apparatus, see design decisions (session 4) below.
+- **The Instrumentarium** — specs at `apparatus/instrumentarium.md`. Not yet implemented.
+- **Loom MVP** — specs at `apparatus/loom.md`. Not yet implemented.
+- **Animator MVP** — specs at `apparatus/animator.md`. Not yet implemented.
 
 ---
 
@@ -246,7 +264,6 @@ All are `<!-- TODO -->` blocks. In rough priority order:
 **Decision:** Create a new apparatus — **The Instrumentarium** (plugin id `tools`, package `@shardworks/tools-apparatus`). It owns:
 - Tool registry — scanning kit `tools` contributions and apparatus `supportKit` tools at startup
 - Role-gating resolution — given a set of roles + baseTools, return the resolved tool set
-- HandlerContext creation — scoped to the invoking plugin, with `config()` and `apparatus()` wired
 - CLI tool discovery — `nsg <tool>` resolves through The Instrumentarium
 
 The Instrumentarium has no dependency on animas, sessions, or composition. Both The Loom and the CLI depend on it independently. Apparatus that need to invoke tools programmatically depend on it.
@@ -257,37 +274,35 @@ The Instrumentarium has no dependency on animas, sessions, or composition. Both 
 
 **Problem:** Full anima composition (identity lookup → curriculum resolution → temperament resolution → charter + tool instructions) requires several systems that don't exist yet. But The Animator needs *some* composed context to launch sessions.
 
-**Decision:** MVP Loom returns a fixed composition for a given role:
-- Reads the role's `instructions` file from disk (the path in `guild.json` roles config)
-- Reads tool instructions from The Instrumentarium for the resolved tool set
-- Returns a composed system prompt: role instructions + tool instructions
-- No anima identity lookup, no curriculum, no temperament, no charter
+**Decision:** MVP Loom is a pass-through — the caller provides the system prompt and optional initial prompt. The Loom packages them into a `WovenContext` that The Animator consumes. No role resolution, no tool instructions, no file reading, no identity lookup.
 
-This is enough for The Animator to launch useful sessions. Identity and full composition are layered on later without changing The Animator's interface — it always receives a composed context and a tool set, regardless of how they were assembled.
+The Loom exists as a separate apparatus even at MVP so that The Animator never assembles prompts itself. As composition grows (role instructions, tool instructions, curricula, temperaments, charter), The Loom's internals change but its output shape (`WovenContext`) stays stable — The Animator is unaffected.
 
 ### Animator MVP
 
-**Decision:** The Animator takes a composed context (from Loom) + a resolved tool set (from Instrumentarium) and:
-1. Launches a session provider (e.g. `claude-code-session-provider`) with the system prompt and an MCP server loaded with the tool set
+**Decision:** MVP Animator takes a `WovenContext` (from Loom) + a working directory and:
+1. Launches a session provider (e.g. `claude-code-session-provider`) with the system prompt
 2. Monitors the process
 3. Records the session result to The Stacks (sessions book)
 
-The Animator does not know how the context was composed or which anima is being manifested (in MVP, there are no anima identity records). It receives inputs and runs a session.
+No MCP tool server, no Instrumentarium dependency, no role awareness in MVP. Tool-equipped sessions with MCP are documented as future state in `apparatus/animator.md`.
 
 ### Dependency graph (MVP)
 
 ```
 The Stacks (books)
     │
-    ├── The Instrumentarium (tools)
-    │       │
-    │       ├── The Loom (loom)
-    │       │       │
-    │       │       └── The Animator (animator)
-    │       │
-    │       └── CLI (nsg)
-    │
-    └── The Clockworks (clockworks)
+    └── The Animator (animator)
             │
-            └── summon relay → The Animator
+            └── The Loom (loom)   ← zero apparatus dependencies, pass-through
+
+The Clockworks (clockworks)
+    │
+    └── summon relay → The Loom → The Animator
+
+The Instrumentarium (tools)   ← no dependencies in MVP, not yet wired to sessions
+    │
+    └── CLI (nsg)
 ```
+
+Note: in MVP, The Loom and The Animator do not depend on The Instrumentarium. Tool-equipped sessions (Animator → Instrumentarium for MCP tool set) are future state.
