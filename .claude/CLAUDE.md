@@ -15,26 +15,26 @@ This is the source repository for the Nexus framework: the TypeScript packages t
 
 ```
 nexus/
-├── packages/                    # pnpm workspace packages
-│   ├── core/                    # @shardworks/nexus-core — shared framework library
-│   │   └── src/                 #   anima, clockworks, commission, conversation, writ,
-│   │                            #   session, events, manifest, guild-config, workshop, etc.
-│   ├── cli/                     # @shardworks/nexus — the `nsg` CLI
-│   │   └── src/commands/        #   init, status, version, upgrade, plugin management
-│   ├── claude-code-session-provider/  # Session provider (launches claude CLI sessions)
-│   └── guild-starter-kit/       # Scaffolding for new guilds
-│       ├── migrations/          #   SQL migrations (001-initial, 002-writs, 003-conversations)
-│       ├── curricula/           #   guild-operations curriculum
-│       └── temperaments/        #   artisan, guide
-├── docs/                        # Framework documentation
-│   ├── philosophy.md            #   Project "why" — experiment goals, Mk 2.0 vs 2.1
-│   ├── guild-metaphor.md        #   Conceptual model (metaphorical register, not technical)
-│   ├── architecture/            #   System design: overview, clockworks, writs, tools-and-engines
-│   ├── reference/               #   Lookup docs: core-api, schema, event-catalog, conversations
-│   └── guides/                  #   How-to: building-tools, building-engines
+├── packages/
+│   ├── framework/                   # Core infrastructure (not plugins)
+│   │   ├── core/                    #   @shardworks/nexus-core — public SDK surface
+│   │   ├── arbor/                   #   @shardworks/nexus-arbor — guild runtime host
+│   │   └── cli/                     #   @shardworks/nexus — the `nsg` CLI
+│   └── plugins/                     # Guild plugins (apparatus + kits)
+│       ├── stacks/                  #   @shardworks/stacks-apparatus — persistence (NoSQL + CDC)
+│       ├── tools/                   #   @shardworks/tools-apparatus — tool registry
+│       ├── loom/                    #   @shardworks/loom-apparatus — session context composition
+│       ├── animator/                #   @shardworks/animator-apparatus — session launch + recording
+│       ├── claude-code/             #   @shardworks/claude-code-apparatus — Claude CLI provider
+│       └── guild-starter-kit/       #   @shardworks/guild-starter-kit — default guild scaffolding
+├── packages-deprecated/             # Reference copies of removed legacy code
+├── docs/                            # Framework documentation
+│   ├── philosophy.md                #   Project "why" — experiment goals, Mk 2.0 vs 2.1
+│   ├── guild-metaphor.md            #   Conceptual model (metaphorical register, not technical)
+│   └── architecture/                #   System design docs and apparatus API contracts
 ├── bin/
-│   └── upgrade-guild.sh         # Wait for publish workflow, then upgrade nsg in a guild
-└── .github/workflows/           # CI (ci.yml) and npm publish (publish.yml)
+│   └── upgrade-guild.sh             # Wait for publish workflow, then upgrade nsg in a guild
+└── .github/workflows/               # CI (ci.yml) and npm publish (publish.yml)
 ```
 
 ### Key Concepts

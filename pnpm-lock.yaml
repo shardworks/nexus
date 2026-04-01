@@ -15,29 +15,7 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
-  packages/animator:
-    dependencies:
-      '@shardworks/loom':
-        specifier: workspace:*
-        version: link:../loom
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../core
-      '@shardworks/stacks':
-        specifier: workspace:*
-        version: link:../stacks
-      '@shardworks/tools-apparatus':
-        specifier: workspace:*
-        version: link:../tools-apparatus
-      zod:
-        specifier: 4.3.6
-        version: 4.3.6
-    devDependencies:
-      '@types/node':
-        specifier: 25.5.0
-        version: 25.5.0
-
-  packages/arbor:
+  packages/framework/arbor:
     dependencies:
       '@shardworks/nexus-core':
         specifier: workspace:*
@@ -56,29 +34,7 @@ importers:
         specifier: 25.5.0
         version: 25.5.0
 
-  packages/claude-code-apparatus:
-    dependencies:
-      '@modelcontextprotocol/sdk':
-        specifier: 1.27.1
-        version: 1.27.1(zod@4.3.6)
-      '@shardworks/animator':
-        specifier: workspace:*
-        version: link:../animator
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../core
-      '@shardworks/tools-apparatus':
-        specifier: workspace:*
-        version: link:../tools-apparatus
-      zod:
-        specifier: 4.3.6
-        version: 4.3.6
-    devDependencies:
-      '@types/node':
-        specifier: 25.5.0
-        version: 25.5.0
-
-  packages/cli:
+  packages/framework/cli:
     dependencies:
       '@shardworks/nexus-arbor':
         specifier: workspace:*
@@ -88,7 +44,7 @@ importers:
         version: link:../core
       '@shardworks/tools-apparatus':
         specifier: workspace:*
-        version: link:../tools-apparatus
+        version: link:../../plugins/tools
       commander:
         specifier: 14.0.3
         version: 14.0.3
@@ -103,29 +59,73 @@ importers:
         specifier: 25.5.0
         version: 25.5.0
 
-  packages/core:
+  packages/framework/core:
     devDependencies:
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
 
-  packages/guild-starter-kit: {}
-
-  packages/loom:
+  packages/plugins/animator:
     dependencies:
+      '@shardworks/loom-apparatus':
+        specifier: workspace:*
+        version: link:../loom
       '@shardworks/nexus-core':
         specifier: workspace:*
-        version: link:../core
+        version: link:../../framework/core
+      '@shardworks/stacks-apparatus':
+        specifier: workspace:*
+        version: link:../stacks
+      '@shardworks/tools-apparatus':
+        specifier: workspace:*
+        version: link:../tools
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
     devDependencies:
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
 
-  packages/stacks:
+  packages/plugins/claude-code:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: 1.27.1
+        version: 1.27.1(zod@4.3.6)
+      '@shardworks/animator-apparatus':
+        specifier: workspace:*
+        version: link:../animator
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
+      '@shardworks/tools-apparatus':
+        specifier: workspace:*
+        version: link:../tools
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
+  packages/plugins/guild-starter-kit: {}
+
+  packages/plugins/loom:
     dependencies:
       '@shardworks/nexus-core':
         specifier: workspace:*
-        version: link:../core
+        version: link:../../framework/core
+    devDependencies:
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
+  packages/plugins/stacks:
+    dependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       better-sqlite3:
         specifier: 12.8.0
         version: 12.8.0
@@ -137,11 +137,11 @@ importers:
         specifier: 25.5.0
         version: 25.5.0
 
-  packages/tools-apparatus:
+  packages/plugins/tools:
     dependencies:
       '@shardworks/nexus-core':
         specifier: workspace:*
-        version: link:../core
+        version: link:../../framework/core
       zod:
         specifier: 4.3.6
         version: 4.3.6

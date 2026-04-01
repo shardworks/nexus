@@ -1,0 +1,49 @@
+{
+  "name": "@shardworks/nexus",
+  "version": "0.0.0",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shardworks/nexus",
+    "directory": "packages/framework/cli"
+  },
+  "description": "The nsg CLI — framework commands and dynamic plugin-contributed tool discovery via The Instrumentarium",
+  "type": "module",
+  "bin": {
+    "nsg": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "cli": "node --disable-warning=ExperimentalWarning --experimental-transform-types src/cli.ts",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@shardworks/nexus-core": "workspace:*",
+    "@shardworks/nexus-arbor": "workspace:*",
+    "@shardworks/tools-apparatus": "workspace:*",
+    "commander": "14.0.3",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@commander-js/extra-typings": "14.0.0",
+    "@types/node": "25.5.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    },
+    "bin": {
+      "nsg": "./dist/cli.js"
+    }
+  }
+}
