@@ -448,15 +448,15 @@ The trigger determines *what* work is done (the prompt, the workspace, the metad
 
 ### Context Composition (The Loom)
 
-The Loom weaves session contexts. At MVP it is a pass-through — callers supply the system prompt and initial prompt directly, and The Loom packages them into a `WovenContext`. The value is in the seam: The Animator never assembles prompts, so when The Loom gains real composition logic, nothing downstream changes.
+The Loom weaves anima identity into session contexts. Given a role name, it produces an `AnimaWeave` — the composed identity context (system prompt) that The Animator uses to launch a session. The work prompt (what the anima should do) bypasses The Loom and goes directly from the caller to the session provider. At MVP, the Loom accepts the role but does not yet compose a system prompt — the value is in the seam. The Animator never assembles prompts, so when The Loom gains real composition logic, nothing downstream changes.
 
 The target design composes the system prompt from layers, in order: **guild charter** (institutional policy) → **curriculum** (what the anima knows) → **temperament** (who the anima is) → **role instructions** → **tool instructions** → **writ context**. Each layer is versioned and immutable per version, making sessions reproducible — given the same inputs, The Loom produces the same context.
 
-The distinction between **system prompt** and **initial prompt** matters: the system prompt is the anima's identity and operating instructions (persistent across turns in a conversation); the initial prompt is the specific work request for this session (changes each turn). The Loom produces both; The Animator passes both to the provider.
+The distinction between **system prompt** and **work prompt** matters: the system prompt is the anima's identity and operating instructions (persistent across turns in a conversation, composed by The Loom); the work prompt is the specific work request for this session (changes each turn, bypasses The Loom). The Animator sends both to the provider.
 
 ### Session Launch (The Animator)
 
-The Animator brings animas to life. It takes a `WovenContext`, a working directory, and optional metadata, then delegates to a **session provider** — a pluggable backend that knows how to launch and communicate with a specific AI system. The MVP provider is `claude-code-apparatus`, which launches a `claude` CLI process in **bare mode** (no CLAUDE.md, no persistent project context — the session context is entirely what The Loom wove).
+The Animator brings animas to life. It takes an `AnimaWeave`, a working directory, and optional metadata, then delegates to a **session provider** — a pluggable backend that knows how to launch and communicate with a specific AI system. Both `summon()` and `animate()` return an `AnimateHandle` synchronously — a `{ chunks, result }` pair where `result` is a promise for the final `SessionResult` and `chunks` is an async iterable of output (empty unless `streaming: true` is set on the request). The MVP provider is `claude-code-apparatus`, which launches a `claude` CLI process in **bare mode** (no CLAUDE.md, no persistent project context — the session context is entirely what The Loom wove).
 
 The Animator's error handling contract is strict: session results are **always** recorded to The Stacks, even when the provider crashes or times out. The launch is wrapped in try/finally — if the provider throws, the session record still gets written with `status: 'failed'` and whatever telemetry was available. If the Stacks write itself fails, that error is logged but doesn't mask the provider error. Session data loss is preferable to swallowing the original failure.
 
@@ -464,7 +464,7 @@ Every session record captures structured telemetry: wall-clock duration, exit co
 
 ### Session Providers
 
-Session providers are the pluggable backend behind The Animator. A provider implements `launch()` (blocking) and optionally `launchStreaming()` (yields output chunks as they arrive). The Animator's `animateStreaming()` method passes chunks through to the caller for real-time display; if the provider doesn't support streaming, the chunks iterable completes immediately with no items.
+Session providers are the pluggable backend behind The Animator. A provider implements `launch()` (blocking) and optionally `launchStreaming()` (yields output chunks as they arrive). When `streaming: true` is set on the request, The Animator uses `launchStreaming()` and pipes chunks through the returned `AnimateHandle`; if the provider doesn't support streaming, the chunks iterable completes immediately with no items.
 
 Providers handle the mechanics of a specific AI system — process spawning, stdio communication, result parsing — but not session lifecycle. The Animator owns lifecycle (id generation, timing, recording); the provider owns the process. This split means adding a new AI backend (GPT, Gemini, local models) requires only a new provider package, not changes to The Animator.
 

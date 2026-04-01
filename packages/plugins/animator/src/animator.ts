@@ -1,9 +1,9 @@
 /**
  * The Animator — session launch and telemetry recording apparatus.
  *
- * Takes a WovenContext (from The Loom), launches an AI process via a
- * session provider, monitors it until exit, and records the result to
- * The Stacks.
+ * Two API levels:
+ * - summon() — high-level: composes context via The Loom, then launches.
+ * - animate() — low-level: takes a pre-composed AnimaWeave + prompt.
  *
  * See: docs/specification.md (animator)
  */
@@ -14,10 +14,14 @@ import type { Plugin, StartupContext } from '@shardworks/nexus-core';
 import { guild } from '@shardworks/nexus-core';
 import type { StacksApi, Book } from '@shardworks/stacks-apparatus';
 
+import type { LoomApi } from '@shardworks/loom-apparatus';
+
 import type {
   AnimatorApi,
+  AnimateHandle,
   AnimatorConfig,
   AnimateRequest,
+  SummonRequest,
   SessionResult,
   SessionChunk,
   SessionDoc,
@@ -26,7 +30,7 @@ import type {
   SessionProviderResult,
 } from './types.ts';
 
-import { sessionList, sessionShow } from './tools/index.ts';
+import { sessionList, sessionShow, summon as summonTool } from './tools/index.ts';
 
 // ── ID generation ────────────────────────────────────────────────────
 
@@ -59,6 +63,9 @@ function resolveModel(): string {
 
 /**
  * Build the provider config from an AnimateRequest.
+ *
+ * The system prompt comes from the AnimaWeave (composed by The Loom).
+ * The work prompt comes from the request directly (bypasses The Loom).
  */
 function buildProviderConfig(
   request: AnimateRequest,
@@ -66,7 +73,7 @@ function buildProviderConfig(
 ): SessionProviderConfig {
   return {
     systemPrompt: request.context.systemPrompt,
-    initialPrompt: request.context.initialPrompt,
+    initialPrompt: request.prompt,
     model,
     conversationId: request.conversationId,
     cwd: request.cwd,
@@ -211,43 +218,88 @@ export function createAnimator(): Plugin {
   let config: AnimatorConfig = {};
   let sessions: Book<SessionDoc>;
 
+  // ── Shared empty chunks iterable ──────────────────────────────────
+  const emptyChunks: AsyncIterable<SessionChunk> = {
+    [Symbol.asyncIterator]() {
+      return {
+        async next() {
+          return { value: undefined as unknown as SessionChunk, done: true as const };
+        },
+      };
+    },
+  };
+
   const api: AnimatorApi = {
-    async animate(request: AnimateRequest): Promise<SessionResult> {
-      const provider = resolveProvider(config);
-      const model = resolveModel();
-      const providerConfig = buildProviderConfig(request, model);
-
-      // Step 1: generate session id, capture startedAt
-      const id = generateSessionId();
-      const startedAt = new Date().toISOString();
-
-      // Step 2: write initial 'running' record
-      await recordRunning(sessions, id, startedAt, provider.name, request);
-
-      // Steps 3–4: launch provider (wrapped in try/catch for error guarantee)
-      let result: SessionResult;
+    summon(request: SummonRequest): AnimateHandle {
+      // Resolve The Loom at call time — not a startup dependency.
+      // This allows the Animator to start without the Loom installed;
+      // only summon() requires it.
+      let loom: LoomApi;
       try {
-        const providerResult = await provider.launch(providerConfig);
-        result = buildSessionResult(id, startedAt, provider.name, providerResult, request);
-      } catch (err) {
-        result = buildFailedResult(id, startedAt, provider.name, err, request);
-        // Step 5: record even on failure
-        await recordSession(sessions, result);
-        // Re-throw per error handling contract
-        throw err;
+        loom = guild().apparatus<LoomApi>('loom');
+      } catch {
+        throw new Error(
+          'summon() requires The Loom apparatus to be installed. ' +
+          'Use animate() directly if you want to provide a pre-composed AnimaWeave.',
+        );
       }
 
-      // Step 5: record result
-      await recordSession(sessions, result);
+      // We need to weave context before we can animate, but summon()
+      // must return synchronously. Wrap the async Loom call and the
+      // animate delegation into a single deferred flow.
+      const deferred = (async () => {
+        // Compose identity context via The Loom.
+        // The Loom owns system prompt composition — it produces the system
+        // prompt from the anima's identity layers (role instructions,
+        // curriculum, temperament, charter). MVP: returns empty (no
+        // systemPrompt); the session runs without one until the Loom
+        // gains composition logic. The work prompt bypasses the Loom.
+        const context = await loom.weave({
+          role: request.role,
+        });
 
-      // Step 6: return
-      return result;
+        // Merge caller metadata with auto-generated summon metadata
+        const metadata: Record<string, unknown> = {
+          trigger: 'summon',
+          ...(request.role ? { role: request.role } : {}),
+          ...request.metadata,
+        };
+
+        // Delegate to the standard animate path.
+        // The work prompt goes directly on the request — it is not
+        // a composition concern.
+        return this.animate({
+          context,
+          prompt: request.prompt,
+          cwd: request.cwd,
+          conversationId: request.conversationId,
+          metadata,
+          streaming: request.streaming,
+        });
+      })();
+
+      // If streaming, we can't get the provider chunks until after the
+      // Loom weave resolves. Pipe through an intermediate iterable.
+      if (request.streaming) {
+        async function* pipeChunks(): AsyncIterable<SessionChunk> {
+          const handle = await deferred;
+          yield* handle.chunks;
+        }
+
+        return {
+          chunks: pipeChunks(),
+          result: deferred.then((handle) => handle.result),
+        };
+      }
+
+      // Non-streaming: empty chunks, just unwrap the result
+      return {
+        chunks: emptyChunks,
+        result: deferred.then((handle) => handle.result),
+      };
     },
 
-    animateStreaming(request: AnimateRequest): {
-      chunks: AsyncIterable<SessionChunk>;
-      result: Promise<SessionResult>;
-    } {
+    animate(request: AnimateRequest): AnimateHandle {
       const provider = resolveProvider(config);
       const model = resolveModel();
       const providerConfig = buildProviderConfig(request, model);
@@ -256,25 +308,20 @@ export function createAnimator(): Plugin {
       const id = generateSessionId();
       const startedAt = new Date().toISOString();
 
-      // If provider doesn't support streaming, fall back to launch()
-      if (!provider.launchStreaming) {
-        const emptyChunks: AsyncIterable<SessionChunk> = {
-          [Symbol.asyncIterator]() {
-            return {
-              async next() {
-                return { value: undefined as unknown as SessionChunk, done: true as const };
-              },
-            };
-          },
-        };
+      // Streaming path: provider supports streaming AND caller asked for it
+      if (request.streaming && provider.launchStreaming) {
+        const { chunks: providerChunks, result: providerResultPromise } =
+          provider.launchStreaming(providerConfig);
+
+        // Write initial record (fire and forget — don't block streaming)
+        const initPromise = recordRunning(sessions, id, startedAt, provider.name, request);
 
         const result = (async () => {
-          // Write initial record
-          await recordRunning(sessions, id, startedAt, provider.name, request);
+          await initPromise;
 
           let sessionResult: SessionResult;
           try {
-            const providerResult = await provider.launch(providerConfig);
+            const providerResult = await providerResultPromise;
             sessionResult = buildSessionResult(id, startedAt, provider.name, providerResult, request);
           } catch (err) {
             sessionResult = buildFailedResult(id, startedAt, provider.name, err, request);
@@ -286,24 +333,16 @@ export function createAnimator(): Plugin {
           return sessionResult;
         })();
 
-        return { chunks: emptyChunks, result };
+        return { chunks: providerChunks, result };
       }
 
-      // Provider supports streaming
-      const { chunks: providerChunks, result: providerResultPromise } =
-        provider.launchStreaming(providerConfig);
-
-      // Write initial record (fire and forget — don't block streaming)
-      const initPromise = recordRunning(sessions, id, startedAt, provider.name, request);
-
-      // Wrap the result to add recording
+      // Non-streaming path (or provider doesn't support streaming)
       const result = (async () => {
-        // Ensure initial record was written before we finish
-        await initPromise;
+        await recordRunning(sessions, id, startedAt, provider.name, request);
 
         let sessionResult: SessionResult;
         try {
-          const providerResult = await providerResultPromise;
+          const providerResult = await provider.launch(providerConfig);
           sessionResult = buildSessionResult(id, startedAt, provider.name, providerResult, request);
         } catch (err) {
           sessionResult = buildFailedResult(id, startedAt, provider.name, err, request);
@@ -315,13 +354,14 @@ export function createAnimator(): Plugin {
         return sessionResult;
       })();
 
-      return { chunks: providerChunks, result };
+      return { chunks: emptyChunks, result };
     },
   };
 
   return {
     apparatus: {
       requires: ['stacks'],
+      recommends: ['loom'],
 
       supportKit: {
         books: {
@@ -329,7 +369,7 @@ export function createAnimator(): Plugin {
             indexes: ['startedAt', 'status', 'conversationId', 'provider'],
           },
         },
-        tools: [sessionList, sessionShow],
+        tools: [sessionList, sessionShow, summonTool],
       },
 
       provides: api,

@@ -1,7 +1,7 @@
 /**
  * @shardworks/animator-apparatus — The Animator.
  *
- * Session launch and telemetry recording: takes a WovenContext from The Loom,
+ * Session launch and telemetry recording: takes an AnimaWeave from The Loom,
  * launches an AI process via a session provider, monitors it until exit, and
  * records the result to The Stacks.
  *
@@ -14,7 +14,9 @@ import { createAnimator } from './animator.ts';
 
 export {
   type AnimatorApi,
+  type AnimateHandle,
   type AnimateRequest,
+  type SummonRequest,
   type SessionResult,
   type SessionChunk,
   type TokenUsage,

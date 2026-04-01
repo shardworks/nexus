@@ -1,13 +1,13 @@
 # `@shardworks/loom-apparatus`
 
-The Loom — the guild's session context composer. This apparatus owns system prompt assembly: it weaves charter, curricula, temperament, and role instructions into a `WovenContext` that The Animator consumes to launch AI sessions. Callers provide the user-facing prompt (writ description, standing order payload); The Loom produces the system prompt. The Animator never assembles prompts itself.
+The Loom — the guild's session context composer. This apparatus owns system prompt assembly: given a role name, it weaves charter, curricula, temperament, and role instructions into an `AnimaWeave` that The Animator consumes to launch AI sessions. The work prompt (what the anima should do) bypasses The Loom — it is not a composition concern.
 
-MVP: system prompt composition is not yet implemented — `weave()` returns `undefined` for `systemPrompt`. The caller-provided prompt is passed through as `initialPrompt`. The seam exists now so the contract is stable as composition logic is built out.
+MVP: system prompt composition is not yet implemented — `weave()` returns an empty `AnimaWeave` (systemPrompt undefined). The role is accepted but not yet used. The seam exists now so the contract is stable as composition logic is built out.
 
 ```
-caller (Animator, clockworks)   → weave({ prompt })
-@shardworks/loom-apparatus                → WovenContext { systemPrompt?, initialPrompt? }
-The Animator                    → launches session with the woven context
+caller (Animator.summon)         → weave({ role })
+@shardworks/loom-apparatus       → AnimaWeave { systemPrompt? }
+The Animator                     → launches session with weave + work prompt
 ```
 
 ---
@@ -42,13 +42,12 @@ const loom = guild().apparatus<LoomApi>('loom');
 ```typescript
 interface LoomApi {
   /**
-   * Weave a session context.
+   * Weave an anima's session context.
    *
-   * MVP: passes the caller-provided prompt through as initialPrompt.
-   * systemPrompt is undefined — composition logic (charter, curricula,
-   * temperament, role instructions) is future work.
+   * Given a role name, produces an AnimaWeave containing the composed
+   * system prompt. MVP: returns undefined for systemPrompt.
    */
-  weave(request: WeaveRequest): Promise<WovenContext>;
+  weave(request: WeaveRequest): Promise<AnimaWeave>;
 }
 ```
 
@@ -56,41 +55,47 @@ interface LoomApi {
 
 ```typescript
 interface WeaveRequest {
-  /** Optional initial user message (e.g. writ description, standing order payload). */
-  prompt?: string;
+  /**
+   * The role to weave context for (e.g. 'artificer', 'scribe').
+   * MVP: accepted but not used. Future: resolves role instructions,
+   * curriculum, temperament, and composes the system prompt.
+   */
+  role?: string;
 }
 ```
 
-### `WovenContext`
+### `AnimaWeave`
 
 ```typescript
-interface WovenContext {
+interface AnimaWeave {
   /** The system prompt for the AI process. Undefined until composition is implemented. */
   systemPrompt?: string;
-  /** The initial user message, if any. */
-  initialPrompt?: string;
 }
 ```
 
 ### Usage Examples
 
-**Weave a context for a commissioned session:**
+**Weave a context for a role:**
 
 ```typescript
 const loom = guild().apparatus<LoomApi>('loom');
 
-const context = await loom.weave({
-  prompt: 'Commission C-042: Implement the Loom apparatus.',
-});
-// MVP → { systemPrompt: undefined, initialPrompt: 'Commission C-042...' }
-// Future → { systemPrompt: '<woven from charter + curricula + ...>', initialPrompt: 'Commission C-042...' }
+const weave = await loom.weave({ role: 'artificer' });
+// MVP → { systemPrompt: undefined }
+// Future → { systemPrompt: '<woven from charter + curricula + ...>' }
 ```
 
-**Weave a context with no initial prompt (e.g. interactive session):**
+**Via The Animator (typical path):**
 
 ```typescript
-const context = await loom.weave({});
-// MVP → { systemPrompt: undefined, initialPrompt: undefined }
+const animator = guild().apparatus<AnimatorApi>('animator');
+
+// summon() calls loom.weave() internally — you don't need to call it directly
+const result = await animator.summon({
+  role: 'artificer',
+  prompt: 'Build the frobnicator module with tests',
+  cwd: '/path/to/workdir',
+});
 ```
 
 ---
@@ -99,7 +104,7 @@ const context = await loom.weave({});
 
 MVP: none. The Loom reads no guild configuration.
 
-Future versions will read anima identity records, charter content, and role definitions from guild config and The Stacks.
+Future versions will read role definitions, anima identity records, charter content, and curricula from guild config and The Stacks.
 
 ---
 
@@ -110,7 +115,7 @@ Future versions will read anima identity records, charter content, and role defi
 import {
   type LoomApi,
   type WeaveRequest,
-  type WovenContext,
+  type AnimaWeave,
   createLoom,
 } from '@shardworks/loom-apparatus';
 ```

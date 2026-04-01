@@ -1,9 +1,9 @@
 /**
  * @shardworks/loom-apparatus — The Loom.
  *
- * Session context composition: weaves system prompts, initial prompts,
- * and (eventually) role instructions, curricula, and temperaments into
- * a WovenContext that The Animator can consume.
+ * Session context composition: weaves role instructions, curricula, and
+ * temperaments into an AnimaWeave that The Animator can consume to
+ * launch AI sessions.
  *
  * See: docs/specification.md (loom)
  */
@@ -15,7 +15,7 @@ import { createLoom } from './loom.ts';
 export {
   type LoomApi,
   type WeaveRequest,
-  type WovenContext,
+  type AnimaWeave,
   createLoom,
 } from './loom.ts';
 

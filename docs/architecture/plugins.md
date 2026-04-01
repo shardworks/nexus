@@ -227,6 +227,22 @@ Both produce the same operator-facing failure: a loud, early, specific error at 
 
 The framework validates all `requires` declarations at startup — before any `start` is called. If a declared dependency is not installed, the guild refuses to start with a specific error naming the missing plugin. Circular dependencies are rejected at load time.
 
+### `recommends`
+
+Both kits and apparatuses may declare `recommends` — advisory dependencies that generate startup warnings but do not prevent startup. Use `recommends` for soft dependencies needed by optional capabilities:
+
+```typescript
+export default {
+  apparatus: {
+    requires:   ["stacks"],
+    recommends: ["loom"],     // summon() needs it, animate() doesn't
+    // ...
+  },
+} satisfies Plugin
+```
+
+If a recommended plugin is not installed, Arbor logs a warning at startup but proceeds normally. The apparatus is responsible for producing a clear runtime error if the missing dependency is actually needed (e.g. "summon() requires The Loom apparatus to be installed").
+
 ---
 
 ## Internal Model

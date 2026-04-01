@@ -7,7 +7,7 @@
  * See: docs/specification.md (animator)
  */
 
-import type { WovenContext } from '@shardworks/loom-apparatus';
+import type { AnimaWeave } from '@shardworks/loom-apparatus';
 
 // ── Session chunks (streaming output) ────────────────────────────────
 
@@ -20,8 +20,14 @@ export type SessionChunk =
 // ── Request / Result ─────────────────────────────────────────────────
 
 export interface AnimateRequest {
-  /** The woven context from The Loom. */
-  context: WovenContext;
+  /** The anima weave from The Loom (composed identity context). */
+  context: AnimaWeave;
+  /**
+   * The work prompt — what the anima should do.
+   * Passed directly to the session provider as the initial prompt.
+   * This bypasses The Loom — it is not a composition concern.
+   */
+  prompt?: string;
   /**
    * Working directory for the session.
    * The session provider launches the AI process here.
@@ -38,6 +44,14 @@ export interface AnimateRequest {
    * The Animator stores this as-is — it does not interpret the contents.
    */
   metadata?: Record<string, unknown>;
+  /**
+   * Enable streaming output. When true, the returned `chunks` iterable
+   * yields output as the session produces it. When false (default), the
+   * `chunks` iterable completes immediately with no items.
+   *
+   * Either way, the return shape is the same: `{ chunks, result }`.
+   */
+  streaming?: boolean;
 }
 
 export interface SessionResult {
@@ -76,28 +90,91 @@ export interface TokenUsage {
   cacheWriteTokens?: number;
 }
 
+// ── Summon request ──────────────────────────────────────────────────
+
+export interface SummonRequest {
+  /**
+   * The work prompt — what the anima should do.
+   * Passed directly to the session provider as the initial prompt.
+   */
+  prompt: string;
+  /**
+   * The role to summon (e.g. 'artificer', 'scribe').
+   * Passed to The Loom for context composition and recorded in session metadata.
+   */
+  role?: string;
+  /**
+   * Working directory for the session.
+   * The session provider launches the AI process here.
+   */
+  cwd: string;
+  /**
+   * Optional conversation id to resume a multi-turn conversation.
+   */
+  conversationId?: string;
+  /**
+   * Additional metadata to record alongside the session.
+   * Merged with auto-generated metadata (trigger: 'summon', role).
+   */
+  metadata?: Record<string, unknown>;
+  /**
+   * Enable streaming output. When true, the returned `chunks` iterable
+   * yields output as the session produces it. When false (default), the
+   * `chunks` iterable completes immediately with no items.
+   */
+  streaming?: boolean;
+}
+
 // ── Animator API (the `provides` interface) ──────────────────────────
+
+/** The return value from animate() and summon(). */
+export interface AnimateHandle {
+  /**
+   * Async iterable of output chunks from the session. When streaming is
+   * disabled (the default), this iterable completes immediately with no
+   * items. When streaming is enabled, it yields chunks as the session
+   * produces output.
+   */
+  chunks: AsyncIterable<SessionChunk>;
+  /**
+   * Promise that resolves to the final SessionResult after the session
+   * completes (or fails/times out) and the result is recorded to The Stacks.
+   */
+  result: Promise<SessionResult>;
+}
 
 export interface AnimatorApi {
   /**
-   * Animate a session — launch an AI process with the given context.
+   * Summon an anima — compose context via The Loom and launch a session.
    *
-   * Blocks until the session completes (or fails/times out).
-   * Records the session result to The Stacks before returning.
+   * This is the high-level "make an anima do a thing" entry point.
+   * Internally calls The Loom for context composition (passing the role),
+   * then animate() for session launch and recording. The work prompt
+   * bypasses the Loom and goes directly to the provider.
+   *
+   * Requires The Loom apparatus to be installed. Throws if not available.
+   *
+   * Auto-populates session metadata with `trigger: 'summon'` and `role`.
+   *
+   * Returns synchronously — the async work lives inside `result` and `chunks`.
    */
-  animate(request: AnimateRequest): Promise<SessionResult>;
+  summon(request: SummonRequest): AnimateHandle;
 
   /**
-   * Animate a session with streaming output.
+   * Animate a session — launch an AI process with the given context.
    *
-   * Returns an async iterable of chunks as the session produces output,
-   * plus a promise that resolves to the final SessionResult.
-   * The result promise resolves after recording completes.
+   * This is the low-level entry point for callers that compose their own
+   * AnimaWeave (e.g. The Parlour for multi-turn conversations).
+   *
+   * Records the session result to The Stacks before `result` resolves.
+   *
+   * Set `streaming: true` on the request to receive output chunks as the
+   * session runs. When streaming is disabled (default), the `chunks`
+   * iterable completes immediately with no items.
+   *
+   * Returns synchronously — the async work lives inside `result` and `chunks`.
    */
-  animateStreaming(request: AnimateRequest): {
-    chunks: AsyncIterable<SessionChunk>;
-    result: Promise<SessionResult>;
-  };
+  animate(request: AnimateRequest): AnimateHandle;
 }
 
 // ── Session provider interface ───────────────────────────────────────
@@ -121,7 +198,7 @@ export interface AnimatorSessionProvider {
 
   /**
    * Launch a session with streaming output. Optional — providers that
-   * don't support streaming omit this method, and animateStreaming()
+   * don't support streaming omit this method, and animate({ streaming: true })
    * falls back to launch() with no chunks emitted.
    */
   launchStreaming?(config: SessionProviderConfig): {

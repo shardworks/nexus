@@ -2,7 +2,7 @@
  * The Loom — unit tests.
  *
  * Tests the MVP weave: system prompt is undefined (composition not yet
- * implemented), caller-provided prompt passed through as initialPrompt.
+ * implemented), role is accepted but not yet used.
  */
 
 import { describe, it } from 'node:test';
@@ -58,31 +58,22 @@ describe('The Loom', () => {
   describe('weave()', () => {
     it('returns undefined systemPrompt (composition not yet implemented)', async () => {
       const api = makeLoomApi();
-      const ctx = await api.weave({});
+      const weave = await api.weave({});
 
-      assert.strictEqual(ctx.systemPrompt, undefined);
+      assert.strictEqual(weave.systemPrompt, undefined);
     });
 
-    it('passes through prompt as initialPrompt', async () => {
+    it('returns undefined systemPrompt even when role is provided', async () => {
       const api = makeLoomApi();
-      const ctx = await api.weave({ prompt: 'Do the thing.' });
+      const weave = await api.weave({ role: 'artificer' });
 
-      assert.strictEqual(ctx.initialPrompt, 'Do the thing.');
+      assert.strictEqual(weave.systemPrompt, undefined);
     });
 
-    it('omits initialPrompt when prompt is not provided', async () => {
+    it('accepts role without error', async () => {
       const api = makeLoomApi();
-      const ctx = await api.weave({});
-
-      assert.strictEqual(ctx.initialPrompt, undefined);
-      assert.ok(!('initialPrompt' in ctx), 'initialPrompt key should not be present');
-    });
-
-    it('preserves empty string prompt as initialPrompt', async () => {
-      const api = makeLoomApi();
-      const ctx = await api.weave({ prompt: '' });
-
-      assert.strictEqual(ctx.initialPrompt, '');
+      // Should not throw — role is accepted, just not used at MVP
+      await api.weave({ role: 'scribe' });
     });
 
     it('returns a promise', () => {
@@ -92,20 +83,11 @@ describe('The Loom', () => {
       assert.ok(result instanceof Promise, 'weave() should return a Promise');
     });
 
-    it('handles multiline prompts', async () => {
+    it('returns an object without initialPrompt', async () => {
       const api = makeLoomApi();
-      const multiline = 'Line 1\nLine 2\nLine 3';
-      const ctx = await api.weave({ prompt: multiline });
+      const weave = await api.weave({ role: 'artificer' });
 
-      assert.strictEqual(ctx.initialPrompt, multiline);
-    });
-
-    it('handles very long prompts', async () => {
-      const api = makeLoomApi();
-      const longPrompt = 'x'.repeat(100_000);
-      const ctx = await api.weave({ prompt: longPrompt });
-
-      assert.strictEqual(ctx.initialPrompt!.length, 100_000);
+      assert.ok(!('initialPrompt' in weave), 'AnimaWeave should not have initialPrompt');
     });
   });
 });

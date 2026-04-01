@@ -32,6 +32,7 @@ function makeApparatus(
   id: string,
   opts: {
     requires?: string[];
+    recommends?: string[];
     provides?: unknown;
     consumes?: string[];
     start?: (ctx: StartupContext) => void | Promise<void>;
@@ -43,6 +44,7 @@ function makeApparatus(
     version: '1.0.0',
     apparatus: {
       requires: opts.requires,
+      recommends: opts.recommends,
       provides: opts.provides,
       consumes: opts.consumes,
       start: opts.start ?? (() => {}),
@@ -267,11 +269,30 @@ describe('collectStartupWarnings', () => {
     assert.ok(warnings[0]!.includes('sessions'));
   });
 
-  it('does not warn when a recommended apparatus IS installed', () => {
+  it('does not warn when a kit-recommended apparatus IS installed', () => {
     const kits = [makeKit('relay-kit', { recommends: ['sessions'] })];
     const apps = [makeApparatus('sessions')];
     const warnings = collectStartupWarnings(kits, apps);
     // No recommends warnings (there may be contribution warnings)
+    const recommends = warnings.filter((w) => w.includes('recommends'));
+    assert.equal(recommends.length, 0);
+  });
+
+  it('warns when an apparatus recommends another apparatus that is not installed', () => {
+    const apps = [makeApparatus('animator', { recommends: ['loom'] })];
+    const warnings = collectStartupWarnings([], apps);
+    assert.equal(warnings.length, 1);
+    assert.ok(warnings[0]!.includes('animator'));
+    assert.ok(warnings[0]!.includes('recommends'));
+    assert.ok(warnings[0]!.includes('loom'));
+  });
+
+  it('does not warn when an apparatus-recommended apparatus IS installed', () => {
+    const apps = [
+      makeApparatus('animator', { recommends: ['loom'] }),
+      makeApparatus('loom'),
+    ];
+    const warnings = collectStartupWarnings([], apps);
     const recommends = warnings.filter((w) => w.includes('recommends'));
     assert.equal(recommends.length, 0);
   });

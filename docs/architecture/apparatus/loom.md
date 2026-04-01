@@ -4,15 +4,15 @@ Status: **Draft — MVP**
 
 Package: `@shardworks/loom-apparatus` · Plugin id: `loom`
 
-> **⚠️ MVP scope.** This spec describes the thinnest viable Loom — just enough to get sessions running. The Loom owns system prompt assembly, but MVP has no composition logic yet — `weave()` returns `undefined` for `systemPrompt` and passes the caller-provided prompt through as `initialPrompt`. Role resolution, tool instructions, anima identity, curricula, temperaments, and charter composition are all future work. See [Future: Full Composition](#future-full-composition) for the target design.
+> **⚠️ MVP scope.** This spec covers the seam only — the Loom accepts a role name and returns an `AnimaWeave`, but does not yet compose a system prompt. Role resolution, tool instructions, anima identity, curricula, temperaments, and charter composition are all future work. See [Future: Full Composition](#future-full-composition) for the target design.
 
 ---
 
 ## Purpose
 
-The Loom weaves session contexts. It owns system prompt assembly: callers provide the user-facing prompt (writ description, standing order payload); The Loom produces the system prompt from anima identity, charter, curricula, temperament, and role instructions.
+The Loom weaves anima identity into session contexts. Given a role name, it produces an `AnimaWeave` — the composed identity context that The Animator uses to launch a session. The work prompt (what the anima should do) is not the Loom's concern — it bypasses the Loom and goes directly from the caller to the session provider.
 
-MVP: system prompt composition is not yet implemented — `weave()` returns `undefined` for `systemPrompt`. The caller-provided prompt is passed through as `initialPrompt`. The seam exists so The Animator never assembles prompts itself; as composition is built out, The Loom's internals change but its output shape stays the same.
+MVP: system prompt composition is not yet implemented — `weave()` returns an empty `AnimaWeave` (systemPrompt undefined). The role is accepted on the API surface but not yet used. The seam exists so The Animator never assembles prompts itself; as composition is built out, The Loom's internals change but its output shape stays the same.
 
 ---
 
@@ -29,44 +29,52 @@ requires: []    — MVP has no apparatus dependencies
 ```typescript
 interface LoomApi {
   /**
-   * Weave a session context.
+   * Weave an anima's session context.
    *
-   * MVP: passes the caller-provided prompt through as initialPrompt.
-   * systemPrompt is undefined — composition logic (charter, curricula,
-   * temperament, role instructions) is future work.
+   * Given a role name, produces an AnimaWeave containing the composed
+   * system prompt. MVP: returns undefined for systemPrompt.
    */
-  weave(request: WeaveRequest): Promise<WovenContext>
+  weave(request: WeaveRequest): Promise<AnimaWeave>
 }
 
 interface WeaveRequest {
-  /** Optional initial user message (e.g. writ description, standing order payload). */
-  prompt?: string
+  /**
+   * The role to weave context for (e.g. 'artificer', 'scribe').
+   * MVP: accepted but not used. Future: resolves role instructions,
+   * curriculum, temperament, and composes the system prompt.
+   */
+  role?: string
 }
 
-interface WovenContext {
+/**
+ * The output of The Loom's weave() — the composed anima identity context.
+ * Contains the system prompt produced from the anima's identity layers.
+ * The work prompt is not part of the weave.
+ */
+interface AnimaWeave {
   /** The system prompt for the AI process. Undefined until composition is implemented. */
   systemPrompt?: string
-  /** The initial user message, if any. */
-  initialPrompt?: string
 }
 ```
 
-That's it. The MVP Loom is a pass-through — the value is in the seam, not the logic. The contract is stable: as composition is built out, `systemPrompt` gains a value but the shape doesn't change.
+The MVP Loom is a stub — the value is in the seam, not the logic. The contract is stable: as composition is built out, `systemPrompt` gains a value but the shape doesn't change.
 
 ---
 
 ## What The Loom does NOT do (MVP)
 
-- **Resolve roles or tools** — the caller provides the prompt content; The Loom doesn't read guild config.
-- **Read files from disk** — no role instructions, no tool instructions, no charter.
+- **Compose system prompts** — the role is accepted but not used; systemPrompt is undefined.
+- **Resolve roles or tools** — no role instructions, no tool instructions, no charter.
+- **Read files from disk** — no file I/O at all.
 - **Look up anima identity** — no identity records exist in MVP.
+- **Handle work prompts** — the work prompt bypasses the Loom entirely.
 - **Launch sessions** — that's The Animator's job.
 
 ---
 
 ## Future: Full Composition
 
-When the session infrastructure matures, The Loom becomes the system's composition engine. The API shape (`weave(request) → WovenContext`) remains stable; the request gains fields and the internals gain logic.
+When the session infrastructure matures, The Loom becomes the system's composition engine. The API shape (`weave(request) → AnimaWeave`) remains stable; the request may gain fields and the internals gain logic.
 
 ### Future `WeaveRequest`
 
@@ -76,19 +84,16 @@ interface WeaveRequest {
   role: string
   /** Optional anima id. Resolves identity → curriculum → temperament. */
   animaId?: string
-  /** Optional initial prompt. */
-  prompt?: string
   /** Optional writ id. The Loom reads writ context from The Stacks. */
   writId?: string
 }
 ```
 
-### Future `WovenContext`
+### Future `AnimaWeave`
 
 ```typescript
-interface WovenContext {
+interface AnimaWeave {
   systemPrompt: string
-  initialPrompt?: string
   /** The resolved tool set for this role. */
   tools: ResolvedTool[]
   /** The role this context was woven for. */
@@ -114,7 +119,7 @@ The legacy session system supports a `systemPromptAppendix` — additional conte
 **Open question:** Does this belong in The Loom or in the caller? Two options:
 
 1. **Loom owns it** — `WeaveRequest` gains an `appendix?: string` field. The Loom appends it after composing the system prompt. Clean: all prompt assembly happens in one place.
-2. **Caller owns it** — the caller (summon relay) concatenates the appendix to `WovenContext.systemPrompt` before passing to The Animator. Simple: no Loom changes needed.
+2. **Caller owns it** — the caller (summon relay) concatenates the appendix to `AnimaWeave.systemPrompt` before passing to The Animator. Simple: no Loom changes needed.
 
 The answer depends on whether the appendix is a *composition concern* (part of building the prompt) or a *dispatch concern* (context that only the caller knows). Writ protocol feels like dispatch — the Loom shouldn't need to know about writ lifecycle. But if other appendix use cases emerge (e.g. guild-wide policies injected per-session), it may belong in the Loom.
 

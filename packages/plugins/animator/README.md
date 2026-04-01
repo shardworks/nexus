@@ -1,8 +1,13 @@
 # `@shardworks/animator-apparatus`
 
-The Animator brings animas to life. It takes a woven session context (from The Loom), launches an AI process via a configurable session provider apparatus, monitors it until exit, and records the result to The Stacks. The Animator does not know how the context was composed — it receives a `WovenContext` and runs a session.
+The Animator brings animas to life. It is the guild's session apparatus — the single entry point for making an anima do work. Two API levels serve different callers:
 
-Depends on `@shardworks/stacks-apparatus` for persistence and `@shardworks/loom-apparatus` for the `WovenContext` type. The session provider (e.g. `@shardworks/claude-code-apparatus`) is discovered at runtime via guild config.
+- **`summon()`** — the high-level "make an anima do a thing" call. Passes the role to The Loom for identity composition, then launches a session with the work prompt. This is what the summon relay, the CLI, and most callers use.
+- **`animate()`** — the low-level call for callers that compose their own `AnimaWeave` (e.g. The Parlour for multi-turn conversations).
+
+Both methods return an `AnimateHandle` synchronously — a `{ chunks, result }` pair. The `result` promise resolves when the session completes. The `chunks` async iterable yields output as the session runs when `streaming: true` is set; otherwise it completes immediately with no items.
+
+Depends on `@shardworks/stacks-apparatus` for persistence. Uses `@shardworks/loom-apparatus` for context composition (resolved at call time by `summon()`, not a startup dependency). The session provider (e.g. `@shardworks/claude-code-apparatus`) is discovered at runtime via guild config.
 
 ---
 
@@ -27,55 +32,110 @@ import type { AnimatorApi } from '@shardworks/animator-apparatus';
 const animator = guild().apparatus<AnimatorApi>('animator');
 ```
 
-### `animate(request): Promise<SessionResult>`
+### `summon(request): AnimateHandle`
 
-Launch a session and block until it completes. Records the result to The Stacks before returning.
+Summon an anima — compose context via The Loom and launch a session. This is the primary entry point for dispatching work. Returns synchronously.
 
 ```typescript
-const result = await animator.animate({
-  context: wovenContext,        // from The Loom
+const { result } = animator.summon({
+  prompt: 'Build the frobnicator module with tests',
+  role: 'artificer',              // passed to The Loom for composition
   cwd: '/path/to/workdir',
-  conversationId: 'conv-xyz',  // optional, for multi-turn resume
-  metadata: {                   // optional, recorded as-is
-    trigger: 'summon',
-    animaName: 'scribe',
+  metadata: {                     // optional, merged with auto-generated metadata
     writId: 'wrt-8a4c9e2',
   },
 });
 
-console.log(result.status);           // 'completed' | 'failed' | 'timeout'
-console.log(result.costUsd);          // 0.42
-console.log(result.tokenUsage);       // { inputTokens, outputTokens, ... }
-console.log(result.providerSessionId); // provider's session id for --resume
+const session = await result;
+console.log(session.status);           // 'completed' | 'failed' | 'timeout'
+console.log(session.costUsd);          // 0.42
+console.log(session.metadata?.trigger); // 'summon' (auto-populated)
+console.log(session.metadata?.role);    // 'artificer' (auto-populated from request)
 ```
 
-### `animateStreaming(request): { chunks, result }`
-
-Launch a session with streaming output. Returns an async iterable of chunks as the session produces output, plus a promise for the final `SessionResult`.
+With streaming:
 
 ```typescript
-const { chunks, result } = animator.animateStreaming({
-  context: wovenContext,
+const { chunks, result } = animator.summon({
+  prompt: 'Build the frobnicator module with tests',
+  role: 'artificer',
   cwd: '/path/to/workdir',
+  streaming: true,
 });
 
 for await (const chunk of chunks) {
   if (chunk.type === 'text') process.stdout.write(chunk.text);
 }
 
-const sessionResult = await result;
+const session = await result;
 ```
 
-If the session provider doesn't support streaming, `chunks` completes immediately with no items and `result` resolves normally via the non-streaming path.
+The Loom owns system prompt composition — given the role, it produces the system prompt from the anima's identity layers (role instructions, curriculum, temperament, charter). The work prompt bypasses The Loom and goes directly to the session provider. At MVP, the Loom does not yet compose a system prompt (returns `undefined`); the session runs with the work prompt only. As the Loom gains composition logic, `summon()` callers get richer sessions without changing their code.
+
+Requires The Loom apparatus to be installed. Throws with a clear error if not available.
+
+### `animate(request): AnimateHandle`
+
+Launch a session with a pre-composed context. Use this when you've already built an `AnimaWeave` yourself (e.g. The Parlour assembling inter-turn context for a multi-turn conversation). Returns synchronously.
+
+```typescript
+const { result } = animator.animate({
+  context: animaWeave,            // from The Loom or self-composed
+  prompt: 'Do the thing',         // work prompt, sent directly to provider
+  cwd: '/path/to/workdir',
+  conversationId: 'conv-xyz',    // optional, for multi-turn resume
+  metadata: {                     // optional, recorded as-is
+    trigger: 'consult',
+    animaName: 'coco',
+  },
+});
+
+const session = await result;
+```
+
+With streaming:
+
+```typescript
+const { chunks, result } = animator.animate({
+  context: animaWeave,
+  prompt: 'Build the feature',
+  cwd: '/path/to/workdir',
+  streaming: true,
+});
+
+for await (const chunk of chunks) {
+  if (chunk.type === 'text') process.stdout.write(chunk.text);
+}
+
+const session = await result;
+```
+
+If the session provider doesn't support streaming, `chunks` completes immediately with no items and `result` resolves normally via the non-streaming path — regardless of the `streaming` flag.
 
 ### Types
 
 ```typescript
+interface SummonRequest {
+  prompt: string;                // The work prompt (sent to provider directly)
+  role?: string;                 // Role name (passed to The Loom for composition)
+  cwd: string;                   // Working directory for the session
+  conversationId?: string;       // Optional, for multi-turn resume
+  metadata?: Record<string, unknown>; // Merged with { trigger: 'summon', role }
+  streaming?: boolean;           // Enable streaming output (default false)
+}
+
 interface AnimateRequest {
-  context: WovenContext;
+  context: AnimaWeave;           // Pre-composed identity context
+  prompt?: string;               // Work prompt (sent to provider as initialPrompt)
   cwd: string;
   conversationId?: string;
   metadata?: Record<string, unknown>;
+  streaming?: boolean;           // Enable streaming output (default false)
+}
+
+interface AnimateHandle {
+  chunks: AsyncIterable<SessionChunk>; // Empty when not streaming
+  result: Promise<SessionResult>;
 }
 
 interface SessionResult {
@@ -131,8 +191,8 @@ interface AnimatorSessionProvider {
 }
 
 interface SessionProviderConfig {
-  systemPrompt: string;
-  initialPrompt?: string;
+  systemPrompt?: string;         // From AnimaWeave (Loom output)
+  initialPrompt?: string;        // From AnimateRequest.prompt (work prompt)
   model: string;
   conversationId?: string;
   cwd: string;
@@ -152,7 +212,7 @@ The Animator imports these types; provider packages import them from `@shardwork
 
 ## Support Kit
 
-The Animator contributes a `sessions` book and two inspection tools:
+The Animator contributes a `sessions` book and inspection/dispatch tools:
 
 ### Books
 
@@ -162,10 +222,13 @@ The Animator contributes a `sessions` book and two inspection tools:
 
 ### Tools
 
-| Tool | Description |
-|---|---|
-| `session-list` | List recent sessions with optional filters (status, provider, conversationId, limit) |
-| `session-show` | Show full detail for a single session by id |
+| Tool | Permission | Description |
+|---|---|---|
+| `session-list` | `read` | List recent sessions with optional filters (status, provider, conversationId, limit) |
+| `session-show` | `read` | Show full detail for a single session by id |
+| `summon` | `animate` | Summon an anima from the CLI — compose context and launch a session |
+
+The `summon` tool is CLI-only (`callableFrom: 'cli'`). It calls `animator.summon()` with the guild home as the working directory.
 
 ## Exports
 
@@ -175,7 +238,9 @@ The main export provides the apparatus factory, API types, and provider interfac
 import {
   createAnimator,
   type AnimatorApi,
+  type AnimateHandle,
   type AnimateRequest,
+  type SummonRequest,
   type SessionResult,
   type SessionChunk,
   type TokenUsage,
@@ -191,5 +256,5 @@ The default export is a pre-created apparatus plugin instance:
 
 ```typescript
 import animator from '@shardworks/animator-apparatus';
-// animator is { apparatus: { requires: ['stacks'], provides: AnimatorApi, ... } }
+// animator is { apparatus: { requires: ['stacks'], recommends: ['loom'], provides: AnimatorApi, ... } }
 ```

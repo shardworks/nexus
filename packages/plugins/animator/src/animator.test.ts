@@ -18,6 +18,9 @@ import { createStacksApparatus } from '@shardworks/stacks-apparatus';
 import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 
+import { createLoom } from '@shardworks/loom-apparatus';
+import type { LoomApi } from '@shardworks/loom-apparatus';
+
 import { createAnimator } from './animator.ts';
 import type {
   AnimatorApi,
@@ -129,10 +132,13 @@ let animator: AnimatorApi;
  * Set up the test environment with a guild mock, in-memory Stacks,
  * and the Animator apparatus. The provider is registered as an apparatus
  * that the Animator discovers via guild().apparatus('fake-provider').
+ *
+ * @param opts.installLoom — if true, installs The Loom apparatus (needed for summon() tests)
  */
 function setup(
   provider: AnimatorSessionProvider = createFakeProvider(),
   sessionProviderPluginId = 'fake-provider',
+  opts: { installLoom?: boolean } = {},
 ) {
   const memBackend = new MemoryBackend();
   const stacksPlugin = createStacksApparatus(memBackend);
@@ -143,6 +149,14 @@ function setup(
 
   // Register the provider as an apparatus (same as a real guild would)
   apparatusMap.set(sessionProviderPluginId, provider);
+
+  // Optionally install The Loom (needed for summon() tests)
+  if (opts.installLoom) {
+    const loomPlugin = createLoom();
+    const loomApparatus = (loomPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
+    loomApparatus.start({ on: () => {} });
+    apparatusMap.set('loom', loomApparatus.provides);
+  }
 
   const fakeGuild: Guild = {
     home: '/tmp/fake-guild',
@@ -204,11 +218,21 @@ describe('Animator', () => {
       setup();
     });
 
+    it('returns an AnimateHandle with chunks and result', () => {
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      });
+
+      assert.ok(handle.chunks, 'should have chunks');
+      assert.ok(handle.result instanceof Promise, 'result should be a Promise');
+    });
+
     it('completes a session and records to Stacks', async () => {
       const result = await animator.animate({
         context: { systemPrompt: 'You are a test agent.' },
         cwd: '/tmp/workdir',
-      });
+      }).result;
 
       assert.equal(result.status, 'completed');
       assert.equal(result.exitCode, 0);
@@ -241,7 +265,7 @@ describe('Animator', () => {
         context: { systemPrompt: 'Test' },
         cwd: '/tmp/workdir',
         metadata,
-      });
+      }).result;
 
       assert.deepEqual(result.metadata, metadata);
 
@@ -255,7 +279,7 @@ describe('Animator', () => {
         context: { systemPrompt: 'Test' },
         cwd: '/tmp/workdir',
         conversationId: 'conv-xyz',
-      });
+      }).result;
 
       assert.equal(result.conversationId, 'conv-xyz');
 
@@ -264,17 +288,15 @@ describe('Animator', () => {
       assert.equal(doc?.conversationId, 'conv-xyz');
     });
 
-    it('passes initialPrompt and model to provider', async () => {
+    it('passes prompt and systemPrompt to provider', async () => {
       const { provider, getCapturedConfig } = createSpyProvider();
       setup(provider);
 
       await animator.animate({
-        context: {
-          systemPrompt: 'System prompt here',
-          initialPrompt: 'Do the thing',
-        },
+        context: { systemPrompt: 'System prompt here' },
+        prompt: 'Do the thing',
         cwd: '/tmp/workdir',
-      });
+      }).result;
 
       const captured = getCapturedConfig();
       assert.ok(captured);
@@ -292,7 +314,7 @@ describe('Animator', () => {
         () => animator.animate({
           context: { systemPrompt: 'Test' },
           cwd: '/tmp/workdir',
-        }),
+        }).result,
         { message: 'Provider exploded' },
       );
 
@@ -316,7 +338,7 @@ describe('Animator', () => {
       const result = await animator.animate({
         context: { systemPrompt: 'Test' },
         cwd: '/tmp/workdir',
-      });
+      }).result;
 
       assert.equal(result.status, 'failed');
       assert.equal(result.exitCode, 2);
@@ -334,13 +356,13 @@ describe('Animator', () => {
       const result = await animator.animate({
         context: { systemPrompt: 'Test' },
         cwd: '/tmp/workdir',
-      });
+      }).result;
 
       assert.equal(result.status, 'timeout');
       assert.equal(result.exitCode, 124);
     });
 
-    it('throws when session provider apparatus not installed', async () => {
+    it('throws when session provider apparatus not installed', () => {
       // Set up with a bad provider plugin id
       setup(createFakeProvider(), 'nonexistent');
       // The provider IS registered at 'nonexistent', so the lookup will work.
@@ -384,7 +406,9 @@ describe('Animator', () => {
       aa.start({ on: () => {} });
       const a = aa.provides as AnimatorApi;
 
-      await assert.rejects(
+      // animate() resolves the provider synchronously — throws before
+      // returning the AnimateHandle.
+      assert.throws(
         () => a.animate({
           context: { systemPrompt: 'Test' },
           cwd: '/tmp/workdir',
@@ -392,9 +416,25 @@ describe('Animator', () => {
         /missing-provider/,
       );
     });
+
+    it('returns empty chunks when streaming is not requested', async () => {
+      const { chunks, result } = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      });
+
+      const collected: SessionChunk[] = [];
+      for await (const chunk of chunks) {
+        collected.push(chunk);
+      }
+      assert.equal(collected.length, 0);
+
+      const sessionResult = await result;
+      assert.equal(sessionResult.status, 'completed');
+    });
   });
 
-  describe('animateStreaming()', () => {
+  describe('animate({ streaming: true })', () => {
     it('streams chunks and returns result', async () => {
       const testChunks: SessionChunk[] = [
         { type: 'text', text: 'Hello ' },
@@ -405,9 +445,10 @@ describe('Animator', () => {
 
       setup(createStreamingFakeProvider(testChunks));
 
-      const { chunks, result } = animator.animateStreaming({
+      const { chunks, result } = animator.animate({
         context: { systemPrompt: 'Test' },
         cwd: '/tmp/workdir',
+        streaming: true,
       });
 
       const collected: SessionChunk[] = [];
@@ -432,9 +473,10 @@ describe('Animator', () => {
     it('falls back to launch() when provider has no launchStreaming', async () => {
       setup(createFakeProvider());
 
-      const { chunks, result } = animator.animateStreaming({
+      const { chunks, result } = animator.animate({
         context: { systemPrompt: 'Test' },
         cwd: '/tmp/workdir',
+        streaming: true,
       });
 
       const collected: SessionChunk[] = [];
@@ -459,9 +501,10 @@ describe('Animator', () => {
         error: 'Stream failed',
       }));
 
-      const { result } = animator.animateStreaming({
+      const { result } = animator.animate({
         context: { systemPrompt: 'Test' },
         cwd: '/tmp/workdir',
+        streaming: true,
       });
 
       const sessionResult = await result;
@@ -481,9 +524,9 @@ describe('Animator', () => {
 
     it('generates unique ids', async () => {
       const results = await Promise.all([
-        animator.animate({ context: { systemPrompt: 'Test' }, cwd: '/tmp' }),
-        animator.animate({ context: { systemPrompt: 'Test' }, cwd: '/tmp' }),
-        animator.animate({ context: { systemPrompt: 'Test' }, cwd: '/tmp' }),
+        animator.animate({ context: { systemPrompt: 'Test' }, cwd: '/tmp' }).result,
+        animator.animate({ context: { systemPrompt: 'Test' }, cwd: '/tmp' }).result,
+        animator.animate({ context: { systemPrompt: 'Test' }, cwd: '/tmp' }).result,
       ]);
 
       const ids = new Set(results.map((r) => r.id));
@@ -494,9 +537,212 @@ describe('Animator', () => {
       const result = await animator.animate({
         context: { systemPrompt: 'Test' },
         cwd: '/tmp',
-      });
+      }).result;
 
       assert.match(result.id, /^ses-[a-f0-9]{8}$/);
+    });
+  });
+
+  describe('summon()', () => {
+    it('returns an AnimateHandle with chunks and result', () => {
+      setup(createFakeProvider(), 'fake-provider', { installLoom: true });
+
+      const handle = animator.summon({
+        prompt: 'Build the frobnicator',
+        cwd: '/tmp/workdir',
+      });
+
+      assert.ok(handle.chunks, 'should have chunks');
+      assert.ok(handle.result instanceof Promise, 'result should be a Promise');
+    });
+
+    it('composes context via The Loom and launches a session', async () => {
+      const { provider, getCapturedConfig } = createSpyProvider();
+      setup(provider, 'fake-provider', { installLoom: true });
+
+      const result = await animator.summon({
+        prompt: 'Build the frobnicator',
+        cwd: '/tmp/workdir',
+      }).result;
+
+      assert.equal(result.status, 'completed');
+      assert.ok(result.id.startsWith('ses-'));
+
+      // Verify the provider received the prompt as initialPrompt
+      const captured = getCapturedConfig();
+      assert.ok(captured);
+      assert.equal(captured!.initialPrompt, 'Build the frobnicator');
+      assert.equal(captured!.cwd, '/tmp/workdir');
+      assert.equal(captured!.model, 'sonnet');
+    });
+
+    it('auto-populates trigger: summon in metadata', async () => {
+      setup(createFakeProvider(), 'fake-provider', { installLoom: true });
+
+      const result = await animator.summon({
+        prompt: 'Do the thing',
+        cwd: '/tmp/workdir',
+      }).result;
+
+      assert.equal(result.metadata?.trigger, 'summon');
+
+      // Verify in Stacks too
+      const sessions = stacks.readBook<SessionDoc>('animator', 'sessions');
+      const doc = await sessions.get(result.id);
+      assert.equal(doc?.metadata?.trigger, 'summon');
+    });
+
+    it('merges caller metadata with auto-generated metadata', async () => {
+      setup(createFakeProvider(), 'fake-provider', { installLoom: true });
+
+      const result = await animator.summon({
+        prompt: 'Build it',
+        cwd: '/tmp/workdir',
+        metadata: {
+          role: 'artificer',
+          writId: 'wrt-abc123',
+        },
+      }).result;
+
+      assert.equal(result.metadata?.trigger, 'summon');
+      assert.equal(result.metadata?.role, 'artificer');
+      assert.equal(result.metadata?.writId, 'wrt-abc123');
+    });
+
+    it('passes conversationId through for resume', async () => {
+      const { provider, getCapturedConfig } = createSpyProvider();
+      setup(provider, 'fake-provider', { installLoom: true });
+
+      const result = await animator.summon({
+        prompt: 'Continue working',
+        cwd: '/tmp/workdir',
+        conversationId: 'conv-resume-123',
+      }).result;
+
+      assert.equal(result.conversationId, 'conv-resume-123');
+
+      const captured = getCapturedConfig();
+      assert.equal(captured!.conversationId, 'conv-resume-123');
+    });
+
+    it('records session to Stacks', async () => {
+      setup(createFakeProvider(), 'fake-provider', { installLoom: true });
+
+      const result = await animator.summon({
+        prompt: 'Build it',
+        cwd: '/tmp/workdir',
+      }).result;
+
+      const sessions = stacks.readBook<SessionDoc>('animator', 'sessions');
+      const doc = await sessions.get(result.id);
+      assert.ok(doc);
+      assert.equal(doc.status, 'completed');
+      assert.equal(doc.metadata?.trigger, 'summon');
+    });
+
+    it('throws with clear error when Loom is not installed', async () => {
+      // Setup WITHOUT the Loom
+      setup(createFakeProvider());
+
+      assert.throws(
+        () => animator.summon({
+          prompt: 'Build it',
+          cwd: '/tmp/workdir',
+        }),
+        /Loom apparatus/,
+      );
+    });
+
+    it('records failed session when provider throws', async () => {
+      const throwProvider = createThrowingProvider(new Error('Session crashed'));
+      setup(throwProvider, 'fake-provider', { installLoom: true });
+
+      await assert.rejects(
+        () => animator.summon({
+          prompt: 'Build it',
+          cwd: '/tmp/workdir',
+        }).result,
+        { message: 'Session crashed' },
+      );
+
+      // Failed session should still be recorded
+      const sessions = stacks.readBook<SessionDoc>('animator', 'sessions');
+      const allDocs = await sessions.list();
+      const failedDocs = allDocs.filter((d) => d.status === 'failed');
+      assert.equal(failedDocs.length, 1);
+      assert.equal(failedDocs[0]!.metadata?.trigger, 'summon');
+    });
+
+    it('Loom produces undefined systemPrompt at MVP', async () => {
+      const { provider, getCapturedConfig } = createSpyProvider();
+      setup(provider, 'fake-provider', { installLoom: true });
+
+      await animator.summon({
+        prompt: 'Build the thing',
+        cwd: '/tmp/workdir',
+      }).result;
+
+      const captured = getCapturedConfig();
+      assert.equal(captured!.systemPrompt, undefined);
+    });
+
+    it('records role in metadata when provided', async () => {
+      setup(createFakeProvider(), 'fake-provider', { installLoom: true });
+
+      const result = await animator.summon({
+        prompt: 'Build it',
+        role: 'artificer',
+        cwd: '/tmp/workdir',
+      }).result;
+
+      assert.equal(result.metadata?.trigger, 'summon');
+      assert.equal(result.metadata?.role, 'artificer');
+    });
+
+    it('omits role from metadata when not provided', async () => {
+      setup(createFakeProvider(), 'fake-provider', { installLoom: true });
+
+      const result = await animator.summon({
+        prompt: 'Build it',
+        cwd: '/tmp/workdir',
+      }).result;
+
+      assert.equal(result.metadata?.trigger, 'summon');
+      assert.ok(!('role' in (result.metadata ?? {})));
+    });
+
+    it('prompt bypasses the Loom and goes directly to provider', async () => {
+      const { provider, getCapturedConfig } = createSpyProvider();
+      setup(provider, 'fake-provider', { installLoom: true });
+
+      await animator.summon({
+        prompt: 'Build the frobnicator',
+        role: 'artificer',
+        cwd: '/tmp/workdir',
+      }).result;
+
+      const captured = getCapturedConfig();
+      assert.ok(captured);
+      assert.equal(captured!.initialPrompt, 'Build the frobnicator');
+      assert.equal(captured!.systemPrompt, undefined);
+    });
+
+    it('returns empty chunks when streaming is not requested', async () => {
+      setup(createFakeProvider(), 'fake-provider', { installLoom: true });
+
+      const { chunks, result } = animator.summon({
+        prompt: 'Build it',
+        cwd: '/tmp/workdir',
+      });
+
+      const collected: SessionChunk[] = [];
+      for await (const chunk of chunks) {
+        collected.push(chunk);
+      }
+      assert.equal(collected.length, 0);
+
+      const sessionResult = await result;
+      assert.equal(sessionResult.status, 'completed');
     });
   });
 });

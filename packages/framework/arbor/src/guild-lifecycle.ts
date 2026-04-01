@@ -149,8 +149,19 @@ export function collectStartupWarnings(
     }
   }
 
+  // Check apparatus recommends
+  for (const app of apparatuses) {
+    for (const rec of app.apparatus.recommends ?? []) {
+      if (!installedIds.has(rec)) {
+        warnings.push(
+          `[arbor] warn: "${app.id}" recommends "${rec}" but it is not installed.`,
+        );
+      }
+    }
+  }
+
   for (const kit of kits) {
-    // Check recommends
+    // Check kit recommends
     for (const rec of kit.kit.recommends ?? []) {
       if (!installedIds.has(rec)) {
         warnings.push(

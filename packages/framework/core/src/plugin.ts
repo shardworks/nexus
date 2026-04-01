@@ -79,6 +79,12 @@ export type Kit = {
  *   start() runs. Determines start ordering. Hard startup validation failure
  *   if a declared apparatus is not installed.
  *
+ * `recommends`: advisory apparatus names — generates startup warnings when
+ *   expected apparatuses are absent. Not enforced — the apparatus starts
+ *   regardless. Use for soft dependencies needed by optional API methods
+ *   (e.g. The Animator recommends The Loom for summon(), but animate()
+ *   works without it).
+ *
  * `provides`: the runtime API object this apparatus exposes to other plugins.
  *   Retrieved via guild().apparatus<T>(name). Created at manifest-definition time,
  *   populated during start.
@@ -90,12 +96,13 @@ export type Kit = {
  *   Enables framework startup warnings when kits contribute types with no consumer.
  */
 export type Apparatus = {
-  requires?:   string[]
-  provides?:   unknown
-  start:       (ctx: StartupContext) => void | Promise<void>
-  stop?:       () => void | Promise<void>
-  supportKit?: Kit
-  consumes?:   string[]
+  requires?:    string[]
+  recommends?:  string[]
+  provides?:    unknown
+  start:        (ctx: StartupContext) => void | Promise<void>
+  stop?:        () => void | Promise<void>
+  supportKit?:  Kit
+  consumes?:    string[]
 }
 
 // ── Plugin ─────────────────────────────────────────────────────────────
