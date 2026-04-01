@@ -4,24 +4,25 @@ Status: **Draft — MVP**
 
 Package: `@shardworks/animator` · Plugin id: `animator`
 
+> **⚠️ MVP scope.** This spec describes the thinnest viable Animator — just enough to launch AI sessions with a system prompt and record the result. There is no MCP tool server, no Instrumentarium dependency, and no role awareness. The Animator receives a woven context and a working directory, launches a session provider process, and records what happened. See [Future: Tool-Equipped Sessions](#future-tool-equipped-sessions) for the target design.
+
 ---
 
 ## Purpose
 
-The Animator brings animas to life. It takes a woven session context (from The Loom) and a resolved tool set (from The Instrumentarium), launches an AI process with an MCP server loaded with those tools, monitors the session while it runs, and records the result to The Stacks when it completes.
+The Animator brings animas to life. It takes a woven session context (from The Loom), launches an AI process via a session provider, monitors it until exit, and records the result to The Stacks.
 
-The Animator does not know how the context was composed or which anima is being animated. It receives inputs and runs a session. This separation means The Loom can evolve its composition model (adding identity, curricula, temperaments) without changing The Animator's interface.
+The Animator does not know how the context was composed. It receives a `WovenContext` and runs a session. This separation means The Loom can evolve its composition model without changing The Animator's interface.
 
 ---
 
 ## Dependencies
 
 ```
-requires: ['stacks', 'instrumentarium']
+requires: ['stacks']
 ```
 
 - **The Stacks** — records session results (the `sessions` book).
-- **The Instrumentarium** — creates the `HandlerContext` for tool handlers during the session, and provides the MCP tool registrations.
 
 ---
 
@@ -33,7 +34,7 @@ The Animator contributes a `sessions` book via its supportKit:
 supportKit: {
   books: {
     sessions: {
-      indexes: ['role', 'startedAt', 'status', 'writId', 'conversationId'],
+      indexes: ['startedAt', 'status', 'conversationId'],
     },
   },
 },
@@ -58,6 +59,11 @@ interface AnimateRequest {
   /** The woven context from The Loom. */
   context: WovenContext
   /**
+   * Working directory for the session.
+   * The session provider launches the AI process here.
+   */
+  cwd: string
+  /**
    * Session provider to use (e.g. 'claude-code').
    * If not specified, uses the guild's default provider.
    */
@@ -68,11 +74,6 @@ interface AnimateRequest {
    * rather than starting a new one.
    */
   conversationId?: string
-  /**
-   * Optional writ id this session is fulfilling.
-   * Recorded in the session record for traceability.
-   */
-  writId?: string
 }
 
 interface SessionResult {
@@ -84,8 +85,6 @@ interface SessionResult {
   startedAt: string
   /** When the session ended (ISO-8601). */
   endedAt: string
-  /** The role this session was animated for. */
-  role: string
   /** Exit code or error message if failed. */
   error?: string
   /** Conversation id (for multi-turn resume). */
@@ -104,32 +103,26 @@ animate(request)
   │
   ├─ 1. Generate session id
   ├─ 2. Write initial session record to The Stacks (status: 'running')
-  ├─ 3. Write session working file to .nexus/sessions/<id>.json
   │
-  ├─ 4. Configure MCP server:
-  │     - Register each tool from request.context.tools
-  │     - Each tool handler invoked with a HandlerContext from The Instrumentarium
-  │
-  ├─ 5. Launch session provider:
+  ├─ 3. Launch session provider:
   │     - System prompt: request.context.systemPrompt
   │     - Initial prompt: request.context.initialPrompt
-  │     - MCP server: stdio JSON-RPC
-  │     - Provider-specific config (model, flags, etc.)
+  │     - Model: from guild settings
+  │     - Working directory: request.cwd
   │
-  ├─ 6. Monitor process until exit
+  ├─ 4. Monitor process until exit
   │
-  ├─ 7. Record result:
+  ├─ 5. Record result:
   │     - Update session record in The Stacks (status, endedAt, usage)
-  │     - Update working file in .nexus/sessions/
   │
-  └─ 8. Return SessionResult
+  └─ 6. Return SessionResult
 ```
 
 ---
 
 ## Session Providers
 
-The Animator delegates AI process management to a **session provider** — a pluggable backend that knows how to launch and communicate with a specific AI system. The provider interface is intentionally narrow:
+The Animator delegates AI process management to a **session provider** — a pluggable backend that knows how to launch and communicate with a specific AI system:
 
 ```typescript
 interface SessionProvider {
@@ -138,10 +131,6 @@ interface SessionProvider {
 
   /**
    * Launch a session. Returns when the AI process exits.
-   *
-   * The provider receives the system prompt, initial prompt, and
-   * an MCP server configuration (socket path or stdio pipe).
-   * How it launches the AI process is provider-specific.
    */
   launch(config: SessionProviderConfig): Promise<SessionProviderResult>
 }
@@ -149,8 +138,6 @@ interface SessionProvider {
 interface SessionProviderConfig {
   systemPrompt: string
   initialPrompt?: string
-  /** MCP server stdio pipe or socket for tool access. */
-  mcp: McpServerConfig
   /** Model to use (from guild settings). */
   model: string
   /** Optional conversation id for resume. */
@@ -171,7 +158,7 @@ interface SessionProviderResult {
 }
 ```
 
-The `claude-code-session-provider` is the default and currently only implementation. It launches a `claude` CLI process in bare mode (no CLAUDE.md) with the MCP server connected via stdio.
+MVP: hardcoded to `claude-code-session-provider`, which launches a `claude` CLI process in bare mode (no CLAUDE.md).
 
 ---
 
@@ -179,7 +166,7 @@ The `claude-code-session-provider` is the default and currently only implementat
 
 The Animator is called from two places:
 
-1. **The summon relay** — when a standing order fires `summon: "role"`, the summon relay calls The Loom to weave the context, then The Animator to run the session. This is the Clockworks-driven path.
+1. **The summon relay** — when a standing order fires `summon: "role"`, the relay assembles the context via The Loom, then calls The Animator. This is the Clockworks-driven path.
 
 2. **`nsg consult`** — the CLI command for interactive sessions. Calls The Loom and The Animator directly, bypassing Clockworks.
 
@@ -189,7 +176,68 @@ Both paths use the same `AnimatorApi.animate()` call. The Animator doesn't know 
 
 ## Open Questions
 
-- **Concurrency.** Can multiple sessions run simultaneously? Current answer: yes, each `animate()` call is independent. But `roles[role].seats` may need enforcement — should The Animator check seat limits, or is that a higher-level concern (the summon relay)?
-- **Timeout.** How are session timeouts configured? Per-role? Per-guild? Per-invocation? MVP: no timeout (the session runs until the provider exits). Future: configurable timeout in the `AnimateRequest` or role config.
-- **Session working files.** The `.nexus/sessions/` directory currently holds JSON records. Should these move entirely to The Stacks, or do working files serve a purpose beyond persistence (e.g. provider-specific state)?
-- **Provider discovery.** How does The Animator find installed session providers? Are they plugins (kits with a `providers` contribution)? Or just npm packages named in guild config? MVP: hardcoded to `claude-code-session-provider`. Future: pluggable discovery.
+- **Provider discovery.** How does The Animator find installed session providers? MVP: hardcoded to `claude-code-session-provider`. Future: pluggable discovery via kit contributions or guild config.
+- **Timeout.** How are session timeouts configured? MVP: no timeout (the session runs until the provider exits).
+- **Concurrency.** Can multiple sessions run simultaneously? Current answer: yes, each `animate()` call is independent.
+
+---
+
+## Future: Tool-Equipped Sessions
+
+When The Instrumentarium ships, The Animator gains the ability to launch sessions with an MCP tool server. The changes:
+
+### Additional dependency
+
+```
+requires: ['stacks', 'instrumentarium']
+```
+
+### Updated `AnimateRequest`
+
+```typescript
+interface AnimateRequest {
+  context: WovenContext
+  cwd: string
+  provider?: string
+  conversationId?: string
+  /** Role to resolve tools for. The Instrumentarium provides the tool set. */
+  role?: string
+  /** Optional writ id for traceability. */
+  writId?: string
+}
+```
+
+### Updated lifecycle
+
+```
+animate(request)
+  │
+  ├─ 1. Generate session id
+  ├─ 2. Write initial session record to The Stacks
+  │
+  ├─ 3. Resolve tool set via The Instrumentarium (if role provided)
+  ├─ 4. Configure MCP server:
+  │     - Register each tool from the resolved set
+  │     - Each tool handler invoked with a HandlerContext from The Instrumentarium
+  │
+  ├─ 5. Launch session provider (with MCP server attached)
+  ├─ 6. Monitor process until exit
+  ├─ 7. Record result to The Stacks
+  └─ 8. Return SessionResult
+```
+
+### Updated `SessionProviderConfig`
+
+```typescript
+interface SessionProviderConfig {
+  systemPrompt: string
+  initialPrompt?: string
+  /** MCP server stdio pipe or socket for tool access. */
+  mcp?: McpServerConfig
+  model: string
+  conversationId?: string
+  cwd: string
+}
+```
+
+The session provider interface gains an optional `mcp` field. Providers that support MCP connect to it; providers that don't ignore it. The Animator handles MCP server lifecycle (start before launch, stop after exit).
