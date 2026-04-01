@@ -7,6 +7,8 @@
  * See: docs/architecture/apparatus/stacks.md
  */
 
+import { createStacksApparatus } from './stacks.ts';
+
 // ── Public types ──────────────────────────────────────────────────────
 
 export type {
@@ -62,5 +64,4 @@ export { createStacksApparatus } from './stacks.ts';
 
 // ── Default export: the apparatus plugin ──────────────────────────────
 
-import { createStacksApparatus } from './stacks.ts';
 export default createStacksApparatus();

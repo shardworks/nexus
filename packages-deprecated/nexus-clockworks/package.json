@@ -1,13 +1,13 @@
 {
-  "name": "@shardworks/nexus-core",
+  "name": "@shardworks/nexus-clockworks",
   "version": "0.0.0",
   "license": "ISC",
   "repository": {
     "type": "git",
     "url": "https://github.com/shardworks/nexus",
-    "directory": "packages/core"
+    "directory": "packages/nexus-clockworks"
   },
-  "description": "Nexus core library — shared infrastructure for the guild system",
+  "description": "Nexus Mk 2.1 — Clockworks rig (event queue, standing order dispatch, daemon)",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
@@ -17,13 +17,18 @@
     "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@shardworks/nexus-core": "workspace:*",
+    "@shardworks/tools-apparatus": "workspace:*",
+    "better-sqlite3": "12.8.0",
+    "zod": "4.3.6"
+  },
   "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
     "@types/node": "25.5.0"
   },
   "files": [
-    "dist",
-    "migrations"
+    "dist"
   ],
   "publishConfig": {
     "exports": {

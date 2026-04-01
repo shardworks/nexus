@@ -5,12 +5,16 @@
  * Each test gets a fresh backend + API instance. No state leaks.
  */
 
+import assert from 'node:assert/strict';
 import type { StacksBackend, BookRef } from '../backend.ts';
 import type {
   BookEntry,
   StacksApi,
   ChangeEvent,
   ChangeHandler,
+  CreateEvent,
+  UpdateEvent,
+  DeleteEvent,
   WatchOptions,
 } from '../types.ts';
 import { createTestableStacks } from './testable-stacks.ts';
@@ -106,9 +110,6 @@ export function spyingBackendFactory(
 }
 
 // ── CDC event assertion helpers ──────────────────────────────────────
-
-import assert from 'node:assert/strict';
-import type { CreateEvent, UpdateEvent, DeleteEvent } from '../types.ts';
 
 /** Assert the event is a `create` and check its fields. */
 export function assertCreateEvent(

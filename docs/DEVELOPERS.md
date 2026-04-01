@@ -27,14 +27,10 @@ pnpm typecheck    # tsc --noEmit across all packages
 ### Running the CLI locally
 
 ```sh
-# V2 CLI (current)
 pnpm nsg <command>
-
-# V1 CLI (legacy, transitional)
-pnpm nsg1 <command>
 ```
 
-Both use Node's `--experimental-transform-types` to run TypeScript directly — no build step required for development iteration.
+Uses Node's `--experimental-transform-types` to run TypeScript directly — no build step required for development iteration.
 
 ### Package-level commands
 
@@ -62,7 +58,6 @@ Packages in the `@shardworks/` scope follow a naming convention that determines 
 | `@shardworks/stacks` | `stacks` |
 | `@shardworks/tools-apparatus` | `tools` |
 | `@shardworks/nexus-core` | `nexus-core` |
-| `@shardworks/nexus-stdlib` | `nexus-stdlib` |
 
 Choose package names so the derived plugin id is short, clear, and reads naturally in configuration.
 

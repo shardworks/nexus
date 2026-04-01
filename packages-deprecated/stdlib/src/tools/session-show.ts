@@ -1,0 +1,19 @@
+import { tool } from '@shardworks/tools-apparatus';
+import { guild } from '@shardworks/nexus-core';
+import { showSession } from '@shardworks/nexus-core/legacy/1';
+import { z } from 'zod';
+
+export default tool({
+  name: 'session-show',
+  description: 'Show full details of a specific session',
+  instructions: 'Returns the complete session record including token usage, cost, and duration.',
+  params: {
+    id: z.string().describe('Session ID'),
+  },
+  handler: (params) => {
+    const { home } = guild();
+    const result = showSession(home, params.id);
+    if (!result) throw new Error(`Session "${params.id}" not found.`);
+    return result;
+  },
+});

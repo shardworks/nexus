@@ -2,16 +2,33 @@
  * Session provider registry — a slim singleton that holds the registered
  * SessionProvider implementation.
  *
- * Lives in core (not nexus-sessions) so that clock-daemon.ts can import it
- * at startup without creating a circular dependency:
- *   nexus-sessions → nexus-core (ok)
- *   nexus-core → nexus-sessions (would be circular)
- *
- * nexus-sessions re-exports registerSessionProvider and getSessionProvider
- * from here, so callers can import from either package.
+ * Lives in core so apparatus packages can import it without creating
+ * circular dependencies.
  */
 
-import type { ManifestResult } from './legacy/1/manifest.ts';
+// ── Manifest types (inlined from former legacy/1/manifest.ts) ─────────
+
+/** The result of manifesting an anima — everything needed to launch a session. */
+export interface ManifestResult {
+  /** The anima record from the Register. */
+  anima: { id: string; name: string; status: string; roles: string[] };
+  /** The composed system prompt for the anima. */
+  systemPrompt: string;
+  /** The individual ingredients that produced the system prompt. */
+  composition: {
+    codex: string;
+    roleInstructions: string;
+    curriculum: { name: string; version: string; content: string } | null;
+    temperament: { name: string; version: string; content: string } | null;
+    toolInstructions: Array<{ toolName: string; instructions: string }>;
+  };
+  /** Resolved tools the anima has access to. */
+  tools: Array<{ name: string; description: string; package: string; export: string }>;
+  /** Tools that matched the anima's roles but failed precondition checks. */
+  unavailable: Array<{ name: string; reason: string }>;
+  /** Warnings generated during manifest (e.g. undefined roles). */
+  warnings: string[];
+}
 
 // ── Provider types ─────────────────────────────────────────────────────
 

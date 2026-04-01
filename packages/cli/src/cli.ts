@@ -1,17 +1,13 @@
 #!/usr/bin/env node
 
 /**
- * nsg — new entry point, built on the plugin architecture.
+ * nsg — CLI entry point, built on the plugin architecture.
  *
  * Dynamically discovers installed tools via plugins, registers them as Commander
  * commands, and delegates argument parsing and invocation to Commander.
  *
  * Tools are filtered to those with 'cli' in callableFrom (or no callableFrom
  * set, which defaults to all callers). Tools marked 'mcp'-only are invisible here.
- *
- * nsg1 is the legacy entry point (src/v1/cli.ts) — fully preserved and functional.
- * The guild continues to use nsg1 for anything not yet migrated. Over time, nsg1
- * is retired as commands migrate to nsg.
  */
 
 import { main } from './program.ts';

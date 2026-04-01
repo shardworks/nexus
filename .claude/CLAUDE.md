@@ -20,11 +20,7 @@ nexus/
 │   │   └── src/                 #   anima, clockworks, commission, conversation, writ,
 │   │                            #   session, events, manifest, guild-config, workshop, etc.
 │   ├── cli/                     # @shardworks/nexus — the `nsg` CLI
-│   │   └── src/commands/        #   commission, consult, convene, clock, init, dispatch, etc.
-│   ├── stdlib/                  # @shardworks/nexus-stdlib — MCP tools & clockwork engines
-│   │   ├── src/tools/           #   ~30 tools: writ CRUD, commission, anima, clock, workshop, etc.
-│   │   ├── src/engines/         #   workshop-prepare, workshop-merge
-│   │   └── instructions/        #   per-tool markdown instructions for animas
+│   │   └── src/commands/        #   init, status, version, upgrade, plugin management
 │   ├── claude-code-session-provider/  # Session provider (launches claude CLI sessions)
 │   └── guild-starter-kit/       # Scaffolding for new guilds
 │       ├── migrations/          #   SQL migrations (001-initial, 002-writs, 003-conversations)
@@ -56,5 +52,5 @@ nexus/
 - **Self-document for other agents.** Write commit messages, code comments, and documentation with the assumption that your primary audience is other agents who will continue the work. Be precise and concise; include enough context for an agent to pick up where you left off.
 - **Commit early and often.** Make small, atomic commits as work is completed. Do not accumulate large uncommitted changesets. Never leave uncommitted or untracked files in the project root. This is critical in a multi-agent environment where conflicts are a real risk.
 - **Minimize conflict surface.** Structure work to reduce the likelihood of git conflicts with other agents. Prefer adding new files over modifying shared ones. When modifying shared files, keep changes narrow and well-scoped. Commit and merge promptly rather than holding long-lived branches.
-- **Tests are not optional.** All changes to `core` and `stdlib` must include tests. Run `pnpm test` before committing.
+- **Tests are not optional.** All changes to `core` must include tests. Run `pnpm test` before committing.
 - **Version bumps trigger publish.** The `publish.yml` workflow fires on every push to `main` and publishes any packages whose version has changed. Bump versions deliberately.
