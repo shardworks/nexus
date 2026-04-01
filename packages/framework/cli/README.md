@@ -31,7 +31,7 @@ At startup:
 
 1. Pre-parse `--guild-root` to locate the guild (or auto-detect by walking up from cwd)
 2. Register framework commands (always available — see [Framework Commands](#framework-commands))
-3. If inside a guild: call `createGuild()` to start the runtime, then query The Instrumentarium for all tools with `callableFrom: 'cli'`
+3. If inside a guild: call `createGuild()` to start the runtime, then query The Instrumentarium for all tools with `callableBy: 'cli'`
 4. Auto-generate Commander commands from each tool's Zod param schema
 
 If the guild doesn't have the tools apparatus installed, only framework commands are available.
@@ -166,15 +166,19 @@ Plugin install is a pure npm + guild.json operation — it adds the package as a
 | `nsg event list` | nexus-stdlib | List recent events |
 | `nsg event show` | nexus-stdlib | Show event detail |
 
-### Workshops
+### Codexes
 
 | Command | Source | Description |
 |---|---|---|
-| `nsg workshop create` | cli (v1) | Create a new workshop (bare repo) |
-| `nsg workshop register` | cli (v1) | Register an existing repo as a workshop |
-| `nsg workshop list` | cli (v1) | List registered workshops |
-| `nsg workshop show` | cli (v1) | Show workshop detail |
-| `nsg workshop remove` | cli (v1) | Unregister a workshop |
+| `nsg codex add` | codexes-apparatus | Register an existing repo as a codex |
+| `nsg codex list` | codexes-apparatus | List registered codexes |
+| `nsg codex show` | codexes-apparatus | Show codex detail |
+| `nsg codex remove` | codexes-apparatus | Unregister a codex |
+| `nsg codex push` | codexes-apparatus | Push a branch to the codex remote |
+| `nsg draft open` | codexes-apparatus | Open a draft binding (worktree) |
+| `nsg draft list` | codexes-apparatus | List active draft bindings |
+| `nsg draft abandon` | codexes-apparatus | Abandon a draft binding |
+| `nsg draft seal` | codexes-apparatus | Seal a draft into the codex |
 
 ### Operations
 
@@ -197,7 +201,7 @@ The v2 CLI dynamically discovers plugin-contributed tools via The Instrumentariu
 **Remaining in v1 only:**
 - `consult`, `convene` — interactive session launchers (need Animator/Parlour integration)
 - `clock *` — Clockworks daemon management
-- `workshop *` — workshop lifecycle
+- `codex *` / `draft *` — codex and draft lifecycle (migrated to codexes-apparatus)
 - `dashboard` — guild dashboard
 - `guild restore`, `guild upgrade-books` — guild maintenance
 

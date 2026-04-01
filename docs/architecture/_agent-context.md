@@ -145,7 +145,7 @@ The V2 type (`GuildConfig` in `packages/core/src/guild-config.ts`) defines the f
 
 **Framework keys:** `name`, `nexus`, `plugins` (string array), `settings` (object with `model`, `autoMigrate`).
 
-**Plugin config keys (standard guild):** `clockworks`, `workshops`, `roles`, `baseTools` — owned by their respective apparatus, not by the framework. They sit at the top level because `@shardworks/clockworks` → `clockworks`, etc.
+**Plugin config keys (standard guild):** `clockworks`, `codexes`, `roles`, `baseTools` — owned by their respective apparatus, not by the framework. They sit at the top level because `@shardworks/clockworks` → `clockworks`, `@shardworks/codexes-apparatus` → `codexes`, etc.
 
 Note: the live guild at `/workspace/shardworks/` is still running the V1 config shape (per-capability registries: `tools`, `engines`, `curricula`, `temperaments` as objects, no `plugins` array). V2 has `plugins` as a flat string array and drops per-capability registries. The architecture docs describe V2.
 

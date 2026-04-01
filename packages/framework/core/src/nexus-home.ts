@@ -34,16 +34,6 @@ export function worktreesPath(home: string): string {
   return path.join(home, '.nexus', 'worktrees');
 }
 
-/** Path to the workshops directory (contains bare clones). */
-export function workshopsPath(home: string): string {
-  return path.join(home, '.nexus', 'workshops');
-}
-
-/** Path to a specific workshop's bare clone. */
-export function workshopBarePath(home: string, name: string): string {
-  return path.join(home, '.nexus', 'workshops', `${name}.git`);
-}
-
 /** Path to the clockworks daemon PID file. */
 export function clockPidPath(home: string): string {
   return path.join(home, '.nexus', 'clock.pid');

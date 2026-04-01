@@ -29,14 +29,6 @@ export interface ClockworksConfig {
   standingOrders?: StandingOrder[];
 }
 
-/** A registered workshop — a repository where the guild does its work. */
-export interface WorkshopEntry {
-  /** Git remote URL (the clone source). */
-  remoteUrl: string;
-  /** ISO-8601 timestamp of when the workshop was added. */
-  addedAt: string;
-}
-
 /** Guild-level settings — operational flags and preferences. */
 export interface GuildSettings {
   /**
@@ -65,8 +57,6 @@ export interface GuildConfig {
   name: string;
   /** Installed Nexus framework version. */
   nexus: string;
-  /** Registered workshops indexed by name. */
-  workshops: Record<string, WorkshopEntry>;
   /** Installed plugin ids (derived from npm package names). Always present; starts empty. */
   plugins: string[];
   /** Clockworks configuration — events, standing orders. */
@@ -85,7 +75,6 @@ export function createInitialGuildConfig(name: string, nexusVersion: string, mod
   return {
     name,
     nexus: nexusVersion,
-    workshops: {},
     plugins: [],
     settings: { model },
   };

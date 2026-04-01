@@ -111,7 +111,6 @@ writeGuildConfig(home, config);
 |---|---|---|
 | `name` | `string` | Guild name |
 | `nexus` | `string` | Framework version at last init/upgrade |
-| `workshops` | `Record<string, WorkshopEntry>` | Registered workshops |
 | `plugins` | `string[]` | Installed plugin ids |
 | `clockworks?` | `ClockworksConfig` | Events and standing orders |
 | `writTypes?` | `Record<string, WritTypeDeclaration>` | Guild-declared writ types |
@@ -125,7 +124,6 @@ All other top-level keys are plugin configuration sections, keyed by derived plu
 |---|---|
 | `createInitialGuildConfig(name, version, model)` | Default config for `nsg init` |
 | `guildConfigPath(home)` | Resolve path to `guild.json` |
-| `WorkshopEntry` | Workshop descriptor: `remoteUrl`, `addedAt` |
 | `EventDeclaration` | Custom event: `description`, optional `schema` |
 | `StandingOrder` | Event → action mapping (run / summon / brief) |
 | `ClockworksConfig` | Container for events and standing orders |
@@ -150,8 +148,6 @@ const dir  = nexusDir(home);    // .nexus/
 | `findGuildRoot(startDir?)` | Guild root (walks up from cwd, throws if not found) |
 | `nexusDir(home)` | `.nexus/` |
 | `worktreesPath(home)` | `.nexus/worktrees/` |
-| `workshopsPath(home)` | `.nexus/workshops/` |
-| `workshopBarePath(home, name)` | `.nexus/workshops/<name>.git` |
 | `clockPidPath(home)` | `.nexus/clock.pid` |
 | `clockLogPath(home)` | `.nexus/clock.log` |
 

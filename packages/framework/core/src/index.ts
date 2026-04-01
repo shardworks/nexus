@@ -38,8 +38,6 @@ export {
   findGuildRoot,
   nexusDir,
   worktreesPath,
-  workshopsPath,
-  workshopBarePath,
   clockPidPath,
   clockLogPath,
 } from './nexus-home.ts';
@@ -56,7 +54,6 @@ export {
   createInitialGuildConfig,
   readGuildConfig,
   writeGuildConfig,
-  type WorkshopEntry,
   type EventDeclaration,
   type StandingOrder,
   type ClockworksConfig,

@@ -38,7 +38,6 @@ export function makeGuild(dir: string, overrides: Record<string, unknown> = {}):
   const config = {
     name: 'test-guild',
     nexus: '0.0.0',
-    workshops: {},
     plugins: [],
     settings: { model: 'sonnet' },
     ...overrides,

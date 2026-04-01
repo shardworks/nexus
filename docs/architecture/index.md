@@ -66,7 +66,7 @@ Two additional commands bypass the tool registry: `nsg consult` and `nsg convene
 
 ### The Apparatus
 
-The guild's operational fabric is provided by apparatus — plugins with a start/stop lifecycle that Arbor starts in dependency order. **The Stacks** is the persistence substrate everything else reads from and writes to. **The Clockworks** is the event-driven nervous system: standing orders bind events to relays, and the summon relay dispatches anima sessions in response. **The Surveyor** tracks what work applies to each registered codex. **The Clerk** handles commission intake, converting patron requests into writs and signaling when work is ready to execute. The Formulary, Walker, Executor, Loom, and Animator then take it from there — covered in the next section.
+The guild's operational fabric is provided by apparatus — plugins with a start/stop lifecycle that Arbor starts in dependency order. **The Stacks** is the persistence substrate everything else reads from and writes to. **The Scriptorium** manages codexes — bare clones, draft bindings (worktrees), and the seal-and-push lifecycle. **The Clockworks** is the event-driven nervous system: standing orders bind events to relays, and the summon relay dispatches anima sessions in response. **The Surveyor** tracks what work applies to each registered codex. **The Clerk** handles commission intake, converting patron requests into writs and signaling when work is ready to execute. The Formulary, Walker, Executor, Loom, and Animator then take it from there — covered in the next section.
 
 Each of these is a plugin from the default set, not a built-in. The [Standard Guild](#the-standard-guild) section lists them; the sections that follow document each in detail.
 
@@ -100,8 +100,8 @@ GUILD_ROOT/
     clock.pid                   ← Clockworks daemon PID
     clock.log                   ← Clockworks daemon log
     sessions/                   ← per-session working files
-    workshops/                  ← bare git clones of registered workshops
-    worktrees/                  ← git worktrees for active commissions
+    codexes/                    ← bare git clones of registered codexes
+    worktrees/                  ← git worktrees for active draft bindings
 ```
 
 The versioned files — `guild.json`, `package.json`, and the guild's own content — are the guild's identity. `.nexus/` is operational territory: it can be deleted and rebuilt without losing configuration. Nothing in `.nexus/` is committed; everything that matters is in the versioned files.
@@ -124,9 +124,9 @@ The versioned files — `guild.json`, `package.json`, and the guild's own conten
       "craft.question": { "description": "An artificer hit a decision outside commission scope." }
     },
     "standingOrders": [
-      { "on": "writ.ready",            "run": "workshop-prepare" },
+      { "on": "writ.ready",            "run": "draft-prepare" },
       { "on": "writ.workspace-ready",  "summon": "artificer", "prompt": "..." },
-      { "on": "writ.completed",        "run": "workshop-merge" }
+      { "on": "writ.completed",        "run": "draft-seal" }
     ]
   }
 }
@@ -146,7 +146,7 @@ The versioned files — `guild.json`, `package.json`, and the guild's own conten
 
 All remaining top-level keys are plugin configuration sections, keyed by derived plugin id (see [Plugin IDs](#plugin-ids)). Each plugin reads its own section via `guild().config(pluginId)` at startup or handler invocation time.
 
-In the standard guild, `clockworks` contains events and standing orders; `workshops` tracks registered repositories; `loom` holds role definitions and permission grants. These are all plugin config — not framework-owned fields — they get natural short keys because of the `@shardworks/` naming convention and `-(plugin|apparatus|kit)` suffix stripping (e.g. `@shardworks/tools-apparatus` → `tools`). See [Configuration](plugins.md#configuration) for the full model.
+In the standard guild, `clockworks` contains events and standing orders; `codexes` tracks registered repositories and draft settings; `loom` holds role definitions and permission grants. These are all plugin config — not framework-owned fields — they get natural short keys because of the `@shardworks/` naming convention and `-(plugin|apparatus|kit)` suffix stripping (e.g. `@shardworks/tools-apparatus` → `tools`). See [Configuration](plugins.md#configuration) for the full model.
 
 ### Runtime State (`.nexus/`)
 
@@ -158,9 +158,9 @@ In the standard guild, `clockworks` contains events and standing orders; `worksh
 
 **`sessions/`** — working files for active and recently-completed sessions. Each session gets a JSON record here at launch; The Animator writes the result back when the session exits.
 
-**`workshops/`** — bare git clones of every registered workshop, named `<workshop-name>.git`. Git worktrees are checked out from these clones rather than from the remotes directly, keeping network operations to `fetch` calls rather than repeated clones.
+**`codexes/`** — bare git clones of every registered codex, named `<codex-name>.git`. Managed by The Scriptorium. Draft worktrees are checked out from these clones rather than from the remotes directly, keeping network operations to `fetch` calls rather than repeated clones.
 
-**`worktrees/`** — git worktrees for active commissions. Each commission that requires file changes gets a dedicated worktree here, isolated from other concurrent work. Worktrees are created when a commission's workspace is prepared and removed when the work is merged or abandoned.
+**`worktrees/`** — git worktrees for active draft bindings. Each draft gets a dedicated worktree here, isolated from other concurrent work. Drafts are opened when work begins and sealed or abandoned when the work completes. See [The Scriptorium](apparatus/scriptorium.md).
 
 ---
 
@@ -271,6 +271,7 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 | Apparatus | Plugin id | Function |
 |-----------|-----------|----------|
 | **The Stacks** | `books` | Persistence substrate — SQLite-backed document store and change-data-capture events |
+| **The Scriptorium** | `codexes` | Codex management — repository registry, bare clones, draft binding lifecycle, sealing and push |
 | **The Clockworks** | `clockworks` | Event-driven nervous system — standing orders, event queue, the summon relay |
 | **The Surveyor** | `surveyor` | Codex knowledge — surveys registered codexes so the guild knows what work applies to each |
 | **The Clerk** | `clerk` | Commission intake and writ lifecycle — receives commissions, creates writs, signals when work is ready |
@@ -460,7 +461,7 @@ The Animator brings animas to life. It takes an `AnimaWeave`, a working director
 
 The Animator's error handling contract is strict: session results are **always** recorded to The Stacks, even when the provider crashes or times out. The launch is wrapped in try/finally — if the provider throws, the session record still gets written with `status: 'failed'` and whatever telemetry was available. If the Stacks write itself fails, that error is logged but doesn't mask the provider error. Session data loss is preferable to swallowing the original failure.
 
-Every session record captures structured telemetry: wall-clock duration, exit code, token usage (input, output, cache read, cache write), and cost in USD. Callers attach opaque **metadata** — the Animator stores it without interpreting it. The summon relay attaches dispatch context (writ id, anima name, workshop); `nsg consult` attaches interactive session context. Downstream queries against metadata use The Stacks' JSON path queries.
+Every session record captures structured telemetry: wall-clock duration, exit code, token usage (input, output, cache read, cache write), and cost in USD. Callers attach opaque **metadata** — the Animator stores it without interpreting it. The summon relay attaches dispatch context (writ id, anima name, codex); `nsg consult` attaches interactive session context. Downstream queries against metadata use The Stacks' JSON path queries.
 
 ### Session Providers
 
@@ -511,4 +512,35 @@ See [The Animator — API Contract](apparatus/animator.md), [The Loom — API Co
 ## Core Apparatus Reference
 
 <!-- TODO: Quick-reference table of all standard apparatus — name, package, layer, what it provides, links to detailed docs where they exist. Covers the same set as the table in "The Standard Guild" section but with package names, API surface hints, and links. -->
+
+---
+
+## Future State
+
+Known gaps in the framework infrastructure that will be addressed as apparatus are built out.
+
+### Config write path on `Guild` interface
+
+The `Guild` interface (`guild()` singleton) exposes `config<T>(pluginId)` for reading plugin configuration from `guild.json`, but has no corresponding write method. Currently, plugins that need to modify their config section must use the standalone `writeGuildConfig()` function from `@shardworks/nexus-core`, which reads the full file, modifies it, and writes it back. This works but has no atomicity guarantees and no event emission.
+
+A `guild().writeConfig(pluginId, config)` method (or equivalent) would provide:
+- Scoped writes (a plugin modifies only its own section)
+- Atomic file updates (read-modify-write under a lock)
+- Config change events (for downstream reactivity)
+
+**First consumer:** [The Scriptorium](apparatus/scriptorium.md) — `codex-add` and `codex-remove` need to modify the `codexes` config section programmatically. Update the Scriptorium's implementation when this API ships.
+
+### `workshops` → `codexes` migration in nexus-core
+
+The `GuildConfig` interface in `@shardworks/nexus-core` (`guild-config.ts`) still carries a framework-level `workshops` field with an associated `WorkshopEntry` type. This is legacy — codex registration is plugin config owned by The Scriptorium (read via `guild().config<CodexesConfig>('codexes')`), not a framework-level concern.
+
+Cleanup required:
+- Remove `workshops` from `GuildConfig` and `WorkshopEntry` from `guild-config.ts`
+- Remove `workshopsPath()` and `workshopBarePath()` from `nexus-home.ts`
+- Remove corresponding exports from `index.ts`
+- Update `createInitialGuildConfig()` to drop the empty `workshops: {}` default
+- Update test helpers in arbor and CLI that set `workshops: {}`
+- Update `README.md` in core and CLI packages
+
+The Scriptorium defines its own config types and path helpers internally. Nothing in the framework needs workshop/codex awareness.
 

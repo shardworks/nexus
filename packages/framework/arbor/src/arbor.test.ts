@@ -39,7 +39,6 @@ function writeGuildJson(dir: string, config: Record<string, unknown>): void {
   const full = {
     name: 'test-guild',
     nexus: '0.0.0',
-    workshops: {},
     plugins: [],
     settings: { model: 'sonnet' },
     ...config,

@@ -373,9 +373,12 @@ Plugin config sections sit alongside the framework-level keys at the top level o
   "name":     "my-guild",
   "nexus":    "0.1.x",
   "plugins":  ["clockworks", "stacks", "animator", "..."],
-  "workshops": { ... },
   "settings": { "model": "claude-opus-4-5" },
 
+  "codexes": {
+    "settings": { "maxMergeRetries": 3 },
+    "registered": { "my-app": { "remoteUrl": "git@github.com:patron/my-app.git" } }
+  },
   "clockworks": {
     "events":        { ... },
     "standingOrders": [...]
