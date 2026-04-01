@@ -722,6 +722,158 @@ describe('ScriptoriumCore', () => {
     });
   });
 
+  // ── Seal: Rebase contention ──────────────────────────────────────
+
+  describe('seal() rebase contention', () => {
+
+    /**
+     * Helper: set up a codex with two diverged drafts.
+     *
+     * Both draft-A and draft-B branch from the same initial commit on main.
+     * Each writes to a different file so the rebase can succeed cleanly.
+     *
+     * Returns the api plus references to both drafts.
+     */
+    async function setupDivergedDrafts() {
+      const remote = createRemoteRepo();
+      const { core, guildState } = createStartedCore();
+      const api = core.createApi();
+
+      await api.add('test-codex', remote.url);
+
+      const draftA = await api.openDraft({ codexName: 'test-codex', branch: 'draft-a' });
+      const draftB = await api.openDraft({ codexName: 'test-codex', branch: 'draft-b' });
+
+      // Configure git in both worktrees
+      for (const d of [draftA, draftB]) {
+        gitSync(['config', 'user.email', 'test@test.com'], d.path);
+        gitSync(['config', 'user.name', 'Test'], d.path);
+      }
+
+      // Draft A commits to file-a.txt
+      fs.writeFileSync(path.join(draftA.path, 'file-a.txt'), 'from draft A\n');
+      gitSync(['add', 'file-a.txt'], draftA.path);
+      gitSync(['commit', '-m', 'Draft A inscription'], draftA.path);
+
+      // Draft B commits to file-b.txt (no conflict with A)
+      fs.writeFileSync(path.join(draftB.path, 'file-b.txt'), 'from draft B\n');
+      gitSync(['add', 'file-b.txt'], draftB.path);
+      gitSync(['commit', '-m', 'Draft B inscription'], draftB.path);
+
+      return { api, guildState, draftA, draftB, remote };
+    }
+
+    it('rebases and seals when another draft advanced the target', async () => {
+      const { api, guildState, draftA, draftB } = await setupDivergedDrafts();
+
+      // Seal draft A first — this advances main past the common ancestor
+      const resultA = await api.seal({
+        codexName: 'test-codex',
+        sourceBranch: 'draft-a',
+      });
+      assert.equal(resultA.success, true);
+      assert.equal(resultA.strategy, 'fast-forward');
+      assert.equal(resultA.retries, 0);
+
+      // Now seal draft B — main has moved, so ff won't work; must rebase
+      const resultB = await api.seal({
+        codexName: 'test-codex',
+        sourceBranch: 'draft-b',
+      });
+
+      assert.equal(resultB.success, true);
+      assert.equal(resultB.strategy, 'rebase');
+      // At least 1 retry (the initial ff attempt fails, rebase, then ff succeeds)
+      assert.ok(resultB.retries >= 1, `Expected retries >= 1, got ${resultB.retries}`);
+      assert.ok(resultB.sealedCommit);
+
+      // The sealed commit should contain both files
+      const bareClone = path.join(guildState.home, '.nexus', 'codexes', 'test-codex.git');
+      const mainRef = gitSync(['rev-parse', 'main'], bareClone);
+      assert.equal(mainRef, resultB.sealedCommit);
+
+      // Verify both inscriptions are present by checking the tree
+      const tree = gitSync(['ls-tree', '--name-only', 'main'], bareClone);
+      assert.ok(tree.includes('file-a.txt'), 'file-a.txt should be in tree after both seals');
+      assert.ok(tree.includes('file-b.txt'), 'file-b.txt should be in tree after both seals');
+    });
+
+    it('reports rebase strategy and retry count accurately', async () => {
+      const { api } = await setupDivergedDrafts();
+
+      // Seal A (ff)
+      await api.seal({ codexName: 'test-codex', sourceBranch: 'draft-a' });
+
+      // Seal B (rebase required)
+      const result = await api.seal({
+        codexName: 'test-codex',
+        sourceBranch: 'draft-b',
+      });
+
+      // Strategy should be 'rebase' because ff was attempted and failed
+      assert.equal(result.strategy, 'rebase');
+      // Retries tracks the number of rebase-then-retry loops
+      assert.ok(result.retries >= 1);
+    });
+
+    it('fails with conflict error when rebase cannot resolve', async () => {
+      const remote = createRemoteRepo();
+      const { core } = createStartedCore();
+      const api = core.createApi();
+
+      await api.add('test-codex', remote.url);
+
+      const draftA = await api.openDraft({ codexName: 'test-codex', branch: 'draft-a' });
+      const draftB = await api.openDraft({ codexName: 'test-codex', branch: 'draft-b' });
+
+      for (const d of [draftA, draftB]) {
+        gitSync(['config', 'user.email', 'test@test.com'], d.path);
+        gitSync(['config', 'user.name', 'Test'], d.path);
+      }
+
+      // Both drafts write conflicting content to the SAME file
+      fs.writeFileSync(path.join(draftA.path, 'conflict.txt'), 'content from A\n');
+      gitSync(['add', 'conflict.txt'], draftA.path);
+      gitSync(['commit', '-m', 'Draft A writes conflict.txt'], draftA.path);
+
+      fs.writeFileSync(path.join(draftB.path, 'conflict.txt'), 'content from B\n');
+      gitSync(['add', 'conflict.txt'], draftB.path);
+      gitSync(['commit', '-m', 'Draft B writes conflict.txt'], draftB.path);
+
+      // Seal A — should succeed (ff)
+      await api.seal({ codexName: 'test-codex', sourceBranch: 'draft-a' });
+
+      // Seal B — rebase will conflict
+      await assert.rejects(
+        () => api.seal({ codexName: 'test-codex', sourceBranch: 'draft-b' }),
+        /Sealing seized.*conflicts/,
+      );
+
+      // Draft B should still exist (not cleaned up on failure)
+      const drafts = await api.listDrafts();
+      assert.equal(drafts.length, 1);
+      assert.equal(drafts[0].branch, 'draft-b');
+    });
+
+    it('respects maxRetries limit', async () => {
+      const { api } = await setupDivergedDrafts();
+
+      // Seal A first
+      await api.seal({ codexName: 'test-codex', sourceBranch: 'draft-a' });
+
+      // Seal B with maxRetries=0 — should fail since ff won't work
+      // and we don't allow any retries after the initial attempt
+      await assert.rejects(
+        () => api.seal({
+          codexName: 'test-codex',
+          sourceBranch: 'draft-b',
+          maxRetries: 0,
+        }),
+        /failed after 0 retries/,
+      );
+    });
+  });
+
   // ── Startup Reconciliation ────────────────────────────────────────
 
   describe('startup reconciliation', () => {

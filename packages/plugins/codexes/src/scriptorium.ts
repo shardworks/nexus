@@ -36,7 +36,7 @@ export function createScriptorium(): Plugin {
 
   return {
     apparatus: {
-      requires: ['stacks'],
+      requires: [],
       consumes: [],
 
       get provides() { return api; },
