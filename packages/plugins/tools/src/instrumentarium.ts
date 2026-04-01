@@ -10,6 +10,9 @@
  * Role definitions and permission grants are owned by the Loom.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 import type {
   StartupContext,
   LoadedPlugin,
@@ -25,6 +28,8 @@ import {
 
 import type { ToolDefinition, ToolCaller } from './tool.ts';
 import { isToolDefinition } from './tool.ts';
+import { createToolsList } from './tools/tools-list.ts';
+import { createToolsShow } from './tools/tools-show.ts';
 
 // ── Public types ──────────────────────────────────────────────────────
 
@@ -49,8 +54,8 @@ export interface ResolveOptions {
    * permissionless tools are included unconditionally.
    */
   strict?: boolean;
-  /** Filter by invocation channel. Tools with no callableFrom pass all channels. */
-  channel?: ToolCaller;
+  /** Filter by invocation caller. Tools with no callableBy pass all callers. */
+  caller?: ToolCaller;
 }
 
 /** The Instrumentarium's public API, exposed via `provides`. */
@@ -61,7 +66,7 @@ export interface InstrumentariumApi {
    * Evaluates each registered tool against the permission grants:
    * - Tools with a `permission` field: included if any grant matches
    * - Permissionless tools: always included (default) or gated by `strict`
-   * - Channel filtering applied last
+   * - Caller filtering applied last
    */
   resolve(options: ResolveOptions): ResolvedTool[];
 
@@ -140,16 +145,24 @@ function strictAllowsPermissionless(
 class ToolRegistry {
   /** Map from tool name → ResolvedTool. Last-write-wins for duplicates. */
   private readonly tools = new Map<string, ResolvedTool>();
+  /** Guild root path — set at startup, used for instructionsFile resolution. */
+  private guildHome = '';
+
+  /** Set the guild root path for instructionsFile resolution. */
+  setHome(home: string): void {
+    this.guildHome = home;
+  }
 
   /** Register all tools from a loaded plugin. */
   register(plugin: LoadedPlugin): void {
     const pluginId = plugin.id;
+    const packageName = plugin.packageName;
 
     if (isLoadedKit(plugin)) {
-      this.registerToolsFromKit(pluginId, plugin.kit);
+      this.registerToolsFromKit(pluginId, packageName, plugin.kit);
     } else if (isLoadedApparatus(plugin)) {
       if (plugin.apparatus.supportKit) {
-        this.registerToolsFromKit(pluginId, plugin.apparatus.supportKit);
+        this.registerToolsFromKit(pluginId, packageName, plugin.apparatus.supportKit);
       }
     }
   }
@@ -157,6 +170,7 @@ class ToolRegistry {
   /** Extract and register tools from a kit (or supportKit) contribution. */
   private registerToolsFromKit(
     pluginId: string,
+    packageName: string,
     kit: Record<string, unknown>,
   ): void {
     const rawTools = kit.tools;
@@ -164,9 +178,48 @@ class ToolRegistry {
 
     for (const t of rawTools) {
       if (isToolDefinition(t)) {
-        this.tools.set(t.name, { definition: t, pluginId });
+        const definition = this.preloadInstructions(t, packageName);
+        this.tools.set(definition.name, { definition, pluginId });
       }
     }
+  }
+
+  /**
+   * Pre-load instructionsFile into instructions text.
+   *
+   * If the tool has an `instructionsFile`, resolve it relative to the
+   * package root in node_modules, read the file, and return a copy with
+   * `instructions` set to the file content and `instructionsFile` cleared.
+   *
+   * Tools with inline `instructions` or neither field are returned as-is.
+   */
+  private preloadInstructions(
+    tool: ToolDefinition,
+    packageName: string,
+  ): ToolDefinition {
+    if (!tool.instructionsFile) return tool;
+
+    const packageDir = path.join(this.guildHome, 'node_modules', packageName);
+    const filePath = path.join(packageDir, tool.instructionsFile);
+
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      // Return a mutated copy — instructionsFile consumed, instructions set
+      const { instructionsFile: _, ...rest } = tool;
+      return { ...rest, instructions: content } as ToolDefinition;
+    } catch {
+      console.warn(
+        `[instrumentarium] Could not read instructions file for tool "${tool.name}": ${filePath}`,
+      );
+      // Return tool without instructions — don't block registration
+      const { instructionsFile: _, ...rest } = tool;
+      return rest as ToolDefinition;
+    }
+  }
+
+  /** Register a single tool definition directly (for self-contributed tools). */
+  registerTool(definition: ToolDefinition, pluginId: string): void {
+    this.tools.set(definition.name, { definition, pluginId });
   }
 
   /** Find a tool by name. */
@@ -190,7 +243,7 @@ class ToolRegistry {
    *    b. If tool has a permission:
    *       - Match against grants: exact, plugin wildcard, level wildcard, or superuser
    *       - Include if any grant matches
-   * 3. Filter by channel (callableFrom)
+   * 3. Filter by caller (callableBy)
    */
   resolve(options: ResolveOptions): ResolvedTool[] {
     const grants = options.permissions
@@ -218,11 +271,11 @@ class ToolRegistry {
         }
       }
 
-      // Channel filter
+      // Caller filter
       if (
-        options.channel &&
-        definition.callableFrom &&
-        !definition.callableFrom.includes(options.channel)
+        options.caller &&
+        definition.callableBy &&
+        !definition.callableBy.includes(options.caller)
       ) {
         continue;
       }
@@ -260,14 +313,32 @@ export function createInstrumentarium(): Plugin {
     },
   };
 
+  // Introspection tools use a lazy getter so they can query the registry
+  // after all plugins have registered their tools at startup.
+  const getApi = () => api;
+  const toolsList = createToolsList(getApi);
+  const toolsShow = createToolsShow(getApi);
+
   return {
     apparatus: {
       requires: [],
       consumes: ['tools'],
       provides: api,
 
+      supportKit: {
+        tools: [toolsList, toolsShow],
+      },
+
       start(ctx: StartupContext): void {
         const g = guild();
+        registry.setHome(g.home);
+
+        // Register our own supportKit tools (tools-list, tools-show).
+        // These live on this apparatus and aren't discovered through the
+        // normal kit scanning path.
+        for (const t of [toolsList, toolsShow]) {
+          registry.registerTool(t, 'tools');
+        }
 
         // Scan all already-loaded kits. These fired plugin:initialized before
         // any apparatus started, so we can't catch them via events.

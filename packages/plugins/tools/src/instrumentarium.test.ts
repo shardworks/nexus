@@ -153,6 +153,16 @@ function startInstrumentarium(opts: {
   return { api, fire };
 }
 
+// ── Constants ────────────────────────────────────────────────────────
+
+/** Names of the Instrumentarium's self-registered introspection tools. */
+const SELF_TOOLS = new Set(['tools-list', 'tools-show']);
+
+/** Filter out the Instrumentarium's own tools for tests that count external tools. */
+function externalOnly(tools: { definition: { name: string } }[]) {
+  return tools.filter((t) => !SELF_TOOLS.has(t.definition.name));
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────
 
 describe('Instrumentarium', () => {
@@ -161,9 +171,13 @@ describe('Instrumentarium', () => {
   });
 
   describe('list()', () => {
-    it('returns empty when no tools installed', () => {
+    it('returns only self-registered tools when no external tools installed', () => {
       const { api } = startInstrumentarium({});
-      assert.deepStrictEqual(api.list(), []);
+      const external = externalOnly(api.list());
+      assert.equal(external.length, 0);
+      // Self-registered introspection tools are always present
+      assert.ok(api.find('tools-list'));
+      assert.ok(api.find('tools-show'));
     });
 
     it('scans tools from kits loaded before startup', () => {
@@ -173,7 +187,7 @@ describe('Instrumentarium', () => {
 
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      const tools = api.list();
+      const tools = externalOnly(api.list());
       assert.equal(tools.length, 2);
       assert.deepStrictEqual(
         tools.map((t) => t.definition.name).sort(),
@@ -191,7 +205,7 @@ describe('Instrumentarium', () => {
       // Simulate apparatus loading after Instrumentarium started
       await fire('plugin:initialized', app);
 
-      const tools = api.list();
+      const tools = externalOnly(api.list());
       assert.equal(tools.length, 1);
       assert.equal(tools[0]!.definition.name, 'gamma');
       assert.equal(tools[0]!.pluginId, 'my-apparatus');
@@ -204,7 +218,7 @@ describe('Instrumentarium', () => {
       const { api, fire } = startInstrumentarium({ kits: [kit] });
       await fire('plugin:initialized', app);
 
-      assert.equal(api.list().length, 3);
+      assert.equal(externalOnly(api.list()).length, 3);
     });
 
     it('ignores non-tool entries in kit contributions', () => {
@@ -217,8 +231,9 @@ describe('Instrumentarium', () => {
       ]);
 
       const { api } = startInstrumentarium({ kits: [kit] });
-      assert.equal(api.list().length, 1);
-      assert.equal(api.list()[0]!.definition.name, 'valid');
+      const external = externalOnly(api.list());
+      assert.equal(external.length, 1);
+      assert.equal(external[0]!.definition.name, 'valid');
     });
 
     it('last-write-wins for duplicate tool names', () => {
@@ -227,9 +242,11 @@ describe('Instrumentarium', () => {
 
       const { api } = startInstrumentarium({ kits: [kit1, kit2] });
 
-      const tools = api.list();
-      assert.equal(tools.length, 1);
-      assert.equal(tools[0]!.pluginId, 'kit-2');
+      const dups = externalOnly(api.list()).filter(
+        (t) => t.definition.name === 'dup',
+      );
+      assert.equal(dups.length, 1);
+      assert.equal(dups[0]!.pluginId, 'kit-2');
     });
 
     it('returns all tools regardless of permissions', () => {
@@ -240,7 +257,7 @@ describe('Instrumentarium', () => {
       ]);
 
       const { api } = startInstrumentarium({ kits: [kit] });
-      assert.equal(api.list().length, 3);
+      assert.equal(externalOnly(api.list()).length, 3);
     });
   });
 
@@ -300,7 +317,7 @@ describe('Instrumentarium', () => {
 
       const { api } = startInstrumentarium({ kits: [kit1, kit2] });
 
-      const resolved = api.resolve({ permissions: ['*:read'] });
+      const resolved = externalOnly(api.resolve({ permissions: ['*:read'] }));
       assert.equal(resolved.length, 2);
       const names = resolved.map((t) => t.definition.name).sort();
       assert.deepStrictEqual(names, ['clock-status', 'list-writs']);
@@ -317,7 +334,7 @@ describe('Instrumentarium', () => {
 
       const { api } = startInstrumentarium({ kits: [kit1, kit2] });
 
-      const resolved = api.resolve({ permissions: ['*:*'] });
+      const resolved = externalOnly(api.resolve({ permissions: ['*:*'] }));
       assert.equal(resolved.length, 3);
     });
 
@@ -451,10 +468,10 @@ describe('Instrumentarium', () => {
 
       const { api } = startInstrumentarium({ kits: [kit1, kit2] });
 
-      const resolved = api.resolve({
+      const resolved = externalOnly(api.resolve({
         permissions: ['*:*'],
         strict: true,
-      });
+      }));
       assert.equal(resolved.length, 2);
     });
 
@@ -482,10 +499,10 @@ describe('Instrumentarium', () => {
 
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      const resolved = api.resolve({
+      const resolved = externalOnly(api.resolve({
         permissions: ['*:read'],
         strict: true,
-      });
+      }));
       assert.equal(resolved.length, 1);
       assert.equal(resolved[0]!.definition.name, 'list-writs');
     });
