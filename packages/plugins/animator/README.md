@@ -1,8 +1,8 @@
-# `@shardworks/animator`
+# `@shardworks/animator-apparatus`
 
 The Animator brings animas to life. It takes a woven session context (from The Loom), launches an AI process via a configurable session provider apparatus, monitors it until exit, and records the result to The Stacks. The Animator does not know how the context was composed — it receives a `WovenContext` and runs a session.
 
-Depends on `@shardworks/stacks` for persistence and `@shardworks/loom` for the `WovenContext` type. The session provider (e.g. `@shardworks/claude-code-apparatus`) is discovered at runtime via guild config.
+Depends on `@shardworks/stacks-apparatus` for persistence and `@shardworks/loom-apparatus` for the `WovenContext` type. The session provider (e.g. `@shardworks/claude-code-apparatus`) is discovered at runtime via guild config.
 
 ---
 
@@ -11,7 +11,7 @@ Depends on `@shardworks/stacks` for persistence and `@shardworks/loom` for the `
 ```json
 {
   "dependencies": {
-    "@shardworks/animator": "workspace:*"
+    "@shardworks/animator-apparatus": "workspace:*"
   }
 }
 ```
@@ -22,7 +22,7 @@ The Animator exposes its API via `guild().apparatus<AnimatorApi>('animator')`:
 
 ```typescript
 import { guild } from '@shardworks/nexus-core';
-import type { AnimatorApi } from '@shardworks/animator';
+import type { AnimatorApi } from '@shardworks/animator-apparatus';
 
 const animator = guild().apparatus<AnimatorApi>('animator');
 ```
@@ -148,7 +148,7 @@ interface SessionProviderResult {
 }
 ```
 
-The Animator imports these types; provider packages import them from `@shardworks/animator` and implement them.
+The Animator imports these types; provider packages import them from `@shardworks/animator-apparatus` and implement them.
 
 ## Support Kit
 
@@ -184,12 +184,12 @@ import {
   type SessionProviderResult,
   type SessionDoc,
   type AnimatorConfig,
-} from '@shardworks/animator';
+} from '@shardworks/animator-apparatus';
 ```
 
 The default export is a pre-created apparatus plugin instance:
 
 ```typescript
-import animator from '@shardworks/animator';
+import animator from '@shardworks/animator-apparatus';
 // animator is { apparatus: { requires: ['stacks'], provides: AnimatorApi, ... } }
 ```

@@ -10,7 +10,7 @@
 import { tool } from '@shardworks/tools-apparatus';
 import { guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
-import type { StacksApi } from '@shardworks/stacks-apparatus';
+import type { StacksApi, WhereCondition } from '@shardworks/stacks-apparatus';
 import type { SessionDoc } from '../types.ts';
 
 export default tool({
@@ -35,13 +35,13 @@ export default tool({
     const stacks = guild().apparatus<StacksApi>('stacks');
     const sessions = stacks.readBook<SessionDoc>('animator', 'sessions');
 
-    const where: Array<[string, string, unknown]> = [];
+    const where: WhereCondition[] = [];
     if (params.status) where.push(['status', '=', params.status]);
     if (params.provider) where.push(['provider', '=', params.provider]);
     if (params.conversationId) where.push(['conversationId', '=', params.conversationId]);
 
     const results = await sessions.find({
-      where: where.length > 0 ? where as never : undefined,
+      where: where.length > 0 ? where : undefined,
       orderBy: ['startedAt', 'desc'],
       limit: params.limit,
     });

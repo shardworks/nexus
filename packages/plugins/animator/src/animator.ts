@@ -217,13 +217,14 @@ export function createAnimator(): Plugin {
       const model = resolveModel();
       const providerConfig = buildProviderConfig(request, model);
 
+      // Step 1: generate session id, capture startedAt
       const id = generateSessionId();
       const startedAt = new Date().toISOString();
 
       // Step 2: write initial 'running' record
       await recordRunning(sessions, id, startedAt, provider.name, request);
 
-      // Steps 3–4: launch provider (wrapped in try/finally for error guarantee)
+      // Steps 3–4: launch provider (wrapped in try/catch for error guarantee)
       let result: SessionResult;
       try {
         const providerResult = await provider.launch(providerConfig);
@@ -251,6 +252,7 @@ export function createAnimator(): Plugin {
       const model = resolveModel();
       const providerConfig = buildProviderConfig(request, model);
 
+      // Step 1: generate session id, capture startedAt
       const id = generateSessionId();
       const startedAt = new Date().toISOString();
 
@@ -334,7 +336,7 @@ export function createAnimator(): Plugin {
 
       start(_ctx: StartupContext): void {
         const g = guild();
-        config = g.config<AnimatorConfig>('animator');
+        config = g.guildConfig().animator ?? {};
 
         const stacks = g.apparatus<StacksApi>('stacks');
         sessions = stacks.book<SessionDoc>('animator', 'sessions');

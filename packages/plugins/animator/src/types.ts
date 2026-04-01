@@ -166,6 +166,13 @@ export interface SessionProviderResult {
  */
 export interface SessionDoc {
   id: string;
+  /**
+   * Session status. Initially written as `'running'` when the session is
+   * launched (Step 2), then updated to a terminal status (`'completed'`,
+   * `'failed'`, or `'timeout'`) after the provider exits (Step 5).
+   * The `'running'` state is transient — it only exists between Steps 2 and 5.
+   * `SessionResult.status` only includes terminal states.
+   */
   status: 'running' | 'completed' | 'failed' | 'timeout';
   startedAt: string;
   endedAt?: string;
@@ -192,4 +199,12 @@ export interface AnimatorConfig {
    * Defaults to 'claude-code' if not specified.
    */
   sessionProvider?: string;
+}
+
+// Augment GuildConfig so `guild().guildConfig().animator` is typed without
+// requiring a manual type parameter at the call site.
+declare module '@shardworks/nexus-core' {
+  interface GuildConfig {
+    animator?: AnimatorConfig;
+  }
 }

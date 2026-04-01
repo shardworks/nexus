@@ -2,7 +2,7 @@
 
 Status: **Draft — MVP**
 
-Package: `@shardworks/animator` · Plugin id: `animator`
+Package: `@shardworks/animator-apparatus` · Plugin id: `animator`
 
 > **⚠️ MVP scope.** This spec covers session launch, structured telemetry recording, streaming output, error guarantees, and session inspection tools. There is no MCP tool server, no Instrumentarium dependency, no role awareness, and no event signalling. The Animator receives a woven context and a working directory, launches a session provider process, and records what happened. See the Future sections for the target design.
 
@@ -255,7 +255,7 @@ interface SessionProviderResult {
 }
 ```
 
-The default provider is `@shardworks/claude-code-apparatus` (plugin id: `claude-code`), which launches a `claude` CLI process in autonomous mode with `--output-format stream-json`. Provider packages import the `AnimatorSessionProvider` type from `@shardworks/animator` and export an apparatus whose `provides` satisfies the interface.
+The default provider is `@shardworks/claude-code-apparatus` (plugin id: `claude-code`), which launches a `claude` CLI process in autonomous mode with `--output-format stream-json`. Provider packages import the `AnimatorSessionProvider` type from `@shardworks/animator-apparatus` and export an apparatus whose `provides` satisfies the interface.
 
 ---
 
