@@ -6,24 +6,9 @@
 
 ## Authoring
 
-The SDK factories for building tools and engines. These are the primary entry points for anyone extending the guild with new capabilities.
+> **Note:** The `tool()` factory, `ToolDefinition`, `ToolCaller`, `isToolDefinition()`, and `resolveToolFromExport()` have moved to `@shardworks/tools-apparatus`. See the [Instrumentarium API Contract](../architecture/apparatus/instrumentarium.md) for the tool authoring API.
 
-### `tool(def): ToolDefinition`
-
-Define a Nexus tool. The primary SDK entry point for module-based tools.
-
-```typescript
-tool({
-  name: string,
-  description: string,
-  params: { [key: string]: ZodType },
-  handler: (params, context: ToolContext) => unknown | Promise<unknown>,
-  instructions?: string,        // inline text (mutually exclusive with instructionsFile)
-  instructionsFile?: string,    // path resolved at manifest time
-}): ToolDefinition
-```
-
-The handler receives validated params (typed from the Zod schemas) and a `ToolContext` (`{ home: string }`). Return any JSON-serializable value. Throw for errors.
+The following SDK factories remain in `@shardworks/nexus-core`:
 
 ### `engine(def): EngineDefinition`
 
@@ -38,21 +23,9 @@ engine({
 
 The handler receives the triggering `GuildEvent` (or `null` for direct invocation) and an `EngineContext` (`{ home: string }`).
 
-### `isToolDefinition(obj): obj is ToolDefinition`
-
-Type guard — checks if a value is a `ToolDefinition` (has `name`, `description`, `params`, `handler`).
-
 ### `isClockworkEngine(obj): obj is EngineDefinition`
 
 Type guard — checks if a value has the `__clockwork: true` brand.
-
-### `resolveToolFromExport(moduleDefault, toolName?): ToolDefinition | null`
-
-Resolve a single tool from a module's default export. Handles single-tool exports (`export default tool({...})`) and array exports (`export default [tool({...}), ...]`). For arrays, matches by `toolName`.
-
-### `resolveAllToolsFromExport(moduleDefault): ToolDefinition[]`
-
-Resolve all tools from a module's default export. Returns an array regardless of whether the export is a single tool or an array.
 
 ### `resolveEngineFromExport(moduleDefault, engineName?): EngineDefinition | null`
 
@@ -62,8 +35,6 @@ Resolve a single engine from a module's default export. Same pattern as `resolve
 
 | Type | Description |
 |------|-------------|
-| `ToolContext` | `{ home: string }` — injected into tool handlers |
-| `ToolDefinition<TShape>` | A fully-defined tool (return type of `tool()`) |
 | `GuildEvent` | `{ id, name, payload, emitter, firedAt }` — immutable event from the queue |
 | `EngineContext` | `{ home: string }` — injected into engine handlers |
 | `EngineDefinition` | A fully-defined clockwork engine (return type of `engine()`) |
@@ -197,14 +168,9 @@ These functions assemble an anima's identity for a session.
 
 Read an anima's full record including roles and composition metadata. **Throws** if not found.
 
-### `resolveTools(home, config, animaRoles): Promise<{ available, unavailable, warnings }>`
+### Tool Resolution
 
-Resolve the set of tools an anima has access to based on role definitions and precondition checks. Starts with `baseTools`, unions in each role's tools, deduplicates, resolves from disk, runs precondition checks.
-
-**Returns:**
-- `available: ResolvedTool[]` — tools the anima can use
-- `unavailable: UnavailableTool[]` — tools that failed preconditions
-- `warnings: string[]` — e.g. undefined roles, missing tools
+Tool resolution has moved to **The Instrumentarium** (`@shardworks/tools-apparatus`). The Loom resolves an anima's roles into a flat permissions array, then calls `instrumentarium.resolve({ permissions, channel })` to get the available tool set. See [The Instrumentarium — Permission Model](../architecture/apparatus/instrumentarium.md#permission-model).
 
 ### `readCodex(home): string`
 
@@ -549,14 +515,7 @@ Create the default guild.json content for a new guild. All registries start empt
 
 | Type | Description |
 |------|-------------|
-| `GuildConfig` | The full guild.json shape: name, nexus, model, workshops, roles, baseTools, tools, engines, curricula, temperaments, clockworks? |
-| `RoleDefinition` | `{ seats: number \| null, tools: string[], instructions?: string }` |
-| `ToolEntry` | `{ upstream, installedAt, package?, bundle? }` |
-| `TrainingEntry` | `{ upstream, installedAt, bundle? }` |
-| `WorkshopEntry` | `{ remoteUrl, addedAt }` |
-| `EventDeclaration` | `{ description?, schema? }` |
-| `StandingOrder` | `{ on, run }` or `{ on, summon }` or `{ on, brief }` |
-| `ClockworksConfig` | `{ events?, standingOrders? }` |
+| `GuildConfig` | The full guild.json shape: name, nexus, plugins, settings, plus plugin config sections |
 
 ---
 

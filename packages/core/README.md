@@ -1,63 +1,10 @@
 # `@shardworks/nexus-core`
 
-The public SDK for Nexus Mk 2.1. Rig authors import from this package to define tools, declare books, and read guild configuration.
+The public SDK for Nexus Mk 2.1. Plugin authors import from this package for the guild singleton, configuration types, and plugin lifecycle types.
 
-This package is a dependency of every rig. It does not depend on arbor or the CLI — the dependency graph runs one way: rigs → core.
+This package is a dependency of every plugin. It does not depend on arbor or the CLI — the dependency graph runs one way: plugins → core.
 
----
-
-## `tool()` — Tool SDK
-
-Define a Nexus tool. This is the primary authoring entry point for rig packages.
-
-```typescript
-import { tool } from '@shardworks/nexus-core';
-import { z } from 'zod';
-
-export default tool({
-  name: 'greet',
-  description: 'Greet an anima by name',
-  params: {
-    name: z.string().describe('Anima name'),
-  },
-  handler: async ({ name }, ctx) => {
-    return `Hello, ${name}! Guild root: ${ctx.home}`;
-  },
-});
-```
-
-A rig package exports a `Rig` object, a single tool, or an array of tools as its default export. Arbor discovers them automatically at install time.
-
-### `ToolDefinition`
-
-The return type of `tool()`. MCP, CLI, and engines all consume this shape.
-
-### `ToolCaller`
-
-`'cli' | 'mcp'` — controls which surfaces a tool appears on. Set via `callableFrom`:
-
-```typescript
-tool({
-  name: 'rig-install',
-  callableFrom: ['cli'],   // CLI only — not exposed to animas via MCP
-  ...
-});
-```
-
-Defaults to all callers if omitted.
-
-### Resolution helpers
-
-```typescript
-// Find one tool from a module's default export
-resolveToolFromExport(moduleDefault, toolName?)
-
-// Find all tools from a module's default export
-resolveAllToolsFromExport(moduleDefault)
-
-// Type guard
-isToolDefinition(obj)
-```
+> **Note:** The `tool()` factory and `ToolDefinition` type have moved to `@shardworks/tools-apparatus`. See the [Instrumentarium docs](../../docs/architecture/apparatus/instrumentarium.md) for the tool authoring API.
 
 ---
 
@@ -66,7 +13,8 @@ isToolDefinition(obj)
 The author-facing export type for a rig package. Rig packages export this as their default export. Arbor reads it at load time to discover the rig's contributions.
 
 ```typescript
-import { type Rig, tool } from '@shardworks/nexus-core';
+import type { Rig } from '@shardworks/nexus-core';
+import { tool } from '@shardworks/tools-apparatus';
 
 const myTool = tool({ ... });
 
@@ -163,7 +111,6 @@ Read and write `guild.json`, the guild's central configuration file.
 import { readGuildConfigV2, writeGuildConfigV2 } from '@shardworks/nexus-core';
 
 const config = readGuildConfigV2(home);
-config.baseTools.push('my-tool');
 writeGuildConfigV2(home, config);
 ```
 
@@ -175,13 +122,10 @@ The shape of `guild.json` for V2 guilds:
 |---|---|---|
 | `name` | `string` | Guild name |
 | `nexus` | `string` | Framework version at last init/upgrade |
-| `rigs` | `string[]` | Installed rig keys (derived from npm package names) |
-| `baseTools` | `string[]` | Tools available to all animas |
-| `roles` | `Record<string, RoleDefinition>` | Guild roles with seats, tools, instructions |
-| `workshops` | `Record<string, WorkshopEntry>` | Registered workshops |
+| `plugins` | `string[]` | Installed plugin ids |
 | `settings?` | `GuildSettings` | Operational flags including default `model` |
-| `clockworks?` | `ClockworksConfig` | Standing orders and custom events |
-| `writTypes?` | `Record<string, WritTypeDeclaration>` | Custom writ type declarations |
+
+All remaining top-level keys are plugin configuration sections, keyed by derived plugin id. For example, `loom` holds role definitions with permission grants; `clockworks` holds events and standing orders.
 
 ### Other exports
 

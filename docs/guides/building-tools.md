@@ -19,10 +19,11 @@ The handler is the only file that matters for execution. Everything else is meta
 
 ## The handler
 
-Use the `tool()` factory from `@shardworks/nexus-core`:
+Use the `tool()` factory from `@shardworks/tools-apparatus`:
 
 ```typescript
-import { tool, guild } from '@shardworks/nexus-core';
+import { tool } from '@shardworks/tools-apparatus';
+import { guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -79,6 +80,7 @@ See `packages/tool-install/` for the canonical example. Key files:
   },
   "dependencies": {
     "@shardworks/nexus-core": "workspace:*",
+    "@shardworks/tools-apparatus": "workspace:*",
     "zod": "^4.0.0"
   },
   "devDependencies": {
@@ -224,13 +226,13 @@ This reconstructs the runtime environment:
 
 Rehydrate is idempotent and safe to run at any time.
 
-## Using `@shardworks/nexus-core`
+## Using `@shardworks/nexus-core` and `@shardworks/tools-apparatus`
 
-The core library provides utilities that tool handlers commonly need. Common imports for tool authors:
+Tool authors import `tool()` from `@shardworks/tools-apparatus` and guild infrastructure from `@shardworks/nexus-core`. Common imports:
 
 | Export | Purpose |
 |--------|---------|
-| `tool(def)` | The tool SDK factory |
+| `guild()` | The guild singleton (access apparatus, config, home path) |
 | `VERSION` | Framework version string |
 | `readGuildConfig(home)` | Read and parse `guild.json` |
 | `writeGuildConfig(home, config)` | Write `guild.json` |
@@ -247,10 +249,11 @@ For the event system, standing orders, and event-driven automation, see the [Eve
 
 For the database schema and entity relationships, see the [Schema Reference](../reference/schema.md).
 
-Import from `@shardworks/nexus-core`:
+Import from the appropriate package:
 
 ```typescript
-import { readGuildConfig, findGuildRoot } from '@shardworks/nexus-core';
+import { tool } from '@shardworks/tools-apparatus';
+import { guild } from '@shardworks/nexus-core';
 ```
 
 **See also:** [Building Engines](building-engines.md) — if you need to build event-driven automation rather than an interactive tool.
@@ -303,11 +306,20 @@ initGuild(home, 'test-guild', 'test-model');
 // Now home has a real guild with guild.json, package.json, and .git
 ```
 
-## Adding to base tools
+## Permission levels
 
-If this is a framework tool (ships with Nexus):
+Tools can declare a `permission` level to control access:
 
-1. Add an entry to `BASE_TOOLS` in `packages/core/src/base-tools.ts`
-2. The entry needs: `name`, `packageName`
-3. Run `pnpm install` so the workspace picks up the new package
-4. Run `pnpm test` to verify nothing breaks
+```typescript
+export default tool({
+  name: 'session-list',
+  description: 'List recent sessions',
+  permission: 'read',    // requires 'animator:read' or wildcard grant
+  params: { ... },
+  handler: async (params) => { ... },
+});
+```
+
+Tools without a `permission` field are permissionless — available to all roles by default (or gated in strict mode). Common permission levels: `'read'` for queries, `'write'` for mutations, `'admin'` for dangerous operations. Levels are opaque strings — there is no implied hierarchy (`write` does not imply `read`).
+
+See [The Instrumentarium — Permission Model](../architecture/apparatus/instrumentarium.md#permission-model) for the full grant format and resolution logic.

@@ -76,7 +76,7 @@ Framework commands are defined in the CLI package itself (`src/commands/`). They
 | Command | Description |
 |---|---|
 | `nsg init <path>` | Create a new guild: directory structure, `guild.json`, `package.json`, `.gitignore` |
-| `nsg status` | Show guild identity, installed plugins, and configured roles |
+| `nsg status` | Show guild identity and installed plugins |
 | `nsg version` | Show Nexus framework version and installed plugin versions |
 | `nsg upgrade` | Upgrade framework and run pending plugin migrations *(stub)* |
 
@@ -86,7 +86,7 @@ Framework commands are defined in the CLI package itself (`src/commands/`). They
 |---|---|
 | `nsg plugin list` | List installed plugins |
 | `nsg plugin install <source>` | Install a plugin from npm, a git URL, or a local directory |
-| `nsg plugin remove <name>` | Remove a plugin and unregister its tools |
+| `nsg plugin remove <name>` | Remove a plugin |
 | `nsg plugin upgrade <name>` | Upgrade a plugin to a newer version *(stub)* |
 
 #### `nsg init`
@@ -112,11 +112,7 @@ nsg plugin install git+https://github.com/acme/my-plugin.git
 nsg plugin install ./path/to/my-plugin --type link
 ```
 
-Tools are added to `baseTools` by default (available to all animas). Pass `--roles` to assign to specific roles instead:
-
-```sh
-nsg plugin install @shardworks/nexus-stdlib --roles artificer,scribe
-```
+Plugin install is a pure npm + guild.json operation — it adds the package as a dependency and registers the plugin id. Tool access is controlled by the permission model: tools declare permission levels, and roles grant `plugin:level` permissions via the Loom's configuration. See [The Instrumentarium](../../docs/architecture/apparatus/instrumentarium.md) for the permission model.
 
 ---
 

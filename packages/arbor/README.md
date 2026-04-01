@@ -3,7 +3,7 @@
 The guild runtime host for Nexus Mk 2.1. The arbor reads `guild.json`, loads all declared plugins, validates the dependency graph, starts each apparatus in dependency order, and wires the `guild()` singleton. It is the bootstrap layer — every entry point (the CLI, the MCP server, the Clockworks daemon) calls `createGuild()` once at startup.
 
 ```
-@shardworks/nexus-core   — public SDK, types, tool() factory
+@shardworks/nexus-core   — public SDK, types, guild() singleton
 @shardworks/nexus-arbor  — guild host, createGuild(), Guild object
 @shardworks/nexus (cli)  — nsg binary, framework commands + Instrumentarium tools
 plugins                  — import from nexus-core only

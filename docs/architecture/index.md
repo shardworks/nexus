@@ -31,7 +31,7 @@ A Nexus guild is a git repository with a `guild.json` at its root and a `.nexus/
   │  └─────────────────────────┬─────────────────────────────┘  │
   │                            │                                 │
   │  Anima Sessions  ◄─────────┘                                │
-  │  AI process · MCP server · role-gated tools                 │
+  │  AI process · MCP server · permission-gated tools                 │
   │                   │                                          │
   │  Works  ◄─────────┘                                         │
   │  codexes · documents · yields                               │
@@ -146,7 +146,7 @@ The versioned files — `guild.json`, `package.json`, and the guild's own conten
 
 All remaining top-level keys are plugin configuration sections, keyed by derived plugin id (see [Plugin IDs](#plugin-ids)). Each plugin reads its own section via `guild().config(pluginId)` at startup or handler invocation time.
 
-In the standard guild, `clockworks` contains events and standing orders; `workshops` tracks registered repositories; `tools` holds role definitions and base tool assignments. These are all plugin config — not framework-owned fields — they get natural short keys because of the `@shardworks/` naming convention and `-(plugin|apparatus|kit)` suffix stripping (e.g. `@shardworks/tools-apparatus` → `tools`). See [Configuration](plugins.md#configuration) for the full model.
+In the standard guild, `clockworks` contains events and standing orders; `workshops` tracks registered repositories; `loom` holds role definitions and permission grants. These are all plugin config — not framework-owned fields — they get natural short keys because of the `@shardworks/` naming convention and `-(plugin|apparatus|kit)` suffix stripping (e.g. `@shardworks/tools-apparatus` → `tools`). See [Configuration](plugins.md#configuration) for the full model.
 
 ### Runtime State (`.nexus/`)
 
@@ -275,7 +275,7 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 | **The Surveyor** | `surveyor` | Codex knowledge — surveys registered codexes so the guild knows what work applies to each |
 | **The Clerk** | `clerk` | Commission intake and writ lifecycle — receives commissions, creates writs, signals when work is ready |
 | **The Loom** | `loom` | Session context composition — weaves role instructions, tool instructions, curricula, and temperaments into a session context |
-| **The Instrumentarium** | `tools` | Tool registry — resolves installed tools, role-gating, handler context creation |
+| **The Instrumentarium** | `tools` | Tool registry — resolves installed tools, permission-gated tool sets |
 | **The Animator** | `animator` | Session lifecycle — launches, monitors, and records anima sessions |
 | **The Formulary** | `formulary` | Engine design registry — answers "what engine chain satisfies this need?" from installed kits |
 | **The Walker** | `walker` | Rig lifecycle — spawns, traverses, extends, and strikes rigs as work progresses |
@@ -373,7 +373,7 @@ Kits contribute three kinds of installable artifacts. All three follow the same 
 - **CLI** — humans invoke tools via `nsg` subcommands.
 - **Import** — engines, relays, and other tools can import handlers programmatically.
 
-All three paths execute the same logic. Tool authors write the handler once using the `tool()` SDK factory from `@shardworks/nexus-core`, which wraps a Zod schema and handler function into a `ToolDefinition`:
+All three paths execute the same logic. Tool authors write the handler once using the `tool()` SDK factory from `@shardworks/tools-apparatus`, which wraps a Zod schema and handler function into a `ToolDefinition`:
 
 ```typescript
 export default tool({
@@ -385,7 +385,7 @@ export default tool({
 
 Tools can be TypeScript modules or plain scripts (bash, Python, any executable). Script tools need no SDK — a one-line descriptor and an executable is enough. The framework infers the kind from the file extension.
 
-**Role gating:** Tools are assigned to roles in `guild.json`. An anima's available tools are the union of all tools permitted across its roles, plus `baseTools`. The Instrumentarium resolves this set; the MCP engine is launched with exactly those tools.
+**Permission gating:** Tools may declare a `permission` level (e.g. `'read'`, `'write'`, `'admin'`). Roles grant permission strings in `plugin:level` format (with wildcard support). The Loom resolves an anima's roles into a flat permissions array; the Instrumentarium matches those grants against each tool's declared permission to resolve the available set. Tools without a `permission` field are permissionless — included by default, or gated in strict mode.
 
 **Instructions:** A tool can optionally ship with an `instructions.md` — a teaching document delivered to the anima as part of its system prompt. Instructions provide craft guidance (when to use the tool, when not to, workflow context) that MCP's schema metadata cannot convey.
 
@@ -472,7 +472,7 @@ MVP: one hardcoded provider (`claude-code`). Future: provider discovery via kit 
 
 ### Tool-Equipped Sessions (Future)
 
-At MVP, sessions run without tools — the anima can only read and respond. When **The Instrumentarium** ships, The Animator gains the ability to launch an MCP tool server alongside the AI process. The Instrumentarium resolves the role-gated tool set; The Animator starts an MCP server loaded with those tools; the provider connects to it via stdio JSON-RPC. One MCP server per session, torn down when the session exits.
+At MVP, sessions run without tools — the anima can only read and respond. When **The Instrumentarium** ships, The Animator gains the ability to launch an MCP tool server alongside the AI process. The Loom resolves the anima's roles into permission grants; The Instrumentarium resolves the permission-gated tool set; The Animator starts an MCP server loaded with those tools; the provider connects to it via stdio JSON-RPC. One MCP server per session, torn down when the session exits.
 
 Tools are the mechanism through which animas act on the guild — creating writs, reading documents, signaling events, modifying files. Without tools, a session is advisory; with tools, it is operational.
 
