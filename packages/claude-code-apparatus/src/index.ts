@@ -1,12 +1,13 @@
 /**
  * Claude Code Session Provider
  *
- * Implements the SessionProvider interface for Claude Code sessions.
- * Handles both interactive (TUI) and autonomous (--print) modes.
+ * Apparatus plugin that implements AnimatorSessionProvider for the
+ * Claude Code CLI. The Animator discovers this via guild config:
  *
- * This is a platform dependency of the CLI, not a guild-registered engine.
- * The CLI imports it at startup and registers it as the session provider.
- * Guilds don't need to know about it — it's a transitive dep of @shardworks/nexus.
+ *   guild.json["animator"]["sessionProvider"] = "claude-code"
+ *
+ * Launches sessions via the `claude` CLI in autonomous mode (--print)
+ * with --output-format stream-json for structured telemetry.
  *
  * Key design choice: uses async spawn() instead of spawnSync().
  * This is required for stream-json transcript parsing, timeout enforcement,
@@ -17,106 +18,15 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import type { ResolvedTool, ManifestResult } from '@shardworks/nexus-core/legacy/1';
-import type { McpServerConfig } from './mcp-server.ts';
-import type { SessionProvider, SessionProviderLaunchOptions, SessionProviderResult, SessionChunk } from '@shardworks/nexus-core';
 
-// ── MCP Config Generation ──────────────────────────────────────────────
+import type { Plugin } from '@shardworks/nexus-core';
+import type {
+  AnimatorSessionProvider,
+  SessionProviderConfig,
+  SessionProviderResult,
+  SessionChunk,
+} from '@shardworks/animator';
 
-/**
- * Generate the MCP server config for the resolved tool set.
- *
- * For tools with a `package` field in guild.json, the modulePath is the
- * npm package name (resolved via NODE_PATH at runtime). For tools without
- * a package field, the modulePath is an absolute path to the entry point.
- */
-export function generateMcpConfig(
-  home: string,
-  tools: ResolvedTool[],
-): McpServerConfig {
-  const mcpTools: Array<{ name: string; modulePath: string }> = [];
-
-  for (const t of tools) {
-    if (t.package) {
-      mcpTools.push({ name: t.name, modulePath: t.package });
-    } else {
-      const descriptorPath = path.join(t.path, 'nexus-tool.json');
-      if (!fs.existsSync(descriptorPath)) continue;
-
-      const descriptor = JSON.parse(fs.readFileSync(descriptorPath, 'utf-8'));
-      const entry = descriptor.entry as string;
-      mcpTools.push({ name: t.name, modulePath: path.join(t.path, entry) });
-    }
-  }
-
-  // Set NODE_PATH so the MCP server process can resolve npm-installed guild
-  // tools from the guildhall's node_modules, regardless of where the MCP
-  // engine code itself lives on disk.
-  const nodePath = path.join(home, 'node_modules');
-  return { home, tools: mcpTools, env: { NODE_PATH: nodePath } };
-}
-
-// ── Claude MCP Config ──────────────────────────────────────────────────
-
-/**
- * Build the Claude MCP config JSON (mcpServers format) that launches the
- * MCP server as a stdio process serving the anima's tools.
- */
-function buildClaudeMcpConfig(
-  tmpDir: string,
-  mcpServerConfigPath: string,
-  serverConfig: McpServerConfig,
-): object {
-  // Resolve the mcp-server entry point within this package.
-  // Use .js extension — TypeScript's transform-types does not rewrite
-  // extensions in import.meta.resolve() calls, so .ts would be baked
-  // into compiled output and fail at runtime (dist/ only has .js).
-  const mcpServerUrl = import.meta.resolve('./mcp-server.js');
-  const mcpServerPath = fileURLToPath(mcpServerUrl);
-
-  // In dev (monorepo), only mcp-server.ts exists — the .js URL won't
-  // resolve on disk. Detect this and swap to .ts with transform flags.
-  const isDev = !fs.existsSync(mcpServerPath);
-  const actualUrl = isDev
-    ? mcpServerUrl.replace(/\.js$/, '.ts')
-    : mcpServerUrl;
-
-  // Write a wrapper script that imports and invokes main().
-  const wrapperPath = path.join(tmpDir, 'mcp-entry.mjs');
-  fs.writeFileSync(
-    wrapperPath,
-    `import { main } from ${JSON.stringify(actualUrl)};\nawait main();\n`,
-  );
-
-  // Dev mode needs transform-types to handle the .ts source.
-  const nodeArgs: string[] = [];
-  if (isDev) {
-    nodeArgs.push(
-      '--disable-warning=ExperimentalWarning',
-      '--experimental-transform-types',
-    );
-  }
-
-  return {
-    mcpServers: {
-      'nexus-guild': {
-        command: 'node',
-        args: [...nodeArgs, wrapperPath, mcpServerConfigPath],
-        env: serverConfig.env ?? {},
-      },
-    },
-  };
-}
-
-// ── Session Provider ───────────────────────────────────────────────────
-
-/**
- * Claude Code session provider.
- *
- * Launches sessions via the `claude` CLI. Interactive mode inherits stdio;
- * autonomous mode uses --print with optional --output-format stream-json.
- */
 // ── Session File Preparation ────────────────────────────────────────────
 
 /** Prepared session files in a temp directory. */
@@ -128,109 +38,86 @@ interface PreparedSession {
 /**
  * Prepare session files and build base CLI args.
  *
- * Shared between launch() and launchStreaming(). Writes system prompt,
- * MCP config, and Claude MCP config to a temp directory. Builds the
- * base args array including --resume support.
+ * Writes system prompt to a temp directory. Builds the base args array
+ * including --resume support. No MCP config in MVP — tool-equipped
+ * sessions are a future capability.
  *
  * Caller is responsible for cleaning up tmpDir.
  */
-function prepareSession(options: SessionProviderLaunchOptions): PreparedSession {
-  const { home, manifest, cwd, name, claudeSessionId } = options;
-
+function prepareSession(config: SessionProviderConfig): PreparedSession {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nsg-session-'));
 
-  // Generate MCP config from resolved tools
-  const mcpConfig = generateMcpConfig(home, manifest.tools);
-
   const systemPromptPath = path.join(tmpDir, 'system-prompt.md');
-  const mcpServerConfigPath = path.join(tmpDir, 'mcp-server-config.json');
-  const claudeMcpConfigPath = path.join(tmpDir, 'claude-mcp-config.json');
+  fs.writeFileSync(systemPromptPath, config.systemPrompt);
 
-  fs.writeFileSync(systemPromptPath, manifest.systemPrompt);
-  fs.writeFileSync(mcpServerConfigPath, JSON.stringify(mcpConfig, null, 2));
-  fs.writeFileSync(
-    claudeMcpConfigPath,
-    JSON.stringify(buildClaudeMcpConfig(tmpDir, mcpServerConfigPath, mcpConfig), null, 2),
-  );
-
-  // Base args
   const args: string[] = [
     '--setting-sources', 'user',
     '--dangerously-skip-permissions',
     '--system-prompt-file', systemPromptPath,
-    '--mcp-config', claudeMcpConfigPath,
+    '--model', config.model,
   ];
 
   // Resume an existing conversation
-  if (claudeSessionId) {
-    args.push('--resume', claudeSessionId);
-  }
-
-  if (name) {
-    args.push('--name', name);
+  if (config.conversationId) {
+    args.push('--resume', config.conversationId);
   }
 
   return { tmpDir, args };
 }
 
-// ── Provider ───────────────────────────────────────────────────────────
+// ── Provider implementation ──────────────────────────────────────────
 
-export const claudeCodeProvider: SessionProvider = {
+const provider: AnimatorSessionProvider = {
   name: 'claude-code',
 
-  async launch(options: SessionProviderLaunchOptions): Promise<SessionProviderResult> {
-    const { prompt, interactive, cwd } = options;
-    const startTime = Date.now();
-    const { tmpDir, args } = prepareSession(options);
+  async launch(config: SessionProviderConfig): Promise<SessionProviderResult> {
+    const { tmpDir, args } = prepareSession(config);
 
     try {
-      if (interactive) {
-        // Interactive: human at keyboard, inherit stdio
-        const exitCode = await spawnClaude(args, cwd, 'inherit');
-        const durationMs = Date.now() - startTime;
-        return { exitCode, durationMs };
-      } else {
-        // Autonomous: commission spec / brief as prompt
-        // Use stream-json to capture transcript, token usage, and cost.
-        args.push(
-          '--print', prompt ?? '',
-          '--output-format', 'stream-json',
-          '--verbose',
-        );
-        const { exitCode, transcript, costUsd, tokenUsage, providerSessionId } =
-          await spawnClaudeStreamJson(args, cwd);
-        const durationMs = Date.now() - startTime;
-        return { exitCode, durationMs, transcript, costUsd, tokenUsage, providerSessionId };
-      }
+      // Autonomous mode: initial prompt via --print, stream-json for telemetry
+      args.push(
+        '--print', config.initialPrompt ?? '',
+        '--output-format', 'stream-json',
+        '--verbose',
+      );
+      const { exitCode, costUsd, tokenUsage, providerSessionId } =
+        await spawnClaudeStreamJson(args, config.cwd);
+
+      const status = exitCode === 0 ? 'completed' : 'failed';
+      return {
+        status,
+        exitCode,
+        error: status === 'failed' ? `claude exited with code ${exitCode}` : undefined,
+        costUsd,
+        tokenUsage,
+        providerSessionId,
+      };
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   },
 
-  launchStreaming(options: SessionProviderLaunchOptions): {
+  launchStreaming(config: SessionProviderConfig): {
     chunks: AsyncIterable<SessionChunk>;
     result: Promise<SessionProviderResult>;
   } {
-    const { prompt, cwd } = options;
-    const startTime = Date.now();
-    const { tmpDir, args } = prepareSession(options);
+    const { tmpDir, args } = prepareSession(config);
 
     args.push(
-      '--print', prompt ?? '',
+      '--print', config.initialPrompt ?? '',
       '--output-format', 'stream-json',
       '--verbose',
     );
 
-    const { chunks, result: rawResult } = spawnClaudeStreamingJson(args, cwd);
+    const { chunks, result: rawResult } = spawnClaudeStreamingJson(args, config.cwd);
 
-    // Wrap the result promise to add durationMs and clean up tmp files
     const result = rawResult.then((raw) => {
-      const durationMs = Date.now() - startTime;
       fs.rmSync(tmpDir, { recursive: true, force: true });
+      const status = raw.exitCode === 0 ? 'completed' as const : 'failed' as const;
       return {
+        status,
         exitCode: raw.exitCode,
-        durationMs,
-        transcript: raw.transcript,
+        error: status === 'failed' ? `claude exited with code ${raw.exitCode}` : undefined,
         costUsd: raw.costUsd,
         tokenUsage: raw.tokenUsage,
         providerSessionId: raw.providerSessionId,
@@ -244,36 +131,31 @@ export const claudeCodeProvider: SessionProvider = {
   },
 };
 
+// ── Apparatus export ─────────────────────────────────────────────────
+
 /**
- * Spawn the claude CLI process asynchronously in interactive mode.
+ * Create the Claude Code session provider apparatus.
  *
- * @param args - CLI arguments for claude
- * @param cwd - Working directory for the process
- * @param stdio - 'inherit' for interactive, 'pipe' for autonomous (stdin only)
- * @returns Exit code (0 = success)
+ * The apparatus has no startup logic — it just provides the
+ * AnimatorSessionProvider implementation. The Animator looks it up
+ * via guild().apparatus('claude-code').
  */
-function spawnClaude(
-  args: string[],
-  cwd: string,
-  stdio: 'inherit' | 'pipe',
-): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn('claude', args, {
-      cwd,
-      stdio: stdio === 'inherit'
-        ? 'inherit'
-        : ['pipe', 'inherit', 'inherit'],
-    });
+export function createClaudeCodeProvider(): Plugin {
+  return {
+    apparatus: {
+      requires: [],
+      provides: provider,
 
-    proc.on('error', (err) => {
-      reject(new Error(`Failed to spawn claude: ${err.message}`));
-    });
-
-    proc.on('close', (code) => {
-      resolve(code ?? 1);
-    });
-  });
+      start() {
+        // No startup work — the provider is stateless.
+      },
+    },
+  };
 }
+
+export default createClaudeCodeProvider();
+
+// ── Spawn helpers ────────────────────────────────────────────────────
 
 /** Parsed result from stream-json output. */
 interface StreamJsonResult {
@@ -326,12 +208,10 @@ function parseStreamJsonMessage(
   } else if (msg.type === 'user') {
     acc.transcript.push(msg);
 
-    // Check for tool results
     const content = (msg as Record<string, unknown>).content as Array<Record<string, unknown>> | undefined;
     if (content) {
       for (const block of content) {
         if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-          // Try to find the tool name — it may not be directly available
           chunks.push({ type: 'tool_result', tool: String(block.tool_use_id) });
         }
       }
@@ -444,7 +324,6 @@ function spawnClaudeStreamingJson(args: string[], cwd: string): {
   chunks: AsyncIterable<SessionChunk>;
   result: Promise<StreamJsonResult>;
 } {
-  // Queue for streaming chunks to the async iterable consumer
   const chunkQueue: SessionChunk[] = [];
   let chunkResolve: (() => void) | null = null;
   let done = false;
@@ -469,7 +348,6 @@ function spawnClaudeStreamingJson(args: string[], cwd: string): {
       const newChunks = parseStreamJsonMessage(msg, acc);
       if (newChunks.length > 0) {
         chunkQueue.push(...newChunks);
-        // Wake up the async iterator if it's waiting
         if (chunkResolve) {
           chunkResolve();
           chunkResolve = null;
@@ -501,7 +379,6 @@ function spawnClaudeStreamingJson(args: string[], cwd: string): {
     });
   });
 
-  // Async iterable that yields chunks as they arrive
   const chunks: AsyncIterable<SessionChunk> = {
     [Symbol.asyncIterator]() {
       return {
@@ -513,7 +390,6 @@ function spawnClaudeStreamingJson(args: string[], cwd: string): {
             if (done) {
               return { value: undefined as unknown as SessionChunk, done: true };
             }
-            // Wait for more data
             await new Promise<void>((resolve) => { chunkResolve = resolve; });
           }
         },
@@ -523,5 +399,3 @@ function spawnClaudeStreamingJson(args: string[], cwd: string): {
 
   return { chunks, result };
 }
-
-export default claudeCodeProvider;

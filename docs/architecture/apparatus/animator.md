@@ -108,11 +108,6 @@ interface AnimateRequest {
    */
   cwd: string
   /**
-   * Session provider to use (e.g. 'claude-code').
-   * If not specified, uses the guild's default provider.
-   */
-  provider?: string
-  /**
    * Optional conversation id to resume a multi-turn conversation.
    * If provided, the session provider resumes the existing conversation
    * rather than starting a new one.
@@ -200,10 +195,20 @@ If `animateStreaming()` is called but the provider does not implement `launchStr
 
 ## Session Providers
 
-The Animator delegates AI process management to a **session provider** — a pluggable backend that knows how to launch and communicate with a specific AI system:
+The Animator delegates AI process management to a **session provider** — a pluggable apparatus that knows how to launch and communicate with a specific AI system. The provider is discovered at runtime via guild config:
+
+```json
+{
+  "animator": {
+    "sessionProvider": "claude-code"
+  }
+}
+```
+
+The `sessionProvider` field names the plugin id of an apparatus whose `provides` object implements `AnimatorSessionProvider`. The Animator looks it up via `guild().apparatus<AnimatorSessionProvider>(config.sessionProvider)` at animate-time. Defaults to `'claude-code'` if not specified.
 
 ```typescript
-interface SessionProvider {
+interface AnimatorSessionProvider {
   /** Human-readable name (e.g. 'claude-code'). */
   name: string
 
@@ -250,7 +255,7 @@ interface SessionProviderResult {
 }
 ```
 
-MVP: hardcoded to `claude-code-session-provider`, which launches a `claude` CLI process in bare mode (no CLAUDE.md).
+The default provider is `@shardworks/claude-code-apparatus` (plugin id: `claude-code`), which launches a `claude` CLI process in autonomous mode with `--output-format stream-json`. Provider packages import the `AnimatorSessionProvider` type from `@shardworks/animator` and export an apparatus whose `provides` satisfies the interface.
 
 ---
 
@@ -324,7 +329,7 @@ Both paths use the same `AnimatorApi.animate()` call. The Animator doesn't know 
 
 ## Open Questions
 
-- **Provider discovery.** How does The Animator find installed session providers? MVP: hardcoded to `claude-code-session-provider`. Future: pluggable discovery via kit contributions or guild config.
+- ~~**Provider discovery.** How does The Animator find installed session providers?~~ **Resolved:** the `guild.json["animator"]["sessionProvider"]` config field names the plugin id of the provider apparatus. The Animator looks it up via `guild().apparatus()`. Defaults to `'claude-code'`.
 - **Timeout.** How are session timeouts configured? MVP: no timeout (the session runs until the provider exits).
 - **Concurrency.** Can multiple sessions run simultaneously? Current answer: yes, each `animate()` call is independent.
 

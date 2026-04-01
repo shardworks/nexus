@@ -28,9 +28,9 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { VERSION, resolveToolFromExport, registerSessionProvider } from '@shardworks/nexus-core';
-import type { ToolDefinition } from '@shardworks/nexus-core';
-import { claudeCodeProvider } from './index.ts';
+import { VERSION } from '@shardworks/nexus-core';
+import type { ToolDefinition } from '@shardworks/tools-apparatus';
+import { resolveToolFromExport } from '@shardworks/tools-apparatus';
 
 /** A single tool to load into the MCP server. */
 export interface ToolSpec {
@@ -171,12 +171,9 @@ export async function main(configPath?: string): Promise<void> {
     process.exit(1);
   }
 
-  // Register the session provider so tools that trigger session launches
-  // (e.g. clock-run dispatching a summon) have a provider available.
-  // Without this, launchSession() throws because no provider is registered —
-  // the CLI entry point (program.ts) registers it for CLI commands, but the
-  // MCP server is a separate process that needs its own registration.
-  registerSessionProvider(claudeCodeProvider);
+  // TODO: The MCP server needs to be modernized to use the guild runtime.
+  // Session provider registration is now handled via the apparatus model
+  // (the Animator looks up the provider via guild().apparatus()).
 
   const fs = await import('node:fs');
   const configText = fs.readFileSync(resolvedPath, 'utf-8');
