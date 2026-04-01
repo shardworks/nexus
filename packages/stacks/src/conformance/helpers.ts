@@ -105,6 +105,46 @@ export function spyingBackendFactory(
   return { factory: wrappedFactory, putCalls };
 }
 
+// ── CDC event assertion helpers ──────────────────────────────────────
+
+import assert from 'node:assert/strict';
+import type { CreateEvent, UpdateEvent, DeleteEvent } from '../types.ts';
+
+/** Assert the event is a `create` and check its fields. */
+export function assertCreateEvent(
+  event: ChangeEvent<BookEntry>,
+  expected: { entry: BookEntry; ownerId?: string; book?: string },
+): asserts event is CreateEvent<BookEntry> {
+  assert.strictEqual(event.type, 'create');
+  assert.deepStrictEqual(event.entry, expected.entry);
+  if (expected.ownerId !== undefined) assert.strictEqual(event.ownerId, expected.ownerId);
+  if (expected.book !== undefined) assert.strictEqual(event.book, expected.book);
+}
+
+/** Assert the event is an `update` and check its fields. */
+export function assertUpdateEvent(
+  event: ChangeEvent<BookEntry>,
+  expected: { entry: BookEntry; prev: BookEntry; ownerId?: string; book?: string },
+): asserts event is UpdateEvent<BookEntry> {
+  assert.strictEqual(event.type, 'update');
+  assert.deepStrictEqual(event.entry, expected.entry);
+  assert.deepStrictEqual(event.prev, expected.prev);
+  if (expected.ownerId !== undefined) assert.strictEqual(event.ownerId, expected.ownerId);
+  if (expected.book !== undefined) assert.strictEqual(event.book, expected.book);
+}
+
+/** Assert the event is a `delete` and check its fields. */
+export function assertDeleteEvent(
+  event: ChangeEvent<BookEntry>,
+  expected: { id: string; prev: BookEntry; ownerId?: string; book?: string },
+): asserts event is DeleteEvent<BookEntry> {
+  assert.strictEqual(event.type, 'delete');
+  assert.strictEqual(event.id, expected.id);
+  assert.deepStrictEqual(event.prev, expected.prev);
+  if (expected.ownerId !== undefined) assert.strictEqual(event.ownerId, expected.ownerId);
+  if (expected.book !== undefined) assert.strictEqual(event.book, expected.book);
+}
+
 // ── Default book ref ─────────────────────────────────────────────────
 
 export const OWNER = 'test-owner';

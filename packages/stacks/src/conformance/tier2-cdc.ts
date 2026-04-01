@@ -14,6 +14,9 @@ import {
   collectEvents,
   seedDocument,
   spyingBackendFactory,
+  assertCreateEvent,
+  assertUpdateEvent,
+  assertDeleteEvent,
   OWNER,
   BOOK,
   REF,
@@ -39,8 +42,7 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       await book.put({ id: 'a', name: 'Alice' });
 
       assert.strictEqual(events.length, 1);
-      assert.strictEqual(events[0].type, 'create');
-      assert.deepStrictEqual(events[0].entry, { id: 'a', name: 'Alice' });
+      assertCreateEvent(events[0], { entry: { id: 'a', name: 'Alice' } });
     });
 
     it('2.2 Put (existing document) fires update event with prev', async () => {
@@ -50,11 +52,10 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       await book.put({ id: 'a', name: 'Bob' });
 
       assert.strictEqual(events.length, 1);
-      assert.strictEqual(events[0].type, 'update');
-      if (events[0].type === 'update') {
-        assert.deepStrictEqual(events[0].entry, { id: 'a', name: 'Bob' });
-        assert.deepStrictEqual(events[0].prev, { id: 'a', name: 'Alice' });
-      }
+      assertUpdateEvent(events[0], {
+        entry: { id: 'a', name: 'Bob' },
+        prev: { id: 'a', name: 'Alice' },
+      });
     });
 
     it('2.3 Patch fires update event with prev', async () => {
@@ -64,11 +65,10 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       await book.patch('a', { score: 20 });
 
       assert.strictEqual(events.length, 1);
-      assert.strictEqual(events[0].type, 'update');
-      if (events[0].type === 'update') {
-        assert.deepStrictEqual(events[0].entry, { id: 'a', name: 'Alice', score: 20 });
-        assert.deepStrictEqual(events[0].prev, { id: 'a', name: 'Alice', score: 10 });
-      }
+      assertUpdateEvent(events[0], {
+        entry: { id: 'a', name: 'Alice', score: 20 },
+        prev: { id: 'a', name: 'Alice', score: 10 },
+      });
     });
 
     it('2.4 Delete fires delete event with prev', async () => {
@@ -78,11 +78,7 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       await book.delete('a');
 
       assert.strictEqual(events.length, 1);
-      assert.strictEqual(events[0].type, 'delete');
-      if (events[0].type === 'delete') {
-        assert.strictEqual(events[0].id, 'a');
-        assert.deepStrictEqual(events[0].prev, { id: 'a', name: 'Alice' });
-      }
+      assertDeleteEvent(events[0], { id: 'a', prev: { id: 'a', name: 'Alice' } });
     });
 
     it('2.5 Delete of nonexistent document fires no event', async () => {
@@ -120,11 +116,10 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       await book.put({ id: 'a', name: 'Alice' });
 
       assert.strictEqual(events.length, 1);
-      assert.strictEqual(events[0].type, 'update');
-      if (events[0].type === 'update') {
-        assert.deepStrictEqual(events[0].entry, { id: 'a', name: 'Alice' });
-        assert.deepStrictEqual(events[0].prev, { id: 'a', name: 'Alice' });
-      }
+      assertUpdateEvent(events[0], {
+        entry: { id: 'a', name: 'Alice' },
+        prev: { id: 'a', name: 'Alice' },
+      });
     });
 
     it('2.6b CDC events include ownerId and book fields — create', async () => {
@@ -274,7 +269,9 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
 
       t.stacks.watch(OWNER, bookNameA, async (event) => {
         const booksB = t.stacks.book<BookEntry>(OWNER, bookNameB);
-        await booksB.put({ id: 'derived', source: (event as any).entry?.id });
+        const sourceId = event.type === 'create' || event.type === 'update'
+          ? event.entry.id : event.id;
+        await booksB.put({ id: 'derived', source: sourceId });
         throw new Error('phase 2 error');
       }, { failOnError: false });
 
@@ -317,7 +314,7 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       for (let i = 0; i < books.length - 1; i++) {
         const src = books[i];
         const dst = books[i + 1];
-        const dstId = `${dst[dst.length - 1]}1`;
+        const dstId = `from-${src}`;
         t.stacks.watch(OWNER, src, async () => {
           await t.stacks.book<BookEntry>(OWNER, dst).put({ id: dstId, from: src });
         }, { failOnError: true });
@@ -325,12 +322,18 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
 
       await t.stacks.book<BookEntry>(OWNER, books[0]).put({ id: 'a1' });
 
-      for (const b of books) {
-        const id = b === books[0] ? 'a1' : `${b[b.length - 1]}1`;
+      // Verify the seed document and each cascaded document exists
+      assert.notStrictEqual(
+        await t.stacks.book<BookEntry>(OWNER, books[0]).get('a1'),
+        null,
+        `Seed document in ${books[0]} should exist`,
+      );
+      for (let i = 0; i < books.length - 1; i++) {
+        const expectedId = `from-${books[i]}`;
         assert.notStrictEqual(
-          await t.stacks.book<BookEntry>(OWNER, b).get(id),
+          await t.stacks.book<BookEntry>(OWNER, books[i + 1]).get(expectedId),
           null,
-          `Document in ${b} should exist`,
+          `Cascaded document '${expectedId}' in ${books[i + 1]} should exist`,
         );
       }
     });
@@ -420,10 +423,7 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       });
 
       assert.strictEqual(events.length, 1);
-      assert.strictEqual(events[0].type, 'create');
-      if (events[0].type === 'create') {
-        assert.deepStrictEqual(events[0].entry, { id: 'a', name: 'Alice' });
-      }
+      assertCreateEvent(events[0], { entry: { id: 'a', name: 'Alice' } });
     });
 
     it('2.16 Coalescing: create → update produces create with final state', async () => {
@@ -436,10 +436,7 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       });
 
       assert.strictEqual(events.length, 1);
-      assert.strictEqual(events[0].type, 'create');
-      if (events[0].type === 'create') {
-        assert.strictEqual(events[0].entry.name, 'Bob');
-      }
+      assertCreateEvent(events[0], { entry: { id: 'a', name: 'Bob' } });
     });
 
     it('2.17 Coalescing: create → update → update produces create with final state', async () => {
@@ -453,10 +450,7 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       });
 
       assert.strictEqual(events.length, 1);
-      assert.strictEqual(events[0].type, 'create');
-      if (events[0].type === 'create') {
-        assert.strictEqual(events[0].entry.status, 'completed');
-      }
+      assertCreateEvent(events[0], { entry: { id: 'a', status: 'completed' } });
     });
 
     it('2.18 Coalescing: create → delete produces no event', async () => {
@@ -481,11 +475,10 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       });
 
       assert.strictEqual(events.length, 1);
-      assert.strictEqual(events[0].type, 'update');
-      if (events[0].type === 'update') {
-        assert.strictEqual(events[0].prev.name, 'Alice');
-        assert.strictEqual(events[0].entry.name, 'Bob');
-      }
+      assertUpdateEvent(events[0], {
+        entry: { id: 'a', name: 'Bob' },
+        prev: { id: 'a', name: 'Alice' },
+      });
     });
 
     it('2.20 Coalescing: update → update produces single update with pre-transaction prev', async () => {
@@ -499,11 +492,10 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       });
 
       assert.strictEqual(events.length, 1);
-      assert.strictEqual(events[0].type, 'update');
-      if (events[0].type === 'update') {
-        assert.strictEqual(events[0].prev.name, 'Alice');
-        assert.strictEqual(events[0].entry.name, 'Charlie');
-      }
+      assertUpdateEvent(events[0], {
+        entry: { id: 'a', name: 'Charlie' },
+        prev: { id: 'a', name: 'Alice' },
+      });
     });
 
     it('2.21 Coalescing: update → delete produces delete with pre-transaction prev', async () => {
@@ -517,10 +509,7 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       });
 
       assert.strictEqual(events.length, 1);
-      assert.strictEqual(events[0].type, 'delete');
-      if (events[0].type === 'delete') {
-        assert.strictEqual(events[0].prev.name, 'Alice');
-      }
+      assertDeleteEvent(events[0], { id: 'a', prev: { id: 'a', name: 'Alice' } });
     });
 
     it('2.22 Coalescing: delete (single, existing doc) produces delete with pre-transaction prev', async () => {
@@ -533,10 +522,7 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       });
 
       assert.strictEqual(events.length, 1);
-      assert.strictEqual(events[0].type, 'delete');
-      if (events[0].type === 'delete') {
-        assert.strictEqual(events[0].prev.name, 'Alice');
-      }
+      assertDeleteEvent(events[0], { id: 'a', prev: { id: 'a', name: 'Alice' } });
     });
   });
 }
