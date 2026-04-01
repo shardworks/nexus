@@ -1,44 +1,62 @@
 # `@shardworks/nexus-arbor`
 
-The guild runtime host for Nexus Mk 2.1. The arbor loads installed plugins, assembles the tool surface, and injects context into the CLI and MCP server.
-
-## Package roles
+The guild runtime host for Nexus Mk 2.1. The arbor reads `guild.json`, loads all declared plugins, validates the dependency graph, starts each apparatus in dependency order, and wires the `guild()` singleton. It is the bootstrap layer — every entry point (the CLI, the MCP server, the Clockworks daemon) calls `createGuild()` once at startup.
 
 ```
 @shardworks/nexus-core   — public SDK, types, tool() factory
-@shardworks/nexus-arbor  — guild host, createArbor(), Arbor object
-@shardworks/nexus (cli)  — nsg binary, maps Tool[] → Commander commands
+@shardworks/nexus-arbor  — guild host, createGuild(), Guild object
+@shardworks/nexus (cli)  — nsg binary, framework commands + Instrumentarium tools
 plugins                  — import from nexus-core only
 ```
 
 Plugin authors import from `@shardworks/nexus-core`. The arbor is an internal concern of the CLI and session provider — plugins never depend on it directly.
 
-## Runtime API
+---
 
-```typescript
-import { createArbor } from '@shardworks/nexus-arbor';
+## Installation
 
-const arbor = createArbor('/path/to/guild');
+```json
+{
+  "dependencies": {
+    "@shardworks/nexus-arbor": "workspace:*"
+  }
+}
 ```
 
-### `Arbor`
+---
+
+## API
+
+### `createGuild(root?)`
+
+The single entry point. Creates and starts a guild, returning the `Guild` object.
+
+```typescript
+import { createGuild } from '@shardworks/nexus-arbor';
+
+const guild = await createGuild('/path/to/guild');
+```
+
+If `root` is omitted, auto-detects by walking up from cwd until `guild.json` is found.
+
+`createGuild()` also sets the `guild()` singleton from `@shardworks/nexus-core`, so apparatus code can call `guild()` immediately after startup.
+
+### `Guild`
+
+The object returned by `createGuild()` — also accessible via `guild()` from `@shardworks/nexus-core`.
 
 | Method | Returns | Description |
 |---|---|---|
-| `arbor.home` | `string` | Absolute path to the guild root |
-| `arbor.getGuildConfig()` | `GuildConfigV2` | Parsed `guild.json`, read at construction time |
-| `arbor.listKits()` | `Promise<LoadedKit[]>` | All installed kits, including the arbor's own built-ins. Lazy-loaded and cached |
-| `arbor.listApparatuses()` | `Promise<LoadedApparatus[]>` | All installed apparatuses. Lazy-loaded and cached |
-| `arbor.listPlugins()` | `Promise<LoadedPlugin[]>` | All installed plugins (kits + apparatuses). Lazy-loaded and cached |
-| `arbor.findPlugin(name)` | `Promise<LoadedPlugin \| null>` | Find a plugin by derived id or full package name |
-| `arbor.listTools(options?)` | `Promise<Tool[]>` | All tools, optionally filtered by `channel` and/or `roles` |
-| `arbor.findTool(name)` | `Promise<Tool \| null>` | Find a tool by name, across all plugins |
-| `arbor.createHandlerContext(owningPluginId?)` | `HandlerContext` | Create context for dispatching a tool or engine handler. Pass `tool.pluginId` so `ctx.config()` resolves the correct section. Requires plugins to be loaded first |
-| `arbor.getDatabase()` | `BooksDatabase` | Lazily-opened SQLite connection to `.nexus/nexus.db`. **Transitional** — will move to the nexus-books apparatus |
+| `home` | `string` | Absolute path to the guild root |
+| `apparatus<T>(name)` | `T` | Retrieve a started apparatus's `provides` API by plugin id. Throws if the apparatus has no `provides` |
+| `config<T>(pluginId)` | `T` | Read the plugin-specific configuration section from `guild.json` |
+| `guildConfig()` | `GuildConfig` | The full parsed `guild.json` |
+| `kits()` | `LoadedKit[]` | All loaded kits (snapshot copy) |
+| `apparatuses()` | `LoadedApparatus[]` | All loaded apparatus in start order (snapshot copy) |
 
 ### `LoadedKit` and `LoadedApparatus`
 
-Installed plugin packages as seen by the arbor runtime:
+Installed plugin packages as seen by the runtime:
 
 ```typescript
 interface LoadedKit {
@@ -55,168 +73,43 @@ interface LoadedApparatus {
   apparatus:   Apparatus;  // the package's Apparatus object
 }
 
-// Union type
 type LoadedPlugin = LoadedKit | LoadedApparatus;
 ```
 
 Type guards: `isLoadedKit(p)` and `isLoadedApparatus(p)` from `@shardworks/nexus-core`.
 
-### `Tool`
+---
 
-A `ToolDefinition` (from `nexus-core`) with provenance:
+## Plugin Lifecycle
 
-```typescript
-interface Tool extends ToolDefinition {
-  pluginId: string;  // derived plugin id of the owning plugin (e.g. 'nexus-ledger')
-}
-```
+`createGuild()` runs the full plugin lifecycle on each call:
 
-### `ListToolsOptions`
+1. **Load** — imports all declared plugin packages from `node_modules`, discriminates kit vs. apparatus.
+2. **Validate** — checks `requires` declarations (apparatus and kit), detects circular apparatus dependencies. Fails loudly before any apparatus starts.
+3. **Warn** — advisory warnings for kit contributions that no apparatus `consumes`, and for missing `recommends`.
+4. **Wire** — sets the `guild()` singleton. The `provides` map is populated progressively as each apparatus starts; dependency ordering guarantees declared deps are available.
+5. **Start** — fires `plugin:initialized` for all kits, then calls `start(ctx)` on each apparatus in dependency-resolved order, firing `plugin:initialized` after each.
 
-```typescript
-interface ListToolsOptions {
-  channel?: 'cli' | 'mcp';  // filter to tools available in this channel
-  roles?:   string[];        // filter to tools accessible to these roles
-}
-```
-
-### `derivePluginId(packageName)`
-
-Converts an npm package name to the guild-facing plugin id used in `guild.json`, CLI commands, and config sections. Two transformations are applied:
-
-1. **Scope stripping** — the `@shardworks/` official scope is removed entirely; third-party scopes drop the `@`
-2. **Descriptor suffix stripping** — trailing `-(plugin|apparatus|kit)` is removed so packaging conventions don't leak into ids
-
-```
-@shardworks/nexus-stdlib     →  nexus-stdlib    (official scope stripped)
-@shardworks/books-apparatus  →  books           (scope + descriptor stripped)
-@acme/my-relay-kit           →  acme/my-relay   (@ dropped + descriptor stripped)
-my-thing-plugin              →  my-thing        (descriptor stripped)
-my-plugin                    →  my-plugin       (unscoped: unchanged)
-```
-
-### `findGuildRoot()`
-
-Re-exported from `nexus-core` for convenience — walks up from `cwd` to find the nearest guild root (directory containing `guild.json`).
+Apparatus start order is determined by topological sort on `apparatus.requires`. Circular dependencies throw with a descriptive error. Kit `requires` validate that the named apparatus is installed but do not affect start order (kits have no lifecycle).
 
 ---
 
-## Plugin loading
+## Guild Lifecycle Internals
 
-The arbor's `loadAndStart()` runs in five phases on the first call to any listing method:
+Pure validation and ordering logic lives in `guild-lifecycle.ts`, separated from I/O:
 
-1. **Load** — imports all declared plugin packages from `node_modules`, discriminates kit vs. apparatus
-2. **Validate** — checks `requires` declarations, detects circular apparatus dependencies
-3. **Warn** — advisory warnings for mismatched kit contributions vs. apparatus `consumes`
-4. **Start** — calls `start(ctx)` on each apparatus in dependency-resolved order; fires `plugin:initialized` after each
-5. **Reconcile** — scans kit `books` contributions and creates SQLite tables
-
-Apparatus start order is determined by topological sort on `apparatus.requires`. Circular dependencies throw with a descriptive error. Kit `requires` validate that the named apparatuses are installed but do not affect start order (kits have no lifecycle).
-
----
-
-## Built-in CLI commands
-
-These ship with the arbor itself and are always available via `nsg`, regardless of what plugins are installed.
-
-| Command | Description |
+| Function | Description |
 |---|---|
-| `nsg init <path>` | Create a new guild: directory structure, `guild.json`, `package.json`, `.gitignore` |
-| `nsg version` | Show Nexus framework version and installed plugin versions |
-| `nsg status` | Show guild identity, installed plugins, and configured roles |
-| `nsg upgrade` | Upgrade framework and run pending plugin migrations *(stub)* |
-| `nsg rig list` | List installed plugins |
-| `nsg rig install <source>` | Install a plugin from npm, a git URL, or a local directory |
-| `nsg rig remove <name>` | Remove a plugin and unregister its tools |
-| `nsg rig upgrade <name>` | Upgrade a plugin to a newer version *(stub)* |
+| `validateRequires(kits, apparatuses)` | Validates all `requires` declarations and detects circular dependencies |
+| `topoSort(apparatuses)` | Topological sort by `requires` — determines apparatus start order |
+| `collectStartupWarnings(kits, apparatuses)` | Advisory warnings for unconsumed contributions and missing recommends |
+| `buildStartupContext(eventHandlers)` | Creates the `StartupContext` passed to `apparatus.start()` |
+| `fireEvent(eventHandlers, event, ...args)` | Fires lifecycle events to registered handlers |
 
-### `nsg init`
-
-Writes the minimum viable guild. Does not run `git init`, create the database, or instantiate animas — those are separate steps.
-
-```sh
-nsg init ./my-guild --name my-guild
-cd my-guild
-nsg rig install @shardworks/nexus-stdlib
-```
-
-### `nsg rig install`
-
-Accepts npm package specifiers, version pins, and git URLs:
-
-```sh
-nsg rig install @shardworks/nexus-stdlib
-nsg rig install nexus-stdlib@1.2.0
-nsg rig install git+https://github.com/acme/my-plugin.git
-
-# Symlink a local directory (dev workflow)
-nsg rig install ./path/to/my-plugin --type link
-```
-
-Tools are added to `baseTools` by default (available to all animas). Pass `--roles` to assign to specific roles instead:
-
-```sh
-nsg rig install @shardworks/nexus-stdlib --roles artificer,scribe
-```
+These are exported for testing but are not part of the consumer-facing API.
 
 ---
 
-## Books database
+## Lazy Startup
 
-The arbor manages a SQLite database at `.nexus/nexus.db` (WAL mode, foreign keys enabled).
-
-> **Transitional:** Books database management will move to the `nexus-books` apparatus when it ships. `arbor.getDatabase()` is marked `@deprecated` and will be removed at that point.
-
-### Schema reconciliation
-
-On plugin load, `reconcileBooks()` scans each kit's `books` contribution field and creates tables and indexes. This is additive only — tables are never dropped or altered.
-
-Each book gets a table named `books_<pluginId>_<bookName>`:
-
-```sql
-CREATE TABLE IF NOT EXISTS "books_nexus_stdlib_writs" (
-  id      TEXT PRIMARY KEY,
-  content TEXT NOT NULL      -- JSON document
-);
-```
-
-Indexed fields use `json_extract(content, '$.field')`.
-
-### `BookStore<T>`
-
-The document store backing each book. Implements `Book<T>` from `nexus-core`.
-
-| Method | Description |
-|---|---|
-| `put(content)` | Upsert a document (JSON-serialized, keyed by `content.id`) |
-| `get(id)` | Retrieve by id, or `null` |
-| `delete(id)` | Remove by id |
-| `find(query)` | Query with `where`, `orderBy`, `order`, `limit`, `offset` |
-| `list(options?)` | Alias for `find()` |
-| `count(where?)` | Count documents, optionally filtered |
-
-All queries are parameterized. Field names in `where` and `orderBy` are validated against `^[A-Za-z0-9_.-]+$`.
-
-### `BooksDatabase`
-
-Low-level SQL interface returned by `arbor.getDatabase()`. Exposes a single `execute(sql, args?)` method returning `{ rows, columns, rowsAffected, lastInsertRowid }`.
-
-### Public exports
-
-```typescript
-import {
-  openBooksDatabase,    // factory: (guildRoot) => BooksDatabase
-  BookStore,            // BookStore<T> class
-  booksTableName,       // (pluginId, bookName) => qualified table name
-  reconcileBooks,       // (db, kits) => Promise<void>
-  type BooksDatabase,
-  type SqlRow,
-  type SqlResult,
-} from '@shardworks/nexus-arbor';
-```
-
----
-
-## Lazy loading
-
-Plugin modules are imported dynamically from the guild's `node_modules` on the first call to `listKits()`, `listApparatuses()`, `listPlugins()`, or `listTools()`, then cached for the lifetime of the `Arbor` instance. This keeps startup fast — the arbor reads `guild.json` synchronously at construction and defers all module I/O until plugins are actually needed.
+The arbor does no work at import time. `createGuild()` is async and performs all plugin loading, validation, and startup in a single call. There is no background process or persistent state — the `Guild` object is alive for the lifetime of the process that created it.

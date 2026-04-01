@@ -4,7 +4,7 @@ Status: **Draft — MVP**
 
 Package: `@shardworks/animator` · Plugin id: `animator`
 
-> **⚠️ MVP scope.** This spec describes the thinnest viable Animator — just enough to launch AI sessions with a system prompt and record the result. There is no MCP tool server, no Instrumentarium dependency, and no role awareness. The Animator receives a woven context and a working directory, launches a session provider process, and records what happened. See [Future: Tool-Equipped Sessions](#future-tool-equipped-sessions) for the target design.
+> **⚠️ MVP scope.** This spec covers session launch, structured telemetry recording, streaming output, error guarantees, and session inspection tools. There is no MCP tool server, no Instrumentarium dependency, no role awareness, and no event signalling. The Animator receives a woven context and a working directory, launches a session provider process, and records what happened. See the Future sections for the target design.
 
 ---
 
@@ -28,17 +28,43 @@ requires: ['stacks']
 
 ## Kit Contribution
 
-The Animator contributes a `sessions` book via its supportKit:
+The Animator contributes a `sessions` book and session inspection tools via its supportKit:
 
 ```typescript
 supportKit: {
   books: {
     sessions: {
-      indexes: ['startedAt', 'status', 'conversationId'],
+      indexes: ['startedAt', 'status', 'conversationId', 'provider'],
     },
   },
+  tools: [sessionList, sessionShow],
 },
 ```
+
+### `session-list` tool
+
+List recent sessions with optional filters. Returns session summaries ordered by `startedAt` descending (newest first).
+
+| Parameter | Type | Description |
+|---|---|---|
+| `status` | `'running' \| 'completed' \| 'failed' \| 'timeout'` | Filter by terminal status |
+| `provider` | `string` | Filter by provider name |
+| `conversationId` | `string` | Filter by conversation |
+| `limit` | `number` | Maximum results (default: 20) |
+
+Returns: `SessionResult[]` (summary projection — id, status, provider, startedAt, endedAt, durationMs, exitCode, costUsd).
+
+Callers that need to filter by metadata fields (e.g. `metadata.writId`, `metadata.animaName`) use The Stacks' query API directly. The tool exposes filters for fields the Animator itself indexes.
+
+### `session-show` tool
+
+Show full detail for a single session by id.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `id` | `string` | Session id |
+
+Returns: the complete session record from The Stacks, including `tokenUsage`, `metadata`, and all indexed fields.
 
 ---
 
@@ -53,7 +79,25 @@ interface AnimatorApi {
    * Records the session result to The Stacks before returning.
    */
   animate(request: AnimateRequest): Promise<SessionResult>
+
+  /**
+   * Animate a session with streaming output.
+   *
+   * Returns an async iterable of chunks as the session produces output,
+   * plus a promise that resolves to the final SessionResult.
+   * The result promise resolves after recording completes.
+   */
+  animateStreaming(request: AnimateRequest): {
+    chunks: AsyncIterable<SessionChunk>
+    result: Promise<SessionResult>
+  }
 }
+
+/** A chunk of output from a running session. */
+type SessionChunk =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; tool: string }
+  | { type: 'tool_result'; tool: string }
 
 interface AnimateRequest {
   /** The woven context from The Loom. */
@@ -74,6 +118,12 @@ interface AnimateRequest {
    * rather than starting a new one.
    */
   conversationId?: string
+  /**
+   * Caller-supplied metadata recorded alongside the session.
+   * The Animator stores this as-is — it does not interpret the contents.
+   * See § Caller Metadata.
+   */
+  metadata?: Record<string, unknown>
 }
 
 interface SessionResult {
@@ -85,12 +135,31 @@ interface SessionResult {
   startedAt: string
   /** When the session ended (ISO-8601). */
   endedAt: string
-  /** Exit code or error message if failed. */
+  /** Wall-clock duration in milliseconds. */
+  durationMs: number
+  /** Provider name (e.g. 'claude-code'). */
+  provider: string
+  /** Numeric exit code from the provider process. */
+  exitCode: number
+  /** Error message if failed. */
   error?: string
   /** Conversation id (for multi-turn resume). */
   conversationId?: string
-  /** Cost/usage data from the session provider, if available. */
-  usage?: Record<string, unknown>
+  /** Session id from the provider (e.g. for --resume). */
+  providerSessionId?: string
+  /** Token usage from the provider, if available. */
+  tokenUsage?: TokenUsage
+  /** Cost in USD from the provider, if available. */
+  costUsd?: number
+  /** Caller-supplied metadata, recorded as-is. See § Caller Metadata. */
+  metadata?: Record<string, unknown>
+}
+
+interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
 }
 ```
 
@@ -98,25 +167,34 @@ interface SessionResult {
 
 ## Session Lifecycle
 
+Both `animate()` and `animateStreaming()` follow the same lifecycle. The only difference is step 4: `animate()` blocks silently; `animateStreaming()` yields `SessionChunk`s as they arrive from the provider.
+
 ```
-animate(request)
+animate(request) / animateStreaming(request)
   │
-  ├─ 1. Generate session id
+  ├─ 1. Generate session id, capture startedAt
   ├─ 2. Write initial session record to The Stacks (status: 'running')
   │
-  ├─ 3. Launch session provider:
-  │     - System prompt: request.context.systemPrompt
-  │     - Initial prompt: request.context.initialPrompt
-  │     - Model: from guild settings
-  │     - Working directory: request.cwd
+  ├─ 3. Launch session provider:          ─┐
+  │     - System prompt                    │
+  │     - Initial prompt                   │  try
+  │     - Model (from guild settings)      │
+  │     - Working directory                │
+  │     - conversationId (if resuming)     │
+  ├─ 4. Monitor process until exit        ─┘
+  │     (animateStreaming: yield chunks via provider.launchStreaming)
+  │     (animate: block silently via provider.launch)
   │
-  ├─ 4. Monitor process until exit
-  │
-  ├─ 5. Record result:
-  │     - Update session record in The Stacks (status, endedAt, usage)
+  ├─ 5. Record result (ALWAYS — see § Error Handling Contract):
+  │     - Capture endedAt, durationMs
+  │     - Update session record in The Stacks
+  │       (status, endedAt, durationMs, exitCode, tokenUsage, costUsd,
+  │        providerSessionId, error, metadata)
   │
   └─ 6. Return SessionResult
 ```
+
+If `animateStreaming()` is called but the provider does not implement `launchStreaming()`, the Animator falls back to `provider.launch()` — the `chunks` iterable completes immediately with no items, and `result` resolves normally. Callers should not assume chunks will be emitted.
 
 ---
 
@@ -133,6 +211,16 @@ interface SessionProvider {
    * Launch a session. Returns when the AI process exits.
    */
   launch(config: SessionProviderConfig): Promise<SessionProviderResult>
+
+  /**
+   * Launch a session with streaming output. Optional — providers that
+   * don't support streaming omit this method, and animateStreaming()
+   * falls back to launch() with no chunks emitted.
+   */
+  launchStreaming?(config: SessionProviderConfig): {
+    chunks: AsyncIterable<SessionChunk>
+    result: Promise<SessionProviderResult>
+  }
 }
 
 interface SessionProviderConfig {
@@ -149,16 +237,76 @@ interface SessionProviderConfig {
 interface SessionProviderResult {
   /** Exit status. */
   status: 'completed' | 'failed' | 'timeout'
+  /** Numeric exit code from the process. */
+  exitCode: number
   /** Error message if failed. */
   error?: string
-  /** Conversation id (for multi-turn resume). */
-  conversationId?: string
-  /** Usage/cost data. */
-  usage?: Record<string, unknown>
+  /** Provider's session id (e.g. for --resume). */
+  providerSessionId?: string
+  /** Token usage, if the provider can report it. */
+  tokenUsage?: TokenUsage
+  /** Cost in USD, if the provider can report it. */
+  costUsd?: number
 }
 ```
 
 MVP: hardcoded to `claude-code-session-provider`, which launches a `claude` CLI process in bare mode (no CLAUDE.md).
+
+---
+
+## Error Handling Contract
+
+The Animator guarantees that **step 5 (recording) always executes**, even if the provider throws or the process crashes. The provider launch (steps 3–4) is wrapped in try/finally. If the provider fails:
+
+- The session record is still updated in The Stacks with `status: 'failed'`, the captured `endedAt`, `durationMs`, and the error message.
+- `exitCode` defaults to `1` if the provider didn't return one.
+- `tokenUsage` and `costUsd` are omitted (the provider may not have reported them).
+
+If the Stacks write itself fails (e.g. database locked), the error is logged but does not propagate — the Animator returns or re-throws the provider error, not a recording error. Session data loss is preferable to masking the original failure.
+
+```
+Provider succeeds  → record status 'completed', return result
+Provider fails     → record status 'failed' + error, re-throw provider error
+Provider times out → record status 'timeout', return result with error
+Recording fails    → log warning, continue with return/re-throw
+```
+
+---
+
+## Caller Metadata
+
+The `metadata` field on `AnimateRequest` is an opaque pass-through. The Animator records it in the session's Stacks entry without interpreting it. This allows callers to attach contextual information that the Animator itself doesn't understand:
+
+```typescript
+// Example: the summon relay attaches dispatch context
+await animator.animate({
+  context: wovenContext,
+  cwd: '/path/to/worktree',
+  metadata: {
+    trigger: 'summon',
+    animaId: 'anm-3f7b2c1',
+    animaName: 'scribe',
+    writId: 'wrt-8a4c9e2',
+    workshop: 'nexus-mk2',
+    workspaceKind: 'workshop-temp',
+  },
+})
+
+// Example: nsg consult attaches interactive session context
+await animator.animate({
+  context: wovenContext,
+  cwd: guildHome,
+  metadata: {
+    trigger: 'consult',
+    animaId: 'anm-b2e8f41',
+    animaName: 'coco',
+  },
+})
+```
+
+The `metadata` field is indexed in The Stacks as a JSON blob. Callers that need to query by metadata fields (e.g. "all sessions for writ X") use The Stacks' JSON path queries against the stored metadata.
+
+This design keeps the Animator focused: it launches sessions and records what happened. Identity, dispatch context, and writ binding are concerns of the caller.
 
 ---
 
@@ -182,6 +330,83 @@ Both paths use the same `AnimatorApi.animate()` call. The Animator doesn't know 
 
 ---
 
+## Future: Event Signalling
+
+When The Clockworks integration is updated, The Animator will signal lifecycle events:
+
+- **`session.started`** — fired after step 2 (initial record written). Payload includes `sessionId`, `provider`, `startedAt`, and caller-supplied `metadata`.
+- **`session.ended`** — fired after step 5 (result recorded). Payload includes `sessionId`, `status`, `exitCode`, `durationMs`, `costUsd`, `error`, and `metadata`.
+- **`session.record-failed`** — fired if the Stacks write in step 5 fails. Payload includes `sessionId` and the recording error. This is a diagnostic event — it means session data was lost.
+
+These events are essential for clockworks standing orders (e.g. retry-on-failure, cost alerting, session auditing). The Animator fires them best-effort — event signalling failures are logged but never mask session results.
+
+Blocked on: Clockworks apparatus spec finalization.
+
+---
+
+## Future: Enriched Session Records
+
+At MVP, the Animator records what it directly observes (provider telemetry) and what the caller passes via `metadata`. The session record in The Stacks looks like:
+
+```typescript
+// MVP session record (what The Animator writes)
+{
+  id: 'ses-a3f7b2c1',
+  status: 'completed',
+  startedAt: '2026-04-01T12:00:00Z',
+  endedAt: '2026-04-01T12:05:30Z',
+  durationMs: 330000,
+  provider: 'claude-code',
+  exitCode: 0,
+  providerSessionId: 'claude-sess-xyz',
+  tokenUsage: {
+    inputTokens: 12500,
+    outputTokens: 3200,
+    cacheReadTokens: 8000,
+    cacheWriteTokens: 1500,
+  },
+  costUsd: 0.42,
+  conversationId: null,
+  metadata: { trigger: 'summon', animaId: 'anm-3f7b2c1', writId: 'wrt-8a4c9e2' },
+}
+```
+
+When The Loom and The Roster are available, the session record can be enriched with anima provenance — a snapshot of the identity and composition at session time. This provenance is critical for experiment ethnography (understanding what an anima "was" when it produced a given output).
+
+Enriched fields (contributed by the caller or a post-session enrichment step):
+
+| Field | Source | Purpose |
+|---|---|---|
+| `animaId` | Roster / caller metadata | Which anima ran |
+| `animaName` | Roster / caller metadata | Human-readable identity |
+| `roles` | Roster | Roles the anima held at session time |
+| `curriculumName` | Loom / manifest | Curriculum snapshot |
+| `curriculumVersion` | Loom / manifest | Curriculum version for reproducibility |
+| `temperamentName` | Loom / manifest | Temperament snapshot |
+| `temperamentVersion` | Loom / manifest | Temperament version |
+| `trigger` | Caller (clockworks / CLI) | What invoked the session |
+| `workshop` | Caller (workspace resolver) | Workshop name |
+| `workspaceKind` | Caller (workspace resolver) | guildhall / workshop-temp / workshop-managed |
+| `writId` | Caller (clockworks) | Bound writ for traceability |
+| `turnNumber` | Caller (conversation manager) | Position in a multi-turn conversation |
+
+**Design question:** Should enrichment happen via (a) the caller passing structured metadata that The Animator promotes into indexed fields, or (b) a post-session enrichment step that reads the session record and augments it? Option (a) is simpler; option (b) keeps the Animator interface stable as the enrichment set grows. Both work with the current `metadata` bag — the difference is whether The Animator's Stacks schema gains named columns for these fields or whether they remain JSON-path-queried properties inside `metadata`.
+
+---
+
+## Future: Session Record Artifacts
+
+The legacy session system writes a full **session record artifact** to disk (`.nexus/sessions/{uuid}.json`) containing the assembled system prompt, tool list, raw transcript, and full anima composition provenance. This artifact serves as a complete snapshot for debugging and ethnographic analysis.
+
+The Animator MVP does not write artifacts to disk — it records structured data to The Stacks only. When session record artifacts are needed, the design options are:
+
+1. **Animator writes artifacts** — the provider returns transcript data, and The Animator persists it alongside the Stacks record. Adds a `recordPath` field to the session entry.
+2. **Separate apparatus** — a "Session Archive" apparatus subscribes to `session.ended` events and writes artifacts asynchronously. Decouples recording from the session hot path.
+
+Blocked on: Event signalling (for option 2), transcript format standardization across providers.
+
+---
+
 ## Future: Tool-Equipped Sessions
 
 When The Instrumentarium ships, The Animator gains the ability to launch sessions with an MCP tool server. The changes:
@@ -200,10 +425,9 @@ interface AnimateRequest {
   cwd: string
   provider?: string
   conversationId?: string
+  metadata?: Record<string, unknown>
   /** Role to resolve tools for. The Instrumentarium provides the tool set. */
   role?: string
-  /** Optional writ id for traceability. */
-  writId?: string
 }
 ```
 

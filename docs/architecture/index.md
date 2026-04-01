@@ -48,7 +48,21 @@ Physically, a guild is a directory. Its configuration root is `guild.json` — a
 
 ### Arbor
 
-Arbor is the guild runtime. It reads `guild.json` at startup, imports every declared plugin, resolves the dependency graph, and starts each apparatus in dependency order. It is not a persistent server or a central process — it is a library that each entry point (the CLI, the MCP server, the Clockworks daemon) instantiates independently at startup. There is no Arbor "service" to connect to; there is an Arbor instance alive for as long as the process that created it is running.
+Arbor is the guild runtime. Its single entry point, `createGuild()`, reads `guild.json`, imports every declared plugin, validates the dependency graph, starts each apparatus in dependency order, and wires the `guild()` singleton. It is not a persistent server or a central process — it is a library that each entry point (the CLI, the MCP server, the Clockworks daemon) calls once at startup. There is no Arbor "service" to connect to; the `Guild` object it returns is alive for as long as the process that created it is running.
+
+Arbor's scope is deliberately narrow: plugin loading, dependency validation, and apparatus lifecycle. It does not own tool discovery (that belongs to The Instrumentarium), persistence (that belongs to The Stacks), or any CLI commands.
+
+### The CLI
+
+The `nsg` command is the patron's and operator's entry point into the guild. It has two layers of commands:
+
+**Framework commands** are defined in the CLI package itself — guild lifecycle (`init`, `status`, `version`, `upgrade`) and plugin management (`plugin list/install/remove`). These are always available, even without a guild.
+
+**Plugin tools** are discovered dynamically from **The Instrumentarium** (the `tools` apparatus). At startup, the CLI calls `createGuild()` to boot the runtime, then queries the Instrumentarium for all installed tools that are CLI-callable. Each tool's Zod param schema is auto-converted to Commander flags. This means the plugin tool surface grows automatically as plugins are installed — `nsg --help` always reflects exactly what's available.
+
+Tool names are auto-grouped by hyphen prefix — `session-list` and `session-show` become `nsg session list` and `nsg session show`.
+
+Two additional commands bypass the tool registry: `nsg consult` and `nsg convene` (interactive sessions with streaming output — not simple tool invocations). These are built into the v1 CLI and will migrate when the Animator and Parlour expose the necessary APIs.
 
 ### The Apparatus
 
@@ -404,7 +418,87 @@ See [Kit Components](kit-components.md) for the full specification: descriptor s
 
 ## Sessions
 
-<!-- TODO: The session funnel. Triggered by Clockworks summon relay (standing order) or directly via nsg consult. The Loom weaves context (role instructions + tool instructions, eventually curricula + temperaments + charter) → The Animator launches AI process with MCP engine → session runs → The Animator records result. The MCP engine: one process per session, role-gated tools resolved by The Instrumentarium, stdio JSON-RPC. Session providers: pluggable AI backend (e.g. claude-code-session-provider). System prompt vs. initial prompt distinction. Sessions run in bare mode (no CLAUDE.md). Link to reference/conversations.md. -->
+A **session** is a single AI process doing work. It is the fundamental unit of labor in the guild — every anima interaction, whether launched by a standing order or started interactively from the CLI, is a session. Three apparatus collaborate to make a session happen: **The Loom** composes the context, **The Animator** launches the process and records the result, and (when available) **The Instrumentarium** resolves the tools the anima can wield.
+
+### The Session Funnel
+
+Every session passes through the same funnel regardless of how it was triggered:
+
+```
+  Trigger (summon relay / nsg consult / nsg convene)
+    │
+    ├─ 1. Weave context  (The Loom)
+    │     system prompt + initial prompt
+    │     future: + role instructions + tool instructions
+    │             + curriculum + temperament + charter
+    │
+    ├─ 2. Launch process  (The Animator → Session Provider)
+    │     AI process starts in a working directory
+    │     MCP tool server attached (future: when Instrumentarium ships)
+    │
+    ├─ 3. Session runs
+    │     anima reads context, uses tools, produces output
+    │
+    └─ 4. Record result  (The Animator → The Stacks)
+          status, duration, token usage, cost, exit code
+          ALWAYS recorded — even on crash (try/finally guarantee)
+```
+
+The trigger determines *what* work is done (the prompt, the workspace, the metadata), but the funnel is identical. The Animator doesn't know or care whether it was called from a standing order or an interactive session.
+
+### Context Composition (The Loom)
+
+The Loom weaves session contexts. At MVP it is a pass-through — callers supply the system prompt and initial prompt directly, and The Loom packages them into a `WovenContext`. The value is in the seam: The Animator never assembles prompts, so when The Loom gains real composition logic, nothing downstream changes.
+
+The target design composes the system prompt from layers, in order: **guild charter** (institutional policy) → **curriculum** (what the anima knows) → **temperament** (who the anima is) → **role instructions** → **tool instructions** → **writ context**. Each layer is versioned and immutable per version, making sessions reproducible — given the same inputs, The Loom produces the same context.
+
+The distinction between **system prompt** and **initial prompt** matters: the system prompt is the anima's identity and operating instructions (persistent across turns in a conversation); the initial prompt is the specific work request for this session (changes each turn). The Loom produces both; The Animator passes both to the provider.
+
+### Session Launch (The Animator)
+
+The Animator brings animas to life. It takes a `WovenContext`, a working directory, and optional metadata, then delegates to a **session provider** — a pluggable backend that knows how to launch and communicate with a specific AI system. The MVP provider is `claude-code-session-provider`, which launches a `claude` CLI process in **bare mode** (no CLAUDE.md, no persistent project context — the session context is entirely what The Loom wove).
+
+The Animator's error handling contract is strict: session results are **always** recorded to The Stacks, even when the provider crashes or times out. The launch is wrapped in try/finally — if the provider throws, the session record still gets written with `status: 'failed'` and whatever telemetry was available. If the Stacks write itself fails, that error is logged but doesn't mask the provider error. Session data loss is preferable to swallowing the original failure.
+
+Every session record captures structured telemetry: wall-clock duration, exit code, token usage (input, output, cache read, cache write), and cost in USD. Callers attach opaque **metadata** — the Animator stores it without interpreting it. The summon relay attaches dispatch context (writ id, anima name, workshop); `nsg consult` attaches interactive session context. Downstream queries against metadata use The Stacks' JSON path queries.
+
+### Session Providers
+
+Session providers are the pluggable backend behind The Animator. A provider implements `launch()` (blocking) and optionally `launchStreaming()` (yields output chunks as they arrive). The Animator's `animateStreaming()` method passes chunks through to the caller for real-time display; if the provider doesn't support streaming, the chunks iterable completes immediately with no items.
+
+Providers handle the mechanics of a specific AI system — process spawning, stdio communication, result parsing — but not session lifecycle. The Animator owns lifecycle (id generation, timing, recording); the provider owns the process. This split means adding a new AI backend (GPT, Gemini, local models) requires only a new provider package, not changes to The Animator.
+
+MVP: one hardcoded provider (`claude-code`). Future: provider discovery via kit contributions or guild config.
+
+### Tool-Equipped Sessions (Future)
+
+At MVP, sessions run without tools — the anima can only read and respond. When **The Instrumentarium** ships, The Animator gains the ability to launch an MCP tool server alongside the AI process. The Instrumentarium resolves the role-gated tool set; The Animator starts an MCP server loaded with those tools; the provider connects to it via stdio JSON-RPC. One MCP server per session, torn down when the session exits.
+
+Tools are the mechanism through which animas act on the guild — creating writs, reading documents, signaling events, modifying files. Without tools, a session is advisory; with tools, it is operational.
+
+### Conversations (The Parlour)
+
+A **conversation** groups multiple sessions into a coherent multi-turn interaction. Two kinds exist: **consult** (a human talks to an anima — the `nsg consult` command) and **convene** (multiple animas hold a structured dialogue — `nsg convene`). The Parlour manages both.
+
+The Parlour orchestrates, it doesn't execute. For each turn, it determines whose turn it is, assembles the inter-turn context (what happened since this participant last spoke), and delegates the actual session to The Animator. Each anima participant maintains **provider session continuity** via the `--resume` mechanism — the provider's conversation id is stored on the participant record and passed back on the next turn, allowing the AI process to maintain its full context window across turns.
+
+For convene conversations, The Parlour assembles inter-turn messages: when it's Participant A's turn, it collects the responses from all participants who spoke since A's last turn and formats them as the input message. Each participant sees a coherent dialogue without The Parlour re-sending the full history (the provider's `--resume` handles that).
+
+Conversations have an optional **turn limit** — when reached, the conversation auto-concludes. The Parlour tracks all state in The Stacks (no in-memory state between turns), making it safe for concurrent callers and process restarts.
+
+**Workspace constraint:** Provider session continuity depends on local filesystem state (e.g. Claude Code's `.claude/` directory). All turns in a conversation must run in the same working directory, or the session data needed for `--resume` won't be present. The Parlour enforces this by passing a consistent `cwd` to The Animator for every turn.
+
+### Invocation Paths
+
+Sessions enter the system through three paths:
+
+1. **Clockworks summon relay** — a standing order fires, the summon relay calls The Loom and The Animator. This is the autonomous path — no human involved.
+2. **`nsg consult`** — the patron starts an interactive session. The CLI calls The Loom and The Animator directly, with streaming output to the terminal. For multi-turn conversations, The Parlour manages the session sequence.
+3. **`nsg convene`** — the patron convenes a multi-anima dialogue. The CLI creates a Parlour conversation and drives the turn loop, with each turn delegating to The Animator.
+
+All three paths converge on the same `AnimatorApi.animate()` call. The Animator is the single chokepoint for session telemetry — every session, regardless of trigger, gets the same structured recording.
+
+See [The Animator — API Contract](apparatus/animator.md), [The Loom — API Contract](apparatus/loom.md), and [The Parlour — API Contract](apparatus/parlour.md) for the full specifications.
 
 ---
 

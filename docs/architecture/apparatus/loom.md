@@ -109,6 +109,19 @@ The system prompt is woven by combining, in order:
 5. **Tool instructions** — per-tool `instructions.md` for the resolved tool set
 6. **Writ context** — the specific work being done
 
+### Future: System Prompt Appendix
+
+The legacy session system supports a `systemPromptAppendix` — additional content appended to the system prompt after manifest assembly. This is used by clockworks to inject session protocol (e.g. writ completion requirements) without modifying the manifest itself.
+
+**Open question:** Does this belong in The Loom or in the caller? Two options:
+
+1. **Loom owns it** — `WeaveRequest` gains an `appendix?: string` field. The Loom appends it after composing the system prompt. Clean: all prompt assembly happens in one place.
+2. **Caller owns it** — the caller (summon relay) concatenates the appendix to `WovenContext.systemPrompt` before passing to The Animator. Simple: no Loom changes needed.
+
+The answer depends on whether the appendix is a *composition concern* (part of building the prompt) or a *dispatch concern* (context that only the caller knows). Writ protocol feels like dispatch — the Loom shouldn't need to know about writ lifecycle. But if other appendix use cases emerge (e.g. guild-wide policies injected per-session), it may belong in the Loom.
+
+No decision required for MVP — the appendix feature is not needed until clockworks-driven sessions exist.
+
 ### Future dependencies
 
 ```
