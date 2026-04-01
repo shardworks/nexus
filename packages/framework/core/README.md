@@ -1,41 +1,90 @@
 # `@shardworks/nexus-core`
 
-The public SDK for Nexus Mk 2.1. Plugin authors import from this package for the guild singleton, configuration types, and plugin lifecycle types.
+The public SDK surface for Nexus Mk 2.1. Every plugin — kit or apparatus — depends on this package for the guild singleton, plugin lifecycle types, guild configuration, and package resolution utilities.
 
-This package is a dependency of every plugin. It does not depend on arbor or the CLI — the dependency graph runs one way: plugins → core.
-
-> **Note:** The `tool()` factory and `ToolDefinition` type have moved to `@shardworks/tools-apparatus`. See the [Instrumentarium docs](../../docs/architecture/apparatus/instrumentarium.md) for the tool authoring API.
+This package has zero runtime dependencies. The dependency graph runs one way: plugins → core.
 
 ---
 
-## `Rig` — Rig Export Type
+## `Guild` — Process-Level Singleton
 
-The author-facing export type for a rig package. Rig packages export this as their default export. Arbor reads it at load time to discover the rig's contributions.
+The central access point for guild infrastructure at runtime. All plugin code (apparatus `start()`, tool handlers, engine handlers) imports `guild()` to access apparatus APIs, plugin config, and the guild root path.
 
 ```typescript
-import type { Rig } from '@shardworks/nexus-core';
-import { tool } from '@shardworks/tools-apparatus';
+import { guild } from '@shardworks/nexus-core';
 
-const myTool = tool({ ... });
-
-export default {
-  tools: [myTool],
-  books: {
-    writs: { indexes: ['status', 'createdAt', 'parent.id'] },
-  },
-} satisfies Rig;
+const home = guild().home;
+const stacks = guild().apparatus<StacksApi>('stacks');
+const config = guild().config<MyConfig>('my-plugin');
 ```
 
-| Field | Type | Description |
+| Member | Returns | Description |
 |---|---|---|
-| `tools?` | `ToolDefinition[]` | Tools this rig contributes to the guild |
-| `books?` | `Record<string, BookOptions>` | Named document collections — arbor creates SQLite tables and indexes at startup |
+| `home` | `string` | Absolute path to the guild root |
+| `apparatus<T>(name)` | `T` | Retrieve a started apparatus's `provides` object by plugin id |
+| `config<T>(pluginId)` | `T` | Read a plugin's configuration section from guild.json |
+| `guildConfig()` | `GuildConfig` | Read the full parsed guild.json |
+| `kits()` | `LoadedKit[]` | Snapshot of all loaded kits (including apparatus supportKits) |
+| `apparatuses()` | `LoadedApparatus[]` | Snapshot of all started apparatuses |
 
-Backward-compatible: rigs may still export a bare `ToolDefinition` or `ToolDefinition[]` directly.
+Framework functions (not for plugin use):
 
-### `BookOptions`
+| Function | Description |
+|---|---|
+| `setGuild(g)` | Register the guild instance — called by Arbor at startup |
+| `clearGuild()` | Clear the guild instance — called by Arbor at shutdown or in tests |
 
-Schema declaration for a single book:
+---
+
+## Plugin System — `Kit`, `Apparatus`, `Plugin`
+
+Core types for the Kit/Apparatus model. Plugins come in two kinds:
+
+- **Kit** — passive package contributing capabilities. No lifecycle, no running state. Read at load time.
+- **Apparatus** — package contributing persistent infrastructure. Has a `start`/`stop` lifecycle.
+
+```typescript
+import type { Kit, Apparatus, Plugin } from '@shardworks/nexus-core';
+
+// Kit example
+export default { kit: { tools: [myTool] } } satisfies Plugin;
+
+// Apparatus example
+export default {
+  apparatus: {
+    requires: ['stacks'],
+    provides: myApi,
+    start: async (ctx) => { /* ... */ },
+  },
+} satisfies Plugin;
+```
+
+### Types
+
+| Type | Description |
+|---|---|
+| `Kit` | Open record with optional `requires` and `recommends` arrays. Contribution fields are defined by consuming apparatuses. |
+| `Apparatus` | Record with `start(ctx)`, optional `stop()`, optional `provides`, `requires`, `supportKit`, `consumes`. |
+| `Plugin` | Discriminated union: `{ kit: Kit }` or `{ apparatus: Apparatus }` |
+| `LoadedKit` | A kit as tracked by Arbor: `packageName`, `id`, `version`, `kit` |
+| `LoadedApparatus` | An apparatus as tracked by Arbor: `packageName`, `id`, `version`, `apparatus` |
+| `LoadedPlugin` | Union of `LoadedKit` and `LoadedApparatus` |
+| `StartupContext` | Passed to `apparatus.start()`. Provides `on(event, handler)` for lifecycle subscriptions. |
+
+### Type Guards
+
+| Function | Description |
+|---|---|
+| `isKit(obj)` | Narrows to `{ kit: Kit }` |
+| `isApparatus(obj)` | Narrows to `{ apparatus: Apparatus }` |
+| `isLoadedKit(p)` | Narrows `LoadedPlugin` to `LoadedKit` |
+| `isLoadedApparatus(p)` | Narrows `LoadedPlugin` to `LoadedApparatus` |
+
+---
+
+## `BookOptions` — Book Schema Declaration
+
+Transitional type exported from core for kit packages declaring book schemas. Will move to a dedicated Books apparatus when that ships.
 
 ```typescript
 interface BookOptions {
@@ -43,111 +92,58 @@ interface BookOptions {
 }
 ```
 
-### `isRig(obj)`
-
-Type guard distinguishing a `Rig` export from a bare tool or array.
-
 ---
 
-## `RigContext` — Handler Context
-
-Injected into every tool and engine handler. Scoped to the rig that owns the handler.
-
-```typescript
-interface RigContext {
-  home: string;
-
-  book<T extends { id: string }>(name: string): Book<T>;
-  rigBook<T extends { id: string }>(rigId: string, name: string): ReadOnlyBook<T>;
-}
-```
-
-| Member | Returns | Description |
-|---|---|---|
-| `home` | `string` | Absolute path to the guild root |
-| `book(name)` | `Book<T>` | Read-write handle to one of this rig's declared books |
-| `rigBook(rigId, name)` | `ReadOnlyBook<T>` | Read-only handle to another rig's book |
-
-`ToolContext` is a deprecated alias for `RigContext`, re-exported from legacy for backward compatibility.
-
----
-
-## `Book<T>` — Document Store
-
-The NoSQL document store primitive for rig authors. `T` must extend `{ id: string }` — rig authors own ID generation.
-
-| Method | Description |
-|---|---|
-| `put(content)` | Upsert a document (creates or replaces entirely by `content.id`) |
-| `get(id)` | Retrieve by id, or `null` |
-| `delete(id)` | Remove by id (silent no-op if absent) |
-| `find(query)` | Query with `where`, `orderBy`, `order`, `limit`, `offset` |
-| `list(options?)` | List all documents, optionally paginated and sorted |
-| `count(where?)` | Count documents matching an optional filter |
-
-### `BookQuery`
-
-```typescript
-type BookQuery = {
-  where?: Record<string, unknown>;  // field equality filters, ANDed
-  orderBy?: string;                 // plain name or dot-notation
-  order?: 'asc' | 'desc';
-  limit?: number;
-  offset?: number;                  // requires limit
-}
-```
-
-### `ReadOnlyBook<T>`
-
-Returned by `rigBook()` for cross-rig access. Same as `Book<T>` minus `put` and `delete`.
-
----
-
-## `guild-config` — Guild Configuration
+## Guild Configuration
 
 Read and write `guild.json`, the guild's central configuration file.
 
 ```typescript
-import { readGuildConfigV2, writeGuildConfigV2 } from '@shardworks/nexus-core';
+import { readGuildConfig, writeGuildConfig } from '@shardworks/nexus-core';
 
-const config = readGuildConfigV2(home);
-writeGuildConfigV2(home, config);
+const config = readGuildConfig(home);
+writeGuildConfig(home, config);
 ```
 
-### `GuildConfigV2`
-
-The shape of `guild.json` for V2 guilds:
+### `GuildConfig`
 
 | Field | Type | Description |
 |---|---|---|
 | `name` | `string` | Guild name |
 | `nexus` | `string` | Framework version at last init/upgrade |
+| `workshops` | `Record<string, WorkshopEntry>` | Registered workshops |
 | `plugins` | `string[]` | Installed plugin ids |
+| `clockworks?` | `ClockworksConfig` | Events and standing orders |
+| `writTypes?` | `Record<string, WritTypeDeclaration>` | Guild-declared writ types |
 | `settings?` | `GuildSettings` | Operational flags including default `model` |
 
-All remaining top-level keys are plugin configuration sections, keyed by derived plugin id. For example, `loom` holds role definitions with permission grants; `clockworks` holds events and standing orders.
+All other top-level keys are plugin configuration sections, keyed by derived plugin id.
 
-### Other exports
+### Other Exports
 
-```typescript
-guildConfigPath(home)              // path to guild.json
-createInitialGuildConfigV2(...)    // default config for nsg init
-```
+| Function / Type | Description |
+|---|---|
+| `createInitialGuildConfig(name, version, model)` | Default config for `nsg init` |
+| `guildConfigPath(home)` | Resolve path to `guild.json` |
+| `WorkshopEntry` | Workshop descriptor: `remoteUrl`, `addedAt` |
+| `EventDeclaration` | Custom event: `description`, optional `schema` |
+| `StandingOrder` | Event → action mapping (run / summon / brief) |
+| `ClockworksConfig` | Container for events and standing orders |
+| `WritTypeDeclaration` | Writ type: `description` |
+| `GuildSettings` | Settings: `model`, `autoMigrate` |
 
 ---
 
-## `nexus-home` — Path Resolution
+## Path Resolution — `nexus-home`
 
 Resolve standard paths within a guild's `.nexus/` directory.
 
 ```typescript
 import { findGuildRoot, nexusDir } from '@shardworks/nexus-core';
 
-const home = findGuildRoot();          // walks up from cwd to find guild.json
-const dir  = nexusDir(home);           // .nexus/
+const home = findGuildRoot();   // walks up from cwd to find guild.json
+const dir  = nexusDir(home);    // .nexus/
 ```
-
-### All path helpers
 
 | Function | Returns |
 |---|---|
@@ -161,27 +157,31 @@ const dir  = nexusDir(home);           // .nexus/
 
 ---
 
-## `rig-descriptor` — Rig Descriptor Types
+## Package Resolution
 
-Types for `rig.json`, the optional descriptor a rig package can include at its root to declare dependencies on other rigs.
-
-```typescript
-import type { RigDescriptor } from '@shardworks/nexus-core';
-```
-
-### `RigDescriptor`
+Utilities for resolving guild-installed npm packages and deriving plugin ids.
 
 ```typescript
-interface RigDescriptor {
-  description?: string;
-  dependencies?: RigDependency[];
-}
+import { derivePluginId, resolveGuildPackageEntry } from '@shardworks/nexus-core';
 
-interface RigDependency {
-  rig: string;   // rig key, e.g. 'nexus-stdlib'
-}
+derivePluginId('@shardworks/books-apparatus');  // → 'books'
+derivePluginId('@acme/my-plugin');              // → 'acme/my-plugin'
+derivePluginId('my-relay-kit');                 // → 'my-relay'
 ```
 
-Arbor reads `rig.json` at install time. If declared dependencies aren't installed, `nsg rig install` fails with a clear error.
+| Function | Description |
+|---|---|
+| `derivePluginId(packageName)` | Canonical npm package name → plugin id. Strips `@shardworks/` scope and `-plugin`/`-apparatus`/`-kit` suffixes. |
+| `readGuildPackageJson(guildRoot, pkgName)` | Read a package's `package.json` from the guild's `node_modules` |
+| `resolvePackageNameForPluginId(guildRoot, pluginId)` | Reverse lookup: find the npm package name for a plugin id |
+| `resolveGuildPackageEntry(guildRoot, pkgName)` | Resolve the ESM entry point for a guild-installed package |
 
-A rig with no dependencies needs no `rig.json` at all.
+---
+
+## `VERSION`
+
+The package version, read from `package.json` at runtime.
+
+```typescript
+import { VERSION } from '@shardworks/nexus-core';
+```

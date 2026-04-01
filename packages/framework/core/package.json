@@ -7,7 +7,7 @@
     "url": "https://github.com/shardworks/nexus",
     "directory": "packages/framework/core"
   },
-  "description": "Nexus core — public SDK surface: guild singleton, plugin/kit/apparatus types, guild config, session provider registry",
+  "description": "Nexus core — public SDK surface: guild singleton, plugin/kit/apparatus types, guild config, package resolution",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
@@ -22,8 +22,7 @@
     "@types/node": "25.5.0"
   },
   "files": [
-    "dist",
-    "migrations"
+    "dist"
   ],
   "publishConfig": {
     "exports": {

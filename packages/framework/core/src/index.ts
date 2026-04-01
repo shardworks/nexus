@@ -64,15 +64,3 @@ export {
   type GuildSettings,
   guildConfigPath,
 } from './guild-config.ts';
-
-// ── Session provider registry ─────────────────────────────────────────
-
-export {
-  type ManifestResult,
-  type SessionChunk,
-  type SessionProvider,
-  type SessionProviderLaunchOptions,
-  type SessionProviderResult,
-  registerSessionProvider,
-  getSessionProvider,
-} from './session-provider.ts';
