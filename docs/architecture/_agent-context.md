@@ -35,7 +35,7 @@ The patron-side sanctum (experiments, session notes, Coco config) is at `/worksp
 | `nexus-clockworks` | `@shardworks/nexus-clockworks` | Clockworks as a rig — contributes clockworks tools and events/dispatches Books tables |
 | `nexus-sessions` | `@shardworks/nexus-sessions` | Sessions as a rig — contributes session tools and sessions Book |
 | `guild-starter-kit` | `@shardworks/guild-starter-kit` | Starter bundle — curricula, temperaments, migration snapshots |
-| `claude-code-session-provider` | (local) | Session provider implementation for Claude Code / claude CLI |
+| `claude-code-apparatus` | `@shardworks/claude-code-apparatus` | Session provider implementation for Claude Code / claude CLI |
 | `stdlib` | `@shardworks/nexus-stdlib` | Standard tools, engines, relays |
 
 ---
@@ -107,7 +107,7 @@ The codebase is in active transition from a "rig-centric" model (current) toward
 - Anima instantiation, roster, role assignments
 - Commission → mandate writ → dispatch flow
 - Session funnel (manifest → MCP engine launch → session record)
-- Session providers (pluggable; claude-code-session-provider exists)
+- Session providers (pluggable; claude-code-apparatus exists)
 
 ### Target architecture (described in docs, not yet fully built)
 
@@ -133,7 +133,7 @@ If you're working on a specific section of the architecture doc, start with:
 | Animas | `packages/core/src/legacy/1/anima.ts`, `guild-metaphor.md` (Anima section) |
 | Work Model | `packages/core/src/legacy/1/writ.ts`, `docs/reference/schema.md` (writs table), `clockworks.md` |
 | Kit Components | `docs/architecture/kit-components.md`, `packages/core/src/tool.ts` |
-| Sessions | `packages/nexus-sessions/src/`, `packages/claude-code-session-provider/src/` (if exists), `docs/reference/conversations.md` |
+| Sessions | `packages/plugins/claude-code/src/`, `docs/reference/conversations.md` |
 | Clockworks | `docs/architecture/clockworks.md`, `packages/nexus-clockworks/src/` |
 | Rigging | `docs/architecture/rigging.md` (aspirational), `packages/arbor/src/arbor.ts` (current) |
 
@@ -281,7 +281,7 @@ The Loom exists as a separate apparatus even at MVP so that The Animator never a
 ### Animator MVP
 
 **Decision:** MVP Animator takes a `WovenContext` (from Loom) + a working directory and:
-1. Launches a session provider (e.g. `claude-code-session-provider`) with the system prompt
+1. Launches a session provider (e.g. `claude-code-apparatus`) with the system prompt
 2. Monitors the process
 3. Records the session result to The Stacks (sessions book)
 

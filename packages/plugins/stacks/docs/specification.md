@@ -831,7 +831,7 @@ In the `stacks` plugin configuration section of `guild.json` (e.g. `"stacks": { 
 **Q: How are persistence backends swapped?**
 For v1, The Stacks ships with SQLite built in — `StacksBackend` is an internal implementation detail, not a public extension point. To use a different persistence backend, install a different apparatus that provides `StacksApi` (e.g. swap `@shardworks/stacks` for `@acme/stacks-turso` in the plugins list). The public contract is `StacksApi`; any apparatus that satisfies it is a valid replacement.
 
-A future version could adopt a sub-apparatus pattern where The Stacks depends on a backend apparatus (e.g. `stacks-sqlite` starts first, provides a `StacksBackend`, then `stacks` consumes it via `guild().apparatus()`). This is the same provider pattern used by session providers (`claude-code-session-provider`). Deferred until there's a concrete second backend.
+A future version could adopt a sub-apparatus pattern where The Stacks depends on a backend apparatus (e.g. `stacks-sqlite` starts first, provides a `StacksBackend`, then `stacks` consumes it via `guild().apparatus()`). This is the same provider pattern used by session providers (`claude-code-apparatus`). Deferred until there's a concrete second backend.
 
 The in-memory `StacksBackend` for tests ships inside `@shardworks/stacks` as a test utility export — not as a separate package.
 

@@ -308,7 +308,7 @@ Engines are automated mechanical processes with no AI involvement. Two kinds:
 
 Session providers are the bridge between the Nexus session funnel and a specific AI runtime. They are not engines — they implement the `SessionProvider` interface and handle the mechanics of launching an AI session (spawning a process, connecting tools via MCP, collecting transcripts and metrics).
 
-The current session provider is **Claude Code** (`@shardworks/claude-code-session-provider`), which spawns the Claude CLI with an MCP server that exposes the anima's tools.
+The current session provider is **Claude Code** (`@shardworks/claude-code-apparatus`), which spawns the Claude CLI with an MCP server that exposes the anima's tools.
 
 ## The Codex
 

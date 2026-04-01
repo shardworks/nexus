@@ -2,7 +2,7 @@
  * MCP Server — serves guild tools as typed MCP tools during anima sessions.
  *
  * Absorbed from the former `engine-mcp-server` package. This is an internal
- * module of claude-code-session-provider — not a separate package.
+ * module of the claude-code apparatus package — not a separate package.
  *
  * The session provider launches this as a stdio process, configured with
  * the set of tools the anima has access to (based on role gating).
@@ -171,9 +171,9 @@ export async function main(configPath?: string): Promise<void> {
     process.exit(1);
   }
 
-  // TODO: The MCP server needs to be modernized to use the guild runtime.
-  // Session provider registration is now handled via the apparatus model
-  // (the Animator looks up the provider via guild().apparatus()).
+  // NOTE: This MCP server module is orphaned — it predates the apparatus model
+  // and needs modernization to use the guild runtime. Tracked in:
+  // nexus-mk2/docs/future/known-gaps.md ("MCP server module orphaned in claude-code-apparatus")
 
   const fs = await import('node:fs');
   const configText = fs.readFileSync(resolvedPath, 'utf-8');
