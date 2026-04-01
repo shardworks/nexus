@@ -19,7 +19,8 @@
  *   params: {
  *     name: z.string().describe('Anima name'),
  *   },
- *   handler: async ({ name }, { home }) => {
+ *   handler: async ({ name }) => {
+ *     const { home } = guild();
  *     return { found: true, status: 'active' };
  *   },
  * });
@@ -35,6 +36,8 @@
  */
 import { z } from 'zod';
 import { isKit, isApparatus } from './plugin.ts';
+// HandlerContext retained as optional second param for backward compatibility.
+// New tools should use guild() from '@shardworks/nexus-core' instead.
 import type { HandlerContext } from './plugin.ts';
 
 // Zod shape type — a record of string keys to Zod schemas.
@@ -78,7 +81,8 @@ export interface ToolDefinition<TShape extends ZodShape = ZodShape> {
   readonly params: z.ZodObject<TShape>;
   readonly handler: (
     params: z.infer<z.ZodObject<TShape>>,
-    context: HandlerContext,
+    /** @deprecated Use guild() instead. Retained for backward compatibility. */
+    context?: HandlerContext,
   ) => unknown | Promise<unknown>;
 }
 
@@ -89,7 +93,8 @@ type ToolInput<TShape extends ZodShape> = {
   params: TShape;
   handler: (
     params: z.infer<z.ZodObject<TShape>>,
-    context: HandlerContext,
+    /** @deprecated Use guild() instead. Retained for backward compatibility. */
+    context?: HandlerContext,
   ) => unknown | Promise<unknown>;
   /**
    * Caller types this tool is available to.
@@ -108,9 +113,11 @@ type ToolInput<TShape extends ZodShape> = {
  * name, description, a params object of Zod schemas, and a handler function.
  * The framework handles the rest — MCP registration, CLI generation, validation.
  *
- * The handler receives two arguments:
+ * The handler receives one argument:
  * - `params` — the validated input, typed from your Zod schemas
- * - `context` — framework-injected context (guild root path, etc.)
+ *
+ * To access guild infrastructure (apparatus, config, home path), import
+ * `guild` from `@shardworks/nexus-core` and call `guild()` inside the handler.
  *
  * Return any JSON-serializable value. The MCP engine wraps it as tool output;
  * the CLI prints it; engines use it directly.

@@ -18,7 +18,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { engine, signalEvent, readWrit, workshopBarePath, worktreesPath } from '@shardworks/nexus-core';
+import { engine, signalEvent, readWrit, workshopBarePath, worktreesPath, guild } from '@shardworks/nexus-core';
 import { setupWorktree } from '@shardworks/nexus-core';
 
 function git(args: string[], cwd: string): string {
@@ -27,7 +27,8 @@ function git(args: string[], cwd: string): string {
 
 export default engine({
   name: 'workshop-prepare',
-  handler: async (event, { home }) => {
+  handler: async (event) => {
+    const { home } = guild();
     if (!event) {
       throw new Error('workshop-prepare requires an event (cannot be invoked directly).');
     }

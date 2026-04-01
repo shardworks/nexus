@@ -17,12 +17,21 @@ export {
   type LoadedApparatus,
   type LoadedPlugin,
   type GuildContext,
+  /** @deprecated Use guild() instead. */
   type HandlerContext,
   isKit,
   isApparatus,
   isLoadedKit,
   isLoadedApparatus,
 } from './plugin.ts';
+
+// Guild accessor — the process-level singleton for accessing guild infrastructure.
+export {
+  type GuildAccessor,
+  guild,
+  setGuildAccessor,
+  clearGuildAccessor,
+} from './guild.ts';
 
 // Transitional: BookOptions moves to nexus-books apparatus when that ships.
 export { type BookOptions } from './books.ts';
@@ -58,12 +67,10 @@ export {
 } from './nexus-home.ts';
 
 export {
-  // V2 — plugin-centric model (canonical for new guilds)
-  type GuildConfigV2,
-  createInitialGuildConfigV2,
-  readGuildConfigV2,
-  writeGuildConfigV2,
-  // Shared types (V1 and V2)
+  type GuildConfig,
+  createInitialGuildConfig,
+  readGuildConfig,
+  writeGuildConfig,
   type RoleDefinition,
   type WorkshopEntry,
   type EventDeclaration,

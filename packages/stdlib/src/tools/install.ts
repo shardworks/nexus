@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { tool, installTool, installBundle, classifySource, isBundleDir } from '@shardworks/nexus-core';
+import { tool, installTool, installBundle, classifySource, isBundleDir, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 /**
@@ -45,7 +45,8 @@ export default tool({
     roles: z.array(z.string()).optional().describe('Roles for tool access gating'),
     link: z.boolean().optional().describe('Symlink local directory instead of copying (for active development)'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     // Check if source is a bundle
     if (!params.link) {
       const bundleDir = detectBundle(home, params.source);

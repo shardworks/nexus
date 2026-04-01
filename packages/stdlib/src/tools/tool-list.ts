@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { listTools } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
@@ -9,5 +9,8 @@ export default tool({
   params: {
     category: z.string().optional().describe('Filter by category (tools, engines, curricula, temperaments)'),
   },
-  handler: (params, { home }) => listTools(home, params.category),
+  handler: (params) => {
+    const { home } = guild();
+    return listTools(home, params.category);
+  },
 });

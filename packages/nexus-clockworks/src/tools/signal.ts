@@ -6,7 +6,7 @@
  * for recovery use cases.
  */
 
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { validateCustomEvent, signalEvent } from '../lib/events-api.ts';
 
@@ -25,11 +25,12 @@ export default tool({
       'Bypass event validation — allows framework-namespace events. Use for recovery only.',
     ),
   },
-  handler: (params, ctx) => {
+  handler: (params) => {
+    const { home } = guild();
     if (!params.force) {
-      validateCustomEvent(ctx.home, params.name);
+      validateCustomEvent(home, params.name);
     }
-    const eventId = signalEvent(ctx.home, params.name, params.payload ?? null, 'anima');
+    const eventId = signalEvent(home, params.name, params.payload ?? null, 'anima');
     return { eventId, name: params.name };
   },
 });

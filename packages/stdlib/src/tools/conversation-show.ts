@@ -1,4 +1,4 @@
-import { tool, showConversation } from '@shardworks/nexus-core';
+import { tool, showConversation, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -8,7 +8,8 @@ export default tool({
   params: {
     id: z.string().describe('Conversation ID (conv_xxxx)'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const detail = showConversation(home, params.id);
     if (!detail) {
       throw new Error(`Conversation "${params.id}" not found.`);

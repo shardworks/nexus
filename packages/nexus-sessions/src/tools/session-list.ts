@@ -8,7 +8,7 @@
  * requires nexus-roster (not yet riggified). Pass an animaId, not a name.
  */
 
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { listSessions } from '../lib/session-api.js';
 
@@ -27,7 +27,8 @@ export default tool({
     writId: z.string().optional().describe('Filter by bound writ ID'),
     limit: z.number().optional().default(20).describe('Maximum results'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     return listSessions(home, {
       anima: params.anima,
       workshop: params.workshop,

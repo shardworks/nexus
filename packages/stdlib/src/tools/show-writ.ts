@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { readWrit, getWritChildren } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
@@ -9,7 +9,8 @@ export default tool({
   params: {
     writId: z.string().describe('Writ ID to show'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const writ = readWrit(home, params.writId);
     if (!writ) {
       return { error: `Writ "${params.writId}" not found.` };

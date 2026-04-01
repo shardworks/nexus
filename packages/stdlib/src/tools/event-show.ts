@@ -1,4 +1,4 @@
-import { tool, readEvent } from '@shardworks/nexus-core';
+import { tool, readEvent, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -8,7 +8,8 @@ export default tool({
   params: {
     id: z.string().describe('Event ID'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const result = readEvent(home, params.id);
     if (!result) throw new Error(`Event "${params.id}" not found.`);
     return result;

@@ -1,4 +1,5 @@
 import { tool, clockStop } from '@shardworks/nexus-core';
+import { guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -6,5 +7,8 @@ export default tool({
   description: 'Stop the clockworks daemon',
   instructions: 'Stops the running clockworks daemon. Returns the PID that was stopped. Handles stale PID files gracefully. Fails if no daemon is running.',
   params: {},
-  handler: (_params, { home }) => clockStop(home),
+  handler: (_params) => {
+    const { home } = guild();
+    return clockStop(home);
+  },
 });

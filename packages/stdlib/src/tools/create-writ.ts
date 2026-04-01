@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { createWrit } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
@@ -17,7 +17,8 @@ export default tool({
     parentId: z.string().optional().describe('Parent writ ID (defaults to current session writ)'),
     workshop: z.string().optional().describe('Workshop name (inherits from parent if omitted)'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const resolvedParent = params.parentId ?? process.env.NEXUS_WRIT_ID ?? undefined;
 
     return createWrit(home, {

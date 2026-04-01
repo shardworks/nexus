@@ -16,7 +16,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { readGuildConfigV2 } from '@shardworks/nexus-core';
+import { readGuildConfig } from '@shardworks/nexus-core';
 import { openDb, EVENTS_TABLE, DISPATCHES_TABLE } from './db.ts';
 import type { EventDoc, DispatchDoc } from '../types.ts';
 
@@ -63,7 +63,7 @@ export function validateCustomEvent(home: string, name: string): void {
     );
   }
 
-  const config = readGuildConfigV2(home);
+  const config = readGuildConfig(home);
   const declaredEvents = config.clockworks?.events ?? {};
   if (!Object.hasOwn(declaredEvents, name)) {
     const available = Object.keys(declaredEvents);

@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { readEvent, listDispatches } from '../lib/events-api.ts';
 
@@ -9,10 +9,11 @@ export default tool({
   params: {
     id: z.string().describe('Event ID'),
   },
-  handler: (params, ctx) => {
-    const event = readEvent(ctx.home, params.id);
+  handler: (params) => {
+    const { home } = guild();
+    const event = readEvent(home, params.id);
     if (!event) throw new Error(`Event "${params.id}" not found.`);
-    const dispatches = listDispatches(ctx.home, { eventId: params.id });
+    const dispatches = listDispatches(home, { eventId: params.id });
     return { ...event, dispatches };
   },
 });

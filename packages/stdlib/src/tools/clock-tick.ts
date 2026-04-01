@@ -1,4 +1,5 @@
 import { tool, clockTick } from '@shardworks/nexus-core';
+import { guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -8,5 +9,8 @@ export default tool({
   params: {
     id: z.string().optional().describe('Specific event ID to process'),
   },
-  handler: async (params, { home }) => clockTick(home, params.id),
+  handler: async (params) => {
+    const { home } = guild();
+    return clockTick(home, params.id);
+  },
 });

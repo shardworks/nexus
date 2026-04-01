@@ -10,7 +10,7 @@
  * See: docs/architecture/plugins.md
  */
 
-import type { GuildConfigV2 } from './guild-config.ts';
+import type { GuildConfig } from './guild-config.ts';
 
 // ── Loaded plugin descriptors ──────────────────────────────────────────
 
@@ -50,7 +50,7 @@ export interface GuildContext {
    */
   config<T = Record<string, unknown>>(pluginId?: string): T
   /** Get the full parsed guild.json config. */
-  guildConfig(): GuildConfigV2
+  guildConfig(): GuildConfig
   /**
    * Retrieve a started apparatus's provides object.
    * Validated against the calling apparatus's requires at startup.
@@ -67,22 +67,17 @@ export interface GuildContext {
 }
 
 /**
- * Context injected into tool and engine handlers at invocation time.
- * Distinct from GuildContext — handlers run long after startup.
+ * @deprecated HandlerContext is replaced by the guild() singleton accessor.
+ * Tool, engine, and relay handlers no longer receive context as a parameter —
+ * they import `guild` from `@shardworks/nexus-core` and call `guild()` directly.
+ *
+ * Retained temporarily for backward compatibility during migration.
+ * See: docs/architecture/plugins.md
  */
 export interface HandlerContext {
-  /** Absolute path to the guild root. */
   home: string
-  /**
-   * Get the plugin-specific config section from guild.json.
-   * Called with no args returns the section for the owning plugin.
-   * Called with a pluginId returns that plugin's section.
-   * Returns `{}` if the section is absent.
-   */
   config<T = Record<string, unknown>>(pluginId?: string): T
-  /** Get the full parsed guild.json config. */
-  guildConfig(): GuildConfigV2
-  /** Retrieve a started apparatus's provides object. */
+  guildConfig(): GuildConfig
   apparatus<T>(name: string): T
 }
 

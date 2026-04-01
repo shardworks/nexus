@@ -5,7 +5,7 @@
  * table and will be processed by the Clockworks runner. Validates that the
  * event name is declared in guild.json and is not in a reserved namespace.
  */
-import { tool, validateCustomEvent, signalEvent } from '@shardworks/nexus-core';
+import { tool, validateCustomEvent, signalEvent, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -17,7 +17,8 @@ export default tool({
     payload: z.record(z.string(), z.unknown()).optional().describe('Event payload (JSON object)'),
     force: z.boolean().optional().describe('Bypass event validation — allows framework-namespace events. Use for recovery only.'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     // Validate the event name is declared and not reserved (unless --force)
     if (!params.force) {
       validateCustomEvent(home, params.name);

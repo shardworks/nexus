@@ -1,4 +1,4 @@
-import { tool, createConversation, takeTurn, nextParticipant, formatConveneMessage, showConversation } from '@shardworks/nexus-core';
+import { tool, createConversation, takeTurn, nextParticipant, formatConveneMessage, showConversation, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -14,7 +14,8 @@ The calling anima is NOT automatically included — list all intended participan
     topic: z.string().describe('Topic or prompt to seed the conversation'),
     turnLimit: z.number().optional().default(10).describe('Maximum number of turns'),
   },
-  handler: async (params, { home }) => {
+  handler: async (params) => {
+    const { home } = guild();
     const { conversationId } = createConversation(home, {
       kind: 'convene',
       topic: params.topic,

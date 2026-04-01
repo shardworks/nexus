@@ -5,7 +5,7 @@
  * from @shardworks/nexus-core. The rig now owns this operation.
  */
 
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { showConversation } from '../lib/conversation-api.js';
 
@@ -19,7 +19,8 @@ export default tool({
   params: {
     id: z.string().describe('Conversation ID (conv-xxxx)'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const detail = showConversation(home, params.id);
     if (!detail) {
       throw new Error(`Conversation "${params.id}" not found.`);

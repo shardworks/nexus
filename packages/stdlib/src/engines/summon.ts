@@ -36,6 +36,7 @@ import {
   getWritChildren,
   hydratePromptTemplate,
   buildProgressAppendix,
+  guild,
 } from '@shardworks/nexus-core';
 import {
   resolveWorkspace,
@@ -68,7 +69,8 @@ You are working on writ \`${writId}\`. You MUST signal completion before your se
 
 export default engine({
   name: 'summon-engine',
-  handler: async (event, { home, params }) => {
+  handler: async (event, { params }) => {
+    const { home } = guild();
     if (!event) {
       throw new Error('summon-engine requires an event (cannot be invoked directly).');
     }

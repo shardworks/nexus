@@ -7,7 +7,7 @@
  * to plugins, not here.
  */
 
-import { tool, VERSION, readGuildConfigV2 } from '@shardworks/nexus-core';
+import { tool, VERSION, readGuildConfig, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -17,8 +17,9 @@ export default tool({
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },
-  handler: async (_params, { home }) => {
-    const config = readGuildConfigV2(home);
+  handler: async (_params) => {
+    const { home } = guild();
+    const config = readGuildConfig(home);
 
     // Note: at status time we don't load/start plugins — we just report what's
     // declared in guild.json. Type discrimination (kit vs apparatus) requires

@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { listWrits } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
@@ -12,5 +12,8 @@ export default tool({
     status: z.enum(['ready', 'active', 'pending', 'completed', 'failed', 'cancelled']).optional()
       .describe('Filter by status'),
   },
-  handler: (params, { home }) => listWrits(home, params),
+  handler: (params) => {
+    const { home } = guild();
+    return listWrits(home, params);
+  },
 });

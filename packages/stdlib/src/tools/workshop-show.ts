@@ -1,4 +1,4 @@
-import { tool, showWorkshop } from '@shardworks/nexus-core';
+import { tool, showWorkshop, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -8,7 +8,8 @@ export default tool({
   params: {
     name: z.string().describe('Workshop name'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const result = showWorkshop(home, params.name);
     if (!result) throw new Error(`Workshop "${params.name}" not found.`);
     return result;

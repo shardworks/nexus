@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { listEvents } from '../lib/events-api.ts';
 
@@ -14,5 +14,8 @@ export default tool({
     pending: z.boolean().optional().describe('If true, only unprocessed events; if false, only processed'),
     limit: z.number().optional().default(20).describe('Maximum results'),
   },
-  handler: (params, ctx) => listEvents(ctx.home, params),
+  handler: (params) => {
+    const { home } = guild();
+    return listEvents(home, params);
+  },
 });

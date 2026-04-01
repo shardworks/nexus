@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { clockStatus } from '../daemon-ctrl.ts';
 
 export default tool({
@@ -9,5 +9,8 @@ export default tool({
     'Use this to verify the daemon is active before dispatching work that depends on automatic ' +
     'event processing.',
   params: {},
-  handler: (_params, ctx) => clockStatus(ctx.home),
+  handler: (_params) => {
+    const { home } = guild();
+    return clockStatus(home);
+  },
 });

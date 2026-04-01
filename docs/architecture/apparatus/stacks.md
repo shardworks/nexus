@@ -41,7 +41,7 @@ export default {
   kit: {
     requires: ['stacks'],
     books: {
-      writs:    { indexes: ['status', 'createdAt', 'parent.id'] },
+      writs:    { indexes: ['status', 'createdAt', 'parent.id', ['status', 'createdAt']] },
       sessions: { indexes: ['writId', 'startedAt', 'animaId'] },
     },
   },
@@ -52,12 +52,19 @@ export default {
 /**
  * Schema declaration for a single book.
  *
- * `indexes` is a list of fields to index for efficient querying.
+ * `indexes` is a list of fields or field tuples to index for efficient
+ * querying. Each entry is either:
+ *
+ * - A `string` — creates a single-field index (e.g. `'status'`)
+ * - A `string[]` — creates a compound index on multiple fields
+ *   (e.g. `['status', 'createdAt']`), useful when queries filter on
+ *   one field and sort by another.
+ *
  * Field names use plain notation ('status') or dot-notation for nested
  * fields ('parent.id'). The Stacks translates internally.
  */
 interface BookSchema {
-  indexes?: string[]
+  indexes?: (string | string[])[]
 }
 ```
 
@@ -76,6 +83,14 @@ interface StacksApi {
    *
    * `ownerId` is the plugin id of the declaring kit (e.g. 'nexus-ledger').
    * Kits use their own plugin id — this is the write boundary.
+   *
+   * **Trust-based boundary:** The `ownerId` parameter is not validated
+   * against the caller's identity at runtime. Any plugin *can* obtain a
+   * write handle for another plugin's book by passing its ownerId. The
+   * `readBook()` method exists to make intent legible in code and enforce
+   * the boundary at the TypeScript type level. Runtime enforcement (e.g.
+   * injecting caller identity via context) may be added in a future
+   * version if the trust model proves insufficient.
    */
   book<T extends BookEntry>(ownerId: string, name: string): Book<T>
 
@@ -151,7 +166,8 @@ interface Book<T extends BookEntry> extends ReadOnlyBook<T> {
    *
    * Merges the given fields into the existing document at the top level.
    * Fields not mentioned are left unchanged. If the document does not exist,
-   * throws. Returns the updated document.
+   * throws — `patch()` implies "I know this exists and I'm changing it."
+   * Returns the full document after the merge (not just the patched fields).
    *
    * Fires an `update` CDC event with the pre-patch document as `prev`.
    *
@@ -163,8 +179,8 @@ interface Book<T extends BookEntry> extends ReadOnlyBook<T> {
   /**
    * Delete a document by id.
    *
-   * Silent no-op if the document does not exist. Fires a `delete` CDC
-   * event (with `prev`) only if the document existed.
+   * Silent no-op if the document does not exist — delete is idempotent.
+   * Fires a `delete` CDC event (with `prev`) only if the document existed.
    */
   delete(id: string): Promise<void>
 }
@@ -180,7 +196,7 @@ interface ReadOnlyBook<T extends BookEntry> {
   list(options?: ListOptions): Promise<T[]>
 
   /** Count documents matching an optional predicate. Does not fetch payloads. */
-  count(where?: WhereClause<T>): Promise<number>
+  count(where?: WhereClause<T> | { or: WhereClause<T>[] }): Promise<number>
 }
 ```
 
@@ -190,15 +206,23 @@ interface ReadOnlyBook<T extends BookEntry> {
 
 ### 5.1 Predicate operators
 
-Where conditions are expressed as an array of tuples — `[field, operator, value?]`. All conditions are **AND**-ed. OR is not supported; see §7 for rationale.
+Where conditions are expressed as an array of tuples — `[field, operator, value?]`. All conditions within a single `WhereClause` are **AND**-ed. OR is supported at the query level via the `{ or: [...] }` form — see §5.4.
 
 ```typescript
+/**
+ * Field names are plain strings, not `keyof T`. This is intentional:
+ * dot-notation paths ('parent.id') don't satisfy `keyof T` unless T
+ * literally declares a key named 'parent.id'. Runtime validation via
+ * SAFE_FIELD_RE (see "Field names" below) is the real safety net;
+ * the type system permits any string to avoid forcing casts on every
+ * nested-field query.
+ */
 type WhereCondition<T> =
-  | [keyof T & string, '=' | '!=', Scalar]
-  | [keyof T & string, '>' | '>=' | '<' | '<=', number | string]
-  | [keyof T & string, 'LIKE', string]       // % and _ wildcards
-  | [keyof T & string, 'IN', Scalar[]]
-  | [keyof T & string, 'IS NULL' | 'IS NOT NULL']
+  | [string, '=' | '!=', Scalar]
+  | [string, '>' | '>=' | '<' | '<=', number | string]
+  | [string, 'LIKE', string]       // % and _ wildcards
+  | [string, 'IN', Scalar[]]
+  | [string, 'IS NULL' | 'IS NOT NULL']
 
 type Scalar = string | number | boolean | null
 
@@ -225,16 +249,31 @@ type OrderBy = OrderEntry | OrderEntry[]   // shorthand: single tuple for single
 ```typescript
 type Pagination =
   | { limit: number; offset?: number }
-  | {}   // no pagination — all results
+  | { limit?: never; offset?: never }   // no pagination — all results
 
-// offset requires limit (enforced by type)
+// offset requires limit; omitting both is explicit (enforced by type)
 ```
 
 ### 5.4 `BookQuery` (combined)
 
 ```typescript
+/**
+ * The `where` field accepts two forms:
+ *
+ * - `WhereClause<T>` (an array) — all conditions are AND'd. This is the
+ *   common case and the only form most queries need.
+ *
+ * - `{ or: WhereClause<T>[] }` — each element is an AND-clause; results
+ *   are the union of all clauses. Duplicates (by `id`) are removed.
+ *
+ * @example AND: { where: [['status', '=', 'active'], ['animaId', '=', 'vera']] }
+ * @example OR:  { where: { or: [
+ *   [['status', '=', 'active']],
+ *   [['animaId', '=', 'vera']],
+ * ]}}
+ */
 type BookQuery<T extends BookEntry> = {
-  where?:   WhereClause<T>
+  where?:   WhereClause<T> | { or: WhereClause<T>[] }
   orderBy?: OrderBy
 } & Pagination
 
@@ -242,6 +281,8 @@ type ListOptions = {
   orderBy?: OrderBy
 } & Pagination
 ```
+
+**OR implementation strategy:** The backend interface (`InternalQuery`) remains AND-only. The Stacks apparatus handles OR by running each branch as a separate backend query, deduplicating by `id`, re-sorting, and applying pagination to the merged result set. This is correct for all dataset sizes in v1. A future backend optimization could translate `{ or: [...] }` to native SQL `OR` for a single-query execution path — the public API is the same either way.
 
 ---
 
@@ -286,9 +327,15 @@ interface DeleteEvent<T> {
 ### 6.2 Handler registration and two-phase execution
 
 ```typescript
+/**
+ * CDC handler function. Receives the change event only — no context
+ * parameter. Handlers access guild infrastructure via the `guild()`
+ * singleton (from `@shardworks/nexus-core`), same as all other plugin
+ * code. Transaction binding is transparent via `AsyncLocalStorage` —
+ * see "Transaction binding" below.
+ */
 type ChangeHandler<T extends BookEntry> = (
-  event:   ChangeEvent<T>,
-  context: HandlerContext,
+  event: ChangeEvent<T>,
 ) => Promise<void> | void
 
 interface WatchOptions {
@@ -313,7 +360,7 @@ CDC handlers execute in **two phases**, determined by `failOnError`:
 
 **Phase 1 — Cascade handlers (`failOnError: true`, the default)**
 
-Run *inside* the transaction, before it commits. The handler receives `Book<T>` handles that are bound to the active transaction — any writes the handler makes join the same atomic unit. If the handler throws, the entire transaction rolls back: the triggering write, the handler's writes, and all nested cascade writes are undone. No CDC events are emitted externally.
+Run *inside* the transaction, before it commits. Any writes the handler makes through the Stacks API join the same atomic unit (see "Transaction binding" below). If the handler throws, the entire transaction rolls back: the triggering write, the handler's writes, and all nested cascade writes are undone. No CDC events are emitted externally.
 
 This is the correct phase for cascade operations: status propagation, referential integrity enforcement, any logic where the handler's writes must succeed or fail together with the trigger.
 
@@ -323,15 +370,37 @@ Run *after* the transaction commits. The data is already persisted. The handler 
 
 This is the correct phase for external notification: Clockworks event emission, telemetry, audit logging — anything where a handler failure must not block or undo writes.
 
+**Choosing a phase:** Use Phase 1 when your handler's writes must succeed or fail atomically with the trigger — cascade status propagation, referential integrity, any logic where partial completion is a corrupt state. Use Phase 2 for notification, dispatch, and external system synchronization — Clockworks event emission, telemetry, audit logging. **If your Phase 1 handler produces effects outside the Stacks (sends a message, calls an external API), it probably belongs in Phase 2.** Transaction rollback cannot undo non-database side effects; a Phase 1 handler with external effects creates a false sense of atomicity.
+
 **Registration window:** `watch()` must be called during startup — before any writes occur. Calling `watch()` after the apparatus is in use is a programming error and throws.
 
 **Handler ordering:** Within each phase, handlers fire in registration order. All Phase 1 handlers complete before the transaction commits. All Phase 2 handlers fire after the commit. If apparatus A registers before apparatus B (i.e. A comes first in topological startup order), A's handler fires first within its phase.
+
+**Transaction binding:** Handlers access the Stacks through the normal `guild().apparatus<StacksApi>('stacks')` path — the same singleton accessor used by all plugin code. Transaction binding is transparent, managed by the Stacks apparatus via `AsyncLocalStorage`:
+
+1. Before invoking a Phase 1 handler, the Stacks sets the active `BackendTransaction` in an `AsyncLocalStorage` context.
+2. Any `Book` operation (`put`, `patch`, `delete`, `get`, `find`, `count`) executed within that async context automatically routes through the active transaction.
+3. When the handler (and all nested cascade handlers) completes, the async context is cleared.
+
+Phase 2 handlers run outside any transaction context — their book operations are independent. The same `AsyncLocalStorage` mechanism also serves `stacks.transaction()`: the explicit transaction is set in async-local storage before calling the user's callback, so all book operations inside see it.
+
+This means handler code is identical to normal plugin code — no special API, no transaction-aware handles. The transaction context is ambient.
+
+**All book operations inside a Phase 1 handler must be `await`-ed.** A non-awaited write (fire-and-forget) inherits the `AsyncLocalStorage` transaction context and will attempt to join the active transaction — but the transaction may commit or roll back before the detached write completes, producing undefined behavior. This is not a race condition the framework can detect or prevent; it is a contract that handler authors must follow.
 
 ### 6.3 CDC and cascades
 
 CDC is the correct hook point for cascade operations (e.g. cancelling child writs when a parent is cancelled). Cascade handlers (`failOnError: true`) execute inside the write's transaction, so their writes are atomic with the triggering write. All writes succeed together or fail together.
 
-Cascade writes go through the normal write path, which means they invoke their own Phase 1 handlers in turn. A parent cancellation that triggers 5 child cancellations, each of which triggers grandchild updates, all execute within one transaction. Cycles are the handler author's responsibility — there is no cycle detection.
+Cascade writes go through the normal write path, which means they invoke their own Phase 1 handlers in turn. A parent cancellation that triggers 5 child cancellations, each of which triggers grandchild updates, all execute within one transaction.
+
+#### Cascade depth limiting
+
+The Stacks enforces a maximum cascade depth to prevent infinite recursion from accidental cycles (e.g., A's handler updates B, B's handler updates A). A depth counter in the transaction context is incremented each time a Phase 1 handler triggers a nested write. If the counter exceeds `MAX_CASCADE_DEPTH` (default: 16), the write throws and the entire transaction rolls back.
+
+This is a safety net, not a design constraint — legitimate cascade trees are unlikely to exceed single-digit depth. If a handler hits the limit, it indicates a cycle or a design problem in the cascade graph, not a need to raise the limit.
+
+`MAX_CASCADE_DEPTH` is configurable via the `stacks` plugin configuration section in `guild.json` (e.g., `"stacks": { "maxCascadeDepth": 32 }`). Raising it is discouraged without understanding why the limit was hit.
 
 #### Example: transactional writ status cascade
 
@@ -341,14 +410,15 @@ A parent writ is cancelled. The cascade handler cancels all non-terminal childre
 // In nexus-ledger apparatus start()
 const stacks = ctx.apparatus<StacksApi>('stacks')
 
-stacks.watch<Writ>('nexus-ledger', 'writs', async (event, ctx) => {
+stacks.watch<Writ>('nexus-ledger', 'writs', async (event) => {
   // Only respond to status changes to 'cancelled'
   if (event.type !== 'update') return
   if (event.entry.status !== 'cancelled' || event.prev.status === 'cancelled') return
 
-  // This book handle is bound to the same transaction as the triggering write.
-  // All puts below join that transaction — they do not commit independently.
-  const writs = ctx.apparatus<StacksApi>('stacks').book<Writ>('nexus-ledger', 'writs')
+  // Normal guild() access — the Stacks transparently routes these
+  // operations through the active transaction via AsyncLocalStorage.
+  const stacks = guild().apparatus<StacksApi>('stacks')
+  const writs = stacks.book<Writ>('nexus-ledger', 'writs')
 
   const children = await writs.find({
     where: [['parent.id', '=', event.entry.id]],
@@ -520,10 +590,22 @@ Explicit enumeration of all conceivable use cases. The "status" column is the de
 | Batch insert / bulk upsert | ❌ Out of scope v1 | Call `put()` in a loop |
 | Bulk delete by query | ❌ Out of scope v1 | Query then delete in a loop |
 | Atomic multi-document writes | ✅ `transaction()` | Explicit transactions; also implicit for cascades (see §6.4) |
-| Read-modify-write safety | ✅ `transaction()` | Read and conditional write in one atomic unit |
+| Read-modify-write safety | ✅ `transaction()` | Read and conditional write in one atomic unit — see note below |
 | Conditional update (CAS / optimistic locking) | ❌ Out of scope | Use `transaction()` for read-modify-write instead |
 | Soft delete | ❌ User-space concern | Add your own `deletedAt` field; use `IS NULL` filter |
 | Raw SQL write | ❌ Permanently out of scope | CDC contract depends on this |
+
+> **⚠️ Read-modify-write without a transaction is a silent-clobber risk.** A `get()` → modify → `put()` sequence without wrapping in `transaction()` will silently overwrite any changes made between the read and the write — including changes from cascade handlers or other plugins. This is especially relevant in Nexus because LLM-driven agents (Anima) may read a document, deliberate (taking time), and then put the result back, easily clobbering an intervening status change. **Always wrap read-modify-write in `transaction()`:**
+>
+> ```typescript
+> await stacks.transaction(async (tx) => {
+>   const writs = tx.book<Writ>('nexus-ledger', 'writs')
+>   const writ = await writs.get(id)
+>   if (writ && writ.status === 'active') {
+>     await writs.put({ ...writ, status: 'paused' })
+>   }
+> })
+> ```
 
 ### Reads
 
@@ -541,7 +623,7 @@ Explicit enumeration of all conceivable use cases. The "status" column is the de
 | Filter by pattern match | ✅ `LIKE` | `%` and `_` wildcards |
 | Filter by set membership | ✅ `IN` | |
 | Multiple conditions (AND) | ✅ Default — all conditions AND'd | |
-| OR conditions | ❌ Out of scope | Run two queries, merge in application code |
+| OR conditions | ✅ `{ or: [...] }` | Each branch is AND'd internally; results are unioned and deduplicated |
 | Sort by single field | ✅ `orderBy` | |
 | Sort by multiple fields | ✅ `orderBy` as array | |
 | Count | ✅ `count()` | Efficient — no payload fetch |
@@ -649,7 +731,13 @@ interface BackendTransaction {
   // ── Reads ──────────────────────────────────────────────────────────────
   get(ref: BookRef, id: string): Promise<BookEntry | null>
   find(ref: BookRef, query: InternalQuery): Promise<BookEntry[]>
-  count(ref: BookRef, query: InternalQuery): Promise<number>
+
+  /**
+   * Count documents matching a where clause. Takes conditions only —
+   * pagination (limit/offset) is not meaningful for counts and is
+   * excluded from this signature to avoid ambiguity.
+   */
+  count(ref: BookRef, where?: InternalCondition[]): Promise<number>
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
   commit(): Promise<void>
@@ -671,6 +759,12 @@ interface PutResult {
   prev?:   BookEntry   // populated only when withPrev: true and !created
 }
 
+/**
+ * The apparatus layer translates PatchResult to the public API's return
+ * type: `Book<T>.patch()` returns `Promise<T>` (just the updated document).
+ * The `prev` field is consumed internally for CDC event construction and
+ * is not surfaced to callers.
+ */
 interface PatchResult {
   entry: BookEntry   // document after patch
   prev:  BookEntry   // document before patch
@@ -741,11 +835,14 @@ A future version could adopt a sub-apparatus pattern where The Stacks depends on
 
 The in-memory `StacksBackend` for tests ships inside `@shardworks/stacks` as a test utility export — not as a separate package.
 
-**Q: `HandlerContext` passed to CDC handlers**
-Scoped to the *observing* plugin (the one that registered the watcher), not the book owner. A Clockworks handler registered by the Clockworks apparatus gets a HandlerContext where `ctx.apparatus('clockworks')` resolves correctly.
+**Q: How do CDC handlers access guild infrastructure?**
+Via the `guild()` singleton from `@shardworks/nexus-core` — same as all other plugin code. Handlers receive only the change event, no context parameter. Transaction binding is transparent via `AsyncLocalStorage`: Phase 1 handlers run inside an async context where all Stacks operations automatically join the active transaction. Phase 2 handlers run outside any transaction context. See §6.2.
 
 **Q: Registration timing enforcement**
 Option A: track a `started` flag, throw if `watch()` is called after the first write. Lightweight safety net — the practical risk of late registration is low, but the check is cheap.
+
+**Q: Cascade cycle detection?**
+Handled via cascade depth limiting (§6.3). A counter in the transaction context is incremented on each nested Phase 1 handler invocation. If it exceeds `MAX_CASCADE_DEPTH` (default 16, configurable), the write throws and the entire transaction rolls back. This catches accidental cycles without requiring graph analysis.
 
 ---
 

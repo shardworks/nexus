@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { listAnimas, checkAllAnimaStaleness } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
@@ -10,7 +10,8 @@ export default tool({
     status: z.string().optional().describe('Filter by status (aspirant, active, retired)'),
     role: z.string().optional().describe('Filter by role name'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const animas = listAnimas(home, params);
     const stalenessMap = checkAllAnimaStaleness(home);
 

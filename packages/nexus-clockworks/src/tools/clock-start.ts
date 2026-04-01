@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { clockStart } from '../daemon-ctrl.ts';
 
@@ -12,5 +12,8 @@ export default tool({
   params: {
     interval: z.number().optional().describe('Polling interval in milliseconds (default: 2000)'),
   },
-  handler: (_params, ctx) => clockStart(ctx.home, { interval: _params.interval }),
+  handler: (_params) => {
+    const { home } = guild();
+    return clockStart(home, { interval: _params.interval });
+  },
 });

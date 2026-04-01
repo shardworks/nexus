@@ -1,4 +1,4 @@
-import { tool, createWorkshop } from '@shardworks/nexus-core';
+import { tool, guild, createWorkshop } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -9,5 +9,8 @@ export default tool({
     repoName: z.string().describe('Repository name in org/name format'),
     private: z.boolean().optional().describe('Create private repo (default: true)'),
   },
-  handler: (params, { home }) => createWorkshop({ home, ...params }),
+  handler: (params) => {
+    const { home } = guild();
+    return createWorkshop({ home, ...params });
+  },
 });

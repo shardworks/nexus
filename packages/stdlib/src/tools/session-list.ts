@@ -1,4 +1,4 @@
-import { tool, listSessions } from '@shardworks/nexus-core';
+import { tool, listSessions, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -12,7 +12,8 @@ export default tool({
     status: z.enum(['active', 'completed']).optional().describe('Filter by active or completed'),
     limit: z.number().optional().default(20).describe('Maximum results'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     return listSessions(home, {
       anima: params.anima,
       workshop: params.workshop,

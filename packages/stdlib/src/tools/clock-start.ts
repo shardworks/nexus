@@ -1,4 +1,5 @@
 import { tool, clockStart } from '@shardworks/nexus-core';
+import { guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -8,5 +9,8 @@ export default tool({
   params: {
     interval: z.number().optional().describe('Polling interval in milliseconds (default: 2000)'),
   },
-  handler: (_params, { home }) => clockStart(home, { interval: _params.interval }),
+  handler: (_params) => {
+    const { home } = guild();
+    return clockStart(home, { interval: _params.interval });
+  },
 });

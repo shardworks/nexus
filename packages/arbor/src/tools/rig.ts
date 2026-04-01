@@ -9,8 +9,9 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   tool,
-  readGuildConfigV2,
-  writeGuildConfigV2,
+  guild,
+  readGuildConfig,
+  writeGuildConfig,
   resolveAllToolsFromExport,
 } from '@shardworks/nexus-core';
 import { z } from 'zod';
@@ -83,8 +84,9 @@ export const rigList = tool({
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },
-  handler: async (_params, { home }) => {
-    const config = readGuildConfigV2(home);
+  handler: async (_params) => {
+    const { home } = guild();
+    const config = readGuildConfig(home);
     const pluginIds = config.plugins;
 
     if (pluginIds.length === 0) {
@@ -108,7 +110,8 @@ export const rigInstall = tool({
     roles: z.string().optional().describe('Comma-separated role names to assign tools to (default: baseTools)'),
     type: z.enum(['registry', 'link']).optional().describe('Install type: "registry" (npm install, default) or "link" (symlink local dir)'),
   },
-  handler: async (params, { home }) => {
+  handler: async (params) => {
+    const { home } = guild();
     const { source } = params;
     const installType = params.type ?? 'registry';
     const roles = params.roles?.split(',').map((r) => r.trim()).filter(Boolean);
@@ -140,7 +143,7 @@ export const rigInstall = tool({
     const toolNames = await discoverPluginTools(home, packageName);
 
     // 3. Update guild.json — add to plugins list, update access control
-    const config = readGuildConfigV2(home);
+    const config = readGuildConfig(home);
 
     if (!config.plugins.includes(pluginId)) {
       config.plugins.push(pluginId);
@@ -160,7 +163,7 @@ export const rigInstall = tool({
       }
     }
 
-    writeGuildConfigV2(home, config);
+    writeGuildConfig(home, config);
 
     const lines = [
       `Installed plugin: ${pluginId} (${packageName})`,
@@ -182,8 +185,9 @@ export const rigRemove = tool({
   params: {
     name: z.string().describe('Plugin id or package name to remove'),
   },
-  handler: async (params, { home }) => {
-    const config = readGuildConfigV2(home);
+  handler: async (params) => {
+    const { home } = guild();
+    const config = readGuildConfig(home);
     const targetId = params.name.startsWith('@') ? derivePluginId(params.name) : params.name;
 
     if (!config.plugins.includes(targetId)) {
@@ -213,7 +217,7 @@ export const rigRemove = tool({
 
     config.plugins = config.plugins.filter((id) => id !== targetId);
 
-    writeGuildConfigV2(home, config);
+    writeGuildConfig(home, config);
 
     if (packageName) {
       try {

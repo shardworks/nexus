@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { completeWrit, readWrit, getWritChildren } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
@@ -12,7 +12,8 @@ export default tool({
   params: {
     summary: z.string().optional().describe('Brief summary of what was accomplished'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const writId = process.env.NEXUS_WRIT_ID;
     if (!writId) {
       return { status: 'no-writ', message: 'No writ bound to this session.' };

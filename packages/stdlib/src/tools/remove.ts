@@ -5,7 +5,7 @@
  * the CLI (for humans), and importable by engines. All access paths execute
  * the same logic.
  */
-import { tool, removeTool } from '@shardworks/nexus-core';
+import { tool, removeTool, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -17,7 +17,8 @@ export default tool({
     category: z.enum(['tools', 'engines', 'curricula', 'temperaments']).optional()
       .describe('Restrict to a specific category (searches all if omitted)'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     return removeTool({ home, name: params.name, category: params.category });
   },
 });

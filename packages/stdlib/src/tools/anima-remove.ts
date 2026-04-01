@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { removeAnima } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
@@ -9,7 +9,8 @@ export default tool({
   params: {
     id: z.string().describe('Anima ID or name'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     removeAnima(home, params.id);
     return { removed: params.id };
   },

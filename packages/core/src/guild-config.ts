@@ -69,17 +69,14 @@ export interface GuildSettings {
 }
 
 /**
- * Guild configuration — V2.
+ * Guild configuration.
  *
  * The plugin-centric model: plugins are npm packages; capabilities (tools, engines,
  * training content) are declared by plugins and discovered dynamically at runtime.
- * No per-capability registries — `config.plugins` + `node_modules` is the source
- * of truth. The default model moves into `settings`.
- *
- * Breaking change from GuildConfig (V1): drops `tools`, `engines`, `curricula`,
- * `temperaments`, and top-level `model`. Requires `plugins` (was optional `rigs`).
+ * Framework-level keys (`name`, `nexus`, `plugins`, `settings`) are defined here;
+ * all other top-level keys are plugin configuration sections, keyed by plugin id.
  */
-export interface GuildConfigV2 {
+export interface GuildConfig {
   /** Guild name — used as the guildhall npm package name. */
   name: string;
   /** Installed Nexus framework version. */
@@ -101,10 +98,10 @@ export interface GuildConfigV2 {
 }
 
 /**
- * Create the default guild.json content for a new V2 guild.
+ * Create the default guild.json content for a new guild.
  * All collections start empty. The default model is stored in settings.
  */
-export function createInitialGuildConfigV2(name: string, nexusVersion: string, model: string): GuildConfigV2 {
+export function createInitialGuildConfig(name: string, nexusVersion: string, model: string): GuildConfig {
   return {
     name,
     nexus: nexusVersion,
@@ -116,14 +113,14 @@ export function createInitialGuildConfigV2(name: string, nexusVersion: string, m
   };
 }
 
-/** Read and parse a V2 guild.json from the guild root. */
-export function readGuildConfigV2(home: string): GuildConfigV2 {
+/** Read and parse guild.json from the guild root. */
+export function readGuildConfig(home: string): GuildConfig {
   const configFile = guildConfigPath(home);
-  return JSON.parse(fs.readFileSync(configFile, 'utf-8')) as GuildConfigV2;
+  return JSON.parse(fs.readFileSync(configFile, 'utf-8')) as GuildConfig;
 }
 
-/** Write a V2 guild.json to the guild root. */
-export function writeGuildConfigV2(home: string, config: GuildConfigV2): void {
+/** Write guild.json to the guild root. */
+export function writeGuildConfig(home: string, config: GuildConfig): void {
   const configFile = guildConfigPath(home);
   fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n');
 }

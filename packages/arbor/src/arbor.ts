@@ -14,18 +14,21 @@
  */
 
 import {
-  readGuildConfigV2,
+  readGuildConfig,
   resolveAllToolsFromExport,
   isToolDefinition,
   isKit,
   isApparatus,
   VERSION,
+  setGuildAccessor,
+  clearGuildAccessor,
 } from '@shardworks/nexus-core';
 import type {
-  GuildConfigV2,
+  GuildConfig,
   ToolDefinition,
   HandlerContext,
   GuildContext,
+  GuildAccessor,
   Kit,
   LoadedKit,
   LoadedApparatus,
@@ -80,7 +83,7 @@ export interface Arbor {
   readonly home: string;
 
   /** The parsed guild.json config. Read at construction time. */
-  getGuildConfig(): GuildConfigV2;
+  getGuildConfig(): GuildConfig;
 
   /**
    * List all installed kits.
@@ -268,7 +271,7 @@ function buildGuildContext(
   forApparatus:  LoadedApparatus,
   manifest:      GuildManifest,
   guildRoot:     string,
-  config:        GuildConfigV2,
+  config:        GuildConfig,
   eventHandlers: Map<string, Array<(...args: unknown[]) => void | Promise<void>>>,
 ): GuildContext {
   const allowed = new Set(forApparatus.apparatus.requires ?? []);
@@ -391,7 +394,7 @@ function extractTools(pluginId: string, kit: Kit): Tool[] {
  */
 async function loadAndStart(
   guildRoot: string,
-  config:    GuildConfigV2,
+  config:    GuildConfig,
   db:        BooksDatabase,
 ): Promise<GuildManifest> {
   const kits:        LoadedKit[]        = [arborKit()];
@@ -511,7 +514,7 @@ async function loadAndStart(
  * @param guildRoot - Absolute path to the guild root (contains guild.json).
  */
 export function createArbor(guildRoot: string): Arbor {
-  const config = readGuildConfigV2(guildRoot);
+  const config = readGuildConfig(guildRoot);
 
   // Lazy manifest — a single Promise shared across all callers.
   // `resolvedManifest` is set synchronously once the Promise resolves,
@@ -533,6 +536,39 @@ export function createArbor(guildRoot: string): Arbor {
     if (!manifestPromise) {
       manifestPromise = loadAndStart(guildRoot, config, getDatabase()).then((m) => {
         resolvedManifest = m;
+
+        // Wire the process-level guild accessor so tool/engine/relay handlers
+        // can call guild() to access apparatus, config, and guild root.
+        const accessor: GuildAccessor = {
+          home: guildRoot,
+
+          apparatus<T>(name: string): T {
+            const provides = m.provides.get(name);
+            if (provides === undefined) {
+              const sentinel = new Proxy({} as object, {
+                get(_target, prop) {
+                  throw new Error(
+                    `[guild] apparatus("${name}") has no provides. ` +
+                    `Accessing .${String(prop)} is not available.`,
+                  );
+                },
+              });
+              return sentinel as unknown as T;
+            }
+            return provides as T;
+          },
+
+          config<T = Record<string, unknown>>(pluginId: string): T {
+            const cfg = config as unknown as Record<string, unknown>;
+            return (cfg[pluginId] ?? {}) as T;
+          },
+
+          guildConfig() {
+            return config;
+          },
+        };
+        setGuildAccessor(accessor);
+
         return m;
       });
     }

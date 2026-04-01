@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { updateAnima } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
@@ -11,8 +11,11 @@ export default tool({
     status: z.string().optional().describe('New status (aspirant, active, retired)'),
     roles: z.array(z.string()).optional().describe('New role assignments (replaces all existing roles)'),
   },
-  handler: (params, { home }) => updateAnima(home, params.id, {
-    status: params.status,
-    roles: params.roles,
-  }),
+  handler: (params) => {
+    const { home } = guild();
+    return updateAnima(home, params.id, {
+      status: params.status,
+      roles: params.roles,
+    });
+  },
 });

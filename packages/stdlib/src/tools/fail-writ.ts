@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { failWrit } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
@@ -12,7 +12,8 @@ export default tool({
   params: {
     reason: z.string().describe('Why this writ cannot be completed'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const writId = process.env.NEXUS_WRIT_ID;
     if (!writId) {
       return { status: 'error', message: 'No writ bound to this session.' };

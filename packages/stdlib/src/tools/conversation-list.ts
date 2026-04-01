@@ -1,4 +1,4 @@
-import { tool, listConversations } from '@shardworks/nexus-core';
+import { tool, listConversations, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -10,7 +10,8 @@ export default tool({
     kind: z.enum(['consult', 'convene']).optional().describe('Filter by kind'),
     limit: z.number().optional().default(20).describe('Maximum results'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     return listConversations(home, {
       status: params.status,
       kind: params.kind,

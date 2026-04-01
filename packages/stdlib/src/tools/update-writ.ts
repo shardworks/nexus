@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { failWrit, cancelWrit, interruptWrit, adminCompleteWrit, reopenFailedWrit, readWrit } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
@@ -20,7 +20,8 @@ export default tool({
     action: z.enum(['fail', 'cancel', 'reopen', 'complete', 'reopen-failed']).describe('The action to take'),
     reason: z.string().optional().describe('Reason for the action (used for fail)'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const writ = readWrit(home, params.writId);
     if (!writ) {
       return { status: 'error', message: `Writ "${params.writId}" not found.` };

@@ -20,9 +20,9 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
-import { readGuildConfigV2 } from '@shardworks/nexus-core';
+import { readGuildConfig } from '@shardworks/nexus-core';
 import { resolveEngineFromExport } from '@shardworks/nexus-core';
-import type { StandingOrder, GuildConfigV2 } from '@shardworks/nexus-core';
+import type { StandingOrder, GuildConfig } from '@shardworks/nexus-core';
 import type { GuildEvent, EngineDefinition } from '@shardworks/nexus-core';
 import {
   readPendingEvents,
@@ -104,7 +104,7 @@ export interface ClockRunResult {
  */
 async function resolveEngine(
   home: string,
-  config: GuildConfigV2,
+  config: GuildConfig,
   engineName: string,
 ): Promise<EngineDefinition> {
   const nodeModules = path.join(home, 'node_modules');
@@ -169,7 +169,7 @@ async function executeEngineOrder(
   home: string,
   event: GuildEvent,
   engineName: string,
-  config: GuildConfigV2,
+  config: GuildConfig,
   params: Record<string, unknown>,
 ): Promise<DispatchSummary> {
   const startedAt = new Date().toISOString();
@@ -211,7 +211,7 @@ async function executeEngineOrder(
  * Process a single event: find matching standing orders and execute them.
  */
 async function processEvent(home: string, event: GuildEvent): Promise<TickResult> {
-  const config = readGuildConfigV2(home);
+  const config = readGuildConfig(home);
   const standingOrders = config.clockworks?.standingOrders ?? [];
   const matching = standingOrders.filter(so => so.on === event.name);
   const dispatches: DispatchSummary[] = [];

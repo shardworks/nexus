@@ -1,4 +1,4 @@
-import { tool, endConversation } from '@shardworks/nexus-core';
+import { tool, endConversation, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -10,7 +10,8 @@ export default tool({
     reason: z.enum(['concluded', 'abandoned']).optional().default('concluded')
       .describe('Why the conversation ended'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     endConversation(home, params.id, params.reason);
     return { id: params.id, status: params.reason };
   },

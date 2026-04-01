@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { showAnima, checkAnimaStaleness } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
@@ -9,7 +9,8 @@ export default tool({
   params: {
     id: z.string().describe('Anima ID or name'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const result = showAnima(home, params.id);
     if (!result) throw new Error(`Anima "${params.id}" not found.`);
 

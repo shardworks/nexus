@@ -5,7 +5,7 @@
  * @shardworks/nexus-core. The rig now owns this operation.
  */
 
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { showSession } from '../lib/session-api.js';
 
@@ -18,7 +18,8 @@ export default tool({
   params: {
     id: z.string().describe('Session ID'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const result = showSession(home, params.id);
     if (!result) throw new Error(`Session "${params.id}" not found.`);
     return result;

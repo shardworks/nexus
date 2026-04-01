@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { createWrit, signalEvent } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
@@ -16,7 +16,8 @@ export default tool({
     workshop: z.string().optional().describe('Target workshop (workspace-bound work)'),
     type: z.string().optional().describe('Writ type (defaults to "writ")'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const writ = createWrit(home, {
       type: params.type,
       title: params.title,

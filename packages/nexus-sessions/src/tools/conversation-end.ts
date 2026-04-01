@@ -5,7 +5,7 @@
  * from @shardworks/nexus-core. The rig now owns this operation.
  */
 
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { endConversation } from '../lib/conversation-api.js';
 
@@ -20,7 +20,8 @@ export default tool({
     reason: z.enum(['concluded', 'abandoned']).optional().default('concluded')
       .describe('Why the conversation ended'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     endConversation(home, params.id, params.reason);
     return { id: params.id, status: params.reason };
   },

@@ -1,4 +1,4 @@
-import { tool, showSession } from '@shardworks/nexus-core';
+import { tool, showSession, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -8,7 +8,8 @@ export default tool({
   params: {
     id: z.string().describe('Session ID'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const result = showSession(home, params.id);
     if (!result) throw new Error(`Session "${params.id}" not found.`);
     return result;

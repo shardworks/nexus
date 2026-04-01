@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { clockRun } from '../lib/runner.ts';
 
 export default tool({
@@ -9,5 +9,8 @@ export default tool({
     'pending events remain (standing order failures may generate new events). Returns a ' +
     'summary of all events processed and their dispatch outcomes.',
   params: {},
-  handler: async (_params, ctx) => clockRun(ctx.home),
+  handler: async (_params) => {
+    const { home } = guild();
+    return clockRun(home);
+  },
 });

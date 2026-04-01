@@ -1,4 +1,4 @@
-import { tool, addWorkshop, deriveWorkshopName } from '@shardworks/nexus-core';
+import { tool, addWorkshop, deriveWorkshopName, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -9,7 +9,8 @@ export default tool({
     url: z.string().describe('Git remote URL to clone'),
     name: z.string().optional().describe('Workshop name (default: derived from URL)'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     const name = params.name ?? deriveWorkshopName(params.url);
     return addWorkshop({ home, name, remoteUrl: params.url });
   },

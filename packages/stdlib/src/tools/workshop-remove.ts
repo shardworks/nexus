@@ -1,4 +1,4 @@
-import { tool, removeWorkshop } from '@shardworks/nexus-core';
+import { tool, removeWorkshop, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -8,7 +8,8 @@ export default tool({
   params: {
     name: z.string().describe('Workshop name to remove'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     removeWorkshop({ home, name: params.name });
     return { removed: params.name };
   },

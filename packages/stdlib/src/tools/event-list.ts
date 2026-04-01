@@ -1,4 +1,4 @@
-import { tool, listEvents } from '@shardworks/nexus-core';
+import { tool, listEvents, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -11,7 +11,8 @@ export default tool({
     pending: z.boolean().optional().describe('If true, only unprocessed events'),
     limit: z.number().optional().default(20).describe('Maximum results'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     return listEvents(home, {
       name: params.name,
       emitter: params.emitter,

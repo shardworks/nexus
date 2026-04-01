@@ -4,7 +4,7 @@
  * An arbor built-in command. Available via CLI only (not MCP).
  */
 
-import { tool, VERSION, readGuildConfigV2 } from '@shardworks/nexus-core';
+import { tool, VERSION, readGuildConfig, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { readGuildPackageJson, resolvePackageNameForPluginId } from '../resolve-package.ts';
 
@@ -15,14 +15,15 @@ export default tool({
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },
-  handler: async (_params, { home }) => {
+  handler: async (_params) => {
+    const { home } = guild();
     const result: Record<string, string> = {
       nexus: VERSION,
       node: process.version,
     };
 
     try {
-      const config = readGuildConfigV2(home);
+      const config = readGuildConfig(home);
       for (const pluginId of config.plugins) {
         const packageName = resolvePackageNameForPluginId(home, pluginId);
         if (!packageName) {

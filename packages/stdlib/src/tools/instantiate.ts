@@ -5,7 +5,7 @@
  * the CLI (for humans), and importable by engines. All access paths execute
  * the same logic.
  */
-import { tool, instantiate } from '@shardworks/nexus-core';
+import { tool, instantiate, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -18,7 +18,8 @@ export default tool({
     curriculum: z.string().optional().describe('Curriculum to assign (by name, must be registered in guild.json)'),
     temperament: z.string().optional().describe('Temperament to assign (by name, must be registered in guild.json)'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     return instantiate({ home, ...params });
   },
 });

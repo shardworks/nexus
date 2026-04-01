@@ -5,7 +5,7 @@
  * from @shardworks/nexus-core. The rig now owns this operation.
  */
 
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { listConversations } from '../lib/conversation-api.js';
 
@@ -20,7 +20,8 @@ export default tool({
     kind: z.enum(['consult', 'convene']).optional().describe('Filter by kind'),
     limit: z.number().optional().default(20).describe('Maximum results'),
   },
-  handler: (params, { home }) => {
+  handler: (params) => {
+    const { home } = guild();
     return listConversations(home, {
       status: params.status,
       kind: params.kind,

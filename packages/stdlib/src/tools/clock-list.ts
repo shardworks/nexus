@@ -1,4 +1,5 @@
 import { tool, readPendingEvents } from '@shardworks/nexus-core';
+import { guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -6,5 +7,8 @@ export default tool({
   description: 'Show pending (unprocessed) events in the Clockworks queue',
   instructions: 'Returns all unprocessed events from the Clockworks event queue, ordered by fire time.',
   params: {},
-  handler: (_params, { home }) => readPendingEvents(home),
+  handler: (_params) => {
+    const { home } = guild();
+    return readPendingEvents(home);
+  },
 });

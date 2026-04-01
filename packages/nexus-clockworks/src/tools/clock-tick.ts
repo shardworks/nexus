@@ -1,4 +1,4 @@
-import { tool } from '@shardworks/nexus-core';
+import { tool, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { clockTick } from '../lib/runner.ts';
 
@@ -12,5 +12,8 @@ export default tool({
   params: {
     id: z.string().optional().describe('Specific event ID to process (omit for next pending)'),
   },
-  handler: async (params, ctx) => clockTick(ctx.home, params.id),
+  handler: async (params) => {
+    const { home } = guild();
+    return clockTick(home, params.id);
+  },
 });
