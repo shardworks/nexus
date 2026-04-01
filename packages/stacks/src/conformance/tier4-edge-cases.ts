@@ -116,6 +116,10 @@ export function tier4EdgeCases(backendFactory: () => StacksBackend): void {
       assert.strictEqual(zeroResults[0].id, 'a');
     });
 
+    // 4.7 — Concurrent implicit transactions: N/A for single-connection
+    // SQLite (serialized access). Relevant for future multi-connection
+    // backends (e.g. Postgres). See spec for test definition.
+
     it('4.8 Empty book operations', async () => {
       const book = t.stacks.book<BookEntry>(OWNER, BOOK);
 

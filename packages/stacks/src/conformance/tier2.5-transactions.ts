@@ -90,6 +90,9 @@ export function tier25Transactions(backendFactory: () => StacksBackend): void {
       });
     });
 
+    // 2.27 is intentionally similar to 2.11 (tier2-cdc.ts). The spec
+    // acknowledges the overlap — 2.11 tests CDC atomicity, 2.27 frames
+    // the same behavior from the implicit-transaction perspective.
     it('2.27 Implicit transaction spans write + Phase 1 handlers', async () => {
       const bookNameA = 'booksa';
       const bookNameB = 'booksb';

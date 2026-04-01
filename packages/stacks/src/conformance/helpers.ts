@@ -66,6 +66,45 @@ export function collectEvents<T extends BookEntry = BookEntry>(
   return events;
 }
 
+// ── Backend spy (for 2.6 — verifying withPrev behavior) ─────────────
+
+export interface PutCall {
+  ref: BookRef;
+  entry: BookEntry;
+  withPrev: boolean;
+}
+
+/**
+ * Wraps a backend factory to record put() calls on transactions,
+ * so tests can verify whether withPrev was requested.
+ */
+export function spyingBackendFactory(
+  factory: () => StacksBackend,
+): { factory: () => StacksBackend; putCalls: PutCall[] } {
+  const putCalls: PutCall[] = [];
+
+  const wrappedFactory = (): StacksBackend => {
+    const backend = factory();
+    const origBeginTransaction = backend.beginTransaction.bind(backend);
+
+    backend.beginTransaction = () => {
+      const tx = origBeginTransaction();
+      const origPut = tx.put.bind(tx);
+
+      tx.put = (ref, entry, opts) => {
+        putCalls.push({ ref, entry, withPrev: opts?.withPrev ?? false });
+        return origPut(ref, entry, opts);
+      };
+
+      return tx;
+    };
+
+    return backend;
+  };
+
+  return { factory: wrappedFactory, putCalls };
+}
+
 // ── Default book ref ─────────────────────────────────────────────────
 
 export const OWNER = 'test-owner';

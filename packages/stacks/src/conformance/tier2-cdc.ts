@@ -8,11 +8,12 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { StacksBackend } from '../backend.ts';
-import type { BookEntry, ChangeEvent } from '../types.ts';
+import type { BookEntry } from '../types.ts';
 import {
   createTestStacks,
   collectEvents,
   seedDocument,
+  spyingBackendFactory,
   OWNER,
   BOOK,
   REF,
@@ -92,6 +93,26 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       assert.strictEqual(events.length, 0);
     });
 
+    it('2.6 No pre-read when no handlers are registered', async () => {
+      // Use a spying backend to verify put() is called with withPrev: false
+      const spy = spyingBackendFactory(backendFactory);
+      const spyT = createTestStacks(spy.factory);
+      spyT.ensureBook(OWNER, BOOK);
+
+      // No watch() calls — no handlers registered
+      const book = spyT.stacks.book<BookEntry>(OWNER, BOOK);
+      await book.put({ id: 'a', name: 'Alice' });
+
+      // The put should have been called with withPrev: false (no pre-read needed)
+      const putCalls = spy.putCalls.filter(
+        c => c.ref.ownerId === OWNER && c.ref.book === BOOK,
+      );
+      assert.strictEqual(putCalls.length, 1);
+      assert.strictEqual(putCalls[0].withPrev, false);
+
+      spyT.backend.close();
+    });
+
     it('2.6a Put with identical document fires update event', async () => {
       seedDocument(t.backend, REF, { id: 'a', name: 'Alice' });
       const events = collectEvents(t.stacks, OWNER, BOOK);
@@ -106,23 +127,51 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       }
     });
 
-    it('2.6b CDC events include ownerId and book fields', async () => {
+    it('2.6b CDC events include ownerId and book fields — create', async () => {
       const owner = 'my-plugin';
       const bookName = 'tasks';
       t.ensureBook(owner, bookName);
 
-      // Test all three event types
       const events = collectEvents(t.stacks, owner, bookName);
       const book = t.stacks.book<BookEntry>(owner, bookName);
 
-      // create
       await book.put({ id: 'a', title: 'test' });
+      assert.strictEqual(events[0].type, 'create');
       assert.strictEqual(events[0].ownerId, owner);
       assert.strictEqual(events[0].book, bookName);
-      assert.strictEqual(events[0].type, 'create');
+    });
 
-      // For update and delete, we need a fresh stacks instance since
-      // lock prevents registering after writes. Verify the fields on the create event.
+    it('2.6b CDC events include ownerId and book fields — update', async () => {
+      const owner = 'my-plugin';
+      const bookName = 'tasks';
+      t.ensureBook(owner, bookName);
+
+      // Seed via backend to avoid tripping the CDC lock
+      seedDocument(t.backend, { ownerId: owner, book: bookName }, { id: 'a', title: 'test' });
+
+      const events = collectEvents(t.stacks, owner, bookName);
+      const book = t.stacks.book<BookEntry>(owner, bookName);
+
+      await book.put({ id: 'a', title: 'updated' });
+      assert.strictEqual(events[0].type, 'update');
+      assert.strictEqual(events[0].ownerId, owner);
+      assert.strictEqual(events[0].book, bookName);
+    });
+
+    it('2.6b CDC events include ownerId and book fields — delete', async () => {
+      const owner = 'my-plugin';
+      const bookName = 'tasks';
+      t.ensureBook(owner, bookName);
+
+      seedDocument(t.backend, { ownerId: owner, book: bookName }, { id: 'a', title: 'test' });
+
+      const events = collectEvents(t.stacks, owner, bookName);
+      const book = t.stacks.book<BookEntry>(owner, bookName);
+
+      await book.delete('a');
+      assert.strictEqual(events[0].type, 'delete');
+      assert.strictEqual(events[0].ownerId, owner);
+      assert.strictEqual(events[0].book, bookName);
     });
 
     it('2.7 Phase 1 handler error rolls back the triggering write', async () => {
