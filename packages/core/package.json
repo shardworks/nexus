@@ -7,7 +7,7 @@
     "url": "https://github.com/shardworks/nexus",
     "directory": "packages/core"
   },
-  "description": "Nexus core library — shared infrastructure for the guild system",
+  "description": "Nexus core — public SDK surface: guild singleton, plugin/kit/apparatus types, guild config, session provider registry",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

@@ -1,7 +1,7 @@
 {
   "name": "@shardworks/guild-starter-kit",
   "version": "0.0.0",
-  "description": "Default bundle for new Nexus guilds — tools, training, and migrations",
+  "description": "Default kit for new guilds — SQL migrations, curricula (guild-operations), and temperaments (artisan, guide)",
   "repository": {
     "type": "git",
     "url": "https://github.com/shardworks/nexus",

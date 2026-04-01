@@ -7,7 +7,7 @@
     "url": "https://github.com/shardworks/nexus",
     "directory": "packages/arbor"
   },
-  "description": "Nexus Mk 2.1 — arbor (plugin host, tool resolution)",
+  "description": "The Arbor — guild runtime host: loads plugins, validates dependencies, starts apparatus in order, wires the guild() singleton",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

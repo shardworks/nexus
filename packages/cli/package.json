@@ -7,7 +7,7 @@
     "url": "https://github.com/shardworks/nexus",
     "directory": "packages/cli"
   },
-  "description": "Nexus Mk 2.1 — CLI for the guild system",
+  "description": "The nsg CLI — framework commands and dynamic plugin-contributed tool discovery via The Instrumentarium",
   "type": "module",
   "bin": {
     "nsg": "./src/cli.ts"
