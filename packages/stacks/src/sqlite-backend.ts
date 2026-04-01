@@ -16,6 +16,7 @@ import type {
   BackendOptions,
   BackendTransaction,
   BookRef,
+  CountQuery,
   DeleteResult,
   InternalCondition,
   InternalQuery,
@@ -222,23 +223,25 @@ class SqliteTransaction implements BackendTransaction {
   delete(ref: BookRef, id: string, opts?: { withPrev: boolean }): DeleteResult {
     const table = tableName(ref);
 
-    let prev: BookEntry | undefined;
-
     if (opts?.withPrev) {
+      // Fetch-then-delete in one logical step. Safe because we're
+      // inside an explicit transaction (synchronous better-sqlite3).
       const existing = this.db
         .prepare(`SELECT content FROM "${table}" WHERE id = ?`)
         .get(id) as { content: string } | undefined;
 
       if (!existing) return { found: false };
-      prev = JSON.parse(existing.content) as BookEntry;
+
+      this.db.prepare(`DELETE FROM "${table}" WHERE id = ?`).run(id);
+      return { found: true, prev: JSON.parse(existing.content) as BookEntry };
     }
 
+    // No prev needed — just delete and check changes
     const result = this.db
       .prepare(`DELETE FROM "${table}" WHERE id = ?`)
       .run(id);
 
-    if (result.changes === 0) return { found: false };
-    return { found: true, prev };
+    return { found: result.changes > 0 };
   }
 
   get(ref: BookRef, id: string): BookEntry | null {
@@ -263,7 +266,7 @@ class SqliteTransaction implements BackendTransaction {
     return rows.map(parseRow);
   }
 
-  count(ref: BookRef, query: InternalQuery): number {
+  count(ref: BookRef, query: CountQuery): number {
     const table = tableName(ref);
     const where = buildWhere(query.where);
 

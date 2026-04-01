@@ -54,6 +54,11 @@ export interface InternalQuery {
   offset?: number;
 }
 
+/** Narrowed query type for count() — conditions only, no pagination. */
+export interface CountQuery {
+  where?: InternalCondition[];
+}
+
 // ── Transaction handle ────────────────────────────────────────────────
 
 export interface BackendTransaction {
@@ -62,7 +67,7 @@ export interface BackendTransaction {
   delete(ref: BookRef, id: string, opts?: { withPrev: boolean }): DeleteResult;
   get(ref: BookRef, id: string): BookEntry | null;
   find(ref: BookRef, query: InternalQuery): BookEntry[];
-  count(ref: BookRef, query: InternalQuery): number;
+  count(ref: BookRef, query: CountQuery): number;
   commit(): void;
   rollback(): void;
 }

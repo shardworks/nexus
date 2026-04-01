@@ -9,6 +9,7 @@ import type {
   BackendOptions,
   BackendTransaction,
   BookRef,
+  CountQuery,
   DeleteResult,
   InternalCondition,
   InternalQuery,
@@ -17,6 +18,7 @@ import type {
   StacksBackend,
 } from './backend.ts';
 import type { BookEntry, BookSchema, Scalar } from './types.ts';
+import { getNestedField } from './field-utils.ts';
 
 // ── Ref key ───────────────────────────────────────────────────────────
 
@@ -24,22 +26,10 @@ function refKey(ref: BookRef): string {
   return `${ref.ownerId}/${ref.book}`;
 }
 
-// ── Field access (dot-notation) ───────────────────────────────────────
-
-function getField(entry: BookEntry, field: string): unknown {
-  const parts = field.split('.');
-  let current: unknown = entry;
-  for (const part of parts) {
-    if (current == null || typeof current !== 'object') return undefined;
-    current = (current as Record<string, unknown>)[part];
-  }
-  return current;
-}
-
 // ── Condition matching ────────────────────────────────────────────────
 
 function matchesCondition(entry: BookEntry, cond: InternalCondition): boolean {
-  const value = getField(entry, cond.field);
+  const value = getNestedField(entry, cond.field);
 
   switch (cond.op) {
     case 'eq':       return value === cond.value;
@@ -55,20 +45,34 @@ function matchesCondition(entry: BookEntry, cond: InternalCondition): boolean {
   }
 }
 
+/**
+ * SQL LIKE matching — case-insensitive for ASCII only, matching SQLite behavior.
+ *
+ * SQLite's LIKE is case-insensitive for ASCII A-Z but case-sensitive for
+ * Unicode characters. We replicate this by folding ASCII letters in both
+ * value and pattern to lowercase before matching, rather than using the
+ * regex 'i' flag (which would be case-insensitive for all Unicode).
+ */
 function sqlLike(value: string, pattern: string): boolean {
+  // Fold ASCII letters only (matches SQLite behavior)
+  const foldAscii = (s: string) =>
+    s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+  const foldedValue = foldAscii(value);
+  const foldedPattern = foldAscii(pattern);
+
   // Convert SQL LIKE pattern to regex: % → .*, _ → .
-  const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, (m) => {
+  const escaped = foldedPattern.replace(/[.*+?^${}()|[\]\\]/g, (m) => {
     if (m === '%' || m === '_') return m;
     return '\\' + m;
   });
   const regex = new RegExp(
     '^' + escaped.replace(/%/g, '.*').replace(/_/g, '.') + '$',
-    'i',
   );
-  return regex.test(value);
+  return regex.test(foldedValue);
 }
 
-function matchesQuery(entry: BookEntry, query: InternalQuery): boolean {
+function matchesQuery(entry: BookEntry, query: CountQuery | InternalQuery): boolean {
   if (!query.where) return true;
   return query.where.every((cond) => matchesCondition(entry, cond));
 }
@@ -83,8 +87,8 @@ function sortEntries(
 
   return [...entries].sort((a, b) => {
     for (const { field, dir } of orderBy) {
-      const va = getField(a, field);
-      const vb = getField(b, field);
+      const va = getNestedField(a, field);
+      const vb = getNestedField(b, field);
       if (va === vb) continue;
       if (va == null) return dir === 'asc' ? -1 : 1;
       if (vb == null) return dir === 'asc' ? 1 : -1;
@@ -141,7 +145,17 @@ class MemoryTransaction implements BackendTransaction {
     this.snapshot = cloneStore(store);
   }
 
+  private assertActive(): void {
+    if (this.committed) {
+      throw new Error('[stacks/memory] Cannot operate on a committed transaction');
+    }
+    if (this.rolledBack) {
+      throw new Error('[stacks/memory] Cannot operate on a rolled-back transaction');
+    }
+  }
+
   put(ref: BookRef, entry: BookEntry, opts?: { withPrev: boolean }): PutResult {
+    this.assertActive();
     const book = getBook(this.store, ref);
     const existing = book.get(entry.id);
     const created = !existing;
@@ -152,6 +166,7 @@ class MemoryTransaction implements BackendTransaction {
   }
 
   patch(ref: BookRef, id: string, fields: Record<string, unknown>): PatchResult {
+    this.assertActive();
     const book = getBook(this.store, ref);
     const existing = book.get(id);
 
@@ -169,6 +184,7 @@ class MemoryTransaction implements BackendTransaction {
   }
 
   delete(ref: BookRef, id: string, opts?: { withPrev: boolean }): DeleteResult {
+    this.assertActive();
     const book = getBook(this.store, ref);
     const existing = book.get(id);
 
@@ -180,12 +196,14 @@ class MemoryTransaction implements BackendTransaction {
   }
 
   get(ref: BookRef, id: string): BookEntry | null {
+    this.assertActive();
     const book = getBook(this.store, ref);
     const entry = book.get(id);
     return entry ? structuredClone(entry) : null;
   }
 
   find(ref: BookRef, query: InternalQuery): BookEntry[] {
+    this.assertActive();
     const book = getBook(this.store, ref);
     let entries = Array.from(book.values()).filter((e) => matchesQuery(e, query));
     entries = sortEntries(entries, query.orderBy);
@@ -193,7 +211,8 @@ class MemoryTransaction implements BackendTransaction {
     return entries.map((e) => structuredClone(e));
   }
 
-  count(ref: BookRef, query: InternalQuery): number {
+  count(ref: BookRef, query: CountQuery): number {
+    this.assertActive();
     const book = getBook(this.store, ref);
     return Array.from(book.values()).filter((e) => matchesQuery(e, query)).length;
   }

@@ -50,6 +50,7 @@ export type {
   BookRef,
   InternalQuery,
   InternalCondition,
+  CountQuery,
   PutResult,
   PatchResult,
   DeleteResult,

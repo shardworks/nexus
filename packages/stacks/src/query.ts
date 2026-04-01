@@ -5,7 +5,7 @@
  * user-facing operator strings to the backend's internal enum.
  */
 
-import type { BookQuery, ListOptions, OrderBy, WhereClause, WhereCondition } from './types.ts';
+import type { BookQuery, OrderBy, WhereClause, WhereCondition } from './types.ts';
 import type { InternalCondition, InternalQuery } from './backend.ts';
 
 // ── Field name validation ─────────────────────────────────────────────
@@ -74,16 +74,13 @@ export function translateQuery(query: BookQuery): InternalQuery {
   };
 }
 
-export function translateListOptions(options?: ListOptions): InternalQuery {
-  if (!options) return {};
-  return {
-    orderBy: normalizeOrderBy(options.orderBy),
-    limit: options.limit,
-    offset: options.offset,
-  };
-}
-
-export function translateWhereClause(where?: WhereClause | { or: WhereClause[] }): InternalQuery {
+/**
+ * Translate a WhereClause into conditions only (no pagination fields).
+ * OR clauses are handled at the apparatus level — this only handles AND.
+ */
+export function translateWhereClause(
+  where?: WhereClause | { or: WhereClause[] },
+): { where?: InternalCondition[] } {
   if (!where) return {};
   // Only handles AND clauses — OR is handled at the apparatus level
   if (!Array.isArray(where)) return {};
