@@ -353,7 +353,10 @@ export class ScriptoriumCore {
     }
 
     const defaultBranch = await resolveDefaultBranch(clonePath);
-    const startPoint = request.startPoint ?? `origin/${defaultBranch}`;
+    // In a bare clone, refs are at refs/heads/* (mirroring the remote),
+    // not refs/remotes/origin/*. Use the branch name directly since we
+    // already fetched to ensure freshness.
+    const startPoint = request.startPoint ?? defaultBranch;
 
     const worktreePath = this.draftWorktreePath(request.codexName, branch);
     fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
