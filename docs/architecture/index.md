@@ -10,7 +10,7 @@ For the conceptual vocabulary — what guilds, animas, commissions, writs, and a
 
 > This section describes the **standard guild** — the configuration `nsg init` produces. The framework itself is a plugin loader; every apparatus named below is part of the default plugin set, not a hard requirement. §4 ([Plugin Architecture](#plugin-architecture)) explains the underlying model; the [Standard Guild](#the-standard-guild) section catalogues what the default set includes.
 
-A Nexus guild is a git repository with a `guild.json` at its root and a `.nexus/` directory holding runtime state. When the system starts, **Arbor** — the guild runtime — reads `guild.json`, loads the declared plugins, validates their dependencies, and starts each apparatus in order. From that point, the guild operates: the patron commissions work; **The Clerk** receives it and issues writs; **The Walker** assembles rigs and drives their engines to completion; **The Clockworks** turns events into action, activating relays in response to standing orders; and **anima sessions** — AI processes launched by **The Summoner** — do the work that requires judgment. Results land in codexes and documents; the patron consumes what the guild delivers.
+A Nexus guild is a git repository with a `guild.json` at its root and a `.nexus/` directory holding runtime state. When the system starts, **Arbor** — the guild runtime — reads `guild.json`, loads the declared plugins, validates their dependencies, and starts each apparatus in order. From that point, the guild operates: the patron commissions work; **The Clerk** receives it and issues writs; **The Walker** assembles rigs and drives their engines to completion; **The Clockworks** turns events into action, activating relays in response to standing orders; and **anima sessions** — AI processes launched by **The Animator** — do the work that requires judgment. Results land in codexes and documents; the patron consumes what the guild delivers.
 
 ```
   PATRON
@@ -27,7 +27,7 @@ A Nexus guild is a git repository with a `guild.json` at its root and a `.nexus/
   │  │  Clockworks · Surveyor · Clerk                        │  │
   │  ├───────────────────────────────────────────────────────┤  │
   │  │  Walker · Formulary · Executor                        │  │
-  │  │  Manifester · Summoner                                │  │
+  │  │  Loom · Animator                                      │  │
   │  └─────────────────────────┬─────────────────────────────┘  │
   │                            │                                 │
   │  Anima Sessions  ◄─────────┘                                │
@@ -52,7 +52,7 @@ Arbor is the guild runtime. It reads `guild.json` at startup, imports every decl
 
 ### The Apparatus
 
-The guild's operational fabric is provided by apparatus — plugins with a start/stop lifecycle that Arbor starts in dependency order. **The Stacks** is the persistence substrate everything else reads from and writes to. **The Clockworks** is the event-driven nervous system: standing orders bind events to relays, and the summon relay dispatches anima sessions in response. **The Surveyor** tracks what work applies to each registered codex. **The Clerk** handles commission intake, converting patron requests into writs and signaling when work is ready to execute. The Formulary, Walker, Executor, Manifester, and Summoner then take it from there — covered in the next section.
+The guild's operational fabric is provided by apparatus — plugins with a start/stop lifecycle that Arbor starts in dependency order. **The Stacks** is the persistence substrate everything else reads from and writes to. **The Clockworks** is the event-driven nervous system: standing orders bind events to relays, and the summon relay dispatches anima sessions in response. **The Surveyor** tracks what work applies to each registered codex. **The Clerk** handles commission intake, converting patron requests into writs and signaling when work is ready to execute. The Formulary, Walker, Executor, Loom, and Animator then take it from there — covered in the next section.
 
 Each of these is a plugin from the default set, not a built-in. The [Standard Guild](#the-standard-guild) section lists them; the sections that follow document each in detail.
 
@@ -60,7 +60,7 @@ Each of these is a plugin from the default set, not a built-in. The [Standard Gu
 
 When The Clerk signals a writ is ready, **The Walker** spawns a rig and begins driving it: traversing active engines, dispatching those whose upstream work is complete, and extending the rig by querying **The Formulary** for engine chains that satisfy declared needs. **The Executor** runs each engine — clockwork engines run their code directly; quick engines launch an anima session.
 
-An anima session is an AI process running against an MCP server loaded with the role's tools. Before launch, **The Manifester** assembles the session context: system prompt, tool instructions, writ context. **The Summoner** then starts the process, monitors it, and records the result. The session exits; the output persists. The Clockworks can also trigger sessions directly via the summon relay, bypassing the rig machinery entirely — The Summoner handles both paths the same way.
+An anima session is an AI process running against an MCP server loaded with the role's tools. Before launch, **The Loom** weaves the session context: system prompt, tool instructions, writ context. **The Animator** then starts the process, monitors it, and records the result. The session exits; the output persists. The Clockworks can also trigger sessions directly via the summon relay, bypassing the rig machinery entirely — The Animator handles both paths the same way.
 
 Session output is concrete: modified files committed to a git branch, new documents written to disk, structured data passed as engine yield to downstream steps. When a rig completes, any pending git work is merged, and the result is whatever the patron commissioned — a working feature, a fixed bug, a written report. The patron's codexes are updated; the patron can pull, deploy, and use them.
 
@@ -142,7 +142,7 @@ In the standard guild, `clockworks` contains events and standing orders; `worksh
 
 **`clock.pid` / `clock.log`** — daemon bookkeeping for The Clockworks. `clock.pid` holds the PID of the running daemon process; `clock.log` is its output. Both are absent when the daemon is not running.
 
-**`sessions/`** — working files for active and recently-completed sessions. Each session gets a JSON record here at launch; The Summoner writes the result back when the session exits.
+**`sessions/`** — working files for active and recently-completed sessions. Each session gets a JSON record here at launch; The Animator writes the result back when the session exits.
 
 **`workshops/`** — bare git clones of every registered workshop, named `<workshop-name>.git`. Git worktrees are checked out from these clones rather than from the remotes directly, keeping network operations to `fetch` calls rather than repeated clones.
 
@@ -282,9 +282,9 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 | **The Clockworks** | `clockworks` | Event-driven nervous system — standing orders, event queue, the summon relay |
 | **The Surveyor** | `surveyor` | Codex knowledge — surveys registered codexes so the guild knows what work applies to each |
 | **The Clerk** | `clerk` | Commission intake and writ lifecycle — receives commissions, creates writs, signals when work is ready |
-| **The Manifester** | `manifester` | Anima session assembly — deterministic composition of curriculum, temperament, charter, tool instructions |
+| **The Loom** | `loom` | Session context composition — weaves role instructions, tool instructions, curricula, and temperaments into a session context |
 | **The Instrumentarium** | `instrumentarium` | Tool registry — resolves installed tools, role-gating, handler context creation |
-| **The Summoner** | `summoner` | AI session lifecycle — launches, monitors, and records anima sessions |
+| **The Animator** | `animator` | Session lifecycle — launches, monitors, and records anima sessions |
 | **The Formulary** | `formulary` | Engine design registry — answers "what engine chain satisfies this need?" from installed kits |
 | **The Walker** | `walker` | Rig lifecycle — spawns, traverses, extends, and strikes rigs as work progresses |
 | **The Executor** | `executor` | Engine runner — executes clockwork and quick engines against a configured substrate |
@@ -359,7 +359,7 @@ See [The Stacks — API Contract](apparatus/stacks.md) for the full specificatio
 
 ## Animas
 
-<!-- TODO: Identity and composition. An anima = name + curriculum + temperament + role assignments. The Register as persistent identity record. The Roster as active-anima view. Composition model: curriculum (what you know), temperament (who you are) — both versioned, immutable per version. The Manifester assembles them at session time. Anima states: active / retired. Link to forthcoming anima-composition.md. -->
+<!-- TODO: Identity and composition. An anima = name + curriculum + temperament + role assignments. Composition model: curriculum (what you know), temperament (who you are) — both versioned, immutable per version. The Loom weaves them at session time. Anima states: active / retired. MVP: no identity layer; The Loom returns a fixed composition per role. Link to forthcoming anima-composition.md. -->
 
 ---
 
@@ -393,7 +393,7 @@ export default tool({
 
 Tools can be TypeScript modules or plain scripts (bash, Python, any executable). Script tools need no SDK — a one-line descriptor and an executable is enough. The framework infers the kind from the file extension.
 
-**Role gating:** Tools are assigned to roles in `guild.json`. An anima's available tools are the union of all tools permitted across its roles, plus `baseTools`. The Manifester resolves this set at session time; the MCP engine is launched with exactly those tools.
+**Role gating:** Tools are assigned to roles in `guild.json`. An anima's available tools are the union of all tools permitted across its roles, plus `baseTools`. The Instrumentarium resolves this set; the MCP engine is launched with exactly those tools.
 
 **Instructions:** A tool can optionally ship with an `instructions.md` — a teaching document delivered to the anima as part of its system prompt. Instructions provide craft guidance (when to use the tool, when not to, workflow context) that MCP's schema metadata cannot convey.
 
@@ -426,7 +426,7 @@ See [Kit Components](kit-components.md) for the full specification: descriptor s
 
 ## Sessions
 
-<!-- TODO: The session funnel. Triggered by Clockworks summon relay (standing order) or directly via nsg consult. Manifester assembles context (curriculum + temperament + charter + tool instructions + writ context) → Summoner launches AI process with MCP engine → session runs → Summoner records result in Daybook. The MCP engine: one process per session, all role-gated tools registered, stdio JSON-RPC. Session providers: pluggable AI backend (e.g. claude-code-session-provider). System prompt vs. initial prompt distinction. Sessions run in bare mode (no CLAUDE.md). Link to reference/conversations.md. -->
+<!-- TODO: The session funnel. Triggered by Clockworks summon relay (standing order) or directly via nsg consult. The Loom weaves context (role instructions + tool instructions, eventually curricula + temperaments + charter) → The Animator launches AI process with MCP engine → session runs → The Animator records result. The MCP engine: one process per session, role-gated tools resolved by The Instrumentarium, stdio JSON-RPC. Session providers: pluggable AI backend (e.g. claude-code-session-provider). System prompt vs. initial prompt distinction. Sessions run in bare mode (no CLAUDE.md). Link to reference/conversations.md. -->
 
 ---
 

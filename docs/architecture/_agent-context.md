@@ -66,7 +66,7 @@ The architecture docs use "rig" exclusively in the metaphor sense (execution sca
 | `architecture/plugins.md` | Good | Describes the Kit/Apparatus model with full type signatures. This is aspirational architecture, not fully implemented. |
 | `architecture/clockworks.md` | Good | Detailed; covers events, standing orders, relays, runner phases, daemon. Generally matches current implementation. |
 | `architecture/kit-components.md` | Good | Tools, engines, relays — artifact model, descriptors, role gating, installation. Generally accurate. |
-| `architecture/rigging.md` | Forward-looking | Describes Walker/Formulary/Executor/Manifester/Summoner/Clerk as separate apparatus. This is the *target* design; currently much of this logic is either in core or not yet implemented. |
+| `architecture/rigging.md` | Forward-looking | Describes Walker/Formulary/Executor/Loom/Animator/Clerk as separate apparatus. This is the *target* design; currently much of this logic is either in core or not yet implemented. |
 | `reference/schema.md` | Good | SQLite schema, ERD, entity ID prefixes. Reflects current database. |
 | `reference/core-api.md` | Good | Function signatures for `@shardworks/nexus-core`. Generally accurate but some functions are in `legacy/1/` indicating in-flight migration. |
 | `reference/event-catalog.md` | Not read | Should describe all framework events and payload shapes. |
@@ -114,7 +114,7 @@ The codebase is in active transition from a "rig-centric" model (current) toward
 - Formal `Plugin` type with explicit Kit/Apparatus discriminant
 - `Apparatus` with `start`/`stop`/`health`/`supportKit`/`consumes`
 - `GuildContext` with `ctx.plugin()`, `ctx.kits()`, `ctx.plugins()`
-- Separate named apparatus: Stacks, Guildhall, Clerk, Manifester, Summoner, Formulary, Walker, Executor, Surveyor, Warden
+- Separate named apparatus: Stacks, Guildhall, Clerk, Loom, Animator, Formulary, Walker, Executor, Surveyor, Warden
 - Walker-driven rig execution (the commission → rig → engine chain)
 - Formulary (capability resolution from installed kits)
 - `plugin:initialized` reactive consumption
@@ -220,11 +220,11 @@ All are `<!-- TODO -->` blocks. In rough priority order:
 
 3. **The Clockworks** — Abbreviate; `clockworks.md` is detailed and current. Cover: events as immutable facts, standing orders as guild policy, summon verb, framework vs custom events, runner (manual vs daemon), error handling. Link to `clockworks.md`.
 
-4. **Animas** — Identity model (name + curriculum + temperament + role assignments). Composition: curriculum (what you know), temperament (who you are) — both versioned, immutable per version. Manifester assembles at session time. States: active / retired. Link to forthcoming `anima-composition.md`.
+4. **Animas** — MVP: no identity layer. Composition is per-role, not per-anima. The Loom weaves role instructions + tool instructions into a session context. Future: anima identity records, curricula, temperaments, states (active/retired). Keep section light on implementation since apparatus are being designed.
 
 5. **Kit Components** — Tools, engines, relays. Abbreviate; `kit-components.md` covers this well. Role gating for tools, clockwork vs quick for engines, relay contract. Descriptor files. Installation.
 
-6. **Sessions** — Session funnel. Triggered by summon relay or `nsg consult`. Manifester → Summoner → AI process with MCP server → result recorded. Session providers (pluggable). System prompt vs initial prompt. Bare mode. Link to `reference/conversations.md`.
+6. **Sessions** — Session funnel. Triggered by summon relay or `nsg consult`. Loom → Animator → AI process with MCP server → result recorded. Session providers (pluggable). System prompt vs initial prompt. Bare mode. Link to `reference/conversations.md`.
 
 7. **Core Apparatus Reference** — Quick-reference table with plugin ids, package names, API surface hints, links to detailed docs.
 
@@ -232,8 +232,8 @@ All are `<!-- TODO -->` blocks. In rough priority order:
 - **Arbor config API** — implementation plan at `nexus-mk2/.scratch/arbor-config-impl-plan.md`. Updates `derivePluginId`, adds `ctx.config()` / `ctx.guildConfig()` to GuildContext/HandlerContext, removes `getPluginConfig` from Arbor. Not yet commissioned.
 - **Plugin rename** — standard apparatus packages should be renamed to match new naming convention (e.g. `@shardworks/nexus-clockworks` → `@shardworks/clockworks`). Not yet commissioned. Scope TBD.
 - **The Instrumentarium** — new apparatus, see design decisions (session 4) below.
-- **Manifester MVP** — new apparatus, see design decisions (session 4) below.
-- **Summoner MVP** — new apparatus, see design decisions (session 4) below.
+- **Loom MVP** — new apparatus, see design decisions (session 4) below.
+- **Animator MVP** — new apparatus, see design decisions (session 4) below.
 
 ---
 
@@ -241,7 +241,7 @@ All are `<!-- TODO -->` blocks. In rough priority order:
 
 ### New apparatus: The Instrumentarium (`instrumentarium`)
 
-**Problem:** Tools are currently owned by Arbor (`listTools()`, `findTool()`), but Arbor's design goal is "plugin loader only." Tools need a home that both the session layer (Manifester/Summoner) and the CLI can depend on, without coupling either to anima identity.
+**Problem:** Tools are currently owned by Arbor (`listTools()`, `findTool()`), but Arbor's design goal is "plugin loader only." Tools need a home that both the session layer (Loom/Animator) and the CLI can depend on, without coupling either to anima identity.
 
 **Decision:** Create a new apparatus — **The Instrumentarium** (`instrumentarium`, package `@shardworks/instrumentarium`). It owns:
 - Tool registry — scanning kit `tools` contributions and apparatus `supportKit` tools at startup
@@ -249,30 +249,30 @@ All are `<!-- TODO -->` blocks. In rough priority order:
 - HandlerContext creation — scoped to the invoking plugin, with `config()` and `apparatus()` wired
 - CLI tool discovery — `nsg <tool>` resolves through The Instrumentarium
 
-The Instrumentarium has no dependency on animas, sessions, or composition. Both The Manifester and the CLI depend on it independently. Apparatus that need to invoke tools programmatically depend on it.
+The Instrumentarium has no dependency on animas, sessions, or composition. Both The Loom and the CLI depend on it independently. Apparatus that need to invoke tools programmatically depend on it.
 
 `consumes: ["tools"]` — scans kit and supportKit contributions for tool definitions.
 
-### Manifester MVP — composition without identity
+### Loom MVP — composition without identity
 
-**Problem:** Full anima composition (identity lookup → curriculum resolution → temperament resolution → charter + tool instructions) requires several systems that don't exist yet. But The Summoner needs *some* composed context to launch sessions.
+**Problem:** Full anima composition (identity lookup → curriculum resolution → temperament resolution → charter + tool instructions) requires several systems that don't exist yet. But The Animator needs *some* composed context to launch sessions.
 
-**Decision:** MVP Manifester returns a fixed composition for a given role:
+**Decision:** MVP Loom returns a fixed composition for a given role:
 - Reads the role's `instructions` file from disk (the path in `guild.json` roles config)
 - Reads tool instructions from The Instrumentarium for the resolved tool set
 - Returns a composed system prompt: role instructions + tool instructions
 - No anima identity lookup, no curriculum, no temperament, no charter
 
-This is enough for The Summoner to launch useful sessions. Identity and full composition are layered on later without changing The Summoner's interface — it always receives a composed context and a tool set, regardless of how they were assembled.
+This is enough for The Animator to launch useful sessions. Identity and full composition are layered on later without changing The Animator's interface — it always receives a composed context and a tool set, regardless of how they were assembled.
 
-### Summoner MVP
+### Animator MVP
 
-**Decision:** The Summoner takes a composed context (from Manifester) + a resolved tool set (from Instrumentarium) and:
+**Decision:** The Animator takes a composed context (from Loom) + a resolved tool set (from Instrumentarium) and:
 1. Launches a session provider (e.g. `claude-code-session-provider`) with the system prompt and an MCP server loaded with the tool set
 2. Monitors the process
 3. Records the session result to The Stacks (sessions book)
 
-The Summoner does not know how the context was composed or which anima is being manifested (in MVP, there are no anima identity records). It receives inputs and runs a session.
+The Animator does not know how the context was composed or which anima is being manifested (in MVP, there are no anima identity records). It receives inputs and runs a session.
 
 ### Dependency graph (MVP)
 
@@ -281,13 +281,13 @@ The Stacks (books)
     │
     ├── The Instrumentarium (instrumentarium)
     │       │
-    │       ├── The Manifester (manifester)
+    │       ├── The Loom (loom)
     │       │       │
-    │       │       └── The Summoner (summoner)
+    │       │       └── The Animator (animator)
     │       │
     │       └── CLI (nsg)
     │
     └── The Clockworks (clockworks)
             │
-            └── summon relay → The Summoner
+            └── summon relay → The Animator
 ```
