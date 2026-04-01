@@ -35,14 +35,6 @@ export {
 export { type BookOptions } from './books.ts';
 
 export {
-  type ToolCaller,
-  type ToolDefinition,
-  tool,
-  isToolDefinition,
-  resolveToolFromExport,
-} from './tool.ts';
-
-export {
   findGuildRoot,
   nexusDir,
   worktreesPath,
@@ -57,7 +49,6 @@ export {
   readGuildPackageJson,
   resolvePackageNameForPluginId,
   resolveGuildPackageEntry,
-  discoverPluginTools,
 } from './resolve-package.ts';
 
 export {
@@ -65,7 +56,6 @@ export {
   createInitialGuildConfig,
   readGuildConfig,
   writeGuildConfig,
-  type RoleDefinition,
   type WorkshopEntry,
   type EventDeclaration,
   type StandingOrder,
@@ -75,15 +65,10 @@ export {
   guildConfigPath,
 } from './guild-config.ts';
 
-// ── Legacy modules ────────────────────────────────────────────────────
-// V1 APIs (clockworks, writs, animas, workshops, etc.) are available at
-// the @shardworks/nexus-core/legacy/1 subpath. They are NOT re-exported
-// from this barrel. Import from '@shardworks/nexus-core/legacy/1' directly.
+// ── Session provider registry ─────────────────────────────────────────
 
-// Session provider registry — slim singleton that lives in core so clock-daemon
-// can import it without creating a circular dependency with nexus-sessions.
-// The full session funnel (launchSession, listSessions, etc.) lives in nexus-sessions.
 export {
+  type ManifestResult,
   type SessionChunk,
   type SessionProvider,
   type SessionProviderLaunchOptions,

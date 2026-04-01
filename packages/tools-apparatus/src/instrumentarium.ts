@@ -2,8 +2,12 @@
  * The Instrumentarium — guild tool registry apparatus.
  *
  * Scans installed tools from kit contributions and apparatus supportKits,
- * resolves role-gated tool sets on demand, and serves as the single source
- * of truth for "what tools exist and who can use them."
+ * resolves permission-gated tool sets on demand, and serves as the single
+ * source of truth for "what tools exist and who can use them."
+ *
+ * The Instrumentarium is role-agnostic — it receives an already-resolved
+ * permissions array from the Loom and returns the matching tool set.
+ * Role definitions and permission grants are owned by the Loom.
  *
  * See: docs/architecture/apparatus/instrumentarium.md
  */
@@ -14,15 +18,15 @@ import type {
   LoadedKit,
   LoadedApparatus,
   Plugin,
-  ToolDefinition,
-  ToolCaller,
 } from '@shardworks/nexus-core';
 import {
   guild,
-  isToolDefinition,
   isLoadedKit,
   isLoadedApparatus,
 } from '@shardworks/nexus-core';
+
+import type { ToolDefinition, ToolCaller } from './tool.ts';
+import { isToolDefinition } from './tool.ts';
 
 // ── Public types ──────────────────────────────────────────────────────
 
@@ -34,10 +38,19 @@ export interface ResolvedTool {
   pluginId: string;
 }
 
-/** Options for resolving a role-gated tool set. */
+/** Options for resolving a permission-gated tool set. */
 export interface ResolveOptions {
-  /** Roles to resolve tools for. Tools are the union across all roles + baseTools. */
-  roles: string[];
+  /**
+   * Permission grants in `plugin:level` format.
+   * Supports wildcards: `plugin:*`, `*:level`, `*:*`.
+   */
+  permissions: string[];
+  /**
+   * When true, permissionless tools are excluded unless the role grants
+   * `plugin:*` or `*:*` for the tool's plugin. When false (default),
+   * permissionless tools are included unconditionally.
+   */
+  strict?: boolean;
   /** Filter by invocation channel. Tools with no callableFrom pass all channels. */
   channel?: ToolCaller;
 }
@@ -45,10 +58,12 @@ export interface ResolveOptions {
 /** The Instrumentarium's public API, exposed via `provides`. */
 export interface InstrumentariumApi {
   /**
-   * Resolve the tool set for a given set of roles.
+   * Resolve the tool set for a given set of permissions.
    *
-   * Returns tools from baseTools + the union of each role's tool list,
-   * filtered by the provided channel (mcp, cli, or import).
+   * Evaluates each registered tool against the permission grants:
+   * - Tools with a `permission` field: included if any grant matches
+   * - Permissionless tools: always included (default) or gated by `strict`
+   * - Channel filtering applied last
    */
   resolve(options: ResolveOptions): ResolvedTool[];
 
@@ -58,26 +73,71 @@ export interface InstrumentariumApi {
   find(name: string): ResolvedTool | null;
 
   /**
-   * List all installed tools, regardless of role assignment.
+   * List all installed tools, regardless of permissions.
    */
   list(): ResolvedTool[];
 }
 
-// ── Configuration ─────────────────────────────────────────────────────
+// ── Permission matching ──────────────────────────────────────────────
 
-/** Plugin configuration stored at guild.json["tools"]. */
-export interface InstrumentariumConfig {
-  /** Tool names available to all animas regardless of role. */
-  baseTools?: string[];
-  /** Role → tool names mapping. */
-  roles?: Record<string, string[]>;
+/** A parsed permission grant. */
+interface ParsedGrant {
+  plugin: string;
+  level: string;
+}
+
+/** Parse a grant string like "plugin:level" into its components. */
+function parseGrant(grant: string): ParsedGrant | null {
+  const colonIdx = grant.indexOf(':');
+  if (colonIdx === -1) return null;
+  return {
+    plugin: grant.slice(0, colonIdx),
+    level: grant.slice(colonIdx + 1),
+  };
+}
+
+/**
+ * Check if a tool with the given permission level from the given plugin
+ * is matched by any of the parsed grants.
+ */
+function matchesPermission(
+  pluginId: string,
+  permission: string,
+  grants: ParsedGrant[],
+): boolean {
+  for (const grant of grants) {
+    // Exact match: plugin:level
+    if (grant.plugin === pluginId && grant.level === permission) return true;
+    // Plugin wildcard: plugin:*
+    if (grant.plugin === pluginId && grant.level === '*') return true;
+    // Level wildcard: *:level
+    if (grant.plugin === '*' && grant.level === permission) return true;
+    // Superuser: *:*
+    if (grant.plugin === '*' && grant.level === '*') return true;
+  }
+  return false;
+}
+
+/**
+ * Check if a permissionless tool from the given plugin should be included
+ * in strict mode. Only `plugin:*` or `*:*` opts in permissionless tools.
+ */
+function strictAllowsPermissionless(
+  pluginId: string,
+  grants: ParsedGrant[],
+): boolean {
+  for (const grant of grants) {
+    if (grant.plugin === pluginId && grant.level === '*') return true;
+    if (grant.plugin === '*' && grant.level === '*') return true;
+  }
+  return false;
 }
 
 // ── Implementation ────────────────────────────────────────────────────
 
 /**
  * The tool registry — accumulates tools from plugin contributions
- * and resolves role-gated tool sets.
+ * and resolves permission-gated tool sets.
  */
 class ToolRegistry {
   /** Map from tool name → ResolvedTool. Last-write-wins for duplicates. */
@@ -122,42 +182,54 @@ class ToolRegistry {
   }
 
   /**
-   * Resolve a role-gated tool set.
+   * Resolve a permission-gated tool set.
    *
-   * 1. Collect tool names from baseTools
-   * 2. For each role, collect tool names from config
-   * 3. Union all collected names
-   * 4. Match against installed tools
-   * 5. Filter by channel if specified
+   * 1. Parse each grant into (plugin, level) pairs
+   * 2. For each registered tool:
+   *    a. If tool has no permission:
+   *       - If NOT strict → include
+   *       - If strict → include only if grants contain <tool's plugin>:* or *:*
+   *    b. If tool has a permission:
+   *       - Match against grants: exact, plugin wildcard, level wildcard, or superuser
+   *       - Include if any grant matches
+   * 3. Filter by channel (callableFrom)
    */
-  resolve(
-    options: ResolveOptions,
-    config: InstrumentariumConfig,
-  ): ResolvedTool[] {
-    const toolNames = new Set<string>(config.baseTools ?? []);
-
-    for (const role of options.roles) {
-      const roleTools = config.roles?.[role];
-      if (roleTools) {
-        for (const name of roleTools) {
-          toolNames.add(name);
-        }
-      }
-    }
+  resolve(options: ResolveOptions): ResolvedTool[] {
+    const grants = options.permissions
+      .map(parseGrant)
+      .filter((g): g is ParsedGrant => g !== null);
+    const strict = options.strict ?? false;
 
     const result: ResolvedTool[] = [];
-    for (const name of toolNames) {
-      const tool = this.tools.get(name);
-      if (tool) {
-        if (
-          options.channel &&
-          tool.definition.callableFrom &&
-          !tool.definition.callableFrom.includes(options.channel)
-        ) {
+
+    for (const resolved of this.tools.values()) {
+      const { definition, pluginId } = resolved;
+      const permission = definition.permission;
+
+      // Permission check
+      if (permission === undefined) {
+        // Permissionless tool
+        if (strict && !strictAllowsPermissionless(pluginId, grants)) {
           continue;
         }
-        result.push(tool);
+        // In default mode, permissionless tools are always included
+      } else {
+        // Tool has a permission — must match against grants
+        if (!matchesPermission(pluginId, permission, grants)) {
+          continue;
+        }
       }
+
+      // Channel filter
+      if (
+        options.channel &&
+        definition.callableFrom &&
+        !definition.callableFrom.includes(options.channel)
+      ) {
+        continue;
+      }
+
+      result.push(resolved);
     }
 
     return result;
@@ -175,11 +247,10 @@ class ToolRegistry {
  */
 export function createInstrumentarium(): Plugin {
   const registry = new ToolRegistry();
-  let config: InstrumentariumConfig = {};
 
   const api: InstrumentariumApi = {
     resolve(options: ResolveOptions): ResolvedTool[] {
-      return registry.resolve(options, config);
+      return registry.resolve(options);
     },
 
     find(name: string): ResolvedTool | null {
@@ -199,7 +270,6 @@ export function createInstrumentarium(): Plugin {
 
       start(ctx: StartupContext): void {
         const g = guild();
-        config = g.config<InstrumentariumConfig>('tools');
 
         // Scan all already-loaded kits. These fired plugin:initialized before
         // any apparatus started, so we can't catch them via events.

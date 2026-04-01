@@ -1,12 +1,11 @@
 # `@shardworks/tools-apparatus`
 
-The Instrumentarium — the guild's tool registry. This apparatus scans installed tools from kit contributions and apparatus supportKits at startup, resolves role-gated tool sets on demand, and serves as the single source of truth for "what tools exist and who can use them."
+The Instrumentarium — the guild's tool registry. This apparatus scans installed tools from kit contributions and apparatus supportKits at startup, resolves permission-gated tool sets on demand, and serves as the single source of truth for "what tools exist and who can use them."
 
 Both the CLI and the session layer (The Animator, via MCP) depend on The Instrumentarium to discover available tools. It sits low in the dependency graph — no dependencies on other apparatus.
 
 ```
-@shardworks/nexus-core            — tool() factory, ToolDefinition type
-@shardworks/tools-apparatus       — tool registry, role resolution, InstrumentariumApi
+@shardworks/tools-apparatus       — tool() factory, ToolDefinition type, tool registry, InstrumentariumApi
 @shardworks/nexus (cli)           — queries InstrumentariumApi for CLI-callable tools
 kits / apparatus supportKits      — contribute ToolDefinition[] via `tools` field
 ```
@@ -43,10 +42,12 @@ const instrumentarium = guild().apparatus<InstrumentariumApi>('tools');
 ```typescript
 interface InstrumentariumApi {
   /**
-   * Resolve the tool set for a given set of roles.
+   * Resolve the tool set for a given set of permissions.
    *
-   * Returns tools from baseTools + the union of each role's tool list,
-   * filtered by the provided channel (mcp, cli, or import).
+   * Evaluates each registered tool against the permission grants:
+   * - Tools with a `permission` field: included if any grant matches
+   * - Permissionless tools: always included (default) or gated by `strict`
+   * - Channel filtering applied last
    */
   resolve(options: ResolveOptions): ResolvedTool[];
 
@@ -56,7 +57,7 @@ interface InstrumentariumApi {
   find(name: string): ResolvedTool | null;
 
   /**
-   * List all installed tools, regardless of role assignment.
+   * List all installed tools, regardless of permissions.
    */
   list(): ResolvedTool[];
 }
@@ -79,8 +80,17 @@ interface ResolvedTool {
 
 ```typescript
 interface ResolveOptions {
-  /** Roles to resolve tools for. Tools are the union across all roles + baseTools. */
-  roles: string[];
+  /**
+   * Permission grants in `plugin:level` format.
+   * Supports wildcards: `plugin:*`, `*:level`, `*:*`.
+   */
+  permissions: string[];
+  /**
+   * When true, permissionless tools are excluded unless the role grants
+   * `plugin:*` or `*:*` for the tool's plugin. When false (default),
+   * permissionless tools are included unconditionally.
+   */
+  strict?: boolean;
   /** Filter by invocation channel. Tools with no callableFrom pass all channels. */
   channel?: ToolCaller;
 }
@@ -88,14 +98,25 @@ interface ResolveOptions {
 
 ### Usage Examples
 
-**Resolve tools for a session (The Animator's use case):**
+**Resolve tools for a session (The Loom's use case):**
+
+```typescript
+// The Loom resolves role → permissions, then asks the Instrumentarium
+const tools = instrumentarium.resolve({
+  permissions: ['stdlib:read', 'stdlib:write', 'animator:read'],
+  channel: 'mcp',
+});
+// → ResolvedTool[] — all MCP-callable tools matching those permission grants
+```
+
+**Resolve with strict mode (lock down permissionless tools):**
 
 ```typescript
 const tools = instrumentarium.resolve({
-  roles: ['artificer', 'scribe'],
-  channel: 'mcp',
+  permissions: ['stdlib:*'],
+  strict: true,
 });
-// → ResolvedTool[] — all MCP-callable tools for those roles + baseTools
+// → Only tools from the stdlib plugin (both permissioned and permissionless)
 ```
 
 **Find a specific tool:**
@@ -117,36 +138,26 @@ const cliTools = instrumentarium.list()
 
 ---
 
-## Configuration
+## Permission Model
 
-Role assignments and base tools are stored in `guild.json` under the `tools` key:
+The Instrumentarium is **role-agnostic** — it receives an already-resolved permissions array and returns matching tools. Role definitions and permission grants are owned by the Loom.
 
-```json
-{
-  "tools": {
-    "baseTools": ["nexus-version", "signal"],
-    "roles": {
-      "artificer": ["commission-show", "writ-update", "complete-session"],
-      "scribe": ["commission-show", "writ-list"]
-    }
-  }
-}
-```
+### How permissions work
 
-### `InstrumentariumConfig`
+Each tool may declare a `permission` level (e.g. `'read'`, `'write'`, `'admin'`). Callers provide permission grants in `plugin:level` format:
 
-```typescript
-interface InstrumentariumConfig {
-  /** Tool names available to all animas regardless of role. */
-  baseTools?: string[];
-  /** Role → tool names mapping. */
-  roles?: Record<string, string[]>;
-}
-```
+| Grant format | Meaning |
+|---|---|
+| `stdlib:read` | Exact match — grants `read` tools from the `stdlib` plugin |
+| `stdlib:*` | Plugin wildcard — grants all tools from `stdlib` |
+| `*:read` | Level wildcard — grants `read` tools from any plugin |
+| `*:*` | Superuser — grants all tools from all plugins |
 
-**`baseTools`** — tools available to every anima, regardless of their role assignments. Defaults to `[]`.
+There is **no permission hierarchy** — `write` does not imply `read`. Each level must be granted explicitly, or use wildcards.
 
-**`roles`** — maps role names to arrays of tool names. An anima's available tools are the union of `baseTools` + all tools listed under each of its assigned roles.
+### Permissionless tools
+
+Tools without a `permission` field are **permissionless**. In default mode, they are always included in resolution results. In `strict` mode, they are excluded unless the caller has `plugin:*` or `*:*` for the tool's plugin.
 
 ---
 
@@ -161,6 +172,7 @@ import { z } from 'zod';
 const showTool = tool({
   name: 'commission-show',
   description: 'Show details of a commission',
+  permission: 'read',
   params: {
     id: z.string().describe('Commission id'),
   },
@@ -185,16 +197,13 @@ Each entry in the `tools` array is a `ToolDefinition` produced by the `tool()` f
 
 ## Exports
 
-The package re-exports the tool authoring API from `@shardworks/nexus-core` for convenience:
-
 ```typescript
-// Tool authoring (re-exported from core during transition)
+// Tool authoring API (canonical home)
 import { tool, type ToolDefinition, type ToolCaller } from '@shardworks/tools-apparatus';
 
 // Instrumentarium API
 import {
   type InstrumentariumApi,
-  type InstrumentariumConfig,
   type ResolvedTool,
   type ResolveOptions,
   createInstrumentarium,

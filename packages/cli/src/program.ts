@@ -21,7 +21,7 @@ import path from 'node:path';
 import { Command } from 'commander';
 import { z } from 'zod';
 import { findGuildRoot, guild } from '@shardworks/nexus-core';
-import type { ToolDefinition } from '@shardworks/nexus-core';
+import type { ToolDefinition } from '@shardworks/tools-apparatus';
 import { createGuild } from '@shardworks/nexus-arbor';
 import type { InstrumentariumApi } from '@shardworks/tools-apparatus';
 import { frameworkCommands } from './commands/index.ts';

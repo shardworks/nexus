@@ -8,7 +8,8 @@
  * when run outside a guild (no error, just less info).
  */
 
-import { tool, VERSION, readGuildConfig, guild } from '@shardworks/nexus-core';
+import { tool } from '@shardworks/tools-apparatus';
+import { VERSION, readGuildConfig, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import { readGuildPackageJson, resolvePackageNameForPluginId } from '@shardworks/nexus-core';
 

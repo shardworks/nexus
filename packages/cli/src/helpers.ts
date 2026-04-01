@@ -6,7 +6,7 @@
  */
 
 import { z } from 'zod';
-import type { ToolDefinition } from '@shardworks/nexus-core';
+import type { ToolDefinition } from '@shardworks/tools-apparatus';
 
 /**
  * Convert camelCase key to kebab-case CLI flag.

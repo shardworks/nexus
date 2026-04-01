@@ -1,30 +1,30 @@
 /**
  * @shardworks/tools-apparatus — The Instrumentarium.
  *
- * Guild tool registry: scans kit contributions, resolves role-gated tool sets,
- * and provides the InstrumentariumApi for tool lookup and resolution.
+ * Guild tool registry: scans kit contributions, resolves permission-gated
+ * tool sets, and provides the InstrumentariumApi for tool lookup and resolution.
  *
- * The tool() factory and ToolDefinition type currently live in @shardworks/nexus-core
- * and are re-exported here for convenience. They will move here canonically in a
- * future migration (see instrumentarium.md Implementation Notes).
+ * The tool() factory and ToolDefinition type live here canonically.
  *
  * See: docs/architecture/apparatus/instrumentarium.md
  */
 
-// ── Tool authoring API (re-exported from core during transition) ──────
+import { createInstrumentarium } from './instrumentarium.ts';
+
+// ── Tool authoring API ───────────────────────────────────────────────
 
 export {
   type ToolCaller,
   type ToolDefinition,
   tool,
   isToolDefinition,
-} from '@shardworks/nexus-core';
+  resolveToolFromExport,
+} from './tool.ts';
 
 // ── Instrumentarium API ───────────────────────────────────────────────
 
 export {
   type InstrumentariumApi,
-  type InstrumentariumConfig,
   type ResolvedTool,
   type ResolveOptions,
   createInstrumentarium,
@@ -32,5 +32,4 @@ export {
 
 // ── Default export: the apparatus plugin ──────────────────────────────
 
-import { createInstrumentarium } from './instrumentarium.ts';
 export default createInstrumentarium();

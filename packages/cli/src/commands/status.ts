@@ -9,7 +9,8 @@
  * Requires a booted guild — prints a friendly error if run outside one.
  */
 
-import { tool, VERSION, readGuildConfig, guild } from '@shardworks/nexus-core';
+import { tool } from '@shardworks/tools-apparatus';
+import { VERSION, readGuildConfig, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 export default tool({
@@ -39,7 +40,6 @@ export default tool({
       home,
       model:   config.settings?.model ?? '(not set)',
       plugins: [...config.plugins].sort(),
-      roles:   Object.keys(config.roles).sort(),
     };
 
     if (_params.json) {
@@ -52,7 +52,6 @@ export default tool({
       `Home:     ${result.home}`,
       `Model:    ${result.model}`,
       `Plugins:  ${result.plugins.length > 0 ? result.plugins.join(', ') : '(none)'}`,
-      `Roles:    ${result.roles.length > 0 ? result.roles.join(', ') : '(none)'}`,
     ];
     return lines.join('\n');
   },

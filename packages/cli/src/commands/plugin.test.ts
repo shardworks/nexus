@@ -10,7 +10,10 @@
  * resulting guild.json state. Registry mode (npm install from network) is not tested.
  *
  * `plugin-remove` tests manually pre-populate node_modules and guild/package.json so
- * that `resolvePackageNameForPluginId` and dynamic tool discovery work without npm.
+ * that `resolvePackageNameForPluginId` works without npm.
+ *
+ * With permission-based access control, plugin-install and plugin-remove are pure
+ * npm + guild.json operations — no tool discovery, no baseTools/role writes.
  */
 
 import { describe, it, afterEach } from 'node:test';
@@ -41,14 +44,12 @@ function makeTmpDir(): string {
   return dir;
 }
 
-/** Write a minimal V2 guild.json to dir, with optional overrides. */
+/** Write a minimal guild.json to dir, with optional overrides. */
 function makeGuild(dir: string, overrides: Record<string, unknown> = {}): void {
   const config = {
     name: 'test-guild',
     nexus: '0.0.0',
     workshops: {},
-    roles: {},
-    baseTools: [],
     plugins: [],
     settings: { model: 'sonnet' },
     ...overrides,
@@ -64,14 +65,9 @@ function makeGuildPackageJson(dir: string, deps: Record<string, string>): void {
 
 /**
  * Create a minimal fake plugin package directory suitable for `plugin-install --type link`.
- *
- * Exports a valid ToolDefinition (or array of them) so that
- * `resolveAllToolsFromExport` recognises them as tools.
- *
  * Returns the absolute path to the fake plugin directory.
  */
-function makeFakePlugin(parentDir: string, packageName: string, toolNames: string[]): string {
-  // Use packageName as the directory name, handling scoped names (@scope/pkg → scope-pkg)
+function makeFakePlugin(parentDir: string, packageName: string): string {
   const dirName = packageName.replace(/^@/, '').replace('/', '-');
   const pluginDir = path.join(parentDir, dirName);
   fs.mkdirSync(pluginDir, { recursive: true });
@@ -83,38 +79,9 @@ function makeFakePlugin(parentDir: string, packageName: string, toolNames: strin
     exports: { '.': './index.js' },
   };
   fs.writeFileSync(path.join(pluginDir, 'package.json'), JSON.stringify(pkgJson, null, 2));
-
-  const toolObjects = toolNames.map(
-    (n) => `{ name: '${n}', description: 'Tool ${n}', params: {}, handler: async () => {} }`,
-  );
-  const exportExpr = toolObjects.length === 1 ? toolObjects[0] : `[${toolObjects.join(', ')}]`;
-  fs.writeFileSync(path.join(pluginDir, 'index.js'), `export default ${exportExpr};\n`);
+  fs.writeFileSync(path.join(pluginDir, 'index.js'), `export default { kit: { tools: [] } };\n`);
 
   return pluginDir;
-}
-
-/**
- * Create a fake plugin package directly inside the guild's node_modules.
- * Used to set up pre-installed plugins for plugin-remove tests without going through npm.
- * Supports scoped package names (e.g. "@shardworks/nexus-stdlib").
- */
-function makeNodeModulePlugin(guildRoot: string, packageName: string, toolNames: string[]): void {
-  const pkgDir = path.join(guildRoot, 'node_modules', packageName);
-  fs.mkdirSync(pkgDir, { recursive: true });
-
-  const pkgJson = {
-    name: packageName,
-    version: '1.0.0',
-    type: 'module',
-    exports: { '.': './index.js' },
-  };
-  fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify(pkgJson, null, 2));
-
-  const toolObjects = toolNames.map(
-    (n) => `{ name: '${n}', description: 'Tool ${n}', params: {}, handler: async () => {} }`,
-  );
-  const exportExpr = toolObjects.length === 1 ? toolObjects[0] : `[${toolObjects.join(', ')}]`;
-  fs.writeFileSync(path.join(pkgDir, 'index.js'), `export default ${exportExpr};\n`);
 }
 
 afterEach(() => {
@@ -216,7 +183,7 @@ describe('plugin-install handler — link mode', () => {
   it('adds the plugin id to config.plugins', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
-    const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin', ['fake-tool']);
+    const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin');
 
     setupGuildAccessor(tmp);
     await pluginInstall.handler({ source: pluginDir, type: 'link' });
@@ -227,70 +194,24 @@ describe('plugin-install handler — link mode', () => {
     assert.ok(config.plugins.includes('my-fake'));
   });
 
-  it('adds tools to baseTools when no roles are specified', async () => {
+  it('does not write baseTools or roles (permission model)', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
-    const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin', ['fake-tool']);
+    const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin');
 
     setupGuildAccessor(tmp);
     await pluginInstall.handler({ source: pluginDir, type: 'link' });
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
-    assert.ok(config.baseTools.includes('fake-tool'));
-  });
-
-  it('assigns tools to specified role instead of baseTools', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      roles: { artificer: { seats: null, tools: [] } },
-    });
-    const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin', ['fake-tool']);
-
-    setupGuildAccessor(tmp);
-    await pluginInstall.handler({ source: pluginDir, type: 'link', roles: 'artificer' });
-
-    const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
-    assert.ok(config.roles.artificer.tools.includes('fake-tool'));
-    assert.ok(!config.baseTools.includes('fake-tool'));
-  });
-
-  it('assigns tools to multiple roles when comma-separated', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      roles: {
-        artificer: { seats: null, tools: [] },
-        scribe: { seats: 1, tools: [] },
-      },
-    });
-    const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin', ['fake-tool']);
-
-    setupGuildAccessor(tmp);
-    await pluginInstall.handler({ source: pluginDir, type: 'link', roles: 'artificer, scribe' });
-
-    const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
-    assert.ok(config.roles.artificer.tools.includes('fake-tool'));
-    assert.ok(config.roles.scribe.tools.includes('fake-tool'));
-  });
-
-  it('adds all tools from a multi-tool plugin to baseTools', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp);
-    const pluginDir = makeFakePlugin(tmp, 'multi-plugin', ['tool-alpha', 'tool-beta', 'tool-gamma']);
-
-    setupGuildAccessor(tmp);
-    await pluginInstall.handler({ source: pluginDir, type: 'link' });
-
-    const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
-    assert.ok(config.baseTools.includes('tool-alpha'));
-    assert.ok(config.baseTools.includes('tool-beta'));
-    assert.ok(config.baseTools.includes('tool-gamma'));
+    assert.equal(config.baseTools, undefined);
+    assert.equal(config.roles, undefined);
   });
 
   it('does not duplicate plugin id if already in plugins array', async () => {
     const tmp = makeTmpDir();
     // derivePluginId('my-fake-plugin') → 'my-fake'
     makeGuild(tmp, { plugins: ['my-fake'] });
-    const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin', ['fake-tool']);
+    const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin');
 
     setupGuildAccessor(tmp);
     await pluginInstall.handler({ source: pluginDir, type: 'link' });
@@ -316,45 +237,20 @@ describe('plugin-install handler — link mode', () => {
   it('returns a success message mentioning the plugin id', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
-    const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin', ['fake-tool']);
+    const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin');
 
     setupGuildAccessor(tmp);
     const result = await pluginInstall.handler({ source: pluginDir, type: 'link' }) as string;
-    // Message includes the derived plugin id ('my-fake') and the package name
     assert.ok(result.includes('my-fake'));
-  });
-
-  it('returns a success message mentioning discovered tool names', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp);
-    const pluginDir = makeFakePlugin(tmp, 'my-fake-plugin', ['fake-tool']);
-
-    setupGuildAccessor(tmp);
-    const result = await pluginInstall.handler({ source: pluginDir, type: 'link' }) as string;
-    assert.ok(result.includes('fake-tool'));
   });
 });
 
 // ── plugin-remove ────────────────────────────────────────────────────────
 
 describe('plugin-remove handler', () => {
-  /**
-   * Set up a guild with nexus-stdlib already installed.
-   *
-   * Manually creates node_modules and guild/package.json so that
-   * `resolvePackageNameForPluginId` and dynamic tool discovery work
-   * without running npm install.
-   */
   function makeGuildWithPlugin(dir: string): void {
-    makeGuild(dir, {
-      plugins: ['nexus-stdlib'],
-      baseTools: ['commission', 'signal'],
-      roles: {
-        artificer: { seats: null, tools: ['commission'] },
-      },
-    });
+    makeGuild(dir, { plugins: ['nexus-stdlib'] });
     makeGuildPackageJson(dir, { '@shardworks/nexus-stdlib': '^1.0.0' });
-    makeNodeModulePlugin(dir, '@shardworks/nexus-stdlib', ['commission', 'signal']);
   }
 
   it('removes the plugin from config.plugins', async () => {
@@ -368,48 +264,18 @@ describe('plugin-remove handler', () => {
     assert.ok(!config.plugins.includes('nexus-stdlib'));
   });
 
-  it('removes tools from baseTools', async () => {
+  it('does not affect plugins belonging to a different plugin', async () => {
     const tmp = makeTmpDir();
-    makeGuildWithPlugin(tmp);
-
-    setupGuildAccessor(tmp);
-    await pluginRemove.handler({ name: 'nexus-stdlib' });
-
-    const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
-    assert.ok(!config.baseTools.includes('commission'));
-    assert.ok(!config.baseTools.includes('signal'));
-  });
-
-  it('removes tools from role tool lists', async () => {
-    const tmp = makeTmpDir();
-    makeGuildWithPlugin(tmp);
-
-    setupGuildAccessor(tmp);
-    await pluginRemove.handler({ name: 'nexus-stdlib' });
-
-    const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
-    assert.ok(!config.roles.artificer.tools.includes('commission'));
-  });
-
-  it('does not affect tools or plugins belonging to a different plugin', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      plugins: ['nexus-stdlib', 'nexus-ledger'],
-      baseTools: ['commission', 'create-writ'],
-      roles: {},
-    });
+    makeGuild(tmp, { plugins: ['nexus-stdlib', 'nexus-ledger'] });
     makeGuildPackageJson(tmp, {
       '@shardworks/nexus-stdlib': '^1.0.0',
       '@shardworks/nexus-ledger': '^1.0.0',
     });
-    makeNodeModulePlugin(tmp, '@shardworks/nexus-stdlib', ['commission']);
-    makeNodeModulePlugin(tmp, '@shardworks/nexus-ledger', ['create-writ']);
 
     setupGuildAccessor(tmp);
     await pluginRemove.handler({ name: 'nexus-stdlib' });
 
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
-    assert.ok(config.baseTools.includes('create-writ'));
     assert.ok(config.plugins.includes('nexus-ledger'));
   });
 
@@ -431,31 +297,6 @@ describe('plugin-remove handler', () => {
     setupGuildAccessor(tmp);
     const result = await pluginRemove.handler({ name: 'nexus-stdlib' }) as string;
     assert.ok(result.includes('nexus-stdlib'));
-  });
-
-  it('reports the count of unregistered tools (plural)', async () => {
-    const tmp = makeTmpDir();
-    makeGuildWithPlugin(tmp); // 2 tools: commission, signal
-
-    setupGuildAccessor(tmp);
-    const result = await pluginRemove.handler({ name: 'nexus-stdlib' }) as string;
-    assert.ok(result.includes('2 tools'));
-  });
-
-  it('uses singular "tool" when exactly one tool is removed', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      plugins: ['solo-pkg'],
-      baseTools: ['only-tool'],
-      roles: {},
-    });
-    makeGuildPackageJson(tmp, { 'solo-pkg': '^1.0.0' });
-    makeNodeModulePlugin(tmp, 'solo-pkg', ['only-tool']);
-
-    setupGuildAccessor(tmp);
-    const result = await pluginRemove.handler({ name: 'solo-pkg' }) as string;
-    assert.ok(result.includes('1 tool '));
-    assert.ok(!result.includes('1 tools'));
   });
 
   it('throws when the plugin is not installed', async () => {

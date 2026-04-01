@@ -13,7 +13,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { tool, VERSION, createInitialGuildConfig, writeGuildConfig } from '@shardworks/nexus-core';
+import { tool } from '@shardworks/tools-apparatus';
+import { VERSION, createInitialGuildConfig, writeGuildConfig } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
 const DEFAULT_MODEL = 'sonnet';

@@ -40,8 +40,6 @@ function writeGuildJson(dir: string, config: Record<string, unknown>): void {
     name: 'test-guild',
     nexus: '0.0.0',
     workshops: {},
-    roles: {},
-    baseTools: [],
     plugins: [],
     settings: { model: 'sonnet' },
     ...config,

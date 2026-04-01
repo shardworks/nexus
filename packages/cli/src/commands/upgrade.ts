@@ -12,7 +12,7 @@
  * Stub — not yet implemented.
  */
 
-import { tool } from '@shardworks/nexus-core';
+import { tool } from '@shardworks/tools-apparatus';
 import { z } from 'zod';
 
 export default tool({

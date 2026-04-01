@@ -39,9 +39,9 @@ describe('nsg init', () => {
     assert.equal(config.name, 'my-guild');
     assert.equal(config.settings?.model, 'sonnet');
     assert.deepEqual(config.plugins, []);
-    assert.deepEqual(config.baseTools, []);
-    assert.deepEqual(config.roles, {});
-    // V2: no tools/engines/curricula/temperaments registries
+    // V3: no baseTools or roles (permission model — roles owned by Loom)
+    assert.equal(config.baseTools, undefined);
+    assert.equal(config.roles, undefined);
     assert.equal(config.tools, undefined);
     assert.equal(config.engines, undefined);
   });

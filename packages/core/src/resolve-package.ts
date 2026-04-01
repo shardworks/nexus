@@ -7,16 +7,10 @@
  *
  * Also owns:
  * - derivePluginId — canonical npm package name → plugin id derivation
- * - discoverPluginTools — install-time tool discovery for a single package
- *   (used by CLI plugin-install/remove; at runtime, The Instrumentarium
- *   handles tool discovery via its own registry)
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { isToolDefinition } from './tool.ts';
-import type { ToolDefinition } from './tool.ts';
-import { isKit, isApparatus } from './plugin.ts';
 
 /**
  * Derive the guild-facing plugin id from an npm package name.
@@ -128,39 +122,3 @@ export function resolveGuildPackageEntry(guildRoot: string, pkgName: string): st
   return path.join(pkgDir, 'index.js');
 }
 
-/**
- * Discover tools exported by an installed plugin package.
- *
- * Resolves the package entry point from the guild's node_modules,
- * dynamically imports it, and extracts ToolDefinitions from kit.tools
- * or apparatus.supportKit.tools.
- *
- * This is an install-time utility — used by the CLI's plugin-install and
- * plugin-remove commands to update guild.json's baseTools / role lists
- * before the guild is booted. At runtime, The Instrumentarium handles
- * tool discovery via its own registry.
- */
-export async function discoverPluginTools(
-  guildRoot: string,
-  packageName: string,
-): Promise<ToolDefinition[]> {
-  const entryPath = resolveGuildPackageEntry(guildRoot, packageName);
-  const mod = await import(entryPath) as { default: unknown };
-  const raw = mod.default;
-
-  if (isKit(raw)) {
-    const t = (raw.kit as Record<string, unknown>).tools;
-    return Array.isArray(t) ? t.filter(isToolDefinition) : [];
-  }
-
-  if (isApparatus(raw)) {
-    const sk = raw.apparatus.supportKit;
-    if (sk) {
-      const t = (sk as Record<string, unknown>).tools;
-      return Array.isArray(t) ? t.filter(isToolDefinition) : [];
-    }
-    return [];
-  }
-
-  return [];
-}

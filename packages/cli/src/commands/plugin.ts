@@ -2,20 +2,23 @@
  * nsg plugin-* — manage guild plugins.
  *
  * Framework commands for plugin lifecycle. Available via CLI only (not MCP).
+ *
+ * Plugin install/remove are pure npm + guild.json operations. No tool
+ * discovery at install time — tools are resolved at runtime by the
+ * Instrumentarium via its permission-based model.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { tool } from '@shardworks/tools-apparatus';
 import {
-  tool,
   guild,
   readGuildConfig,
   writeGuildConfig,
   derivePluginId,
   readGuildPackageJson,
   resolvePackageNameForPluginId,
-  discoverPluginTools,
 } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
@@ -103,14 +106,12 @@ export const pluginInstall = tool({
   callableFrom: ['cli'],
   params: {
     source: z.string().describe('Package name or git URL, e.g. "@shardworks/nexus-stdlib", "foo@1.0", or "git+https://..."'),
-    roles: z.string().optional().describe('Comma-separated role names to assign tools to (default: baseTools)'),
     type: z.enum(['registry', 'link']).optional().describe('Install type: "registry" (npm install, default) or "link" (symlink local dir)'),
   },
   handler: async (params) => {
     const { home } = guild();
     const { source } = params;
     const installType = params.type ?? 'registry';
-    const roles = params.roles?.split(',').map((r) => r.trim()).filter(Boolean);
 
     // 1. Install the npm package into the guild
     let packageName: string;
@@ -135,43 +136,16 @@ export const pluginInstall = tool({
 
     const pluginId = derivePluginId(packageName);
 
-    // 2. Discover tools from the plugin's exports
-    const tools = await discoverPluginTools(home, packageName);
-    const toolNames = tools.map((t) => t.name);
-
-    // 3. Update guild.json — add to plugins list, update access control
+    // 2. Update guild.json — add to plugins list
     const config = readGuildConfig(home);
 
     if (!config.plugins.includes(pluginId)) {
       config.plugins.push(pluginId);
     }
 
-    for (const toolName of toolNames) {
-      if (roles && roles.length > 0) {
-        for (const role of roles) {
-          if (config.roles[role] && !config.roles[role].tools.includes(toolName)) {
-            config.roles[role].tools.push(toolName);
-          }
-        }
-      } else {
-        if (!config.baseTools.includes(toolName)) {
-          config.baseTools.push(toolName);
-        }
-      }
-    }
-
     writeGuildConfig(home, config);
 
-    const lines = [
-      `Installed plugin: ${pluginId} (${packageName})`,
-      `Discovered ${toolNames.length} tool${toolNames.length === 1 ? '' : 's'}: ${toolNames.join(', ')}`,
-    ];
-    if (roles && roles.length > 0) {
-      lines.push(`Assigned to roles: ${roles.join(', ')}`);
-    } else {
-      lines.push('Added to baseTools (available to all animas)');
-    }
-    return lines.join('\n');
+    return `Installed plugin: ${pluginId} (${packageName})`;
   },
 });
 
@@ -191,32 +165,10 @@ export const pluginRemove = tool({
       throw new Error(`Plugin "${targetId}" is not installed.`);
     }
 
-    const packageName = resolvePackageNameForPluginId(home, targetId);
-
-    let toolsToRemove: string[] = [];
-    if (packageName) {
-      try {
-        const tools = await discoverPluginTools(home, packageName);
-        toolsToRemove = tools.map((t) => t.name);
-      } catch {
-        // Can't load module — skip access control cleanup; tools may be orphaned
-      }
-    }
-
-    for (const toolName of toolsToRemove) {
-      const baseIdx = config.baseTools.indexOf(toolName);
-      if (baseIdx !== -1) config.baseTools.splice(baseIdx, 1);
-
-      for (const role of Object.values(config.roles)) {
-        const roleIdx = role.tools.indexOf(toolName);
-        if (roleIdx !== -1) role.tools.splice(roleIdx, 1);
-      }
-    }
-
     config.plugins = config.plugins.filter((id) => id !== targetId);
-
     writeGuildConfig(home, config);
 
+    const packageName = resolvePackageNameForPluginId(home, targetId);
     if (packageName) {
       try {
         npm(['uninstall', packageName], home);
@@ -225,7 +177,7 @@ export const pluginRemove = tool({
       }
     }
 
-    return `Removed plugin: ${targetId} (${toolsToRemove.length} tool${toolsToRemove.length === 1 ? '' : 's'} unregistered)`;
+    return `Removed plugin: ${targetId}`;
   },
 });
 

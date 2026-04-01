@@ -9,7 +9,7 @@
  * when a guild is present and the tools apparatus is installed.
  */
 
-import type { ToolDefinition } from '@shardworks/nexus-core';
+import type { ToolDefinition } from '@shardworks/tools-apparatus';
 import init from './init.ts';
 import version from './version.ts';
 import status from './status.ts';

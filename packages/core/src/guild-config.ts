@@ -1,22 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-/** Definition of a guild role — a structural position in the guild. */
-export interface RoleDefinition {
-  /**
-   * Maximum number of animas that can hold this role simultaneously.
-   * `null` means unbounded.
-   */
-  seats: number | null;
-  /** Tools available to animas in this role (additive with baseTools). */
-  tools: string[];
-  /**
-   * Path to role-specific instructions markdown, relative to guild root.
-   * Read fresh at manifest time and delivered to animas holding this role.
-   */
-  instructions?: string;
-}
-
 /** A custom event declaration in guild.json clockworks.events. */
 export interface EventDeclaration {
   /** Human-readable description of what this event means. */
@@ -83,10 +67,6 @@ export interface GuildConfig {
   nexus: string;
   /** Registered workshops indexed by name. */
   workshops: Record<string, WorkshopEntry>;
-  /** Guild roles — structural positions that animas fill. */
-  roles: Record<string, RoleDefinition>;
-  /** Tool names available to all animas regardless of role. */
-  baseTools: string[];
   /** Installed plugin ids (derived from npm package names). Always present; starts empty. */
   plugins: string[];
   /** Clockworks configuration — events, standing orders. */
@@ -106,8 +86,6 @@ export function createInitialGuildConfig(name: string, nexusVersion: string, mod
     name,
     nexus: nexusVersion,
     workshops: {},
-    roles: {},
-    baseTools: [],
     plugins: [],
     settings: { model },
   };

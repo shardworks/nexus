@@ -2,7 +2,8 @@
  * Tests for the `status` framework command.
  *
  * Tests the handler directly — no CLI layer involved.
- * Plugins come from config.plugins; roles come from config.roles.
+ * Plugins come from config.plugins. Roles are now Loom-owned plugin config,
+ * not framework-level — status shows plugins but not roles.
  */
 
 import { describe, it, afterEach } from 'node:test';
@@ -33,14 +34,12 @@ function makeTmpDir(): string {
   return dir;
 }
 
-/** Write a minimal V2 guild.json to dir, with optional overrides. */
+/** Write a minimal guild.json to dir, with optional overrides. */
 function makeGuild(dir: string, overrides: Record<string, unknown> = {}): void {
   const config = {
     name: 'test-guild',
     nexus: '0.0.0',
     workshops: {},
-    roles: {},
-    baseTools: [],
     plugins: [],
     settings: { model: 'sonnet' },
     ...overrides,
@@ -60,7 +59,6 @@ afterEach(() => {
 
 describe('status handler — no guild', () => {
   it('throws a friendly error when guild is not initialized', async () => {
-    // guild() not set — clearGuild() runs in afterEach
     await assert.rejects(
       async () => statusTool.handler({}),
       /Not inside a guild/,
@@ -121,16 +119,6 @@ describe('status handler — text mode', () => {
     assert.ok(pluginsLine.includes('(none)'));
   });
 
-  it('shows "(none)" for roles when no roles are configured', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp);
-
-    setupGuildAccessor(tmp);
-    const result = await statusTool.handler({}) as string;
-    const rolesLine = result.split('\n').find((l) => l.startsWith('Roles:')) ?? '';
-    assert.ok(rolesLine.includes('(none)'));
-  });
-
   it('shows installed plugin ids from config.plugins', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { plugins: ['nexus-stdlib'] });
@@ -148,21 +136,6 @@ describe('status handler — text mode', () => {
     const result = await statusTool.handler({}) as string;
     assert.ok(result.includes('nexus-stdlib'));
     assert.ok(result.includes('nexus-ledger'));
-  });
-
-  it('shows installed role names', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      roles: {
-        artificer: { seats: null, tools: [] },
-        scribe: { seats: 1, tools: [] },
-      },
-    });
-
-    setupGuildAccessor(tmp);
-    const result = await statusTool.handler({}) as string;
-    assert.ok(result.includes('artificer'));
-    assert.ok(result.includes('scribe'));
   });
 });
 
@@ -227,31 +200,12 @@ describe('status handler — json mode', () => {
     assert.deepEqual(plugins, [...plugins].sort());
   });
 
-  it('includes roles as a sorted array', async () => {
-    const tmp = makeTmpDir();
-    makeGuild(tmp, {
-      roles: {
-        scribe: { seats: 1, tools: [] },
-        artificer: { seats: null, tools: [] },
-      },
-    });
-
-    setupGuildAccessor(tmp);
-    const result = await statusTool.handler({ json: true }) as Record<string, unknown>;
-    assert.ok(Array.isArray(result.roles));
-    const roles = result.roles as string[];
-    assert.ok(roles.includes('artificer'));
-    assert.ok(roles.includes('scribe'));
-    assert.deepEqual(roles, [...roles].sort());
-  });
-
-  it('returns empty arrays when nothing is installed', async () => {
+  it('returns empty plugins array when nothing is installed', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp);
 
     setupGuildAccessor(tmp);
     const result = await statusTool.handler({ json: true }) as Record<string, unknown>;
     assert.deepEqual(result.plugins, []);
-    assert.deepEqual(result.roles, []);
   });
 });

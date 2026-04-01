@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@shardworks/nexus-core": "workspace:*",
-    "zod": "3.25.23"
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@types/node": "25.5.0"

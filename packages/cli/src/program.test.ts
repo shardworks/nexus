@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { toFlag, isBooleanSchema, findGroupPrefixes } from './helpers.ts';
-import type { ToolDefinition } from '@shardworks/nexus-core';
+import type { ToolDefinition } from '@shardworks/tools-apparatus';
 
 // Helper to create a minimal ToolDefinition for testing
 function fakeTool(name: string): ToolDefinition {

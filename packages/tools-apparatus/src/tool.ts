@@ -9,7 +9,7 @@
  *
  * @example Single tool
  * ```typescript
- * import { tool } from '@shardworks/nexus-core';
+ * import { tool } from '@shardworks/tools-apparatus';
  * import { z } from 'zod';
  *
  * export default tool({
@@ -35,7 +35,6 @@
  * ```
  */
 import { z } from 'zod';
-import { isKit, isApparatus } from './plugin.ts';
 
 // Zod shape type — a record of string keys to Zod schemas.
 // Using a local alias keeps our public API stable across Zod versions.
@@ -75,6 +74,20 @@ export interface ToolDefinition<TShape extends ZodShape = ZodShape> {
    * Always a normalized array. Absent means available to all callers.
    */
   readonly callableFrom?: ToolCaller[];
+  /**
+   * Permission level required to invoke this tool. Matched against role grants.
+   *
+   * Format: a freeform string chosen by the tool author. Conventional names:
+   * - `'read'` — query/inspect operations
+   * - `'write'` — create/update operations
+   * - `'delete'` — destructive operations
+   * - `'admin'` — configuration and lifecycle operations
+   *
+   * Plugins are free to define their own levels.
+   * If omitted, the tool is permissionless — included by default in non-strict
+   * mode, excluded in strict mode unless the role grants `plugin:*` or `*:*`.
+   */
+  readonly permission?: string;
   readonly params: z.ZodObject<TShape>;
   readonly handler: (
     params: z.infer<z.ZodObject<TShape>>,
@@ -94,6 +107,11 @@ type ToolInput<TShape extends ZodShape> = {
    * Accepts a single caller or an array. Normalized to an array in the returned definition.
    */
   callableFrom?: ToolCaller | ToolCaller[];
+  /**
+   * Permission level required to invoke this tool.
+   * See ToolDefinition.permission for details.
+   */
+  permission?: string;
 } & (
   | { instructions?: string; instructionsFile?: never }
   | { instructions?: never; instructionsFile?: string }
@@ -128,6 +146,7 @@ export function tool<TShape extends ZodShape>(def: ToolInput<TShape>): ToolDefin
     ...(def.callableFrom !== undefined
       ? { callableFrom: Array.isArray(def.callableFrom) ? def.callableFrom : [def.callableFrom] }
       : {}),
+    ...(def.permission !== undefined ? { permission: def.permission } : {}),
     params: z.object(def.params),
     handler: def.handler,
   };
@@ -167,58 +186,6 @@ export function resolveToolFromExport(
   }
 
   return null;
-}
-
-/**
- * Resolve all ToolDefinitions from a module's default export.
- *
- * Handles the current plugin export shapes:
- * - `{ kit: { tools: [...] } }` — kit plugin (canonical)
- * - `{ apparatus: { supportKit: { tools: [...] } } }` — apparatus with supportKit
- * - `ToolDefinition[]` — bare array (legacy)
- * - `ToolDefinition` — single tool (legacy)
- * - `{ tools: [...] }` — legacy Rig object shape
- */
-export function resolveAllToolsFromExport(
-  moduleDefault: unknown,
-): ToolDefinition[] {
-  // Kit plugin: { kit: { tools: [...], ... } }
-  if (isKit(moduleDefault)) {
-    const t = (moduleDefault.kit as Record<string, unknown>).tools
-    return Array.isArray(t) ? t.filter(isToolDefinition) : []
-  }
-
-  // Apparatus plugin: extract tools from supportKit if present
-  if (isApparatus(moduleDefault)) {
-    const sk = moduleDefault.apparatus.supportKit
-    if (sk) {
-      const t = (sk as Record<string, unknown>).tools
-      return Array.isArray(t) ? t.filter(isToolDefinition) : []
-    }
-    return []
-  }
-
-  // Legacy: { tools: [...] } bare object (old Rig shape)
-  if (
-    typeof moduleDefault === 'object' &&
-    moduleDefault !== null &&
-    'tools' in moduleDefault
-  ) {
-    const t = (moduleDefault as Record<string, unknown>).tools
-    return Array.isArray(t) ? t.filter(isToolDefinition) : []
-  }
-
-  // Legacy: single ToolDefinition
-  if (isToolDefinition(moduleDefault)) {
-    return [moduleDefault]
-  }
-
-  // Legacy: array of ToolDefinitions
-  if (Array.isArray(moduleDefault)) {
-    return moduleDefault.filter(isToolDefinition)
-  }
-
-  return []
 }
 
 /** Type guard: is this value a ToolDefinition? */

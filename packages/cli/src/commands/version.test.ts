@@ -40,8 +40,6 @@ function makeGuild(dir: string, overrides: Record<string, unknown> = {}): void {
     name: 'test-guild',
     nexus: '0.0.0',
     workshops: {},
-    roles: {},
-    baseTools: [],
     plugins: [],
     settings: { model: 'sonnet' },
     ...overrides,

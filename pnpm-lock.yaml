@@ -26,6 +26,9 @@ importers:
       '@shardworks/stacks':
         specifier: workspace:*
         version: link:../stacks
+      '@shardworks/tools-apparatus':
+        specifier: workspace:*
+        version: link:../tools-apparatus
       zod:
         specifier: 4.3.6
         version: 4.3.6
@@ -53,14 +56,20 @@ importers:
         specifier: 25.5.0
         version: 25.5.0
 
-  packages/claude-code-session-provider:
+  packages/claude-code-apparatus:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: 1.27.1
         version: 1.27.1(zod@4.3.6)
+      '@shardworks/animator':
+        specifier: workspace:*
+        version: link:../animator
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../core
+      '@shardworks/tools-apparatus':
+        specifier: workspace:*
+        version: link:../tools-apparatus
       zod:
         specifier: 4.3.6
         version: 4.3.6
@@ -71,30 +80,15 @@ importers:
 
   packages/cli:
     dependencies:
-      '@shardworks/claude-code-session-provider':
-        specifier: workspace:*
-        version: link:../claude-code-session-provider
-      '@shardworks/guild-monitor':
-        specifier: 0.1.16
-        version: 0.1.16
       '@shardworks/nexus-arbor':
         specifier: workspace:*
         version: link:../arbor
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../core
-      '@shardworks/nexus-sessions':
-        specifier: workspace:*
-        version: link:../nexus-sessions
-      '@shardworks/nexus-stdlib':
-        specifier: workspace:*
-        version: link:../stdlib
       '@shardworks/tools-apparatus':
         specifier: workspace:*
         version: link:../tools-apparatus
-      better-sqlite3:
-        specifier: 12.8.0
-        version: 12.8.0
       commander:
         specifier: 14.0.3
         version: 14.0.3
@@ -105,25 +99,12 @@ importers:
       '@commander-js/extra-typings':
         specifier: 14.0.0
         version: 14.0.0(commander@14.0.3)
-      '@types/better-sqlite3':
-        specifier: 7.6.13
-        version: 7.6.13
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
 
   packages/core:
-    dependencies:
-      better-sqlite3:
-        specifier: 12.8.0
-        version: 12.8.0
-      zod:
-        specifier: 4.3.6
-        version: 4.3.6
     devDependencies:
-      '@types/better-sqlite3':
-        specifier: 7.6.13
-        version: 7.6.13
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
@@ -136,44 +117,6 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
-      '@types/node':
-        specifier: 25.5.0
-        version: 25.5.0
-
-  packages/nexus-clockworks:
-    dependencies:
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../core
-      better-sqlite3:
-        specifier: 12.8.0
-        version: 12.8.0
-      zod:
-        specifier: 4.3.6
-        version: 4.3.6
-    devDependencies:
-      '@types/better-sqlite3':
-        specifier: 7.6.13
-        version: 7.6.13
-      '@types/node':
-        specifier: 25.5.0
-        version: 25.5.0
-
-  packages/nexus-sessions:
-    dependencies:
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../core
-      better-sqlite3:
-        specifier: 12.8.0
-        version: 12.8.0
-      zod:
-        specifier: 4.3.6
-        version: 4.3.6
-    devDependencies:
-      '@types/better-sqlite3':
-        specifier: 7.6.13
-        version: 7.6.13
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
@@ -194,30 +137,14 @@ importers:
         specifier: 25.5.0
         version: 25.5.0
 
-  packages/stdlib:
-    dependencies:
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../core
-      '@shardworks/nexus-sessions':
-        specifier: workspace:*
-        version: link:../nexus-sessions
-      zod:
-        specifier: ^4.0.0
-        version: 4.3.6
-    devDependencies:
-      '@types/node':
-        specifier: 25.5.0
-        version: 25.5.0
-
   packages/tools-apparatus:
     dependencies:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../core
       zod:
-        specifier: 3.25.23
-        version: 3.25.23
+        specifier: 4.3.6
+        version: 4.3.6
     devDependencies:
       '@types/node':
         specifier: 25.5.0
@@ -245,12 +172,6 @@ packages:
     peerDependenciesMeta:
       '@cfworker/json-schema':
         optional: true
-
-  '@shardworks/guild-monitor@0.1.16':
-    resolution: {integrity: sha512-7DCssLKizr67sY79PAV7KYGZ5qv0raZ/rkUyxYis+lbNCqnKUHaEM8Y58g6pvoVtShr5y3akFaX1RtSWrrflHA==}
-
-  '@shardworks/nexus-core@0.1.86':
-    resolution: {integrity: sha512-YWRDwbnewhumh15cdXGBizIrk4Hi3rImwfV6+4e88/PqcY/rQZInanI3L5qJag7LB7l3tkDZdcmjE6El8afO6Q==}
 
   '@tsconfig/node24@24.0.4':
     resolution: {integrity: sha512-2A933l5P5oCbv6qSxHs7ckKwobs8BDAe9SJ/Xr2Hy+nDlwmLE1GhFh/g/vXGRZWgxBg9nX/5piDtHR9Dkw/XuA==}
@@ -513,11 +434,6 @@ packages:
   json-schema-typed@8.0.2:
     resolution: {integrity: sha512-fQhoXdcvc3V28x7C7BMs4P5+kNlgUURe2jmUT1T//oBRMDrqy1QPelJimwZGo7Hg9VPV3EQV5Bnq4hbFy2vetA==}
 
-  marked@15.0.12:
-    resolution: {integrity: sha512-8dD6FusOQSrpv9Z1rdNMdlSgQOIP880DHqnohobOmYLElGEqAL/JvxvuxZO16r4HtjTlfPRDC1hbvxC9dPN2nA==}
-    engines: {node: '>= 18'}
-    hasBin: true
-
   math-intrinsics@1.1.0:
     resolution: {integrity: sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g==}
     engines: {node: '>= 0.4'}
@@ -746,9 +662,6 @@ packages:
     peerDependencies:
       zod: ^3.25 || ^4
 
-  zod@3.25.23:
-    resolution: {integrity: sha512-Od2bdMosahjSrSgJtakrwjMDb1zM1A3VIHCPGveZt/3/wlrTWBya2lmEh2OYe4OIu8mPTmmr0gnLHIWQXdtWBg==}
-
   zod@4.3.6:
     resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
 
@@ -783,17 +696,6 @@ snapshots:
       zod-to-json-schema: 3.25.1(zod@4.3.6)
     transitivePeerDependencies:
       - supports-color
-
-  '@shardworks/guild-monitor@0.1.16':
-    dependencies:
-      '@shardworks/nexus-core': 0.1.86
-      better-sqlite3: 12.8.0
-      marked: 15.0.12
-
-  '@shardworks/nexus-core@0.1.86':
-    dependencies:
-      better-sqlite3: 12.8.0
-      zod: 4.3.6
 
   '@tsconfig/node24@24.0.4': {}
 
@@ -1065,8 +967,6 @@ snapshots:
 
   json-schema-typed@8.0.2: {}
 
-  marked@15.0.12: {}
-
   math-intrinsics@1.1.0: {}
 
   media-typer@1.1.0: {}
@@ -1307,7 +1207,5 @@ snapshots:
   zod-to-json-schema@3.25.1(zod@4.3.6):
     dependencies:
       zod: 4.3.6
-
-  zod@3.25.23: {}
 
   zod@4.3.6: {}
