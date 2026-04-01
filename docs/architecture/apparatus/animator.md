@@ -242,26 +242,22 @@ animate(request)  →  { chunks, result }  (returned synchronously)
   ├─ 1. Generate session id, capture startedAt
   ├─ 2. Write initial session record to The Stacks (status: 'running')
   │
-  ├─ 3. Launch session provider:          ─┐
-  │     - System prompt                    │
-  │     - Initial prompt                   │  try
-  │     - Model (from guild settings)      │
-  │     - Working directory                │
-  │     - conversationId (if resuming)     │
-  ├─ 4. Monitor process until exit        ─┘
-  │     (streaming: yield chunks via provider.launchStreaming)
-  │     (non-streaming: block via provider.launch, chunks is empty)
+  ├─ 3. Call provider.launch(config):
+  │     - System prompt, initial prompt, model, cwd, conversationId
+  │     - streaming flag passed through for provider to honor
+  │     → provider returns { chunks, result } immediately
   │
-  ├─ 5. Record result (ALWAYS — see § Error Handling Contract):
-  │     - Capture endedAt, durationMs
-  │     - Update session record in The Stacks
-  │       (status, endedAt, durationMs, exitCode, tokenUsage, costUsd,
-  │        providerSessionId, error, metadata)
+  ├─ 4. Wrap provider result promise with recording:
+  │     - On resolve: capture endedAt, durationMs, record to Stacks
+  │     - On reject: record failed result, re-throw
+  │     (ALWAYS records — see § Error Handling Contract)
   │
-  └─ 6. result promise resolves with SessionResult
+  └─ 5. Return { chunks, result } to caller
+        chunks: the provider's iterable (may be empty)
+        result: wraps provider result with Animator recording
 ```
 
-When `streaming: true` is set but the provider does not implement `launchStreaming()`, the Animator falls back to `provider.launch()` — the `chunks` iterable completes immediately with no items, and `result` resolves normally. Callers should not assume chunks will be emitted.
+The Animator does not branch on streaming. It passes the `streaming` flag to the provider via `SessionProviderConfig` and returns whatever the provider gives back. Providers that support streaming yield chunks when the flag is set; providers that don't return empty chunks. Callers should not assume chunks will be emitted.
 
 ---
 
@@ -285,16 +281,17 @@ interface AnimatorSessionProvider {
   name: string
 
   /**
-   * Launch a session. Returns when the AI process exits.
+   * Launch a session. Returns { chunks, result } synchronously.
+   *
+   * The result promise resolves when the AI process exits.
+   * The chunks async iterable yields output when config.streaming
+   * is true and the provider supports streaming; otherwise it
+   * completes immediately with no items.
+   *
+   * Providers that don't support streaming simply ignore the flag
+   * and return empty chunks — no separate method needed.
    */
-  launch(config: SessionProviderConfig): Promise<SessionProviderResult>
-
-  /**
-   * Launch a session with streaming output. Optional — providers that
-   * don't support streaming omit this method, and animate({ streaming: true })
-   * falls back to launch() with no chunks emitted.
-   */
-  launchStreaming?(config: SessionProviderConfig): {
+  launch(config: SessionProviderConfig): {
     chunks: AsyncIterable<SessionChunk>
     result: Promise<SessionProviderResult>
   }
@@ -311,6 +308,8 @@ interface SessionProviderConfig {
   conversationId?: string
   /** Working directory for the session. */
   cwd: string
+  /** Enable streaming output. Providers may ignore this flag. */
+  streaming?: boolean
 }
 
 interface SessionProviderResult {
@@ -554,6 +553,7 @@ interface SessionProviderConfig {
   model: string
   conversationId?: string
   cwd: string
+  streaming?: boolean
 }
 ```
 

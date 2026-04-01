@@ -66,6 +66,7 @@ function resolveModel(): string {
  *
  * The system prompt comes from the AnimaWeave (composed by The Loom).
  * The work prompt comes from the request directly (bypasses The Loom).
+ * The streaming flag is passed through for the provider to honor (or ignore).
  */
 function buildProviderConfig(
   request: AnimateRequest,
@@ -77,6 +78,7 @@ function buildProviderConfig(
     model,
     conversationId: request.conversationId,
     cwd: request.cwd,
+    streaming: request.streaming,
   };
 }
 
@@ -218,17 +220,6 @@ export function createAnimator(): Plugin {
   let config: AnimatorConfig = {};
   let sessions: Book<SessionDoc>;
 
-  // ── Shared empty chunks iterable ──────────────────────────────────
-  const emptyChunks: AsyncIterable<SessionChunk> = {
-    [Symbol.asyncIterator]() {
-      return {
-        async next() {
-          return { value: undefined as unknown as SessionChunk, done: true as const };
-        },
-      };
-    },
-  };
-
   const api: AnimatorApi = {
     summon(request: SummonRequest): AnimateHandle {
       // Resolve The Loom at call time — not a startup dependency.
@@ -278,23 +269,16 @@ export function createAnimator(): Plugin {
         });
       })();
 
-      // If streaming, we can't get the provider chunks until after the
-      // Loom weave resolves. Pipe through an intermediate iterable.
-      if (request.streaming) {
-        async function* pipeChunks(): AsyncIterable<SessionChunk> {
-          const handle = await deferred;
-          yield* handle.chunks;
-        }
-
-        return {
-          chunks: pipeChunks(),
-          result: deferred.then((handle) => handle.result),
-        };
+      // Pipe chunks through — can't get them until the Loom weave resolves.
+      // Works for both streaming and non-streaming: non-streaming providers
+      // return empty chunks, so the generator yields nothing and completes.
+      async function* pipeChunks(): AsyncIterable<SessionChunk> {
+        const handle = await deferred;
+        yield* handle.chunks;
       }
 
-      // Non-streaming: empty chunks, just unwrap the result
       return {
-        chunks: emptyChunks,
+        chunks: pipeChunks(),
         result: deferred.then((handle) => handle.result),
       };
     },
@@ -308,41 +292,20 @@ export function createAnimator(): Plugin {
       const id = generateSessionId();
       const startedAt = new Date().toISOString();
 
-      // Streaming path: provider supports streaming AND caller asked for it
-      if (request.streaming && provider.launchStreaming) {
-        const { chunks: providerChunks, result: providerResultPromise } =
-          provider.launchStreaming(providerConfig);
+      // Single path — the provider returns { chunks, result } regardless
+      // of whether streaming is enabled. Providers that don't support
+      // streaming return empty chunks; the Animator doesn't branch.
+      const { chunks, result: providerResultPromise } = provider.launch(providerConfig);
 
-        // Write initial record (fire and forget — don't block streaming)
-        const initPromise = recordRunning(sessions, id, startedAt, provider.name, request);
+      // Write initial record (fire and forget — don't block streaming)
+      const initPromise = recordRunning(sessions, id, startedAt, provider.name, request);
 
-        const result = (async () => {
-          await initPromise;
-
-          let sessionResult: SessionResult;
-          try {
-            const providerResult = await providerResultPromise;
-            sessionResult = buildSessionResult(id, startedAt, provider.name, providerResult, request);
-          } catch (err) {
-            sessionResult = buildFailedResult(id, startedAt, provider.name, err, request);
-            await recordSession(sessions, sessionResult);
-            throw err;
-          }
-
-          await recordSession(sessions, sessionResult);
-          return sessionResult;
-        })();
-
-        return { chunks: providerChunks, result };
-      }
-
-      // Non-streaming path (or provider doesn't support streaming)
       const result = (async () => {
-        await recordRunning(sessions, id, startedAt, provider.name, request);
+        await initPromise;
 
         let sessionResult: SessionResult;
         try {
-          const providerResult = await provider.launch(providerConfig);
+          const providerResult = await providerResultPromise;
           sessionResult = buildSessionResult(id, startedAt, provider.name, providerResult, request);
         } catch (err) {
           sessionResult = buildFailedResult(id, startedAt, provider.name, err, request);
@@ -354,7 +317,7 @@ export function createAnimator(): Plugin {
         return sessionResult;
       })();
 
-      return { chunks: emptyChunks, result };
+      return { chunks, result };
     },
   };
 

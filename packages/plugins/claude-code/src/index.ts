@@ -67,69 +67,68 @@ function prepareSession(config: SessionProviderConfig): PreparedSession {
   return { tmpDir, args };
 }
 
+// ── Shared empty chunks iterable ────────────────────────────────────
+
+const emptyChunks: AsyncIterable<SessionChunk> = {
+  [Symbol.asyncIterator]() {
+    return {
+      async next() {
+        return { value: undefined as unknown as SessionChunk, done: true as const };
+      },
+    };
+  },
+};
+
+// ── Result builder ──────────────────────────────────────────────────
+
+function buildResult(raw: StreamJsonResult): SessionProviderResult {
+  const status = raw.exitCode === 0 ? 'completed' as const : 'failed' as const;
+  return {
+    status,
+    exitCode: raw.exitCode,
+    error: status === 'failed' ? `claude exited with code ${raw.exitCode}` : undefined,
+    costUsd: raw.costUsd,
+    tokenUsage: raw.tokenUsage,
+    providerSessionId: raw.providerSessionId,
+  };
+}
+
 // ── Provider implementation ──────────────────────────────────────────
 
 const provider: AnimatorSessionProvider = {
   name: 'claude-code',
 
-  async launch(config: SessionProviderConfig): Promise<SessionProviderResult> {
-    const { tmpDir, args } = prepareSession(config);
-
-    try {
-      // Autonomous mode: initial prompt via --print, stream-json for telemetry
-      args.push(
-        '--print', config.initialPrompt ?? '',
-        '--output-format', 'stream-json',
-        '--verbose',
-      );
-      const { exitCode, costUsd, tokenUsage, providerSessionId } =
-        await spawnClaudeStreamJson(args, config.cwd);
-
-      const status = exitCode === 0 ? 'completed' : 'failed';
-      return {
-        status,
-        exitCode,
-        error: status === 'failed' ? `claude exited with code ${exitCode}` : undefined,
-        costUsd,
-        tokenUsage,
-        providerSessionId,
-      };
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  },
-
-  launchStreaming(config: SessionProviderConfig): {
+  launch(config: SessionProviderConfig): {
     chunks: AsyncIterable<SessionChunk>;
     result: Promise<SessionProviderResult>;
   } {
     const { tmpDir, args } = prepareSession(config);
 
+    // Autonomous mode: initial prompt via --print, stream-json for telemetry
     args.push(
       '--print', config.initialPrompt ?? '',
       '--output-format', 'stream-json',
       '--verbose',
     );
 
-    const { chunks, result: rawResult } = spawnClaudeStreamingJson(args, config.cwd);
+    const cleanup = () => fs.rmSync(tmpDir, { recursive: true, force: true });
 
-    const result = rawResult.then((raw) => {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-      const status = raw.exitCode === 0 ? 'completed' as const : 'failed' as const;
-      return {
-        status,
-        exitCode: raw.exitCode,
-        error: status === 'failed' ? `claude exited with code ${raw.exitCode}` : undefined,
-        costUsd: raw.costUsd,
-        tokenUsage: raw.tokenUsage,
-        providerSessionId: raw.providerSessionId,
-      } satisfies SessionProviderResult;
-    }).catch((err) => {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-      throw err;
-    });
+    if (config.streaming) {
+      const { chunks, result: rawResult } = spawnClaudeStreamingJson(args, config.cwd);
 
-    return { chunks, result };
+      const result = rawResult
+        .then((raw) => { cleanup(); return buildResult(raw); })
+        .catch((err) => { cleanup(); throw err; });
+
+      return { chunks, result };
+    }
+
+    // Non-streaming: run to completion, return empty chunks
+    const result = spawnClaudeStreamJson(args, config.cwd)
+      .then((raw) => { cleanup(); return buildResult(raw); })
+      .catch((err) => { cleanup(); throw err; });
+
+    return { chunks: emptyChunks, result };
   },
 };
 

@@ -45,18 +45,18 @@ The apparatus provides a stateless implementation of `AnimatorSessionProvider`:
 ```typescript
 interface AnimatorSessionProvider {
   name: string;
-  launch(config: SessionProviderConfig): Promise<SessionProviderResult>;
-  launchStreaming?(config: SessionProviderConfig): {
+  launch(config: SessionProviderConfig): {
     chunks: AsyncIterable<SessionChunk>;
     result: Promise<SessionProviderResult>;
   };
 }
 ```
 
-Both `launch()` and `launchStreaming()` are implemented. They share session preparation logic (temp directory, argument assembly) and differ only in how they consume the child process's stdout:
+A single `launch()` method handles both streaming and non-streaming sessions. When `config.streaming` is true, the provider spawns Claude and yields `SessionChunk` objects as they arrive via an async iterable. When false, it accumulates all output internally and returns empty chunks. The return shape is always `{ chunks, result }` — the Animator does not branch on streaming capability.
 
-- **`launch()`** — accumulates all stream-json output, resolves when the process exits.
-- **`launchStreaming()`** — yields `SessionChunk` objects as they arrive via an async iterable, while also accumulating the full result.
+Internally, the provider delegates to one of two spawn helpers based on the streaming flag:
+- **`spawnClaudeStreamJson()`** — accumulates all stream-json output, resolves when the process exits. Used for non-streaming sessions.
+- **`spawnClaudeStreamingJson()`** — yields chunks in real time via an async iterable while accumulating the full result. Used for streaming sessions.
 
 The apparatus has no startup logic — `start()` is a no-op. The provider is stateless and safe for concurrent use.
 
@@ -239,6 +239,7 @@ interface SessionProviderConfig {
   model: string;
   conversationId?: string;
   cwd: string;
+  streaming?: boolean;
   /** Resolved tools for the session. Provider creates MCP server from these. */
   tools?: ToolDefinition[];
   /** Permission grants, used if the provider boots its own guild for MCP. */

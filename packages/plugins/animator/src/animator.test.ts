@@ -31,6 +31,18 @@ import type {
   SessionDoc,
 } from './types.ts';
 
+// ── Shared empty chunks iterable ─────────────────────────────────────
+
+const emptyChunks: AsyncIterable<SessionChunk> = {
+  [Symbol.asyncIterator]() {
+    return {
+      async next() {
+        return { value: undefined as unknown as SessionChunk, done: true as const };
+      },
+    };
+  },
+};
+
 // ── Fake providers ───────────────────────────────────────────────────
 
 function createFakeProvider(
@@ -38,58 +50,68 @@ function createFakeProvider(
 ): AnimatorSessionProvider {
   return {
     name: 'fake',
-    async launch(_config: SessionProviderConfig): Promise<SessionProviderResult> {
+    launch(_config: SessionProviderConfig) {
       return {
-        status: 'completed',
-        exitCode: 0,
-        providerSessionId: 'fake-sess-123',
-        tokenUsage: {
-          inputTokens: 1000,
-          outputTokens: 500,
-        },
-        costUsd: 0.05,
-        ...overrides,
+        chunks: emptyChunks,
+        result: Promise.resolve({
+          status: 'completed' as const,
+          exitCode: 0,
+          providerSessionId: 'fake-sess-123',
+          tokenUsage: {
+            inputTokens: 1000,
+            outputTokens: 500,
+          },
+          costUsd: 0.05,
+          ...overrides,
+        }),
       };
     },
   };
 }
 
 function createStreamingFakeProvider(
-  chunks: SessionChunk[],
+  streamChunks: SessionChunk[],
   overrides: Partial<SessionProviderResult> = {},
 ): AnimatorSessionProvider {
   return {
     name: 'fake-streaming',
-    async launch(_config: SessionProviderConfig): Promise<SessionProviderResult> {
+    launch(config: SessionProviderConfig) {
+      if (config.streaming) {
+        let idx = 0;
+        const asyncChunks: AsyncIterable<SessionChunk> = {
+          [Symbol.asyncIterator]() {
+            return {
+              async next() {
+                if (idx < streamChunks.length) {
+                  return { value: streamChunks[idx++]!, done: false as const };
+                }
+                return { value: undefined as unknown as SessionChunk, done: true as const };
+              },
+            };
+          },
+        };
+
+        return {
+          chunks: asyncChunks,
+          result: Promise.resolve({
+            status: 'completed' as const,
+            exitCode: 0,
+            providerSessionId: 'fake-stream-sess',
+            ...overrides,
+          }),
+        };
+      }
+
+      // Non-streaming: return empty chunks
       return {
-        status: 'completed',
-        exitCode: 0,
-        ...overrides,
+        chunks: emptyChunks,
+        result: Promise.resolve({
+          status: 'completed' as const,
+          exitCode: 0,
+          providerSessionId: 'fake-stream-sess',
+          ...overrides,
+        }),
       };
-    },
-    launchStreaming(_config: SessionProviderConfig) {
-      let idx = 0;
-      const asyncChunks: AsyncIterable<SessionChunk> = {
-        [Symbol.asyncIterator]() {
-          return {
-            async next() {
-              if (idx < chunks.length) {
-                return { value: chunks[idx++]!, done: false as const };
-              }
-              return { value: undefined as unknown as SessionChunk, done: true as const };
-            },
-          };
-        },
-      };
-
-      const result = Promise.resolve({
-        status: 'completed' as const,
-        exitCode: 0,
-        providerSessionId: 'fake-stream-sess',
-        ...overrides,
-      });
-
-      return { chunks: asyncChunks, result };
     },
   };
 }
@@ -97,8 +119,11 @@ function createStreamingFakeProvider(
 function createThrowingProvider(error: Error): AnimatorSessionProvider {
   return {
     name: 'fake-throwing',
-    async launch(): Promise<SessionProviderResult> {
-      throw error;
+    launch() {
+      return {
+        chunks: emptyChunks,
+        result: Promise.reject(error),
+      };
     },
   };
 }
@@ -114,9 +139,12 @@ function createSpyProvider(): {
   return {
     provider: {
       name: 'fake-spy',
-      async launch(config: SessionProviderConfig): Promise<SessionProviderResult> {
+      launch(config: SessionProviderConfig) {
         capturedConfig = config;
-        return { status: 'completed', exitCode: 0 };
+        return {
+          chunks: emptyChunks,
+          result: Promise.resolve({ status: 'completed' as const, exitCode: 0 }),
+        };
       },
     },
     getCapturedConfig: () => capturedConfig,
@@ -470,7 +498,8 @@ describe('Animator', () => {
       assert.equal(doc.status, 'completed');
     });
 
-    it('falls back to launch() when provider has no launchStreaming', async () => {
+    it('returns empty chunks when provider ignores streaming flag', async () => {
+      // createFakeProvider always returns empty chunks regardless of streaming
       setup(createFakeProvider());
 
       const { chunks, result } = animator.animate({

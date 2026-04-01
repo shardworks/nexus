@@ -186,22 +186,30 @@ export interface AnimatorApi {
  * Implemented as an apparatus plugin whose `provides` object satisfies
  * this interface. The Animator discovers the provider via guild config:
  * `guild.json["animator"]["sessionProvider"]` names the plugin id.
+ *
+ * The provider always returns `{ chunks, result }` — the same shape as
+ * AnimateHandle. When `config.streaming` is true, the provider MAY yield
+ * output chunks as the session runs. When false (or when the provider
+ * does not support streaming), the chunks iterable completes immediately
+ * with no items. The Animator does not branch on streaming capability —
+ * it passes the flag through and trusts the provider to do the right thing.
  */
 export interface AnimatorSessionProvider {
   /** Human-readable name (e.g. 'claude-code'). */
   name: string;
 
   /**
-   * Launch a session. Returns when the AI process exits.
+   * Launch a session. Returns `{ chunks, result }` synchronously.
+   *
+   * The `result` promise resolves when the AI process exits.
+   * The `chunks` async iterable yields output when `config.streaming`
+   * is true and the provider supports streaming; otherwise it completes
+   * immediately with no items.
+   *
+   * Providers that don't support streaming simply ignore the flag and
+   * return empty chunks — no separate method needed.
    */
-  launch(config: SessionProviderConfig): Promise<SessionProviderResult>;
-
-  /**
-   * Launch a session with streaming output. Optional — providers that
-   * don't support streaming omit this method, and animate({ streaming: true })
-   * falls back to launch() with no chunks emitted.
-   */
-  launchStreaming?(config: SessionProviderConfig): {
+  launch(config: SessionProviderConfig): {
     chunks: AsyncIterable<SessionChunk>;
     result: Promise<SessionProviderResult>;
   };
@@ -218,6 +226,14 @@ export interface SessionProviderConfig {
   conversationId?: string;
   /** Working directory for the session. */
   cwd: string;
+  /**
+   * Enable streaming output. When true, the provider should yield output
+   * chunks as the session produces them. When false (default), the chunks
+   * iterable should complete immediately with no items.
+   *
+   * Providers that don't support streaming may ignore this flag.
+   */
+  streaming?: boolean;
 }
 
 export interface SessionProviderResult {
