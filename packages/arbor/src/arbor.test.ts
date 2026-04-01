@@ -266,15 +266,14 @@ describe('createGuild — apparatus loading', () => {
     assert.deepEqual(api.list(), ['tool-a']);
   });
 
-  it('returns a sentinel proxy when apparatus has no provides', async () => {
+  it('throws immediately when apparatus has no provides', async () => {
     const tmp = makeTmpDir();
     installFakeApparatus(tmp, '@shardworks/tools-apparatus');
     writeGuildJson(tmp, { plugins: ['tools'] });
     writePackageJson(tmp, { '@shardworks/tools-apparatus': '^2.0.0' });
 
     const g = await createGuild(tmp);
-    const api = g.apparatus<{ foo: string }>('tools');
-    assert.throws(() => api.foo, /has no provides/);
+    assert.throws(() => g.apparatus('tools'), /is not available/);
   });
 });
 

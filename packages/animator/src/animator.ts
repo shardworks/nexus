@@ -41,32 +41,11 @@ function generateSessionId(): string {
  *
  * Looks up the provider by plugin id from guild config. The provider is
  * an apparatus whose `provides` implements AnimatorSessionProvider.
- *
- * Validates that the resolved object actually looks like a provider
- * (has a `launch` function) — Arbor returns a Proxy sentinel for
- * missing or provides-less apparatus that would give a confusing error
- * at call time.
+ * Arbor throws immediately if the plugin isn't loaded or has no provides.
  */
 function resolveProvider(config: AnimatorConfig): AnimatorSessionProvider {
   const pluginId = config.sessionProvider ?? 'claude-code';
-  let provider: AnimatorSessionProvider;
-
-  try {
-    provider = guild().apparatus<AnimatorSessionProvider>(pluginId);
-    // Probe the object — if it's a sentinel proxy, accessing .launch throws
-    if (typeof provider.launch !== 'function') {
-      throw new Error('provides object does not implement AnimatorSessionProvider');
-    }
-  } catch (err) {
-    throw new Error(
-      `Session provider apparatus "${pluginId}" is not available. ` +
-      `Ensure the plugin is installed and its provides implements AnimatorSessionProvider. ` +
-      `(Configure via guild.json["animator"]["sessionProvider"])`,
-      { cause: err },
-    );
-  }
-
-  return provider;
+  return guild().apparatus<AnimatorSessionProvider>(pluginId);
 }
 
 /**

@@ -120,15 +120,10 @@ export async function createGuild(root?: string): Promise<Guild> {
     apparatus<T>(name: string): T {
       const p = provides.get(name);
       if (p === undefined) {
-        const sentinel = new Proxy({} as object, {
-          get(_target, prop) {
-            throw new Error(
-              `[guild] apparatus("${name}") has no provides. ` +
-              `Accessing .${String(prop)} is not available.`,
-            );
-          },
-        });
-        return sentinel as unknown as T;
+        throw new Error(
+          `[guild] apparatus("${name}") is not available. ` +
+          `No loaded apparatus provides this id. Check guild.json plugins list.`,
+        );
       }
       return p as T;
     },

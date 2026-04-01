@@ -387,7 +387,7 @@ describe('Animator', () => {
           context: { systemPrompt: 'Test' },
           cwd: '/tmp/workdir',
         }),
-        /Session provider apparatus "missing-provider" is not available/,
+        /missing-provider/,
       );
     });
   });
