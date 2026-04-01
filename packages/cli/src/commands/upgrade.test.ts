@@ -1,5 +1,5 @@
 /**
- * Tests for the `upgrade` built-in tool.
+ * Tests for the `upgrade` framework command.
  *
  * Currently a stub — tests confirm the stub behavior and tool metadata.
  */

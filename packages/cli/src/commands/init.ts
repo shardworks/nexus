@@ -1,11 +1,13 @@
 /**
  * nsg init — create a new guild.
  *
+ * A framework command — hardcoded in the CLI, not discovered via plugins.
+ *
  * Writes the minimum viable guild: directory structure, guild.json,
  * package.json, .gitignore. Does NOT git init, install bundles, create
  * the database, or instantiate animas — those are separate steps.
  *
- * After init, the user runs `nsg rig install` to add capabilities.
+ * After init, the user runs `nsg plugin install` to add capabilities.
  */
 
 import fs from 'node:fs';
@@ -55,11 +57,11 @@ export default tool({
       fs.writeFileSync(path.join(full, '.gitkeep'), '');
     }
 
-    // guild.json — V2 format: rig-centric, model in settings
+    // guild.json — V2 format: plugin-centric, model in settings
     const guildConfig = createInitialGuildConfig(name, VERSION, model);
     writeGuildConfig(home, guildConfig);
 
-    // package.json — makes the guild an npm project so rigs install as deps.
+    // package.json — makes the guild an npm project so plugins install as deps.
     // If running from a published version, pin @shardworks/nexus so nsg is
     // available in the guild's node_modules/.bin without a global install.
     const dependencies: Record<string, string> = {};

@@ -1,10 +1,12 @@
 /**
  * nsg status — guild status.
  *
- * Arbor built-in. Shows guild identity, framework version, and installed plugins
+ * A framework command. Shows guild identity, framework version, and installed plugins
  * separated into apparatuses (running infrastructure) and kits (passive capabilities).
  * Domain-specific status (writ counts, session history, clock state) belongs
  * to plugins, not here.
+ *
+ * Requires a booted guild — prints a friendly error if run outside one.
  */
 
 import { tool, VERSION, readGuildConfig, guild } from '@shardworks/nexus-core';
@@ -18,7 +20,14 @@ export default tool({
     json: z.boolean().optional().describe('Output as JSON'),
   },
   handler: async (_params) => {
-    const { home } = guild();
+    let g;
+    try {
+      g = guild();
+    } catch {
+      throw new Error('Not inside a guild. Run `nsg init` to create one, or use --guild-root to specify the path.');
+    }
+
+    const { home } = g;
     const config = readGuildConfig(home);
 
     // Note: at status time we don't load/start plugins — we just report what's

@@ -35,20 +35,11 @@ export {
 export { type BookOptions } from './books.ts';
 
 export {
-  type Book,
-  type ReadOnlyBook,
-  type BookQuery,
-  type ListOptions,
-  type Pagination,
-} from './book.ts';
-
-export {
   type ToolCaller,
   type ToolDefinition,
   tool,
   isToolDefinition,
   resolveToolFromExport,
-  resolveAllToolsFromExport,
 } from './tool.ts';
 
 export {
@@ -60,6 +51,14 @@ export {
   clockPidPath,
   clockLogPath,
 } from './nexus-home.ts';
+
+export {
+  derivePluginId,
+  readGuildPackageJson,
+  resolvePackageNameForPluginId,
+  resolveGuildPackageEntry,
+  discoverPluginTools,
+} from './resolve-package.ts';
 
 export {
   type GuildConfig,
@@ -76,148 +75,10 @@ export {
   guildConfigPath,
 } from './guild-config.ts';
 
-// ── Legacy modules — not yet promoted, still live in legacy/1 ─────────
-
-export {
-  type GuildEvent,
-  type EngineContext,
-  type EngineDefinition,
-  engine,
-  isClockworkEngine,
-  resolveEngineFromExport,
-} from './legacy/1/engine.ts';
-
-export {
-  signalEvent,
-  validateCustomEvent,
-  isFrameworkEvent,
-  readPendingEvents,
-  readEvent,
-  markEventProcessed,
-  recordDispatch,
-  type ListEventsOptions,
-  type DispatchRecord,
-  type ListDispatchesOptions,
-  listEvents,
-  listDispatches,
-} from './legacy/1/events.ts';
-
-export {
-  type TickResult,
-  type DispatchSummary,
-  type ClockRunResult,
-  type ClockStartOptions,
-  type ClockStartResult,
-  type ClockStopResult,
-  type ClockStatus,
-  clockTick,
-  clockRun,
-  clockStart,
-  clockStop,
-  clockStatus,
-  desugarOrder,
-  extractParams,
-} from './legacy/1/clockworks.ts';
-
-export {
-  type InstallToolOptions,
-  type InstallResult,
-  type SourceKind,
-  classifySource,
-  installTool,
-} from './legacy/1/install-tool.ts';
-
-export {
-  type RemoveToolOptions,
-  type RemoveResult,
-  removeTool,
-} from './legacy/1/remove-tool.ts';
-
-export {
-  type InstantiateOptions,
-  type InstantiateResult,
-  instantiate,
-} from './legacy/1/instantiate.ts';
-
-export { initGuild } from './legacy/1/init-guild.ts';
-
-export {
-  type BundleManifest,
-  type BundlePackageEntry,
-  type BundleContentEntry,
-  type BundleMigrationEntry,
-  type InstallBundleOptions,
-  type InstallBundleResult,
-  readBundleManifest,
-  installBundle,
-  isBundleDir,
-} from './legacy/1/bundle.ts';
-
-export {
-  type RehydrateResult,
-  rehydrate,
-} from './legacy/1/rehydrate.ts';
-
-export {
-  type AddWorkshopOptions,
-  type AddWorkshopResult,
-  type RemoveWorkshopOptions,
-  type WorkshopInfo,
-  type WorkshopDetail,
-  type CreateWorkshopOptions,
-  addWorkshop,
-  removeWorkshop,
-  listWorkshops,
-  showWorkshop,
-  createWorkshop,
-  checkGhAuth,
-  deriveWorkshopName,
-} from './legacy/1/workshop.ts';
-
-export {
-  type Precondition,
-  type CommandPrecondition,
-  type CommandOutputPrecondition,
-  type EnvPrecondition,
-  type PreconditionCheckResult,
-  type ToolPreconditionResult,
-  readPreconditions,
-  checkOne,
-  checkPreconditions,
-  checkAllPreconditions,
-  checkToolPreconditions,
-} from './legacy/1/preconditions.ts';
-
-export {
-  type WorktreeConfig,
-  type WorktreeResult,
-  setupWorktree,
-  teardownWorktree,
-  listWorktrees,
-} from './legacy/1/worktree.ts';
-
-export {
-  type MigrationFile,
-  type MigrationProvenance,
-  type MigrateResult,
-  discoverMigrations,
-  applyMigrations,
-  applyCoreMigrations,
-  ensureBooks,
-} from './legacy/1/migrate.ts';
-
-export {
-  type AnimaRecord,
-  type ResolvedTool,
-  type UnavailableTool,
-  type ManifestResult,
-  readAnima,
-  resolveTools,
-  readCodex,
-  readRoleInstructions,
-  assembleSystemPrompt,
-  manifest,
-} from './legacy/1/manifest.ts';
+// ── Legacy modules ────────────────────────────────────────────────────
+// V1 APIs (clockworks, writs, animas, workshops, etc.) are available at
+// the @shardworks/nexus-core/legacy/1 subpath. They are NOT re-exported
+// from this barrel. Import from '@shardworks/nexus-core/legacy/1' directly.
 
 // Session provider registry — slim singleton that lives in core so clock-daemon
 // can import it without creating a circular dependency with nexus-sessions.
@@ -230,70 +91,3 @@ export {
   registerSessionProvider,
   getSessionProvider,
 } from './session-provider.ts';
-
-// Conversation API moved to nexus-sessions. Import from @shardworks/nexus-sessions.
-
-export {
-  type UpgradePlan,
-  type UpgradeResult,
-  type ApplyUpgradeOptions,
-  type MigrationPlanEntry,
-  type ContentUpdateEntry,
-  type ToolPlanEntry,
-  type StaleAnimaEntry,
-  planUpgrade,
-  applyUpgrade,
-} from './legacy/1/upgrade.ts';
-
-export { generateId } from './legacy/1/id.ts';
-
-export {
-  type AnimaSummary,
-  type AnimaDetail,
-  type ListAnimasOptions,
-  type UpdateAnimaOptions,
-  type AnimaStaleness,
-  type StalenessInfo,
-  resolveAnimaByRole,
-  listAnimas,
-  showAnima,
-  updateAnima,
-  removeAnima,
-  checkAnimaStaleness,
-  checkAllAnimaStaleness,
-} from './legacy/1/anima.ts';
-
-export {
-  type ToolSummary,
-  listTools,
-} from './legacy/1/tool-registry.ts';
-
-export {
-  type WritRecord,
-  type WritStatus,
-  type CreateWritOptions,
-  type ListWritsOptions,
-  type WritChildSummary,
-  BUILTIN_WRIT_TYPES,
-  validateWritType,
-  createWrit,
-  readWrit,
-  listWrits,
-  activateWrit,
-  completeWrit,
-  adminCompleteWrit,
-  failWrit,
-  cancelWrit,
-  interruptWrit,
-  reopenFailedWrit,
-  rollupParent,
-  getWritChildren,
-  buildProgressAppendix,
-  hydratePromptTemplate,
-} from './legacy/1/writ.ts';
-
-export {
-  type AuditEntry,
-  type ListAuditLogOptions,
-  listAuditLog,
-} from './legacy/1/audit.ts';

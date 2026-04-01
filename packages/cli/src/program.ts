@@ -1,50 +1,39 @@
 /**
- * nsg program — dynamic Commander setup via arbor tool resolution.
+ * nsg program — dynamic Commander setup.
  *
- * Discovers installed tools at startup via the Arbor, then registers each
- * as a Commander command with auto-generated options from its Zod param schema.
+ * Two command sources:
+ *
+ * 1. **Framework commands** — hardcoded in the CLI package (init, status,
+ *    version, upgrade, plugin management). Always available, even without
+ *    a guild.
+ *
+ * 2. **Plugin tools** — discovered at runtime via The Instrumentarium
+ *    (tools apparatus). Only available when a guild is present and the
+ *    tools apparatus is installed.
  *
  * Tool names are auto-grouped when multiple tools share a hyphen prefix:
- * 'rig-list' + 'rig-install' → 'nsg rig list' / 'nsg rig install'.
+ * 'plugin-list' + 'plugin-install' → 'nsg plugin list' / 'nsg plugin install'.
  * A tool like 'show-writ' stays flat ('nsg show-writ') since no other tool
  * starts with 'show-'.
- *
- * Commander lives here; rig handles all manifest and import logic.
  */
 
 import path from 'node:path';
 import { Command } from 'commander';
 import { z } from 'zod';
-import { findGuildRoot, createArbor, builtinTools, derivePluginId } from '@shardworks/nexus-arbor';
-import type { Tool, Arbor } from '@shardworks/nexus-arbor';
+import { findGuildRoot, guild } from '@shardworks/nexus-core';
+import type { ToolDefinition } from '@shardworks/nexus-core';
+import { createGuild } from '@shardworks/nexus-arbor';
+import type { InstrumentariumApi } from '@shardworks/tools-apparatus';
+import { frameworkCommands } from './commands/index.ts';
+import { toFlag, isBooleanSchema, findGroupPrefixes } from './helpers.ts';
+
+// Re-export helpers for backward compatibility with tests
+export { toFlag, isBooleanSchema, findGroupPrefixes } from './helpers.ts';
 
 type ZodShape = Record<string, z.ZodTypeAny>;
 
-// ── Helpers ────────────────────────────────────────────────────────────
-
 /**
- * Convert camelCase key to kebab-case CLI flag.
- * e.g. 'writId' → '--writ-id'
- */
-export function toFlag(key: string): string {
-  return `--${key.replace(/([A-Z])/g, (c) => `-${c.toLowerCase()}`)}`;
-}
-
-/**
- * Detect whether a Zod schema accepts booleans (and only booleans).
- * Used to register Commander flags without <value> for boolean params.
- */
-export function isBooleanSchema(schema: z.ZodTypeAny): boolean {
-  return (
-    schema.safeParse(true).success &&
-    schema.safeParse(false).success &&
-    !schema.safeParse(42).success &&
-    !schema.safeParse('test').success
-  );
-}
-
-/**
- * Build a Commander command from a Tool.
+ * Build a Commander command from a ToolDefinition.
  *
  * Generates options from the Zod param shape. Commander converts kebab-case
  * flags back to camelCase in opts(), matching the tool's schema keys directly.
@@ -54,7 +43,7 @@ export function isBooleanSchema(schema: z.ZodTypeAny): boolean {
  */
 function buildToolCommand(
   commandName: string,
-  toolDef: Tool,
+  toolDef: ToolDefinition,
 ): Command {
   const cmd = new Command(commandName).description(toolDef.description);
 
@@ -91,45 +80,19 @@ function buildToolCommand(
   return cmd;
 }
 
-// createMinimalHandlerContext removed — handlers use guild() singleton
-
 /**
- * Determine which hyphen prefixes have enough tools to warrant a group.
- *
- * Returns a Set of prefixes that have 2+ tools sharing them.
- * 'rig-list' + 'rig-install' → 'rig' is a group.
- * 'show-writ' alone → 'show' is NOT a group.
- */
-export function findGroupPrefixes(tools: Tool[]): Set<string> {
-  const prefixCounts = new Map<string, number>();
-
-  for (const t of tools) {
-    const idx = t.name.indexOf('-');
-    if (idx === -1) continue;
-    const prefix = t.name.slice(0, idx);
-    prefixCounts.set(prefix, (prefixCounts.get(prefix) ?? 0) + 1);
-  }
-
-  const groups = new Set<string>();
-  for (const [prefix, count] of prefixCounts) {
-    if (count >= 2) groups.add(prefix);
-  }
-  return groups;
-}
-
-/**
- * Register all tools as Commander commands.
+ * Register tool definitions as Commander commands.
  *
  * Tools whose hyphen prefix appears in `groupPrefixes` are nested:
- * 'rig-list' → 'nsg rig list'.
+ * 'plugin-list' → 'nsg plugin list'.
  *
  * All other tools are registered flat:
  * 'show-writ' → 'nsg show-writ'.
  * 'signal' → 'nsg signal'.
  */
-function registerAllTools(
+function registerTools(
   program: Command,
-  tools: Tool[],
+  tools: ToolDefinition[],
 ): void {
   const groupPrefixes = findGroupPrefixes(tools);
   const groups = new Map<string, Command>();
@@ -178,11 +141,11 @@ export async function main(): Promise<void> {
   const preOpts = pre.opts() as { guildRoot?: string };
 
   const program = new Command('nsg')
-    .description('Nexus Mk 2.1 — rig-powered guild CLI')
+    .description('Nexus Mk 2.1 — guild CLI')
     .option('--guild-root <path>', 'Guild root directory (default: auto-detect from cwd)');
 
-  // Discover guild root. Built-in rig commands work without a guild;
-  // plugin tools only load when a guild is found.
+  // Discover guild root. Framework commands work without a guild;
+  // plugin tools only load when a guild with The Instrumentarium is found.
   let home: string | undefined;
   try {
     home = preOpts.guildRoot
@@ -192,24 +155,27 @@ export async function main(): Promise<void> {
     // Not in a guild
   }
 
-  // Always register rig built-in tools (version, status, rig, upgrade).
-  // These are framework commands that work with or without a guild.
-  const arborPackageName = '@shardworks/nexus-arbor';
-  const arborPluginId = derivePluginId(arborPackageName);
-  const builtins = builtinTools
-    .filter((t) => !t.callableFrom || t.callableFrom.includes('cli'))
-    .map((t) => ({ ...t, pluginId: arborPluginId }) as Tool);
+  // Always register framework commands (init, status, version, upgrade,
+  // plugin management). These work with or without a guild.
+  registerTools(program, frameworkCommands);
 
-  const builtinHome = home ?? process.cwd();
-  registerAllTools(program, builtins);
-
-  // Load guild plugin tools when inside a guild
+  // Load plugin-contributed tools when inside a guild.
+  // Tools are discovered via The Instrumentarium (tools apparatus).
+  // If the guild doesn't have the tools apparatus installed, no plugin
+  // tools are available — only framework commands.
   if (home) {
-    const arbor = createArbor(home);
-    const tools = await arbor.listTools({ channel: 'cli' });
-    // Filter out arbor built-ins (already registered above)
-    const pluginTools = tools.filter((t) => t.pluginId !== arborPluginId);
-    registerAllTools(program, pluginTools);
+    await createGuild(home);
+
+    try {
+      const instrumentarium = guild().apparatus<InstrumentariumApi>('tools');
+      const pluginTools = instrumentarium.list()
+        .filter((r) => !r.definition.callableFrom || r.definition.callableFrom.includes('cli'))
+        .map((r) => r.definition);
+      registerTools(program, pluginTools);
+    } catch {
+      // No Instrumentarium installed — only framework commands available.
+      // This is fine; the guild just doesn't have plugin-contributed CLI tools.
+    }
   }
 
   program.parse(process.argv);

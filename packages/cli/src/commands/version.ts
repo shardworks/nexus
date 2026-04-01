@@ -1,28 +1,34 @@
 /**
- * nsg version — show framework and rig version info.
+ * nsg version — show framework and plugin version info.
  *
- * An arbor built-in command. Available via CLI only (not MCP).
+ * A framework command — hardcoded in the CLI, not discovered via plugins.
+ *
+ * Always shows framework and Node versions. When run inside a guild,
+ * additionally shows installed plugin versions. Gracefully degrades
+ * when run outside a guild (no error, just less info).
  */
 
 import { tool, VERSION, readGuildConfig, guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
-import { readGuildPackageJson, resolvePackageNameForPluginId } from '../resolve-package.ts';
+import { readGuildPackageJson, resolvePackageNameForPluginId } from '@shardworks/nexus-core';
 
 export default tool({
   name: 'version',
-  description: 'Show Nexus framework and installed rig version information',
+  description: 'Show Nexus framework and installed plugin version information',
   callableFrom: ['cli'],
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },
   handler: async (_params) => {
-    const { home } = guild();
     const result: Record<string, string> = {
       nexus: VERSION,
       node: process.version,
     };
 
+    // Add plugin versions when running inside a guild.
+    // guild() throws if not initialized — that's fine, we just skip plugin info.
     try {
+      const { home } = guild();
       const config = readGuildConfig(home);
       for (const pluginId of config.plugins) {
         const packageName = resolvePackageNameForPluginId(home, pluginId);

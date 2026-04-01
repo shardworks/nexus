@@ -1,7 +1,7 @@
 /**
- * nsg rig — manage guild plugins.
+ * nsg plugin-* — manage guild plugins.
  *
- * Arbor built-in commands for plugin lifecycle. Available via CLI only (not MCP).
+ * Framework commands for plugin lifecycle. Available via CLI only (not MCP).
  */
 
 import fs from 'node:fs';
@@ -12,10 +12,12 @@ import {
   guild,
   readGuildConfig,
   writeGuildConfig,
-  resolveAllToolsFromExport,
+  derivePluginId,
+  readGuildPackageJson,
+  resolvePackageNameForPluginId,
+  discoverPluginTools,
 } from '@shardworks/nexus-core';
 import { z } from 'zod';
-import { derivePluginId, readGuildPackageJson, resolveGuildPackageEntry, resolvePackageNameForPluginId } from '../resolve-package.ts';
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -30,6 +32,10 @@ function npm(args: string[], cwd: string): string {
  *
  * Returns null for git URLs — the package name must be read from
  * the guild's package.json after npm install.
+ *
+ * Known limitations: does not handle npm: alias specifiers, tarball URLs,
+ * or workspace: protocol. These are uncommon for plugin install and can
+ * be added if needed.
  */
 function parsePackageName(source: string): string | null {
   if (source.startsWith('git+') || source.startsWith('git://') || source.endsWith('.git')) {
@@ -49,6 +55,11 @@ function parsePackageName(source: string): string | null {
 /**
  * Find the most recently added dependency in the guild's package.json.
  * Used after `npm install <git-url>` where we can't parse the name from the source.
+ *
+ * Relies on Object.keys() returning insertion-ordered string keys (guaranteed
+ * by the ES2015 spec for non-integer keys, and by V8/Node). A diff-based
+ * approach (snapshot deps before install, compare after) would be more robust
+ * but overkill for this edge case.
  */
 function detectInstalledPackage(guildRoot: string): string {
   const pkgPath = path.join(guildRoot, 'package.json');
@@ -60,25 +71,10 @@ function detectInstalledPackage(guildRoot: string): string {
   return last;
 }
 
-/**
- * Discover tools exported by an installed plugin package.
- * Imports the package from the guild's node_modules and returns
- * all ToolDefinitions found in its default export.
- */
-async function discoverPluginTools(
-  guildRoot: string,
-  packageName: string,
-): Promise<string[]> {
-  const entryPath = resolveGuildPackageEntry(guildRoot, packageName);
-  const mod = await import(entryPath) as { default: unknown };
-  const tools = resolveAllToolsFromExport(mod.default);
-  return tools.map((t) => t.name);
-}
-
 // ── Commands ───────────────────────────────────────────────────────────
 
-export const rigList = tool({
-  name: 'rig-list',
+export const pluginList = tool({
+  name: 'plugin-list',
   description: 'List installed plugins',
   callableFrom: ['cli'],
   params: {
@@ -101,8 +97,8 @@ export const rigList = tool({
   },
 });
 
-export const rigInstall = tool({
-  name: 'rig-install',
+export const pluginInstall = tool({
+  name: 'plugin-install',
   description: 'Install a plugin into the guild',
   callableFrom: ['cli'],
   params: {
@@ -140,7 +136,8 @@ export const rigInstall = tool({
     const pluginId = derivePluginId(packageName);
 
     // 2. Discover tools from the plugin's exports
-    const toolNames = await discoverPluginTools(home, packageName);
+    const tools = await discoverPluginTools(home, packageName);
+    const toolNames = tools.map((t) => t.name);
 
     // 3. Update guild.json — add to plugins list, update access control
     const config = readGuildConfig(home);
@@ -178,8 +175,8 @@ export const rigInstall = tool({
   },
 });
 
-export const rigRemove = tool({
-  name: 'rig-remove',
+export const pluginRemove = tool({
+  name: 'plugin-remove',
   description: 'Remove a plugin from the guild',
   callableFrom: ['cli'],
   params: {
@@ -199,7 +196,8 @@ export const rigRemove = tool({
     let toolsToRemove: string[] = [];
     if (packageName) {
       try {
-        toolsToRemove = await discoverPluginTools(home, packageName);
+        const tools = await discoverPluginTools(home, packageName);
+        toolsToRemove = tools.map((t) => t.name);
       } catch {
         // Can't load module — skip access control cleanup; tools may be orphaned
       }
@@ -231,8 +229,8 @@ export const rigRemove = tool({
   },
 });
 
-export const rigUpgrade = tool({
-  name: 'rig-upgrade',
+export const pluginUpgrade = tool({
+  name: 'plugin-upgrade',
   description: 'Upgrade a plugin to a newer version',
   callableFrom: ['cli'],
   params: {

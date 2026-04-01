@@ -1,8 +1,8 @@
 /**
- * Tests for the `version` built-in tool (V2 guild config).
+ * Tests for the `version` framework command.
  *
  * Tests the handler directly — no CLI layer involved.
- * V2: rigs come from config.rigs; package versions are resolved via
+ * Plugins come from config.plugins; package versions are resolved via
  * the guild's package.json and node_modules.
  */
 
@@ -76,6 +76,25 @@ afterEach(() => {
   tmpDirs = [];
 });
 
+// ── No guild ──────────────────────────────────────────────────────────────
+
+describe('version handler — no guild', () => {
+  it('returns framework version even without a guild', async () => {
+    // guild() not set — clearGuild() runs in afterEach
+    // version should still work — just shows nexus + node versions
+    const result = await versionTool.handler({}) as string;
+    assert.ok(result.includes('nexus:'));
+    assert.ok(result.includes('node:'));
+  });
+
+  it('returns only nexus and node in json mode without a guild', async () => {
+    const result = await versionTool.handler({ json: true }) as Record<string, string>;
+    assert.ok('nexus' in result);
+    assert.ok('node' in result);
+    assert.equal(Object.keys(result).length, 2);
+  });
+});
+
 // ── Tool metadata ──────────────────────────────────────────────────────────
 
 describe('version tool definition', () => {
@@ -127,9 +146,9 @@ describe('version handler — text mode', () => {
     }
   });
 
-  it('shows rig key as "not installed" when guild has no package.json', async () => {
+  it('shows plugin id as "not installed" when guild has no package.json', async () => {
     const tmp = makeTmpDir();
-    makeGuild(tmp, { plugins: ['nexus-stdlib'] }); // no guild package.json — resolvePackageNameForRigKey returns null
+    makeGuild(tmp, { plugins: ['nexus-stdlib'] }); // no guild package.json — resolvePackageNameForPluginId returns null
 
     setupGuildAccessor(tmp);
     const result = await versionTool.handler({}) as string;
@@ -137,7 +156,7 @@ describe('version handler — text mode', () => {
     assert.ok(result.includes('not installed'));
   });
 
-  it('shows the npm package name and version when rig is resolvable', async () => {
+  it('shows the npm package name and version when plugin is resolvable', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { plugins: ['nexus-stdlib'] });
     makeGuildPackageJson(tmp, { '@shardworks/nexus-stdlib': '^1.2.3' });
@@ -149,7 +168,7 @@ describe('version handler — text mode', () => {
     assert.ok(result.includes('1.2.3'));
   });
 
-  it('shows package versions for multiple installed rigs', async () => {
+  it('shows package versions for multiple installed plugins', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { plugins: ['nexus-stdlib', 'nexus-ledger'] });
     makeGuildPackageJson(tmp, {
@@ -206,7 +225,7 @@ describe('version handler — json mode', () => {
     assert.equal(Object.keys(result).length, 2);
   });
 
-  it('marks rig key as "not installed" when guild has no package.json', async () => {
+  it('marks plugin id as "not installed" when guild has no package.json', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { plugins: ['nexus-stdlib'] }); // no guild package.json
 
@@ -215,7 +234,7 @@ describe('version handler — json mode', () => {
     assert.equal(result['nexus-stdlib'], 'not installed');
   });
 
-  it('includes resolved package name and version for an installed rig', async () => {
+  it('includes resolved package name and version for an installed plugin', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { plugins: ['nexus-stdlib'] });
     makeGuildPackageJson(tmp, { '@shardworks/nexus-stdlib': '^1.2.3' });
@@ -226,7 +245,7 @@ describe('version handler — json mode', () => {
     assert.equal(result['@shardworks/nexus-stdlib'], '1.2.3');
   });
 
-  it('includes both package versions for two installed rigs', async () => {
+  it('includes both package versions for two installed plugins', async () => {
     const tmp = makeTmpDir();
     makeGuild(tmp, { plugins: ['nexus-stdlib', 'nexus-ledger'] });
     makeGuildPackageJson(tmp, {

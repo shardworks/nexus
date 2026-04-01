@@ -1,8 +1,8 @@
 /**
- * Tests for the `status` built-in tool (V2 guild config).
+ * Tests for the `status` framework command.
  *
  * Tests the handler directly — no CLI layer involved.
- * V2: rigs come from config.rigs directly, not derived from a tools registry.
+ * Plugins come from config.plugins; roles come from config.roles.
  */
 
 import { describe, it, afterEach } from 'node:test';
@@ -24,7 +24,6 @@ function setupGuildAccessor(home: string): void {
     apparatuses: () => [],
   });
 }
-
 
 let tmpDirs: string[] = [];
 
@@ -55,6 +54,18 @@ afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
   tmpDirs = [];
+});
+
+// ── No guild ──────────────────────────────────────────────────────────────
+
+describe('status handler — no guild', () => {
+  it('throws a friendly error when guild is not initialized', async () => {
+    // guild() not set — clearGuild() runs in afterEach
+    await assert.rejects(
+      async () => statusTool.handler({}),
+      /Not inside a guild/,
+    );
+  });
 });
 
 // ── Tool metadata ──────────────────────────────────────────────────────────

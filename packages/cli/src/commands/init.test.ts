@@ -1,19 +1,22 @@
+/**
+ * Tests for the `init` framework command.
+ *
+ * Tests the handler directly — no CLI layer involved.
+ * init does not use guild() — it creates a new guild from scratch.
+ */
+
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-/**
- * Exercise the init tool's handler directly, bypassing the CLI.
- * init does not use guild() — it creates a new guild from scratch.
- */
 import initTool from './init.ts';
 
 let tmpDirs: string[] = [];
 
 function makeTmpDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rig-init-test-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nsg-init-test-'));
   tmpDirs.push(dir);
   return dir;
 }

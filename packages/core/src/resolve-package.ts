@@ -5,12 +5,18 @@
  * exports maps directly. Needed because guild plugins are ESM-only packages
  * and createRequire() can't resolve their exports.
  *
- * Also owns derivePluginId — kept here (not arbor.ts) so that tool modules
- * can import it without creating a circular dependency through arbor.
+ * Also owns:
+ * - derivePluginId — canonical npm package name → plugin id derivation
+ * - discoverPluginTools — install-time tool discovery for a single package
+ *   (used by CLI plugin-install/remove; at runtime, The Instrumentarium
+ *   handles tool discovery via its own registry)
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { isToolDefinition } from './tool.ts';
+import type { ToolDefinition } from './tool.ts';
+import { isKit, isApparatus } from './plugin.ts';
 
 /**
  * Derive the guild-facing plugin id from an npm package name.
@@ -64,9 +70,12 @@ export function readGuildPackageJson(
 /**
  * Resolve the npm package name for a plugin id by consulting the guild's root package.json.
  *
- * Reverses the `derivePluginId()` mapping:
- * - Id containing `/`  → `@id`           (e.g. `acme/my-plugin` → `@acme/my-plugin`)
- * - Id without `/`     → prefer `@shardworks/id` in deps; fall back to unscoped `id`
+ * Scans all dependencies and runs `derivePluginId()` on each to find the
+ * package whose derived id matches. This correctly handles descriptor
+ * suffixes (-kit, -apparatus, -plugin) that derivePluginId strips.
+ *
+ * When multiple packages derive to the same id (unlikely but possible),
+ * prefers @shardworks-scoped packages over third-party ones.
  *
  * Returns null if no matching dependency is found.
  */
@@ -80,17 +89,16 @@ export function resolvePackageNameForPluginId(guildRoot: string, pluginId: strin
     return null;
   }
 
-  // Id with / came from @scope/name → scope/name; reverse is prepend @
-  if (pluginId.includes('/')) {
-    const pkg = '@' + pluginId;
-    return deps.includes(pkg) ? pkg : null;
+  let match: string | null = null;
+  for (const dep of deps) {
+    if (derivePluginId(dep) === pluginId) {
+      // Prefer @shardworks-scoped packages (official namespace)
+      if (dep.startsWith('@shardworks/')) return dep;
+      // Keep the first match as fallback
+      if (!match) match = dep;
+    }
   }
-
-  // Id without /: prefer the official @shardworks/ scope; fall back to unscoped
-  const official = '@shardworks/' + pluginId;
-  if (deps.includes(official)) return official;
-  if (deps.includes(pluginId)) return pluginId;
-  return null;
+  return match;
 }
 
 /**
@@ -118,4 +126,41 @@ export function resolveGuildPackageEntry(guildRoot: string, pkgName: string): st
   }
 
   return path.join(pkgDir, 'index.js');
+}
+
+/**
+ * Discover tools exported by an installed plugin package.
+ *
+ * Resolves the package entry point from the guild's node_modules,
+ * dynamically imports it, and extracts ToolDefinitions from kit.tools
+ * or apparatus.supportKit.tools.
+ *
+ * This is an install-time utility — used by the CLI's plugin-install and
+ * plugin-remove commands to update guild.json's baseTools / role lists
+ * before the guild is booted. At runtime, The Instrumentarium handles
+ * tool discovery via its own registry.
+ */
+export async function discoverPluginTools(
+  guildRoot: string,
+  packageName: string,
+): Promise<ToolDefinition[]> {
+  const entryPath = resolveGuildPackageEntry(guildRoot, packageName);
+  const mod = await import(entryPath) as { default: unknown };
+  const raw = mod.default;
+
+  if (isKit(raw)) {
+    const t = (raw.kit as Record<string, unknown>).tools;
+    return Array.isArray(t) ? t.filter(isToolDefinition) : [];
+  }
+
+  if (isApparatus(raw)) {
+    const sk = raw.apparatus.supportKit;
+    if (sk) {
+      const t = (sk as Record<string, unknown>).tools;
+      return Array.isArray(t) ? t.filter(isToolDefinition) : [];
+    }
+    return [];
+  }
+
+  return [];
 }

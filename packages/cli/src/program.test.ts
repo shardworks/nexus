@@ -1,14 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
-import { toFlag, isBooleanSchema, findGroupPrefixes } from './program.ts';
-import type { Tool } from '@shardworks/nexus-arbor';
+import { toFlag, isBooleanSchema, findGroupPrefixes } from './helpers.ts';
+import type { ToolDefinition } from '@shardworks/nexus-core';
 
-// Helper to create a minimal Tool for testing
-function fakeTool(name: string): Tool {
+// Helper to create a minimal ToolDefinition for testing
+function fakeTool(name: string): ToolDefinition {
   return {
     name,
-    rigId: 'test',
     description: `test tool ${name}`,
     params: z.object({}),
     handler: async () => null,
@@ -60,12 +59,12 @@ describe('isBooleanSchema', () => {
 describe('findGroupPrefixes', () => {
   it('groups prefixes with 2+ tools', () => {
     const tools = [
-      fakeTool('rig-list'),
-      fakeTool('rig-install'),
-      fakeTool('rig-remove'),
+      fakeTool('plugin-list'),
+      fakeTool('plugin-install'),
+      fakeTool('plugin-remove'),
     ];
     const groups = findGroupPrefixes(tools);
-    assert.ok(groups.has('rig'));
+    assert.ok(groups.has('plugin'));
     assert.equal(groups.size, 1);
   });
 
@@ -94,15 +93,15 @@ describe('findGroupPrefixes', () => {
 
   it('handles mixed grouped and ungrouped', () => {
     const tools = [
-      fakeTool('rig-list'),
-      fakeTool('rig-install'),
+      fakeTool('plugin-list'),
+      fakeTool('plugin-install'),
       fakeTool('version'),
       fakeTool('show-writ'),
       fakeTool('anima-create'),
       fakeTool('anima-list'),
     ];
     const groups = findGroupPrefixes(tools);
-    assert.ok(groups.has('rig'));
+    assert.ok(groups.has('plugin'));
     assert.ok(groups.has('anima'));
     assert.ok(!groups.has('show'));
     assert.equal(groups.size, 2);
