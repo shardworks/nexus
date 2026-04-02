@@ -13,10 +13,8 @@
  * See: docs/architecture/apparatus/parlour.md
  */
 
-import crypto from 'node:crypto';
-
 import type { Plugin, StartupContext } from '@shardworks/nexus-core';
-import { guild } from '@shardworks/nexus-core';
+import { guild, generateId } from '@shardworks/nexus-core';
 import type { StacksApi, Book, ReadOnlyBook, WhereCondition } from '@shardworks/stacks-apparatus';
 import type { AnimatorApi, SessionResult, SessionChunk, SessionDoc } from '@shardworks/animator-apparatus';
 import type { LoomApi } from '@shardworks/loom-apparatus';
@@ -39,12 +37,6 @@ import type {
 } from './types.ts';
 
 import { conversationList, conversationShow, conversationEnd } from './tools/index.ts';
-
-// ── ID generation ────────────────────────────────────────────────────
-
-function generateId(prefix: string): string {
-  return `${prefix}-${crypto.randomBytes(4).toString('hex')}`;
-}
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -300,7 +292,7 @@ export function createParlour(): Plugin {
 
       if (participant.kind === 'human') {
         // Human turn — record the message, no session launched
-        const turnId = generateId('turn');
+        const turnId = generateId('turn', 6);
         await turns.put({
           id: turnId,
           conversationId: conv.id,
@@ -365,7 +357,7 @@ export function createParlour(): Plugin {
       await conversations.patch(conv.id, { participants: updatedParticipants });
 
       // Record the turn
-      const turnId = generateId('turn');
+      const turnId = generateId('turn', 6);
       await turns.put({
         id: turnId,
         conversationId: conv.id,
@@ -537,7 +529,7 @@ export function createParlour(): Plugin {
         await conversations.patch(conv.id, { participants: updatedParticipants });
 
         // Record turn
-        const turnId = generateId('turn');
+        const turnId = generateId('turn', 6);
         await turns.put({
           id: turnId,
           conversationId: conv.id,

@@ -57,3 +57,5 @@ export {
   type GuildSettings,
   guildConfigPath,
 } from './guild-config.ts';
+
+export { generateId } from './id.ts';

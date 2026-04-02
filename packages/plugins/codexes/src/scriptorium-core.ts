@@ -14,9 +14,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 
-import { guild } from '@shardworks/nexus-core';
+import { guild, generateId } from '@shardworks/nexus-core';
 
 import { git, resolveDefaultBranch, resolveRef, commitsAhead, GitError } from './git.ts';
 
@@ -43,15 +42,6 @@ interface CodexState {
   lastFetched: string | null
   /** Promise that resolves when the bare clone is ready (for background clones). */
   clonePromise?: Promise<void>
-}
-
-// ── ULID-like ID generation ─────────────────────────────────────────
-
-function generateDraftId(): string {
-  // Timestamp prefix (ms, base36) + random suffix for uniqueness.
-  const ts = Date.now().toString(36);
-  const rand = crypto.randomBytes(4).toString('hex');
-  return `${ts}${rand}`;
 }
 
 // ── Core class ──────────────────────────────────────────────────────
@@ -158,7 +148,7 @@ export class ScriptoriumCore {
         const key = `${codexName}/${branch}`;
         if (!this.drafts.has(key)) {
           this.drafts.set(key, {
-            id: generateDraftId(),
+            id: generateId('draft', 4),
             codexName,
             branch,
             path: draftPath,
@@ -385,7 +375,7 @@ export class ScriptoriumCore {
     // Fetch before branching for freshness
     await this.performFetch(state.name);
 
-    const branch = request.branch ?? `draft-${generateDraftId()}`;
+    const branch = request.branch ?? generateId('draft', 4);
     const key = `${request.codexName}/${branch}`;
 
     // Reject if draft already exists
@@ -413,7 +403,7 @@ export class ScriptoriumCore {
     );
 
     const draft: DraftRecord = {
-      id: generateDraftId(),
+      id: generateId('draft', 4),
       codexName: request.codexName,
       branch,
       path: worktreePath,

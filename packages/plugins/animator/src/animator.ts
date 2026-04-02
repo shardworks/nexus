@@ -8,10 +8,8 @@
  * See: docs/specification.md (animator)
  */
 
-import crypto from 'node:crypto';
-
 import type { Plugin, StartupContext } from '@shardworks/nexus-core';
-import { guild } from '@shardworks/nexus-core';
+import { guild, generateId } from '@shardworks/nexus-core';
 import type { StacksApi, Book } from '@shardworks/stacks-apparatus';
 
 import type { LoomApi } from '@shardworks/loom-apparatus';
@@ -31,12 +29,6 @@ import type {
 } from './types.ts';
 
 import { sessionList, sessionShow, summon as summonTool } from './tools/index.ts';
-
-// ── ID generation ────────────────────────────────────────────────────
-
-function generateSessionId(): string {
-  return `ses-${crypto.randomBytes(4).toString('hex')}`;
-}
 
 // ── Core logic ───────────────────────────────────────────────────────
 
@@ -290,7 +282,7 @@ export function createAnimator(): Plugin {
       const providerConfig = buildProviderConfig(request, model);
 
       // Step 1: generate session id, capture startedAt
-      const id = generateSessionId();
+      const id = generateId('ses', 4);
       const startedAt = new Date().toISOString();
 
       // Single path — the provider returns { chunks, result } regardless
