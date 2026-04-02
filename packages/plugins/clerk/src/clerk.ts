@@ -20,6 +20,7 @@ import type { StacksApi, Book, WhereClause } from '@shardworks/stacks-apparatus'
 
 import type {
   ClerkApi,
+  ClerkConfig,
   WritDoc,
   WritStatus,
   PostCommissionRequest,
@@ -45,7 +46,7 @@ const BUILTIN_TYPES = new Set(['mandate']);
 function generateWritId(): string {
   const ts = Date.now().toString(36);
   const rand = crypto.randomBytes(6).toString('hex');
-  return `writ-${ts}${rand}`;
+  return `w-${ts}${rand}`;
 }
 
 // ── Status machine ───────────────────────────────────────────────────
@@ -67,15 +68,19 @@ export function createClerk(): Plugin {
 
   // ── Helpers ──────────────────────────────────────────────────────
 
+  function resolveClerkConfig(): ClerkConfig {
+    return guild().guildConfig().clerk ?? {};
+  }
+
   function resolveWritTypes(): Set<string> {
-    const guildConfig = guild().guildConfig();
-    const declared = Object.keys(guildConfig.writTypes ?? {});
+    const config = resolveClerkConfig();
+    const declared = (config.writTypes ?? []).map((entry) => entry.name);
     return new Set([...BUILTIN_TYPES, ...declared]);
   }
 
   function resolveDefaultType(): string {
-    const config = guild().config<{ defaultType?: string }>('clerk');
-    return config?.defaultType ?? 'mandate';
+    const config = resolveClerkConfig();
+    return config.defaultType ?? 'mandate';
   }
 
   function buildWhereClause(filters?: WritFilters): WhereClause | undefined {

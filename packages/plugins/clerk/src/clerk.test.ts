@@ -15,15 +15,14 @@ import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 
 import { createClerk } from './clerk.ts';
-import type { ClerkApi } from './types.ts';
+import type { ClerkApi, ClerkConfig } from './types.ts';
 
 // ── Test harness ─────────────────────────────────────────────────────
 
 let clerk: ClerkApi;
 
 interface SetupOptions {
-  writTypes?: Record<string, { description: string }>;
-  clerkConfig?: { defaultType?: string };
+  clerkConfig?: ClerkConfig;
 }
 
 function setup(options: SetupOptions = {}) {
@@ -37,8 +36,8 @@ function setup(options: SetupOptions = {}) {
     name: 'test-guild',
     nexus: '0.0.0',
     plugins: [],
-    writTypes: options.writTypes,
     settings: { model: 'sonnet' },
+    clerk: options.clerkConfig,
   };
 
   const fakeGuild: Guild = {
@@ -48,10 +47,7 @@ function setup(options: SetupOptions = {}) {
       if (!api) throw new Error(`Apparatus "${name}" not installed`);
       return api as T;
     },
-    config<T>(pluginId: string): T {
-      if (pluginId === 'clerk') {
-        return (options.clerkConfig ?? {}) as T;
-      }
+    config<T>(_pluginId: string): T {
       return {} as T;
     },
     writeConfig() { /* noop */ },
@@ -94,7 +90,7 @@ describe('Clerk', () => {
     it('creates a writ with ready status and mandate type by default', async () => {
       const writ = await clerk.post({ title: 'Fix the bug', body: 'Details here' });
 
-      assert.ok(writ.id.startsWith('writ-'));
+      assert.ok(writ.id.startsWith('w-'));
       assert.equal(writ.type, 'mandate');
       assert.equal(writ.title, 'Fix the bug');
       assert.equal(writ.body, 'Details here');
@@ -147,14 +143,14 @@ describe('Clerk', () => {
       );
     });
 
-    it('accepts a type declared in guild writTypes config', async () => {
-      setup({ writTypes: { 'errand': { description: 'A small errand' } } });
+    it('accepts a type declared in clerk writTypes config', async () => {
+      setup({ clerkConfig: { writTypes: [{ name: 'errand', description: 'A small errand' }] } });
       const writ = await clerk.post({ title: 'Run errand', body: 'Do it', type: 'errand' });
       assert.equal(writ.type, 'errand');
     });
 
-    it('rejects a type that is not in guild writTypes', async () => {
-      setup({ writTypes: { 'errand': { description: 'A small errand' } } });
+    it('rejects a type that is not in clerk writTypes', async () => {
+      setup({ clerkConfig: { writTypes: [{ name: 'errand', description: 'A small errand' }] } });
       await assert.rejects(
         () => clerk.post({ title: 'Test', body: 'Body', type: 'quest' }),
         /Unknown writ type/,
@@ -180,7 +176,7 @@ describe('Clerk', () => {
 
     it('throws for a non-existent writ id', async () => {
       await assert.rejects(
-        () => clerk.show('writ-doesnotexist'),
+        () => clerk.show('w-doesnotexist'),
         /not found/,
       );
     });
@@ -199,7 +195,7 @@ describe('Clerk', () => {
 
   describe('list()', () => {
     beforeEach(() => {
-      setup({ writTypes: { 'errand': { description: 'A small errand' } } });
+      setup({ clerkConfig: { writTypes: [{ name: 'errand', description: 'A small errand' }] } });
     });
 
     it('returns all writs when no filters given', async () => {
@@ -289,7 +285,7 @@ describe('Clerk', () => {
     });
 
     it('filters by type', async () => {
-      setup({ writTypes: { 'errand': { description: 'A small errand' } } });
+      setup({ clerkConfig: { writTypes: [{ name: 'errand', description: 'A small errand' }] } });
       await clerk.post({ title: 'Mandate', body: 'Body', type: 'mandate' });
       await clerk.post({ title: 'Errand', body: 'Body', type: 'errand' });
 
@@ -322,7 +318,7 @@ describe('Clerk', () => {
 
     it('throws if writ does not exist', async () => {
       await assert.rejects(
-        () => clerk.transition('writ-ghost', 'active'),
+        () => clerk.transition('w-ghost', 'active'),
         /not found/,
       );
     });
@@ -560,7 +556,7 @@ describe('Clerk', () => {
       // Attempt to corrupt id, status, and timestamps via fields
       const done = await clerk.transition(writ.id, 'completed', {
         resolution: 'Legit resolution',
-        id: 'writ-evil',
+        id: 'w-evil',
         status: 'ready' as const,
         createdAt: '1999-01-01T00:00:00Z',
         updatedAt: '1999-01-01T00:00:00Z',
@@ -583,13 +579,13 @@ describe('Clerk', () => {
 
   describe('config: writTypes validation', () => {
     it('built-in type mandate is always valid regardless of writTypes config', async () => {
-      setup({ writTypes: {} }); // empty writTypes — built-in still works
+      setup({ clerkConfig: { writTypes: [] } }); // empty writTypes — built-in still works
       const w1 = await clerk.post({ title: 'Mandate', body: 'Body', type: 'mandate' });
       assert.equal(w1.type, 'mandate');
     });
 
     it('summon is not a built-in type (must be declared)', async () => {
-      setup({ writTypes: {} });
+      setup({ clerkConfig: { writTypes: [] } });
       await assert.rejects(
         () => clerk.post({ title: 'Summon', body: 'Body', type: 'summon' }),
         /Unknown writ type/,
@@ -598,9 +594,11 @@ describe('Clerk', () => {
 
     it('declared custom types are accepted', async () => {
       setup({
-        writTypes: {
-          'quest': { description: 'A significant task' },
-          'errand': { description: 'A small errand' },
+        clerkConfig: {
+          writTypes: [
+            { name: 'quest', description: 'A significant task' },
+            { name: 'errand', description: 'A small errand' },
+          ],
         },
       });
       const w = await clerk.post({ title: 'Go on a quest', body: 'Body', type: 'quest' });
@@ -608,7 +606,7 @@ describe('Clerk', () => {
     });
 
     it('undeclared types are rejected even when other custom types exist', async () => {
-      setup({ writTypes: { 'quest': { description: 'A quest' } } });
+      setup({ clerkConfig: { writTypes: [{ name: 'quest', description: 'A quest' }] } });
       await assert.rejects(
         () => clerk.post({ title: 'Test', body: 'Body', type: 'unknown' }),
         /Unknown writ type/,
@@ -617,8 +615,10 @@ describe('Clerk', () => {
 
     it('defaultType from clerk config is validated against declared types', async () => {
       setup({
-        writTypes: { 'errand': { description: 'A small errand' } },
-        clerkConfig: { defaultType: 'errand' },
+        clerkConfig: {
+          writTypes: [{ name: 'errand', description: 'A small errand' }],
+          defaultType: 'errand',
+        },
       });
       const w = await clerk.post({ title: 'Default errand', body: 'Body' });
       assert.equal(w.type, 'errand');

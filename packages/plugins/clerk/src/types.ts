@@ -25,7 +25,7 @@ export type WritStatus = 'ready' | 'active' | 'completed' | 'failed' | 'cancelle
  * A writ document as stored in The Stacks.
  */
 export interface WritDoc {
-  /** Unique writ id (ULID-like, prefixed "writ-"). */
+  /** Unique writ id (`w-{base36_timestamp}{hex_random}`). Sortable by creation time. */
   id: string;
   /** Writ type — must be a type declared in guild config, or a built-in type. */
   type: string;
@@ -82,6 +82,36 @@ export interface WritFilters {
   limit?: number;
   /** Number of results to skip. */
   offset?: number;
+}
+
+// ── Configuration ───────────────────────────────────────────────
+
+/**
+ * A writ type entry declared in clerk config.
+ */
+export interface WritTypeEntry {
+  /** The writ type name (e.g. "mandate", "task", "bug"). */
+  name: string;
+  /** Optional human-readable description of this writ type. */
+  description?: string;
+}
+
+/**
+ * Clerk apparatus configuration — lives under the `clerk` key in guild.json.
+ */
+export interface ClerkConfig {
+  /** Additional writ type declarations. The built-in type "mandate" is always valid. */
+  writTypes?: WritTypeEntry[];
+  /** Default writ type when commission-post is called without a type (default: "mandate"). */
+  defaultType?: string;
+}
+
+// Augment GuildConfig so `guild().guildConfig().clerk` is typed without
+// requiring a manual type parameter at the call site.
+declare module '@shardworks/nexus-core' {
+  interface GuildConfig {
+    clerk?: ClerkConfig;
+  }
 }
 
 // ── API ──────────────────────────────────────────────────────────────

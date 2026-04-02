@@ -189,7 +189,7 @@ interface ClerkApi {
 
 ```typescript
 interface WritDoc {
-  /** Unique writ id (ULID). */
+  /** Unique writ id (prefixed, sortable: `w-{base36_timestamp}{hex_random}`). */
   id: string
   /** Writ type — guild vocabulary. e.g. "mandate", "task", "bug". */
   type: string
@@ -247,21 +247,46 @@ interface WritFilters {
 
 ## Configuration
 
+All Clerk configuration lives under the `clerk` key in `guild.json`. The Clerk uses [module augmentation](../plugins.md#typed-config-via-module-augmentation-recommended) to extend `GuildConfig`, so config is accessed via `guild().guildConfig().clerk` with full type safety — no manual cast needed.
+
 ```json
 {
   "clerk": {
-    "writTypes": ["mandate", "task", "bug"],
+    "writTypes": [
+      { "name": "mandate" },
+      { "name": "task", "description": "A concrete unit of implementation work" },
+      { "name": "bug", "description": "A defect to investigate and fix" }
+    ],
     "defaultType": "mandate"
+  }
+}
+```
+
+```typescript
+interface ClerkConfig {
+  writTypes?: WritTypeEntry[]
+  defaultType?: string
+}
+
+interface WritTypeEntry {
+  name: string
+  description?: string
+}
+
+// Module augmentation — typed access via guild().guildConfig().clerk
+declare module '@shardworks/nexus-core' {
+  interface GuildConfig {
+    clerk?: ClerkConfig
   }
 }
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `writTypes` | `string[]` | `["mandate"]` | Allowed writ type values. The guild defines its own vocabulary. |
+| `writTypes` | `WritTypeEntry[]` | `[]` | Additional writ type declarations. Each entry has a `name` and optional `description`. The built-in type `"mandate"` is always valid regardless of this list. |
 | `defaultType` | `string` | `"mandate"` | Default type when `commission-post` is called without a type. |
 
-Both fields are optional. A guild with no `clerk` config (or an empty one) gets `writTypes: ["mandate"]` and `defaultType: "mandate"` — enough to post commissions with no configuration.
+Both fields are optional. A guild with no `clerk` config (or an empty one) gets only the built-in `mandate` type with `defaultType: "mandate"` — enough to post commissions with no configuration.
 
 Writ types are the guild's vocabulary — not a framework-imposed hierarchy. A guild that does only implementation work might use only `mandate`. A guild with planning animas might add `task`, `step`, `bug`, `spike`. The Clerk validates that posted writs use a declared type but assigns no behavioral semantics to the type name — that meaning lives in role instructions and (when available) standing orders and engine designs.
 
@@ -460,7 +485,7 @@ decompose(parentId: string, children: CreateWritRequest[]): Promise<WritDoc[]>
 ## Implementation Notes
 
 - Standalone apparatus package at `packages/plugins/clerk/`. Requires only the Stacks.
-- `WritDoc.type` uses a guild-defined vocabulary, not a framework enum. The Clerk validates against `clerk.writTypes` in `guild.json` but the framework imposes no meaning on the type name.
-- ULID for writ ids (same as other Stacks documents) — sortable, unique, no coordination needed.
+- `WritDoc.type` uses a guild-defined vocabulary, not a framework enum. The Clerk validates against `clerk.writTypes` in the apparatus config section but the framework imposes no meaning on the type name.
+- Writ ids use the format `w-{base36_timestamp}{hex_random}` — sortable by creation time, unique without coordination. Not a formal ULID, but provides the same useful properties (temporal ordering, no coordination).
 - The `transition()` method is the single choke point for all status changes. All tools and future integrations go through it. This is where validation, timestamp setting, and (future) event emission and hierarchy rollup happen.
 - When the Clockworks is eventually added as a recommended dependency, resolve it at emit time via `guild().apparatus()`, not at startup — so the Clerk functions with or without it.

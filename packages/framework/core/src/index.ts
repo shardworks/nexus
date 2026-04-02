@@ -54,7 +54,6 @@ export {
   type EventDeclaration,
   type StandingOrder,
   type ClockworksConfig,
-  type WritTypeDeclaration,
   type GuildSettings,
   guildConfigPath,
 } from './guild-config.ts';
