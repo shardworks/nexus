@@ -93,6 +93,35 @@ async function prepareSession(config: SessionProviderConfig): Promise<PreparedSe
   return { tmpDir, args, mcpHandle };
 }
 
+// ── Output extraction ───────────────────────────────────────────────
+
+/**
+ * Extract the final assistant text from a transcript.
+ *
+ * Walks the transcript backwards to find the last `assistant` message
+ * and concatenates its text content blocks.
+ *
+ * @internal Exported for testing only.
+ */
+export function extractFinalAssistantText(transcript: Record<string, unknown>[]): string | undefined {
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const msg = transcript[i]!;
+    if (msg.type !== 'assistant') continue;
+
+    const message = msg.message as Record<string, unknown> | undefined;
+    const content = message?.content as Array<Record<string, unknown>> | undefined;
+    if (!content) continue;
+
+    const text = content
+      .filter((block) => block.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text as string)
+      .join('');
+
+    return text || undefined;
+  }
+  return undefined;
+}
+
 // ── Result builder ──────────────────────────────────────────────────
 
 function buildResult(raw: StreamJsonResult): SessionProviderResult {
@@ -104,6 +133,8 @@ function buildResult(raw: StreamJsonResult): SessionProviderResult {
     costUsd: raw.costUsd,
     tokenUsage: raw.tokenUsage,
     providerSessionId: raw.providerSessionId,
+    transcript: raw.transcript,
+    output: extractFinalAssistantText(raw.transcript),
   };
 }
 

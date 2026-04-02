@@ -23,6 +23,8 @@ import type {
   SessionResult,
   SessionChunk,
   SessionDoc,
+  TranscriptDoc,
+  TranscriptMessage,
   AnimatorSessionProvider,
   SessionProviderConfig,
   SessionProviderResult,
@@ -103,6 +105,7 @@ function buildSessionResult(
     tokenUsage: providerResult.tokenUsage,
     costUsd: providerResult.costUsd,
     metadata: request.metadata,
+    output: providerResult.output,
   };
 }
 
@@ -152,18 +155,21 @@ function toSessionDoc(result: SessionResult): SessionDoc {
     tokenUsage: result.tokenUsage,
     costUsd: result.costUsd,
     metadata: result.metadata,
+    output: result.output,
   };
 }
 
 /**
- * Record a session result to The Stacks.
+ * Record a session result to The Stacks (sessions + transcripts books).
  *
  * Errors are logged but never propagated — session data loss is
  * preferable to masking the original failure. See § Error Handling Contract.
  */
 async function recordSession(
   sessions: Book<SessionDoc>,
+  transcripts: Book<TranscriptDoc>,
   result: SessionResult,
+  transcript: TranscriptMessage[] | undefined,
 ): Promise<void> {
   try {
     await sessions.put(toSessionDoc(result));
@@ -171,6 +177,16 @@ async function recordSession(
     console.warn(
       `[animator] Failed to record session ${result.id}: ${err instanceof Error ? err.message : err}`,
     );
+  }
+
+  if (transcript && transcript.length > 0) {
+    try {
+      await transcripts.put({ id: result.id, messages: transcript });
+    } catch (err) {
+      console.warn(
+        `[animator] Failed to record transcript for ${result.id}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 }
 
@@ -213,6 +229,7 @@ async function recordRunning(
 export function createAnimator(): Plugin {
   let config: AnimatorConfig = {};
   let sessions: Book<SessionDoc>;
+  let transcripts: Book<TranscriptDoc>;
 
   const api: AnimatorApi = {
     summon(request: SummonRequest): AnimateHandle {
@@ -302,13 +319,12 @@ export function createAnimator(): Plugin {
         try {
           const providerResult = await providerResultPromise;
           sessionResult = buildSessionResult(id, startedAt, provider.name, providerResult, request);
+          await recordSession(sessions, transcripts, sessionResult, providerResult.transcript);
         } catch (err) {
           sessionResult = buildFailedResult(id, startedAt, provider.name, err, request);
-          await recordSession(sessions, sessionResult);
+          await recordSession(sessions, transcripts, sessionResult, undefined);
           throw err;
         }
-
-        await recordSession(sessions, sessionResult);
         return sessionResult;
       })();
 
@@ -326,6 +342,9 @@ export function createAnimator(): Plugin {
           sessions: {
             indexes: ['startedAt', 'status', 'conversationId', 'provider'],
           },
+          transcripts: {
+            indexes: ['sessionId'],
+          },
         },
         tools: [sessionList, sessionShow, summonTool],
       },
@@ -338,6 +357,7 @@ export function createAnimator(): Plugin {
 
         const stacks = g.apparatus<StacksApi>('stacks');
         sessions = stacks.book<SessionDoc>('animator', 'sessions');
+        transcripts = stacks.book<TranscriptDoc>('animator', 'transcripts');
       },
     },
   };

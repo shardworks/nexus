@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import {
   parseStreamJsonMessage,
   processNdjsonBuffer,
+  extractFinalAssistantText,
   type StreamJsonResult,
 } from './index.ts';
 
@@ -186,6 +187,95 @@ describe('parseStreamJsonMessage()', () => {
     assert.equal(acc.transcript.length, 2);
     assert.equal(acc.costUsd, 0.50);
     assert.equal(acc.providerSessionId, 'sess-123');
+  });
+});
+
+// ── extractFinalAssistantText ───────────────────────────────────────
+
+describe('extractFinalAssistantText()', () => {
+  it('returns undefined for empty transcript', () => {
+    assert.equal(extractFinalAssistantText([]), undefined);
+  });
+
+  it('returns undefined when no assistant messages', () => {
+    const transcript = [
+      { type: 'result', total_cost_usd: 0.01 },
+    ];
+    assert.equal(extractFinalAssistantText(transcript), undefined);
+  });
+
+  it('extracts text from the last assistant message', () => {
+    const transcript = [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'First response' }] },
+      },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Final response' }] },
+      },
+    ];
+    assert.equal(extractFinalAssistantText(transcript), 'Final response');
+  });
+
+  it('concatenates multiple text blocks from the last assistant message', () => {
+    const transcript = [
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'Part one. ' },
+            { type: 'tool_use', name: 'bash' },
+            { type: 'text', text: 'Part two.' },
+          ],
+        },
+      },
+    ];
+    assert.equal(extractFinalAssistantText(transcript), 'Part one. Part two.');
+  });
+
+  it('skips non-text content blocks', () => {
+    const transcript = [
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', name: 'bash' },
+          ],
+        },
+      },
+    ];
+    assert.equal(extractFinalAssistantText(transcript), undefined);
+  });
+
+  it('skips earlier assistant messages and uses the last', () => {
+    const transcript = [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Earlier' }] },
+      },
+      { type: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1' }] },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Later' }] },
+      },
+      { type: 'result', total_cost_usd: 0.05 },
+    ];
+    assert.equal(extractFinalAssistantText(transcript), 'Later');
+  });
+
+  it('returns undefined for assistant message with no content', () => {
+    const transcript = [
+      { type: 'assistant', message: {} },
+    ];
+    assert.equal(extractFinalAssistantText(transcript), undefined);
+  });
+
+  it('returns undefined for assistant message with no message field', () => {
+    const transcript = [
+      { type: 'assistant' },
+    ];
+    assert.equal(extractFinalAssistantText(transcript), undefined);
   });
 });
 

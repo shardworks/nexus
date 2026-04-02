@@ -88,6 +88,13 @@ export interface SessionResult {
   costUsd?: number;
   /** Caller-supplied metadata, recorded as-is. */
   metadata?: Record<string, unknown>;
+  /**
+   * The final assistant text from the session.
+   * Extracted by the Animator from the provider's transcript.
+   * Useful for programmatic consumers that need the session's conclusion
+   * without parsing the full transcript (e.g. the Walker's review collect step).
+   */
+  output?: string;
 }
 
 export interface TokenUsage {
@@ -263,6 +270,9 @@ export interface SessionProviderConfig {
   environment?: Record<string, string>;
 }
 
+/** A single message from the NDJSON stream. Untyped — shape varies by provider. */
+export type TranscriptMessage = Record<string, unknown>;
+
 export interface SessionProviderResult {
   /** Exit status. */
   status: 'completed' | 'failed' | 'timeout';
@@ -276,6 +286,14 @@ export interface SessionProviderResult {
   tokenUsage?: TokenUsage;
   /** Cost in USD, if the provider can report it. */
   costUsd?: number;
+  /** The session's full transcript — array of NDJSON message objects. */
+  transcript?: TranscriptMessage[];
+  /**
+   * The final assistant text from the session.
+   * Extracted from the last assistant message's text content blocks.
+   * Undefined if the session produced no assistant output.
+   */
+  output?: string;
 }
 
 // ── Stacks document type ─────────────────────────────────────────────
@@ -305,6 +323,21 @@ export interface SessionDoc {
   tokenUsage?: TokenUsage;
   costUsd?: number;
   metadata?: Record<string, unknown>;
+  /** The final assistant text from the session. */
+  output?: string;
+  /** Index signature required by BookEntry. */
+  [key: string]: unknown;
+}
+
+/**
+ * The transcript document stored in The Stacks' `transcripts` book.
+ * One record per session — 1:1 relationship with SessionDoc.
+ */
+export interface TranscriptDoc {
+  /** Same as the session id. */
+  id: string;
+  /** Full NDJSON transcript from the session. */
+  messages: TranscriptMessage[];
   /** Index signature required by BookEntry. */
   [key: string]: unknown;
 }
