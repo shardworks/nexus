@@ -83,18 +83,6 @@ export default {
 
 ---
 
-## `BookOptions` — Book Schema Declaration
-
-Transitional type exported from core for kit packages declaring book schemas. Will move to a dedicated Books apparatus when that ships.
-
-```typescript
-interface BookOptions {
-  indexes?: string[];  // field names to index (plain or dot-notation)
-}
-```
-
----
-
 ## Guild Configuration
 
 Read and write `guild.json`, the guild's central configuration file.

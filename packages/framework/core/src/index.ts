@@ -31,9 +31,6 @@ export {
   clearGuild,
 } from './guild.ts';
 
-// Transitional: BookOptions moves to nexus-books apparatus when that ships.
-export { type BookOptions } from './books.ts';
-
 export {
   findGuildRoot,
   nexusDir,
