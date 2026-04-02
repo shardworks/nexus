@@ -22,6 +22,10 @@ export type {
 
 export type { FabricatorApi } from './fabricator.ts';
 
+// ── Apparatus factory (for tests and direct instantiation) ────────────
+
+export { createFabricator } from './fabricator.ts';
+
 // ── Default export: the apparatus plugin ──────────────────────────────
 
 export default createFabricator();
