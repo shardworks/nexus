@@ -16,7 +16,7 @@ import { z } from 'zod';
 export default tool({
   name: 'status',
   description: 'Show guild identity and installed plugin summary',
-  callableFrom: ['cli'],
+  callableBy: ['cli'],
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },

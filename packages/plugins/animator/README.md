@@ -228,7 +228,7 @@ The Animator contributes a `sessions` book and inspection/dispatch tools:
 | `session-show` | `read` | Show full detail for a single session by id |
 | `summon` | `animate` | Summon an anima from the CLI — compose context and launch a session |
 
-The `summon` tool is CLI-only (`callableFrom: 'cli'`). It calls `animator.summon()` with the guild home as the working directory.
+The `summon` tool is CLI-only (`callableBy: 'cli'`). It calls `animator.summon()` with the guild home as the working directory.
 
 ## Exports
 

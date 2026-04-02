@@ -91,8 +91,8 @@ interface ResolveOptions {
    * permissionless tools are included unconditionally.
    */
   strict?: boolean;
-  /** Filter by invocation channel. Tools with no callableFrom pass all channels. */
-  channel?: ToolCaller;
+  /** Filter by caller type. Tools with no callableBy restriction pass all callers. */
+  caller?: ToolCaller;
 }
 ```
 
@@ -104,9 +104,9 @@ interface ResolveOptions {
 // The Loom resolves role → permissions, then asks the Instrumentarium
 const tools = instrumentarium.resolve({
   permissions: ['stdlib:read', 'stdlib:write', 'animator:read'],
-  channel: 'mcp',
+  caller: 'anima',
 });
-// → ResolvedTool[] — all MCP-callable tools matching those permission grants
+// → ResolvedTool[] — all anima-callable tools matching those permission grants
 ```
 
 **Resolve with strict mode (lock down permissionless tools):**
@@ -132,7 +132,7 @@ if (tool) {
 
 ```typescript
 const cliTools = instrumentarium.list()
-  .filter(r => !r.definition.callableFrom || r.definition.callableFrom.includes('cli'))
+  .filter(r => !r.definition.callableBy || r.definition.callableBy.includes('cli'))
   .map(r => r.definition);
 ```
 

@@ -79,7 +79,7 @@ function detectInstalledPackage(guildRoot: string): string {
 export const pluginList = tool({
   name: 'plugin-list',
   description: 'List installed plugins',
-  callableFrom: ['cli'],
+  callableBy: ['cli'],
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },
@@ -103,7 +103,7 @@ export const pluginList = tool({
 export const pluginInstall = tool({
   name: 'plugin-install',
   description: 'Install a plugin into the guild',
-  callableFrom: ['cli'],
+  callableBy: ['cli'],
   params: {
     source: z.string().describe('Package name, git URL, or local folder path'),
     type: z.enum(['registry', 'link']).optional().describe('Install type: "registry" (npm install) or "link" (local folder). Auto-detected when source is a folder path.'),
@@ -157,7 +157,7 @@ export const pluginInstall = tool({
 export const pluginRemove = tool({
   name: 'plugin-remove',
   description: 'Remove a plugin from the guild',
-  callableFrom: ['cli'],
+  callableBy: ['cli'],
   params: {
     name: z.string().describe('Plugin id or package name to remove'),
   },
@@ -189,7 +189,7 @@ export const pluginRemove = tool({
 export const pluginUpgrade = tool({
   name: 'plugin-upgrade',
   description: 'Upgrade a plugin to a newer version',
-  callableFrom: ['cli'],
+  callableBy: ['cli'],
   params: {
     name: z.string().describe('Plugin id or package name to upgrade'),
     version: z.string().optional().describe('Target version (default: latest)'),

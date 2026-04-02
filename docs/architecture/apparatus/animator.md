@@ -75,7 +75,7 @@ Returns: the complete session record from The Stacks, including `tokenUsage`, `m
 
 ### `summon` tool
 
-Summon an anima from the CLI. Calls `animator.summon()` with the guild home as working directory. CLI-only (`callableFrom: 'cli'`). Requires `animate` permission.
+Summon an anima from the CLI. Calls `animator.summon()` with the guild home as working directory. CLI-only (`callableBy: 'cli'`). Requires `animate` permission.
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -501,46 +501,35 @@ Blocked on: Event signalling (for option 2), transcript format standardization a
 
 ## Future: Tool-Equipped Sessions
 
-When The Instrumentarium ships, The Animator gains the ability to launch sessions with an MCP tool server. The changes:
-
-### Additional dependency
-
-```
-requires: ['stacks', 'tools']
-```
-
-### Updated `AnimateRequest`
-
-```typescript
-interface AnimateRequest {
-  context: WovenContext
-  cwd: string
-  provider?: string
-  conversationId?: string
-  metadata?: Record<string, unknown>
-  /** Role to resolve tools for. The Instrumentarium provides the tool set. */
-  role?: string
-}
-```
+When The Instrumentarium ships, The Animator gains the ability to launch sessions with an MCP tool server. Tool resolution is the Loom's responsibility — the Loom resolves role → permissions → tools and returns them on the `AnimaWeave`. The Animator receives the resolved tool set and handles MCP server lifecycle.
 
 ### Updated lifecycle
 
 ```
+summon(request)
+  │
+  ├─ 1. Resolve The Loom
+  ├─ 2. loom.weave({ role }) → AnimaWeave { systemPrompt, tools }
+  │     (Loom resolves role → permissions, calls instrumentarium.resolve(),
+  │      reads tool instructions, composes full system prompt)
+  └─ 3. Delegate to animate()
+
 animate(request)
   │
   ├─ 1. Generate session id
   ├─ 2. Write initial session record to The Stacks
   │
-  ├─ 3. Resolve tool set via The Instrumentarium (if role provided)
-  ├─ 4. Configure MCP server:
+  ├─ 3. If context.tools is present, configure MCP server:
   │     - Register each tool from the resolved set
   │     - Each tool handler accesses guild infrastructure via guild() singleton
   │
-  ├─ 5. Launch session provider (with MCP server attached)
-  ├─ 6. Monitor process until exit
-  ├─ 7. Record result to The Stacks
-  └─ 8. Return SessionResult
+  ├─ 4. Launch session provider (with MCP server attached)
+  ├─ 5. Monitor process until exit
+  ├─ 6. Record result to The Stacks
+  └─ 7. Return SessionResult
 ```
+
+The Animator does not call the Instrumentarium directly — it receives the tool set from the AnimaWeave. This keeps tool resolution and system prompt composition together in the Loom, where tool instructions can be woven into the prompt alongside the tools they describe.
 
 ### Updated `SessionProviderConfig`
 
@@ -548,8 +537,8 @@ animate(request)
 interface SessionProviderConfig {
   systemPrompt: string
   initialPrompt?: string
-  /** MCP server stdio pipe or socket for tool access. */
-  mcp?: McpServerConfig
+  /** Resolved tools to serve via MCP. */
+  tools?: ToolDefinition[]
   model: string
   conversationId?: string
   cwd: string
@@ -557,7 +546,7 @@ interface SessionProviderConfig {
 }
 ```
 
-The session provider interface gains an optional `mcp` field. Providers that support MCP connect to it; providers that don't ignore it. The Animator handles MCP server lifecycle (start before launch, stop after exit).
+The session provider interface gains an optional `tools` field. The provider configures the MCP server from the tool definitions. Providers that don't support MCP ignore it. The Animator handles MCP server lifecycle (start before launch, stop after exit).
 
 ---
 

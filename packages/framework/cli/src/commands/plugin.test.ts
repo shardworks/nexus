@@ -52,19 +52,19 @@ afterEach(() => {
 
 describe('plugin tool definitions', () => {
   it('plugin-list is callable from cli only', () => {
-    assert.deepEqual(pluginList.callableFrom, ['cli']);
+    assert.deepEqual(pluginList.callableBy, ['cli']);
   });
 
   it('plugin-install is callable from cli only', () => {
-    assert.deepEqual(pluginInstall.callableFrom, ['cli']);
+    assert.deepEqual(pluginInstall.callableBy, ['cli']);
   });
 
   it('plugin-remove is callable from cli only', () => {
-    assert.deepEqual(pluginRemove.callableFrom, ['cli']);
+    assert.deepEqual(pluginRemove.callableBy, ['cli']);
   });
 
   it('plugin-upgrade is callable from cli only', () => {
-    assert.deepEqual(pluginUpgrade.callableFrom, ['cli']);
+    assert.deepEqual(pluginUpgrade.callableBy, ['cli']);
   });
 });
 

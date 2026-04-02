@@ -131,12 +131,12 @@ The handler receives:
 - `params` — validated input, typed from your Zod schemas
 - `ctx` — a `HandlerContext` with `home` (guild root path) and `apparatus<T>(name)` for accessing started apparatus APIs
 
-Restrict a tool to a specific surface with `callableFrom`:
+Restrict a tool to specific callers with `callableBy`:
 
 ```typescript
 tool({
   name: 'admin-reset',
-  callableFrom: ['cli'],    // CLI only — not exposed to animas via MCP
+  callableBy: ['cli'],    // CLI only — not available to animas
   // ...
 });
 ```

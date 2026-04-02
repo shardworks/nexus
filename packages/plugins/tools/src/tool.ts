@@ -41,13 +41,14 @@ import { z } from 'zod';
 type ZodShape = Record<string, z.ZodType>;
 
 /**
- * The caller types a tool can be invoked from.
+ * The caller types a tool can be invoked by.
  * - `'cli'` — accessible via `nsg` commands (human-facing)
- * - `'mcp'` — accessible via MCP server (anima-facing)
+ * - `'anima'` — accessible via MCP server (anima-facing, in sessions)
+ * - `'library'` — accessible programmatically via direct import
  *
- * Defaults to all caller types if `callableFrom` is unspecified.
+ * Defaults to all caller types if `callableBy` is unspecified.
  */
-export type ToolCaller = 'cli' | 'mcp';
+export type ToolCaller = 'cli' | 'anima' | 'library';
 
 /**
  * A fully-defined tool — the return type of `tool()`.
@@ -73,7 +74,7 @@ export interface ToolDefinition<TShape extends ZodShape = ZodShape> {
    * Caller types this tool is available to.
    * Always a normalized array. Absent means available to all callers.
    */
-  readonly callableFrom?: ToolCaller[];
+  readonly callableBy?: ToolCaller[];
   /**
    * Permission level required to invoke this tool. Matched against role grants.
    *
@@ -106,7 +107,7 @@ type ToolInput<TShape extends ZodShape> = {
    * Caller types this tool is available to.
    * Accepts a single caller or an array. Normalized to an array in the returned definition.
    */
-  callableFrom?: ToolCaller | ToolCaller[];
+  callableBy?: ToolCaller | ToolCaller[];
   /**
    * Permission level required to invoke this tool.
    * See ToolDefinition.permission for details.
@@ -143,8 +144,8 @@ export function tool<TShape extends ZodShape>(def: ToolInput<TShape>): ToolDefin
     description: def.description,
     ...(def.instructions ? { instructions: def.instructions } : {}),
     ...(def.instructionsFile ? { instructionsFile: def.instructionsFile } : {}),
-    ...(def.callableFrom !== undefined
-      ? { callableFrom: Array.isArray(def.callableFrom) ? def.callableFrom : [def.callableFrom] }
+    ...(def.callableBy !== undefined
+      ? { callableBy: Array.isArray(def.callableBy) ? def.callableBy : [def.callableBy] }
       : {}),
     ...(def.permission !== undefined ? { permission: def.permission } : {}),
     params: z.object(def.params),

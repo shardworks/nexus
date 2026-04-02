@@ -18,7 +18,7 @@ describe('upgrade tool definition', () => {
   });
 
   it('is callable from cli only', () => {
-    assert.deepEqual(upgradeTool.callableFrom, ['cli']);
+    assert.deepEqual(upgradeTool.callableBy, ['cli']);
   });
 
   it('exposes a dryRun param', () => {

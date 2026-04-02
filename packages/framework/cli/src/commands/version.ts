@@ -15,7 +15,7 @@ import { z } from 'zod';
 export default tool({
   name: 'version',
   description: 'Show Nexus framework and installed plugin version information',
-  callableFrom: ['cli'],
+  callableBy: ['cli'],
   params: {
     json: z.boolean().optional().describe('Output as JSON'),
   },

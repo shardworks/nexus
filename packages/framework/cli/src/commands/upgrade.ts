@@ -12,7 +12,7 @@ import { z } from 'zod';
 export default tool({
   name: 'upgrade',
   description: 'Upgrade the guild framework and run pending plugin migrations',
-  callableFrom: ['cli'],
+  callableBy: ['cli'],
   params: {
     dryRun: z.boolean().optional().describe('Show what would be done without applying changes'),
   },

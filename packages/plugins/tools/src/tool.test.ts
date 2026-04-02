@@ -28,39 +28,39 @@ describe('tool()', () => {
     assert.equal(typeof t.handler, 'function');
   });
 
-  it('normalizes callableFrom single string to array', () => {
+  it('normalizes callableBy single string to array', () => {
     const t = tool({
       name: 'cli-tool',
       description: 'CLI only',
       params: {},
       handler: async () => ({}),
-      callableFrom: 'cli',
+      callableBy: 'cli',
     });
 
-    assert.deepStrictEqual(t.callableFrom, ['cli']);
+    assert.deepStrictEqual(t.callableBy, ['cli']);
   });
 
-  it('preserves callableFrom when already an array', () => {
+  it('preserves callableBy when already an array', () => {
     const t = tool({
       name: 'dual-tool',
-      description: 'Both channels',
+      description: 'Both callers',
       params: {},
       handler: async () => ({}),
-      callableFrom: ['cli', 'mcp'],
+      callableBy: ['cli', 'anima'],
     });
 
-    assert.deepStrictEqual(t.callableFrom, ['cli', 'mcp']);
+    assert.deepStrictEqual(t.callableBy, ['cli', 'anima']);
   });
 
-  it('omits callableFrom when not provided', () => {
+  it('omits callableBy when not provided', () => {
     const t = tool({
       name: 'open-tool',
-      description: 'No channel restriction',
+      description: 'No caller restriction',
       params: {},
       handler: async () => ({}),
     });
 
-    assert.equal('callableFrom' in t, false);
+    assert.equal('callableBy' in t, false);
   });
 
   it('omits permission when not provided', () => {
