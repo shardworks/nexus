@@ -149,9 +149,6 @@ importers:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../../framework/core
-      '@shardworks/stacks-apparatus':
-        specifier: workspace:*
-        version: link:../stacks
       '@shardworks/tools-apparatus':
         specifier: workspace:*
         version: link:../tools
@@ -159,6 +156,9 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
+      '@shardworks/stacks-apparatus':
+        specifier: workspace:*
+        version: link:../stacks
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0

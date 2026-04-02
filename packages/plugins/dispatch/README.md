@@ -5,7 +5,7 @@
 The Dispatch is the guild's interim work runner. It bridges the gap between the Clerk (which tracks obligations) and the session machinery (which runs animas). It does one thing: find the oldest ready writ and execute it.
 
 The Dispatch sits downstream of the Clerk and Animator:
-`stacks ← clerk ← dispatch → animator → (codexes)`
+`clerk ← dispatch → animator → (codexes)`
 
 ---
 
@@ -19,7 +19,7 @@ Add to your package's dependencies:
 }
 ```
 
-The Dispatch requires the Stacks, Clerk, Scriptorium (codexes), and Animator to be installed in the guild. The Loom is recommended (used indirectly via `Animator.summon()`).
+The Dispatch requires the Clerk, Scriptorium (codexes), and Animator to be installed in the guild. The Loom is recommended (used indirectly via `Animator.summon()`). The Stacks is used internally by the Clerk but is not a direct dependency of the Dispatch.
 
 ---
 
@@ -68,7 +68,7 @@ Returns `null` if no ready writs exist.
 ```
 next({ role: 'artificer' })
 │
-├─ 1. Query writs book: oldest where status='ready', ordered by postedAt asc
+├─ 1. Query Clerk: clerk.list({ status: 'ready' }), take oldest (last in desc list)
 │     → if none found, return null
 │
 ├─ 2. Clerk: transition writ ready → active

@@ -176,7 +176,7 @@ function setup(options: SetupOptions = {}): TestContext {
 
   // Ensure books
   memBackend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
-    indexes: ['status', 'type', 'assignee', 'postedAt'],
+    indexes: ['status', 'type', 'createdAt'],
   });
   memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, {
     indexes: ['startedAt', 'status', 'conversationId', 'provider'],
@@ -225,9 +225,9 @@ describe('Dispatch', () => {
 
     it('returns null when all writs are in terminal states', async () => {
       const { dispatch, clerk } = setup();
-      const writ = await clerk.postCommission({ title: 'Already done' });
-      await clerk.accept(writ.id);
-      await clerk.complete(writ.id);
+      const writ = await clerk.post({ title: 'Already done', body: '' });
+      await clerk.transition(writ.id, 'active');
+      await clerk.transition(writ.id, 'completed');
 
       const result = await dispatch.next();
       assert.equal(result, null);
@@ -239,7 +239,7 @@ describe('Dispatch', () => {
   describe('next({ dryRun: true })', () => {
     it('returns the writ id without dispatching', async () => {
       const { dispatch, clerk } = setup();
-      const writ = await clerk.postCommission({ title: 'Dry run target' });
+      const writ = await clerk.post({ title: 'Dry run target', body: '' });
 
       const result = await dispatch.next({ dryRun: true });
 
@@ -252,7 +252,7 @@ describe('Dispatch', () => {
 
     it('does not transition the writ on dry run', async () => {
       const { dispatch, clerk } = setup();
-      const writ = await clerk.postCommission({ title: 'Stay ready' });
+      const writ = await clerk.post({ title: 'Stay ready', body: '' });
 
       await dispatch.next({ dryRun: true });
 
@@ -272,7 +272,7 @@ describe('Dispatch', () => {
   describe('next() — successful session, no codex', () => {
     it('transitions writ ready → active → completed', async () => {
       const { dispatch, clerk } = setup();
-      const writ = await clerk.postCommission({ title: 'No codex work' });
+      const writ = await clerk.post({ title: 'No codex work', body: '' });
 
       const result = await dispatch.next();
 
@@ -290,7 +290,7 @@ describe('Dispatch', () => {
     it('uses the default role "artificer" when none specified', async () => {
       // Verifies no error from omitting role
       const { dispatch, clerk } = setup();
-      await clerk.postCommission({ title: 'Default role test' });
+      await clerk.post({ title: 'Default role test', body: '' });
 
       const result = await dispatch.next();
       assert.ok(result);
@@ -299,7 +299,7 @@ describe('Dispatch', () => {
 
     it('accepts an explicit role', async () => {
       const { dispatch, clerk } = setup();
-      await clerk.postCommission({ title: 'Scribe work' });
+      await clerk.post({ title: 'Scribe work', body: '' });
 
       const result = await dispatch.next({ role: 'scribe' });
       assert.ok(result);
@@ -336,7 +336,7 @@ describe('Dispatch', () => {
       const { dispatch, clerk } = setup({ scriptorium: trackingScriptorium });
 
       // Post a writ with a codex field (via index signature)
-      const writ = await clerk.postCommission({ title: 'Codex work' });
+      const writ = await clerk.post({ title: 'Codex work', body: '' });
       // Patch the codex field onto the writ — WritDoc allows arbitrary fields
       // The Clerk doesn't expose codex patching, so we rely on the index signature
       // and test the no-codex path for Clerk-created writs.
@@ -366,7 +366,7 @@ describe('Dispatch', () => {
         provider: createFakeProvider({ status: 'failed', error: 'Claude exited with code 1' }),
       });
 
-      const writ = await clerk.postCommission({ title: 'Doomed commission' });
+      const writ = await clerk.post({ title: 'Doomed commission', body: '' });
 
       const result = await dispatch.next();
 
@@ -385,7 +385,7 @@ describe('Dispatch', () => {
         provider: createFakeProvider({ status: 'failed', error: 'Out of tokens' }),
       });
 
-      await clerk.postCommission({ title: 'Token fail' });
+      await clerk.post({ title: 'Token fail', body: '' });
 
       const result = await dispatch.next();
       assert.ok(result);
@@ -397,7 +397,7 @@ describe('Dispatch', () => {
         provider: createFakeProvider({ status: 'timeout' }),
       });
 
-      await clerk.postCommission({ title: 'Timeout commission' });
+      await clerk.post({ title: 'Timeout commission', body: '' });
 
       const result = await dispatch.next();
       assert.ok(result);
@@ -411,12 +411,12 @@ describe('Dispatch', () => {
     it('dispatches the oldest ready writ first', async () => {
       const { dispatch, clerk } = setup();
 
-      // Create writs with small delays to ensure different postedAt timestamps
-      const w1 = await clerk.postCommission({ title: 'First posted' });
+      // Create writs with small delays to ensure different createdAt timestamps
+      const w1 = await clerk.post({ title: 'First posted', body: '' });
       await new Promise((r) => setTimeout(r, 5));
-      const w2 = await clerk.postCommission({ title: 'Second posted' });
+      const w2 = await clerk.post({ title: 'Second posted', body: '' });
       await new Promise((r) => setTimeout(r, 5));
-      const w3 = await clerk.postCommission({ title: 'Third posted' });
+      const w3 = await clerk.post({ title: 'Third posted', body: '' });
 
       // First dispatch should take w1 (oldest)
       const r1 = await dispatch.next();
@@ -459,7 +459,7 @@ describe('Dispatch', () => {
         scriptorium: createFakeScriptorium({ openDraftFails: true }),
       });
 
-      const writ = await clerk.postCommission({ title: 'No codex — draft skip' });
+      const writ = await clerk.post({ title: 'No codex — draft skip', body: '' });
 
       // Without a codex on the writ, openDraft is never called even if it would fail
       const result = await dispatch.next();
@@ -489,7 +489,7 @@ describe('Dispatch', () => {
       };
 
       const { dispatch, clerk } = setup({ scriptorium: trackingScriptorium });
-      await clerk.postCommission({ title: 'Seal test — no codex' });
+      await clerk.post({ title: 'Seal test — no codex', body: '' });
 
       const result = await dispatch.next();
       assert.ok(result);
@@ -505,7 +505,7 @@ describe('Dispatch', () => {
   describe('next() — idempotency', () => {
     it('same writ is returned by two consecutive dry runs', async () => {
       const { dispatch, clerk } = setup();
-      const writ = await clerk.postCommission({ title: 'Idempotent check' });
+      const writ = await clerk.post({ title: 'Idempotent check', body: '' });
 
       const r1 = await dispatch.next({ dryRun: true });
       const r2 = await dispatch.next({ dryRun: true });
@@ -528,16 +528,16 @@ describe('Dispatch', () => {
       const { dispatch, clerk } = setup();
 
       // Create a writ and put it in active state
-      const active = await clerk.postCommission({ title: 'Already active' });
-      await clerk.accept(active.id);
+      const active = await clerk.post({ title: 'Already active', body: '' });
+      await clerk.transition(active.id, 'active');
 
       // Create a completed writ
-      const completed = await clerk.postCommission({ title: 'Already completed' });
-      await clerk.accept(completed.id);
-      await clerk.complete(completed.id);
+      const completed = await clerk.post({ title: 'Already completed', body: '' });
+      await clerk.transition(completed.id, 'active');
+      await clerk.transition(completed.id, 'completed');
 
       // The only ready writ
-      const ready = await clerk.postCommission({ title: 'The ready one' });
+      const ready = await clerk.post({ title: 'The ready one', body: '' });
 
       const result = await dispatch.next();
       assert.ok(result);

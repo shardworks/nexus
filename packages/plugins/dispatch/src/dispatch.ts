@@ -12,9 +12,8 @@
  * See: docs/architecture/apparatus/dispatch.md
  */
 
-import type { Plugin, StartupContext } from '@shardworks/nexus-core';
+import type { Plugin } from '@shardworks/nexus-core';
 import { guild } from '@shardworks/nexus-core';
-import type { StacksApi, ReadOnlyBook } from '@shardworks/stacks-apparatus';
 import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import type { ScriptoriumApi, DraftRecord } from '@shardworks/codexes-apparatus';
 import type { AnimatorApi, SessionResult } from '@shardworks/animator-apparatus';
@@ -48,26 +47,22 @@ function assemblePrompt(writ: WritDoc): string {
  * Create the Dispatch apparatus plugin.
  *
  * Returns a Plugin with:
- * - `requires: ['stacks', 'clerk', 'codexes', 'animator']`
+ * - `requires: ['clerk', 'codexes', 'animator']`
  * - `recommends: ['loom']` — used indirectly via Animator.summon()
  * - `provides: DispatchApi` — the dispatch API
  * - `supportKit` — contributes the `dispatch-next` tool
  */
 export function createDispatch(): Plugin {
-  let readWrits: ReadOnlyBook<WritDoc>;
-
   const api: DispatchApi = {
     async next(request?: DispatchRequest): Promise<DispatchResult | null> {
       const role = request?.role ?? 'artificer';
       const dryRun = request?.dryRun ?? false;
 
-      // 1. Find oldest ready writ (FIFO — ordered by postedAt asc)
-      const results = await readWrits.find({
-        where: [['status', '=', 'ready']],
-        orderBy: ['postedAt', 'asc'],
-        limit: 1,
-      });
-      const writ = results[0] ?? null;
+      const clerk = guild().apparatus<ClerkApi>('clerk');
+
+      // 1. Find oldest ready writ (FIFO — list returns desc by createdAt, take last)
+      const readyWrits = await clerk.list({ status: 'ready' });
+      const writ = readyWrits[readyWrits.length - 1] ?? null;
 
       if (!writ) return null;
 
@@ -75,12 +70,11 @@ export function createDispatch(): Plugin {
         return { writId: writ.id, dryRun: true };
       }
 
-      const clerk = guild().apparatus<ClerkApi>('clerk');
       const scriptorium = guild().apparatus<ScriptoriumApi>('codexes');
       const animator = guild().apparatus<AnimatorApi>('animator');
 
       // 2. Transition writ ready → active
-      await clerk.accept(writ.id);
+      await clerk.transition(writ.id, 'active');
 
       // 3. Open draft if writ has a codex
       const codexName = typeof writ.codex === 'string' ? writ.codex : undefined;
@@ -91,7 +85,7 @@ export function createDispatch(): Plugin {
           draft = await scriptorium.openDraft({ codexName, associatedWith: writ.id });
         } catch (err) {
           const reason = `Draft open failed: ${String(err)}`;
-          await clerk.fail(writ.id, reason);
+          await clerk.transition(writ.id, 'failed', { resolution: reason });
           return { writId: writ.id, outcome: 'failed', resolution: reason, dryRun: false };
         }
       }
@@ -118,7 +112,7 @@ export function createDispatch(): Plugin {
         if (codexName && draft) {
           await scriptorium.abandonDraft({ codexName, branch: draft.branch, force: true });
         }
-        await clerk.fail(writ.id, reason);
+        await clerk.transition(writ.id, 'failed', { resolution: reason });
         return { writId: writ.id, outcome: 'failed', resolution: reason, dryRun: false };
       }
 
@@ -130,7 +124,7 @@ export function createDispatch(): Plugin {
             await scriptorium.seal({ codexName, sourceBranch: draft.branch });
           } catch (err) {
             const reason = `Seal failed: ${String(err)}`;
-            await clerk.fail(writ.id, reason);
+            await clerk.transition(writ.id, 'failed', { resolution: reason });
             return { writId: writ.id, sessionId: session.id, outcome: 'failed', resolution: reason, dryRun: false };
           }
 
@@ -139,13 +133,13 @@ export function createDispatch(): Plugin {
             await scriptorium.push({ codexName });
           } catch (err) {
             const reason = `Push failed: ${String(err)}`;
-            await clerk.fail(writ.id, reason);
+            await clerk.transition(writ.id, 'failed', { resolution: reason });
             return { writId: writ.id, sessionId: session.id, outcome: 'failed', resolution: reason, dryRun: false };
           }
         }
 
-        await clerk.complete(writ.id);
         const resolution = `Session ${session.id} completed`;
+        await clerk.transition(writ.id, 'completed', { resolution });
         return { writId: writ.id, sessionId: session.id, outcome: 'completed', resolution, dryRun: false };
       }
 
@@ -154,14 +148,14 @@ export function createDispatch(): Plugin {
         await scriptorium.abandonDraft({ codexName, branch: draft.branch, force: true });
       }
       const reason = session.error ?? `Session ${session.status}`;
-      await clerk.fail(writ.id, reason);
+      await clerk.transition(writ.id, 'failed', { resolution: reason });
       return { writId: writ.id, sessionId: session.id, outcome: 'failed', resolution: reason, dryRun: false };
     },
   };
 
   return {
     apparatus: {
-      requires: ['stacks', 'clerk', 'codexes', 'animator'],
+      requires: ['clerk', 'codexes', 'animator'],
       recommends: ['loom'],
 
       supportKit: {
@@ -170,11 +164,8 @@ export function createDispatch(): Plugin {
 
       provides: api,
 
-      start(_ctx: StartupContext): void {
-        const stacks = guild().apparatus<StacksApi>('stacks');
-        // Read-only cross-plugin access to the Clerk's writs book.
-        // Queried with orderBy: ['postedAt', 'asc'] for FIFO dispatch.
-        readWrits = stacks.readBook<WritDoc>('clerk', 'writs');
+      start(): void {
+        // No initialization needed — clerk is resolved at call time in next().
       },
     },
   };
