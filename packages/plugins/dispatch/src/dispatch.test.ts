@@ -111,6 +111,32 @@ function createFakeScriptorium(options: FakeScriptoriumOptions = {}): Scriptoriu
   };
 }
 
+// ── Spy fake provider (captures SessionProviderConfig) ───────────────
+
+function createSpyFakeProvider(): {
+  provider: AnimatorSessionProvider;
+  getCapturedConfig: () => SessionProviderConfig | null;
+} {
+  let capturedConfig: SessionProviderConfig | null = null;
+  return {
+    provider: {
+      name: 'fake-spy',
+      launch(config: SessionProviderConfig) {
+        capturedConfig = config;
+        return {
+          chunks: emptyChunks,
+          result: Promise.resolve({
+            status: 'completed' as const,
+            exitCode: 0,
+            providerSessionId: 'fake-spy-sess',
+          }),
+        };
+      },
+    },
+    getCapturedConfig: () => capturedConfig,
+  };
+}
+
 // ── Test harness ──────────────────────────────────────────────────────
 
 interface SetupOptions {
@@ -542,6 +568,41 @@ describe('Dispatch', () => {
       const result = await dispatch.next();
       assert.ok(result);
       assert.equal(result.writId, ready.id);
+    });
+  });
+
+  // ── Git identity environment ──────────────────────────────────────
+
+  describe('next() — git identity environment', () => {
+    it('passes writ-scoped GIT_*_EMAIL to the session provider', async () => {
+      const { provider, getCapturedConfig } = createSpyFakeProvider();
+      const { dispatch, clerk } = setup({ provider });
+
+      const writ = await clerk.post({ title: 'Git identity test', body: '' });
+
+      await dispatch.next();
+
+      const captured = getCapturedConfig();
+      assert.ok(captured);
+      assert.ok(captured!.environment, 'environment should be present');
+      assert.equal(captured!.environment?.GIT_AUTHOR_EMAIL, `${writ.id}@nexus.local`);
+      assert.equal(captured!.environment?.GIT_COMMITTER_EMAIL, `${writ.id}@nexus.local`);
+      assert.ok(captured!.environment?.GIT_AUTHOR_NAME, 'GIT_AUTHOR_NAME should be present');
+      assert.ok(captured!.environment?.GIT_COMMITTER_NAME, 'GIT_COMMITTER_NAME should be present');
+    });
+
+    it('preserves Loom role name in GIT_*_NAME while overriding email', async () => {
+      const { provider, getCapturedConfig } = createSpyFakeProvider();
+      const { dispatch, clerk } = setup({ provider });
+
+      const writ = await clerk.post({ title: 'Name/email split test', body: '' });
+
+      await dispatch.next();
+
+      const captured = getCapturedConfig();
+      assert.ok(captured);
+      assert.equal(captured!.environment?.GIT_AUTHOR_NAME, 'Artificer');
+      assert.equal(captured!.environment?.GIT_AUTHOR_EMAIL, `${writ.id}@nexus.local`);
     });
   });
 });

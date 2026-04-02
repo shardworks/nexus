@@ -137,6 +137,13 @@ describe('The Loom', () => {
       const weave = await api.weave({ role: 'artificer' });
       assert.ok(!('initialPrompt' in weave), 'AnimaWeave should not have initialPrompt');
     });
+
+    it('returns undefined environment when no role is provided', async () => {
+      setupGuild({});
+      const api = startLoom();
+      const weave = await api.weave({});
+      assert.strictEqual(weave.environment, undefined);
+    });
   });
 
   describe('weave() — role with tool resolution', () => {
@@ -255,6 +262,70 @@ describe('The Loom', () => {
       await api.weave({ role: 'admin' });
 
       assert.equal(calls[0]!.caller, 'anima');
+    });
+
+    it('derives git identity environment from role name', async () => {
+      const { api: instrumentarium } = mockInstrumentarium([]);
+
+      setupGuild({
+        loomConfig: {
+          roles: {
+            artificer: { permissions: ['*:*'] },
+          },
+        },
+        apparatuses: { tools: instrumentarium },
+      });
+
+      const api = startLoom();
+      const weave = await api.weave({ role: 'artificer' });
+
+      assert.deepStrictEqual(weave.environment, {
+        GIT_AUTHOR_NAME: 'Artificer',
+        GIT_AUTHOR_EMAIL: 'artificer@nexus.local',
+        GIT_COMMITTER_NAME: 'Artificer',
+        GIT_COMMITTER_EMAIL: 'artificer@nexus.local',
+      });
+    });
+
+    it('capitalizes first letter of role name for display name', async () => {
+      const { api: instrumentarium } = mockInstrumentarium([]);
+
+      setupGuild({
+        loomConfig: {
+          roles: {
+            scribe: { permissions: ['stacks:read'] },
+          },
+        },
+        apparatuses: { tools: instrumentarium },
+      });
+
+      const api = startLoom();
+      const weave = await api.weave({ role: 'scribe' });
+
+      assert.equal(weave.environment?.GIT_AUTHOR_NAME, 'Scribe');
+      assert.equal(weave.environment?.GIT_COMMITTER_NAME, 'Scribe');
+    });
+
+    it('derives environment even for unknown roles', async () => {
+      const { api: instrumentarium } = mockInstrumentarium([]);
+
+      setupGuild({
+        loomConfig: {
+          roles: {
+            artificer: { permissions: ['*:*'] },
+          },
+        },
+        apparatuses: { tools: instrumentarium },
+      });
+
+      const api = startLoom();
+      const weave = await api.weave({ role: 'unknown-role' });
+
+      assert.ok(weave.environment, 'environment should be defined for any role string');
+      assert.equal(weave.environment?.GIT_AUTHOR_NAME, 'Unknown-role');
+      assert.equal(weave.environment?.GIT_AUTHOR_EMAIL, 'unknown-role@nexus.local');
+      assert.equal(weave.environment?.GIT_COMMITTER_NAME, 'Unknown-role');
+      assert.equal(weave.environment?.GIT_COMMITTER_EMAIL, 'unknown-role@nexus.local');
     });
   });
 });

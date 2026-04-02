@@ -336,6 +336,39 @@ describe('Animator', () => {
       assert.equal(captured!.cwd, '/tmp/workdir');
     });
 
+    it('passes context environment through to provider', async () => {
+      const { provider, getCapturedConfig } = createSpyProvider();
+      setup(provider);
+
+      await animator.animate({
+        context: { systemPrompt: 'Test', environment: { GIT_AUTHOR_NAME: 'Custom' } },
+        cwd: '/tmp/workdir',
+      }).result;
+
+      const captured = getCapturedConfig();
+      assert.ok(captured);
+      assert.deepStrictEqual(captured!.environment, { GIT_AUTHOR_NAME: 'Custom' });
+    });
+
+    it('merges request environment over context environment', async () => {
+      const { provider, getCapturedConfig } = createSpyProvider();
+      setup(provider);
+
+      await animator.animate({
+        context: {
+          systemPrompt: 'Test',
+          environment: { GIT_AUTHOR_NAME: 'FromContext', GIT_AUTHOR_EMAIL: 'context@nexus.local' },
+        },
+        environment: { GIT_AUTHOR_NAME: 'FromRequest' },
+        cwd: '/tmp/workdir',
+      }).result;
+
+      const captured = getCapturedConfig();
+      assert.ok(captured);
+      assert.equal(captured!.environment?.GIT_AUTHOR_NAME, 'FromRequest');
+      assert.equal(captured!.environment?.GIT_AUTHOR_EMAIL, 'context@nexus.local');
+    });
+
     it('records failed session when provider throws', async () => {
       const throwProvider = createThrowingProvider(new Error('Provider exploded'));
       setup(throwProvider);
@@ -775,6 +808,43 @@ describe('Animator', () => {
 
       const sessionResult = await result;
       assert.equal(sessionResult.status, 'completed');
+    });
+
+    it('passes Loom environment to provider when no request environment', async () => {
+      const { provider, getCapturedConfig } = createSpyProvider();
+      setup(provider, 'fake-provider', { installLoom: true });
+
+      await animator.summon({
+        prompt: 'Build the thing',
+        role: 'artificer',
+        cwd: '/tmp/workdir',
+      }).result;
+
+      const captured = getCapturedConfig();
+      assert.ok(captured);
+      assert.deepStrictEqual(captured!.environment, {
+        GIT_AUTHOR_NAME: 'Artificer',
+        GIT_AUTHOR_EMAIL: 'artificer@nexus.local',
+        GIT_COMMITTER_NAME: 'Artificer',
+        GIT_COMMITTER_EMAIL: 'artificer@nexus.local',
+      });
+    });
+
+    it('merges request environment over Loom environment', async () => {
+      const { provider, getCapturedConfig } = createSpyProvider();
+      setup(provider, 'fake-provider', { installLoom: true });
+
+      await animator.summon({
+        prompt: 'Build the thing',
+        role: 'artificer',
+        cwd: '/tmp/workdir',
+        environment: { GIT_AUTHOR_EMAIL: 'override@nexus.local' },
+      }).result;
+
+      const captured = getCapturedConfig();
+      assert.ok(captured);
+      assert.equal(captured!.environment?.GIT_AUTHOR_NAME, 'Artificer');
+      assert.equal(captured!.environment?.GIT_AUTHOR_EMAIL, 'override@nexus.local');
     });
   });
 });
