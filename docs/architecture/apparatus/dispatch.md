@@ -4,7 +4,7 @@ Status: **Draft**
 
 Package: `@shardworks/dispatch-apparatus` · Plugin id: `dispatch`
 
-> **⚠️ Temporary rigging.** This apparatus is a stand-in for the full rigging system (Walker, Formulary, Executor). It provides a single dispatch tool that takes the oldest ready writ and runs it through the guild's existing machinery. When the full rigging system exists, this apparatus is retired and its responsibilities absorbed by the Walker and summon relay. Designed to be disposable.
+> **⚠️ Temporary rigging.** This apparatus is a stand-in for the full rigging system (Walker, Fabricator, Executor). It provides a single dispatch tool that takes the oldest ready writ and runs it through the guild's existing machinery. When the full rigging system exists, this apparatus is retired and its responsibilities absorbed by the Walker and summon relay. Designed to be disposable.
 
 ---
 
@@ -209,11 +209,11 @@ No configuration. The Dispatch reads writs from the Clerk and uses default behav
 
 ## Future: Retirement
 
-When the full rigging system (Walker, Formulary, Executor) is implemented, the Dispatch apparatus is retired:
+When the full rigging system (Walker, Fabricator, Executor) is implemented, the Dispatch apparatus is retired:
 
 - The Walker takes over rig spawning and engine traversal
 - The summon relay handles anima dispatch from standing orders
-- The Formulary resolves engine chains (draft-open → session → seal is just one possible chain)
+- The Fabricator resolves engine chains (draft-open → session → seal is just one possible chain)
 - `dispatch-next` is replaced by the Clockworks processing `mandate.ready` events
 
 The Dispatch is designed to be removable with zero impact on the Clerk, Scriptorium, Animator, or Loom. It is a consumer of their APIs, not a provider of anything they depend on.

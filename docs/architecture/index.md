@@ -26,7 +26,7 @@ A Nexus guild is a git repository with a `guild.json` at its root and a `.nexus/
   │  ├───────────────────────────────────────────────────────┤  │
   │  │  Clockworks · Surveyor · Clerk                        │  │
   │  ├───────────────────────────────────────────────────────┤  │
-  │  │  Walker · Formulary · Executor                        │  │
+  │  │  Walker · Fabricator · Executor                        │  │
   │  │  Loom · Animator                                      │  │
   │  └─────────────────────────┬─────────────────────────────┘  │
   │                            │                                 │
@@ -66,13 +66,13 @@ Two additional commands bypass the tool registry: `nsg consult` and `nsg convene
 
 ### The Apparatus
 
-The guild's operational fabric is provided by apparatus — plugins with a start/stop lifecycle that Arbor starts in dependency order. **The Stacks** is the persistence substrate everything else reads from and writes to. **The Scriptorium** manages codexes — bare clones, draft bindings (worktrees), and the seal-and-push lifecycle. **The Clockworks** is the event-driven nervous system: standing orders bind events to relays, and the summon relay dispatches anima sessions in response. **The Surveyor** tracks what work applies to each registered codex. **The Clerk** handles commission intake, converting patron requests into writs and signaling when work is ready to execute. The Formulary, Walker, Executor, Loom, and Animator then take it from there — covered in the next section.
+The guild's operational fabric is provided by apparatus — plugins with a start/stop lifecycle that Arbor starts in dependency order. **The Stacks** is the persistence substrate everything else reads from and writes to. **The Scriptorium** manages codexes — bare clones, draft bindings (worktrees), and the seal-and-push lifecycle. **The Clockworks** is the event-driven nervous system: standing orders bind events to relays, and the summon relay dispatches anima sessions in response. **The Surveyor** tracks what work applies to each registered codex. **The Clerk** handles commission intake, converting patron requests into writs and signaling when work is ready to execute. The Fabricator, Walker, Executor, Loom, and Animator then take it from there — covered in the next section.
 
 Each of these is a plugin from the default set, not a built-in. The [Standard Guild](#the-standard-guild) section lists them; the sections that follow document each in detail.
 
 ### Execution, Sessions, and Works
 
-When The Clerk signals a writ is ready, **The Walker** spawns a rig and begins driving it: traversing active engines, dispatching those whose upstream work is complete, and extending the rig by querying **The Formulary** for engine chains that satisfy declared needs. **The Executor** runs each engine — clockwork engines run their code directly; quick engines launch an anima session.
+When The Clerk signals a writ is ready, **The Walker** spawns a rig and begins driving it: traversing active engines, dispatching those whose upstream work is complete, and extending the rig by querying **The Fabricator** for engine chains that satisfy declared needs. **The Executor** runs each engine — clockwork engines run their code directly; quick engines launch an anima session.
 
 An anima session is an AI process running against an MCP server loaded with the role's tools. Before launch, **The Loom** weaves the session context: system prompt, tool instructions, writ context. **The Animator** then starts the process, monitors it, and records the result. The session exits; the output persists. The Clockworks can also trigger sessions directly via the summon relay, bypassing the rig machinery entirely — The Animator handles both paths the same way.
 
@@ -278,7 +278,7 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 | **The Loom** | `loom` | Session context composition — weaves role instructions, tool instructions, curricula, and temperaments into a session context |
 | **The Instrumentarium** | `tools` | Tool registry — resolves installed tools, permission-gated tool sets |
 | **The Animator** | `animator` | Session lifecycle — launches, monitors, and records anima sessions |
-| **The Formulary** | `formulary` | Engine design registry — answers "what engine chain satisfies this need?" from installed kits |
+| **The Fabricator** | `fabricator` | Engine design registry — answers "what engine chain satisfies this need?" from installed kits |
 | **The Walker** | `walker` | Rig lifecycle — spawns, traverses, extends, and strikes rigs as work progresses |
 | **The Executor** | `executor` | Engine runner — executes clockwork and quick engines against a configured substrate |
 
@@ -358,7 +358,7 @@ See [The Stacks — API Contract](apparatus/stacks.md) for the full specificatio
 
 ## Work Model
 
-<!-- TODO: The obligation pipeline. Commission (patron's request) → Mandate writ (guild's formal record, created by Clerk) → child writs as the guild decomposes the work → Rigs as the execution scaffolding for a writ. Writ lifecycle (ready → active → pending → completed/failed/cancelled). Writ hierarchy and completion rollup. Brief intro to rigs (assembled by Walker from engine designs contributed by kits via Formulary). Link to rigging.md for rig execution detail. -->
+<!-- TODO: The obligation pipeline. Commission (patron's request) → Mandate writ (guild's formal record, created by Clerk) → child writs as the guild decomposes the work → Rigs as the execution scaffolding for a writ. Writ lifecycle (ready → active → pending → completed/failed/cancelled). Writ hierarchy and completion rollup. Brief intro to rigs (assembled by Walker from engine designs contributed by kits via Fabricator). Link to rigging.md for rig execution detail. -->
 
 ---
 
@@ -397,7 +397,7 @@ Tools can be TypeScript modules or plain scripts (bash, Python, any executable).
 - **Clockwork** — deterministic, no AI. Runs its code directly against the configured substrate.
 - **Quick** — inhabited by an anima for work requiring judgment. The engine defines the work context; the anima brings the skill.
 
-Kits contribute engine designs; the Walker draws on them (via The Formulary) to extend rigs as work progresses. Engines are not role-gated — they are not wielded by animas directly; they are the work context an anima staffs.
+Kits contribute engine designs; the Walker draws on them (via The Fabricator) to extend rigs as work progresses. Engines are not role-gated — they are not wielded by animas directly; they are the work context an anima staffs.
 
 ### Relays
 

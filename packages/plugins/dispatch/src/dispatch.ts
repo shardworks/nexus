@@ -7,7 +7,7 @@
  * the aftermath (seal the draft, transition the writ).
  *
  * This apparatus is temporary rigging — designed to be retired when the
- * full rigging system (Walker, Formulary, Executor) is implemented.
+ * full rigging system (Walker, Fabricator, Executor) is implemented.
  *
  * See: docs/architecture/apparatus/dispatch.md
  */

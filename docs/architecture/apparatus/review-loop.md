@@ -317,7 +317,7 @@ The Walker traverses this graph naturally. Each engine completes and propagates 
 
 **Seeding the rig:** The origination engine produces this graph when it seeds the rig. For `maxRetries=2`, the origination engine seeds a fixed graph (not dynamically extended). If the guild wants `maxRetries=0` (no review loop), origination seeds the simple `implement → seal` graph.
 
-**Dynamic extension (future):** A more sophisticated design would have the review engine declare a `need: 'revision'` when it fails, and the Formulary would resolve and graft the next revise+review pair. This avoids pre-seeding the full graph and enables arbitrary retry depths. This is Future scope — the fixed graph is sufficient for MVP and avoids Walker complexity in the initial rigging implementation.
+**Dynamic extension (future):** A more sophisticated design would have the review engine declare a `need: 'revision'` when it fails, and the Fabricator would resolve and graft the next revise+review pair. This avoids pre-seeding the full graph and enables arbitrary retry depths. This is Future scope — the fixed graph is sufficient for MVP and avoids Walker complexity in the initial rigging implementation.
 
 ### Walker Integration
 
@@ -527,7 +527,7 @@ This commission is itself a spec-writing commission. There's no build command to
 
 ### Phase 4 (Dynamic extension)
 - Review engine declares `need: 'revision'` on failure
-- Formulary resolves revision chain dynamically
+- Fabricator resolves revision chain dynamically
 - Arbitrary retry depth (or patron-configured per-commission)
 - Review loop data feeds Surveyor codex profiles (this codex has a 60% first-try rate → seed richer review graph by default)
 

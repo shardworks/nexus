@@ -5,7 +5,7 @@
  * the guild's session machinery. Opens a draft binding on the target codex,
  * summons an anima via The Animator, and handles the aftermath (seal the
  * draft, transition the writ). Disposable — retired when the full rigging
- * system (Walker, Formulary, Executor) is implemented.
+ * system (Walker, Fabricator, Executor) is implemented.
  *
  * See: docs/architecture/apparatus/dispatch.md
  */

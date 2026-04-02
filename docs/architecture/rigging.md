@@ -14,23 +14,23 @@ The Walker is the spine of the rigging system. It owns the rig's structural life
 
 - Spawn a rig when the Clerk signals a writ is ready
 - Traverse all active rigs, identifying engines whose upstream is complete
-- Request capability chains from the Formulary and graft them onto the rig
+- Request capability chains from the Fabricator and graft them onto the rig
 - Dispatch ready engines to the Executor
 - Strike completed rigs and signal the Clerk
 
 The Walker runs continuously — not bound to any single rig or commission.
 
-### Formulary
+### Fabricator
 
-The Formulary is the guild's authoritative collection of engine design specifications. Every installed kit contributes its engine designs to the Formulary at startup. When an engine in a rig declares a need it cannot yet satisfy, the Walker queries the Formulary:
+The Fabricator is the guild's capability catalog — the authoritative collection of engine design specifications. Every installed kit contributes its engine designs to the Fabricator at startup. When an engine in a rig declares a need it cannot yet satisfy, the Walker queries the Fabricator:
 
 ```
-formulary.resolve(need, installedKits) → EngineChain
+fabricator.resolve(need, installedKits) → EngineChain
 ```
 
-The Formulary returns the chain of engine designs that satisfies the need; the Walker grafts that chain onto the rig. The Formulary does not touch the rig — it is a pure query service.
+The Fabricator returns the chain of engine designs that satisfies the need; the Walker grafts that chain onto the rig. The Fabricator does not touch the rig — it is a pure query service.
 
-The Formulary is also consulted directly by planning animas (Sages) when decomposing a commission: before planning work, a Sage can introspect what the guild is actually capable of building.
+The Fabricator is also consulted directly by planning animas (Sages) when decomposing a commission: before planning work, a Sage can introspect what the guild is actually capable of building.
 
 ### Executor
 
@@ -62,8 +62,8 @@ The Clerk owns the obligation layer. It signals the Walker when a writ is ready 
 | # | Step | Apparatus |
 |---|------|-----------|
 | 1 | Writ becomes ready; spawn initial rig | **Walker** *(triggered by Clerk)* |
-| 2 | Engine declares a need; scan installed kits; determine satisfying engine chain | **Formulary** |
-| 3 | Graft resolved engine chain onto rig structure | **Walker** *(using Formulary output)* |
+| 2 | Engine declares a need; scan installed kits; determine satisfying engine chain | **Fabricator** |
+| 3 | Graft resolved engine chain onto rig structure | **Walker** *(using Fabricator output)* |
 | 4 | Traverse active rigs; identify engines whose upstream is complete | **Walker** |
 | 5 | Execute ready engine — clockwork or quick, any substrate | **Executor** *(routes to substrate or Manifester → Summoner)* |
 | 6 | Record engine yield; propagate completion state to downstream engines | **Executor** *(yield)* → **Walker** *(state propagation)* |
@@ -75,11 +75,11 @@ Steps 2–3 repeat as needed throughout a rig's life — engines declare needs a
 
 ## Design Rationale
 
-### Why Formulary is separate from Walker
+### Why Fabricator is separate from Walker
 
-The natural first instinct is to put capability resolution inside the Walker — it's the Walker that needs the answer, after all. The Formulary earns its independence from two directions:
+The natural first instinct is to put capability resolution inside the Walker — it's the Walker that needs the answer, after all. The Fabricator earns its independence from two directions:
 
-1. **The Sage case.** Planning animas need to know what the guild can build before they decompose a commission into writs. If capability resolution is internal to the Walker, the Sage has no clean way to query it. A standalone Formulary is a shared service both the Walker and the Sage can call.
+1. **The Sage case.** Planning animas need to know what the guild can build before they decompose a commission into writs. If capability resolution is internal to the Walker, the Sage has no clean way to query it. A standalone Fabricator is a shared service both the Walker and the Sage can call.
 
 2. **Separation of concerns.** The Walker's job is motion — advancing what's already planned. Capability reasoning ("what engines can satisfy this need, given the installed kits?") is a different cognitive mode. Keeping them separate keeps both apparatus well-scoped and independently testable.
 
@@ -108,7 +108,7 @@ Writs can exist without rigs (awaiting planning or dependencies). Rigs always tr
              Clerk
                │ (writ:ready / rig:complete)
                ▼
-            Walker ──────────────── Formulary
+            Walker ──────────────── Fabricator
                │
                ▼
             Executor
@@ -122,4 +122,4 @@ Writs can exist without rigs (awaiting planning or dependencies). Rigs always tr
                   Stacks (Daybook)
 ```
 
-The Walker is the only rigging apparatus that touches the Clerk. The Executor is the only rigging apparatus that touches the Summoner. The Formulary is a stateless query service with no downstream dependencies of its own — it reads from the kit registry provided by installed plugins at startup.
+The Walker is the only rigging apparatus that touches the Clerk. The Executor is the only rigging apparatus that touches the Summoner. The Fabricator is a stateless query service with no downstream dependencies of its own — it reads from the kit registry provided by installed plugins at startup.

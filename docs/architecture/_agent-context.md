@@ -66,7 +66,7 @@ The architecture docs use "rig" exclusively in the metaphor sense (execution sca
 | `architecture/plugins.md` | Good | Describes the Kit/Apparatus model with full type signatures. This is aspirational architecture, not fully implemented. |
 | `architecture/clockworks.md` | Good | Detailed; covers events, standing orders, relays, runner phases, daemon. Generally matches current implementation. |
 | `architecture/kit-components.md` | Good | Tools, engines, relays — artifact model, descriptors, role gating, installation. Generally accurate. |
-| `architecture/rigging.md` | Forward-looking | Describes Walker/Formulary/Executor/Loom/Animator/Clerk as separate apparatus. This is the *target* design; currently much of this logic is either in core or not yet implemented. |
+| `architecture/rigging.md` | Forward-looking | Describes Walker/Fabricator/Executor/Loom/Animator/Clerk as separate apparatus. This is the *target* design; currently much of this logic is either in core or not yet implemented. |
 | `reference/schema.md` | Good | SQLite schema, ERD, entity ID prefixes. Reflects current database. |
 | `reference/core-api.md` | Good | Function signatures for `@shardworks/nexus-core`. Generally accurate but some functions are in `legacy/1/` indicating in-flight migration. |
 | `reference/event-catalog.md` | Not read | Should describe all framework events and payload shapes. |
@@ -114,9 +114,9 @@ The codebase is in active transition from a "rig-centric" model (current) toward
 - Formal `Plugin` type with explicit Kit/Apparatus discriminant
 - `Apparatus` with `start`/`stop`/`health`/`supportKit`/`consumes`
 - `GuildContext` with `ctx.plugin()`, `ctx.kits()`, `ctx.plugins()`
-- Separate named apparatus: Stacks, Guildhall, Clerk, Loom, Animator, Formulary, Walker, Executor, Surveyor, Warden
+- Separate named apparatus: Stacks, Guildhall, Clerk, Loom, Animator, Fabricator, Walker, Executor, Surveyor, Warden
 - Walker-driven rig execution (the commission → rig → engine chain)
-- Formulary (capability resolution from installed kits)
+- Fabricator (capability resolution from installed kits)
 - `plugin:initialized` reactive consumption
 - Startup validation with `requires` / `consumes` cross-referencing
 
@@ -161,7 +161,7 @@ Note: the live guild at `/workspace/shardworks/` is still running the V1 config 
 | Summon relay | built-in clockworks dispatch | summon relay (installed via nexus-stdlib) |
 | Arbor | Arbor | Arbor |
 | Walker | (not yet implemented) | The Walker (`walker` apparatus) |
-| Formulary | (not yet implemented) | The Formulary (`formulary` apparatus) |
+| Fabricator | (not yet implemented) | The Fabricator (`fabricator` apparatus) |
 
 ---
 
@@ -234,7 +234,7 @@ CDC handlers (`ChangeHandler`) no longer receive a context parameter. They captu
 ### Remaining stub sections
 All are `<!-- TODO -->` blocks. In rough priority order:
 
-1. **Work Model** — Commission → Mandate writ → child writs → Rigs. Writ lifecycle states (`ready → active → pending → completed/failed/cancelled`). Writ hierarchy and completion rollup. Brief rig intro (Walker assembles from engine designs via Formulary). Link to `rigging.md`.
+1. **Work Model** — Commission → Mandate writ → child writs → Rigs. Writ lifecycle states (`ready → active → pending → completed/failed/cancelled`). Writ hierarchy and completion rollup. Brief rig intro (Walker assembles from engine designs via Fabricator). Link to `rigging.md`.
 
 2. **The Clockworks** — Abbreviate; `clockworks.md` is detailed and current. Cover: events as immutable facts, standing orders as guild policy, summon verb, framework vs custom events, runner (manual vs daemon), error handling. Link to `clockworks.md`.
 
