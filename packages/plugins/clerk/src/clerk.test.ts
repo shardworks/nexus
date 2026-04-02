@@ -114,8 +114,8 @@ describe('Clerk', () => {
     });
 
     it('accepts explicit type when it is a built-in type', async () => {
-      const writ = await clerk.post({ title: 'Summon an anima', body: 'Do it', type: 'summon' });
-      assert.equal(writ.type, 'summon');
+      const writ = await clerk.post({ title: 'A mandate', body: 'Do it', type: 'mandate' });
+      assert.equal(writ.type, 'mandate');
     });
 
     it('persists codex field', async () => {
@@ -134,9 +134,10 @@ describe('Clerk', () => {
     });
 
     it('uses guild defaultType from clerk config when provided', async () => {
-      setup({ clerkConfig: { defaultType: 'summon' } });
-      const writ = await clerk.post({ title: 'Summon', body: 'Body' });
-      assert.equal(writ.type, 'summon');
+      // mandate is a built-in, so it's always valid as a defaultType
+      setup({ clerkConfig: { defaultType: 'mandate' } });
+      const writ = await clerk.post({ title: 'Default mandate', body: 'Body' });
+      assert.equal(writ.type, 'mandate');
     });
 
     it('rejects an unknown writ type', async () => {
@@ -288,11 +289,12 @@ describe('Clerk', () => {
     });
 
     it('filters by type', async () => {
+      setup({ writTypes: { 'errand': { description: 'A small errand' } } });
       await clerk.post({ title: 'Mandate', body: 'Body', type: 'mandate' });
-      await clerk.post({ title: 'Summon', body: 'Body', type: 'summon' });
+      await clerk.post({ title: 'Errand', body: 'Body', type: 'errand' });
 
       assert.equal(await clerk.count({ type: 'mandate' }), 1);
-      assert.equal(await clerk.count({ type: 'summon' }), 1);
+      assert.equal(await clerk.count({ type: 'errand' }), 1);
     });
   });
 
@@ -550,17 +552,48 @@ describe('Clerk', () => {
       assert.ok(t1 >= t0);
       assert.ok(t2 >= t1);
     });
+
+    it('transition() strips managed fields from caller-supplied fields', async () => {
+      const writ = await clerk.post({ title: 'Sanitize test', body: 'Body' });
+      await clerk.transition(writ.id, 'active');
+
+      // Attempt to corrupt id, status, and timestamps via fields
+      const done = await clerk.transition(writ.id, 'completed', {
+        resolution: 'Legit resolution',
+        id: 'writ-evil',
+        status: 'ready' as const,
+        createdAt: '1999-01-01T00:00:00Z',
+        updatedAt: '1999-01-01T00:00:00Z',
+        acceptedAt: '1999-01-01T00:00:00Z',
+        resolvedAt: '1999-01-01T00:00:00Z',
+      });
+
+      // Managed fields should NOT be overridden
+      assert.equal(done.id, writ.id);
+      assert.equal(done.status, 'completed');
+      assert.notEqual(done.createdAt, '1999-01-01T00:00:00Z');
+      assert.notEqual(done.updatedAt, '1999-01-01T00:00:00Z');
+      assert.notEqual(done.resolvedAt, '1999-01-01T00:00:00Z');
+      // But resolution should pass through
+      assert.equal(done.resolution, 'Legit resolution');
+    });
   });
 
   // ── Config validation ────────────────────────────────────────────
 
   describe('config: writTypes validation', () => {
-    it('built-in types are always valid regardless of writTypes config', async () => {
-      setup({ writTypes: {} }); // empty writTypes — built-ins still work
+    it('built-in type mandate is always valid regardless of writTypes config', async () => {
+      setup({ writTypes: {} }); // empty writTypes — built-in still works
       const w1 = await clerk.post({ title: 'Mandate', body: 'Body', type: 'mandate' });
-      const w2 = await clerk.post({ title: 'Summon', body: 'Body', type: 'summon' });
       assert.equal(w1.type, 'mandate');
-      assert.equal(w2.type, 'summon');
+    });
+
+    it('summon is not a built-in type (must be declared)', async () => {
+      setup({ writTypes: {} });
+      await assert.rejects(
+        () => clerk.post({ title: 'Summon', body: 'Body', type: 'summon' }),
+        /Unknown writ type/,
+      );
     });
 
     it('declared custom types are accepted', async () => {
@@ -583,9 +616,12 @@ describe('Clerk', () => {
     });
 
     it('defaultType from clerk config is validated against declared types', async () => {
-      setup({ clerkConfig: { defaultType: 'summon' } });
-      const w = await clerk.post({ title: 'Default summon', body: 'Body' });
-      assert.equal(w.type, 'summon');
+      setup({
+        writTypes: { 'errand': { description: 'A small errand' } },
+        clerkConfig: { defaultType: 'errand' },
+      });
+      const w = await clerk.post({ title: 'Default errand', body: 'Body' });
+      assert.equal(w.type, 'errand');
     });
   });
 });

@@ -8,7 +8,7 @@ export default tool({
   description: 'Post a new commission, creating a writ in ready status',
   instructions:
     'Creates a new writ and places it in ready status awaiting acceptance. ' +
-    'The writ type must be a type declared in the guild config, or a built-in type (mandate, summon). ' +
+    'The writ type must be a type declared in the guild config, or the built-in type "mandate". ' +
     'If type is omitted, the guild\'s configured default type is used (defaults to "mandate").',
   params: {
     title: z.string().describe('Short human-readable title describing the work'),

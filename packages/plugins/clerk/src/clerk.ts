@@ -7,7 +7,7 @@
  * optional codex and resolution fields.
  *
  * Writ types are validated against the guild config's writTypes field plus the
- * built-in types ('mandate', 'summon'). An unknown type is rejected at post time.
+ * built-in type ('mandate'). An unknown type is rejected at post time.
  *
  * See: docs/architecture/apparatus/clerk.md
  */
@@ -38,7 +38,7 @@ import {
 
 // ── Built-in writ types ──────────────────────────────────────────────
 
-const BUILTIN_TYPES = new Set(['mandate', 'summon']);
+const BUILTIN_TYPES = new Set(['mandate']);
 
 // ── ID generation (ULID-like) ────────────────────────────────────────
 
@@ -160,12 +160,17 @@ export function createClerk(): Plugin {
       const now = new Date().toISOString();
       const isTerminal = TERMINAL_STATUSES.has(to);
 
+      // Strip managed fields — callers cannot override id, status, or timestamps
+      // controlled by the status machine.
+      const { id: _id, status: _status, createdAt: _c, updatedAt: _u,
+        acceptedAt: _a, resolvedAt: _r, ...safeFields } = (fields ?? {}) as WritDoc;
+
       const patch: Partial<Omit<WritDoc, 'id'>> = {
         status: to,
         updatedAt: now,
         ...(to === 'active' ? { acceptedAt: now } : {}),
         ...(isTerminal ? { resolvedAt: now } : {}),
-        ...fields,
+        ...safeFields,
       };
 
       return writs.patch(id, patch);
