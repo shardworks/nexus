@@ -23,6 +23,8 @@ import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import { createFabricator } from '@shardworks/fabricator-apparatus';
 import type { FabricatorApi, EngineDesign } from '@shardworks/fabricator-apparatus';
 
+import type { AnimatorApi, SummonRequest, AnimateHandle, SessionChunk, SessionResult, SessionDoc } from '@shardworks/animator-apparatus';
+
 import { createWalker } from './walker.ts';
 import type { WalkerApi, RigDoc, EngineInstance } from './types.ts';
 
@@ -53,15 +55,20 @@ function buildCtx(): {
 
 /**
  * Full integration fixture: starts Stacks (memory), Clerk, Fabricator,
- * and Walker. Returns handles to each API.
+ * and Walker. Returns handles to each API plus mock animator controls.
  */
-function buildFixture(guildConfig: Partial<GuildConfig> = {}): {
+function buildFixture(
+  guildConfig: Partial<GuildConfig> = {},
+  initialSessionOutcome: { status: 'completed' | 'failed'; error?: string } = { status: 'completed' },
+): {
   stacks: StacksApi;
   clerk: ClerkApi;
   fabricator: FabricatorApi;
   walker: WalkerApi;
   memBackend: InstanceType<typeof MemoryBackend>;
   fire: (event: string, ...args: unknown[]) => Promise<void>;
+  summonCalls: SummonRequest[];
+  setSessionOutcome: (outcome: { status: 'completed' | 'failed'; error?: string }) => void;
 } {
   const memBackend = new MemoryBackend();
   const stacksPlugin = createStacksApparatus(memBackend);
@@ -121,6 +128,56 @@ function buildFixture(guildConfig: Partial<GuildConfig> = {}): {
     indexes: ['startedAt', 'status'],
   });
 
+  // Mock animator — captures summon() calls and writes session docs to Stacks.
+  // The implement engine awaits handle.result to get the session id; the mock
+  // writes a terminal session record before resolving so the Walker's collect
+  // step finds it on the next walk() call.
+  let currentSessionOutcome = initialSessionOutcome;
+  const summonCalls: SummonRequest[] = [];
+  const mockAnimatorApi: AnimatorApi = {
+    summon(request: SummonRequest): AnimateHandle {
+      summonCalls.push(request);
+      const sessionId = generateId('ses', 4);
+      const startedAt = new Date().toISOString();
+      const outcome = currentSessionOutcome;
+
+      const result = (async (): Promise<SessionResult> => {
+        const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+        const endedAt = new Date().toISOString();
+        const doc: SessionDoc = {
+          id: sessionId,
+          status: outcome.status,
+          startedAt,
+          endedAt,
+          durationMs: 0,
+          provider: 'mock',
+          exitCode: outcome.status === 'completed' ? 0 : 1,
+          ...(outcome.error ? { error: outcome.error } : {}),
+          metadata: request.metadata,
+        };
+        await sessBook.put(doc);
+        return {
+          id: sessionId,
+          status: outcome.status,
+          startedAt,
+          endedAt,
+          durationMs: 0,
+          provider: 'mock',
+          exitCode: outcome.status === 'completed' ? 0 : 1,
+          ...(outcome.error ? { error: outcome.error } : {}),
+          metadata: request.metadata,
+        } as SessionResult;
+      })();
+
+      async function* emptyChunks(): AsyncIterable<SessionChunk> {}
+      return { chunks: emptyChunks(), result };
+    },
+    animate(): AnimateHandle {
+      throw new Error('animate() not used in Walker tests');
+    },
+  };
+  apparatusMap.set('animator', mockAnimatorApi);
+
   // Start clerk
   clerkApparatus.start(noopCtx);
   const clerk = clerkApparatus.provides as ClerkApi;
@@ -148,7 +205,13 @@ function buildFixture(guildConfig: Partial<GuildConfig> = {}): {
   // Fire synchronously — fabricator's handler is sync
   void fire('plugin:initialized', walkerLoaded);
 
-  return { stacks, clerk, fabricator, walker, memBackend, fire };
+  return {
+    stacks, clerk, fabricator, walker, memBackend, fire,
+    summonCalls,
+    setSessionOutcome(outcome: { status: 'completed' | 'failed'; error?: string }) {
+      currentSessionOutcome = outcome;
+    },
+  };
 }
 
 /** Get the rigs book. */
@@ -321,7 +384,7 @@ describe('Walker', () => {
       assert.deepEqual(implement?.upstream, ['draft']);
     });
 
-    it('implement only runs after draft is completed', async () => {
+    it('implement only launches after draft is completed', async () => {
       const { clerk, walker, stacks } = fix;
       await postWrit(clerk);
       await walker.walk(); // spawn
@@ -337,17 +400,17 @@ describe('Walker', () => {
       );
       await book.patch(rig.id, { engines: updatedEngines });
 
-      // Now walk should run implement
+      // Now walk should launch implement (quick engine → 'launched', not 'ran')
       const result = await walker.walk();
-      assert.equal(result?.type, 'ran');
+      assert.equal(result?.type, 'launched');
       assert.equal((result as { engineId: string }).engineId, 'implement');
     });
   });
 
-  // ── Clockwork execution ────────────────────────────────────────────
+  // ── Quick engine execution (implement) ────────────────────────────
 
-  describe('clockwork engine execution', () => {
-    it('stores yields and marks engine completed in same walk call', async () => {
+  describe('implement engine execution', () => {
+    it('launches session on first walk, then collects yields on second walk', async () => {
       const { clerk, walker, stacks } = fix;
       await postWrit(clerk);
       await walker.walk(); // spawn
@@ -355,7 +418,7 @@ describe('Walker', () => {
       const book = rigsBook(stacks);
       const [rig0] = await book.list();
 
-      // Pre-complete draft so implement can run (stub clockwork)
+      // Pre-complete draft so implement can run
       const updatedEngines = rig0.engines.map((e: EngineInstance) =>
         e.id === 'draft'
           ? { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p' } }
@@ -363,17 +426,26 @@ describe('Walker', () => {
       );
       await book.patch(rig0.id, { engines: updatedEngines });
 
-      // Walk: implement stub runs synchronously (clockwork)
+      // Walk: implement launches an Animator session (quick engine → 'launched')
       const result = await walker.walk();
-      assert.equal(result?.type, 'ran');
+      assert.equal(result?.type, 'launched');
       assert.equal((result as { engineId: string }).engineId, 'implement');
 
       const [rig1] = await book.list();
-      const impl = rig1.engines.find((e: EngineInstance) => e.id === 'implement');
-      assert.equal(impl?.status, 'completed');
-      assert.ok(impl?.yields !== undefined, 'yields should be stored');
-      // Stub yields are JSON-serializable
-      assert.doesNotThrow(() => JSON.stringify(impl?.yields));
+      const impl1 = rig1.engines.find((e: EngineInstance) => e.id === 'implement');
+      assert.equal(impl1?.status, 'running', 'engine should be running after launch');
+      assert.ok(impl1?.sessionId !== undefined, 'sessionId should be stored');
+
+      // Walk: collect step finds the terminal session and stores yields
+      const result2 = await walker.walk();
+      assert.equal(result2?.type, 'collected');
+      assert.equal((result2 as { engineId: string }).engineId, 'implement');
+
+      const [rig2] = await book.list();
+      const impl2 = rig2.engines.find((e: EngineInstance) => e.id === 'implement');
+      assert.equal(impl2?.status, 'completed');
+      assert.ok(impl2?.yields !== undefined, 'yields should be stored');
+      assert.doesNotThrow(() => JSON.stringify(impl2?.yields));
     });
 
     it('marks engine and rig failed when engine design is not found', async () => {
@@ -398,6 +470,112 @@ describe('Walker', () => {
       const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
       assert.equal(draft?.status, 'failed');
       assert.ok(draft?.error?.includes('nonexistent-engine'));
+    });
+  });
+
+  // ── Implement engine — summon args and prompt wrapping ────────────
+
+  describe('implement engine — Animator integration', () => {
+    it('calls animator.summon() with role, prompt, cwd, environment, and metadata', async () => {
+      const { clerk, walker, stacks, summonCalls } = fix;
+      const writ = await postWrit(clerk, 'My commission', 'my-codex');
+      await walker.walk(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) =>
+          e.id === 'draft'
+            ? { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/the/worktree' } }
+            : e,
+        ),
+      });
+
+      await walker.walk(); // launch implement
+
+      assert.equal(summonCalls.length, 1, 'summon should be called once');
+      const call = summonCalls[0];
+      assert.equal(call.role, 'artificer', 'role defaults to artificer');
+      assert.equal(call.cwd, '/the/worktree', 'cwd is draft worktree path');
+      assert.deepEqual(call.environment, { GIT_AUTHOR_EMAIL: `${writ.id}@nexus.local` });
+      assert.deepEqual(call.metadata, { engineId: 'implement', writId: writ.id });
+    });
+
+    it('wraps the writ body with a commit instruction', async () => {
+      const { clerk, walker, stacks, summonCalls } = fix;
+      await clerk.post({ title: 'My writ', body: 'Build the feature.' });
+      await walker.walk(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) =>
+          e.id === 'draft'
+            ? { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/wt' } }
+            : e,
+        ),
+      });
+
+      await walker.walk(); // launch implement
+
+      assert.equal(summonCalls.length, 1);
+      const expectedPrompt = 'Build the feature.\n\nCommit all changes before ending your session.';
+      assert.equal(summonCalls[0].prompt, expectedPrompt);
+    });
+
+    it('session failure propagates: engine fails → rig fails → writ transitions to failed', async () => {
+      const { clerk, walker, stacks, setSessionOutcome } = fix;
+      setSessionOutcome({ status: 'failed', error: 'Process exited with code 1' });
+
+      const writ = await postWrit(clerk, 'Failing writ');
+      await walker.walk(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) =>
+          e.id === 'draft'
+            ? { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/wt' } }
+            : e,
+        ),
+      });
+
+      await walker.walk(); // launch implement (session already terminal in Stacks)
+      await walker.walk(); // collect: session failed → engine fails → rig fails
+
+      const [updatedRig] = await book.list();
+      assert.equal(updatedRig.status, 'failed', 'rig should be failed');
+      const impl = updatedRig.engines.find((e: EngineInstance) => e.id === 'implement');
+      assert.equal(impl?.status, 'failed', 'implement engine should be failed');
+
+      const failedWrit = await clerk.show(writ.id);
+      assert.equal(failedWrit.status, 'failed', 'writ should transition to failed via CDC');
+    });
+
+    it('ImplementYields contain sessionId and sessionStatus from the session record', async () => {
+      const { clerk, walker, stacks } = fix;
+      await postWrit(clerk, 'Yields test');
+      await walker.walk(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) =>
+          e.id === 'draft'
+            ? { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/wt' } }
+            : e,
+        ),
+      });
+
+      await walker.walk(); // launch
+      await walker.walk(); // collect
+
+      const [updated] = await book.list();
+      const impl = updated.engines.find((e: EngineInstance) => e.id === 'implement');
+      assert.equal(impl?.status, 'completed');
+      const yields = impl?.yields as Record<string, unknown>;
+      assert.ok(typeof yields.sessionId === 'string', 'sessionId should be a string');
+      assert.equal(yields.sessionStatus, 'completed');
     });
   });
 
@@ -635,10 +813,15 @@ describe('Walker', () => {
         ),
       });
 
-      // Walk: implement runs (stub → completed)
+      // Walk: implement launches an Animator session (quick engine)
       const r1 = await walker.walk();
-      assert.equal(r1?.type, 'ran');
+      assert.equal(r1?.type, 'launched');
       assert.equal((r1 as { engineId: string }).engineId, 'implement');
+
+      // Walk: collect step picks up the completed implement session
+      const r1c = await walker.walk();
+      assert.equal(r1c?.type, 'collected');
+      assert.equal((r1c as { engineId: string }).engineId, 'implement');
 
       // Walk: review runs (stub → completed)
       const r2 = await walker.walk();

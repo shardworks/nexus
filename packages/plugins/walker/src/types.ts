@@ -161,6 +161,17 @@ export interface SealYields {
   inscriptionsSealed: number;
 }
 
+/**
+ * Yields from the `implement` quick engine.
+ * Set by the Walker's collect step when the Animator session completes.
+ */
+export interface ImplementYields {
+  /** The Animator session id. */
+  sessionId: string;
+  /** Terminal status of the session. */
+  sessionStatus: 'completed' | 'failed';
+}
+
 // Augment GuildConfig so `guild().guildConfig().walker` is typed.
 declare module '@shardworks/nexus-core' {
   interface GuildConfig {
