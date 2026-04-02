@@ -7,16 +7,16 @@ export default tool({
   name: 'writ-fail',
   description: 'Fail a writ, transitioning it from active to failed',
   instructions:
-    'Marks the writ as failed. Optionally record a reason for the failure. ' +
+    'Marks the writ as failed. Record a resolution explaining why it failed. ' +
     'Only writs in active status can be failed. ' +
     'Returns the updated writ.',
   params: {
     id: z.string().describe('Writ id'),
-    reason: z.string().optional().describe('Optional reason for failure'),
+    resolution: z.string().describe('Summary of why the writ failed'),
   },
   permission: 'clerk:write',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
-    return clerk.fail(params.id, params.reason);
+    return clerk.transition(params.id, 'failed', { resolution: params.resolution });
   },
 });

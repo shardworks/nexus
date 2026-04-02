@@ -12,18 +12,18 @@ export default tool({
     'If type is omitted, the guild\'s configured default type is used (defaults to "mandate").',
   params: {
     title: z.string().describe('Short human-readable title describing the work'),
-    body: z.string().optional().describe('Optional detail text or description'),
+    body: z.string().describe('Detail text or description'),
     type: z.string().optional().describe('Writ type (default: guild defaultType or "mandate")'),
-    assignee: z.string().optional().describe('Assignee name or id'),
+    codex: z.string().optional().describe('Target codex name'),
   },
   permission: 'clerk:write',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
-    return clerk.postCommission({
+    return clerk.post({
       title: params.title,
       body: params.body,
       type: params.type,
-      assignee: params.assignee,
+      codex: params.codex,
     });
   },
 });

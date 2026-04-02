@@ -16,6 +16,6 @@ export default tool({
   permission: 'clerk:write',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
-    return clerk.accept(params.id);
+    return clerk.transition(params.id, 'active');
   },
 });

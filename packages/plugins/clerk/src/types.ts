@@ -29,23 +29,24 @@ export interface WritDoc {
   id: string;
   /** Writ type — must be a type declared in guild config, or a built-in type. */
   type: string;
-  /** Short human-readable title. */
-  title: string;
-  /** Optional body / detail text. */
-  body: string | null;
   /** Current lifecycle status. */
   status: WritStatus;
-  /** Assignee name or id — the party responsible for executing the writ. */
-  assignee: string | null;
-  /** ISO timestamp when the writ was posted. */
-  postedAt: string;
+  /** Short human-readable title. */
+  title: string;
+  /** Detail text. */
+  body: string;
+  /** Target codex name. */
+  codex?: string;
+  /** ISO timestamp when the writ was created. */
+  createdAt: string;
+  /** ISO timestamp of the last mutation. */
+  updatedAt: string;
   /** ISO timestamp when the writ was accepted (transitioned to active). */
-  acceptedAt: string | null;
-  /** ISO timestamp when the writ was closed (completed, failed, or cancelled). */
-  closedAt: string | null;
-  /** Optional failure reason — populated when status transitions to failed. */
-  failReason: string | null;
-  [key: string]: unknown;
+  acceptedAt?: string;
+  /** ISO timestamp when the writ reached a terminal state. */
+  resolvedAt?: string;
+  /** Summary of how the writ resolved (set on any terminal transition). */
+  resolution?: string;
 }
 
 // ── Requests ─────────────────────────────────────────────────────────
@@ -61,10 +62,10 @@ export interface PostCommissionRequest {
   type?: string;
   /** Short human-readable title describing the work. */
   title: string;
-  /** Optional body / detail text. */
-  body?: string;
-  /** Optional assignee name or id. */
-  assignee?: string;
+  /** Detail text. */
+  body: string;
+  /** Optional target codex name. */
+  codex?: string;
 }
 
 // ── Filters ──────────────────────────────────────────────────────────
@@ -77,23 +78,10 @@ export interface WritFilters {
   status?: WritStatus;
   /** Filter by writ type. */
   type?: string;
-  /** Filter by assignee. */
-  assignee?: string;
   /** Maximum number of results (default: 20). */
   limit?: number;
-}
-
-// ── Clerk config ─────────────────────────────────────────────────────
-
-/**
- * Plugin-level configuration for The Clerk (under "clerk" key in guild config).
- */
-export interface ClerkConfig {
-  /**
-   * Default writ type used when commission-post omits the type.
-   * Falls back to "mandate" if not set.
-   */
-  defaultType?: string;
+  /** Number of results to skip. */
+  offset?: number;
 }
 
 // ── API ──────────────────────────────────────────────────────────────
@@ -106,35 +94,26 @@ export interface ClerkApi {
    * Post a new commission, creating a writ in 'ready' status.
    * Validates the writ type against declared types in guild config.
    */
-  postCommission(request: PostCommissionRequest): Promise<WritDoc>;
+  post(request: PostCommissionRequest): Promise<WritDoc>;
 
   /**
-   * Show a writ by id. Returns null if not found.
+   * Show a writ by id. Throws if not found.
    */
-  show(writId: string): Promise<WritDoc | null>;
+  show(id: string): Promise<WritDoc>;
 
   /**
-   * List writs with optional filters, ordered by postedAt descending.
+   * List writs with optional filters, ordered by createdAt descending.
    */
   list(filters?: WritFilters): Promise<WritDoc[]>;
 
   /**
-   * Accept a writ — transitions ready → active.
+   * Count writs matching optional filters.
    */
-  accept(writId: string): Promise<WritDoc>;
+  count(filters?: WritFilters): Promise<number>;
 
   /**
-   * Complete a writ — transitions active → completed.
+   * Transition a writ to a new status, optionally setting additional fields.
+   * Validates that the transition is legal.
    */
-  complete(writId: string): Promise<WritDoc>;
-
-  /**
-   * Fail a writ — transitions active → failed.
-   */
-  fail(writId: string, reason?: string): Promise<WritDoc>;
-
-  /**
-   * Cancel a writ — transitions ready|active → cancelled.
-   */
-  cancel(writId: string): Promise<WritDoc>;
+  transition(id: string, to: WritStatus, fields?: Partial<WritDoc>): Promise<WritDoc>;
 }

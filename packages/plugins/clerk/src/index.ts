@@ -14,7 +14,6 @@ import { createClerk } from './clerk.ts';
 
 export {
   type ClerkApi,
-  type ClerkConfig,
   type WritDoc,
   type WritStatus,
   type PostCommissionRequest,

@@ -1,6 +1,6 @@
 # `@shardworks/clerk-apparatus`
 
-The Clerk manages the lifecycle of **writs** — lightweight work orders that flow through a fixed status machine. Writs are created as commissions, accepted by an assignee, and ultimately completed, failed, or cancelled.
+The Clerk manages the lifecycle of **writs** — lightweight work orders that flow through a fixed status machine. Writs are created as commissions and ultimately completed, failed, or cancelled.
 
 The Clerk sits downstream of The Stacks: `stacks ← clerk`.
 
@@ -30,35 +30,35 @@ import type { ClerkApi } from '@shardworks/clerk-apparatus';
 const clerk = guild().apparatus<ClerkApi>('clerk');
 ```
 
-### `postCommission(request): Promise<WritDoc>`
+### `post(request): Promise<WritDoc>`
 
 Post a new commission, creating a writ in `ready` status.
 
 ```typescript
-const writ = await clerk.postCommission({
+const writ = await clerk.post({
   title: 'Refactor the session layer',
   body: 'Move all session logic into a dedicated module',
-  type: 'mandate',       // optional, defaults to guild defaultType or "mandate"
-  assignee: 'artificer', // optional
+  type: 'mandate',      // optional, defaults to guild defaultType or "mandate"
+  codex: 'artificer',  // optional target codex
 });
 ```
 
 | Parameter | Type | Description |
 |---|---|---|
 | `title` | `string` | Short human-readable title |
-| `body` | `string` | Optional detail text |
+| `body` | `string` | Detail text (required) |
 | `type` | `string` | Writ type — must be declared or built-in (optional) |
-| `assignee` | `string` | Assignee name or id (optional) |
+| `codex` | `string` | Target codex name (optional) |
 
 Throws if the writ type is not declared in the guild config and is not a built-in type (`mandate`, `summon`).
 
-### `show(writId): Promise<WritDoc | null>`
+### `show(id): Promise<WritDoc>`
 
-Show a writ by id. Returns `null` if not found.
+Show a writ by id. Throws if not found.
 
 ### `list(filters?): Promise<WritDoc[]>`
 
-List writs with optional filters, ordered by `postedAt` descending (newest first).
+List writs with optional filters, ordered by `createdAt` descending (newest first).
 
 ```typescript
 const activeWrits = await clerk.list({ status: 'active', limit: 10 });
@@ -68,24 +68,36 @@ const activeWrits = await clerk.list({ status: 'active', limit: 10 });
 |---|---|---|
 | `status` | `WritStatus` | Filter by status |
 | `type` | `string` | Filter by writ type |
-| `assignee` | `string` | Filter by assignee |
 | `limit` | `number` | Maximum results (default: 20) |
+| `offset` | `number` | Number of results to skip |
 
-### `accept(writId): Promise<WritDoc>`
+### `count(filters?): Promise<number>`
 
-Accept a writ — transitions `ready → active`.
+Count writs matching optional filters. Accepts the same filters as `list()` (except `limit` and `offset`).
 
-### `complete(writId): Promise<WritDoc>`
+```typescript
+const total = await clerk.count({ status: 'ready' });
+```
 
-Complete a writ — transitions `active → completed`.
+### `transition(id, to, fields?): Promise<WritDoc>`
 
-### `fail(writId, reason?): Promise<WritDoc>`
+Transition a writ to a new status, optionally setting additional fields atomically.
 
-Fail a writ — transitions `active → failed`. Optionally records a reason.
+```typescript
+// Accept
+await clerk.transition(id, 'active');
 
-### `cancel(writId): Promise<WritDoc>`
+// Complete with resolution
+await clerk.transition(id, 'completed', { resolution: 'Shipped to production' });
 
-Cancel a writ — transitions `ready|active → cancelled`.
+// Fail with resolution
+await clerk.transition(id, 'failed', { resolution: 'Build pipeline broke' });
+
+// Cancel (resolution optional)
+await clerk.transition(id, 'cancelled', { resolution: 'No longer needed' });
+```
+
+Throws if the transition is not legal for the writ's current status.
 
 ---
 
@@ -139,7 +151,7 @@ The Clerk contributes one book and seven tools to the guild:
 
 | Book | Indexes | Contents |
 |---|---|---|
-| `writs` | `status`, `type`, `assignee`, `postedAt` | Writ documents |
+| `writs` | `status`, `type`, `createdAt`, `[status, type]`, `[status, createdAt]` | Writ documents |
 
 ### Tools
 
@@ -163,21 +175,22 @@ type WritStatus = 'ready' | 'active' | 'completed' | 'failed' | 'cancelled';
 interface WritDoc {
   id: string;           // ULID-like, prefixed "writ-"
   type: string;         // declared or built-in type
-  title: string;
-  body: string | null;
   status: WritStatus;
-  assignee: string | null;
-  postedAt: string;     // ISO timestamp
-  acceptedAt: string | null;
-  closedAt: string | null;
-  failReason: string | null;
+  title: string;
+  body: string;
+  codex?: string;       // target codex name
+  createdAt: string;    // ISO timestamp
+  updatedAt: string;    // ISO timestamp, updated on every mutation
+  acceptedAt?: string;  // ISO timestamp, set when transitioning to active
+  resolvedAt?: string;  // ISO timestamp, set on any terminal transition
+  resolution?: string;  // summary of how the writ resolved
 }
 
 interface PostCommissionRequest {
   title: string;
-  body?: string;
+  body: string;         // required
   type?: string;        // defaults to guild defaultType or "mandate"
-  assignee?: string;
+  codex?: string;
 }
 ```
 
