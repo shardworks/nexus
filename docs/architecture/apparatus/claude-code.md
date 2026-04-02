@@ -22,6 +22,8 @@ The Claude Code apparatus is a **session provider** — a pluggable backend that
 
 The apparatus handles the mechanics of the Claude Code CLI: process spawning, argument assembly, system prompt file management, stream-json NDJSON parsing, and telemetry extraction (cost, token usage, session id). It does not handle session lifecycle, recording, or identity composition — those belong to The Animator and The Loom respectively.
 
+The provider also injects environment variables from `SessionProviderConfig.environment` into the spawned process. This is how anima git identity (set by The Loom and optionally overridden per-task by the orchestrator) reaches the `claude` child process. The provider does not interpret these variables — it spreads them into the spawn environment alongside `process.env`.
+
 The package also contains the **MCP tool server** — a module that creates an MCP server from resolved tool definitions, serving guild tools to Claude during sessions. This module is not yet integrated into the session lifecycle but is the designated home for MCP server functionality.
 
 ---

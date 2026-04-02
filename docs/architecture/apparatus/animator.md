@@ -147,6 +147,14 @@ interface SummonRequest {
    * See § Caller Metadata.
    */
   metadata?: Record<string, unknown>
+  /**
+   * Environment variable overrides for the session process.
+   * Merged with the AnimaWeave's environment (request overrides weave).
+   * Use this for per-task identity — e.g. setting GIT_AUTHOR_EMAIL
+   * to a writ ID for commit attribution.
+   * See § Session Environment.
+   */
+  environment?: Record<string, string>
   /** Enable streaming output (default false). */
   streaming?: boolean
 }
@@ -173,6 +181,12 @@ interface AnimateRequest {
    * See § Caller Metadata.
    */
   metadata?: Record<string, unknown>
+  /**
+   * Environment variable overrides for the session process.
+   * Merged with the AnimaWeave's environment (request overrides weave).
+   * See § Session Environment.
+   */
+  environment?: Record<string, string>
   /** Enable streaming output (default false). */
   streaming?: boolean
 }
@@ -228,8 +242,9 @@ summon(request)
   │     (Loom produces systemPrompt from anima identity layers;
   │      MVP: systemPrompt is undefined — composition not yet implemented)
   ├─ 3. Build AnimateRequest with:
-  │     - context (AnimaWeave from Loom)
+  │     - context (AnimaWeave from Loom — includes environment)
   │     - prompt (work prompt, bypasses Loom)
+  │     - environment (per-request overrides, if any)
   │     - auto-metadata { trigger: 'summon', role }
   └─ 4. Delegate to animate() → full animate lifecycle below
 ```
@@ -244,6 +259,7 @@ animate(request)  →  { chunks, result }  (returned synchronously)
   │
   ├─ 3. Call provider.launch(config):
   │     - System prompt, initial prompt, model, cwd, conversationId
+  │     - environment (merged: weave defaults + request overrides)
   │     - streaming flag passed through for provider to honor
   │     → provider returns { chunks, result } immediately
   │
@@ -310,6 +326,13 @@ interface SessionProviderConfig {
   cwd: string
   /** Enable streaming output. Providers may ignore this flag. */
   streaming?: boolean
+  /**
+   * Environment variables for the session process.
+   * Merged by the Animator from the AnimaWeave's environment and any
+   * per-request overrides (request overrides weave). The provider
+   * spreads these into the spawned process environment.
+   */
+  environment?: Record<string, string>
 }
 
 interface SessionProviderResult {
@@ -389,6 +412,21 @@ const consultSession = await consultResult;
 The `metadata` field is indexed in The Stacks as a JSON blob. Callers that need to query by metadata fields (e.g. "all sessions for writ X") use The Stacks' JSON path queries against the stored metadata.
 
 This design keeps the Animator focused: it launches sessions and records what happened. Identity, dispatch context, and writ binding are concerns of the caller.
+
+---
+
+## Session Environment
+
+The Animator supports environment variable injection into the spawned session process. This is the mechanism for giving animas distinct identities (e.g. git author) without modifying global host configuration.
+
+Environment variables come from two sources, merged at session launch time:
+
+1. **AnimaWeave** (`context.environment`) — identity-layer defaults from The Loom. Set per-role. Example: `GIT_AUTHOR_NAME=Artificer`, `GIT_AUTHOR_EMAIL=artificer@nexus.local`.
+2. **Request** (`request.environment`) — per-task overrides from the caller. Example: the Dispatch sets `GIT_AUTHOR_EMAIL=w-{writId}@nexus.local` for per-commission git attribution.
+
+The merge is simple: `{ ...weave.environment, ...request.environment }`. Request values override weave values for the same key. The merged result is passed to the session provider as `SessionProviderConfig.environment`, which the provider spreads into the child process environment (`{ ...process.env, ...config.environment }`).
+
+This keeps the Animator generic — it does not interpret environment variables or know about git. The Loom decides what identity defaults a role should have. Orchestrators decide what per-task overrides are needed. The Animator just merges and passes through.
 
 ---
 
@@ -543,6 +581,8 @@ interface SessionProviderConfig {
   conversationId?: string
   cwd: string
   streaming?: boolean
+  /** Environment variables for the session process. */
+  environment?: Record<string, string>
 }
 ```
 

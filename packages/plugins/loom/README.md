@@ -70,6 +70,12 @@ interface WeaveRequest {
 interface AnimaWeave {
   /** The system prompt for the AI process. Undefined until composition is implemented. */
   systemPrompt?: string;
+  /**
+   * Environment variables for the session process.
+   * Default: git identity derived from role name.
+   * The Animator merges these with any per-request overrides.
+   */
+  environment?: Record<string, string>;
 }
 ```
 
@@ -81,8 +87,15 @@ interface AnimaWeave {
 const loom = guild().apparatus<LoomApi>('loom');
 
 const weave = await loom.weave({ role: 'artificer' });
-// MVP → { systemPrompt: undefined }
-// Future → { systemPrompt: '<woven from charter + curricula + ...>' }
+// → {
+//     systemPrompt: undefined,  // MVP — composition not yet implemented
+//     environment: {
+//       GIT_AUTHOR_NAME: 'Artificer',
+//       GIT_AUTHOR_EMAIL: 'artificer@nexus.local',
+//       GIT_COMMITTER_NAME: 'Artificer',
+//       GIT_COMMITTER_EMAIL: 'artificer@nexus.local',
+//     }
+//   }
 ```
 
 **Via The Animator (typical path):**
@@ -102,9 +115,9 @@ const result = await animator.summon({
 
 ## Configuration
 
-MVP: none. The Loom reads no guild configuration.
+The Loom reads role definitions from `guild.json["loom"]["roles"]`. See the [architecture spec](../../docs/architecture/apparatus/loom.md) for role configuration format.
 
-Future versions will read role definitions, anima identity records, charter content, and curricula from guild config and The Stacks.
+MVP: role configuration is used for tool resolution (permissions) and environment variables (git identity). System prompt composition is not yet implemented — future versions will also read anima identity records, charter content, and curricula from guild config and The Stacks.
 
 ---
 

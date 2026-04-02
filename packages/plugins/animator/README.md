@@ -121,6 +121,7 @@ interface SummonRequest {
   cwd: string;                   // Working directory for the session
   conversationId?: string;       // Optional, for multi-turn resume
   metadata?: Record<string, unknown>; // Merged with { trigger: 'summon', role }
+  environment?: Record<string, string>; // Per-request env overrides (merged with weave)
   streaming?: boolean;           // Enable streaming output (default false)
 }
 
@@ -130,6 +131,7 @@ interface AnimateRequest {
   cwd: string;
   conversationId?: string;
   metadata?: Record<string, unknown>;
+  environment?: Record<string, string>; // Per-request env overrides (merged with weave)
   streaming?: boolean;           // Enable streaming output (default false)
 }
 
@@ -196,6 +198,7 @@ interface SessionProviderConfig {
   model: string;
   conversationId?: string;
   cwd: string;
+  environment?: Record<string, string>; // Merged env vars (weave + request overrides)
 }
 
 interface SessionProviderResult {

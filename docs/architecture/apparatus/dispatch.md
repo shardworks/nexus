@@ -130,6 +130,10 @@ dispatch.next({ role: 'artificer' })
 │       role,
 │       prompt: <assembled from writ title + body>,
 │       cwd: draftRecord.path (or guild home),
+│       environment: {
+│         GIT_AUTHOR_EMAIL: `${writ.id}@nexus.local`,
+│         GIT_COMMITTER_EMAIL: `${writ.id}@nexus.local`,
+│       },
 │       metadata: { writId: writ.id, trigger: 'dispatch' }
 │     })
 │     → { chunks, result }
@@ -169,6 +173,19 @@ You have been dispatched to fulfill a commission.
 The prompt is intentionally minimal — the anima's curriculum and role instructions carry the craft knowledge. The Dispatch just delivers the assignment.
 
 The Dispatch owns the writ transition — the anima does not call `writ-complete` or `writ-fail`. The Dispatch observes the session outcome and transitions the writ accordingly. This keeps writ lifecycle management out of the anima's instructions, which simplifies the prompt and avoids relying on animas to self-report correctly.
+
+### Git Identity
+
+The Dispatch sets per-writ git identity via the `environment` field on the summon request. The Loom provides role-level defaults (e.g. `GIT_AUTHOR_NAME=Artificer`, `GIT_AUTHOR_EMAIL=artificer@nexus.local`). The Dispatch overrides the email with the writ ID for per-commission attribution:
+
+```typescript
+environment: {
+  GIT_AUTHOR_EMAIL: `${writ.id}@nexus.local`,
+  GIT_COMMITTER_EMAIL: `${writ.id}@nexus.local`,
+}
+```
+
+This produces commits attributed to `Artificer <w-{writId}@nexus.local>`, enabling commit-level tracing back to the originating commission. The Animator merges these overrides with the Loom's defaults (request overrides weave) and passes the result to the session provider.
 
 ### Error Handling
 

@@ -77,7 +77,11 @@ next({ role: 'artificer' })
 │     → draftRecord (worktree path = session cwd)
 │     → if no codex on writ, cwd = guild home
 │
-├─ 4. Animator: summon({ role, prompt, cwd, metadata: { writId, trigger: 'dispatch' } })
+├─ 4. Animator: summon({
+│       role, prompt, cwd,
+│       environment: { GIT_*_EMAIL: `${writ.id}@nexus.local` },
+│       metadata: { writId, trigger: 'dispatch' }
+│     })
 │     → { chunks, result }
 │
 ├─ 5. Await result
