@@ -21,7 +21,7 @@
 import http from 'node:http';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { VERSION } from '@shardworks/nexus-core';
 import type { ToolDefinition } from '@shardworks/tools-apparatus';
 
@@ -97,10 +97,13 @@ export async function createMcpServer(tools: ToolDefinition[]): Promise<McpServe
 // ── HTTP Server ─────────────────────────────────────────────────────────
 
 /**
- * Start an in-process HTTP server serving the MCP tool set.
+ * Start an in-process HTTP server serving the MCP tool set via SSE.
  *
- * Uses the MCP SDK's Streamable HTTP transport on an ephemeral localhost
- * port. The server binds to 127.0.0.1 only — not network-accessible.
+ * Uses the MCP SDK's SSE transport: the client GETs /sse to establish
+ * the event stream, then POSTs messages to /message. Claude Code's
+ * --mcp-config expects `type: "sse"` for HTTP-based MCP servers.
+ *
+ * The server binds to 127.0.0.1 only — not network-accessible.
  *
  * Returns a handle with the URL (for --mcp-config) and a close() function.
  * The caller is responsible for calling close() after the session exits.
@@ -111,17 +114,25 @@ export async function createMcpServer(tools: ToolDefinition[]): Promise<McpServe
 export async function startMcpHttpServer(tools: ToolDefinition[]): Promise<McpHttpHandle> {
   const mcpServer = await createMcpServer(tools);
 
-  // Stateless mode — each server serves exactly one session, so no
-  // session tracking is needed.
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-  });
-
-  await mcpServer.connect(transport);
+  // SSE transport: the client GETs /sse, the transport tells it to POST
+  // messages to /message. One transport per connection (single-session).
+  let transport: SSEServerTransport | null = null;
 
   const httpServer = http.createServer(async (req, res) => {
     try {
-      await transport.handleRequest(req, res);
+      if (req.method === 'GET' && req.url === '/sse') {
+        // New SSE connection — create transport bound to this response.
+        transport = new SSEServerTransport('/message', res);
+        await mcpServer.connect(transport);
+      } else if (req.method === 'POST' && req.url?.startsWith('/message')) {
+        if (!transport) {
+          res.writeHead(400).end('No active SSE connection');
+          return;
+        }
+        await transport.handlePostMessage(req, res);
+      } else {
+        res.writeHead(404).end('Not found');
+      }
     } catch {
       if (!res.headersSent) {
         res.writeHead(500).end('Internal Server Error');
@@ -139,12 +150,14 @@ export async function startMcpHttpServer(tools: ToolDefinition[]): Promise<McpHt
     throw new Error('Failed to get server address');
   }
 
-  const url = `http://127.0.0.1:${addr.port}/mcp`;
+  const url = `http://127.0.0.1:${addr.port}/sse`;
 
   return {
     url,
     async close() {
-      await transport.close();
+      if (transport) {
+        await transport.close();
+      }
       await new Promise<void>((resolve, reject) => {
         httpServer.close((err) => (err ? reject(err) : resolve()));
       });

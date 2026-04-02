@@ -87,7 +87,7 @@ describe('startMcpHttpServer()', () => {
 
     try {
       assert.ok(handle.url, 'should have a URL');
-      assert.match(handle.url, /^http:\/\/127\.0\.0\.1:\d+\/mcp$/, 'URL should be localhost with port');
+      assert.match(handle.url, /^http:\/\/127\.0\.0\.1:\d+\/sse$/, 'URL should be localhost with /sse endpoint');
       assert.equal(typeof handle.close, 'function', 'should have a close function');
     } finally {
       await handle.close();

@@ -79,7 +79,7 @@ async function prepareSession(config: SessionProviderConfig): Promise<PreparedSe
     const mcpConfig = {
       mcpServers: {
         'nexus-guild': {
-          type: 'http',
+          type: 'sse',
           url: mcpHandle.url,
         },
       },
