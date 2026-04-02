@@ -94,6 +94,8 @@ export interface SealResult {
   retries: number
   /** The commit SHA at head of target after sealing. */
   sealedCommit: string
+  /** Number of inscriptions (commits) incorporated from the draft. 0 means no-op seal. */
+  inscriptionsSealed: number
 }
 
 export interface PushRequest {

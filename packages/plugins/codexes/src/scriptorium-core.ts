@@ -203,9 +203,53 @@ export class ScriptoriumCore {
     await git(['clone', '--bare', remoteUrl, clonePath]);
   }
 
+  /**
+   * Advance refs/heads/<branch> to the remote's position if the remote is
+   * strictly ahead of the local sealed binding.
+   *
+   * This handles commits pushed to the remote outside the Scriptorium:
+   * if the remote has advanced past the local sealed binding, sealing must
+   * rebase the draft onto the remote position — not the stale local one.
+   *
+   * If the local sealed binding is already ahead of (or equal to) the remote
+   * (e.g. contains unpushed seals from contention scenarios), it is kept.
+   */
+  private async advanceToRemote(codexName: string, branch: string): Promise<void> {
+    const clonePath = this.bareClonePath(codexName);
+    let remoteRef: string;
+    try {
+      remoteRef = await resolveRef(clonePath, `refs/remotes/origin/${branch}`);
+    } catch {
+      return; // No remote tracking ref (branch may not exist on remote yet)
+    }
+    const localRef = await resolveRef(clonePath, branch);
+    if (remoteRef === localRef) return;
+
+    const { stdout: mergeBase } = await git(
+      ['merge-base', localRef, remoteRef],
+      clonePath,
+    );
+    if (mergeBase === localRef) {
+      // Local is an ancestor of remote → remote is ahead → advance local
+      await git(['update-ref', `refs/heads/${branch}`, remoteRef], clonePath);
+    }
+    // If local is ahead of or diverged from remote: keep the local sealed binding
+  }
+
   private async performFetch(name: string): Promise<void> {
     const clonePath = this.bareClonePath(name);
-    await git(['fetch', '--prune', 'origin'], clonePath);
+    // Explicit refspec is required: git clone --bare does not configure a
+    // fetch refspec, so plain `git fetch origin` only updates FETCH_HEAD and
+    // leaves refs/heads/* stale.
+    //
+    // We fetch into refs/remotes/origin/* rather than refs/heads/* for two
+    // reasons:
+    //   1. It avoids force-overwriting local draft branches (which live in
+    //      refs/heads/* but do not exist on the remote).
+    //   2. It separates the "remote position" (refs/remotes/origin/*) from
+    //      the "local sealed binding" (refs/heads/*), letting seal() advance
+    //      refs/heads/* only when the remote is strictly ahead.
+    await git(['fetch', '--prune', 'origin', '+refs/heads/*:refs/remotes/origin/*'], clonePath);
 
     const state = this.codexes.get(name);
     if (state) {
@@ -353,10 +397,11 @@ export class ScriptoriumCore {
     }
 
     const defaultBranch = await resolveDefaultBranch(clonePath);
-    // In a bare clone, refs are at refs/heads/* (mirroring the remote),
-    // not refs/remotes/origin/*. Use the branch name directly since we
-    // already fetched to ensure freshness.
     const startPoint = request.startPoint ?? defaultBranch;
+
+    // Advance the start-point branch to the remote position if the remote
+    // has moved ahead. Ensures the draft branches from the latest state.
+    await this.advanceToRemote(state.name, startPoint);
 
     const worktreePath = this.draftWorktreePath(request.codexName, branch);
     fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
@@ -464,6 +509,12 @@ export class ScriptoriumCore {
     // Fetch before sealing for freshness
     await this.performFetch(state.name);
 
+    // Advance the local sealed binding to the remote position if the remote
+    // has moved ahead (e.g. commits pushed outside the Scriptorium).
+    // This ensures seal compares against the latest remote ref, not a
+    // potentially stale local one — preventing push failures.
+    await this.advanceToRemote(state.name, targetBranch);
+
     // Attempt ff-only merge, with rebase retry loop
     while (retries <= maxRetries) {
       try {
@@ -484,7 +535,7 @@ export class ScriptoriumCore {
               force: true,
             });
           }
-          return { success: true, strategy, retries, sealedCommit: targetRef };
+          return { success: true, strategy, retries, sealedCommit: targetRef, inscriptionsSealed: 0 };
         }
 
         // Check if target is an ancestor of source (ff is possible)
@@ -494,7 +545,13 @@ export class ScriptoriumCore {
         );
 
         if (mergeBase === targetRef) {
-          // Fast-forward is possible — update the ref
+          // Fast-forward is possible — count and incorporate inscriptions
+          const inscriptionsSealed = await commitsAhead(
+            clonePath,
+            request.sourceBranch,
+            targetBranch,
+          );
+
           await git(
             ['update-ref', `refs/heads/${targetBranch}`, sourceRef],
             clonePath,
@@ -509,7 +566,7 @@ export class ScriptoriumCore {
             });
           }
 
-          return { success: true, strategy, retries, sealedCommit: sourceRef };
+          return { success: true, strategy, retries, sealedCommit: sourceRef, inscriptionsSealed };
         }
 
         // FF not possible — rebase the source branch onto the target
