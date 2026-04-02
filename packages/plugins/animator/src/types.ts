@@ -53,6 +53,12 @@ export interface AnimateRequest {
    * Either way, the return shape is the same: `{ chunks, result }`.
    */
   streaming?: boolean;
+  /**
+   * Task-layer environment variables. Overrides the identity-layer
+   * environment from the AnimaWeave when keys collide. Spread into the
+   * spawned process environment.
+   */
+  environment?: Record<string, string>;
 }
 
 export interface SessionResult {
@@ -124,6 +130,12 @@ export interface SummonRequest {
    * `chunks` iterable completes immediately with no items.
    */
   streaming?: boolean;
+  /**
+   * Task-layer environment variables. Overrides the identity-layer
+   * environment from the AnimaWeave when keys collide. Spread into the
+   * spawned process environment.
+   */
+  environment?: Record<string, string>;
 }
 
 // ── Animator API (the `provides` interface) ──────────────────────────
@@ -243,6 +255,12 @@ export interface SessionProviderConfig {
    * The Animator passes them through from the AnimaWeave.
    */
   tools?: ResolvedTool[];
+  /**
+   * Merged environment variables to spread into the spawned process.
+   * The Animator merges identity-layer (weave) and task-layer (request)
+   * variables before passing them here — task layer wins on collision.
+   */
+  environment?: Record<string, string>;
 }
 
 export interface SessionProviderResult {

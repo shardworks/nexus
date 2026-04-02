@@ -46,6 +46,8 @@ export interface AnimaWeave {
   systemPrompt?: string;
   /** The resolved tool set for this role. Undefined when no role is specified or no tools match. */
   tools?: ResolvedTool[];
+  /** Environment variables derived from role identity (e.g. git author/committer). */
+  environment?: Record<string, string>;
 }
 
 /** The Loom's public API, exposed via `provides`. */
@@ -116,6 +118,17 @@ export function createLoom(): Plugin {
             // fail gracefully rather than crash the session.
           }
         }
+      }
+
+      // Derive git identity from role name.
+      if (request.role) {
+        const displayName = request.role.charAt(0).toUpperCase() + request.role.slice(1);
+        weave.environment = {
+          GIT_AUTHOR_NAME: displayName,
+          GIT_AUTHOR_EMAIL: `${request.role}@nexus.local`,
+          GIT_COMMITTER_NAME: displayName,
+          GIT_COMMITTER_EMAIL: `${request.role}@nexus.local`,
+        };
       }
 
       // Future: compose system prompt from charter + curriculum +

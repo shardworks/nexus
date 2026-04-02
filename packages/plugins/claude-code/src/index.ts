@@ -142,7 +142,7 @@ const provider: AnimatorSessionProvider = {
 
       try {
         if (config.streaming) {
-          const spawned = spawnClaudeStreamingJson(args, config.cwd);
+          const spawned = spawnClaudeStreamingJson(args, config.cwd, config.environment);
           innerChunks = spawned.chunks;
           prepDone = true;
           if (chunkResolve) { chunkResolve(); chunkResolve = null; }
@@ -157,7 +157,7 @@ const provider: AnimatorSessionProvider = {
         done = true;
         if (chunkResolve) { chunkResolve(); chunkResolve = null; }
 
-        const raw = await spawnClaudeStreamJson(args, config.cwd);
+        const raw = await spawnClaudeStreamJson(args, config.cwd, config.environment);
         await cleanup();
         return buildResult(raw);
       } catch (err) {
@@ -358,11 +358,12 @@ export function processNdjsonBuffer(
  *
  * Forwards assistant text content to stderr so it's visible during execution.
  */
-function spawnClaudeStreamJson(args: string[], cwd: string): Promise<StreamJsonResult> {
+function spawnClaudeStreamJson(args: string[], cwd: string, env?: Record<string, string>): Promise<StreamJsonResult> {
   return new Promise((resolve, reject) => {
     const proc = spawn('claude', args, {
       cwd,
       stdio: ['pipe', 'pipe', 'inherit'],
+      env: { ...process.env, ...env },
     });
 
     const acc: {
@@ -408,7 +409,7 @@ function spawnClaudeStreamJson(args: string[], cwd: string): Promise<StreamJsonR
  * Returns an async iterable of chunks for real-time consumption and
  * a promise for the final StreamJsonResult.
  */
-function spawnClaudeStreamingJson(args: string[], cwd: string): {
+function spawnClaudeStreamingJson(args: string[], cwd: string, env?: Record<string, string>): {
   chunks: AsyncIterable<SessionChunk>;
   result: Promise<StreamJsonResult>;
 } {
@@ -426,6 +427,7 @@ function spawnClaudeStreamingJson(args: string[], cwd: string): {
   const proc = spawn('claude', args, {
     cwd,
     stdio: ['pipe', 'pipe', 'inherit'],
+    env: { ...process.env, ...env },
   });
 
   let buffer = '';

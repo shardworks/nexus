@@ -72,6 +72,7 @@ function buildProviderConfig(
     cwd: request.cwd,
     streaming: request.streaming,
     tools: request.context.tools,
+    environment: { ...request.context.environment, ...request.environment },
   };
 }
 
@@ -259,6 +260,7 @@ export function createAnimator(): Plugin {
           conversationId: request.conversationId,
           metadata,
           streaming: request.streaming,
+          environment: request.environment,
         });
       })();
 
