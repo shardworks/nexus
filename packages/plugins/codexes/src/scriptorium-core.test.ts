@@ -720,6 +720,50 @@ describe('ScriptoriumCore', () => {
       assert.notEqual(mainBefore, mainAfter);
       assert.equal(mainAfter, result.sealedCommit);
     });
+
+    it('inscriptionsSealed is 0 for no-op seal (draft has no new commits)', async () => {
+      const remote = createRemoteRepo();
+      const { core } = createStartedCore();
+      const api = core.createApi();
+
+      await api.add('test-codex', remote.url);
+      await api.openDraft({ codexName: 'test-codex', branch: 'my-draft' });
+
+      // No commits — draft is at the same point as main
+      const result = await api.seal({
+        codexName: 'test-codex',
+        sourceBranch: 'my-draft',
+      });
+
+      assert.equal(result.inscriptionsSealed, 0);
+    });
+
+    it('inscriptionsSealed counts all draft inscriptions on fast-forward seal', async () => {
+      const remote = createRemoteRepo();
+      const { core } = createStartedCore();
+      const api = core.createApi();
+
+      await api.add('test-codex', remote.url);
+      const draft = await api.openDraft({ codexName: 'test-codex', branch: 'my-draft' });
+
+      gitSync(['config', 'user.email', 'test@test.com'], draft.path);
+      gitSync(['config', 'user.name', 'Test'], draft.path);
+
+      // Make 3 separate inscriptions
+      for (let i = 1; i <= 3; i++) {
+        fs.writeFileSync(path.join(draft.path, `inscription-${i}.txt`), `inscription ${i}\n`);
+        gitSync(['add', `inscription-${i}.txt`], draft.path);
+        gitSync(['commit', '-m', `Inscription ${i}`], draft.path);
+      }
+
+      const result = await api.seal({
+        codexName: 'test-codex',
+        sourceBranch: 'my-draft',
+      });
+
+      assert.equal(result.strategy, 'fast-forward');
+      assert.equal(result.inscriptionsSealed, 3);
+    });
   });
 
   // ── Seal: Rebase contention ──────────────────────────────────────
@@ -871,6 +915,107 @@ describe('ScriptoriumCore', () => {
         }),
         /failed after 0 retries/,
       );
+    });
+  });
+
+  // ── Seal: Diverged remote ─────────────────────────────────────────
+
+  describe('seal() diverged remote', () => {
+
+    /**
+     * Helper: push a commit to the remote bare repo from an external clone,
+     * simulating work done outside the Scriptorium.
+     */
+    function pushExternalCommit(remoteUrl: string, filename: string, content: string): void {
+      const outsideClone = makeTmpDir('outside-clone');
+      // git clone needs a non-existent or empty target dir
+      fs.rmSync(outsideClone, { recursive: true });
+      gitSync(['clone', remoteUrl, outsideClone], os.tmpdir());
+      gitSync(['config', 'user.email', 'outside@test.com'], outsideClone);
+      gitSync(['config', 'user.name', 'Outside'], outsideClone);
+      fs.writeFileSync(path.join(outsideClone, filename), content);
+      gitSync(['add', filename], outsideClone);
+      gitSync(['commit', '-m', `External: ${filename}`], outsideClone);
+      gitSync(['push', 'origin', 'main'], outsideClone);
+    }
+
+    it('seals successfully when remote advances between draft open and seal', async () => {
+      const remote = createRemoteRepo();
+      const { core, guildState } = createStartedCore();
+      const api = core.createApi();
+
+      await api.add('test-codex', remote.url);
+      const draft = await api.openDraft({ codexName: 'test-codex', branch: 'my-draft' });
+
+      gitSync(['config', 'user.email', 'test@test.com'], draft.path);
+      gitSync(['config', 'user.name', 'Test'], draft.path);
+
+      // Make an inscription in the draft
+      fs.writeFileSync(path.join(draft.path, 'draft-feature.txt'), 'draft work\n');
+      gitSync(['add', 'draft-feature.txt'], draft.path);
+      gitSync(['commit', '-m', 'Draft inscription'], draft.path);
+
+      // Simulate external push to the remote (outside the Scriptorium)
+      pushExternalCommit(remote.url, 'external-change.txt', 'external work\n');
+
+      // Confirm the bare clone's main is now behind the remote
+      const bareClone = path.join(guildState.home, '.nexus', 'codexes', 'test-codex.git');
+      const remoteHead = gitSync(['rev-parse', 'main'], remote.path);
+      const bareMainBefore = gitSync(['rev-parse', 'main'], bareClone);
+      assert.notEqual(remoteHead, bareMainBefore, 'Remote should have advanced past bare clone before seal');
+
+      // Seal should succeed: fetch picks up remote advancement, rebase handles divergence
+      const result = await api.seal({
+        codexName: 'test-codex',
+        sourceBranch: 'my-draft',
+        keepDraft: true,
+      });
+
+      assert.equal(result.success, true);
+      assert.equal(result.strategy, 'rebase');
+      assert.ok(result.retries >= 1, `Expected retries >= 1, got ${result.retries}`);
+      assert.equal(result.inscriptionsSealed, 1);
+
+      // Sealed binding should include both the draft inscription and the external commit
+      const bareMainAfter = gitSync(['rev-parse', 'main'], bareClone);
+      assert.equal(bareMainAfter, result.sealedCommit);
+
+      const tree = gitSync(['ls-tree', '--name-only', 'main'], bareClone);
+      assert.ok(tree.includes('draft-feature.txt'), 'draft-feature.txt should be in sealed tree');
+      assert.ok(tree.includes('external-change.txt'), 'external-change.txt should be in sealed tree');
+    });
+
+    it('push succeeds after sealing against a diverged remote', async () => {
+      const remote = createRemoteRepo();
+      const { core } = createStartedCore();
+      const api = core.createApi();
+
+      await api.add('test-codex', remote.url);
+      const draft = await api.openDraft({ codexName: 'test-codex', branch: 'my-draft' });
+
+      gitSync(['config', 'user.email', 'test@test.com'], draft.path);
+      gitSync(['config', 'user.name', 'Test'], draft.path);
+
+      fs.writeFileSync(path.join(draft.path, 'draft-work.txt'), 'draft\n');
+      gitSync(['add', 'draft-work.txt'], draft.path);
+      gitSync(['commit', '-m', 'Draft work'], draft.path);
+
+      // External push advances remote
+      pushExternalCommit(remote.url, 'external.txt', 'external\n');
+
+      // Seal — must rebase onto the remote-advanced main
+      const result = await api.seal({ codexName: 'test-codex', sourceBranch: 'my-draft' });
+      assert.equal(result.strategy, 'rebase');
+
+      // Push should fast-forward cleanly (the sealed binding is rebased on remote's latest)
+      await assert.doesNotReject(
+        () => api.push({ codexName: 'test-codex' }),
+        'Push should succeed after sealing against diverged remote',
+      );
+
+      // Confirm remote has the sealed commit
+      const remoteHead = gitSync(['rev-parse', 'main'], remote.path);
+      assert.equal(remoteHead, result.sealedCommit);
     });
   });
 
