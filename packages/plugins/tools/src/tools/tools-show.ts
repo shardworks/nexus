@@ -50,18 +50,18 @@ function extractParams(schema: z.ZodObject<z.ZodRawShape>): Record<string, Param
 /** Extract info for a single Zod parameter. */
 function extractSingleParam(zodType: z.ZodType): ParamInfo {
   let isOptional = false;
-  let inner = zodType;
+  let inner: z.ZodType = zodType;
 
   // Unwrap ZodOptional
   if (inner instanceof z.ZodOptional) {
     isOptional = true;
-    inner = inner.unwrap();
+    inner = inner.unwrap() as z.ZodType;
   }
 
   // Unwrap ZodDefault
   if (inner instanceof z.ZodDefault) {
     isOptional = true;
-    inner = inner._def.innerType;
+    inner = inner.unwrap() as z.ZodType;
   }
 
   return {
@@ -79,9 +79,9 @@ function zodTypeToJsonType(zodType: z.ZodType): string {
   if (zodType instanceof z.ZodArray) return 'array';
   if (zodType instanceof z.ZodObject) return 'object';
   if (zodType instanceof z.ZodEnum) return 'string';
-  if (zodType instanceof z.ZodLiteral) return typeof zodType._def.value;
+  if (zodType instanceof z.ZodLiteral) return typeof zodType._def.values[0];
   if (zodType instanceof z.ZodUnion) return 'union';
-  if (zodType instanceof z.ZodNullable) return zodTypeToJsonType(zodType.unwrap());
+  if (zodType instanceof z.ZodNullable) return zodTypeToJsonType(zodType.unwrap() as z.ZodType);
   return 'unknown';
 }
 

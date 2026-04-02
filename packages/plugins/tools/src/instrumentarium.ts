@@ -336,7 +336,7 @@ export function createInstrumentarium(): Plugin {
         // Register our own supportKit tools (tools-list, tools-show).
         // These live on this apparatus and aren't discovered through the
         // normal kit scanning path.
-        for (const t of [toolsList, toolsShow]) {
+        for (const t of [toolsList, toolsShow] as ToolDefinition[]) {
           registry.registerTool(t, 'tools');
         }
 

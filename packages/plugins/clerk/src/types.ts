@@ -25,6 +25,8 @@ export type WritStatus = 'ready' | 'active' | 'completed' | 'failed' | 'cancelle
  * A writ document as stored in The Stacks.
  */
 export interface WritDoc {
+  /** Index signature required to satisfy BookEntry constraint. */
+  [key: string]: unknown;
   /** Unique writ id (`w-{base36_timestamp}{hex_random}`). Sortable by creation time. */
   id: string;
   /** Writ type — must be a type declared in guild config, or a built-in type. */
