@@ -8,6 +8,7 @@
  */
 
 import type { AnimaWeave } from '@shardworks/loom-apparatus';
+import type { ResolvedTool } from '@shardworks/tools-apparatus';
 
 // ── Session chunks (streaming output) ────────────────────────────────
 
@@ -234,6 +235,14 @@ export interface SessionProviderConfig {
    * Providers that don't support streaming may ignore this flag.
    */
   streaming?: boolean;
+  /**
+   * Resolved tools for this session. When present, the provider should
+   * configure an MCP server with these tool definitions.
+   *
+   * The Loom resolves role → permissions → tools via the Instrumentarium.
+   * The Animator passes them through from the AnimaWeave.
+   */
+  tools?: ResolvedTool[];
 }
 
 export interface SessionProviderResult {

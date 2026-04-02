@@ -79,6 +79,7 @@ function buildProviderConfig(
     conversationId: request.conversationId,
     cwd: request.cwd,
     streaming: request.streaming,
+    tools: request.context.tools,
   };
 }
 

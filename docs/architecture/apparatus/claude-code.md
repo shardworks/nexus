@@ -143,7 +143,7 @@ The stderr write of assistant text content is a deliberate side effect — it pr
 
 ## MCP Tool Server
 
-The package contains a module (`mcp-server.ts`) that creates an MCP server from `ToolDefinition` objects. This is the designated MCP server for guild tool sessions — one per session, serving the anima's permission-gated tool set.
+The package contains a module (`mcp-server.ts`) that creates an MCP server from `ToolDefinition` objects, and an HTTP server helper (`startMcpHttpServer()`) that serves it over Streamable HTTP on an ephemeral localhost port. Each anima session gets its own MCP server instance serving that session's permission-gated tool set.
 
 ### `createMcpServer(tools)`
 
@@ -156,49 +156,104 @@ Creates an MCP server instance with the given tools registered. Each tool is reg
 - Zod param schema (the SDK handles JSON Schema conversion)
 - Handler wrapped with Zod validation and error formatting
 
-Tools with `callableFrom` set that does not include `'mcp'` are filtered out. Tools without `callableFrom` are included (available on all channels by default).
+Tools with `callableBy` set that does not include `'anima'` are filtered out. Tools without `callableBy` are included (available to all callers by default).
 
-### `startMcpServer(config)`
+### `startMcpHttpServer(tools)`
 
 ```typescript
-async function startMcpServer(config: McpServerProcessConfig): Promise<void>
+async function startMcpHttpServer(tools: ToolDefinition[]): Promise<McpHttpHandle>
+
+interface McpHttpHandle {
+  /** URL for --mcp-config (e.g. "http://localhost:PORT/mcp") */
+  url: string;
+  /** Shut down the HTTP server and MCP transport. */
+  close(): Promise<void>;
+}
 ```
 
-Process entry point for running the MCP server as a standalone stdio process. Designed to be spawned by Claude's runtime via `--mcp-config`:
+Starts an in-process HTTP server serving the MCP tool set via the Streamable HTTP transport. The server:
 
-1. Reads config (guild home path + permissions)
-2. Boots the guild runtime via `createGuild()`
-3. Resolves the tool set via The Instrumentarium
-4. Creates the MCP server with resolved tools
-5. Connects via `StdioServerTransport`
+1. Calls `createMcpServer(tools)` to build the MCP server instance
+2. Creates a `StreamableHTTPServerTransport` in stateless mode (one session per server — no session tracking needed)
+3. Connects the MCP server to the transport
+4. Starts a Node.js `http.createServer()` listening on `127.0.0.1` with port `0` (OS-assigned ephemeral port)
+5. Routes all requests to the transport's `handleRequest()`
+6. Returns a handle with the URL and a `close()` function
+
+The HTTP server binds to localhost only — it is not network-accessible. The ephemeral port avoids conflicts when multiple sessions run concurrently.
+
+### Transport Choice: HTTP vs Stdio
+
+The MCP SDK supports multiple transports. We chose in-process HTTP over the more common stdio child-process approach:
+
+| Concern | Stdio (child process) | HTTP (in-process) |
+|---------|----------------------|-------------------|
+| Guild instances | Two (SQLite contention risk) | One (shared) |
+| Tool resolution | Must re-resolve in child | Already resolved by Loom |
+| Boot latency | Guild boot per session | ~0 (just start HTTP listener) |
+| Lifecycle | Claude manages | Provider manages |
+| Entry point | Needs runnable script file | No extra file |
+| Permissions | Must serialize & re-resolve | Not needed — tools in memory |
+
+The in-process approach eliminates the need for a separate MCP server process entry point, avoids duplicate guild boot, and removes the SQLite concurrent-writer concern entirely. Tool definitions (including Zod schemas and handler functions) are passed directly — no serialization boundary.
 
 ### MCP Config Format
 
-The claude-code provider writes a temporary MCP config file for `--mcp-config`:
+The provider writes a temporary `--mcp-config` JSON file:
 
 ```json
 {
   "mcpServers": {
     "nexus-guild": {
-      "command": "node",
-      "args": ["<path-to-mcp-server-entry>", "<config.json>"],
-      "env": {}
+      "type": "http",
+      "url": "http://127.0.0.1:PORT/mcp"
     }
   }
 }
 ```
 
-The config file passed to the MCP server process:
+Claude connects to the HTTP server as an MCP client using the Streamable HTTP transport. From Claude's perspective, this is no different from any remote MCP server.
 
-```json
-{
-  "home": "/absolute/path/to/guild-root",
-  "permissions": ["stdlib:read", "stdlib:write", "stacks:read"],
-  "strict": false
-}
+### Server Lifecycle
+
+The provider owns the MCP server lifecycle — it starts the server before launching the Claude session and stops it after the session exits:
+
+```
+prepareSession(config)
+  │
+  ├─ ... existing steps (temp dir, args, system prompt, resume) ...
+  │
+  └─ If config.tools has entries:
+      ├─ startMcpHttpServer(tools) → { url, close }
+      ├─ Write --mcp-config JSON to temp dir (pointing at url)
+      ├─ Add --mcp-config <path> to args
+      ├─ Add --strict-mcp-config to args
+      └─ Return close() in PreparedSession for cleanup
 ```
 
-The MCP server process boots its own guild instance — tool handlers call `guild()` internally, so a live guild runtime is required. This means each session has two guild instances: one in the main process (The Animator's) and one in the MCP server process. Guild boot is fast (reads `guild.json`, loads plugins, starts apparatus) and the instances are independent.
+Cleanup happens in the same `finally` block that removes the temp directory:
+
+```
+launch(config)
+  ├─ prepareSession() → { tmpDir, args, mcpClose? }
+  ├─ spawn claude process
+  └─ on exit:
+      ├─ mcpClose?.() — shut down HTTP server + transport
+      └─ rmSync(tmpDir) — remove temp files
+```
+
+The `close()` function:
+1. Closes the `StreamableHTTPServerTransport` (terminates any active SSE connections)
+2. Closes the `http.Server` (stops accepting new connections)
+
+If the Claude process crashes or is killed, the cleanup still runs — the `close` handler on the child process fires regardless of exit reason.
+
+### Concurrency
+
+Each session gets its own MCP server on its own ephemeral port. Multiple concurrent sessions each have independent HTTP servers, all sharing the same in-process guild instance. This is safe because:
+- Tool handlers access guild infrastructure via `guild()`, which is process-global
+- Read operations (stacks queries, config reads) are naturally concurrent
+- Write operations (stacks puts) go through SQLite, which handles concurrency in WAL mode
 
 ---
 
@@ -221,51 +276,18 @@ The `claude-code` value is the default when `sessionProvider` is not specified. 
 ## Open Questions
 
 - **`--bare` mode.** When should the provider switch from the current `--setting-sources user` to full `--bare` mode? Likely when The Loom produces real system prompts and MCP config is attached. Need to verify that `--bare` + `--mcp-config` + `--system-prompt-file` gives us full control with no ambient leakage.
-- **Guild boot cost in MCP server process.** Each session spawns a separate guild instance for the MCP server. Is this acceptable, or should we explore in-process MCP serving? Current assessment: acceptable — guild boot is fast and the isolation is clean.
-- **Tool handler `guild()` context.** Tool handlers access guild infrastructure via the `guild()` singleton. In the MCP server process, this singleton points at the MCP server's own guild instance. Are there any concerns with two guild instances accessing the same `.nexus/nexus.db` simultaneously? SQLite handles concurrent readers, but concurrent writers could contend.
 
 ---
 
-## Future: Tool-Equipped Sessions
+## Future: Server Reuse
 
-When The Animator gains Instrumentarium integration, the session preparation changes:
+Currently each session gets its own MCP HTTP server, even when consecutive sessions have identical tool sets (same role, same permissions). A future optimization could pool and reuse MCP servers:
 
-### Updated `SessionProviderConfig`
+- **Key by tool set** — hash the sorted list of tool names to produce a cache key
+- **Reference counting** — track active sessions per server; close when count drops to zero
+- **Idle timeout** — close unused servers after a configurable idle period
+- **Stale detection** — invalidate the cache when tool registrations change (plugin reload, guild restart)
 
-```typescript
-interface SessionProviderConfig {
-  systemPrompt?: string;
-  initialPrompt?: string;
-  model: string;
-  conversationId?: string;
-  cwd: string;
-  streaming?: boolean;
-  /** Resolved tools for the session. Provider creates MCP server from these. */
-  tools?: ToolDefinition[];
-  /** Permission grants, used if the provider boots its own guild for MCP. */
-  permissions?: string[];
-}
-```
+This would eliminate per-session HTTP server startup for batch operations (e.g., dispatching multiple artificer sessions). The savings are modest — HTTP server start is fast — but it reduces port churn and simplifies cleanup in high-throughput scenarios.
 
-### Updated `prepareSession()`
-
-```
-prepareSession(config)
-  │
-  ├─ ... existing steps ...
-  │
-  ├─ 6. If tools provided:
-  │     Write MCP server config to temp dir
-  │     Write --mcp-config JSON to temp dir
-  │     --mcp-config <path>
-  │     --strict-mcp-config  (only guild tools, no ambient MCP)
-  │
-  └─ 7. Consider switching to --bare mode
-        (full Loom composition + MCP = complete session control)
-```
-
-### MCP Server Lifecycle
-
-Claude's runtime manages the MCP server lifecycle. The `--mcp-config` flag tells Claude to spawn the server process at session start and kill it at session end. The provider does not manage the MCP server process directly — it writes the config, Claude does the rest.
-
-This is the standard MCP pattern: the AI runtime owns server lifecycle. The guild's MCP server is no different from any external MCP server (GitHub, Slack, etc.) from Claude's perspective.
+Not implemented; revisit if session launch latency becomes a concern.

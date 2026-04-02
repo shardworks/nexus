@@ -154,7 +154,9 @@ Each role definition contains:
 - **`permissions`** — an array of `plugin:level` grant strings. The Instrumentarium uses these to resolve which tools are available. See [The Instrumentarium § Permission Model](./instrumentarium.md#permission-model) for grant format and matching rules.
 - **`strict`** (optional, default `false`) — when true, permissionless tools are excluded unless the role has `plugin:*` or `*:*` for that tool's plugin. Useful for locked-down roles that should only see explicitly granted tools.
 
-The Loom resolves an anima's assigned roles into a flat permissions array (union across all roles), then passes it to `instrumentarium.resolve()`. The Instrumentarium is role-agnostic — it never sees role names, only permissions.
+The Loom resolves an anima's assigned roles into a flat permissions array (union across all roles), then passes it to `instrumentarium.resolve()` with `caller: 'anima'` — since the Loom only weaves anima sessions, this is a constant, not a parameter. The Instrumentarium is role-agnostic — it never sees role names, only permissions.
+
+The resolved tool set is returned on the `AnimaWeave` so the Animator can pass it to the session provider for MCP server configuration. The Loom also reads each resolved tool's `instructions.md` and weaves them into the system prompt (see [Future composition order](#future-composition-order)).
 
 ### Future dependencies
 

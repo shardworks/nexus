@@ -20,16 +20,7 @@ importers:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../core
-      better-sqlite3:
-        specifier: 12.8.0
-        version: 12.8.0
-      zod:
-        specifier: 4.3.6
-        version: 4.3.6
     devDependencies:
-      '@types/better-sqlite3':
-        specifier: 7.6.13
-        version: 7.6.13
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
@@ -52,9 +43,6 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
-      '@commander-js/extra-typings':
-        specifier: 14.0.0
-        version: 14.0.0(commander@14.0.3)
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
@@ -109,13 +97,58 @@ importers:
         specifier: 25.5.0
         version: 25.5.0
 
-  packages/plugins/guild-starter-kit: {}
+  packages/plugins/codexes:
+    dependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
+      '@shardworks/tools-apparatus':
+        specifier: workspace:*
+        version: link:../tools
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
 
   packages/plugins/loom:
     dependencies:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../../framework/core
+      '@shardworks/tools-apparatus':
+        specifier: workspace:*
+        version: link:../tools
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
+  packages/plugins/parlour:
+    dependencies:
+      '@shardworks/animator-apparatus':
+        specifier: workspace:*
+        version: link:../animator
+      '@shardworks/loom-apparatus':
+        specifier: workspace:*
+        version: link:../loom
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
+      '@shardworks/stacks-apparatus':
+        specifier: workspace:*
+        version: link:../stacks
+      '@shardworks/tools-apparatus':
+        specifier: workspace:*
+        version: link:../tools
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
     devDependencies:
       '@types/node':
         specifier: 25.5.0
@@ -151,11 +184,6 @@ importers:
         version: 25.5.0
 
 packages:
-
-  '@commander-js/extra-typings@14.0.0':
-    resolution: {integrity: sha512-hIn0ncNaJRLkZrxBIp5AsW/eXEHNKYQBh0aPdoUqNgD+Io3NIykQqpKFyKcuasZhicGaEZJX/JBSIkZ4e5x8Dg==}
-    peerDependencies:
-      commander: ~14.0.0
 
   '@hono/node-server@1.19.11':
     resolution: {integrity: sha512-dr8/3zEaB+p0D2n/IUrlPF1HZm586qgJNXK1a9fhg/PzdtkK7Ksd5l312tJX2yBuALqDYBlG20QEbayqPyxn+g==}
@@ -666,10 +694,6 @@ packages:
     resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
 
 snapshots:
-
-  '@commander-js/extra-typings@14.0.0(commander@14.0.3)':
-    dependencies:
-      commander: 14.0.3
 
   '@hono/node-server@1.19.11(hono@4.12.9)':
     dependencies:

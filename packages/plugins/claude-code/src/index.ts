@@ -27,24 +27,29 @@ import type {
   SessionChunk,
 } from '@shardworks/animator-apparatus';
 
+import { startMcpHttpServer } from './mcp-server.ts';
+import type { McpHttpHandle } from './mcp-server.ts';
+
 // ── Session File Preparation ────────────────────────────────────────────
 
 /** Prepared session files in a temp directory. */
 interface PreparedSession {
   tmpDir: string;
   args: string[];
+  /** If an MCP server was started, this handle closes it. */
+  mcpHandle?: McpHttpHandle;
 }
 
 /**
  * Prepare session files and build base CLI args.
  *
  * Writes system prompt to a temp directory. Builds the base args array
- * including --resume support. No MCP config in MVP — tool-equipped
- * sessions are a future capability.
+ * including --resume support. When tools are provided, starts an
+ * in-process MCP HTTP server and writes --mcp-config.
  *
- * Caller is responsible for cleaning up tmpDir.
+ * Caller is responsible for cleaning up tmpDir and calling mcpHandle.close().
  */
-function prepareSession(config: SessionProviderConfig): PreparedSession {
+async function prepareSession(config: SessionProviderConfig): Promise<PreparedSession> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nsg-session-'));
 
   const args: string[] = [
@@ -64,20 +69,29 @@ function prepareSession(config: SessionProviderConfig): PreparedSession {
     args.push('--resume', config.conversationId);
   }
 
-  return { tmpDir, args };
-}
+  // Tool-equipped session: start MCP HTTP server, write --mcp-config
+  let mcpHandle: McpHttpHandle | undefined;
 
-// ── Shared empty chunks iterable ────────────────────────────────────
+  if (config.tools && config.tools.length > 0) {
+    const tools = config.tools.map((rt) => rt.definition);
+    mcpHandle = await startMcpHttpServer(tools);
 
-const emptyChunks: AsyncIterable<SessionChunk> = {
-  [Symbol.asyncIterator]() {
-    return {
-      async next() {
-        return { value: undefined as unknown as SessionChunk, done: true as const };
+    const mcpConfig = {
+      mcpServers: {
+        'nexus-guild': {
+          type: 'http',
+          url: mcpHandle.url,
+        },
       },
     };
-  },
-};
+
+    const mcpConfigPath = path.join(tmpDir, 'mcp-config.json');
+    fs.writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig));
+    args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');
+  }
+
+  return { tmpDir, args, mcpHandle };
+}
 
 // ── Result builder ──────────────────────────────────────────────────
 
@@ -102,33 +116,94 @@ const provider: AnimatorSessionProvider = {
     chunks: AsyncIterable<SessionChunk>;
     result: Promise<SessionProviderResult>;
   } {
-    const { tmpDir, args } = prepareSession(config);
+    // prepareSession is async (MCP server start), so we wrap the launch
+    // in a promise. The chunks iterable bridges the async gap — it waits
+    // for prep to complete before yielding.
 
-    // Autonomous mode: initial prompt via --print, stream-json for telemetry
-    args.push(
-      '--print', config.initialPrompt ?? '',
-      '--output-format', 'stream-json',
-      '--verbose',
-    );
+    let chunkResolve: (() => void) | null = null;
+    let innerChunks: AsyncIterable<SessionChunk> | null = null;
+    let innerIterator: AsyncIterator<SessionChunk> | null = null;
+    let prepDone = false;
+    let prepError: Error | null = null;
+    let done = false;
 
-    const cleanup = () => fs.rmSync(tmpDir, { recursive: true, force: true });
+    const result = prepareSession(config).then(async ({ tmpDir, args, mcpHandle }) => {
+      // Autonomous mode: initial prompt via --print, stream-json for telemetry
+      args.push(
+        '--print', config.initialPrompt ?? '',
+        '--output-format', 'stream-json',
+        '--verbose',
+      );
 
-    if (config.streaming) {
-      const { chunks, result: rawResult } = spawnClaudeStreamingJson(args, config.cwd);
+      const cleanup = async () => {
+        await mcpHandle?.close().catch(() => {});
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      };
 
-      const result = rawResult
-        .then((raw) => { cleanup(); return buildResult(raw); })
-        .catch((err) => { cleanup(); throw err; });
+      try {
+        if (config.streaming) {
+          const spawned = spawnClaudeStreamingJson(args, config.cwd);
+          innerChunks = spawned.chunks;
+          prepDone = true;
+          if (chunkResolve) { chunkResolve(); chunkResolve = null; }
 
-      return { chunks, result };
-    }
+          const raw = await spawned.result;
+          await cleanup();
+          return buildResult(raw);
+        }
 
-    // Non-streaming: run to completion, return empty chunks
-    const result = spawnClaudeStreamJson(args, config.cwd)
-      .then((raw) => { cleanup(); return buildResult(raw); })
-      .catch((err) => { cleanup(); throw err; });
+        // Non-streaming
+        prepDone = true;
+        done = true;
+        if (chunkResolve) { chunkResolve(); chunkResolve = null; }
 
-    return { chunks: emptyChunks, result };
+        const raw = await spawnClaudeStreamJson(args, config.cwd);
+        await cleanup();
+        return buildResult(raw);
+      } catch (err) {
+        await cleanup();
+        throw err;
+      }
+    }).catch((err) => {
+      // If prep itself failed, unblock the chunk iterator
+      prepError = err instanceof Error ? err : new Error(String(err));
+      prepDone = true;
+      done = true;
+      if (chunkResolve) { chunkResolve(); chunkResolve = null; }
+      throw err;
+    });
+
+    // Chunks iterable that bridges the async prep gap. In non-streaming
+    // mode or on error, it completes immediately with no items.
+    const chunks: AsyncIterable<SessionChunk> = {
+      [Symbol.asyncIterator]() {
+        return {
+          async next(): Promise<IteratorResult<SessionChunk>> {
+            // Wait for prep to complete
+            while (!prepDone) {
+              await new Promise<void>((resolve) => { chunkResolve = resolve; });
+            }
+
+            if (prepError || done) {
+              return { value: undefined as unknown as SessionChunk, done: true };
+            }
+
+            // Delegate to inner streaming iterator
+            if (innerChunks && !innerIterator) {
+              innerIterator = innerChunks[Symbol.asyncIterator]();
+            }
+
+            if (innerIterator) {
+              return innerIterator.next();
+            }
+
+            return { value: undefined as unknown as SessionChunk, done: true };
+          },
+        };
+      },
+    };
+
+    return { chunks, result };
   },
 };
 
@@ -157,12 +232,12 @@ export function createClaudeCodeProvider(): Plugin {
 export default createClaudeCodeProvider();
 
 // ── MCP server re-exports ───────────────────────────────────────────
-// The MCP server module is used by the session provider (future: to
-// attach tools to sessions via --mcp-config) and can be imported
-// directly for testing or custom integrations.
+// The MCP server module is used by the session provider to attach tools
+// to sessions via --mcp-config, and can be imported directly for
+// testing or custom integrations.
 
-export { createMcpServer } from './mcp-server.ts';
-export type { McpServerProcessConfig } from './mcp-server.ts';
+export { createMcpServer, startMcpHttpServer } from './mcp-server.ts';
+export type { McpHttpHandle } from './mcp-server.ts';
 
 // ── Spawn helpers ────────────────────────────────────────────────────
 
