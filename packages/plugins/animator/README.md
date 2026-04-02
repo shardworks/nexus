@@ -7,7 +7,7 @@ The Animator brings animas to life. It is the guild's session apparatus — the 
 
 Both methods return an `AnimateHandle` synchronously — a `{ chunks, result }` pair. The `result` promise resolves when the session completes. The `chunks` async iterable yields output as the session runs when `streaming: true` is set; otherwise it completes immediately with no items.
 
-Depends on `@shardworks/stacks-apparatus` for persistence. Uses `@shardworks/loom-apparatus` for context composition (resolved at call time by `summon()`, not a startup dependency). The session provider (e.g. `@shardworks/claude-code-apparatus`) is discovered at runtime via guild config.
+Depends on `@shardworks/stacks-apparatus` for persistence (session records and full transcripts). Uses `@shardworks/loom-apparatus` for context composition (resolved at call time by `summon()`, not a startup dependency). The session provider (e.g. `@shardworks/claude-code-apparatus`) is discovered at runtime via guild config.
 
 ---
 
@@ -49,6 +49,7 @@ const { result } = animator.summon({
 const session = await result;
 console.log(session.status);           // 'completed' | 'failed' | 'timeout'
 console.log(session.costUsd);          // 0.42
+console.log(session.output);           // final assistant message text
 console.log(session.metadata?.trigger); // 'summon' (auto-populated)
 console.log(session.metadata?.role);    // 'artificer' (auto-populated from request)
 ```
@@ -154,6 +155,7 @@ interface SessionResult {
   tokenUsage?: TokenUsage;
   costUsd?: number;
   metadata?: Record<string, unknown>;
+  output?: string;               // Final assistant message text
 }
 
 type SessionChunk =
@@ -208,6 +210,8 @@ interface SessionProviderResult {
   providerSessionId?: string;
   tokenUsage?: TokenUsage;
   costUsd?: number;
+  transcript?: TranscriptMessage[];  // Full NDJSON message array
+  output?: string;                   // Final assistant message text
 }
 ```
 
@@ -215,13 +219,14 @@ The Animator imports these types; provider packages import them from `@shardwork
 
 ## Support Kit
 
-The Animator contributes a `sessions` book and inspection/dispatch tools:
+The Animator contributes two books and inspection/dispatch tools:
 
 ### Books
 
 | Book | Indexes | Description |
 |---|---|---|
-| `sessions` | `startedAt`, `status`, `conversationId`, `provider` | Session records — one per `animate()` call |
+| `sessions` | `startedAt`, `status`, `conversationId`, `provider` | Session records — one per `animate()` call. Includes `output` (final assistant text). |
+| `transcripts` | `sessionId` | Full NDJSON transcripts — one per session. Drives web UIs, operational logs, debugging. |
 
 ### Tools
 
@@ -251,6 +256,8 @@ import {
   type SessionProviderConfig,
   type SessionProviderResult,
   type SessionDoc,
+  type TranscriptDoc,
+  type TranscriptMessage,
   type AnimatorConfig,
 } from '@shardworks/animator-apparatus';
 ```

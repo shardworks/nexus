@@ -28,20 +28,23 @@ requires:   ['stacks']
 recommends: ['loom']
 ```
 
-- **The Stacks** (required) — records session results (the `sessions` book).
+- **The Stacks** (required) — records session results (the `sessions` book) and full transcripts (the `transcripts` book).
 - **The Loom** (recommended) — composes session context for `summon()`. Not needed for `animate()`, which accepts a pre-composed context. Resolved at call time, not at startup — the Animator starts without the Loom, but `summon()` throws if it's not installed. Arbor emits a startup warning if the Loom is not installed.
 
 ---
 
 ## Kit Contribution
 
-The Animator contributes a `sessions` book and session tools via its supportKit:
+The Animator contributes two books and session tools via its supportKit:
 
 ```typescript
 supportKit: {
   books: {
     sessions: {
       indexes: ['startedAt', 'status', 'conversationId', 'provider'],
+    },
+    transcripts: {
+      indexes: ['sessionId'],
     },
   },
   tools: [sessionList, sessionShow, summon],
@@ -71,7 +74,7 @@ Show full detail for a single session by id.
 |---|---|---|
 | `id` | `string` | Session id |
 
-Returns: the complete session record from The Stacks, including `tokenUsage`, `metadata`, and all indexed fields.
+Returns: the complete session record from The Stacks, including `tokenUsage`, `metadata`, `output`, and all indexed fields.
 
 ### `summon` tool
 
@@ -218,6 +221,13 @@ interface SessionResult {
   costUsd?: number
   /** Caller-supplied metadata, recorded as-is. See § Caller Metadata. */
   metadata?: Record<string, unknown>
+  /**
+   * The final assistant text from the session.
+   * Extracted from the last assistant message in the provider's transcript.
+   * Useful for programmatic consumers that need the session's conclusion
+   * without parsing the full transcript (e.g. the Walker's review collect step).
+   */
+  output?: string
 }
 
 interface TokenUsage {
@@ -264,7 +274,9 @@ animate(request)  →  { chunks, result }  (returned synchronously)
   │     → provider returns { chunks, result } immediately
   │
   ├─ 4. Wrap provider result promise with recording:
-  │     - On resolve: capture endedAt, durationMs, record to Stacks
+  │     - On resolve: capture endedAt, durationMs, extract output from
+  │       provider transcript, record session to Stacks, record transcript
+  │       to transcripts book
   │     - On reject: record failed result, re-throw
   │     (ALWAYS records — see § Error Handling Contract)
   │
@@ -348,7 +360,17 @@ interface SessionProviderResult {
   tokenUsage?: TokenUsage
   /** Cost in USD, if the provider can report it. */
   costUsd?: number
+  /** Full session transcript — array of NDJSON message objects. */
+  transcript?: TranscriptMessage[]
+  /**
+   * The final assistant text from the session.
+   * Extracted from the last assistant message's text content blocks.
+   */
+  output?: string
 }
+
+/** A single message from the NDJSON stream. Shape varies by provider. */
+type TranscriptMessage = Record<string, unknown>
 ```
 
 The default provider is `@shardworks/claude-code-apparatus` (plugin id: `claude-code`), which launches a `claude` CLI process in autonomous mode with `--output-format stream-json`. Provider packages import the `AnimatorSessionProvider` type from `@shardworks/animator-apparatus` and export an apparatus whose `provides` satisfies the interface.
@@ -498,6 +520,7 @@ At MVP, the Animator records what it directly observes (provider telemetry) and 
   costUsd: 0.42,
   conversationId: null,
   metadata: { trigger: 'summon', animaId: 'anm-3f7b2c1', writId: 'wrt-8a4c9e2' },
+  output: '### Overall: PASS\n\n### Completeness\n...',  // final assistant message
 }
 ```
 
@@ -524,16 +547,28 @@ Enriched fields (contributed by the caller or a post-session enrichment step):
 
 ---
 
-## Future: Session Record Artifacts
+## Transcripts
 
-The legacy session system writes a full **session record artifact** to disk (`.nexus/sessions/{uuid}.json`) containing the assembled system prompt, tool list, raw transcript, and full anima composition provenance. This artifact serves as a complete snapshot for debugging and ethnographic analysis.
+The Animator captures full session transcripts in a dedicated `transcripts` book, separate from the `sessions` book. This keeps the operational session records lean (small records, fast CDC) while making the full interaction history available for web UIs, operational logs, debugging, and research.
 
-The Animator MVP does not write artifacts to disk — it records structured data to The Stacks only. When session record artifacts are needed, the design options are:
+Each transcript record contains the complete NDJSON message stream from the session provider:
 
-1. **Animator writes artifacts** — the provider returns transcript data, and The Animator persists it alongside the Stacks record. Adds a `recordPath` field to the session entry.
-2. **Separate apparatus** — a "Session Archive" apparatus subscribes to `session.ended` events and writes artifacts asynchronously. Decouples recording from the session hot path.
+```typescript
+interface TranscriptDoc {
+  id: string                          // same as session id — 1:1 relationship
+  messages: TranscriptMessage[]       // full NDJSON transcript
+}
 
-Blocked on: Event signalling (for option 2), transcript format standardization across providers.
+type TranscriptMessage = Record<string, unknown>
+```
+
+The transcript is written at session completion (step 4 in the animate lifecycle), alongside the session result. If the transcript write fails, the error is logged but does not propagate — same error handling contract as session recording.
+
+The `output` field on the session record (the final assistant message text) is extracted from the transcript before storage. This gives programmatic consumers a fast path to the session's conclusion without parsing the full transcript.
+
+### Data scale
+
+Transcripts are typically 500KB–5MB per session. At ~60 sessions/day, this is ~30–300MB/day in the transcripts book. SQLite handles this comfortably — primary key lookups are microseconds regardless of row size. The transcripts book has no CDC handlers, so there is no amplification concern. Retention/archival is a future concern.
 
 ---
 
