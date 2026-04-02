@@ -565,13 +565,13 @@ describe('Animator', () => {
       assert.equal(ids.size, 3, 'All session ids should be unique');
     });
 
-    it('ids follow ses-{base36_timestamp}{hex_random} format', async () => {
+    it('ids follow ses-{base36_timestamp}-{hex_random} format', async () => {
       const result = await animator.animate({
         context: { systemPrompt: 'Test' },
         cwd: '/tmp',
       }).result;
 
-      assert.match(result.id, /^ses-[a-z0-9]+[a-f0-9]{8}$/);
+      assert.match(result.id, /^ses-[a-z0-9]+-[a-f0-9]{8}$/);
     });
   });
 
