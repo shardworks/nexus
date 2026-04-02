@@ -39,9 +39,9 @@ The Executor runs engine instances. It is the substrate abstraction layer — th
 The Executor handles two engine kinds:
 
 - **Clockwork engines** — deterministic, no AI. The Executor runs the engine code directly against its configured substrate.
-- **Quick engines** — AI-backed. The Executor calls the Manifester to compose the anima's session context, then the Summoner to launch and manage the AI session. The yield is the session's output.
+- **Quick engines** — AI-backed. The Executor calls the Manifester to compose the anima's session context, then the Summoner to launch and manage the AI session. The yields are the session's output.
 
-From the Walker's perspective, both kinds look identical: inputs in, yield out.
+From the Walker's perspective, both kinds look identical: givens in, yields out.
 
 ### Manifester *(dependency)*
 
@@ -66,7 +66,7 @@ The Clerk owns the obligation layer. It signals the Walker when a writ is ready 
 | 3 | Graft resolved engine chain onto rig structure | **Walker** *(using Fabricator output)* |
 | 4 | Traverse active rigs; identify engines whose upstream is complete | **Walker** |
 | 5 | Execute ready engine — clockwork or quick, any substrate | **Executor** *(routes to substrate or Manifester → Summoner)* |
-| 6 | Record engine yield; propagate completion state to downstream engines | **Executor** *(yield)* → **Walker** *(state propagation)* |
+| 6 | Record engine yields; propagate completion state to downstream engines | **Executor** *(yields)* → **Walker** *(state propagation)* |
 | 7 | Detect rig fully complete; signal Clerk; strike rig | **Walker** → **Clerk** |
 
 Steps 2–3 repeat as needed throughout a rig's life — engines declare needs at runtime, and the rig grows as it runs. Steps 4–6 also repeat in a continuous traversal loop. Steps 1 and 7 are the lifecycle bookends.
@@ -85,7 +85,7 @@ The natural first instinct is to put capability resolution inside the Walker —
 
 ### Why Executor handles both engine kinds
 
-From the Walker's perspective, clockwork and quick engines are the same shape: inputs in, yield out. Unifying execution in the Executor means the Walker has one dispatch call for any engine type, and the distinction between "run some code" and "run an AI session" lives entirely within the Executor. The substrate-switching logic (local vs Docker vs remote VM) and the AI session management logic are both Executor concerns — neither bleeds into the Walker.
+From the Walker's perspective, clockwork and quick engines are the same shape: givens in, yields out. Unifying execution in the Executor means the Walker has one dispatch call for any engine type, and the distinction between "run some code" and "run an AI session" lives entirely within the Executor. The substrate-switching logic (local vs Docker vs remote VM) and the AI session management logic are both Executor concerns — neither bleeds into the Walker.
 
 ### Why Summoner is not rig-specific
 

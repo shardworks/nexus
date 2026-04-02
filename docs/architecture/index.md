@@ -76,7 +76,7 @@ When The Clerk signals a writ is ready, **The Walker** spawns a rig and begins d
 
 An anima session is an AI process running against an MCP server loaded with the role's tools. Before launch, **The Loom** weaves the session context: system prompt, tool instructions, writ context. **The Animator** then starts the process, monitors it, and records the result. The session exits; the output persists. The Clockworks can also trigger sessions directly via the summon relay, bypassing the rig machinery entirely — The Animator handles both paths the same way.
 
-Session output is concrete: modified files committed to a git branch, new documents written to disk, structured data passed as engine yield to downstream steps. When a rig completes, any pending git work is merged, and the result is whatever the patron commissioned — a working feature, a fixed bug, a written report. The patron's codexes are updated; the patron can pull, deploy, and use them.
+Session output is concrete: modified files committed to a git branch, new documents written to disk, structured data passed as engine yields to downstream steps. When a rig completes, any pending git work is merged, and the result is whatever the patron commissioned — a working feature, a fixed bug, a written report. The patron's codexes are updated; the patron can pull, deploy, and use them.
 
 ---
 
@@ -392,7 +392,7 @@ Tools can be TypeScript modules or plain scripts (bash, Python, any executable).
 
 ### Engines
 
-**Engines** are the workhorse components of rigs — bounded units of work the Walker mounts and sets in motion. An engine runs when its upstream dependencies are satisfied and produces a yield when done. Two kinds:
+**Engines** are the workhorse components of rigs — bounded units of work the Walker mounts and sets in motion. An engine runs when its upstream dependencies (givens) are satisfied and produces yields when done. Two kinds:
 
 - **Clockwork** — deterministic, no AI. Runs its code directly against the configured substrate.
 - **Quick** — inhabited by an anima for work requiring judgment. The engine defines the work context; the anima brings the skill.
