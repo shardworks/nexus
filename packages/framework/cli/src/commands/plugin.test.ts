@@ -20,7 +20,7 @@ import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { pluginList, pluginInstall, pluginRemove, pluginUpgrade } from './plugin.ts';
+import { pluginList, pluginInstall, pluginRemove, pluginUpgrade, detectPackageManager } from './plugin.ts';
 import { setupGuildAccessor, makeTmpDir, makeGuild, makeGuildPackageJson, cleanupTestState } from './test-helpers.ts';
 
 /**
@@ -227,6 +227,39 @@ describe('plugin-install handler — link mode', () => {
     const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
     assert.ok(config.plugins.includes('relative-detect'));
   });
+
+  it('uses link: protocol when guild has pnpm-lock.yaml', async () => {
+    const tmp = makeTmpDir('plugin');
+    makeGuild(tmp);
+    fs.writeFileSync(path.join(tmp, 'pnpm-lock.yaml'), '');
+    const pluginDir = makeFakePlugin(tmp, 'pnpm-fake-plugin');
+
+    setupGuildAccessor(tmp);
+    await pluginInstall.handler({ source: pluginDir, type: 'link' });
+
+    const pkgJson = JSON.parse(fs.readFileSync(path.join(tmp, 'package.json'), 'utf-8'));
+    const depValue: string = pkgJson.dependencies['pnpm-fake-plugin'];
+    assert.ok(depValue.startsWith('link:'), `Expected link: protocol, got: ${depValue}`);
+
+    const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
+    assert.ok(config.plugins.includes('pnpm-fake'));
+  });
+
+  it('uses file: protocol when guild has no pnpm-lock.yaml', async () => {
+    const tmp = makeTmpDir('plugin');
+    makeGuild(tmp);
+    const pluginDir = makeFakePlugin(tmp, 'npm-fake-plugin');
+
+    setupGuildAccessor(tmp);
+    await pluginInstall.handler({ source: pluginDir, type: 'link' });
+
+    const pkgJson = JSON.parse(fs.readFileSync(path.join(tmp, 'package.json'), 'utf-8'));
+    const depValue: string = pkgJson.dependencies['npm-fake-plugin'];
+    assert.ok(depValue.startsWith('file:'), `Expected file: protocol, got: ${depValue}`);
+
+    const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
+    assert.ok(config.plugins.includes('npm-fake'));
+  });
 });
 
 // ── plugin-remove ─��──────────────���───────────────────────────────────────
@@ -292,6 +325,20 @@ describe('plugin-remove handler', () => {
       async () => pluginRemove.handler({ name: 'nonexistent-plugin' }),
       /not installed/,
     );
+  });
+
+  it('calls pnpm remove when guild has pnpm-lock.yaml', async () => {
+    const tmp = makeTmpDir('plugin');
+    // Install the plugin first via pnpm so it exists in node_modules
+    makeGuild(tmp, { plugins: ['nexus-stdlib'] });
+    fs.writeFileSync(path.join(tmp, 'pnpm-lock.yaml'), '');
+    makeGuildPackageJson(tmp, { '@shardworks/nexus-stdlib': '^1.0.0' });
+
+    setupGuildAccessor(tmp);
+    await pluginRemove.handler({ name: 'nexus-stdlib' });
+
+    const config = JSON.parse(fs.readFileSync(path.join(tmp, 'guild.json'), 'utf-8'));
+    assert.ok(!config.plugins.includes('nexus-stdlib'));
   });
 });
 

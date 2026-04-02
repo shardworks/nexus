@@ -28,6 +28,21 @@ function npm(args: string[], cwd: string): string {
   return execFileSync('npm', args, { cwd, stdio: 'pipe', encoding: 'utf-8' });
 }
 
+function pnpm(args: string[], cwd: string): string {
+  return execFileSync('pnpm', args, { cwd, stdio: 'pipe', encoding: 'utf-8' });
+}
+
+/**
+ * Detect the package manager used by the guild.
+ *
+ * Checks for lockfiles in order of specificity. Falls back to 'npm'
+ * when no lockfile is present (e.g. fresh guilds before first install).
+ */
+export function detectPackageManager(guildRoot: string): 'npm' | 'pnpm' {
+  if (fs.existsSync(path.join(guildRoot, 'pnpm-lock.yaml'))) return 'pnpm';
+  return 'npm';
+}
+
 /**
  * Parse a source specifier to extract the npm package name.
  * e.g. "@shardworks/nexus-stdlib@1.0" → "@shardworks/nexus-stdlib"
@@ -128,7 +143,12 @@ export const pluginInstall = tool({
       }
       const pkgJson = JSON.parse(fs.readFileSync(path.join(sourceDir, 'package.json'), 'utf-8')) as Record<string, unknown>;
       packageName = pkgJson.name as string;
-      npm(['install', '--save', `file:${sourceDir}`], home);
+      const pm = detectPackageManager(home);
+      if (pm === 'pnpm') {
+        pnpm(['add', `link:${sourceDir}`], home);
+      } else {
+        npm(['install', '--save', `file:${sourceDir}`], home);
+      }
     } else {
       npm(['install', '--save', source], home);
       packageName = parsePackageName(source) ?? detectInstalledPackage(home);
@@ -176,9 +196,14 @@ export const pluginRemove = tool({
     const packageName = resolvePackageNameForPluginId(home, targetId);
     if (packageName) {
       try {
-        npm(['uninstall', packageName], home);
+        const pm = detectPackageManager(home);
+        if (pm === 'pnpm') {
+          pnpm(['remove', packageName], home);
+        } else {
+          npm(['uninstall', packageName], home);
+        }
       } catch {
-        // Don't fail if npm uninstall fails — guild.json is already updated
+        // Don't fail if uninstall fails — guild.json is already updated
       }
     }
 
