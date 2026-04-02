@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 /**
  * Generate a sortable, prefixed ID.
  *
- * Format: `{prefix}-{base36_timestamp}{hex_random}`
+ * Format: `{prefix}-{base36_timestamp}-{hex_random}`
  *
  * The timestamp component (Date.now() in base36) gives lexicographic sort
  * order by creation time. The random suffix prevents collisions without
@@ -15,5 +15,5 @@ import crypto from 'node:crypto';
 export function generateId(prefix: string, randomByteCount: number = 6): string {
   const ts = Date.now().toString(36);
   const rand = crypto.randomBytes(randomByteCount).toString('hex');
-  return `${prefix}-${ts}${rand}`;
+  return `${prefix}-${ts}-${rand}`;
 }

@@ -12,10 +12,8 @@
  * See: docs/architecture/apparatus/clerk.md
  */
 
-import crypto from 'node:crypto';
-
 import type { Plugin, StartupContext } from '@shardworks/nexus-core';
-import { guild } from '@shardworks/nexus-core';
+import { guild, generateId } from '@shardworks/nexus-core';
 import type { StacksApi, Book, WhereClause } from '@shardworks/stacks-apparatus';
 
 import type {
@@ -40,14 +38,6 @@ import {
 // ── Built-in writ types ──────────────────────────────────────────────
 
 const BUILTIN_TYPES = new Set(['mandate']);
-
-// ── ID generation (ULID-like) ────────────────────────────────────────
-
-function generateWritId(): string {
-  const ts = Date.now().toString(36);
-  const rand = crypto.randomBytes(6).toString('hex');
-  return `w-${ts}${rand}`;
-}
 
 // ── Status machine ───────────────────────────────────────────────────
 
@@ -109,7 +99,7 @@ export function createClerk(): Plugin {
 
       const now = new Date().toISOString();
       const writ: WritDoc = {
-        id: generateWritId(),
+        id: generateId('w', 6),
         type,
         status: 'ready',
         title: request.title,

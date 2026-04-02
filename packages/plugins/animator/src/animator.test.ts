@@ -571,7 +571,7 @@ describe('Animator', () => {
         cwd: '/tmp',
       }).result;
 
-      assert.match(result.id, /^ses-[a-f0-9]{8}$/);
+      assert.match(result.id, /^ses-[a-z0-9]+-[a-f0-9]{8}$/);
     });
   });
 
