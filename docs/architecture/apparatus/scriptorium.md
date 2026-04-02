@@ -240,6 +240,8 @@ interface SealResult {
   retries: number
   /** The commit SHA at head of target after sealing. */
   sealedCommit: string
+  /** Number of inscriptions (commits) incorporated from the draft. 0 means no-op seal. */
+  inscriptionsSealed: number
 }
 
 interface PushRequest {
@@ -604,13 +606,17 @@ draft-open
   └─ 3. Record draft in Stacks
 
 draft-seal
-  ├─ 1. Fetch latest target branch refs
-  ├─ 2. Attempt fast-forward merge
+  ├─ 1. Fetch remote refs (git fetch --prune origin +refs/heads/*:refs/remotes/origin/*)
+  │     → populates refs/remotes/origin/* without touching local sealed binding or draft branches
+  ├─ 2. Advance local sealed binding if remote is ahead
+  │     → if refs/remotes/origin/<target> is ahead of refs/heads/<target>: advance refs/heads/<target>
+  │     → if local is ahead (unpushed seals): keep local — preserves inter-draft contention ordering
+  ├─ 3. Attempt fast-forward merge
   │     └─ If ff not possible: rebase source onto target
   │        └─ If rebase conflicts: FAIL (no auto-resolution)
   │        └─ If rebase succeeds: retry ff (up to maxRetries)
-  ├─ 3. Update target branch ref in bare clone
-  └─ 4. Abandon draft (unless keepDraft)
+  ├─ 4. Update target branch ref in bare clone
+  └─ 5. Abandon draft (unless keepDraft)
 
 codex-push
   ├─ 1. git push origin <branch> (from bare clone)
@@ -660,7 +666,7 @@ At **startup**, the Scriptorium checks each configured codex for an existing bar
 Every operation that creates or modifies branches **fetches from the remote first**:
 
 - **`openDraft`** — fetches before branching, ensuring the start point reflects the latest remote state.
-- **`seal`** — fetches the target branch before attempting ff-only, and again on each retry iteration.
+- **`seal`** — fetches the target branch before attempting ff-only, and again on each retry iteration. The fetch uses an explicit refspec (`+refs/heads/*:refs/remotes/origin/*`) to populate remote-tracking refs — a plain `git fetch origin` in a bare clone (which has no default fetch refspec) only updates `FETCH_HEAD` and leaves both `refs/heads/*` and `refs/remotes/origin/*` stale. After fetching, if `refs/remotes/origin/<target>` is strictly ahead of `refs/heads/<target>` (i.e. commits were pushed outside the Scriptorium), the local sealed binding is advanced to the remote position before the seal attempt. This ensures the draft is rebased onto the actual remote state and the subsequent push fast-forwards cleanly.
 - **`push`** — does **not** fetch first (it's pushing, not pulling).
 
 `fetch` is also exposed as a standalone API for manual use, but callers generally don't need it — the branch operations handle freshness internally.

@@ -78,7 +78,8 @@ const result = await scriptorium.seal({
   codexName: 'my-app',
   sourceBranch: 'writ-42',
 });
-// result → { success: true, strategy: 'fast-forward', retries: 0, sealedCommit: 'abc123' }
+// result → { success: true, strategy: 'fast-forward', retries: 0, sealedCommit: 'abc123', inscriptionsSealed: 2 }
+// inscriptionsSealed: 0 means a no-op seal (draft had no commits ahead of target)
 
 // Abandon a draft (removes worktree + branch)
 await scriptorium.abandonDraft({
@@ -248,6 +249,8 @@ interface SealResult {
   strategy: 'fast-forward' | 'rebase'
   retries: number
   sealedCommit: string
+  /** Number of inscriptions (commits) incorporated from the draft. 0 = no-op seal. */
+  inscriptionsSealed: number
 }
 
 interface PushRequest {
