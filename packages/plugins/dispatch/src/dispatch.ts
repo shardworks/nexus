@@ -101,7 +101,6 @@ export function createDispatch(): Plugin {
         cwd,
         environment: {
           GIT_AUTHOR_EMAIL: `${writ.id}@nexus.local`,
-          GIT_COMMITTER_EMAIL: `${writ.id}@nexus.local`,
         },
         metadata: { writId: writ.id, trigger: 'dispatch' },
       });

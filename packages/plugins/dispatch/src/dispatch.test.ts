@@ -586,9 +586,7 @@ describe('Dispatch', () => {
       assert.ok(captured);
       assert.ok(captured!.environment, 'environment should be present');
       assert.equal(captured!.environment?.GIT_AUTHOR_EMAIL, `${writ.id}@nexus.local`);
-      assert.equal(captured!.environment?.GIT_COMMITTER_EMAIL, `${writ.id}@nexus.local`);
       assert.ok(captured!.environment?.GIT_AUTHOR_NAME, 'GIT_AUTHOR_NAME should be present');
-      assert.ok(captured!.environment?.GIT_COMMITTER_NAME, 'GIT_COMMITTER_NAME should be present');
     });
 
     it('preserves Loom role name in GIT_*_NAME while overriding email', async () => {

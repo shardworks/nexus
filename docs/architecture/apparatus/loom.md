@@ -61,8 +61,8 @@ interface AnimaWeave {
    * any per-request environment overrides (request overrides weave).
    *
    * Default: git identity derived from the role name.
-   *   GIT_AUTHOR_NAME / GIT_COMMITTER_NAME = capitalized role (e.g. "Artificer")
-   *   GIT_AUTHOR_EMAIL / GIT_COMMITTER_EMAIL = role@nexus.local
+   *   GIT_AUTHOR_NAME = capitalized role (e.g. "Artificer")
+   *   GIT_AUTHOR_EMAIL = role@nexus.local
    */
   environment?: Record<string, string>
 }
@@ -70,7 +70,7 @@ interface AnimaWeave {
 
 The MVP Loom is a stub for system prompt composition — the value is in the seam, not the logic. The contract is stable: as composition is built out, `systemPrompt` gains a value but the shape doesn't change.
 
-The `environment` field is active at MVP: the Loom derives git identity from the role name and populates `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and `GIT_COMMITTER_EMAIL`. The Animator merges these into the spawned process environment, giving each role a distinct git identity. Orchestrators (e.g. the Dispatch) can override specific variables per-request — for example, setting the email to a writ ID for per-commission attribution.
+The `environment` field is active at MVP: the Loom derives git identity from the role name and populates `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL`. The committer identity is intentionally left to the system default so that commit signatures remain verified on GitHub. The Animator merges these into the spawned process environment, giving each role a distinct author identity. Orchestrators (e.g. the Dispatch) can override specific variables per-request — for example, setting the email to a writ ID for per-commission attribution.
 
 ---
 

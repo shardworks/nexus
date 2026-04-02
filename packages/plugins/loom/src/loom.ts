@@ -126,8 +126,6 @@ export function createLoom(): Plugin {
         weave.environment = {
           GIT_AUTHOR_NAME: displayName,
           GIT_AUTHOR_EMAIL: `${request.role}@nexus.local`,
-          GIT_COMMITTER_NAME: displayName,
-          GIT_COMMITTER_EMAIL: `${request.role}@nexus.local`,
         };
       }
 

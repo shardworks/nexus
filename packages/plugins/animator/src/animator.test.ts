@@ -825,8 +825,6 @@ describe('Animator', () => {
       assert.deepStrictEqual(captured!.environment, {
         GIT_AUTHOR_NAME: 'Artificer',
         GIT_AUTHOR_EMAIL: 'artificer@nexus.local',
-        GIT_COMMITTER_NAME: 'Artificer',
-        GIT_COMMITTER_EMAIL: 'artificer@nexus.local',
       });
     });
 

@@ -132,7 +132,6 @@ dispatch.next({ role: 'artificer' })
 │       cwd: draftRecord.path (or guild home),
 │       environment: {
 │         GIT_AUTHOR_EMAIL: `${writ.id}@nexus.local`,
-│         GIT_COMMITTER_EMAIL: `${writ.id}@nexus.local`,
 │       },
 │       metadata: { writId: writ.id, trigger: 'dispatch' }
 │     })
@@ -181,11 +180,10 @@ The Dispatch sets per-writ git identity via the `environment` field on the summo
 ```typescript
 environment: {
   GIT_AUTHOR_EMAIL: `${writ.id}@nexus.local`,
-  GIT_COMMITTER_EMAIL: `${writ.id}@nexus.local`,
 }
 ```
 
-This produces commits attributed to `Artificer <w-{writId}@nexus.local>`, enabling commit-level tracing back to the originating commission. The Animator merges these overrides with the Loom's defaults (request overrides weave) and passes the result to the session provider.
+This produces commits authored by `Artificer <w-{writId}@nexus.local>`, enabling commit-level tracing back to the originating commission. The committer identity is left to the system default so that commit signatures remain verified on GitHub. The Animator merges these overrides with the Loom's defaults (request overrides weave) and passes the result to the session provider.
 
 ### Error Handling
 

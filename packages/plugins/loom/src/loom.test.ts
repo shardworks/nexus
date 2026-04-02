@@ -282,8 +282,6 @@ describe('The Loom', () => {
       assert.deepStrictEqual(weave.environment, {
         GIT_AUTHOR_NAME: 'Artificer',
         GIT_AUTHOR_EMAIL: 'artificer@nexus.local',
-        GIT_COMMITTER_NAME: 'Artificer',
-        GIT_COMMITTER_EMAIL: 'artificer@nexus.local',
       });
     });
 
@@ -303,7 +301,6 @@ describe('The Loom', () => {
       const weave = await api.weave({ role: 'scribe' });
 
       assert.equal(weave.environment?.GIT_AUTHOR_NAME, 'Scribe');
-      assert.equal(weave.environment?.GIT_COMMITTER_NAME, 'Scribe');
     });
 
     it('derives environment even for unknown roles', async () => {
@@ -324,8 +321,6 @@ describe('The Loom', () => {
       assert.ok(weave.environment, 'environment should be defined for any role string');
       assert.equal(weave.environment?.GIT_AUTHOR_NAME, 'Unknown-role');
       assert.equal(weave.environment?.GIT_AUTHOR_EMAIL, 'unknown-role@nexus.local');
-      assert.equal(weave.environment?.GIT_COMMITTER_NAME, 'Unknown-role');
-      assert.equal(weave.environment?.GIT_COMMITTER_EMAIL, 'unknown-role@nexus.local');
     });
   });
 });
