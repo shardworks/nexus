@@ -94,8 +94,8 @@ type WalkResult =
 
 Each `walk()` call does exactly one thing. The priority ordering:
 
-1. **Collect a completed engine.** Scan all active rigs for an engine with `status === 'running'`. Read the session record from the sessions book by `engine.sessionId`. If the session has reached a terminal status (`completed` or `failed`), update the engine: set its status and populate its yields (or error). If the engine failed, mark the rig `failed` (same transaction). If the completed engine is the terminal engine (`seal`), mark the rig `completed` (same transaction). Rig status changes trigger the CDC handler (see below). Returns `rig-completed` if the rig transitioned, otherwise `engine-completed`. This is the first priority because it unblocks downstream engines.
-2. **Run a ready engine.** An engine is ready when `status === 'pending'` and its upstream engine has `status === 'completed'`. Look up the `EngineDesign` by `designId` from the Fabricator. Assemble givens (from givensSpec) and context (with upstream yields), then call `design.run(givens, context)`. For clockwork engines (`status: 'completed'` result): store the yields on the engine instance, mark it completed, and check for rig completion (same as step 1). Returns `engine-completed` (or `rig-completed` if this was the terminal engine). For quick engines (`status: 'launched'` result): store the `sessionId`, mark the engine `running`. Returns `engine-started`. Completion is collected on subsequent walk calls via step 1.
+1. **Collect a completed engine.** Scan all running rigs for an engine with `status === 'running'`. Read the session record from the sessions book by `engine.sessionId`. If the session has reached a terminal status (`completed` or `failed`), update the engine: set its status and populate its yields (or error). If the engine failed, mark the rig `failed` (same transaction). If the completed engine is the terminal engine (`seal`), mark the rig `completed` (same transaction). Rig status changes trigger the CDC handler (see below). Returns `rig-completed` if the rig transitioned, otherwise `engine-completed`. This is the first priority because it unblocks downstream engines.
+2. **Run a ready engine.** An engine is ready when `status === 'pending'` and all engines in its `upstream` array have `status === 'completed'`. Look up the `EngineDesign` by `designId` from the Fabricator. Assemble givens (from givensSpec) and context (with upstream yields), then call `design.run(givens, context)`. For clockwork engines (`status: 'completed'` result): store the yields on the engine instance, mark it completed, and check for rig completion (same as step 1). Returns `engine-completed` (or `rig-completed` if this was the terminal engine). For quick engines (`status: 'launched'` result): store the `sessionId`, mark the engine `running`. Returns `engine-started`. Completion is collected on subsequent walk calls via step 1.
 3. **Spawn a rig.** If there's a ready writ with no rig, spawn the static graph. Returns `rig-spawned`.
 
 If nothing qualifies at any level, return null (the guild is idle or all work is blocked on running quick engines).
@@ -121,7 +121,7 @@ The loop: call `walk()`, sleep `pollIntervalMs` (default 5000), repeat. When `wa
 interface Rig {
   id: string
   writId: string
-  status: 'active' | 'completed' | 'failed'
+  status: 'running' | 'completed' | 'failed'
   engines: EngineInstance[]
 }
 ```
@@ -135,7 +135,7 @@ interface EngineInstance {
   id: string               // unique within the rig, e.g. 'draft', 'implement', 'review', 'revise', 'seal'
   designId: string         // engine design id — resolved from the Fabricator
   status: 'pending' | 'running' | 'completed' | 'failed'
-  upstream: string | null  // id of the engine that must complete first (null = first engine)
+  upstream: string[]       // ids of engines that must complete first (empty = first engine)
   givensSpec: Record<string, unknown>  // givens specification — literal values now, templates later
   yields: unknown          // set on completion — the engine's yields (see Yield Types below)
   error?: string           // set on failure
@@ -145,7 +145,7 @@ interface EngineInstance {
 }
 ```
 
-An engine is **ready** when: `status === 'pending'` and its upstream engine (if any) has `status === 'completed'`.
+An engine is **ready** when: `status === 'pending'` and all engines in its `upstream` array have `status === 'completed'`.
 
 ### The Static Graph
 
@@ -154,15 +154,15 @@ Every spawned rig gets this engine list:
 ```typescript
 function spawnStaticRig(writ: Writ, config: WalkerConfig): EngineInstance[] {
   return [
-    { id: 'draft',     designId: 'draft',     status: 'pending', upstream: null,
+    { id: 'draft',     designId: 'draft',     status: 'pending', upstream: [],
       givensSpec: { writ }, yields: null },
-    { id: 'implement', designId: 'implement', status: 'pending', upstream: 'draft',
+    { id: 'implement', designId: 'implement', status: 'pending', upstream: ['draft'],
       givensSpec: { writ, role: config.role }, yields: null },
-    { id: 'review',    designId: 'review',    status: 'pending', upstream: 'implement',
+    { id: 'review',    designId: 'review',    status: 'pending', upstream: ['implement'],
       givensSpec: { writ, role: 'reviewer', buildCommand: config.buildCommand, testCommand: config.testCommand }, yields: null },
-    { id: 'revise',    designId: 'revise',    status: 'pending', upstream: 'review',
+    { id: 'revise',    designId: 'revise',    status: 'pending', upstream: ['review'],
       givensSpec: { writ, role: config.role }, yields: null },
-    { id: 'seal',      designId: 'seal',      status: 'pending', upstream: 'revise',
+    { id: 'seal',      designId: 'seal',      status: 'pending', upstream: ['revise'],
       givensSpec: {}, yields: null },
   ]
 }
@@ -184,13 +184,14 @@ When the Walker runs an engine, it assembles givens from the givensSpec only —
 
 ```typescript
 function assembleGivensAndContext(rig: Rig, engine: EngineInstance) {
-  // Collect all upstream yields for the context escape hatch
+  // Collect all completed engine yields for the context escape hatch.
+  // All completed yields are included regardless of graph distance —
+  // simpler than chain-walking and equivalent for the static graph.
   const upstream: Record<string, unknown> = {}
-  let current = engine
-  while (current.upstream) {
-    const up = rig.engines.find(e => e.id === current.upstream)!
-    upstream[up.id] = up.yields
-    current = up
+  for (const e of rig.engines) {
+    if (e.status === 'completed' && e.yields !== undefined) {
+      upstream[e.id] = e.yields
+    }
   }
 
   // Givens = givensSpec only. Upstream data stays on context.
@@ -211,15 +212,18 @@ Givens contain only what the givensSpec declares — static values set at rig sp
 
 ```typescript
 interface DraftYields {
-  worktreePath: string    // absolute path to the draft worktree
-  draftBranch: string     // git branch name for the draft
-  codexId: string         // which codex this draft is on
+  draftId: string         // the draft binding's unique id (from DraftRecord.id)
+  codexName: string       // which codex this draft is on (from DraftRecord.codexName)
+  branch: string          // git branch name for the draft (from DraftRecord.branch)
+  path: string            // absolute path to the draft worktree (from DraftRecord.path)
   baseSha: string         // commit SHA at draft open — used to compute diffs later
 }
 ```
 
 **Produced by:** `draft` engine
 **Consumed by:** all downstream engines. Establishes the physical workspace.
+
+> **Note:** Field names mirror the Scriptorium's `DraftRecord` type (`codexName`, `branch`, `path`) rather than inventing Walker-specific aliases. `baseSha` is the only field the draft engine adds itself — by reading `HEAD` after opening the draft.
 
 ### `ImplementYields`
 
@@ -272,13 +276,17 @@ interface ReviseYields {
 
 ```typescript
 interface SealYields {
-  mergedSha: string     // the commit SHA after sealing (fast-forward merge to main)
-  pushed: boolean       // whether the push to upstream succeeded
+  sealedCommit: string                     // the commit SHA at head of target after sealing (from SealResult)
+  strategy: 'fast-forward' | 'rebase'      // merge strategy used (from SealResult)
+  retries: number                          // rebase retry attempts needed (from SealResult)
+  inscriptionsSealed: number               // number of commits incorporated (from SealResult)
 }
 ```
 
 **Produced by:** `seal` engine
 **Consumed by:** nothing (terminal). Used by the CDC handler for the writ transition resolution message.
+
+> **Note:** Field names mirror the Scriptorium's `SealResult` type. Push is a separate Scriptorium operation — the seal engine seals but does not push.
 
 ---
 
@@ -291,15 +299,15 @@ Each engine is an `EngineDesign` contributed by the Walker's support kit. The en
 Opens a draft binding on the commission's target codex.
 
 ```typescript
-async run(givens: Record<string, unknown>, { engineId }: EngineRunContext): Promise<EngineRunResult> {
-  const scriptorium = guild().apparatus<ScriptoriumApi>('scriptorium')
+async run(givens: Record<string, unknown>, _context: EngineRunContext): Promise<EngineRunResult> {
+  const scriptorium = guild().apparatus<ScriptoriumApi>('codexes')
   const writ = givens.writ as Writ
-  const draft = await scriptorium.openDraft({ codexId: writ.codexId, writId: writ.id })
-  const baseSha = await getHeadSha(draft.worktreePath)
+  const draft = await scriptorium.openDraft({ codexName: writ.codex, associatedWith: writ.id })
+  const baseSha = await getHeadSha(draft.path)
 
   return {
     status: 'completed',
-    yields: { worktreePath: draft.worktreePath, draftBranch: draft.branch, codexId: writ.codexId, baseSha } satisfies DraftYields,
+    yields: { draftId: draft.id, codexName: draft.codexName, branch: draft.branch, path: draft.path, baseSha } satisfies DraftYields,
   }
 }
 ```
@@ -319,7 +327,7 @@ async run(givens: Record<string, unknown>, context: EngineRunContext): Promise<E
   const handle = animator.summon({
     role: givens.role as string,
     prompt,
-    cwd: draft.worktreePath,
+    cwd: draft.path,
     environment: { GIT_AUTHOR_EMAIL: `${writ.id}@nexus.local` },
     metadata: { engineId: context.engineId, writId: writ.id },
   })
@@ -355,15 +363,15 @@ async run(givens: Record<string, unknown>, context: EngineRunContext): Promise<E
   // 1. Run mechanical checks synchronously
   const checks: MechanicalCheck[] = []
   if (givens.buildCommand) {
-    checks.push(await runCheck('build', givens.buildCommand as string, draft.worktreePath))
+    checks.push(await runCheck('build', givens.buildCommand as string, draft.path))
   }
   if (givens.testCommand) {
-    checks.push(await runCheck('test', givens.testCommand as string, draft.worktreePath))
+    checks.push(await runCheck('test', givens.testCommand as string, draft.path))
   }
 
   // 2. Compute diff since draft opened
-  const diff = await gitDiff(draft.worktreePath, draft.baseSha)
-  const status = await gitStatus(draft.worktreePath)
+  const diff = await gitDiff(draft.path, draft.baseSha)
+  const status = await gitStatus(draft.path)
 
   // 3. Assemble review prompt
   const prompt = assembleReviewPrompt(writ, diff, status, checks)
@@ -372,7 +380,7 @@ async run(givens: Record<string, unknown>, context: EngineRunContext): Promise<E
   const handle = animator.summon({
     role: givens.role as string,
     prompt,
-    cwd: draft.worktreePath,
+    cwd: draft.path,
     metadata: {
       engineId: context.engineId,
       writId: writ.id,
@@ -471,14 +479,14 @@ async run(givens: Record<string, unknown>, context: EngineRunContext): Promise<E
   const draft = context.upstream.draft as DraftYields
   const review = context.upstream.review as ReviewYields
 
-  const status = await gitStatus(draft.worktreePath)
-  const diff = await gitDiffUncommitted(draft.worktreePath)
+  const status = await gitStatus(draft.path)
+  const diff = await gitDiffUncommitted(draft.path)
   const prompt = assembleRevisionPrompt(writ, review, status, diff)
 
   const handle = animator.summon({
     role: givens.role as string,
     prompt,
-    cwd: draft.worktreePath,
+    cwd: draft.path,
     environment: { GIT_AUTHOR_EMAIL: `${writ.id}@nexus.local` },
     metadata: { engineId: context.engineId, writId: writ.id },
   })
@@ -538,18 +546,23 @@ engine.yields = { sessionId: session.id, sessionStatus: session.status } satisfi
 Seals the draft binding.
 
 ```typescript
-async run(givens: Record<string, unknown>, ctx: EngineRunContext): Promise<EngineRunResult> {
-  const scriptorium = guild().apparatus<ScriptoriumApi>('scriptorium')
+async run(_givens: Record<string, unknown>, ctx: EngineRunContext): Promise<EngineRunResult> {
+  const scriptorium = guild().apparatus<ScriptoriumApi>('codexes')
   const draft = ctx.upstream.draft as DraftYields
 
   const result = await scriptorium.seal({
-    codexId: draft.codexId,
-    branch: draft.draftBranch,
+    codexName: draft.codexName,
+    sourceBranch: draft.branch,
   })
 
   return {
     status: 'completed',
-    yields: { mergedSha: result.mergedSha, pushed: result.pushed } satisfies SealYields,
+    yields: {
+      sealedCommit: result.sealedCommit,
+      strategy: result.strategy,
+      retries: result.retries,
+      inscriptionsSealed: result.inscriptionsSealed,
+    } satisfies SealYields,
   }
 }
 ```
@@ -581,7 +594,7 @@ stacks.watch('rigs', async (event) => {
   if (rig.status === 'completed') {
     const sealYields = rig.engines.find(e => e.id === 'seal')?.yields as SealYields
     await clerk.transition(rig.writId, 'completed', {
-      resolution: `Sealed at ${sealYields.mergedSha}. Pushed: ${sealYields.pushed}.`,
+      resolution: `Sealed at ${sealYields.sealedCommit} (${sealYields.strategy}, ${sealYields.inscriptionsSealed} inscriptions).`,
     })
   } else {
     const failedEngine = rig.engines.find(e => e.status === 'failed')
