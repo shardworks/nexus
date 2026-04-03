@@ -239,9 +239,10 @@ export function createWalker(): Plugin {
 
         if (engineResult.status === 'launched') {
           // Quick engine — store sessionId, leave engine in 'running'
+          const { sessionId } = engineResult;
           const launchedEngines = updatedRig.engines.map((e) =>
             e.id === pending.id
-              ? { ...e, status: 'running' as const, sessionId: engineResult.sessionId }
+              ? { ...e, status: 'running' as const, sessionId }
               : e,
           );
           await rigsBook.patch(rig.id, { engines: launchedEngines });
@@ -249,7 +250,8 @@ export function createWalker(): Plugin {
         }
 
         // Clockwork engine — validate and store yields
-        if (!isJsonSerializable(engineResult.yields)) {
+        const { yields } = engineResult;
+        if (!isJsonSerializable(yields)) {
           await failEngine(updatedRig, pending.id, 'Engine yields are not JSON-serializable');
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
         }
@@ -257,7 +259,7 @@ export function createWalker(): Plugin {
         const completedAt = new Date().toISOString();
         const completedEngines = updatedRig.engines.map((e) =>
           e.id === pending.id
-            ? { ...e, status: 'completed' as const, yields: engineResult.yields, completedAt }
+            ? { ...e, status: 'completed' as const, yields, completedAt }
             : e,
         );
         const allCompleted = completedEngines.every((e) => e.status === 'completed');
