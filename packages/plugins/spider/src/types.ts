@@ -1,7 +1,7 @@
 /**
- * The Walker — public types.
+ * The Spider — public types.
  *
- * Rig and engine data model, WalkResult, WalkerApi, and configuration.
+ * Rig and engine data model, CrawlResult, SpiderApi, and configuration.
  * Engine yield shapes (DraftYields, SealYields) live here too so downstream
  * packages can import them without depending on the engine implementation files.
  */
@@ -19,7 +19,7 @@ export type EngineStatus = 'pending' | 'running' | 'completed' | 'failed';
  * For the static pipeline it matches `designId`.
  *
  * `givensSpec` holds literal values set at spawn time (writ, role, commands).
- * The Walker assembles `givens` from this directly; upstream yields arrive
+ * The Spider assembles `givens` from this directly; upstream yields arrive
  * via `context.upstream` as the escape hatch.
  */
 export interface EngineInstance {
@@ -52,8 +52,8 @@ export type RigStatus = 'running' | 'completed' | 'failed';
 /**
  * A rig — the execution context for a single writ.
  *
- * Stored in The Stacks (`walker/rigs` book). The `engines` array is the
- * ordered pipeline of engine instances. The Walker updates this document
+ * Stored in The Stacks (`spider/rigs` book). The `engines` array is the
+ * ordered pipeline of engine instances. The Spider updates this document
  * in-place as engines run and complete.
  */
 export interface RigDoc {
@@ -69,53 +69,53 @@ export interface RigDoc {
   engines: EngineInstance[];
 }
 
-// ── WalkResult ────────────────────────────────────────────────────────
+// ── CrawlResult ────────────────────────────────────────────────────────
 
 /**
- * The result of a single walk() call.
+ * The result of a single crawl() call.
  *
  * Four variants, ordered by priority:
  * - 'engine-completed' — an engine finished (collected or ran inline); rig still running
  * - 'engine-started'   — launched a quick engine's session
  * - 'rig-spawned'      — created a new rig for a ready writ
- * - 'rig-completed'    — the walk step caused a rig to reach a terminal state
+ * - 'rig-completed'    — the crawl step caused a rig to reach a terminal state
  *
  * null means no work was available.
  */
-export type WalkResult =
+export type CrawlResult =
   | { action: 'engine-completed'; rigId: string; engineId: string }
   | { action: 'engine-started'; rigId: string; engineId: string }
   | { action: 'rig-spawned'; rigId: string; writId: string }
   | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'failed' };
 
-// ── WalkerApi ─────────────────────────────────────────────────────────
+// ── SpiderApi ─────────────────────────────────────────────────────────
 
 /**
- * The Walker's public API — retrieved via guild().apparatus<WalkerApi>('walker').
+ * The Spider's public API — retrieved via guild().apparatus<SpiderApi>('spider').
  */
-export interface WalkerApi {
+export interface SpiderApi {
   /**
-   * Execute one step of the walk loop.
+   * Execute one step of the crawl loop.
    *
    * Priority ordering: collect > run > spawn.
    * Returns null when no work is available.
    */
-  walk(): Promise<WalkResult | null>;
+  crawl(): Promise<CrawlResult | null>;
 }
 
 // ── Configuration ─────────────────────────────────────────────────────
 
 /**
- * Walker apparatus configuration — lives under the `walker` key in guild.json.
+ * Spider apparatus configuration — lives under the `spider` key in guild.json.
  */
-export interface WalkerConfig {
+export interface SpiderConfig {
   /**
    * Role to summon for quick engine sessions.
    * Default: 'artificer'.
    */
   role?: string;
   /**
-   * Polling interval for walkContinual tool (milliseconds).
+   * Polling interval for crawlContinual tool (milliseconds).
    * Default: 5000.
    */
   pollIntervalMs?: number;
@@ -133,7 +133,7 @@ export interface WalkerConfig {
 
 /**
  * Yields from the `draft` clockwork engine.
- * The Walker stores these in the engine instance and passes them
+ * The Spider stores these in the engine instance and passes them
  * to downstream engines via context.upstream['draft'].
  */
 export interface DraftYields {
@@ -165,7 +165,7 @@ export interface SealYields {
 
 /**
  * Yields from the `implement` quick engine.
- * Set by the Walker's collect step when the Animator session completes.
+ * Set by the Spider's collect step when the Animator session completes.
  */
 export interface ImplementYields {
   /** The Animator session id. */
@@ -191,7 +191,7 @@ export interface MechanicalCheck {
 
 /**
  * Yields from the `review` quick engine.
- * Assembled by the Walker's collect step from session.output and session.metadata.
+ * Assembled by the Spider's collect step from session.output and session.metadata.
  */
 export interface ReviewYields {
   /** The Animator session id. */
@@ -206,7 +206,7 @@ export interface ReviewYields {
 
 /**
  * Yields from the `revise` quick engine.
- * Set by the Walker's collect step when the Animator session completes.
+ * Set by the Spider's collect step when the Animator session completes.
  */
 export interface ReviseYields {
   /** The Animator session id. */
@@ -215,9 +215,9 @@ export interface ReviseYields {
   sessionStatus: 'completed' | 'failed';
 }
 
-// Augment GuildConfig so `guild().guildConfig().walker` is typed.
+// Augment GuildConfig so `guild().guildConfig().spider` is typed.
 declare module '@shardworks/nexus-core' {
   interface GuildConfig {
-    walker?: WalkerConfig;
+    spider?: SpiderConfig;
   }
 }

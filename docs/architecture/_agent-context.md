@@ -48,7 +48,7 @@ The word "rig" means two completely different things in this codebase:
 
 | Context | Meaning |
 |---------|---------|
-| **Guild metaphor / target architecture** | The execution scaffold assembled to fulfill a commission — seeded at commission time, built out by Walker with engines, struck when work is done |
+| **Guild metaphor / target architecture** | The execution scaffold assembled to fulfill a commission — seeded at commission time, built out by Spider with engines, struck when work is done |
 | **Current code** (`Rig` type in `core/src/rig.ts`, loaded by Arbor) | A package contributing tools, Books declarations, and other capabilities to the guild — basically what the target architecture calls a Kit or Apparatus |
 
 The current code's `Rig` is what we're moving toward calling a **Kit** (or Apparatus, for packages with a lifecycle). This rename is in progress. When reading source code, mentally substitute "plugin" for `Rig`.
@@ -66,7 +66,7 @@ The architecture docs use "rig" exclusively in the metaphor sense (execution sca
 | `architecture/plugins.md` | Good | Describes the Kit/Apparatus model with full type signatures. This is aspirational architecture, not fully implemented. |
 | `architecture/clockworks.md` | Good | Detailed; covers events, standing orders, relays, runner phases, daemon. Generally matches current implementation. |
 | `architecture/kit-components.md` | Good | Tools, engines, relays — artifact model, descriptors, role gating, installation. Generally accurate. |
-| `architecture/rigging.md` | Forward-looking | Describes Walker/Fabricator/Executor/Loom/Animator/Clerk as separate apparatus. This is the *target* design; currently much of this logic is either in core or not yet implemented. |
+| `architecture/rigging.md` | Forward-looking | Describes Spider/Fabricator/Executor/Loom/Animator/Clerk as separate apparatus. This is the *target* design; currently much of this logic is either in core or not yet implemented. |
 | `reference/schema.md` | Good | SQLite schema, ERD, entity ID prefixes. Reflects current database. |
 | `reference/core-api.md` | Good | Function signatures for `@shardworks/nexus-core`. Generally accurate but some functions are in `legacy/1/` indicating in-flight migration. |
 | `reference/event-catalog.md` | Not read | Should describe all framework events and payload shapes. |
@@ -85,7 +85,7 @@ The architecture docs use "rig" exclusively in the metaphor sense (execution sca
 |-----|-----------------|---------------------|
 | `anima-composition.md` | kit-components.md | Curricula, temperaments, oaths — composition artifacts |
 | `writs.md` | multiple places | Writ lifecycle, completion rollup, prompt templates, commission→mandate bridge |
-| `engine-designs.md` | plugins.md, future/ | WalkerKit engine design specifications |
+| `engine-designs.md` | plugins.md, future/ | SpiderKit engine design specifications |
 | `anima-lifecycle.md` | future/ | Anima states, instantiation, retirement |
 
 ---
@@ -114,8 +114,8 @@ The codebase is in active transition from a "rig-centric" model (current) toward
 - Formal `Plugin` type with explicit Kit/Apparatus discriminant
 - `Apparatus` with `start`/`stop`/`health`/`supportKit`/`consumes`
 - `GuildContext` with `ctx.plugin()`, `ctx.kits()`, `ctx.plugins()`
-- Separate named apparatus: Stacks, Guildhall, Clerk, Loom, Animator, Fabricator, Walker, Executor, Surveyor, Warden
-- Walker-driven rig execution (the commission → rig → engine chain)
+- Separate named apparatus: Stacks, Guildhall, Clerk, Loom, Animator, Fabricator, Spider, Executor, Surveyor, Warden
+- Spider-driven rig execution (the commission → rig → engine chain)
 - Fabricator (capability resolution from installed kits)
 - `plugin:initialized` reactive consumption
 - Startup validation with `requires` / `consumes` cross-referencing
@@ -160,7 +160,7 @@ Note: the live guild at `/workspace/shardworks/` is still running the V1 config 
 | The Books | nexus.db / SQLite tables | The Stacks (`books` apparatus) |
 | Summon relay | built-in clockworks dispatch | summon relay (installed via nexus-stdlib) |
 | Arbor | Arbor | Arbor |
-| Walker | (not yet implemented) | The Walker (`walker` apparatus) |
+| Spider | (not yet implemented) | The Spider (`spider` apparatus) |
 | Fabricator | (not yet implemented) | The Fabricator (`fabricator` apparatus) |
 
 ---
@@ -169,7 +169,7 @@ Note: the live guild at `/workspace/shardworks/` is still running the V1 config 
 
 - **2026-03-31 (session 1):** Initial scaffold session. Wrote §1–4 scaffold + "Standard Guild" bridge section. Created this context doc. Architecture doc is at `docs/architecture/index.md`. Companion detailed docs are already written for clockworks, plugins, kit-components, and rigging — they're good references even if partially aspirational.
 
-- **2026-03-31 (session 2):** Wrote §2 content (intro paragraph, ASCII diagram, narrative subsections). Scoped §2 explicitly as the "standard guild" — blockquote caveat added before the intro paragraph. Established the intended narrative arc: §2 gives the standard-guild mental model → §4 peels it back ("everything in §2 is a plugin, there is no privileged built-in layer") → Standard Guild bridge lists the defaults → detail sections proceed without hedging. **When writing §4**, open with a callback to §2: *"The apparatus described in §2 — Clerk, Walker, Clockworks, and the rest — are all plugins..."* This converts §2 into setup and §4 into the architectural reveal.
+- **2026-03-31 (session 2):** Wrote §2 content (intro paragraph, ASCII diagram, narrative subsections). Scoped §2 explicitly as the "standard guild" — blockquote caveat added before the intro paragraph. Established the intended narrative arc: §2 gives the standard-guild mental model → §4 peels it back ("everything in §2 is a plugin, there is no privileged built-in layer") → Standard Guild bridge lists the defaults → detail sections proceed without hedging. **When writing §4**, open with a callback to §2: *"The apparatus described in §2 — Clerk, Spider, Clockworks, and the rest — are all plugins..."* This converts §2 into setup and §4 into the architectural reveal.
 
 - **2026-03-31 (session 3):** Completed §3 (Guild Root) and §4 (Plugin Architecture). Corrected `guild.json` key names from real V2 type. Documented real `.nexus/` contents. Identified and resolved a plugin configuration specification gap — see design decisions below. Rewrote §4 with the §2 callback opening, corrected Kit/Apparatus examples (new naming convention, correct manifest shape), added Plugin IDs and Configuration subsections, updated GuildContext/HandlerContext interfaces with `config<T>()` and `guildConfig()`. Cleaned up Standard Guild table (dropped Guildhall, dropped layer column, added plugin id column, updated Stacks description). Restructured `guild.json` section to separate framework keys (`name`, `nexus`, `plugins`, `settings`) from plugin config sections (everything else, keyed by plugin id). Updated `plugins.md` spec with Plugin IDs section, Configuration section, and updated context interfaces.
 
@@ -234,7 +234,7 @@ CDC handlers (`ChangeHandler`) no longer receive a context parameter. They captu
 ### Remaining stub sections
 All are `<!-- TODO -->` blocks. In rough priority order:
 
-1. **Work Model** — Commission → Mandate writ → child writs → Rigs. Writ lifecycle states (`ready → active → pending → completed/failed/cancelled`). Writ hierarchy and completion rollup. Brief rig intro (Walker assembles from engine designs via Fabricator). Link to `rigging.md`.
+1. **Work Model** — Commission → Mandate writ → child writs → Rigs. Writ lifecycle states (`ready → active → pending → completed/failed/cancelled`). Writ hierarchy and completion rollup. Brief rig intro (Spider assembles from engine designs via Fabricator). Link to `rigging.md`.
 
 2. **The Clockworks** — Abbreviate; `clockworks.md` is detailed and current. Cover: events as immutable facts, standing orders as guild policy, summon verb, framework vs custom events, runner (manual vs daemon), error handling. Link to `clockworks.md`.
 

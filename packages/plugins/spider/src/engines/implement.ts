@@ -4,7 +4,7 @@
  * Summons an anima to do the commissioned work. Wraps the writ body with
  * a commit instruction, then calls animator.summon() with the draft
  * worktree as the working directory. Returns `{ status: 'launched', sessionId }`
- * so the Walker's collect step can poll for completion on subsequent walks.
+ * so the Spider's collect step can poll for completion on subsequent walks.
  */
 
 import { guild } from '@shardworks/nexus-core';

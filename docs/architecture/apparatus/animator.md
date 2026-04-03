@@ -225,7 +225,7 @@ interface SessionResult {
    * The final assistant text from the session.
    * Extracted from the last assistant message in the provider's transcript.
    * Useful for programmatic consumers that need the session's conclusion
-   * without parsing the full transcript (e.g. the Walker's review collect step).
+   * without parsing the full transcript (e.g. the Spider's review collect step).
    */
   output?: string
 }

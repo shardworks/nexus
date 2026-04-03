@@ -15,7 +15,7 @@ import { dashboardStart } from './tool.ts';
 export function createDashboard(): Plugin {
   return {
     apparatus: {
-      recommends: ['clerk', 'stacks', 'animator', 'walker', 'codexes'],
+      recommends: ['clerk', 'stacks', 'animator', 'spider', 'codexes'],
 
       supportKit: {
         tools: [dashboardStart],

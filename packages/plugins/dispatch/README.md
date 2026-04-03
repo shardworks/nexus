@@ -1,6 +1,6 @@
 # `@shardworks/dispatch-apparatus`
 
-> **⚠️ Temporary rigging.** The Dispatch is a stand-in for the full rigging system (Walker, Fabricator, Executor). When that system exists, this apparatus is retired.
+> **⚠️ Temporary rigging.** The Dispatch is a stand-in for the full rigging system (Spider, Fabricator, Executor). When that system exists, this apparatus is retired.
 
 The Dispatch is the guild's interim work runner. It bridges the gap between the Clerk (which tracks obligations) and the session machinery (which runs animas). It does one thing: find the oldest ready writ and execute it.
 

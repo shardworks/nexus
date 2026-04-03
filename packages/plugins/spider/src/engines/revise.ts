@@ -6,7 +6,7 @@
  * If the review failed, the prompt directs the anima to address each item
  * in the findings and commit the result.
  *
- * Returns `{ status: 'launched', sessionId }` so the Walker's collect step
+ * Returns `{ status: 'launched', sessionId }` so the Spider's collect step
  * can store ReviseYields on completion.
  */
 

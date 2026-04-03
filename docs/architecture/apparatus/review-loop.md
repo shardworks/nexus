@@ -2,7 +2,7 @@
 
 Status: **Design** (not yet implemented)
 
-> **Not a traditional apparatus.** The review loop does not have a `start()`/`stop()` lifecycle or a persistent runtime API. It is a composition pattern — a pair of engine designs and a rig structure — that lives at the intersection of the Walker, the Executor, and the Dispatch apparatus. This document specifies the full design, including an MVP path that works before the Walker exists.
+> **Not a traditional apparatus.** The review loop does not have a `start()`/`stop()` lifecycle or a persistent runtime API. It is a composition pattern — a pair of engine designs and a rig structure — that lives at the intersection of the Spider, the Executor, and the Dispatch apparatus. This document specifies the full design, including an MVP path that works before the Spider exists.
 
 ---
 
@@ -44,19 +44,19 @@ Three candidate locations were considered:
 
 ### Option A: Dispatch-level wrapper (MVP path)
 
-The Dispatch apparatus (`dispatch-next`) runs the implementation session, then runs a review pass, then optionally a revision session — all within a single dispatch call. No new apparatus; no Walker dependency.
+The Dispatch apparatus (`dispatch-next`) runs the implementation session, then runs a review pass, then optionally a revision session — all within a single dispatch call. No new apparatus; no Spider dependency.
 
 **Pros:** Implementable now. Works with existing infrastructure. Dispatch is already the single entry point for writ execution.
 
-**Cons:** The Dispatch is temporary infrastructure, scheduled for retirement when the Walker is implemented. Any logic added to Dispatch must be migrated. Also, the dispatch-level wrapper can only retry the entire session; it cannot retry a subcomponent.
+**Cons:** The Dispatch is temporary infrastructure, scheduled for retirement when the Spider is implemented. Any logic added to Dispatch must be migrated. Also, the dispatch-level wrapper can only retry the entire session; it cannot retry a subcomponent.
 
 ### Option B: Review engine in every rig (full design)
 
-The Walker seeds every rig with an `implement → review → [revise → review]*N` chain by default. The review engine is a clockwork engine; the revise engine is a quick engine. Both are standard engine designs contributed by a kit.
+The Spider seeds every rig with an `implement → review → [revise → review]*N` chain by default. The review engine is a clockwork engine; the revise engine is a quick engine. Both are standard engine designs contributed by a kit.
 
-**Pros:** Architecturally clean. Composes naturally with Walker's traversal. Reusable engine designs. No migration from Dispatch required — Dispatch simply dispatches, and the rig handles iteration.
+**Pros:** Architecturally clean. Composes naturally with Spider's traversal. Reusable engine designs. No migration from Dispatch required — Dispatch simply dispatches, and the rig handles iteration.
 
-**Cons:** Requires the Walker. Not implementable until the rigging system exists.
+**Cons:** Requires the Spider. Not implementable until the rigging system exists.
 
 ### Option C: Rig pattern via origination engine
 
@@ -70,7 +70,7 @@ The origination engine seeds rigs with review chains by default. Superficially s
 
 **Adopt both Option A (MVP) and Option B (full design).**
 
-The Dispatch-level wrapper is the MVP: implementable now, catches the known failure modes, produces data on review loop effectiveness. When the Walker is implemented, the review logic migrates to engine designs (Option B), and the Dispatch drops its review wrapping entirely. The rig pattern (Option C) governs per-commission review configuration as a future enhancement.
+The Dispatch-level wrapper is the MVP: implementable now, catches the known failure modes, produces data on review loop effectiveness. When the Spider is implemented, the review logic migrates to engine designs (Option B), and the Dispatch drops its review wrapping entirely. The rig pattern (Option C) governs per-commission review configuration as a future enhancement.
 
 The two designs share the same review criteria and artifact schemas — the MVP is a direct precursor to the full design, not a throwaway.
 
@@ -234,7 +234,7 @@ The patron can inspect the artifacts, diagnose the failure mode, and either rewr
 
 ## Full Design: Review Engines in the Rig
 
-When the Walker is implemented, the review loop migrates from Dispatch into the rig as two engine designs. The Dispatch drops all review logic.
+When the Spider is implemented, the review loop migrates from Dispatch into the rig as two engine designs. The Dispatch drops all review logic.
 
 ### Engine Designs
 
@@ -257,7 +257,7 @@ When the Walker is implemented, the review loop migrates from Dispatch into the 
 
 The review engine runs the same three checks as the MVP. It writes a `ReviewResult` to its yield. It does not branch — it always completes, passing the result downstream.
 
-The downstream engine (either a `seal` engine or a `revise` engine) reads `reviewResult.passed` to decide what to do. The Walker sees a completed engine regardless of outcome; the branching logic lives in the rig structure (see Rig Pattern below).
+The downstream engine (either a `seal` engine or a `revise` engine) reads `reviewResult.passed` to decide what to do. The Spider sees a completed engine regardless of outcome; the branching logic lives in the rig structure (see Rig Pattern below).
 
 #### `revise` engine (quick)
 
@@ -313,20 +313,20 @@ The default rig for a commission with review enabled:
                 └─────────────┘         └──────────────────┘
 ```
 
-The Walker traverses this graph naturally. Each engine completes and propagates its yield; downstream engines activate when their upstream is complete. The conditional branching (pass → seal, fail → revise) is expressed in the rig structure, not in Walker logic — the Walker just runs whatever is ready.
+The Spider traverses this graph naturally. Each engine completes and propagates its yield; downstream engines activate when their upstream is complete. The conditional branching (pass → seal, fail → revise) is expressed in the rig structure, not in Spider logic — the Spider just runs whatever is ready.
 
 **Seeding the rig:** The origination engine produces this graph when it seeds the rig. For `maxRetries=2`, the origination engine seeds a fixed graph (not dynamically extended). If the guild wants `maxRetries=0` (no review loop), origination seeds the simple `implement → seal` graph.
 
-**Dynamic extension (future):** A more sophisticated design would have the review engine declare a `need: 'revision'` when it fails, and the Fabricator would resolve and graft the next revise+review pair. This avoids pre-seeding the full graph and enables arbitrary retry depths. This is Future scope — the fixed graph is sufficient for MVP and avoids Walker complexity in the initial rigging implementation.
+**Dynamic extension (future):** A more sophisticated design would have the review engine declare a `need: 'revision'` when it fails, and the Fabricator would resolve and graft the next revise+review pair. This avoids pre-seeding the full graph and enables arbitrary retry depths. This is Future scope — the fixed graph is sufficient for MVP and avoids Spider complexity in the initial rigging implementation.
 
-### Walker Integration
+### Spider Integration
 
-The Walker needs no changes to support the review loop. It already:
+The Spider needs no changes to support the review loop. It already:
 - Traverses all engines whose upstream is complete
 - Dispatches ready engines to the Executor
 - Handles both clockwork and quick engine kinds
 
-The review loop is just a graph shape that Walker happens to traverse. The `escalate` clockwork engine signals the Clerk with a `failed` transition; the `seal` clockwork engine signals completion. The Walker itself is agnostic.
+The review loop is just a graph shape that Spider happens to traverse. The `escalate` clockwork engine signals the Clerk with a `failed` transition; the `seal` clockwork engine signals completion. The Spider itself is agnostic.
 
 ---
 
@@ -379,7 +379,7 @@ experiments/data/commissions/<writ-id>/
     escalation.md        (if loop exhausted; patron-facing summary)
 ```
 
-For the MVP (Dispatch-level), the Dispatch writes these artifacts directly. For the full design (Walker-level), the review engine writes them via the Stacks or directly to the commission data directory.
+For the MVP (Dispatch-level), the Dispatch writes these artifacts directly. For the full design (Spider-level), the review engine writes them via the Stacks or directly to the commission data directory.
 
 ### `review.md` Schema
 
@@ -456,7 +456,7 @@ For the MVP (Dispatch-level), review configuration lives in `guild.json`:
 
 All fields are optional. `enabled` defaults to `false` for the MVP (opt-in). The intent is to make it default-on once the loop has been validated in practice.
 
-For the full design (Walker-level), the same configuration is consumed by the origination engine to decide whether to seed the review graph and what configuration to pass to the review engine.
+For the full design (Spider-level), the same configuration is consumed by the origination engine to decide whether to seed the review graph and what configuration to pass to the review engine.
 
 ---
 
@@ -513,7 +513,7 @@ This commission is itself a spec-writing commission. There's no build command to
 - Artifacts written to commission data directory
 - Opt-in via `review.enabled: true` in `guild.json`
 
-### Phase 2 (Walker-level engine designs)
+### Phase 2 (Spider-level engine designs)
 - `review` clockwork engine contributed by a kit
 - `revise` quick engine contributed by the same kit
 - Origination engine seeds review graph by default

@@ -75,13 +75,13 @@ When a writ is concrete enough to act on, it spawns a **rig** to carry the oblig
 
 ### Rig
 
-The working structure assembled to fulfill a commission. A rig is seeded at commission time — a minimal starting point representing what must be achieved. From there the Walker builds it out: adding engines and arranging them in sequence, each depending on the work of those before it. Some engines are clockwork; others are quick — inhabited by an anima. A rig is never delivered to the patron; it is the scaffolding that enables delivery. When the work is done, the obligation is fulfilled and the rig is struck.
+The working structure assembled to fulfill a commission. A rig is seeded at commission time — a minimal starting point representing what must be achieved. From there the Spider builds it out: adding engines and arranging them in sequence, each depending on the work of those before it. Some engines are clockwork; others are quick — inhabited by an anima. A rig is never delivered to the patron; it is the scaffolding that enables delivery. When the work is done, the obligation is fulfilled and the rig is struck.
 
 Rigs are dynamic. Any engine whose work is not yet complete may be replaced with a chain of engines, allowing the rig to grow and adapt as the work unfolds. Engines that have completed their work are fixed — their yield is final.
 
 ### Engine
 
-Engines are the workhorse components of a rig — purpose-built machines the guild puts to work. Each engine does one bounded piece of work: runs when its upstream work is ready, produces a yield when done. The same engine design may run in many rigs at once, each working independently. Kits bring engine designs to the guild; the Walker mounts them as each rig demands.
+Engines are the workhorse components of a rig — purpose-built machines the guild puts to work. Each engine does one bounded piece of work: runs when its upstream work is ready, produces a yield when done. The same engine design may run in many rigs at once, each working independently. Kits bring engine designs to the guild; the Spider mounts them as each rig demands.
 
 Two kinds:
 
@@ -112,7 +112,7 @@ A body of inscriptions that compels a system to behave. The guild's primary and 
 | **Abandoning** | Setting a draft binding aside without sealing. The work persists in the Daybook but never becomes authoritative |
 | **Edition** | The sealed binding at a specific significant moment — marked, versioned, and distributed |
 
-A commission arrives; the Walker opens a draft binding from the codex; an anima staffs the engine — inscribing changes, building up the draft. When the anima signals completion, the sealing engine incorporates the draft into the sealed binding. The codex grows. If the draft contradicts the sealed binding, the sealing engine seizes; the draft must be reconciled before sealing can proceed.
+A commission arrives; the Spider opens a draft binding from the codex; an anima staffs the engine — inscribing changes, building up the draft. When the anima signals completion, the sealing engine incorporates the draft into the sealed binding. The codex grows. If the draft contradicts the sealed binding, the sealing engine seizes; the draft must be reconciled before sealing can proceed.
 
 A codex may have multiple draft bindings open simultaneously. Each is independent. Each must be sealed or abandoned on its own terms.
 
@@ -150,13 +150,13 @@ A named, versioned, immutable personality template. A temperament governs an ani
 
 ### Apparatus
 
-A named, persistent, deterministic system that predates any commission and outlasts any rig is an **apparatus** — the guild's operational fabric. Apparatus are always running; they hold no craft, no spirit, no judgment. Where animas are animated and engines do the work of rigs, apparatus are the guild itself in continuous operation. The Clockworks, the Walker, and the Surveyor are the guild's core apparatus. The set is not fixed — a guild may install additional apparatus as its needs grow.
+A named, persistent, deterministic system that predates any commission and outlasts any rig is an **apparatus** — the guild's operational fabric. Apparatus are always running; they hold no craft, no spirit, no judgment. Where animas are animated and engines do the work of rigs, apparatus are the guild itself in continuous operation. The Clockworks, the Spider, and the Surveyor are the guild's core apparatus. The set is not fixed — a guild may install additional apparatus as its needs grow.
 
 ### Kit
 
-A bundle of engine designs and anima tools contributed to extend what the guild can build. A kit declares what needs it can meet, what prior work it requires, and what chain of engines it will assemble to meet those needs. The Walker draws from installed kits when extending a rig — a guild's installed kits determine what work it can take on.
+A bundle of engine designs and anima tools contributed to extend what the guild can build. A kit declares what needs it can meet, what prior work it requires, and what chain of engines it will assemble to meet those needs. The Spider draws from installed kits when extending a rig — a guild's installed kits determine what work it can take on.
 
-Kits are the guild's extension points. A guild without kits can accept commissions but cannot fulfill them. Each installed kit extends the range of work the Walker can set in motion.
+Kits are the guild's extension points. A guild without kits can accept commissions but cannot fulfill them. Each installed kit extends the range of work the Spider can set in motion.
 
 ### The Clockworks
 
@@ -172,11 +172,11 @@ All relays are clockwork. The summon relay is the built-in relay that handles an
 
 A registered response to an event, defined in `guild.json`. A standing order says: *whenever this event is signaled, do this*. All standing orders invoke relays via the `run` verb. The `summon` verb is syntactic sugar — it invokes the **summon relay**, which manifests an anima in the named role and delivers the event as their context. Standing orders may carry additional params (like `maxSessions` for the circuit breaker) that configure the relay's behavior. Standing orders are guild policy — they live in configuration, not in relay code.
 
-### The Walker
+### The Spider
 
-The apparatus that keeps all active rigs in motion. The Walker moves continuously through every active rig — not bound to any single commission, predating and outlasting them all. When an engine is ready to run, the Walker sets it in motion: starting a clockwork engine or summoning an anima for a quick one. When an engine declares a need the rig cannot yet satisfy, the Walker extends the rig — drawing on installed kits to add the engines needed to meet it.
+The apparatus that keeps all active rigs in motion. The Spider moves continuously through every active rig — not bound to any single commission, predating and outlasting them all. When an engine is ready to run, the Spider sets it in motion: starting a clockwork engine or summoning an anima for a quick one. When an engine declares a need the rig cannot yet satisfy, the Spider extends the rig — drawing on installed kits to add the engines needed to meet it.
 
-The rig grows as it runs. The Walker is why.
+The rig grows as it runs. The Spider is why.
 
 ### The Surveyor
 

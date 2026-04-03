@@ -10,7 +10,7 @@ This document describes the artifact model for the guild's installable capabilit
 
 Tools are accessible through multiple paths: animas invoke them as MCP tools during sessions; humans invoke them via the `nexus` CLI; relays and other tools can import them programmatically. All paths execute the same logic with the same inputs and outputs — the tool author writes the logic once.
 
-**Engines** are the workhorse components of rigs — the units of work the Walker mounts and sets in motion. An engine does one bounded piece of work, runs when its upstream dependencies are satisfied, and produces a yield when done. Kits contribute engine designs; the Walker draws on them to extend rigs as needed. An engine may be clockwork (deterministic, no anima required) or quick (inhabited by an anima for work requiring judgment). Engines are described by a `nexus-engine.json` descriptor.
+**Engines** are the workhorse components of rigs — the units of work the Spider mounts and sets in motion. An engine does one bounded piece of work, runs when its upstream dependencies are satisfied, and produces a yield when done. Kits contribute engine designs; the Spider draws on them to extend rigs as needed. An engine may be clockwork (deterministic, no anima required) or quick (inhabited by an anima for work requiring judgment). Engines are described by a `nexus-engine.json` descriptor.
 
 **Relays** are Clockworks handlers — purpose-built to respond to events via standing orders. A relay exports a standard `relay()` contract that the Clockworks runner calls. All relays are clockwork. See [clockworks.md](clockworks.md) for the relay contract and standing order mechanics. Relays are described by a `nexus-relay.json` descriptor.
 
@@ -407,8 +407,8 @@ The guildhall is never a workspace — artifacts flow in through deliberate inst
 
 | | Tools | Engines | Relays |
 |---|---|---|---|
-| Purpose | Instruments animas wield | Rig workhorses (Walker mounts them) | Clockworks handlers |
-| Invoked by | Animas (MCP), humans (CLI), code (import) | Walker (event-driven within a rig) | Clockworks runner (standing order) |
+| Purpose | Instruments animas wield | Rig workhorses (Spider mounts them) | Clockworks handlers |
+| Invoked by | Animas (MCP), humans (CLI), code (import) | Spider (event-driven within a rig) | Clockworks runner (standing order) |
 | Descriptor | `nexus-tool.json` | `nexus-engine.json` | `nexus-relay.json` |
 | SDK factory | `tool()` | none required (engine logic is the rig work) | `relay()` |
 | Instructions doc? | Optional (anima guidance) | No | No |

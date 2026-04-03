@@ -236,36 +236,7 @@ importers:
         specifier: 25.5.0
         version: 25.5.0
 
-  packages/plugins/stacks:
-    dependencies:
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../../framework/core
-      better-sqlite3:
-        specifier: 12.8.0
-        version: 12.8.0
-    devDependencies:
-      '@types/better-sqlite3':
-        specifier: 7.6.13
-        version: 7.6.13
-      '@types/node':
-        specifier: 25.5.0
-        version: 25.5.0
-
-  packages/plugins/tools:
-    dependencies:
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../../framework/core
-      zod:
-        specifier: 4.3.6
-        version: 4.3.6
-    devDependencies:
-      '@types/node':
-        specifier: 25.5.0
-        version: 25.5.0
-
-  packages/plugins/walker:
+  packages/plugins/spider:
     dependencies:
       '@shardworks/animator-apparatus':
         specifier: workspace:*
@@ -288,6 +259,35 @@ importers:
       '@shardworks/tools-apparatus':
         specifier: workspace:*
         version: link:../tools
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
+  packages/plugins/stacks:
+    dependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
+      better-sqlite3:
+        specifier: 12.8.0
+        version: 12.8.0
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: 7.6.13
+        version: 7.6.13
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
+  packages/plugins/tools:
+    dependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       zod:
         specifier: 4.3.6
         version: 4.3.6

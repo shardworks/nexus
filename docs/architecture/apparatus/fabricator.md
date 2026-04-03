@@ -10,7 +10,7 @@ Package: `@shardworks/fabricator-apparatus` · Plugin id: `fabricator`
 
 ## Purpose
 
-The Fabricator is the guild's capability catalog. It holds engine design specifications and serves them to the Walker on demand. When the Walker needs to run an engine, it asks the Fabricator for the design by ID — the Fabricator resolves it, the Walker runs it.
+The Fabricator is the guild's capability catalog. It holds engine design specifications and serves them to the Spider on demand. When the Spider needs to run an engine, it asks the Fabricator for the design by ID — the Fabricator resolves it, the Spider runs it.
 
 The Fabricator does **not** execute engines. It does not touch rigs, manage sessions, or interact with the Clerk. It is a pure query service: designs in, designs out.
 
@@ -44,10 +44,10 @@ interface EngineDesign {
    * Execute this engine.
    *
    * Returns 'completed' with yields (synchronous work done inline), or
-   * 'launched' with a sessionId (async work the Walker polls for).
-   * The Walker inspects the result shape — no need to declare the kind up front.
+   * 'launched' with a sessionId (async work the Spider polls for).
+   * The Spider inspects the result shape — no need to declare the kind up front.
    *
-   * @param givens — the engine's declared inputs, assembled by the Walker.
+   * @param givens — the engine's declared inputs, assembled by the Spider.
    *   A mix of values from the givensSpec (set at rig spawn time, e.g. role,
    *   buildCommand, writ) and upstream yields (resolved from completed engines,
    *   e.g. draft worktree path). The engine doesn't know or care about
@@ -79,7 +79,7 @@ interface EngineRunContext {
 ```typescript
 type EngineRunResult =
   | { status: 'completed'; yields: unknown }    // clockwork: done, here are the yields
-  | { status: 'launched'; sessionId: string }    // quick: session launched, Walker will poll
+  | { status: 'launched'; sessionId: string }    // quick: session launched, Spider will poll
 ```
 
 ---
@@ -152,12 +152,12 @@ interface FabricatorApi {
    * Resolve a declared need to an engine chain.
    * Searches installed engine designs for those that satisfy the need,
    * composes them into an ordered chain, and returns the chain for the
-   * Walker to graft onto the rig.
+   * Spider to graft onto the rig.
    */
   resolve(need: string, context?: ResolutionContext): EngineChain | null
 }
 ```
 
-The Fabricator is also the Sage's entry point: planning animas query it to introspect what the guild can build before decomposing a commission into writs. A standalone Fabricator (rather than capability resolution buried inside the Walker) is what makes this possible — it's a shared service both the Walker and the Sage can call.
+The Fabricator is also the Sage's entry point: planning animas query it to introspect what the guild can build before decomposing a commission into writs. A standalone Fabricator (rather than capability resolution buried inside the Spider) is what makes this possible — it's a shared service both the Spider and the Sage can call.
 
 **Unified capability catalog.** The Fabricator may absorb tool designs from the Instrumentarium, becoming the single answer to "what can this guild do?" regardless of whether the answer is an engine or a tool.

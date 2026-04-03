@@ -3,10 +3,10 @@
  *
  * Runs mechanical checks (build/test) synchronously in the draft worktree,
  * then summons a reviewer anima to assess the implementation against the spec.
- * Returns `{ status: 'launched', sessionId }` so the Walker's collect step
+ * Returns `{ status: 'launched', sessionId }` so the Spider's collect step
  * can parse the reviewer's findings from session.output on subsequent walks.
  *
- * Collect step (Walker):
+ * Collect step (Spider):
  *   - Reads session.output as the reviewer's structured markdown findings
  *   - Parses `passed` from /^###\s*Overall:\s*PASS/mi
  *   - Retrieves mechanicalChecks from session.metadata

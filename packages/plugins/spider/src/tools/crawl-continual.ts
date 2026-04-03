@@ -1,20 +1,20 @@
 /**
- * walkContinual tool — runs the walk loop continuously.
+ * crawlContinual tool — runs the crawl loop continuously.
  *
- * Polls walk() on a configurable interval until stopped or no remaining
+ * Polls crawl() on a configurable interval until stopped or no remaining
  * work exists for the configured number of consecutive idle cycles.
  */
 
 import { z } from 'zod';
 import { guild } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
-import type { WalkerApi, WalkerConfig } from '../types.ts';
+import type { SpiderApi, SpiderConfig } from '../types.ts';
 
 export default tool({
-  name: 'walkContinual',
-  description: 'Run the Walker loop continuously until idle',
+  name: 'crawlContinual',
+  description: "Run the Spider's crawl loop continuously until idle",
   instructions:
-    'Polls walk() in a loop, sleeping between steps when idle. ' +
+    'Polls crawl() in a loop, sleeping between steps when idle. ' +
     'Stops when the configured number of consecutive idle cycles is reached. ' +
     'Returns a summary of all actions taken.',
   params: {
@@ -23,7 +23,7 @@ export default tool({
       .optional()
       .default(3)
       .describe(
-        'Number of consecutive idle walk() calls before stopping (default: 3)',
+        'Number of consecutive idle crawl() calls before stopping (default: 3)',
       ),
     pollIntervalMs: z
       .number()
@@ -32,11 +32,11 @@ export default tool({
         'Override the configured poll interval in milliseconds',
       ),
   },
-  permission: 'walker:write',
+  permission: 'spider:write',
   handler: async (params) => {
     const g = guild();
-    const walker = g.apparatus<WalkerApi>('walker');
-    const config = g.guildConfig().walker ?? {} as WalkerConfig;
+    const spider = g.apparatus<SpiderApi>('spider');
+    const config = g.guildConfig().spider ?? {} as SpiderConfig;
     const intervalMs = params.pollIntervalMs ?? config.pollIntervalMs ?? 5000;
     const maxIdle = params.maxIdleCycles;
 
@@ -44,11 +44,11 @@ export default tool({
     let idleCount = 0;
 
     while (idleCount < maxIdle) {
-      let result: Awaited<ReturnType<typeof walker.walk>>;
+      let result: Awaited<ReturnType<typeof spider.crawl>>;
       try {
-        result = await walker.walk();
+        result = await spider.crawl();
       } catch (err) {
-        console.error('[walkContinual] walk() error:', err instanceof Error ? err.message : String(err));
+        console.error('[crawlContinual] crawl() error:', err instanceof Error ? err.message : String(err));
         idleCount++;
         if (idleCount < maxIdle) {
           await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));

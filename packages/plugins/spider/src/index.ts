@@ -1,14 +1,14 @@
 /**
- * @shardworks/walker-apparatus — The Walker.
+ * @shardworks/spider-apparatus — The Spider.
  *
  * Rig execution engine: spawns rigs for ready writs, drives engine pipelines
  * to completion, and transitions writs via the Clerk on rig completion/failure.
  *
- * Public types (RigDoc, EngineInstance, WalkResult, WalkerApi, etc.) are
+ * Public types (RigDoc, EngineInstance, CrawlResult, SpiderApi, etc.) are
  * re-exported for consumers that inspect walk results or rig state.
  */
 
-import { createWalker } from './walker.ts';
+import { createSpider } from './spider.ts';
 
 // ── Public types ──────────────────────────────────────────────────────
 
@@ -17,13 +17,13 @@ export type {
   EngineInstance,
   RigStatus,
   RigDoc,
-  WalkResult,
-  WalkerApi,
-  WalkerConfig,
+  CrawlResult,
+  SpiderApi,
+  SpiderConfig,
   DraftYields,
   SealYields,
 } from './types.ts';
 
 // ── Default export: the apparatus plugin ──────────────────────────────
 
-export default createWalker();
+export default createSpider();

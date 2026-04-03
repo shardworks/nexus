@@ -2,7 +2,7 @@
  * The Fabricator — guild engine design registry apparatus.
  *
  * Scans installed engine designs from kit contributions and apparatus supportKits,
- * and serves them to the Walker on demand.
+ * and serves them to the Spider on demand.
  *
  * The Fabricator does not execute engines. It is a pure query service:
  * designs in, designs out.
@@ -34,7 +34,7 @@ export interface EngineRunContext {
  * The result of an engine run.
  *
  * 'completed' — synchronous work done inline, yields are available immediately.
- * 'launched'  — async work launched in a session; the Walker polls for completion.
+ * 'launched'  — async work launched in a session; the Spider polls for completion.
  */
 export type EngineRunResult =
   | { status: 'completed'; yields: unknown }
@@ -42,7 +42,7 @@ export type EngineRunResult =
 
 /**
  * An engine design — the unit of work the Fabricator catalogues and the
- * Walker executes. Kit authors import this type from @shardworks/fabricator-apparatus.
+ * Spider executes. Kit authors import this type from @shardworks/fabricator-apparatus.
  */
 export interface EngineDesign {
   /** Unique identifier for this engine design (e.g. 'draft', 'implement', 'review'). */
@@ -51,7 +51,7 @@ export interface EngineDesign {
   /**
    * Execute this engine.
    *
-   * @param givens   — the engine's declared inputs, assembled by the Walker.
+   * @param givens   — the engine's declared inputs, assembled by the Spider.
    * @param context  — minimal execution context: engine id and upstream yields.
    */
   run(givens: Record<string, unknown>, context: EngineRunContext): Promise<EngineRunResult>;

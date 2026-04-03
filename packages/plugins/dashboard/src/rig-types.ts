@@ -1,5 +1,5 @@
 /**
- * Local type stubs for Walker rig documents read via Stacks readBook().
+ * Local type stubs for Spider rig documents read via Stacks readBook().
  */
 
 export interface EngineInstance {

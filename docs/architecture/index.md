@@ -10,7 +10,7 @@ For the conceptual vocabulary — what guilds, animas, commissions, writs, and a
 
 > This section describes the **standard guild** — the configuration `nsg init` produces. The framework itself is a plugin loader; every apparatus named below is part of the default plugin set, not a hard requirement. §4 ([Plugin Architecture](#plugin-architecture)) explains the underlying model; the [Standard Guild](#the-standard-guild) section catalogues what the default set includes.
 
-A Nexus guild is a git repository with a `guild.json` at its root and a `.nexus/` directory holding runtime state. When the system starts, **Arbor** — the guild runtime — reads `guild.json`, loads the declared plugins, validates their dependencies, and starts each apparatus in order. From that point, the guild operates: the patron commissions work; **The Clerk** receives it and issues writs; **The Walker** assembles rigs and drives their engines to completion; **The Clockworks** turns events into action, activating relays in response to standing orders; and **anima sessions** — AI processes launched by **The Animator** — do the work that requires judgment. Results land in codexes and documents; the patron consumes what the guild delivers.
+A Nexus guild is a git repository with a `guild.json` at its root and a `.nexus/` directory holding runtime state. When the system starts, **Arbor** — the guild runtime — reads `guild.json`, loads the declared plugins, validates their dependencies, and starts each apparatus in order. From that point, the guild operates: the patron commissions work; **The Clerk** receives it and issues writs; **The Spider** assembles rigs and drives their engines to completion; **The Clockworks** turns events into action, activating relays in response to standing orders; and **anima sessions** — AI processes launched by **The Animator** — do the work that requires judgment. Results land in codexes and documents; the patron consumes what the guild delivers.
 
 ```
   PATRON
@@ -26,7 +26,7 @@ A Nexus guild is a git repository with a `guild.json` at its root and a `.nexus/
   │  ├───────────────────────────────────────────────────────┤  │
   │  │  Clockworks · Surveyor · Clerk                        │  │
   │  ├───────────────────────────────────────────────────────┤  │
-  │  │  Walker · Fabricator · Executor                        │  │
+  │  │  Spider · Fabricator · Executor                        │  │
   │  │  Loom · Animator                                      │  │
   │  └─────────────────────────┬─────────────────────────────┘  │
   │                            │                                 │
@@ -66,13 +66,13 @@ Two additional commands bypass the tool registry: `nsg consult` and `nsg convene
 
 ### The Apparatus
 
-The guild's operational fabric is provided by apparatus — plugins with a start/stop lifecycle that Arbor starts in dependency order. **The Stacks** is the persistence substrate everything else reads from and writes to. **The Scriptorium** manages codexes — bare clones, draft bindings (worktrees), and the seal-and-push lifecycle. **The Clockworks** is the event-driven nervous system: standing orders bind events to relays, and the summon relay dispatches anima sessions in response. **The Surveyor** tracks what work applies to each registered codex. **The Clerk** handles commission intake, converting patron requests into writs and signaling when work is ready to execute. The Fabricator, Walker, Executor, Loom, and Animator then take it from there — covered in the next section.
+The guild's operational fabric is provided by apparatus — plugins with a start/stop lifecycle that Arbor starts in dependency order. **The Stacks** is the persistence substrate everything else reads from and writes to. **The Scriptorium** manages codexes — bare clones, draft bindings (worktrees), and the seal-and-push lifecycle. **The Clockworks** is the event-driven nervous system: standing orders bind events to relays, and the summon relay dispatches anima sessions in response. **The Surveyor** tracks what work applies to each registered codex. **The Clerk** handles commission intake, converting patron requests into writs and signaling when work is ready to execute. The Fabricator, Spider, Executor, Loom, and Animator then take it from there — covered in the next section.
 
 Each of these is a plugin from the default set, not a built-in. The [Standard Guild](#the-standard-guild) section lists them; the sections that follow document each in detail.
 
 ### Execution, Sessions, and Works
 
-When The Clerk signals a writ is ready, **The Walker** spawns a rig and begins driving it: traversing active engines, dispatching those whose upstream work is complete, and extending the rig by querying **The Fabricator** for engine chains that satisfy declared needs. **The Executor** runs each engine — clockwork engines run their code directly; quick engines launch an anima session.
+When The Clerk signals a writ is ready, **The Spider** spawns a rig and begins driving it: traversing active engines, dispatching those whose upstream work is complete, and extending the rig by querying **The Fabricator** for engine chains that satisfy declared needs. **The Executor** runs each engine — clockwork engines run their code directly; quick engines launch an anima session.
 
 An anima session is an AI process running against an MCP server loaded with the role's tools. Before launch, **The Loom** weaves the session context: system prompt, tool instructions, writ context. **The Animator** then starts the process, monitors it, and records the result. The session exits; the output persists. The Clockworks can also trigger sessions directly via the summon relay, bypassing the rig machinery entirely — The Animator handles both paths the same way.
 
@@ -166,7 +166,7 @@ In the standard guild, `clockworks` contains events and standing orders; `codexe
 
 ## Plugin Architecture
 
-The apparatus described in §2 — The Stacks, The Clockworks, The Clerk, The Walker, and the rest — are all plugins. There is no privileged built-in layer. Arbor, the guild runtime, is only a plugin loader, a dependency graph, and the startup/shutdown lifecycle for what gets loaded. Every piece of operational infrastructure is contributed by a plugin package; the standard guild is simply a particular set of those packages.
+The apparatus described in §2 — The Stacks, The Clockworks, The Clerk, The Spider, and the rest — are all plugins. There is no privileged built-in layer. Arbor, the guild runtime, is only a plugin loader, a dependency graph, and the startup/shutdown lifecycle for what gets loaded. Every piece of operational infrastructure is contributed by a plugin package; the standard guild is simply a particular set of those packages.
 
 Plugins come in two kinds: **kits** and **apparatus**. This section introduces them; [Plugin Architecture](plugins.md) is the full specification.
 
@@ -179,7 +179,7 @@ A **kit** is a passive package contributing capabilities to the guild. Kits have
 export default {
   kit: {
     requires:   ["books"],
-    recommends: ["clockworks", "walker"],
+    recommends: ["clockworks", "spider"],
     engines: [createBranchEngine, mergeBranchEngine],
     relays:  [onMergeRelay],
     tools:   [statusTool, diffTool],
@@ -189,7 +189,7 @@ export default {
 
 A kit is an **open record**: the contribution fields (`engines`, `relays`, `tools`, etc.) are defined by the apparatus packages that consume them, not by the framework. The framework only reads `requires` (hard dependency on an apparatus — validated at startup) and `recommends` (advisory — generates a startup warning if absent). Everything else is forwarded opaquely to consuming apparatus via the `plugin:initialized` lifecycle event.
 
-Type safety for contribution fields is opt-in — each apparatus publishes a kit interface (`ClockworksKit`, `WalkerKit`, etc.) that kit authors can import and `satisfies` against.
+Type safety for contribution fields is opt-in — each apparatus publishes a kit interface (`ClockworksKit`, `SpiderKit`, etc.) that kit authors can import and `satisfies` against.
 
 ### Apparatus
 
@@ -246,7 +246,7 @@ Plugins are listed in `guild.json` by their plugin id. The framework determines 
 
 ```json
 {
-  "plugins": ["books", "clockworks", "walker", "sessions", "nexus-git"]
+  "plugins": ["books", "clockworks", "spider", "sessions", "nexus-git"]
 }
 ```
 
@@ -279,7 +279,7 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 | **The Instrumentarium** | `tools` | Tool registry — resolves installed tools, permission-gated tool sets |
 | **The Animator** | `animator` | Session lifecycle — launches, monitors, and records anima sessions |
 | **The Fabricator** | `fabricator` | Engine design registry — answers "what engine chain satisfies this need?" from installed kits |
-| **The Walker** | `walker` | Rig lifecycle — spawns, traverses, extends, and strikes rigs as work progresses |
+| **The Spider** | `spider` | Rig lifecycle — spawns, traverses, extends, and strikes rigs as work progresses |
 | **The Executor** | `executor` | Engine runner — executes clockwork and quick engines against a configured substrate |
 
 ### Default Kits
@@ -358,7 +358,7 @@ See [The Stacks — API Contract](apparatus/stacks.md) for the full specificatio
 
 ## Work Model
 
-<!-- TODO: The obligation pipeline. Commission (patron's request) → Mandate writ (guild's formal record, created by Clerk) → child writs as the guild decomposes the work → Rigs as the execution scaffolding for a writ. Writ lifecycle (ready → active → pending → completed/failed/cancelled). Writ hierarchy and completion rollup. Brief intro to rigs (assembled by Walker from engine designs contributed by kits via Fabricator). Link to rigging.md for rig execution detail. -->
+<!-- TODO: The obligation pipeline. Commission (patron's request) → Mandate writ (guild's formal record, created by Clerk) → child writs as the guild decomposes the work → Rigs as the execution scaffolding for a writ. Writ lifecycle (ready → active → pending → completed/failed/cancelled). Writ hierarchy and completion rollup. Brief intro to rigs (assembled by Spider from engine designs contributed by kits via Fabricator). Link to rigging.md for rig execution detail. -->
 
 ---
 
@@ -392,12 +392,12 @@ Tools can be TypeScript modules or plain scripts (bash, Python, any executable).
 
 ### Engines
 
-**Engines** are the workhorse components of rigs — bounded units of work the Walker mounts and sets in motion. An engine runs when its upstream dependencies (givens) are satisfied and produces yields when done. Two kinds:
+**Engines** are the workhorse components of rigs — bounded units of work the Spider mounts and sets in motion. An engine runs when its upstream dependencies (givens) are satisfied and produces yields when done. Two kinds:
 
 - **Clockwork** — deterministic, no AI. Runs its code directly against the configured substrate.
 - **Quick** — inhabited by an anima for work requiring judgment. The engine defines the work context; the anima brings the skill.
 
-Kits contribute engine designs; the Walker draws on them (via The Fabricator) to extend rigs as work progresses. Engines are not role-gated — they are not wielded by animas directly; they are the work context an anima staffs.
+Kits contribute engine designs; the Spider draws on them (via The Fabricator) to extend rigs as work progresses. Engines are not role-gated — they are not wielded by animas directly; they are the work context an anima staffs.
 
 ### Relays
 
@@ -408,7 +408,7 @@ Kits contribute engine designs; the Walker draws on them (via The Fabricator) to
 | | Tools | Engines | Relays |
 |---|---|---|---|
 | **Purpose** | Instruments animas wield | Rig workhorses | Clockworks event handlers |
-| **Invoked by** | Animas (MCP), humans (CLI), code | Walker (within a rig) | Clockworks runner (standing order) |
+| **Invoked by** | Animas (MCP), humans (CLI), code | Spider (within a rig) | Clockworks runner (standing order) |
 | **Role gating?** | Yes | No | No |
 | **Instructions?** | Optional | No | No |
 | **Clockwork or quick?** | Neither (runs on demand) | Either | Always clockwork |

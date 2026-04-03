@@ -1,8 +1,8 @@
 /**
- * The Walker — rig execution engine apparatus.
+ * The Spider — rig execution engine apparatus.
  *
- * The Walker drives writ-to-completion by managing rigs: ordered pipelines
- * of engine instances. Each walk() call performs one unit of work:
+ * The Spider drives writ-to-completion by managing rigs: ordered pipelines
+ * of engine instances. Each crawl() call performs one unit of work:
  *
  *   collect > run > spawn   (priority order)
  *
@@ -13,7 +13,7 @@
  * CDC on the rigs book (Phase 1 cascade) transitions the associated writ
  * when a rig reaches a terminal state (completed or failed).
  *
- * See: docs/architecture/apparatus/walker.md
+ * See: docs/architecture/apparatus/spider.md
  */
 
 import type { Plugin, StartupContext } from '@shardworks/nexus-core';
@@ -26,9 +26,9 @@ import type { SessionDoc } from '@shardworks/animator-apparatus';
 import type {
   RigDoc,
   EngineInstance,
-  WalkerApi,
-  WalkResult,
-  WalkerConfig,
+  SpiderApi,
+  CrawlResult,
+  SpiderConfig,
 } from './types.ts';
 
 import {
@@ -39,7 +39,7 @@ import {
   sealEngine,
 } from './engines/index.ts';
 
-import { walkTool, walkContinualTool } from './tools/index.ts';
+import { crawlTool, crawlContinualTool } from './tools/index.ts';
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -91,7 +91,7 @@ function findRunnableEngine(rig: RigDoc): EngineInstance | null {
  * Each engine receives only the givens it needs.
  * Upstream yields arrive via context.upstream at run time.
  */
-function buildStaticEngines(writ: WritDoc, config: WalkerConfig): EngineInstance[] {
+function buildStaticEngines(writ: WritDoc, config: SpiderConfig): EngineInstance[] {
   const role = config.role ?? 'artificer';
   const reviewGivens: Record<string, unknown> = {
     writ,
@@ -111,15 +111,15 @@ function buildStaticEngines(writ: WritDoc, config: WalkerConfig): EngineInstance
 
 // ── Apparatus factory ──────────────────────────────────────────────────
 
-export function createWalker(): Plugin {
+export function createSpider(): Plugin {
   let rigsBook: Book<RigDoc>;
   let sessionsBook: ReadOnlyBook<SessionDoc>;
   let writsBook: ReadOnlyBook<WritDoc>;
   let clerk: ClerkApi;
   let fabricator: FabricatorApi;
-  let walkerConfig: WalkerConfig = {};
+  let spiderConfig: SpiderConfig = {};
 
-  // ── Internal walk operations ─────────────────────────────────────
+  // ── Internal crawl operations ─────────────────────────────────────
 
   /**
    * Mark an engine failed and propagate failure to the rig (same update).
@@ -148,7 +148,7 @@ export function createWalker(): Plugin {
    * reached a terminal state. Populate yields and advance the engine
    * (and possibly the rig) to completed or failed.
    */
-  async function tryCollect(): Promise<WalkResult | null> {
+  async function tryCollect(): Promise<CrawlResult | null> {
     const runningRigs = await rigsBook.find({ where: [['status', '=', 'running']] });
     for (const rig of runningRigs) {
       for (const engine of rig.engines) {
@@ -217,7 +217,7 @@ export function createWalker(): Plugin {
    *   check for rig completion.
    * - Quick ('launched') → store sessionId, mark engine running.
    */
-  async function tryRun(): Promise<WalkResult | null> {
+  async function tryRun(): Promise<CrawlResult | null> {
     const runningRigs = await rigsBook.find({ where: [['status', '=', 'running']] });
     for (const rig of runningRigs) {
       const pending = findRunnableEngine(rig);
@@ -297,7 +297,7 @@ export function createWalker(): Plugin {
    * Find the oldest ready writ with no existing rig. Create a rig and
    * transition the writ to active so the Clerk tracks it as in-progress.
    */
-  async function trySpawn(): Promise<WalkResult | null> {
+  async function trySpawn(): Promise<CrawlResult | null> {
     // Find ready writs ordered by creation time (oldest first)
     const readyWrits = await writsBook.find({
       where: [['status', '=', 'ready']],
@@ -314,7 +314,7 @@ export function createWalker(): Plugin {
       if (existing.length > 0) continue;
 
       const rigId = generateId('rig', 4);
-      const engines = buildStaticEngines(writ, walkerConfig);
+      const engines = buildStaticEngines(writ, spiderConfig);
 
       const rig: RigDoc = {
         id: rigId,
@@ -331,7 +331,7 @@ export function createWalker(): Plugin {
       } catch (err) {
         // Only swallow state-transition conflicts (writ already moved past 'ready')
         if (err instanceof Error && err.message.includes('transition')) {
-          // Race condition — another walker got here first. The rig is already created,
+          // Race condition — another spider got here first. The rig is already created,
           // so we continue. The writ is already active or beyond.
         } else {
           throw err;
@@ -344,10 +344,10 @@ export function createWalker(): Plugin {
     return null;
   }
 
-  // ── WalkerApi ─────────────────────────────────────────────────────
+  // ── SpiderApi ─────────────────────────────────────────────────────
 
-  const api: WalkerApi = {
-    async walk(): Promise<WalkResult | null> {
+  const api: SpiderApi = {
+    async crawl(): Promise<CrawlResult | null> {
       const collected = await tryCollect();
       if (collected) return collected;
 
@@ -380,27 +380,27 @@ export function createWalker(): Plugin {
           revise:    reviseEngine,
           seal:      sealEngine,
         },
-        tools: [walkTool, walkContinualTool],
+        tools: [crawlTool, crawlContinualTool],
       },
 
       provides: api,
 
       start(_ctx: StartupContext): void {
         const g = guild();
-        walkerConfig = g.guildConfig().walker ?? {};
+        spiderConfig = g.guildConfig().spider ?? {};
 
         const stacks = g.apparatus<StacksApi>('stacks');
         clerk = g.apparatus<ClerkApi>('clerk');
         fabricator = g.apparatus<FabricatorApi>('fabricator');
 
-        rigsBook = stacks.book<RigDoc>('walker', 'rigs');
+        rigsBook = stacks.book<RigDoc>('spider', 'rigs');
         sessionsBook = stacks.readBook<SessionDoc>('animator', 'sessions');
         writsBook = stacks.readBook<WritDoc>('clerk', 'writs');
 
         // CDC — Phase 1 cascade on rigs book.
         // When a rig reaches a terminal state, transition the associated writ.
         stacks.watch<RigDoc>(
-          'walker',
+          'spider',
           'rigs',
           async (event) => {
             if (event.type !== 'update') return;

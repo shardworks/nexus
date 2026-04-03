@@ -6,7 +6,7 @@ This document describes the plugin system — how the guild's capabilities are p
 
 ## Overview
 
-The guild framework ships with no running infrastructure of its own. The Clockworks, the Walker, the Surveyor — everything that makes a guild operational is contributed by plugins. `nsg init` installs a default plugin set; a guild's installed plugins determine what it can do.
+The guild framework ships with no running infrastructure of its own. The Clockworks, the Spider, the Surveyor — everything that makes a guild operational is contributed by plugins. `nsg init` installs a default plugin set; a guild's installed plugins determine what it can do.
 
 This is a deliberate design choice. Keeping the framework core to a plugin loader and a set of type contracts means each piece of infrastructure is independently testable, replaceable, and comprehensible. There is no privileged built-in layer; a core apparatus and a community kit are the same kind of thing.
 
@@ -41,24 +41,24 @@ A kit package exports its manifest as the default export:
 
 ```typescript
 import type { ClockworksKit } from "nexus-clockworks"
-import type { WalkerKit }     from "nexus-walker"
+import type { SpiderKit }     from "nexus-spider"
 import type { AnimaKit }      from "nexus-sessions"
 
 export default {
   kit: {
     requires:   ["nexus-books"],
-    recommends: ["nexus-clockworks", "nexus-walker"],
+    recommends: ["nexus-clockworks", "nexus-spider"],
     engines: [createBranchEngine, deleteBranchEngine, mergeBranchEngine],
     relays:  [onMergeRelay],
     tools:   [statusTool, diffTool, logTool],
-  } satisfies ClockworksKit & WalkerKit & AnimaKit,
+  } satisfies ClockworksKit & SpiderKit & AnimaKit,
 } satisfies Plugin
 ```
 
 Type safety for contribution fields is provided by the apparatus that consumes them — not by the framework. Each apparatus package publishes a kit interface that kit authors can import and `satisfies` against:
 
 - `ClockworksKit` — defines `relays`. See [ClockworksKit](clockworks.md#clockworkskit).
-- `WalkerKit` — defines `engines`. See [Engine Designs](engine-designs.md).
+- `SpiderKit` — defines `engines`. See [Engine Designs](engine-designs.md).
 - `AnimaKit` — defines `tools`. See [Tools](anima-lifecycle.md#tools).
 
 Kit authors who don't want or need static type checking simply write a plain object — both approaches are valid.
@@ -69,7 +69,7 @@ The framework never inspects contribution field contents. It sees kit records as
 
 ## Apparatus
 
-An apparatus is a package contributing persistent running infrastructure to the guild. It implements a lifecycle in `start` and `stop`. The Clockworks, Walker, and Surveyor are all apparatuses.
+An apparatus is a package contributing persistent running infrastructure to the guild. It implements a lifecycle in `start` and `stop`. The Clockworks, Spider, and Surveyor are all apparatuses.
 
 ```typescript
 type Apparatus = {
@@ -299,7 +299,7 @@ warn: nexus-signals contributes relays but no installed apparatus consumes "rela
 warn: nexus-git contributes engines but no installed apparatus consumes "engines"
 ```
 
-Warnings surface at startup where an operator can act on them — not silently at runtime when a commission fails because no Walker is present.
+Warnings surface at startup where an operator can act on them — not silently at runtime when a commission fails because no Spider is present.
 
 ### Design Notes
 
@@ -492,7 +492,7 @@ The Kit/Apparatus split makes this concrete: everything contributed by a kit is 
 
 ## Failure Modes
 
-**Missing dependency** — a plugin declares `requires: ["nexus-clockworks"]` and that plugin is not installed. Loud startup failure before any apparatus starts: *"nexus-walker requires nexus-clockworks, which is not installed."*
+**Missing dependency** — a plugin declares `requires: ["nexus-clockworks"]` and that plugin is not installed. Loud startup failure before any apparatus starts: *"nexus-spider requires nexus-clockworks, which is not installed."*
 
 **Plugin provides nothing** — `guild().apparatus("nexus-git")` where the apparatus has no `provides`. Returns a sentinel; throws with a useful message on access.
 
@@ -508,7 +508,7 @@ Installed plugins are declared in `guild.json`:
 {
   "plugins": [
     "nexus-clockworks",
-    "nexus-walker",
+    "nexus-spider",
     "nexus-surveyor",
     "nexus-stacks",
     "nexus-git"

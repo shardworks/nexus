@@ -1,13 +1,13 @@
 {
-  "name": "@shardworks/walker-apparatus",
+  "name": "@shardworks/spider-apparatus",
   "version": "0.0.0",
   "license": "ISC",
   "repository": {
     "type": "git",
     "url": "https://github.com/shardworks/nexus",
-    "directory": "packages/plugins/walker"
+    "directory": "packages/plugins/spider"
   },
-  "description": "The Walker — rig execution engine apparatus",
+  "description": "The Spider — rig execution engine apparatus",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

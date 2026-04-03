@@ -128,10 +128,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         } catch { /* animator not installed */ }
 
         try {
-          const rigs = stacks.readBook<RigDoc>('walker', 'rigs');
+          const rigs = stacks.readBook<RigDoc>('spider', 'rigs');
           counts.rigs        = await rigs.count();
           counts.runningRigs = await rigs.count([['status', '=', 'running']]);
-        } catch { /* walker not installed */ }
+        } catch { /* spider not installed */ }
       }
 
       const scriptorium = tryApparatus<ScriptoriumApi>('codexes');
@@ -238,7 +238,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const stacks = tryApparatus<StacksApi>('stacks');
     if (!stacks) { json(res, { rigs: [] }); return; }
     try {
-      const rigs = stacks.readBook<RigDoc>('walker', 'rigs');
+      const rigs = stacks.readBook<RigDoc>('spider', 'rigs');
       const where: WhereClause | undefined = qs.status
         ? [['status', '=', qs.status]]
         : undefined;

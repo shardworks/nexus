@@ -179,7 +179,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 <nav id="tab-nav">
   <div class="tab active" data-tab="overview">Overview</div>
   <div class="tab" data-tab="clerk">Clerk <span class="tab-badge" id="badge-clerk">—</span></div>
-  <div class="tab" data-tab="walker">Walker <span class="tab-badge" id="badge-walker">—</span></div>
+  <div class="tab" data-tab="spider">Spider <span class="tab-badge" id="badge-spider">—</span></div>
   <div class="tab" data-tab="animator">Animator <span class="tab-badge" id="badge-animator">—</span></div>
   <div class="tab" data-tab="codexes">Codexes <span class="tab-badge" id="badge-codexes">—</span></div>
 </nav>
@@ -271,21 +271,21 @@ tr:hover td{background:rgba(255,255,255,.02)}
     </div>
   </div>
 
-  <!-- WALKER -->
-  <div class="tab-panel" id="panel-walker">
+  <!-- SPIDER -->
+  <div class="tab-panel" id="panel-spider">
     <div class="card" style="margin-bottom:0">
       <div class="toolbar">
-        <select id="walker-filter-status" onchange="loadRigs()">
+        <select id="spider-filter-status" onchange="loadRigs()">
           <option value="">All statuses</option>
           <option value="running">Running</option>
           <option value="completed">Completed</option>
           <option value="failed">Failed</option>
         </select>
         <div class="toolbar-right">
-          <span id="walker-count-label" style="color:var(--muted);font-size:12px"></span>
+          <span id="spider-count-label" style="color:var(--muted);font-size:12px"></span>
         </div>
       </div>
-      <div id="walker-loading" class="loading" style="display:none"><div class="spinner"></div>Loading…</div>
+      <div id="spider-loading" class="loading" style="display:none"><div class="spinner"></div>Loading…</div>
       <table>
         <thead>
           <tr>
@@ -296,12 +296,12 @@ tr:hover td{background:rgba(255,255,255,.02)}
             <th>Progress</th>
           </tr>
         </thead>
-        <tbody id="walker-tbody"></tbody>
+        <tbody id="spider-tbody"></tbody>
       </table>
-      <div id="walker-empty" class="empty-state" style="display:none">
+      <div id="spider-empty" class="empty-state" style="display:none">
         <div class="empty-icon">⚙️</div>
         <h3>No rigs found</h3>
-        <p>Rigs are created when the Walker processes writs.</p>
+        <p>Rigs are created when the Spider processes writs.</p>
       </div>
     </div>
   </div>
@@ -478,7 +478,7 @@ function switchTab(id) {
 function loadTab(id) {
   if (id === 'overview') loadOverview();
   else if (id === 'clerk') loadWrits();
-  else if (id === 'walker') loadRigs();
+  else if (id === 'spider') loadRigs();
   else if (id === 'animator') loadSessions();
   else if (id === 'codexes') loadCodexes();
 }
@@ -578,7 +578,7 @@ function renderOverview(data) {
 
   // Update badges
   if (data.counts.writs !== undefined) setBadge('clerk', data.counts.writs);
-  if (data.counts.rigs !== undefined) setBadge('walker', data.counts.rigs);
+  if (data.counts.rigs !== undefined) setBadge('spider', data.counts.rigs);
   if (data.counts.sessions !== undefined) setBadge('animator', data.counts.sessions);
   if (data.counts.codexes !== undefined) setBadge('codexes', data.counts.codexes);
 }
@@ -794,28 +794,28 @@ async function submitTransition() {
   }
 }
 
-// ── WALKER ────────────────────────────────────────────────────────
+// ── SPIDER ────────────────────────────────────────────────────────
 async function loadRigs() {
-  const status = document.getElementById('walker-filter-status').value;
-  document.getElementById('walker-loading').style.display = 'flex';
+  const status = document.getElementById('spider-filter-status').value;
+  document.getElementById('spider-loading').style.display = 'flex';
   try {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
     const data = await api('/rigs?' + params);
     rigs = data.rigs;
     renderRigs();
-    setBadge('walker', rigs.length);
-    document.getElementById('walker-count-label').textContent = rigs.length + ' rig' + (rigs.length!==1?'s':'');
+    setBadge('spider', rigs.length);
+    document.getElementById('spider-count-label').textContent = rigs.length + ' rig' + (rigs.length!==1?'s':'');
   } catch(e) {
-    document.getElementById('walker-loading').innerHTML = '<span style="color:var(--red)">Error: ' + esc(e.message) + '</span>';
+    document.getElementById('spider-loading').innerHTML = '<span style="color:var(--red)">Error: ' + esc(e.message) + '</span>';
     return;
   }
-  document.getElementById('walker-loading').style.display = 'none';
+  document.getElementById('spider-loading').style.display = 'none';
 }
 
 function renderRigs() {
   const rows = stableSort(rigs, rigSort.col, rigSort.dir);
-  const tbody = document.getElementById('walker-tbody');
+  const tbody = document.getElementById('spider-tbody');
   tbody.innerHTML = rows.map(r => {
     const engines = r.engines || [];
     const done = engines.filter(e => e.status==='completed' || e.status==='failed').length;
@@ -836,7 +836,7 @@ function renderRigs() {
       '</td>' +
     '</tr>';
   }).join('');
-  document.getElementById('walker-empty').style.display = rows.length ? 'none' : 'block';
+  document.getElementById('spider-empty').style.display = rows.length ? 'none' : 'block';
 }
 
 function sortRigs(col) {
