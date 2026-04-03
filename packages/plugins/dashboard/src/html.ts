@@ -673,12 +673,12 @@ function filterWritsLocal() { renderWrits(); }
 function writActions(w) {
   const btns = [];
   if (w.status === 'ready') {
-    btns.push('<button class="btn-success btn-sm" onclick="openTrans(\'' + w.id + '\',\'active\')">Accept</button>');
-    btns.push('<button class="btn-danger btn-sm" onclick="openTrans(\'' + w.id + '\',\'cancelled\')">Cancel</button>');
+    btns.push('<button class="btn-success btn-sm" onclick="openTrans(&#39;' + w.id + '&#39;,&#39;active&#39;)">Accept</button>');
+    btns.push('<button class="btn-danger btn-sm" onclick="openTrans(&#39;' + w.id + '&#39;,&#39;cancelled&#39;)">Cancel</button>');
   } else if (w.status === 'active') {
-    btns.push('<button class="btn-success btn-sm" onclick="openTrans(\'' + w.id + '\',\'completed\')">Complete</button>');
-    btns.push('<button class="btn-danger btn-sm" onclick="openTrans(\'' + w.id + '\',\'failed\')">Fail</button>');
-    btns.push('<button class="btn-ghost btn-sm" onclick="openTrans(\'' + w.id + '\',\'cancelled\')">Cancel</button>');
+    btns.push('<button class="btn-success btn-sm" onclick="openTrans(&#39;' + w.id + '&#39;,&#39;completed&#39;)">Complete</button>');
+    btns.push('<button class="btn-danger btn-sm" onclick="openTrans(&#39;' + w.id + '&#39;,&#39;failed&#39;)">Fail</button>');
+    btns.push('<button class="btn-ghost btn-sm" onclick="openTrans(&#39;' + w.id + '&#39;,&#39;cancelled&#39;)">Cancel</button>');
   }
   return btns.join('') || '<span style="color:var(--muted);font-size:11px">Terminal</span>';
 }

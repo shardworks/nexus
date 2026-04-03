@@ -26,11 +26,11 @@ requires: ['fabricator', 'clerk', 'stacks']
 - **The Clerk** — queries ready writs; receives writ transitions via CDC.
 - **The Stacks** — persists rigs book, reads sessions book, hosts CDC handler on rigs book.
 
-Engines pull their own apparatus dependencies (Scriptorium, Animator, Loom) via the `guild()` singleton — these are not Walker dependencies.
+Engines pull their own apparatus dependencies (Scriptorium, Animator, Loom) via the `guild()` singleton — these are not Spider dependencies.
 
 ### Reference docs
 
-- **The Rigging System** (`docs/architecture/rigging.md`) — full rigging architecture (Walker, Fabricator, Executor, Manifester). This spec implements a subset.
+- **The Rigging System** (`docs/architecture/rigging.md`) — full rigging architecture (Spider, Fabricator, Executor, Manifester). This spec implements a subset.
 - **The Fabricator** (`docs/architecture/apparatus/fabricator.md`) — engine design registry and `EngineDesign` type definitions.
 - **The Scriptorium** (`docs/architecture/apparatus/scriptorium.md`) — draft binding API (`openDraft`, `seal`, `abandonDraft`).
 - **The Animator** (`docs/architecture/apparatus/animator.md`) — session API (`summon`, `animate`), `AnimateHandle`, `SessionResult`.
@@ -139,7 +139,7 @@ interface EngineInstance {
   givensSpec: Record<string, unknown>  // givens specification — literal values now, templates later
   yields: unknown          // set on completion — the engine's yields (see Yield Types below)
   error?: string           // set on failure
-  sessionId?: string       // set when run() returns 'launched' — Walker polls for completion
+  sessionId?: string       // set when run() returns 'launched' — Spider polls for completion
   startedAt?: string       // ISO-8601, set when engine begins running (enables future timeout detection)
   completedAt?: string     // ISO-8601, set when engine reaches terminal status
 }
@@ -223,7 +223,7 @@ interface DraftYields {
 **Produced by:** `draft` engine
 **Consumed by:** all downstream engines. Establishes the physical workspace.
 
-> **Note:** Field names mirror the Scriptorium's `DraftRecord` type (`codexName`, `branch`, `path`) rather than inventing Walker-specific aliases. `baseSha` is the only field the draft engine adds itself — by reading `HEAD` after opening the draft.
+> **Note:** Field names mirror the Scriptorium's `DraftRecord` type (`codexName`, `branch`, `path`) rather than inventing Spider-specific aliases. `baseSha` is the only field the draft engine adds itself — by reading `HEAD` after opening the draft.
 
 ### `ImplementYields`
 
@@ -234,7 +234,7 @@ interface ImplementYields {
 }
 ```
 
-**Produced by:** `implement` engine (set by Walker's collect step when session completes)
+**Produced by:** `implement` engine (set by Spider's collect step when session completes)
 **Consumed by:** `review` (needs to know the session completed)
 
 ### `ReviewYields`
@@ -269,7 +269,7 @@ interface ReviseYields {
 }
 ```
 
-**Produced by:** `revise` engine (set by Walker's collect step when session completes)
+**Produced by:** `revise` engine (set by Spider's collect step when session completes)
 **Consumed by:** `seal` (no data dependency — seal just needs revise to be done)
 
 ### `SealYields`
@@ -339,10 +339,10 @@ async run(givens: Record<string, unknown>, context: EngineRunContext): Promise<E
 
 The implement engine wraps the writ body with a commit instruction — each engine owns its own prompt contract rather than relying on `dispatch.sh` to append instructions to the writ body.
 
-**Collect step (Walker, not engine):** When the Spider's collect step detects the session has completed, it builds the yields:
+**Collect step (Spider, not engine):** When the Spider's collect step detects the session has completed, it builds the yields:
 
 ```typescript
-// In Walker's collect step
+// In Spider's collect step
 const session = await stacks.get('sessions', engine.sessionId)
 engine.yields = {
   sessionId: session.id,
@@ -457,7 +457,7 @@ Produce your findings as your final message in the format above.
 **Collect step:** The Spider retrieves the reviewer's findings from the session output — the reviewer produces structured markdown as its final message, and the Animator captures this on the session record. No file is written to the worktree (review artifacts don't belong in the codebase).
 
 ```typescript
-// In Walker's collect step
+// In Spider's collect step
 const session = await stacks.get('sessions', engine.sessionId)
 const findings = session.output  // reviewer's structured findings from final message
 const passed = /^###\s*Overall:\s*PASS/mi.test(findings)
@@ -627,12 +627,12 @@ Quick engine "failure" definition: if the Animator session completes with `statu
 ## Dependency Map
 
 ```
-Walker
+Spider
   ├── Fabricator  (resolve engine designs by designId)
   ├── Clerk       (query ready writs, transition writ state via CDC)
   ├── Stacks      (persist rigs book, read sessions book, CDC handler on rigs book)
   │
-  Engines (via guild() singleton, not Walker dependencies)
+  Engines (via guild() singleton, not Spider dependencies)
   ├── Scriptorium (draft, seal engines — open drafts, seal)
   ├── Animator    (implement, review, revise engines — summon animas)
   └── Loom        (via Animator's summon — context composition)
@@ -667,7 +667,7 @@ These are known directions the Spider and its data model will grow. None are in 
 
 ```json
 {
-  "walker": {
+  "spider": {
     "role": "artificer",
     "pollIntervalMs": 5000,
     "buildCommand": "pnpm build",

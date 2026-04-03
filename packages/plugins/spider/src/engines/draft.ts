@@ -30,7 +30,14 @@ const draftEngine: EngineDesign = {
       associatedWith: writ.id,
     });
 
-    const baseSha = execSync('git rev-parse HEAD', { cwd: draft.path, encoding: 'utf-8' }).trim();
+    let baseSha: string;
+    try {
+      baseSha = execSync('git rev-parse HEAD', { cwd: draft.path, encoding: 'utf-8' }).trim();
+    } catch (err) {
+      throw new Error(
+        `Failed to read HEAD commit in draft worktree "${draft.path}": ${(err as Error).message}`,
+      );
+    }
 
     const yields: DraftYields = {
       draftId: draft.id,

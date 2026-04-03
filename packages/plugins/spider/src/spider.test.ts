@@ -871,6 +871,35 @@ describe('Spider', () => {
     });
   });
 
+  // ── Draft engine — baseSha population ──────────────────────────────
+
+  describe('draft engine — baseSha', () => {
+    it('includes baseSha in DraftYields when draft is completed', async () => {
+      // The draft engine calls execSync('git rev-parse HEAD') which we can't
+      // run in test (no real Scriptorium). Verify that baseSha flows through
+      // the rig correctly when pre-completed with yields.
+      const { clerk, spider, stacks } = fix;
+      await postWrit(clerk);
+      await spider.crawl(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'abc123def' };
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) =>
+          e.id === 'draft' ? { ...e, status: 'completed' as const, yields: draftYields } : e,
+        ),
+      });
+
+      // Verify baseSha is present in the stored yields
+      const [updated] = await book.list();
+      const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
+      assert.equal(draft?.status, 'completed');
+      const yields = draft?.yields as Record<string, unknown>;
+      assert.equal(yields.baseSha, 'abc123def', 'baseSha should be populated in DraftYields');
+    });
+  });
+
   // ── Full pipeline ─────────────────────────────────────────────────
 
   describe('full pipeline', () => {
