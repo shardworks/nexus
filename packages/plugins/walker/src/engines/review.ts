@@ -1,26 +1,154 @@
 /**
- * Review engine — stub (Increment 1).
+ * Review engine — quick (Animator-backed).
  *
- * Returns a completed result with mock yields so the full pipeline can be
- * tested end-to-end. Increment 3 replaces this with real Animator-backed
- * quick engine execution.
+ * Runs mechanical checks (build/test) synchronously in the draft worktree,
+ * then summons a reviewer anima to assess the implementation against the spec.
+ * Returns `{ status: 'launched', sessionId }` so the Walker's collect step
+ * can parse the reviewer's findings from session.output on subsequent walks.
+ *
+ * Collect step (Walker):
+ *   - Reads session.output as the reviewer's structured markdown findings
+ *   - Parses `passed` from /^###\s*Overall:\s*PASS/mi
+ *   - Retrieves mechanicalChecks from session.metadata
  */
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { guild } from '@shardworks/nexus-core';
 import type { EngineDesign } from '@shardworks/fabricator-apparatus';
+import type { AnimatorApi } from '@shardworks/animator-apparatus';
+import type { WritDoc } from '@shardworks/clerk-apparatus';
+import type { DraftYields, MechanicalCheck } from '../types.ts';
+
+const execFileAsync = promisify(execFile);
+
+async function runCheck(name: 'build' | 'test', command: string, cwd: string): Promise<MechanicalCheck> {
+  const start = Date.now();
+  try {
+    const { stdout, stderr } = await execFileAsync('sh', ['-c', command], { cwd });
+    const output = (stdout + stderr).slice(0, 4096);
+    return { name, passed: true, output, durationMs: Date.now() - start };
+  } catch (err: unknown) {
+    const execErr = err as { stdout?: string; stderr?: string };
+    const output = ((execErr.stdout ?? '') + (execErr.stderr ?? '')).slice(0, 4096);
+    return { name, passed: false, output, durationMs: Date.now() - start };
+  }
+}
+
+async function gitDiff(cwd: string, baseSha: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', ['diff', `${baseSha}..HEAD`], { cwd });
+    return stdout;
+  } catch {
+    return '';
+  }
+}
+
+async function gitStatus(cwd: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', ['status', '--porcelain'], { cwd });
+    return stdout;
+  } catch {
+    return '';
+  }
+}
+
+function assembleReviewPrompt(writ: WritDoc, diff: string, status: string, checks: MechanicalCheck[]): string {
+  const checksSection = checks.length === 0
+    ? '(No mechanical checks configured.)'
+    : checks.map((c) => `### ${c.name}: ${c.passed ? 'PASSED' : 'FAILED'}\n\`\`\`\n${c.output}\n\`\`\``).join('\n\n');
+
+  return `# Code Review
+
+You are reviewing work on a commission. Your job is to assess whether the
+implementation satisfies the spec, identify any gaps or problems, and produce
+a structured findings document.
+
+## The Commission (Spec)
+
+${writ.body}
+
+## Implementation Diff
+
+Changes since the draft was opened:
+
+\`\`\`diff
+${diff}
+\`\`\`
+
+## Current Worktree State
+
+\`\`\`
+${status}
+\`\`\`
+
+## Mechanical Check Results
+
+${checksSection}
+
+## Instructions
+
+Assess the implementation against the spec. Produce your findings in this format:
+
+### Overall: PASS or FAIL
+
+### Completeness
+- Which spec requirements are addressed?
+- Which are missing or partially addressed?
+
+### Correctness
+- Are there bugs, logic errors, or regressions?
+- Do the tests pass? If not, what fails?
+
+### Quality
+- Code style consistent with the codebase?
+- Appropriate test coverage for new code?
+- Any concerns about the approach?
+
+### Required Changes (if FAIL)
+Numbered list of specific changes needed, in priority order.
+
+Produce your findings as your final message in the format above.`;
+}
 
 const reviewEngine: EngineDesign = {
   id: 'review',
 
-  async run(_givens, _context) {
-    return {
-      status: 'completed',
-      yields: {
-        sessionId: 'stub',
-        passed: true,
-        findings: 'Stub review — no findings.',
-        mechanicalChecks: [],
+  async run(givens, context) {
+    const animator = guild().apparatus<AnimatorApi>('animator');
+    const writ = givens.writ as WritDoc;
+    const draft = context.upstream['draft'] as DraftYields;
+
+    // 1. Run mechanical checks synchronously before the reviewer session
+    const checks: MechanicalCheck[] = [];
+    if (givens.buildCommand) {
+      checks.push(await runCheck('build', givens.buildCommand as string, draft.path));
+    }
+    if (givens.testCommand) {
+      checks.push(await runCheck('test', givens.testCommand as string, draft.path));
+    }
+
+    // 2. Compute diff since draft opened and current worktree state
+    const diff = await gitDiff(draft.path, draft.baseSha);
+    const status = await gitStatus(draft.path);
+
+    // 3. Assemble review prompt
+    const prompt = assembleReviewPrompt(writ, diff, status, checks);
+
+    // 4. Launch reviewer session — stash mechanicalChecks in metadata for collect step
+    const handle = animator.summon({
+      role: givens.role as string,
+      prompt,
+      cwd: draft.path,
+      metadata: {
+        engineId: context.engineId,
+        writId: writ.id,
+        mechanicalChecks: checks,
       },
-    };
+    });
+
+    const sessionResult = await handle.result;
+    return { status: 'launched', sessionId: sessionResult.id };
   },
 };
 

@@ -26,7 +26,7 @@ import type { FabricatorApi, EngineDesign } from '@shardworks/fabricator-apparat
 import type { AnimatorApi, SummonRequest, AnimateHandle, SessionChunk, SessionResult, SessionDoc } from '@shardworks/animator-apparatus';
 
 import { createWalker } from './walker.ts';
-import type { WalkerApi, RigDoc, EngineInstance } from './types.ts';
+import type { WalkerApi, RigDoc, EngineInstance, ReviewYields, MechanicalCheck } from './types.ts';
 
 // ── Test bootstrap ────────────────────────────────────────────────────
 
@@ -59,7 +59,7 @@ function buildCtx(): {
  */
 function buildFixture(
   guildConfig: Partial<GuildConfig> = {},
-  initialSessionOutcome: { status: 'completed' | 'failed'; error?: string } = { status: 'completed' },
+  initialSessionOutcome: { status: 'completed' | 'failed'; error?: string; output?: string } = { status: 'completed' },
 ): {
   stacks: StacksApi;
   clerk: ClerkApi;
@@ -68,7 +68,7 @@ function buildFixture(
   memBackend: InstanceType<typeof MemoryBackend>;
   fire: (event: string, ...args: unknown[]) => Promise<void>;
   summonCalls: SummonRequest[];
-  setSessionOutcome: (outcome: { status: 'completed' | 'failed'; error?: string }) => void;
+  setSessionOutcome: (outcome: { status: 'completed' | 'failed'; error?: string; output?: string }) => void;
 } {
   const memBackend = new MemoryBackend();
   const stacksPlugin = createStacksApparatus(memBackend);
@@ -153,6 +153,7 @@ function buildFixture(
           provider: 'mock',
           exitCode: outcome.status === 'completed' ? 0 : 1,
           ...(outcome.error ? { error: outcome.error } : {}),
+          ...(outcome.output !== undefined ? { output: outcome.output } : {}),
           metadata: request.metadata,
         };
         await sessBook.put(doc);
@@ -165,6 +166,7 @@ function buildFixture(
           provider: 'mock',
           exitCode: outcome.status === 'completed' ? 0 : 1,
           ...(outcome.error ? { error: outcome.error } : {}),
+          ...(outcome.output !== undefined ? { output: outcome.output } : {}),
           metadata: request.metadata,
         } as SessionResult;
       })();
@@ -208,7 +210,7 @@ function buildFixture(
   return {
     stacks, clerk, fabricator, walker, memBackend, fire,
     summonCalls,
-    setSessionOutcome(outcome: { status: 'completed' | 'failed'; error?: string }) {
+    setSessionOutcome(outcome: { status: 'completed' | 'failed'; error?: string; output?: string }) {
       currentSessionOutcome = outcome;
     },
   };
@@ -848,7 +850,7 @@ describe('Walker', () => {
       const [rig] = await book.list();
 
       // Mark draft + implement as completed
-      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p' };
+      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' };
       const implYields = { sessionId: 'stub', sessionStatus: 'completed' };
       const updatedEngines = rig.engines.map((e: EngineInstance) => {
         if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: draftYields };
@@ -857,17 +859,22 @@ describe('Walker', () => {
       });
       await book.patch(rig.id, { engines: updatedEngines });
 
-      // Walk: review runs — stub clockwork (no external deps)
+      // Walk: review launches a session (quick engine → 'engine-started')
       const result = await walker.walk();
-      assert.equal(result?.action, 'engine-completed');
+      assert.equal(result?.action, 'engine-started');
       assert.equal((result as { engineId: string }).engineId, 'review');
+
+      // Walk: collect step picks up the completed review session
+      const result2 = await walker.walk();
+      assert.equal(result2?.action, 'engine-completed');
+      assert.equal((result2 as { engineId: string }).engineId, 'review');
     });
   });
 
-  // ── Full stub pipeline ─────────────────────────────────────────────
+  // ── Full pipeline ─────────────────────────────────────────────────
 
-  describe('full pipeline with stubs', () => {
-    it('walks through implement → review → revise stubs → rig completion → writ completed', async () => {
+  describe('full pipeline', () => {
+    it('walks through implement → review → revise → rig completion → writ completed', async () => {
       const { clerk, walker, stacks } = fix;
       const writ = await postWrit(clerk, 'Full pipeline test');
 
@@ -894,15 +901,25 @@ describe('Walker', () => {
       assert.equal(r1c?.action, 'engine-completed');
       assert.equal((r1c as { engineId: string }).engineId, 'implement');
 
-      // Walk: review runs (stub → completed)
+      // Walk: review launches a session (quick engine)
       const r2 = await walker.walk();
-      assert.equal(r2?.action, 'engine-completed');
+      assert.equal(r2?.action, 'engine-started');
       assert.equal((r2 as { engineId: string }).engineId, 'review');
 
-      // Walk: revise runs (stub → completed)
+      // Walk: collect review session
+      const r2c = await walker.walk();
+      assert.equal(r2c?.action, 'engine-completed');
+      assert.equal((r2c as { engineId: string }).engineId, 'review');
+
+      // Walk: revise launches a session (quick engine)
       const r3 = await walker.walk();
-      assert.equal(r3?.action, 'engine-completed');
+      assert.equal(r3?.action, 'engine-started');
       assert.equal((r3 as { engineId: string }).engineId, 'revise');
+
+      // Walk: collect revise session
+      const r3c = await walker.walk();
+      assert.equal(r3c?.action, 'engine-completed');
+      assert.equal((r3c as { engineId: string }).engineId, 'revise');
 
       // Pre-complete seal (real impl would need codexes)
       const [rig3] = await book.list();
@@ -972,15 +989,25 @@ describe('Walker', () => {
       assert.equal(r1c?.action, 'engine-completed');
       assert.equal((r1c as { engineId: string }).engineId, 'implement');
 
-      // review runs (stub)
+      // review launches (quick engine)
       const r2 = await walker.walk();
-      assert.equal(r2?.action, 'engine-completed');
+      assert.equal(r2?.action, 'engine-started');
       assert.equal((r2 as { engineId: string }).engineId, 'review');
 
-      // revise runs (stub)
+      // collect review
+      const r2c = await walker.walk();
+      assert.equal(r2c?.action, 'engine-completed');
+      assert.equal((r2c as { engineId: string }).engineId, 'review');
+
+      // revise launches (quick engine)
       const r3 = await walker.walk();
-      assert.equal(r3?.action, 'engine-completed');
+      assert.equal(r3?.action, 'engine-started');
       assert.equal((r3 as { engineId: string }).engineId, 'revise');
+
+      // collect revise
+      const r3c = await walker.walk();
+      assert.equal(r3c?.action, 'engine-completed');
+      assert.equal((r3c as { engineId: string }).engineId, 'revise');
 
       // seal runs (stub) — last engine → rig completes
       const r4 = await walker.walk();
@@ -993,6 +1020,386 @@ describe('Walker', () => {
 
       const [finalRig] = await book.list();
       assert.equal(finalRig.status, 'completed');
+    });
+  });
+
+  // ── Review engine — Animator integration ─────────────────────────
+
+  describe('review engine — Animator integration', () => {
+    it('calls animator.summon() with reviewer role, draft cwd, and prompt containing spec', async () => {
+      const { clerk, walker, stacks, summonCalls } = fix;
+      const writ = await postWrit(clerk, 'Review integration test');
+      await walker.walk(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' };
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: draftYields };
+          if (e.id === 'implement') return { ...e, status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } };
+          return e;
+        }),
+      });
+
+      const result = await walker.walk(); // launch review
+      assert.equal(result?.action, 'engine-started');
+      assert.equal((result as { engineId: string }).engineId, 'review');
+
+      assert.equal(summonCalls.length, 1, 'summon should be called once for review');
+      const call = summonCalls[0];
+      assert.equal(call.role, 'reviewer', 'review engine uses reviewer role');
+      assert.equal(call.cwd, '/p', 'cwd is the draft worktree path');
+      assert.ok(call.prompt.includes('# Code Review'), 'prompt includes review header');
+      assert.ok(call.prompt.includes(writ.body), 'prompt includes writ body (spec)');
+      assert.ok(call.prompt.includes('## Instructions'), 'prompt includes instructions section');
+      assert.ok(call.prompt.includes('### Overall: PASS or FAIL'), 'prompt includes findings format');
+      assert.deepEqual(call.metadata?.mechanicalChecks, [], 'no mechanical checks when not configured');
+    });
+
+    it('collects ReviewYields: parses PASS from session.output', async () => {
+      const { clerk, walker, stacks } = fix;
+      await postWrit(clerk);
+      await walker.walk(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      const fakeSessionId = generateId('ses', 4);
+      const findings = '### Overall: PASS\n\n### Completeness\nAll requirements met.';
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } };
+          if (e.id === 'implement') return { ...e, status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } };
+          if (e.id === 'review') return { ...e, status: 'running' as const, sessionId: fakeSessionId };
+          return e;
+        }),
+      });
+
+      const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+      await sessBook.put({
+        id: fakeSessionId,
+        status: 'completed',
+        startedAt: new Date().toISOString(),
+        provider: 'test',
+        output: findings,
+        metadata: { mechanicalChecks: [] },
+      });
+
+      const result = await walker.walk(); // collect review
+      assert.equal(result?.action, 'engine-completed');
+      assert.equal((result as { engineId: string }).engineId, 'review');
+
+      const [updated] = await book.list();
+      const reviewEngine = updated.engines.find((e: EngineInstance) => e.id === 'review');
+      const yields = reviewEngine?.yields as ReviewYields;
+      assert.equal(yields.sessionId, fakeSessionId);
+      assert.equal(yields.passed, true, 'passed should be true when output contains PASS');
+      assert.equal(yields.findings, findings);
+      assert.deepEqual(yields.mechanicalChecks, []);
+    });
+
+    it('collects ReviewYields: passed is false when output contains FAIL', async () => {
+      const { clerk, walker, stacks } = fix;
+      await postWrit(clerk);
+      await walker.walk(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      const fakeSessionId = generateId('ses', 4);
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } };
+          if (e.id === 'implement') return { ...e, status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } };
+          if (e.id === 'review') return { ...e, status: 'running' as const, sessionId: fakeSessionId };
+          return e;
+        }),
+      });
+
+      const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+      await sessBook.put({
+        id: fakeSessionId,
+        status: 'completed',
+        startedAt: new Date().toISOString(),
+        provider: 'test',
+        output: '### Overall: FAIL\n\n### Required Changes\n1. Fix the bug.',
+        metadata: { mechanicalChecks: [] },
+      });
+
+      await walker.walk(); // collect review
+      const [updated] = await book.list();
+      const reviewEngine = updated.engines.find((e: EngineInstance) => e.id === 'review');
+      const yields = reviewEngine?.yields as ReviewYields;
+      assert.equal(yields.passed, false, 'passed should be false when output contains FAIL');
+    });
+
+    it('collects ReviewYields: mechanicalChecks retrieved from session.metadata', async () => {
+      const { clerk, walker, stacks } = fix;
+      await postWrit(clerk);
+      await walker.walk(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      const fakeSessionId = generateId('ses', 4);
+      const checks: MechanicalCheck[] = [
+        { name: 'build', passed: true, output: 'Build succeeded', durationMs: 1200 },
+        { name: 'test', passed: false, output: '3 tests failed', durationMs: 4500 },
+      ];
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } };
+          if (e.id === 'implement') return { ...e, status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } };
+          if (e.id === 'review') return { ...e, status: 'running' as const, sessionId: fakeSessionId };
+          return e;
+        }),
+      });
+
+      const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+      await sessBook.put({
+        id: fakeSessionId,
+        status: 'completed',
+        startedAt: new Date().toISOString(),
+        provider: 'test',
+        output: '### Overall: FAIL',
+        metadata: { mechanicalChecks: checks },
+      });
+
+      await walker.walk(); // collect review
+      const [updated] = await book.list();
+      const reviewEngine = updated.engines.find((e: EngineInstance) => e.id === 'review');
+      const yields = reviewEngine?.yields as ReviewYields;
+      assert.equal(yields.mechanicalChecks.length, 2);
+      assert.equal(yields.mechanicalChecks[0].name, 'build');
+      assert.equal(yields.mechanicalChecks[0].passed, true);
+      assert.equal(yields.mechanicalChecks[1].name, 'test');
+      assert.equal(yields.mechanicalChecks[1].passed, false);
+    });
+  });
+
+  // ── Review engine — mechanical checks ────────────────────────────
+
+  describe('review engine — mechanical checks', () => {
+    let mechFix: ReturnType<typeof buildFixture>;
+
+    beforeEach(() => {
+      mechFix = buildFixture({
+        walker: {
+          buildCommand: 'echo "build output"',
+          testCommand: 'exit 1',
+        },
+      });
+    });
+
+    afterEach(() => {
+      clearGuild();
+    });
+
+    it('executes build and test commands; captures pass/fail from exit code', async () => {
+      const { clerk, walker, stacks, summonCalls } = mechFix;
+      await postWrit(clerk);
+      await walker.walk(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/tmp', baseSha: 'sha1' } };
+          if (e.id === 'implement') return { ...e, status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } };
+          return e;
+        }),
+      });
+
+      const result = await walker.walk(); // launch review (runs checks first)
+      assert.equal(result?.action, 'engine-started');
+
+      assert.equal(summonCalls.length, 1);
+      const checks = summonCalls[0].metadata?.mechanicalChecks as MechanicalCheck[];
+      assert.equal(checks.length, 2, 'both build and test checks should run');
+
+      const buildCheck = checks.find((c) => c.name === 'build');
+      assert.ok(buildCheck, 'build check should be present');
+      assert.equal(buildCheck!.passed, true, 'echo exits 0 → passed');
+      assert.ok(buildCheck!.output.includes('build output'), 'output captured from stdout');
+      assert.ok(typeof buildCheck!.durationMs === 'number', 'durationMs recorded');
+
+      const testCheck = checks.find((c) => c.name === 'test');
+      assert.ok(testCheck, 'test check should be present');
+      assert.equal(testCheck!.passed, false, 'exit 1 → failed');
+    });
+
+    it('skips checks gracefully when no buildCommand or testCommand configured', async () => {
+      const noCmdFix = buildFixture({ walker: {} }); // no buildCommand/testCommand
+      const { clerk, walker: w, stacks: s, summonCalls: sc } = noCmdFix;
+      await postWrit(clerk);
+      await w.walk(); // spawn
+
+      const book = rigsBook(s);
+      const [rig] = await book.list();
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } };
+          if (e.id === 'implement') return { ...e, status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } };
+          return e;
+        }),
+      });
+
+      await w.walk(); // launch review
+      assert.deepEqual(sc[0].metadata?.mechanicalChecks, [], 'no checks when commands not configured');
+      clearGuild();
+    });
+
+    it('truncates check output to 4KB', async () => {
+      const bigFix = buildFixture({
+        walker: { buildCommand: 'python3 -c "print(\'x\' * 8192)"' },
+      });
+      const { clerk, walker: w, stacks: s, summonCalls: sc } = bigFix;
+      await postWrit(clerk);
+      await w.walk(); // spawn
+
+      const book = rigsBook(s);
+      const [rig] = await book.list();
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/tmp', baseSha: 'sha1' } };
+          if (e.id === 'implement') return { ...e, status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } };
+          return e;
+        }),
+      });
+
+      await w.walk(); // launch review (runs check with big output)
+      const checks = sc[0].metadata?.mechanicalChecks as MechanicalCheck[];
+      assert.ok(checks[0].output.length <= 4096, `output should be truncated to 4KB, got ${checks[0].output.length} chars`);
+      clearGuild();
+    });
+  });
+
+  // ── Revise engine — Animator integration ─────────────────────────
+
+  describe('revise engine — Animator integration', () => {
+    it('calls animator.summon() with role from givens, draft cwd, and writ env', async () => {
+      const { clerk, walker, stacks, summonCalls } = fix;
+      const writ = await postWrit(clerk, 'Revise integration test');
+      await walker.walk(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      const reviewYields: ReviewYields = { sessionId: 'rev-1', passed: true, findings: '### Overall: PASS\nAll good.', mechanicalChecks: [] };
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } };
+          if (e.id === 'implement') return { ...e, status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } };
+          if (e.id === 'review') return { ...e, status: 'completed' as const, yields: reviewYields };
+          return e;
+        }),
+      });
+
+      const result = await walker.walk(); // launch revise
+      assert.equal(result?.action, 'engine-started');
+      assert.equal((result as { engineId: string }).engineId, 'revise');
+
+      assert.equal(summonCalls.length, 1, 'summon called once for revise');
+      const call = summonCalls[0];
+      assert.equal(call.role, 'artificer', 'revise uses role from givens (default artificer)');
+      assert.equal(call.cwd, '/p', 'cwd is draft worktree path');
+      assert.deepEqual(call.environment, { GIT_AUTHOR_EMAIL: `${writ.id}@nexus.local` });
+    });
+
+    it('revision prompt includes pass branch when review passed', async () => {
+      const { clerk, walker, stacks, summonCalls } = fix;
+      await postWrit(clerk, 'Pass branch test');
+      await walker.walk(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      const reviewYields: ReviewYields = {
+        sessionId: 'rev-1',
+        passed: true,
+        findings: '### Overall: PASS\nAll requirements met.',
+        mechanicalChecks: [],
+      };
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } };
+          if (e.id === 'implement') return { ...e, status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } };
+          if (e.id === 'review') return { ...e, status: 'completed' as const, yields: reviewYields };
+          return e;
+        }),
+      });
+
+      await walker.walk(); // launch revise
+      const prompt = summonCalls[0].prompt;
+      assert.ok(prompt.includes('## Review Result: PASS'), 'prompt includes PASS result');
+      assert.ok(prompt.includes('The review passed'), 'prompt includes pass branch instruction');
+      assert.ok(prompt.includes(reviewYields.findings), 'prompt includes review findings');
+    });
+
+    it('revision prompt includes fail branch when review failed', async () => {
+      const { clerk, walker, stacks, summonCalls } = fix;
+      await postWrit(clerk, 'Fail branch test');
+      await walker.walk(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      const reviewYields: ReviewYields = {
+        sessionId: 'rev-1',
+        passed: false,
+        findings: '### Overall: FAIL\n\n### Required Changes\n1. Fix the bug.',
+        mechanicalChecks: [],
+      };
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } };
+          if (e.id === 'implement') return { ...e, status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } };
+          if (e.id === 'review') return { ...e, status: 'completed' as const, yields: reviewYields };
+          return e;
+        }),
+      });
+
+      await walker.walk(); // launch revise
+      const prompt = summonCalls[0].prompt;
+      assert.ok(prompt.includes('## Review Result: FAIL'), 'prompt includes FAIL result');
+      assert.ok(
+        prompt.includes('The review identified issues that need to be addressed'),
+        'prompt includes fail branch instruction',
+      );
+      assert.ok(prompt.includes(reviewYields.findings), 'prompt includes review findings');
+    });
+
+    it('ReviseYields: sessionId and sessionStatus collected from session record', async () => {
+      const { clerk, walker, stacks } = fix;
+      await postWrit(clerk);
+      await walker.walk(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      const fakeSessionId = generateId('ses', 4);
+      const reviewYields: ReviewYields = { sessionId: 'rev-1', passed: true, findings: '### Overall: PASS', mechanicalChecks: [] };
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } };
+          if (e.id === 'implement') return { ...e, status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } };
+          if (e.id === 'review') return { ...e, status: 'completed' as const, yields: reviewYields };
+          if (e.id === 'revise') return { ...e, status: 'running' as const, sessionId: fakeSessionId };
+          return e;
+        }),
+      });
+
+      const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+      await sessBook.put({
+        id: fakeSessionId,
+        status: 'completed',
+        startedAt: new Date().toISOString(),
+        provider: 'test',
+      });
+
+      const result = await walker.walk(); // collect revise
+      assert.equal(result?.action, 'engine-completed');
+      assert.equal((result as { engineId: string }).engineId, 'revise');
+
+      const [updated] = await book.list();
+      const reviseEngine = updated.engines.find((e: EngineInstance) => e.id === 'revise');
+      const yields = reviseEngine?.yields as { sessionId: string; sessionStatus: string };
+      assert.equal(yields.sessionId, fakeSessionId);
+      assert.equal(yields.sessionStatus, 'completed');
     });
   });
 

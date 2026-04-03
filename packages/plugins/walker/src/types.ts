@@ -174,6 +174,47 @@ export interface ImplementYields {
   sessionStatus: 'completed' | 'failed';
 }
 
+/**
+ * A single mechanical check (build or test) run by the review engine
+ * before launching the reviewer session.
+ */
+export interface MechanicalCheck {
+  /** Check name. */
+  name: 'build' | 'test';
+  /** Whether the command exited with code 0. */
+  passed: boolean;
+  /** Combined stdout+stderr, truncated to 4KB. */
+  output: string;
+  /** Wall-clock duration of the check in milliseconds. */
+  durationMs: number;
+}
+
+/**
+ * Yields from the `review` quick engine.
+ * Assembled by the Walker's collect step from session.output and session.metadata.
+ */
+export interface ReviewYields {
+  /** The Animator session id. */
+  sessionId: string;
+  /** Reviewer's overall assessment — true if the review passed. */
+  passed: boolean;
+  /** Structured markdown findings from the reviewer's final message. */
+  findings: string;
+  /** Mechanical check results run before the reviewer session. */
+  mechanicalChecks: MechanicalCheck[];
+}
+
+/**
+ * Yields from the `revise` quick engine.
+ * Set by the Walker's collect step when the Animator session completes.
+ */
+export interface ReviseYields {
+  /** The Animator session id. */
+  sessionId: string;
+  /** Terminal status of the session. */
+  sessionStatus: 'completed' | 'failed';
+}
+
 // Augment GuildConfig so `guild().guildConfig().walker` is typed.
 declare module '@shardworks/nexus-core' {
   interface GuildConfig {

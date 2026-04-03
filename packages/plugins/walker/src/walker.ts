@@ -165,12 +165,22 @@ export function createWalker(): Plugin {
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
         }
 
-        // Completed session — assemble yields from session record.
-        const yields: Record<string, unknown> = {
-          sessionId: session.id,
-          sessionStatus: session.status,
-          ...(session.output !== undefined ? { output: session.output } : {}),
-        };
+        // Completed session — assemble engine-specific yields from session record.
+        let yields: Record<string, unknown>;
+        if (engine.id === 'review') {
+          // Review collect: parse findings and passed flag from session output;
+          // retrieve mechanicalChecks stashed in session metadata by the review engine.
+          const findings = session.output ?? '';
+          const passed = /^###\s*Overall:\s*PASS/mi.test(findings);
+          const mechanicalChecks = (session.metadata?.mechanicalChecks as unknown[]) ?? [];
+          yields = { sessionId: session.id, passed, findings, mechanicalChecks };
+        } else {
+          yields = {
+            sessionId: session.id,
+            sessionStatus: session.status,
+            ...(session.output !== undefined ? { output: session.output } : {}),
+          };
+        }
 
         if (!isJsonSerializable(yields)) {
           await failEngine(rig, engine.id, 'Session yields are not JSON-serializable');
