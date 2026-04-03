@@ -448,7 +448,7 @@ The trigger determines *what* work is done (the prompt, the workspace, the metad
 
 ### Context Composition (The Loom)
 
-The Loom weaves anima identity into session contexts. Given a role name, it produces an `AnimaWeave` — the composed identity context (system prompt) that The Animator uses to launch a session. The work prompt (what the anima should do) bypasses The Loom and goes directly from the caller to the session provider. At MVP, the Loom accepts the role but does not yet compose a system prompt — the value is in the seam. The Animator never assembles prompts, so when The Loom gains real composition logic, nothing downstream changes.
+The Loom weaves anima identity into session contexts. Given a role name, it produces an `AnimaWeave` — the composed identity context that The Animator uses to launch a session. The work prompt (what the anima should do) bypasses The Loom and goes directly from the caller to the session provider. The Loom currently handles two concerns: **tool resolution** (role → permissions → Instrumentarium → permission-gated tool set, returned on the `AnimaWeave`) and **git identity** (deriving `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` from the role name). System prompt composition is not yet implemented — the `systemPrompt` field on `AnimaWeave` remains undefined until the Loom gains composition logic. The Animator never assembles prompts, so when real composition arrives, nothing downstream changes.
 
 The target design composes the system prompt from layers, in order: **guild charter** (institutional policy) → **curriculum** (what the anima knows) → **temperament** (who the anima is) → **role instructions** → **tool instructions** → **writ context**. Each layer is versioned and immutable per version, making sessions reproducible — given the same inputs, The Loom produces the same context.
 
@@ -464,15 +464,15 @@ Every session record captures structured telemetry: wall-clock duration, exit co
 
 ### Session Providers
 
-Session providers are the pluggable backend behind The Animator. A provider implements `launch()` (blocking) and optionally `launchStreaming()` (yields output chunks as they arrive). When `streaming: true` is set on the request, The Animator uses `launchStreaming()` and pipes chunks through the returned `AnimateHandle`; if the provider doesn't support streaming, the chunks iterable completes immediately with no items.
+Session providers are the pluggable backend behind The Animator. A provider implements a single `launch()` method that returns `{ chunks, result }` synchronously — the same shape as `AnimateHandle`. When `config.streaming` is true, the provider yields output chunks through the `chunks` async iterable as the session runs; when false (or when the provider doesn't support streaming), the chunks iterable completes immediately with no items. The Animator does not branch on streaming capability — it passes the flag through and trusts the provider.
 
 Providers handle the mechanics of a specific AI system — process spawning, stdio communication, result parsing — but not session lifecycle. The Animator owns lifecycle (id generation, timing, recording); the provider owns the process. This split means adding a new AI backend (GPT, Gemini, local models) requires only a new provider package, not changes to The Animator.
 
 MVP: one hardcoded provider (`claude-code`). Future: provider discovery via kit contributions or guild config.
 
-### Tool-Equipped Sessions (Future)
+### Tool-Equipped Sessions
 
-At MVP, sessions run without tools — the anima can only read and respond. When **The Instrumentarium** ships, The Animator gains the ability to launch an MCP tool server alongside the AI process. The Loom resolves the anima's roles into permission grants; The Instrumentarium resolves the permission-gated tool set; The Animator starts an MCP server loaded with those tools; the provider connects to it via stdio JSON-RPC. One MCP server per session, torn down when the session exits.
+Sessions can be equipped with guild tools via the MCP integration pipeline. The Loom resolves the anima's role into permission grants, then calls The Instrumentarium to resolve the permission-gated tool set. The resolved tools are returned on the `AnimaWeave` and passed through The Animator to the session provider. The claude-code provider starts an in-process MCP HTTP server (one per session, SSE transport on an ephemeral localhost port), writes a `--mcp-config` file pointing at it, and tears it down when the session exits.
 
 Tools are the mechanism through which animas act on the guild — creating writs, reading documents, signaling events, modifying files. Without tools, a session is advisory; with tools, it is operational.
 
