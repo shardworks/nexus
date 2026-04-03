@@ -88,23 +88,24 @@ function findRunnableEngine(rig: RigDoc): EngineInstance | null {
 
 /**
  * Produce the five-engine static pipeline for a writ.
- * All engines receive the same givensSpec (literal config values + writ).
+ * Each engine receives only the givens it needs.
  * Upstream yields arrive via context.upstream at run time.
  */
 function buildStaticEngines(writ: WritDoc, config: WalkerConfig): EngineInstance[] {
-  const givensSpec: Record<string, unknown> = {
+  const role = config.role ?? 'artificer';
+  const reviewGivens: Record<string, unknown> = {
     writ,
-    role: config.role ?? 'artificer',
+    role: 'reviewer',
     ...(config.buildCommand !== undefined ? { buildCommand: config.buildCommand } : {}),
     ...(config.testCommand !== undefined ? { testCommand: config.testCommand } : {}),
   };
 
   return [
-    { id: 'draft',     designId: 'draft',     status: 'pending', upstream: [],           givensSpec },
-    { id: 'implement', designId: 'implement', status: 'pending', upstream: ['draft'],     givensSpec },
-    { id: 'review',    designId: 'review',    status: 'pending', upstream: ['implement'], givensSpec },
-    { id: 'revise',    designId: 'revise',    status: 'pending', upstream: ['review'],    givensSpec },
-    { id: 'seal',      designId: 'seal',      status: 'pending', upstream: ['revise'],    givensSpec },
+    { id: 'draft',     designId: 'draft',     status: 'pending', upstream: [],           givensSpec: { writ } },
+    { id: 'implement', designId: 'implement', status: 'pending', upstream: ['draft'],     givensSpec: { writ, role } },
+    { id: 'review',    designId: 'review',    status: 'pending', upstream: ['implement'], givensSpec: reviewGivens },
+    { id: 'revise',    designId: 'revise',    status: 'pending', upstream: ['review'],    givensSpec: { writ, role } },
+    { id: 'seal',      designId: 'seal',      status: 'pending', upstream: ['revise'],    givensSpec: {} },
   ];
 }
 
@@ -161,7 +162,7 @@ export function createWalker(): Plugin {
 
         if (session.status === 'failed' || session.status === 'timeout') {
           await failEngine(rig, engine.id, session.error ?? `Session ${session.status}`);
-          return { type: 'collected', rigId: rig.id, engineId: engine.id };
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
         }
 
         // Completed session — assemble yields from session record.
@@ -173,7 +174,7 @@ export function createWalker(): Plugin {
 
         if (!isJsonSerializable(yields)) {
           await failEngine(rig, engine.id, 'Session yields are not JSON-serializable');
-          return { type: 'collected', rigId: rig.id, engineId: engine.id };
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
         }
 
         const updatedEngines = rig.engines.map((e) =>
@@ -188,7 +189,10 @@ export function createWalker(): Plugin {
           status: allCompleted ? 'completed' : 'running',
         });
 
-        return { type: 'collected', rigId: rig.id, engineId: engine.id };
+        if (allCompleted) {
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'completed' };
+        }
+        return { action: 'engine-completed', rigId: rig.id, engineId: engine.id };
       }
     }
     return null;
@@ -212,7 +216,7 @@ export function createWalker(): Plugin {
       const design = fabricator.getEngineDesign(pending.designId);
       if (!design) {
         await failEngine(rig, pending.id, `No engine design found for "${pending.designId}"`);
-        return { type: 'ran', rigId: rig.id, engineId: pending.id };
+        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
       }
 
       const now = new Date().toISOString();
@@ -241,13 +245,13 @@ export function createWalker(): Plugin {
               : e,
           );
           await rigsBook.patch(rig.id, { engines: launchedEngines });
-          return { type: 'launched', rigId: rig.id, engineId: pending.id };
+          return { action: 'engine-started', rigId: rig.id, engineId: pending.id };
         }
 
         // Clockwork engine — validate and store yields
         if (!isJsonSerializable(engineResult.yields)) {
           await failEngine(updatedRig, pending.id, 'Engine yields are not JSON-serializable');
-          return { type: 'ran', rigId: rig.id, engineId: pending.id };
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
         }
 
         const completedAt = new Date().toISOString();
@@ -262,11 +266,14 @@ export function createWalker(): Plugin {
           status: allCompleted ? 'completed' : 'running',
         });
 
-        return { type: 'ran', rigId: rig.id, engineId: pending.id };
+        if (allCompleted) {
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'completed' };
+        }
+        return { action: 'engine-completed', rigId: rig.id, engineId: pending.id };
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         await failEngine(rig, pending.id, errorMessage);
-        return { type: 'ran', rigId: rig.id, engineId: pending.id };
+        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
       }
     }
     return null;
@@ -309,11 +316,17 @@ export function createWalker(): Plugin {
       // Transition writ to active so Clerk tracks it
       try {
         await clerk.transition(writ.id, 'active');
-      } catch {
-        // Writ may have already been transitioned (race); continue
+      } catch (err) {
+        // Only swallow state-transition conflicts (writ already moved past 'ready')
+        if (err instanceof Error && err.message.includes('transition')) {
+          // Race condition — another walker got here first. The rig is already created,
+          // so we continue. The writ is already active or beyond.
+        } else {
+          throw err;
+        }
       }
 
-      return { type: 'spawned', rigId, writId: writ.id };
+      return { action: 'rig-spawned', rigId, writId: writ.id };
     }
 
     return null;

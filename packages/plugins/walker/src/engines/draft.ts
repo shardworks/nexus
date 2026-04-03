@@ -5,6 +5,7 @@
  * containing the worktree path and branch name for downstream engines.
  */
 
+import { execSync } from 'node:child_process';
 import { guild } from '@shardworks/nexus-core';
 import type { EngineDesign } from '@shardworks/fabricator-apparatus';
 import type { ScriptoriumApi } from '@shardworks/codexes-apparatus';
@@ -29,11 +30,14 @@ const draftEngine: EngineDesign = {
       associatedWith: writ.id,
     });
 
+    const baseSha = execSync('git rev-parse HEAD', { cwd: draft.path, encoding: 'utf-8' }).trim();
+
     const yields: DraftYields = {
       draftId: draft.id,
       codexName: draft.codexName,
       branch: draft.branch,
       path: draft.path,
+      baseSha,
     };
 
     return { status: 'completed', yields };

@@ -273,7 +273,7 @@ describe('Walker', () => {
 
       const result = await walker.walk();
       assert.ok(result !== null, 'expected a walk result');
-      assert.equal(result.type, 'spawned');
+      assert.equal(result.action, 'rig-spawned');
       assert.equal((result as { writId: string }).writId, writ.id);
 
       const rigs = await rigsBook(stacks).list();
@@ -306,7 +306,7 @@ describe('Walker', () => {
       const w2 = await postWrit(clerk, 'Second writ');
 
       const r1 = await walker.walk();
-      assert.equal(r1?.type, 'spawned');
+      assert.equal(r1?.action, 'rig-spawned');
       assert.equal((r1 as { writId: string }).writId, w1.id);
 
       // Mark rig1 as failed so w2 can spawn
@@ -314,7 +314,7 @@ describe('Walker', () => {
       await rigsBook(fix.stacks).patch(rigs[0].id, { status: 'failed' });
 
       const r2 = await walker.walk();
-      assert.equal(r2?.type, 'spawned');
+      assert.equal(r2?.action, 'rig-spawned');
       assert.equal((r2 as { writId: string }).writId, w2.id);
     });
   });
@@ -328,12 +328,12 @@ describe('Walker', () => {
 
       // Spawn the rig
       const r1 = await walker.walk();
-      assert.equal(r1?.type, 'spawned');
+      assert.equal(r1?.action, 'rig-spawned');
 
       // Second walk should run (not spawn another rig)
-      // The draft engine will fail (no codexes), resulting in 'ran'
+      // The draft engine will fail (no codexes), resulting in 'rig-completed'
       const r2 = await walker.walk();
-      assert.notEqual(r2?.type, 'spawned');
+      assert.notEqual(r2?.action, 'rig-spawned');
       // Only one rig created
       const rigs = await rigsBook(stacks).list();
       assert.equal(rigs.length, 1);
@@ -362,7 +362,7 @@ describe('Walker', () => {
 
       // Walk should collect (not run implement which has no completed upstream)
       const r = await walker.walk();
-      assert.equal(r?.type, 'collected');
+      assert.equal(r?.action, 'engine-completed');
       assert.equal((r as { engineId: string }).engineId, 'draft');
     });
   });
@@ -400,9 +400,9 @@ describe('Walker', () => {
       );
       await book.patch(rig.id, { engines: updatedEngines });
 
-      // Now walk should launch implement (quick engine → 'launched', not 'ran')
+      // Now walk should launch implement (quick engine → 'engine-started', not 'engine-completed')
       const result = await walker.walk();
-      assert.equal(result?.type, 'launched');
+      assert.equal(result?.action, 'engine-started');
       assert.equal((result as { engineId: string }).engineId, 'implement');
     });
   });
@@ -426,9 +426,9 @@ describe('Walker', () => {
       );
       await book.patch(rig0.id, { engines: updatedEngines });
 
-      // Walk: implement launches an Animator session (quick engine → 'launched')
+      // Walk: implement launches an Animator session (quick engine → 'engine-started')
       const result = await walker.walk();
-      assert.equal(result?.type, 'launched');
+      assert.equal(result?.action, 'engine-started');
       assert.equal((result as { engineId: string }).engineId, 'implement');
 
       const [rig1] = await book.list();
@@ -438,7 +438,7 @@ describe('Walker', () => {
 
       // Walk: collect step finds the terminal session and stores yields
       const result2 = await walker.walk();
-      assert.equal(result2?.type, 'collected');
+      assert.equal(result2?.action, 'engine-completed');
       assert.equal((result2 as { engineId: string }).engineId, 'implement');
 
       const [rig2] = await book.list();
@@ -463,13 +463,67 @@ describe('Walker', () => {
       await book.patch(rig.id, { engines: brokenEngines });
 
       const result = await walker.walk();
-      assert.equal(result?.type, 'ran');
+      assert.equal(result?.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
 
       const [updated] = await book.list();
       assert.equal(updated.status, 'failed');
       const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
       assert.equal(draft?.status, 'failed');
       assert.ok(draft?.error?.includes('nonexistent-engine'));
+    });
+  });
+
+  // ── Yield serialization failure ────────────────────────────────────
+
+  describe('yield serialization failure', () => {
+    it('non-serializable engine yields cause engine and rig failure', async () => {
+      const { clerk, walker, stacks, fire } = fix;
+
+      // Register an engine design that returns non-JSON-serializable yields
+      const badEngine: EngineDesign = {
+        id: 'bad-engine',
+        async run() {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return { status: 'completed' as const, yields: { fn: (() => {}) as any } };
+        },
+      };
+      const fakePlugin: LoadedApparatus = {
+        packageName: '@test/bad-engine',
+        id: 'test-bad',
+        version: '0.0.0',
+        apparatus: {
+          requires: [],
+          supportKit: { engines: { 'bad-engine': badEngine } },
+          provides: {},
+          start() {},
+        },
+      };
+      void fire('plugin:initialized', fakePlugin);
+
+      await postWrit(clerk);
+      await walker.walk(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+
+      // Patch draft to use the bad engine design
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) =>
+          e.id === 'draft' ? { ...e, designId: 'bad-engine' } : e,
+        ),
+      });
+
+      const result = await walker.walk();
+      assert.ok(result !== null);
+      assert.equal(result.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
+
+      const [updated] = await book.list();
+      assert.equal(updated.status, 'failed');
+      const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
+      assert.equal(draft?.status, 'failed');
+      assert.ok(draft?.error !== undefined && draft.error.length > 0, `expected engine to have an error, got: ${draft?.error}`);
     });
   });
 
@@ -491,7 +545,8 @@ describe('Walker', () => {
         ),
       });
 
-      await walker.walk(); // launch implement
+      const launchResult = await walker.walk(); // launch implement
+      assert.equal(launchResult?.action, 'engine-started');
 
       assert.equal(summonCalls.length, 1, 'summon should be called once');
       const call = summonCalls[0];
@@ -516,7 +571,8 @@ describe('Walker', () => {
         ),
       });
 
-      await walker.walk(); // launch implement
+      const launchResult2 = await walker.walk(); // launch implement
+      assert.equal(launchResult2?.action, 'engine-started');
 
       assert.equal(summonCalls.length, 1);
       const expectedPrompt = 'Build the feature.\n\nCommit all changes before ending your session.';
@@ -618,7 +674,7 @@ describe('Walker', () => {
 
       // Walk: collect step should find the terminal session
       const result = await walker.walk();
-      assert.equal(result?.type, 'collected');
+      assert.equal(result?.action, 'engine-completed');
       assert.equal((result as { engineId: string }).engineId, 'implement');
 
       const [updated] = await book.list();
@@ -663,7 +719,8 @@ describe('Walker', () => {
       });
 
       const result = await walker.walk();
-      assert.equal(result?.type, 'collected');
+      assert.equal(result?.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
 
       const [updated] = await book.list();
       assert.equal(updated.status, 'failed');
@@ -742,20 +799,34 @@ describe('Walker', () => {
   // ── Givens/context assembly ────────────────────────────────────────
 
   describe('givens and context assembly', () => {
-    it('givensSpec contains the writ and config values set at spawn time', async () => {
+    it('each engine receives only the givens it needs', async () => {
       const { clerk, walker, stacks } = fix;
       const writ = await postWrit(clerk, 'My writ');
       await walker.walk(); // spawn
 
       const [rig] = await rigsBook(stacks).list();
+      const eng = (id: string) => rig.engines.find((e: EngineInstance) => e.id === id)!;
 
-      // All engines share the same givensSpec with writ + config values
-      for (const engine of rig.engines) {
-        assert.ok('writ' in engine.givensSpec, `engine ${engine.id} should have writ in givensSpec`);
-        assert.ok('role' in engine.givensSpec, `engine ${engine.id} should have role in givensSpec`);
-        const writInGivens = engine.givensSpec.writ as WritDoc;
-        assert.equal(writInGivens.id, writ.id);
-      }
+      // draft: { writ } — no role
+      assert.ok('writ' in eng('draft').givensSpec, 'draft should have writ');
+      assert.ok(!('role' in eng('draft').givensSpec), 'draft should not have role');
+      assert.equal((eng('draft').givensSpec.writ as WritDoc).id, writ.id);
+
+      // implement: { writ, role }
+      assert.ok('writ' in eng('implement').givensSpec, 'implement should have writ');
+      assert.ok('role' in eng('implement').givensSpec, 'implement should have role');
+      assert.equal((eng('implement').givensSpec.writ as WritDoc).id, writ.id);
+
+      // review: { writ, role: 'reviewer' }
+      assert.ok('writ' in eng('review').givensSpec, 'review should have writ');
+      assert.equal(eng('review').givensSpec.role, 'reviewer', 'review role should be hardcoded reviewer');
+
+      // revise: { writ, role }
+      assert.ok('writ' in eng('revise').givensSpec, 'revise should have writ');
+      assert.ok('role' in eng('revise').givensSpec, 'revise should have role');
+
+      // seal: {}
+      assert.deepEqual(eng('seal').givensSpec, {}, 'seal should get empty givensSpec');
     });
 
     it('role defaults to "artificer" when not configured', async () => {
@@ -764,8 +835,8 @@ describe('Walker', () => {
       await walker.walk(); // spawn
 
       const [rig] = await rigsBook(stacks).list();
-      const draftEngine = rig.engines.find((e: EngineInstance) => e.id === 'draft');
-      assert.equal(draftEngine?.givensSpec.role, 'artificer');
+      const implementEngine = rig.engines.find((e: EngineInstance) => e.id === 'implement');
+      assert.equal(implementEngine?.givensSpec.role, 'artificer');
     });
 
     it('upstream map is built from completed engine yields', async () => {
@@ -788,7 +859,7 @@ describe('Walker', () => {
 
       // Walk: review runs — stub clockwork (no external deps)
       const result = await walker.walk();
-      assert.equal(result?.type, 'ran');
+      assert.equal(result?.action, 'engine-completed');
       assert.equal((result as { engineId: string }).engineId, 'review');
     });
   });
@@ -806,7 +877,7 @@ describe('Walker', () => {
       const [rig0] = await book.list();
 
       // Pre-complete draft (real impl would need codexes)
-      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p' };
+      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' };
       await book.patch(rig0.id, {
         engines: rig0.engines.map((e: EngineInstance) =>
           e.id === 'draft' ? { ...e, status: 'completed' as const, yields: draftYields } : e,
@@ -815,22 +886,22 @@ describe('Walker', () => {
 
       // Walk: implement launches an Animator session (quick engine)
       const r1 = await walker.walk();
-      assert.equal(r1?.type, 'launched');
+      assert.equal(r1?.action, 'engine-started');
       assert.equal((r1 as { engineId: string }).engineId, 'implement');
 
       // Walk: collect step picks up the completed implement session
       const r1c = await walker.walk();
-      assert.equal(r1c?.type, 'collected');
+      assert.equal(r1c?.action, 'engine-completed');
       assert.equal((r1c as { engineId: string }).engineId, 'implement');
 
       // Walk: review runs (stub → completed)
       const r2 = await walker.walk();
-      assert.equal(r2?.type, 'ran');
+      assert.equal(r2?.action, 'engine-completed');
       assert.equal((r2 as { engineId: string }).engineId, 'review');
 
       // Walk: revise runs (stub → completed)
       const r3 = await walker.walk();
-      assert.equal(r3?.type, 'ran');
+      assert.equal(r3?.action, 'engine-completed');
       assert.equal((r3 as { engineId: string }).engineId, 'revise');
 
       // Pre-complete seal (real impl would need codexes)
@@ -846,6 +917,79 @@ describe('Walker', () => {
       // CDC should have fired — writ should now be completed
       const finalWrit = await clerk.show(writ.id);
       assert.equal(finalWrit.status, 'completed');
+
+      const [finalRig] = await book.list();
+      assert.equal(finalRig.status, 'completed');
+    });
+
+    it('walks all 5 engines to rig completion without manual seal patching', async () => {
+      const { clerk, walker, stacks, fire } = fix;
+
+      // Register a stub seal engine that doesn't require Scriptorium
+      const stubSealEngine: EngineDesign = {
+        id: 'seal',
+        async run() {
+          return {
+            status: 'completed' as const,
+            yields: { sealedCommit: 'abc', strategy: 'fast-forward' as const, retries: 0, inscriptionsSealed: 1 },
+          };
+        },
+      };
+      const fakePlugin: LoadedApparatus = {
+        packageName: '@test/stub-seal',
+        id: 'test-seal',
+        version: '0.0.0',
+        apparatus: {
+          requires: [],
+          supportKit: { engines: { seal: stubSealEngine } },
+          provides: {},
+          start() {},
+        },
+      };
+      void fire('plugin:initialized', fakePlugin);
+
+      const writ = await postWrit(clerk, 'Full pipeline stub seal');
+      await walker.walk(); // spawn (writ → active)
+
+      const book = rigsBook(stacks);
+      const [rig0] = await book.list();
+
+      // Pre-complete draft (requires Scriptorium — not available in tests)
+      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' };
+      await book.patch(rig0.id, {
+        engines: rig0.engines.map((e: EngineInstance) =>
+          e.id === 'draft' ? { ...e, status: 'completed' as const, yields: draftYields } : e,
+        ),
+      });
+
+      // implement launches
+      const r1 = await walker.walk();
+      assert.equal(r1?.action, 'engine-started');
+      assert.equal((r1 as { engineId: string }).engineId, 'implement');
+
+      // collect implement
+      const r1c = await walker.walk();
+      assert.equal(r1c?.action, 'engine-completed');
+      assert.equal((r1c as { engineId: string }).engineId, 'implement');
+
+      // review runs (stub)
+      const r2 = await walker.walk();
+      assert.equal(r2?.action, 'engine-completed');
+      assert.equal((r2 as { engineId: string }).engineId, 'review');
+
+      // revise runs (stub)
+      const r3 = await walker.walk();
+      assert.equal(r3?.action, 'engine-completed');
+      assert.equal((r3 as { engineId: string }).engineId, 'revise');
+
+      // seal runs (stub) — last engine → rig completes
+      const r4 = await walker.walk();
+      assert.equal(r4?.action, 'rig-completed');
+      assert.equal((r4 as { outcome: string }).outcome, 'completed');
+
+      // CDC should have fired — writ should now be completed
+      const finalWrit = await clerk.show(writ.id);
+      assert.equal(finalWrit.status, 'completed', 'writ should transition to completed via CDC');
 
       const [finalRig] = await book.list();
       assert.equal(finalRig.status, 'completed');

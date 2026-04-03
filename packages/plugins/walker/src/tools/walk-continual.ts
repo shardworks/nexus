@@ -44,7 +44,17 @@ export default tool({
     let idleCount = 0;
 
     while (idleCount < maxIdle) {
-      const result = await walker.walk();
+      let result: Awaited<ReturnType<typeof walker.walk>>;
+      try {
+        result = await walker.walk();
+      } catch (err) {
+        console.error('[walkContinual] walk() error:', err instanceof Error ? err.message : String(err));
+        idleCount++;
+        if (idleCount < maxIdle) {
+          await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+        }
+        continue;
+      }
       if (result === null) {
         idleCount++;
         if (idleCount < maxIdle) {

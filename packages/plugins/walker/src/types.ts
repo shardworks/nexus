@@ -75,18 +75,18 @@ export interface RigDoc {
  * The result of a single walk() call.
  *
  * Four variants, ordered by priority:
- * - 'collected'  — collected a running engine's terminal session result
- * - 'ran'        — ran a clockwork engine to completion inline
- * - 'launched'   — launched a quick engine's session
- * - 'spawned'    — created a new rig for a ready writ
+ * - 'engine-completed' — an engine finished (collected or ran inline); rig still running
+ * - 'engine-started'   — launched a quick engine's session
+ * - 'rig-spawned'      — created a new rig for a ready writ
+ * - 'rig-completed'    — the walk step caused a rig to reach a terminal state
  *
  * null means no work was available.
  */
 export type WalkResult =
-  | { type: 'collected'; rigId: string; engineId: string }
-  | { type: 'ran'; rigId: string; engineId: string }
-  | { type: 'launched'; rigId: string; engineId: string }
-  | { type: 'spawned'; rigId: string; writId: string };
+  | { action: 'engine-completed'; rigId: string; engineId: string }
+  | { action: 'engine-started'; rigId: string; engineId: string }
+  | { action: 'rig-spawned'; rigId: string; writId: string }
+  | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'failed' };
 
 // ── WalkerApi ─────────────────────────────────────────────────────────
 
@@ -145,6 +145,8 @@ export interface DraftYields {
   branch: string;
   /** Absolute filesystem path to the draft's worktree. */
   path: string;
+  /** HEAD commit SHA at the time the draft was opened. Used by review engine to compute diffs. */
+  baseSha: string;
 }
 
 /**
