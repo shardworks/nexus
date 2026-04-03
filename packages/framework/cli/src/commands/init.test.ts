@@ -65,8 +65,6 @@ describe('nsg init', () => {
     await initTool.handler({ path: guildPath });
 
     assert.ok(fs.existsSync(path.join(guildPath, '.nexus')));
-    assert.ok(fs.existsSync(path.join(guildPath, 'roles')));
-    assert.ok(fs.existsSync(path.join(guildPath, 'codex')));
   });
 
   it('respects --name override', async () => {

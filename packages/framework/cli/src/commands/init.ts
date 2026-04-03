@@ -47,17 +47,6 @@ export default tool({
     // .nexus infrastructure (gitignored)
     fs.mkdirSync(path.join(home, '.nexus'), { recursive: true });
 
-    // Scaffold guild directories
-    const dirs = [
-      'roles',
-      'codex',
-    ];
-    for (const dir of dirs) {
-      const full = path.join(home, dir);
-      fs.mkdirSync(full, { recursive: true });
-      fs.writeFileSync(path.join(full, '.gitkeep'), '');
-    }
-
     // guild.json — V2 format: plugin-centric, model in settings
     const guildConfig = createInitialGuildConfig(name, VERSION, model);
     writeGuildConfig(home, guildConfig);
@@ -87,9 +76,6 @@ export default tool({
       path.join(home, '.gitignore'),
       ['node_modules/', '.nexus/', ''].join('\n'),
     );
-
-    // codex placeholder
-    fs.writeFileSync(path.join(home, 'codex', 'all.md'), '');
 
     // npm install to get dependencies into node_modules
     if (Object.keys(dependencies).length > 0) {
