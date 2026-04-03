@@ -129,9 +129,9 @@ function buildFixture(
   });
 
   // Mock animator — captures summon() calls and writes session docs to Stacks.
-  // The implement engine awaits handle.result to get the session id; the mock
-  // writes a terminal session record before resolving so the Spider's collect
-  // step finds it on the next walk() call.
+  // The session record is written eagerly (synchronous put, fire-and-forget)
+  // so the Spider's collect step finds it on the next crawl() call. Engines
+  // no longer await handle.result — they return immediately with handle.sessionId.
   let currentSessionOutcome = initialSessionOutcome;
   const summonCalls: SummonRequest[] = [];
   const mockAnimatorApi: AnimatorApi = {
@@ -141,38 +141,38 @@ function buildFixture(
       const startedAt = new Date().toISOString();
       const outcome = currentSessionOutcome;
 
-      const result = (async (): Promise<SessionResult> => {
-        const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
-        const endedAt = new Date().toISOString();
-        const doc: SessionDoc = {
-          id: sessionId,
-          status: outcome.status,
-          startedAt,
-          endedAt,
-          durationMs: 0,
-          provider: 'mock',
-          exitCode: outcome.status === 'completed' ? 0 : 1,
-          ...(outcome.error ? { error: outcome.error } : {}),
-          ...(outcome.output !== undefined ? { output: outcome.output } : {}),
-          metadata: request.metadata,
-        };
-        await sessBook.put(doc);
-        return {
-          id: sessionId,
-          status: outcome.status,
-          startedAt,
-          endedAt,
-          durationMs: 0,
-          provider: 'mock',
-          exitCode: outcome.status === 'completed' ? 0 : 1,
-          ...(outcome.error ? { error: outcome.error } : {}),
-          ...(outcome.output !== undefined ? { output: outcome.output } : {}),
-          metadata: request.metadata,
-        } as SessionResult;
-      })();
+      const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+      const endedAt = new Date().toISOString();
+      const doc: SessionDoc = {
+        id: sessionId,
+        status: outcome.status,
+        startedAt,
+        endedAt,
+        durationMs: 0,
+        provider: 'mock',
+        exitCode: outcome.status === 'completed' ? 0 : 1,
+        ...(outcome.error ? { error: outcome.error } : {}),
+        ...(outcome.output !== undefined ? { output: outcome.output } : {}),
+        metadata: request.metadata,
+      };
+      // Write eagerly — fire and forget. The in-memory backend is sync.
+      void sessBook.put(doc);
+
+      const result = Promise.resolve({
+        id: sessionId,
+        status: outcome.status,
+        startedAt,
+        endedAt,
+        durationMs: 0,
+        provider: 'mock',
+        exitCode: outcome.status === 'completed' ? 0 : 1,
+        ...(outcome.error ? { error: outcome.error } : {}),
+        ...(outcome.output !== undefined ? { output: outcome.output } : {}),
+        metadata: request.metadata,
+      } as SessionResult);
 
       async function* emptyChunks(): AsyncIterable<SessionChunk> {}
-      return { chunks: emptyChunks(), result };
+      return { sessionId, chunks: emptyChunks(), result };
     },
     animate(): AnimateHandle {
       throw new Error('animate() not used in Spider tests');

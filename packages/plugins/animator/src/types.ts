@@ -21,6 +21,12 @@ export type SessionChunk =
 // ── Request / Result ─────────────────────────────────────────────────
 
 export interface AnimateRequest {
+  /**
+   * Optional pre-generated session id. When provided, the Animator uses
+   * this id instead of generating a new one. Used by summon() to make the
+   * session id available on the handle before the Loom weave resolves.
+   */
+  sessionId?: string;
   /** The anima weave from The Loom (composed identity context). */
   context: AnimaWeave;
   /**
@@ -149,6 +155,13 @@ export interface SummonRequest {
 
 /** The return value from animate() and summon(). */
 export interface AnimateHandle {
+  /**
+   * Session ID, available immediately after launch — before the session
+   * completes. Callers that only need to know the session was launched
+   * (e.g. quick engines returning `{ status: 'launched', sessionId }`)
+   * can return without awaiting `result`.
+   */
+  sessionId: string;
   /**
    * Async iterable of output chunks from the session. When streaming is
    * disabled (the default), this iterable completes immediately with no

@@ -4,9 +4,9 @@
  * Runs mechanical checks (build/test) synchronously in the draft worktree,
  * then summons a reviewer anima to assess the implementation against the spec.
  * Returns `{ status: 'launched', sessionId }` so the Spider's collect step
- * can parse the reviewer's findings from session.output on subsequent walks.
+ * can call this engine's collect() method on subsequent crawls.
  *
- * Collect step (Spider):
+ * Collect method:
  *   - Reads session.output as the reviewer's structured markdown findings
  *   - Parses `passed` from /^###\s*Overall:\s*PASS/mi
  *   - Retrieves mechanicalChecks from session.metadata
@@ -16,9 +16,10 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { guild } from '@shardworks/nexus-core';
 import type { EngineDesign } from '@shardworks/fabricator-apparatus';
-import type { AnimatorApi } from '@shardworks/animator-apparatus';
+import type { AnimatorApi, SessionDoc } from '@shardworks/animator-apparatus';
+import type { StacksApi } from '@shardworks/stacks-apparatus';
 import type { WritDoc } from '@shardworks/clerk-apparatus';
-import type { DraftYields, MechanicalCheck } from '../types.ts';
+import type { DraftYields, MechanicalCheck, ReviewYields } from '../types.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -147,8 +148,17 @@ const reviewEngine: EngineDesign = {
       },
     });
 
-    const sessionResult = await handle.result;
-    return { status: 'launched', sessionId: sessionResult.id };
+    return { status: 'launched', sessionId: handle.sessionId };
+  },
+
+  async collect(sessionId: string): Promise<ReviewYields> {
+    const stacks = guild().apparatus<StacksApi>('stacks');
+    const sessionsBook = stacks.readBook<SessionDoc>('animator', 'sessions');
+    const session = await sessionsBook.get(sessionId);
+    const findings = session?.output ?? '';
+    const passed = /^###\s*Overall:\s*PASS/mi.test(findings);
+    const mechanicalChecks = (session?.metadata?.mechanicalChecks as MechanicalCheck[]) ?? [];
+    return { sessionId, passed, findings, mechanicalChecks };
   },
 };
 

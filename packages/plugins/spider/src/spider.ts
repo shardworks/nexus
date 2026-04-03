@@ -165,15 +165,14 @@ export function createSpider(): Plugin {
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
         }
 
-        // Completed session — assemble engine-specific yields from session record.
-        let yields: Record<string, unknown>;
-        if (engine.id === 'review') {
-          // Review collect: parse findings and passed flag from session output;
-          // retrieve mechanicalChecks stashed in session metadata by the review engine.
-          const findings = session.output ?? '';
-          const passed = /^###\s*Overall:\s*PASS/mi.test(findings);
-          const mechanicalChecks = (session.metadata?.mechanicalChecks as unknown[]) ?? [];
-          yields = { sessionId: session.id, passed, findings, mechanicalChecks };
+        // Completed session — assemble yields via engine's collect() or generic default.
+        const design = fabricator.getEngineDesign(engine.designId);
+        let yields: unknown;
+        if (design?.collect) {
+          const givens = { ...engine.givensSpec };
+          const upstream = buildUpstreamMap(rig);
+          const context = { engineId: engine.id, upstream };
+          yields = await design.collect(engine.sessionId!, givens, context);
         } else {
           yields = {
             sessionId: session.id,

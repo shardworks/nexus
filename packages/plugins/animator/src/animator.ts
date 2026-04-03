@@ -246,6 +246,10 @@ export function createAnimator(): Plugin {
         );
       }
 
+      // Generate session id up front so it's available on the handle
+      // immediately — before the Loom weave or session launch resolves.
+      const sessionId = generateId('ses', 4);
+
       // We need to weave context before we can animate, but summon()
       // must return synchronously. Wrap the async Loom call and the
       // animate delegation into a single deferred flow.
@@ -267,10 +271,11 @@ export function createAnimator(): Plugin {
           ...request.metadata,
         };
 
-        // Delegate to the standard animate path.
-        // The work prompt goes directly on the request — it is not
-        // a composition concern.
+        // Delegate to the standard animate path, threading through the
+        // pre-generated session id so animate() uses it instead of
+        // generating a new one.
         return this.animate({
+          sessionId,
           context,
           prompt: request.prompt,
           cwd: request.cwd,
@@ -290,6 +295,7 @@ export function createAnimator(): Plugin {
       }
 
       return {
+        sessionId,
         chunks: pipeChunks(),
         result: deferred.then((handle) => handle.result),
       };
@@ -300,8 +306,9 @@ export function createAnimator(): Plugin {
       const model = resolveModel();
       const providerConfig = buildProviderConfig(request, model);
 
-      // Step 1: generate session id, capture startedAt
-      const id = generateId('ses', 4);
+      // Step 1: use pre-generated session id if provided (from summon()),
+      // otherwise generate one. Capture startedAt.
+      const id = request.sessionId ?? generateId('ses', 4);
       const startedAt = new Date().toISOString();
 
       // Single path — the provider returns { chunks, result } regardless
@@ -328,7 +335,7 @@ export function createAnimator(): Plugin {
         return sessionResult;
       })();
 
-      return { chunks, result };
+      return { sessionId: id, chunks, result };
     },
   };
 

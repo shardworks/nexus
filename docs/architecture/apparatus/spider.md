@@ -94,7 +94,7 @@ type CrawlResult =
 
 Each `crawl()` call does exactly one thing. The priority ordering:
 
-1. **Collect a completed engine.** Scan all running rigs for an engine with `status === 'running'`. Read the session record from the sessions book by `engine.sessionId`. If the session has reached a terminal status (`completed` or `failed`), update the engine: set its status and populate its yields (or error). If the engine failed, mark the rig `failed` (same transaction). If the completed engine is the terminal engine (`seal`), mark the rig `completed` (same transaction). Rig status changes trigger the CDC handler (see below). Returns `rig-completed` if the rig transitioned, otherwise `engine-completed`. This is the first priority because it unblocks downstream engines.
+1. **Collect a completed engine.** Scan all running rigs for an engine with `status === 'running'`. Read the session record from the sessions book by `engine.sessionId`. If the session has reached a terminal status (`completed` or `failed`), update the engine: set its status and populate its yields (or error). **Yield assembly:** look up the `EngineDesign` by `designId` from the Fabricator. If the design defines a `collect(sessionId, givens, context)` method, call it to assemble the yields — passing the same givens and context that were passed to `run()`. Otherwise, use the generic default: `{ sessionId, sessionStatus, output? }`. This keeps engine-specific yield logic (e.g. parsing review findings) in the engine, not the Spider. If the engine failed, mark the rig `failed` (same transaction). If the completed engine is the terminal engine (`seal`), mark the rig `completed` (same transaction). Rig status changes trigger the CDC handler (see below). Returns `rig-completed` if the rig transitioned, otherwise `engine-completed`. This is the first priority because it unblocks downstream engines.
 2. **Run a ready engine.** An engine is ready when `status === 'pending'` and all engines in its `upstream` array have `status === 'completed'`. Look up the `EngineDesign` by `designId` from the Fabricator. Assemble givens (from givensSpec) and context (with upstream yields), then call `design.run(givens, context)`. For clockwork engines (`status: 'completed'` result): store the yields on the engine instance, mark it completed, and check for rig completion (same as step 1). Returns `engine-completed` (or `rig-completed` if this was the terminal engine). For quick engines (`status: 'launched'` result): store the `sessionId`, mark the engine `running`. Returns `engine-started`. Completion is collected on subsequent crawl calls via step 1.
 3. **Spawn a rig.** If there's a ready writ with no rig, spawn the static graph. Returns `rig-spawned`.
 
@@ -332,23 +332,13 @@ async run(givens: Record<string, unknown>, context: EngineRunContext): Promise<E
     metadata: { engineId: context.engineId, writId: writ.id },
   })
 
-  const sessionId = await getSessionIdFromHandle(handle)
-  return { status: 'launched', sessionId }
+  return { status: 'launched', sessionId: handle.sessionId }
 }
 ```
 
 The implement engine wraps the writ body with a commit instruction — each engine owns its own prompt contract rather than relying on `dispatch.sh` to append instructions to the writ body.
 
-**Collect step (Spider, not engine):** When the Spider's collect step detects the session has completed, it builds the yields:
-
-```typescript
-// In Spider's collect step
-const session = await stacks.get('sessions', engine.sessionId)
-engine.yields = {
-  sessionId: session.id,
-  sessionStatus: session.status,
-} satisfies ImplementYields
-```
+**Collect step:** The implement engine has no `collect` method — the Spider uses the generic default: `{ sessionId, sessionStatus, output? }`.
 
 ### `review` (quick)
 
@@ -384,12 +374,11 @@ async run(givens: Record<string, unknown>, context: EngineRunContext): Promise<E
     metadata: {
       engineId: context.engineId,
       writId: writ.id,
-      mechanicalChecks: checks,  // stash for collect step to include in yields
+      mechanicalChecks: checks,  // stash for collect step to retrieve
     },
   })
 
-  const sessionId = await getSessionIdFromHandle(handle)
-  return { status: 'launched', sessionId }
+  return { status: 'launched', sessionId: handle.sessionId }
 }
 ```
 
@@ -454,16 +443,17 @@ Numbered list of specific changes needed, in priority order.
 Produce your findings as your final message in the format above.
 ```
 
-**Collect step:** The Spider retrieves the reviewer's findings from the session output — the reviewer produces structured markdown as its final message, and the Animator captures this on the session record. No file is written to the worktree (review artifacts don't belong in the codebase).
+**Collect step:** The review engine defines a `collect` method that the Spider calls when the session completes. The engine looks up the session record itself and parses the reviewer's structured findings. No file is written to the worktree (review artifacts don't belong in the codebase).
 
 ```typescript
-// In Spider's collect step
-const session = await stacks.get('sessions', engine.sessionId)
-const findings = session.output  // reviewer's structured findings from final message
-const passed = /^###\s*Overall:\s*PASS/mi.test(findings)
-const checks = session.metadata?.mechanicalChecks ?? []
-
-engine.yields = { sessionId: session.id, passed, findings, mechanicalChecks: checks } satisfies ReviewYields
+async collect(sessionId: string, _givens: Record<string, unknown>, _context: EngineRunContext): Promise<ReviewYields> {
+  const stacks = guild().apparatus<StacksApi>('stacks')
+  const session = await stacks.readBook<SessionDoc>('animator', 'sessions').get(sessionId)
+  const findings = session?.output ?? ''
+  const passed = /^###\s*Overall:\s*PASS/mi.test(findings)
+  const mechanicalChecks = (session?.metadata?.mechanicalChecks as MechanicalCheck[]) ?? []
+  return { sessionId, passed, findings, mechanicalChecks }
+}
 ```
 
 **Dependency:** The Animator's `SessionResult.output` field (the final assistant message text) must be available for this to work. See the Animator spec (`docs/architecture/apparatus/animator.md`) — the `output` field is populated from the session provider's transcript at recording time.
@@ -491,8 +481,7 @@ async run(givens: Record<string, unknown>, context: EngineRunContext): Promise<E
     metadata: { engineId: context.engineId, writId: writ.id },
   })
 
-  const sessionId = await getSessionIdFromHandle(handle)
-  return { status: 'launched', sessionId }
+  return { status: 'launched', sessionId: handle.sessionId }
 }
 ```
 
@@ -534,12 +523,7 @@ in the findings above. Address each item, then commit your changes.
 Commit all changes before ending your session.
 ```
 
-**Collect step:**
-
-```typescript
-const session = await stacks.get('sessions', engine.sessionId)
-engine.yields = { sessionId: session.id, sessionStatus: session.status } satisfies ReviseYields
-```
+**Collect step:** The revise engine has no `collect` method — the Spider uses the generic default: `{ sessionId, sessionStatus, output? }`.
 
 ### `seal` (clockwork)
 

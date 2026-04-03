@@ -96,8 +96,7 @@ const reviseEngine: EngineDesign = {
       metadata: { engineId: context.engineId, writId: writ.id },
     });
 
-    const sessionResult = await handle.result;
-    return { status: 'launched', sessionId: sessionResult.id };
+    return { status: 'launched', sessionId: handle.sessionId };
   },
 };
 

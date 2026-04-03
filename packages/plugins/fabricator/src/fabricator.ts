@@ -55,6 +55,25 @@ export interface EngineDesign {
    * @param context  — minimal execution context: engine id and upstream yields.
    */
   run(givens: Record<string, unknown>, context: EngineRunContext): Promise<EngineRunResult>;
+
+  /**
+   * Assemble yields from a completed session.
+   *
+   * Called by the Spider's collect step when a quick engine's session
+   * reaches a terminal state. The engine looks up whatever it needs
+   * via guild() — same dependency pattern as run().
+   *
+   * @param sessionId — the session to collect yields from (primary input).
+   * @param givens    — same givens that were passed to run().
+   * @param context   — same execution context that was passed to run().
+   *
+   * If not defined, the Spider uses a generic default:
+   *   { sessionId, sessionStatus, output? }
+   *
+   * Only relevant for quick engines (those that return { status: 'launched' }).
+   * Clockwork engines return yields directly from run().
+   */
+  collect?(sessionId: string, givens: Record<string, unknown>, context: EngineRunContext): Promise<unknown>;
 }
 
 /** The Fabricator's public API, exposed via `provides`. */
