@@ -159,9 +159,12 @@ const provider: AnimatorSessionProvider = {
     let done = false;
 
     const result = prepareSession(config).then(async ({ tmpDir, args, mcpHandle }) => {
-      // Autonomous mode: initial prompt via --print, stream-json for telemetry
+      // Autonomous mode: prompt piped via stdin (--print - reads from stdin).
+      // This avoids Commander parsing issues when the prompt starts with '-'
+      // (e.g. YAML frontmatter '---') and also avoids OS arg length limits.
+      const prompt = config.initialPrompt ?? '';
       args.push(
-        '--print', config.initialPrompt ?? '',
+        '--print', '-',
         '--output-format', 'stream-json',
         '--verbose',
       );
@@ -173,7 +176,7 @@ const provider: AnimatorSessionProvider = {
 
       try {
         if (config.streaming) {
-          const spawned = spawnClaudeStreamingJson(args, config.cwd, config.environment);
+          const spawned = spawnClaudeStreamingJson(args, config.cwd, config.environment, prompt);
           innerChunks = spawned.chunks;
           prepDone = true;
           if (chunkResolve) { chunkResolve(); chunkResolve = null; }
@@ -188,7 +191,7 @@ const provider: AnimatorSessionProvider = {
         done = true;
         if (chunkResolve) { chunkResolve(); chunkResolve = null; }
 
-        const raw = await spawnClaudeStreamJson(args, config.cwd, config.environment);
+        const raw = await spawnClaudeStreamJson(args, config.cwd, config.environment, prompt);
         await cleanup();
         return buildResult(raw);
       } catch (err) {
@@ -389,13 +392,19 @@ export function processNdjsonBuffer(
  *
  * Forwards assistant text content to stderr so it's visible during execution.
  */
-function spawnClaudeStreamJson(args: string[], cwd: string, env?: Record<string, string>): Promise<StreamJsonResult> {
+function spawnClaudeStreamJson(args: string[], cwd: string, env?: Record<string, string>, stdinData?: string): Promise<StreamJsonResult> {
   return new Promise((resolve, reject) => {
     const proc = spawn('claude', args, {
       cwd,
       stdio: ['pipe', 'pipe', 'inherit'],
       env: { ...process.env, ...env },
     });
+
+    // Pipe prompt via stdin (--print - reads from stdin)
+    if (stdinData !== undefined) {
+      proc.stdin!.write(stdinData);
+      proc.stdin!.end();
+    }
 
     const acc: {
       transcript: Record<string, unknown>[];
@@ -440,7 +449,7 @@ function spawnClaudeStreamJson(args: string[], cwd: string, env?: Record<string,
  * Returns an async iterable of chunks for real-time consumption and
  * a promise for the final StreamJsonResult.
  */
-function spawnClaudeStreamingJson(args: string[], cwd: string, env?: Record<string, string>): {
+function spawnClaudeStreamingJson(args: string[], cwd: string, env?: Record<string, string>, stdinData?: string): {
   chunks: AsyncIterable<SessionChunk>;
   result: Promise<StreamJsonResult>;
 } {
@@ -460,6 +469,12 @@ function spawnClaudeStreamingJson(args: string[], cwd: string, env?: Record<stri
     stdio: ['pipe', 'pipe', 'inherit'],
     env: { ...process.env, ...env },
   });
+
+  // Pipe prompt via stdin (--print - reads from stdin)
+  if (stdinData !== undefined) {
+    proc.stdin!.write(stdinData);
+    proc.stdin!.end();
+  }
 
   let buffer = '';
 
