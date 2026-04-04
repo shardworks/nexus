@@ -1069,24 +1069,15 @@ describe('ScriptoriumCore', () => {
       gitSync(['add', 'push-fail.txt'], draft.path);
       gitSync(['commit', '-m', 'Push fail test'], draft.path);
 
-      // Corrupt the remote by pointing origin at an invalid path
-      const { bareClonePath } = (() => {
-        // Access the bare clone path via the guild home
-        const guildState = (core as unknown as { guildState?: never })['guildState'];
-        return { bareClonePath: null };
-      })();
-
-      // Get the bare clone path by reading the guild home from the test setup
-      // We need to change the remote URL in the bare clone to an invalid location.
-      // The bare clone is at <home>/.nexus/codexes/test-codex.git
-      // Find it via the draft's gitdir
+      // Find the bare clone path via the draft's gitdir.
+      // The gitdir is something like /tmp/.../codexes/test-codex.git/worktrees/my-draft
+      // Go up two levels to get the bare clone root.
       const gitDir = gitSync(['rev-parse', '--git-dir'], draft.path);
-      // gitDir is something like /tmp/.../codexes/test-codex.git/worktrees/my-draft
-      // The bare clone is the worktrees' parent: go up to the .git directory of the bare clone
       const cloneGitDir = path.resolve(path.join(gitDir, '..', '..'));
 
-      // Point origin at an invalid URL so push fails
-      gitSync(['remote', 'set-url', 'origin', 'file:///nonexistent/path.git'], cloneGitDir);
+      // Set a push-only URL to an invalid location so fetch still works but push fails.
+      // git remote set-url --push only overrides the push URL, leaving fetch URL intact.
+      gitSync(['remote', 'set-url', '--push', 'origin', 'file:///nonexistent/path.git'], cloneGitDir);
 
       // seal() should fail with a push error, not a seal error
       await assert.rejects(
@@ -1100,14 +1091,12 @@ describe('ScriptoriumCore', () => {
       );
 
       // The local bare clone's ref should have been updated (seal succeeded locally)
-      // Restore the remote URL temporarily to check
-      gitSync(['remote', 'set-url', 'origin', remote.url], cloneGitDir);
       const localRef = gitSync(['rev-parse', 'main'], cloneGitDir);
       // The draft's HEAD should match the local sealed ref
       const draftHead = gitSync(['rev-parse', 'HEAD'], draft.path);
       assert.equal(localRef, draftHead);
 
-      // The draft must still exist (push ran before abandonDraft)
+      // The draft must still exist (push runs before abandonDraft)
       const drafts = await api.listDrafts();
       assert.equal(drafts.length, 1, 'Draft should still exist after push failure');
     });
