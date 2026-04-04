@@ -46,7 +46,7 @@ Three candidate locations were considered:
 
 The Spider seeds every rig with an `implement → review → [revise → review]*N` chain by default. The review engine is a clockwork engine; the revise engine is a quick engine. Both are standard engine designs contributed by a kit.
 
-**Pros:** Architecturally clean. Composes naturally with Spider's traversal. Reusable engine designs. No migration from Dispatch required — Dispatch simply dispatches, and the rig handles iteration.
+**Pros:** Architecturally clean. Composes naturally with Spider's traversal. Reusable engine designs. Composes naturally with the Spider — the rig handles iteration natively.
 
 **Cons:** Requires the Spider. Not implementable until the rigging system exists.
 
@@ -155,7 +155,7 @@ The Spider traverses this graph naturally. Each engine completes and propagates 
 
 The Spider needs no changes to support the review loop. It already:
 - Traverses all engines whose upstream is complete
-- Dispatches ready engines to the Executor
+- Routes ready engines to the Executor
 - Handles both clockwork and quick engine kinds
 
 The review loop is just a graph shape that Spider happens to traverse. The `escalate` clockwork engine signals the Clerk with a `failed` transition; the `seal` clockwork engine signals completion. The Spider itself is agnostic.
