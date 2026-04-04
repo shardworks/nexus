@@ -43,11 +43,11 @@ Resolve a single engine from a module's default export. Same pattern as `resolve
 
 ## Events
 
-The event system — signaling, reading, validation, dispatch recording. Events are immutable facts persisted to the Clockworks event queue. The Clockworks runner processes them separately via `nsg clock`.
+The event system — signaling, reading, and validation. Events are immutable facts persisted to the Clockworks event queue. The Clockworks runner processes them separately via `nsg clock`.
 
 ### `signalEvent(home, name, payload, emitter): string`
 
-Signal an event — persist it to the Clockworks events table. Does **not** process the event.
+Signal an event — persist it to the Clockworks event queue. Does **not** process the event.
 
 - `name` — event name (e.g. `"commission.posted"`, `"code.reviewed"`)
 - `payload` — JSON-serializable event data, or `null`
@@ -62,64 +62,27 @@ Check if an event name is in a reserved framework namespace. Reserved namespaces
 
 Validate that a custom event name is declared in `guild.json` clockworks.events. **Throws** if the name is in a reserved namespace or not declared.
 
-### `readPendingEvents(home): GuildEvent[]`
-
-Read all unprocessed events from the queue, ordered by `fired_at` ascending.
-
 ### `readEvent(home, id): GuildEvent | null`
 
 Read a single event by ID.
-
-### `markEventProcessed(home, eventId): void`
-
-Mark an event as processed (sets `processed = 1`).
 
 ### `listEvents(home, opts?): GuildEvent[]`
 
 List events with optional filters. Returns newest first.
 
 **Options (`ListEventsOptions`):**
-- `name?: string` — filter by name pattern (SQL `LIKE` — use `%` for wildcards)
+- `name?: string` — filter by event name (exact match or `LIKE` pattern with `%` wildcards)
 - `emitter?: string` — filter by emitter
 - `pending?: boolean` — `true` = unprocessed only, `false` = processed only, omit for all
 - `limit?: number` — max results
-
-### `listDispatches(home, opts?): DispatchRecord[]`
-
-List event dispatch records with optional filters.
-
-**Options (`ListDispatchesOptions`):**
-- `eventId?: string`
-- `handlerType?: string` — `"engine"` or `"anima"`
-- `handlerName?: string`
-- `status?: string` — `"success"` or `"error"`
-- `limit?: number`
-
-### `recordDispatch(home, opts): void`
-
-Record a dispatch in the `event_dispatches` table. Used by the Clockworks runner.
-
-```typescript
-recordDispatch(home, {
-  eventId: string,
-  handlerType: 'engine' | 'anima',
-  handlerName: string,
-  targetRole?: string,
-  noticeType?: 'summon' | 'brief',
-  startedAt: string,
-  endedAt: string,
-  status: 'success' | 'error',
-  error?: string,
-})
-```
 
 ### Types
 
 | Type | Description |
 |------|-------------|
 | `ListEventsOptions` | Filters for `listEvents()` |
-| `DispatchRecord` | A single dispatch record (id, eventId, handlerType, handlerName, etc.) |
-| `ListDispatchesOptions` | Filters for `listDispatches()` |
+
+> **Dispatch tracking.** Dispatch records (what ran in response to each event) are internal Clockworks operational state, managed by the Clockworks apparatus via Stacks books. They are not part of the `nexus-core` API surface. See the Clockworks section for the runner API that exposes dispatch results.
 
 ---
 
@@ -282,22 +245,10 @@ Returns `{ total, completed, failed, cancelled, pending, active, ready }` — co
 | `CommissionSummary` | id, content, status, workshop, statusReason, createdAt, updatedAt |
 | `CommissionDetail` | Summary + assignments[] + sessions[] |
 | `ListCommissionsOptions` | `{ status?, workshop? }` |
-| `WorkRecord` | id, commissionId, title, description, status, createdAt, updatedAt |
-| `CreateWorkOptions` | `{ title, description?, commissionId? }` |
-| `ListWorksOptions` | `{ status?, commissionId? }` |
-| `UpdateWorkOptions` | `{ title?, description?, status? }` |
-| `PieceRecord` | id, workId, title, description, status, createdAt, updatedAt |
-| `CreatePieceOptions` | `{ title, description?, workId? }` |
-| `ListPiecesOptions` | `{ status?, workId? }` |
-| `UpdatePieceOptions` | `{ title?, description?, status? }` |
-| `JobRecord` | id, pieceId, title, description, status, assignee, createdAt, updatedAt |
-| `CreateJobOptions` | `{ title, description?, pieceId?, assignee? }` |
-| `ListJobsOptions` | `{ status?, pieceId?, assignee? }` |
-| `UpdateJobOptions` | `{ title?, description?, status?, assignee? }` |
-| `StrokeRecord` | id, jobId, kind, content, status, createdAt, updatedAt |
-| `CreateStrokeOptions` | `{ jobId, kind, content? }` |
-| `ListStrokesOptions` | `{ jobId?, status? }` |
-| `UpdateStrokeOptions` | `{ status?, content? }` |
+| `WritRecord` | id, type, title, description, status, parentId, sessionId, createdAt, updatedAt |
+| `CreateWritOptions` | `{ type, title, description?, parentId? }` |
+| `ListWritsOptions` | `{ status?, type?, parentId? }` |
+| `WritProgress` | `{ total, completed, failed, cancelled, pending, active, ready }` |
 
 ---
 
@@ -437,7 +388,7 @@ Full conversation detail including all turns.
 
 ## Clockworks
 
-The event processing runner — matches pending events to standing orders and dispatches them.
+The event processing runner — matches pending events to standing orders and dispatches them. The Clockworks apparatus owns its event and dispatch state via Stacks books (not raw SQL tables). Internal operations — reading pending events, marking events processed, recording dispatches — are handled by the apparatus and are not part of the public API. The runner functions below expose dispatch results without leaking persistence details.
 
 ### `clockTick(home, eventId?): Promise<TickResult | null>`
 
