@@ -131,11 +131,15 @@ export function createSpider(): Plugin {
     errorMessage: string,
   ): Promise<void> {
     const now = new Date().toISOString();
-    const updatedEngines = rig.engines.map((e) =>
-      e.id === engineId
-        ? { ...e, status: 'failed' as const, error: errorMessage, completedAt: now }
-        : e,
-    );
+    const updatedEngines = rig.engines.map((e) => {
+      if (e.id === engineId) {
+        return { ...e, status: 'failed' as const, error: errorMessage, completedAt: now };
+      }
+      if (e.status === 'pending') {
+        return { ...e, status: 'cancelled' as const };
+      }
+      return e;
+    });
     await rigsBook.patch(rig.id, {
       engines: updatedEngines,
       status: 'failed',

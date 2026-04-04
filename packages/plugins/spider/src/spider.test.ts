@@ -473,6 +473,14 @@ describe('Spider', () => {
       const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
       assert.equal(draft?.status, 'failed');
       assert.ok(draft?.error?.includes('nonexistent-engine'));
+
+      // All downstream engines should be cancelled
+      for (const id of ['implement', 'review', 'revise', 'seal']) {
+        const eng = updated.engines.find((e: EngineInstance) => e.id === id);
+        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
+        assert.equal(eng?.completedAt, undefined, `${id} should not have completedAt`);
+        assert.equal(eng?.error, undefined, `${id} should not have error`);
+      }
     });
   });
 
@@ -526,6 +534,14 @@ describe('Spider', () => {
       const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
       assert.equal(draft?.status, 'failed');
       assert.ok(draft?.error !== undefined && draft.error.length > 0, `expected engine to have an error, got: ${draft?.error}`);
+
+      // All downstream engines should be cancelled
+      for (const id of ['implement', 'review', 'revise', 'seal']) {
+        const eng = updated.engines.find((e: EngineInstance) => e.id === id);
+        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
+        assert.equal(eng?.completedAt, undefined, `${id} should not have completedAt`);
+        assert.equal(eng?.error, undefined, `${id} should not have error`);
+      }
     });
   });
 
@@ -605,6 +621,18 @@ describe('Spider', () => {
       assert.equal(updatedRig.status, 'failed', 'rig should be failed');
       const impl = updatedRig.engines.find((e: EngineInstance) => e.id === 'implement');
       assert.equal(impl?.status, 'failed', 'implement engine should be failed');
+
+      // Completed upstream engine (draft) is preserved
+      const draftEng = updatedRig.engines.find((e: EngineInstance) => e.id === 'draft');
+      assert.equal(draftEng?.status, 'completed', 'draft should remain completed');
+
+      // Pending downstream engines should be cancelled
+      for (const id of ['review', 'revise', 'seal']) {
+        const eng = updatedRig.engines.find((e: EngineInstance) => e.id === id);
+        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
+        assert.equal(eng?.completedAt, undefined, `${id} should not have completedAt`);
+        assert.equal(eng?.error, undefined, `${id} should not have error`);
+      }
 
       const failedWrit = await clerk.show(writ.id);
       assert.equal(failedWrit.status, 'failed', 'writ should transition to failed via CDC');
@@ -728,6 +756,14 @@ describe('Spider', () => {
       assert.equal(updated.status, 'failed');
       const impl = updated.engines.find((e: EngineInstance) => e.id === 'implement');
       assert.equal(impl?.status, 'failed');
+
+      // Pending downstream engines should be cancelled
+      for (const id of ['review', 'revise', 'seal']) {
+        const eng = updated.engines.find((e: EngineInstance) => e.id === id);
+        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
+        assert.equal(eng?.completedAt, undefined, `${id} should not have completedAt`);
+        assert.equal(eng?.error, undefined, `${id} should not have error`);
+      }
     });
 
     it('does not collect a still-running session', async () => {
@@ -792,6 +828,17 @@ describe('Spider', () => {
 
       const [updatedRig] = await book.list();
       assert.equal(updatedRig.status, 'failed');
+
+      const failedDraft = updatedRig.engines.find((e: EngineInstance) => e.id === 'draft');
+      assert.equal(failedDraft?.status, 'failed', 'draft engine should be failed');
+
+      // All downstream engines should be cancelled
+      for (const id of ['implement', 'review', 'revise', 'seal']) {
+        const eng = updatedRig.engines.find((e: EngineInstance) => e.id === id);
+        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
+        assert.equal(eng?.completedAt, undefined, `${id} should not have completedAt`);
+        assert.equal(eng?.error, undefined, `${id} should not have error`);
+      }
 
       const failedWrit = await clerk.show(writ.id);
       assert.equal(failedWrit.status, 'failed');
@@ -1567,6 +1614,174 @@ describe('Spider', () => {
       assert.ok(!isNaN(new Date(createdAt).getTime()), 'createdAt must be a valid date');
       assert.ok(createdAt >= before, 'createdAt must not be before spawn');
       assert.ok(createdAt <= after, 'createdAt must not be after spawn');
+    });
+  });
+
+  // ── Downstream engine cancellation ───────────────────────────────
+
+  describe('downstream engine cancellation', () => {
+    it('(a) first-engine failure cancels all downstream engines', async () => {
+      const { clerk, spider, stacks } = fix;
+      await postWrit(clerk);
+      await spider.crawl(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+
+      // Inject bad designId for draft (first engine) to trigger failure
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) =>
+          e.id === 'draft' ? { ...e, designId: 'nonexistent-engine' } : e,
+        ),
+      });
+
+      const result = await spider.crawl();
+      assert.equal(result?.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
+
+      const [updated] = await book.list();
+      const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
+      assert.equal(draft?.status, 'failed', 'draft should be failed');
+
+      for (const id of ['implement', 'review', 'revise', 'seal']) {
+        const eng = updated.engines.find((e: EngineInstance) => e.id === id);
+        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
+        assert.equal(eng?.completedAt, undefined, `${id} should not have completedAt`);
+        assert.equal(eng?.error, undefined, `${id} should not have error`);
+      }
+    });
+
+    it('(b) mid-pipeline failure preserves completed upstream, cancels pending downstream', async () => {
+      const { clerk, spider, stacks } = fix;
+      await postWrit(clerk);
+      await spider.crawl(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+
+      // Pre-complete draft, then inject bad designId for implement
+      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' };
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: draftYields };
+          if (e.id === 'implement') return { ...e, designId: 'nonexistent-engine' };
+          return e;
+        }),
+      });
+
+      const result = await spider.crawl();
+      assert.equal(result?.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
+
+      const [updated] = await book.list();
+
+      // Completed upstream engine preserved
+      const draftEng = updated.engines.find((e: EngineInstance) => e.id === 'draft');
+      assert.equal(draftEng?.status, 'completed', 'draft should remain completed');
+
+      // Failed engine
+      const implEng = updated.engines.find((e: EngineInstance) => e.id === 'implement');
+      assert.equal(implEng?.status, 'failed', 'implement should be failed');
+
+      // Pending downstream engines cancelled
+      for (const id of ['review', 'revise', 'seal']) {
+        const eng = updated.engines.find((e: EngineInstance) => e.id === id);
+        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
+        assert.equal(eng?.completedAt, undefined, `${id} should not have completedAt`);
+        assert.equal(eng?.error, undefined, `${id} should not have error`);
+      }
+    });
+
+    it('(c) a running engine is not cancelled when another engine fails', async () => {
+      const { clerk, spider, stacks } = fix;
+      await postWrit(clerk);
+      await spider.crawl(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+
+      // Draft completed, implement is running with a sessionId,
+      // review is pending — inject bad designId for review so it fails next
+      // But we need to fail via failEngine path: inject bad designId on review directly
+      // and manually set implement to running to test it isn't cancelled.
+      const fakeSessionId = generateId('ses', 4);
+      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' };
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: draftYields };
+          if (e.id === 'implement') return { ...e, status: 'running' as const, sessionId: fakeSessionId };
+          if (e.id === 'review') return { ...e, designId: 'nonexistent-engine', upstream: [] };
+          return e;
+        }),
+      });
+
+      // review now has no upstream and bad designId — running it will fail it
+      const result = await spider.crawl();
+      // review fails (bad designId) → rig fails
+      assert.equal(result?.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
+
+      const [updated] = await book.list();
+
+      // The running engine (implement) must NOT be cancelled
+      const implEng = updated.engines.find((e: EngineInstance) => e.id === 'implement');
+      assert.equal(implEng?.status, 'running', 'running implement engine should not be cancelled');
+
+      // The failed engine
+      const reviewEng = updated.engines.find((e: EngineInstance) => e.id === 'review');
+      assert.equal(reviewEng?.status, 'failed', 'review should be failed');
+
+      // Only pending engines should be cancelled (revise and seal)
+      for (const id of ['revise', 'seal']) {
+        const eng = updated.engines.find((e: EngineInstance) => e.id === id);
+        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
+      }
+    });
+
+    it('cancelled engines have no completedAt', async () => {
+      const { clerk, spider, stacks } = fix;
+      await postWrit(clerk);
+      await spider.crawl(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) =>
+          e.id === 'draft' ? { ...e, designId: 'nonexistent-engine' } : e,
+        ),
+      });
+
+      await spider.crawl();
+
+      const [updated] = await book.list();
+      const cancelled = updated.engines.filter((e: EngineInstance) => e.status === 'cancelled');
+      assert.ok(cancelled.length > 0, 'expected cancelled engines');
+      for (const eng of cancelled) {
+        assert.equal(eng.completedAt, undefined, `${eng.id} should not have completedAt`);
+      }
+    });
+
+    it('cancelled engines have no error', async () => {
+      const { clerk, spider, stacks } = fix;
+      await postWrit(clerk);
+      await spider.crawl(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) =>
+          e.id === 'draft' ? { ...e, designId: 'nonexistent-engine' } : e,
+        ),
+      });
+
+      await spider.crawl();
+
+      const [updated] = await book.list();
+      const cancelled = updated.engines.filter((e: EngineInstance) => e.status === 'cancelled');
+      assert.ok(cancelled.length > 0, 'expected cancelled engines');
+      for (const eng of cancelled) {
+        assert.equal(eng.error, undefined, `${eng.id} should not have error`);
+      }
     });
   });
 

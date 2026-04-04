@@ -8,7 +8,7 @@
 
 // ── Engine instance status ────────────────────────────────────────────
 
-export type EngineStatus = 'pending' | 'running' | 'completed' | 'failed';
+export type EngineStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 // ── Engine instance ───────────────────────────────────────────────────
 

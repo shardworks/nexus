@@ -129,7 +129,7 @@ Stored in the Stacks `rigs` book. One rig per writ. The Spider reads and updates
 interface EngineInstance {
   id: string               // unique within the rig, e.g. 'draft', 'implement', 'review', 'revise', 'seal'
   designId: string         // engine design id — resolved from the Fabricator
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   upstream: string[]       // ids of engines that must complete first (empty = first engine)
   givensSpec: Record<string, unknown>  // givens specification — literal values now, templates later
   yields: unknown          // set on completion — the engine's yields (see Yield Types below)
@@ -593,9 +593,10 @@ Because this is Phase 1 (cascade), the writ transition joins the same transactio
 When any engine fails (throws, or a quick engine's session has `status: 'failed'`):
 
 1. The engine is marked `status: 'failed'` with the error (detected during "collect completed engines" for quick engines, or directly during execution for clockwork engines)
-2. The rig is marked `status: 'failed'` (same transaction)
-3. CDC fires on the rig status change → handler calls Clerk API to transition the writ to `failed`
-4. The draft is **not** abandoned — preserved for patron inspection
+2. All engines in the rig with `status === 'pending'` are set to `status: 'cancelled'` — they will never run. Engines already in `'running'`, `'completed'`, or `'failed'` are left untouched. Cancelled engines do **not** receive `completedAt` or `error` — cancellation is a consequence, not a failure.
+3. The rig is marked `status: 'failed'` (same transaction as steps 1 and 2)
+4. CDC fires on the rig status change → handler calls Clerk API to transition the writ to `failed`
+5. The draft is **not** abandoned — preserved for patron inspection
 
 No retry. No recovery. The patron inspects and decides what to do. This is appropriate for the static rig — see [Future Evolution](#future-evolution) for the retry/recovery direction.
 
