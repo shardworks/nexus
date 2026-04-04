@@ -31,6 +31,12 @@ export interface LoadedApparatus {
 /** Union of loaded kit and loaded apparatus. */
 export type LoadedPlugin = LoadedKit | LoadedApparatus
 
+/** A plugin that failed to load, validate, or start. */
+export interface FailedPlugin {
+  readonly id:     string
+  readonly reason: string
+}
+
 // ── Context types ──────────────────────────────────────────────────────
 
 /**

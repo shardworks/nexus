@@ -160,7 +160,13 @@ export async function main(): Promise<void> {
   // If the guild doesn't have the tools apparatus installed, no plugin
   // tools are available — only framework commands.
   if (home) {
-    await createGuild(home);
+    try {
+      await createGuild(home);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[nsg] Guild failed to load: ${message}`);
+      console.warn('[nsg] Plugin-contributed commands are unavailable. Framework commands still work.');
+    }
 
     try {
       const instrumentarium = guild().apparatus<InstrumentariumApi>('tools');
@@ -169,8 +175,8 @@ export async function main(): Promise<void> {
         .map((r) => r.definition);
       registerTools(program, pluginTools);
     } catch {
-      // No Instrumentarium installed — only framework commands available.
-      // This is fine; the guild just doesn't have plugin-contributed CLI tools.
+      // No Instrumentarium installed or guild failed to load —
+      // only framework commands available.
     }
   }
 

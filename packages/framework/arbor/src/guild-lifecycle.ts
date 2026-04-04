@@ -13,6 +13,7 @@ import type {
   StartupContext,
   LoadedKit,
   LoadedApparatus,
+  FailedPlugin,
 } from '@shardworks/nexus-core';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -26,7 +27,7 @@ export type EventHandlerMap = Map<
 
 /**
  * Validate all `requires` declarations and detect circular dependencies.
- * Throws with a descriptive error on the first problem found.
+ * Returns an array of FailedPlugin entries describing every problem found.
  *
  * Checks:
  * - Apparatus requires: every named dependency must exist (kit or apparatus).
@@ -37,7 +38,10 @@ export type EventHandlerMap = Map<
 export function validateRequires(
   kits: LoadedKit[],
   apparatuses: LoadedApparatus[],
-): void {
+): FailedPlugin[] {
+  const failures: FailedPlugin[] = [];
+  const failedIds = new Set<string>();
+
   const apparatusIds = new Set(apparatuses.map((a) => a.id));
   const allIds = new Set([
     ...kits.map((k) => k.id),
@@ -48,9 +52,13 @@ export function validateRequires(
   for (const app of apparatuses) {
     for (const dep of app.apparatus.requires ?? []) {
       if (!allIds.has(dep)) {
-        throw new Error(
-          `[arbor] "${app.id}" requires "${dep}", which is not installed.`,
-        );
+        if (!failedIds.has(app.id)) {
+          failedIds.add(app.id);
+          failures.push({
+            id:     app.id,
+            reason: `"${app.id}" requires "${dep}", which is not installed.`,
+          });
+        }
       }
     }
   }
@@ -59,15 +67,20 @@ export function validateRequires(
   for (const kit of kits) {
     for (const dep of kit.kit.requires ?? []) {
       if (!apparatusIds.has(dep)) {
-        if (!allIds.has(dep)) {
-          throw new Error(
-            `[arbor] kit "${kit.id}" requires "${dep}", which is not installed.`,
-          );
+        if (!failedIds.has(kit.id)) {
+          failedIds.add(kit.id);
+          if (!allIds.has(dep)) {
+            failures.push({
+              id:     kit.id,
+              reason: `kit "${kit.id}" requires "${dep}", which is not installed.`,
+            });
+          } else {
+            failures.push({
+              id:     kit.id,
+              reason: `kit "${kit.id}" requires "${dep}", but that plugin is a kit, not an apparatus. Kit requires must name apparatus plugins.`,
+            });
+          }
         }
-        throw new Error(
-          `[arbor] kit "${kit.id}" requires "${dep}", but that plugin is a kit, not an apparatus. ` +
-          `Kit requires must name apparatus plugins.`,
-        );
       }
     }
   }
@@ -75,12 +88,19 @@ export function validateRequires(
   // Detect circular dependencies among apparatuses
   const visiting = new Set<string>();
   const visited = new Set<string>();
+  const cycleParticipants = new Set<string>();
 
   function visit(id: string, chain: string[]): void {
     if (visited.has(id)) return;
     if (visiting.has(id)) {
-      const cycle = [...chain, id].join(' → ');
-      throw new Error(`[arbor] Circular dependency detected: ${cycle}`);
+      // Back-edge detected — extract cycle participants from chain
+      const cycleStart = chain.indexOf(id);
+      const cycleNodes = cycleStart >= 0 ? chain.slice(cycleStart) : [...chain];
+      cycleNodes.push(id);
+      for (const node of cycleNodes) {
+        cycleParticipants.add(node);
+      }
+      return;
     }
     visiting.add(id);
     const app = apparatuses.find((a) => a.id === id);
@@ -96,6 +116,76 @@ export function validateRequires(
   for (const app of apparatuses) {
     visit(app.id, []);
   }
+
+  for (const id of cycleParticipants) {
+    if (!failedIds.has(id)) {
+      failedIds.add(id);
+      failures.push({
+        id,
+        reason: `"${id}" is part of a circular dependency chain.`,
+      });
+    }
+  }
+
+  return failures;
+}
+
+// ── Cascade filtering ─────────────────────────────────────────────────
+
+/**
+ * Remove plugins that transitively depend on any failed plugin.
+ *
+ * Iterates until stable, cascading failures through the dependency graph.
+ * Returns healthy plugins and any newly-cascaded failures.
+ */
+export function filterFailedPlugins(
+  kits: LoadedKit[],
+  apparatuses: LoadedApparatus[],
+  rootFailures: FailedPlugin[],
+): { kits: LoadedKit[]; apparatuses: LoadedApparatus[]; cascaded: FailedPlugin[] } {
+  const failedIds = new Set<string>(rootFailures.map((f) => f.id));
+  const cascaded: FailedPlugin[] = [];
+
+  // Apparatus cascade: iterate until no new failures
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const app of apparatuses) {
+      if (failedIds.has(app.id)) continue;
+      for (const dep of app.apparatus.requires ?? []) {
+        if (failedIds.has(dep)) {
+          failedIds.add(app.id);
+          cascaded.push({
+            id:     app.id,
+            reason: `"${app.id}" depends on failed plugin "${dep}".`,
+          });
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+
+  // Kit cascade: single pass (kits can't depend on other kits)
+  for (const kit of kits) {
+    if (failedIds.has(kit.id)) continue;
+    for (const dep of kit.kit.requires ?? []) {
+      if (failedIds.has(dep)) {
+        failedIds.add(kit.id);
+        cascaded.push({
+          id:     kit.id,
+          reason: `"${kit.id}" depends on failed plugin "${dep}".`,
+        });
+        break;
+      }
+    }
+  }
+
+  return {
+    kits:        kits.filter((k) => !failedIds.has(k.id)),
+    apparatuses: apparatuses.filter((a) => !failedIds.has(a.id)),
+    cascaded,
+  };
 }
 
 // ── Dependency ordering ──────────────────────────────────────────────

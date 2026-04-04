@@ -31,10 +31,12 @@ import type {
   Guild,
   LoadedKit,
   LoadedApparatus,
+  FailedPlugin,
 } from '@shardworks/nexus-core';
 
 import {
   validateRequires,
+  filterFailedPlugins,
   topoSort,
   collectStartupWarnings,
   buildStartupContext,
@@ -97,7 +99,24 @@ export async function createGuild(root?: string): Promise<Guild> {
 
   // ── Validation phase ───────────────────────────────────────────────
 
-  validateRequires(kits, apparatuses);
+  const allFailures: FailedPlugin[] = [];
+
+  const rootFailures = validateRequires(kits, apparatuses);
+  allFailures.push(...rootFailures);
+
+  // Remove plugins that transitively depend on failed ones
+  if (rootFailures.length > 0) {
+    const filtered = filterFailedPlugins(kits, apparatuses, rootFailures);
+    kits.length = 0;
+    kits.push(...filtered.kits);
+    apparatuses.length = 0;
+    apparatuses.push(...filtered.apparatuses);
+    allFailures.push(...filtered.cascaded);
+
+    for (const f of allFailures) {
+      console.warn(`[arbor] ${f.reason}`);
+    }
+  }
 
   // ── Startup warnings ───────────────────────────────────────────────
 
@@ -152,8 +171,9 @@ export async function createGuild(root?: string): Promise<Guild> {
       return config;
     },
 
-    kits()        { return [...kits]; },
-    apparatuses() { return [...orderedApparatuses]; },
+    kits()          { return [...kits]; },
+    apparatuses()   { return [...orderedApparatuses]; },
+    failedPlugins() { return [...allFailures]; },
   };
   setGuild(guildInstance);
 

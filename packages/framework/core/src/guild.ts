@@ -13,7 +13,7 @@
  */
 
 import type { GuildConfig } from './guild-config.ts';
-import type { LoadedKit, LoadedApparatus } from './plugin.ts';
+import type { LoadedKit, LoadedApparatus, FailedPlugin } from './plugin.ts';
 
 // ── Interface ──────────────────────────────────────────────────────────
 
@@ -70,6 +70,9 @@ export interface Guild {
 
   /** Snapshot of all started apparatuses. */
   apparatuses(): LoadedApparatus[]
+
+  /** Snapshot of plugins that failed to load, validate, or start. */
+  failedPlugins(): FailedPlugin[]
 }
 
 // ── Singleton ──────────────────────────────────────────────────────────

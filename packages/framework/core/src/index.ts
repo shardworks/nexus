@@ -16,6 +16,7 @@ export {
   type LoadedKit,
   type LoadedApparatus,
   type LoadedPlugin,
+  type FailedPlugin,
   type StartupContext,
   isKit,
   isApparatus,

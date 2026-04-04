@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import type { LoadedKit, LoadedApparatus, StartupContext } from '@shardworks/nexus-core';
 import {
   validateRequires,
+  filterFailedPlugins,
   topoSort,
   collectStartupWarnings,
   buildStartupContext,
@@ -56,13 +57,13 @@ function makeApparatus(
 
 describe('validateRequires', () => {
   it('passes with no plugins', () => {
-    assert.doesNotThrow(() => validateRequires([], []));
+    assert.deepEqual(validateRequires([], []), []);
   });
 
   it('passes with kits and apparatuses that have no requires', () => {
     const kits = [makeKit('relay-kit')];
     const apps = [makeApparatus('tools')];
-    assert.doesNotThrow(() => validateRequires(kits, apps));
+    assert.deepEqual(validateRequires(kits, apps), []);
   });
 
   it('passes when apparatus requires another installed apparatus', () => {
@@ -70,29 +71,29 @@ describe('validateRequires', () => {
       makeApparatus('db'),
       makeApparatus('ledger', { requires: ['db'] }),
     ];
-    assert.doesNotThrow(() => validateRequires([], apps));
+    assert.deepEqual(validateRequires([], apps), []);
   });
 
   it('passes when kit requires an installed apparatus', () => {
     const kits = [makeKit('relay-kit', { requires: ['ledger'] })];
     const apps = [makeApparatus('ledger')];
-    assert.doesNotThrow(() => validateRequires(kits, apps));
+    assert.deepEqual(validateRequires(kits, apps), []);
   });
 
   it('throws when apparatus requires a missing plugin', () => {
     const apps = [makeApparatus('ledger', { requires: ['db'] })];
-    assert.throws(
-      () => validateRequires([], apps),
-      /requires "db", which is not installed/,
-    );
+    const failures = validateRequires([], apps);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0]!.id, 'ledger');
+    assert.match(failures[0]!.reason, /requires "db"/);
   });
 
   it('throws when kit requires a missing plugin', () => {
     const kits = [makeKit('relay-kit', { requires: ['nonexistent'] })];
-    assert.throws(
-      () => validateRequires(kits, []),
-      /requires "nonexistent", which is not installed/,
-    );
+    const failures = validateRequires(kits, []);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0]!.id, 'relay-kit');
+    assert.match(failures[0]!.reason, /requires "nonexistent"/);
   });
 
   it('throws when kit requires another kit (not an apparatus)', () => {
@@ -100,20 +101,25 @@ describe('validateRequires', () => {
       makeKit('kit-a'),
       makeKit('kit-b', { requires: ['kit-a'] }),
     ];
-    assert.throws(
-      () => validateRequires(kits, []),
-      /but that plugin is a kit, not an apparatus/,
-    );
+    const failures = validateRequires(kits, []);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0]!.id, 'kit-b');
+    assert.match(failures[0]!.reason, /but that plugin is a kit/);
   });
 
   it('includes the dependent and dependency names in the error', () => {
     const apps = [makeApparatus('sessions', { requires: ['ledger'] })];
-    assert.throws(
-      () => validateRequires([], apps),
-      (err: Error) => {
-        return err.message.includes('"sessions"') && err.message.includes('"ledger"');
-      },
-    );
+    const failures = validateRequires([], apps);
+    assert.ok(failures[0]!.reason.includes('"sessions"') && failures[0]!.reason.includes('"ledger"'));
+  });
+
+  it('collects multiple failures in one pass', () => {
+    const apps = [
+      makeApparatus('alpha', { requires: ['missing-x'] }),
+      makeApparatus('beta', { requires: ['missing-y'] }),
+    ];
+    const failures = validateRequires([], apps);
+    assert.equal(failures.length, 2);
   });
 
   // ── Cycle detection ────────────────────────────────────────────────
@@ -123,10 +129,10 @@ describe('validateRequires', () => {
       makeApparatus('a', { requires: ['b'] }),
       makeApparatus('b', { requires: ['a'] }),
     ];
-    assert.throws(
-      () => validateRequires([], apps),
-      /Circular dependency detected/,
-    );
+    const failures = validateRequires([], apps);
+    assert.ok(failures.length >= 2);
+    const ids = failures.map((f) => f.id);
+    assert.ok(ids.includes('a') && ids.includes('b'));
   });
 
   it('detects a transitive circular dependency (A → B → C → A)', () => {
@@ -135,10 +141,10 @@ describe('validateRequires', () => {
       makeApparatus('b', { requires: ['c'] }),
       makeApparatus('c', { requires: ['a'] }),
     ];
-    assert.throws(
-      () => validateRequires([], apps),
-      /Circular dependency detected/,
-    );
+    const failures = validateRequires([], apps);
+    assert.ok(failures.length >= 3);
+    const ids = failures.map((f) => f.id);
+    assert.ok(ids.includes('a') && ids.includes('b') && ids.includes('c'));
   });
 
   it('includes the cycle path in the error message', () => {
@@ -146,13 +152,8 @@ describe('validateRequires', () => {
       makeApparatus('x', { requires: ['y'] }),
       makeApparatus('y', { requires: ['x'] }),
     ];
-    assert.throws(
-      () => validateRequires([], apps),
-      (err: Error) => {
-        // The cycle path should contain both nodes
-        return err.message.includes('x') && err.message.includes('y') && err.message.includes('→');
-      },
-    );
+    const failures = validateRequires([], apps);
+    assert.ok(failures.every((f) => f.reason.includes('circular dependency')));
   });
 
   it('does not false-positive on a diamond dependency', () => {
@@ -163,15 +164,80 @@ describe('validateRequires', () => {
       makeApparatus('c', { requires: ['d'] }),
       makeApparatus('a', { requires: ['b', 'c'] }),
     ];
-    assert.doesNotThrow(() => validateRequires([], apps));
+    assert.deepEqual(validateRequires([], apps), []);
   });
 
   it('passes with a self-referencing apparatus (allowed by requires check but not cycle check)', () => {
     const apps = [makeApparatus('a', { requires: ['a'] })];
-    assert.throws(
-      () => validateRequires([], apps),
-      /Circular dependency detected/,
-    );
+    const failures = validateRequires([], apps);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0]!.id, 'a');
+    assert.match(failures[0]!.reason, /circular dependency/);
+  });
+});
+
+// ── filterFailedPlugins ──────────────────────────────────────────────
+
+describe('filterFailedPlugins', () => {
+  it('returns all plugins when there are no failures', () => {
+    const kits = [makeKit('k1')];
+    const apps = [makeApparatus('a1'), makeApparatus('a2')];
+    const result = filterFailedPlugins(kits, apps, []);
+    assert.equal(result.kits.length, 1);
+    assert.equal(result.apparatuses.length, 2);
+    assert.deepEqual(result.cascaded, []);
+  });
+
+  it('removes apparatus that depends on a failed plugin', () => {
+    const apps = [
+      makeApparatus('db'),
+      makeApparatus('web', { requires: ['db'] }),
+    ];
+    const rootFailures = [{ id: 'db', reason: 'db failed' }];
+    const result = filterFailedPlugins([], apps, rootFailures);
+    assert.equal(result.apparatuses.length, 0);
+    assert.equal(result.cascaded.length, 1);
+    assert.equal(result.cascaded[0]!.id, 'web');
+    assert.match(result.cascaded[0]!.reason, /depends on failed plugin "db"/);
+  });
+
+  it('cascades transitively (A → B → C, A fails)', () => {
+    const apps = [
+      makeApparatus('a'),
+      makeApparatus('b', { requires: ['a'] }),
+      makeApparatus('c', { requires: ['b'] }),
+    ];
+    const rootFailures = [{ id: 'a', reason: 'a failed' }];
+    const result = filterFailedPlugins([], apps, rootFailures);
+    assert.equal(result.apparatuses.length, 0);
+    assert.equal(result.cascaded.length, 2);
+    const cascadedIds = result.cascaded.map((f) => f.id).sort();
+    assert.deepEqual(cascadedIds, ['b', 'c']);
+  });
+
+  it('removes kits that depend on a failed apparatus', () => {
+    const kits = [makeKit('my-kit', { requires: ['tools'] })];
+    const apps = [makeApparatus('tools')];
+    const rootFailures = [{ id: 'tools', reason: 'tools failed' }];
+    const result = filterFailedPlugins(kits, apps, rootFailures);
+    assert.equal(result.kits.length, 0);
+    assert.equal(result.cascaded.length, 1);
+    assert.equal(result.cascaded[0]!.id, 'my-kit');
+    assert.match(result.cascaded[0]!.reason, /depends on failed plugin "tools"/);
+  });
+
+  it('preserves healthy plugins alongside failed ones', () => {
+    const apps = [
+      makeApparatus('healthy'),
+      makeApparatus('broken'),
+      makeApparatus('dependent', { requires: ['broken'] }),
+    ];
+    const rootFailures = [{ id: 'broken', reason: 'broken failed' }];
+    const result = filterFailedPlugins([], apps, rootFailures);
+    assert.equal(result.apparatuses.length, 1);
+    assert.equal(result.apparatuses[0]!.id, 'healthy');
+    assert.equal(result.cascaded.length, 1);
+    assert.equal(result.cascaded[0]!.id, 'dependent');
   });
 });
 

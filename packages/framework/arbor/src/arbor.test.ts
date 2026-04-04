@@ -160,6 +160,7 @@ describe('createGuild — basic', () => {
     const g = await createGuild(tmp);
     assert.deepEqual(g.kits(), []);
     assert.deepEqual(g.apparatuses(), []);
+    assert.deepEqual(g.failedPlugins(), []);
   });
 });
 
@@ -339,29 +340,49 @@ describe('createGuild — plugin config', () => {
 // ── createGuild — validation ─────────────────────────────────────────
 
 describe('createGuild — validation', () => {
-  it('throws when an apparatus requires a missing plugin', async () => {
+  it('marks apparatus with missing dependency as failed and continues', async () => {
     const tmp = makeTmpDir();
     installFakeApparatus(tmp, 'web', { requires: ['db'] });
     writeGuildJson(tmp, { plugins: ['web'] });
     writePackageJson(tmp, { 'web': '^1.0.0' });
 
-    await assert.rejects(
-      () => createGuild(tmp),
-      /requires "db", which is not installed/,
-    );
+    const g = await createGuild(tmp);
+    assert.equal(g.apparatuses().length, 0);
+    assert.equal(g.failedPlugins().length, 1);
+    assert.match(g.failedPlugins()[0]!.reason, /requires "db", which is not installed/);
   });
 
-  it('throws on circular dependencies', async () => {
+  it('marks circular dependencies as failed and continues', async () => {
     const tmp = makeTmpDir();
     installFakeApparatus(tmp, 'app-a', { requires: ['app-b'] });
     installFakeApparatus(tmp, 'app-b', { requires: ['app-a'] });
     writeGuildJson(tmp, { plugins: ['app-a', 'app-b'] });
     writePackageJson(tmp, { 'app-a': '^1.0.0', 'app-b': '^1.0.0' });
 
-    await assert.rejects(
-      () => createGuild(tmp),
-      /Circular dependency detected/,
-    );
+    const g = await createGuild(tmp);
+    assert.equal(g.apparatuses().length, 0);
+    assert.equal(g.failedPlugins().length, 2);
+    const failedIds = g.failedPlugins().map((f) => f.id).sort();
+    assert.deepEqual(failedIds, ['app-a', 'app-b']);
+  });
+
+  it('cascades failures to transitive dependents', async () => {
+    const tmp = makeTmpDir();
+    installFakeApparatus(tmp, 'db');
+    installFakeApparatus(tmp, 'web', { requires: ['db', 'cache'] });
+    installFakeApparatus(tmp, 'api', { requires: ['web'] });
+    writeGuildJson(tmp, { plugins: ['db', 'web', 'api'] });
+    writePackageJson(tmp, { 'db': '^1.0.0', 'web': '^1.0.0', 'api': '^1.0.0' });
+
+    const g = await createGuild(tmp);
+    // db is healthy; web fails (missing cache); api cascades
+    assert.equal(g.apparatuses().length, 1);
+    assert.equal(g.apparatuses()[0]!.id, 'db');
+    assert.equal(g.failedPlugins().length, 2);
+    const failedIds = g.failedPlugins().map((f) => f.id).sort();
+    assert.deepEqual(failedIds, ['api', 'web']);
+    const apiFailure = g.failedPlugins().find((f) => f.id === 'api');
+    assert.match(apiFailure!.reason, /depends on failed plugin "web"/);
   });
 });
 

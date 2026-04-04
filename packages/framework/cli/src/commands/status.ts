@@ -30,16 +30,18 @@ export default tool({
 
     const { home } = g;
     const config = readGuildConfig(home);
+    const failed = g.failedPlugins();
 
     // Note: at status time we don't load/start plugins — we just report what's
     // declared in guild.json. Type discrimination (kit vs apparatus) requires
     // loading the modules, which is deferred to avoid startup cost for status.
     const result = {
-      guild:   config.name,
-      nexus:   VERSION,
+      guild:         config.name,
+      nexus:         VERSION,
       home,
-      model:   config.settings?.model ?? '(not set)',
-      plugins: [...config.plugins].sort(),
+      model:         config.settings?.model ?? '(not set)',
+      plugins:       [...config.plugins].sort(),
+      failedPlugins: failed,
     };
 
     if (params.json) {
@@ -53,6 +55,15 @@ export default tool({
       `Model:    ${result.model}`,
       `Plugins:  ${result.plugins.length > 0 ? result.plugins.join(', ') : '(none)'}`,
     ];
+
+    if (failed.length > 0) {
+      lines.push('');
+      lines.push('Failed plugins:');
+      for (const f of failed) {
+        lines.push(`  ${f.id}: ${f.reason}`);
+      }
+    }
+
     return lines.join('\n');
   },
 });
