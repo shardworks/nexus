@@ -18,6 +18,8 @@
 import type { Plugin, StartupContext } from '@shardworks/nexus-core';
 import { guild } from '@shardworks/nexus-core';
 import type { InstrumentariumApi, ResolvedTool } from '@shardworks/tools-apparatus';
+import fs from 'node:fs';
+import path from 'node:path';
 
 // ── Public types ──────────────────────────────────────────────────────
 
@@ -42,7 +44,11 @@ export interface WeaveRequest {
  * prompt is not part of the weave — it goes directly to the Animator.
  */
 export interface AnimaWeave {
-  /** The system prompt for the AI process. Undefined until composition is implemented. */
+  /**
+   * The system prompt for the AI process. Composed from guild charter,
+   * tool instructions, and role instructions. Undefined when no
+   * composition layers produce content.
+   */
   systemPrompt?: string;
   /** The resolved tool set for this role. Undefined when no role is specified or no tools match. */
   tools?: ResolvedTool[];
@@ -56,9 +62,9 @@ export interface LoomApi {
    * Weave an anima's session context.
    *
    * Given a role name, produces an AnimaWeave containing the composed
-   * system prompt and the resolved tool set. System prompt composition
-   * (charter, curricula, temperament, role instructions) is future work —
-   * systemPrompt remains undefined until then.
+   * system prompt and the resolved tool set. The system prompt is assembled
+   * from the guild charter, tool instructions (for the resolved tool set),
+   * and role instructions — in that order.
    *
    * Tool resolution is active: if a role is provided and the Instrumentarium
    * is installed, the Loom resolves role → permissions → tools.
@@ -96,6 +102,8 @@ export interface LoomConfig {
  */
 export function createLoom(): Plugin {
   let config: LoomConfig = {};
+  let charterContent: string | undefined;
+  let roleInstructions: Map<string, string> = new Map();
 
   const api: LoomApi = {
     async weave(request: WeaveRequest): Promise<AnimaWeave> {
@@ -129,8 +137,30 @@ export function createLoom(): Plugin {
         };
       }
 
-      // Future: compose system prompt from charter + curriculum +
-      // temperament + role instructions + tool instructions.
+      // Compose system prompt from available layers: charter → tool instructions → role instructions.
+      const layers: string[] = [];
+
+      if (charterContent) {
+        layers.push(charterContent);
+      }
+
+      if (weave.tools && weave.tools.length > 0) {
+        for (const resolvedTool of weave.tools) {
+          const instructions = resolvedTool.definition.instructions;
+          if (instructions) {
+            layers.push(`## Tool: ${resolvedTool.definition.name}\n\n${instructions}`);
+          }
+        }
+      }
+
+      if (request.role && roleInstructions.has(request.role)) {
+        layers.push(roleInstructions.get(request.role)!);
+      }
+
+      if (layers.length > 0) {
+        weave.systemPrompt = layers.join('\n\n');
+      }
+
       return weave;
     },
   };
@@ -143,6 +173,49 @@ export function createLoom(): Plugin {
       start(_ctx: StartupContext): void {
         const g = guild();
         config = g.guildConfig().loom ?? {};
+        const home = g.home;
+
+        // Read charter content at startup and cache it.
+        charterContent = undefined;
+        const charterFilePath = path.join(home, 'charter.md');
+        try {
+          charterContent = fs.readFileSync(charterFilePath, 'utf-8');
+        } catch (err: unknown) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+          // No charter.md — check for charter/ directory.
+          const charterDir = path.join(home, 'charter');
+          try {
+            const stat = fs.statSync(charterDir);
+            if (stat.isDirectory()) {
+              const mdFiles = fs.readdirSync(charterDir)
+                .filter(f => f.endsWith('.md'))
+                .sort();
+              if (mdFiles.length > 0) {
+                charterContent = mdFiles
+                  .map(f => fs.readFileSync(path.join(charterDir, f), 'utf-8'))
+                  .join('\n\n');
+              }
+            }
+          } catch {
+            // No charter/ directory either — silently omit.
+          }
+        }
+
+        // Read role instruction files at startup for all configured roles.
+        roleInstructions = new Map();
+        if (config.roles) {
+          for (const roleName of Object.keys(config.roles)) {
+            const rolePath = path.join(home, 'roles', `${roleName}.md`);
+            try {
+              const content = fs.readFileSync(rolePath, 'utf-8');
+              if (content) {
+                roleInstructions.set(roleName, content);
+              }
+            } catch {
+              // File doesn't exist — silently omit.
+            }
+          }
+        }
       },
     },
   };

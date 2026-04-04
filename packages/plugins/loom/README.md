@@ -1,12 +1,10 @@
 # `@shardworks/loom-apparatus`
 
-The Loom — the guild's session context composer. This apparatus owns system prompt assembly: given a role name, it weaves charter, curricula, temperament, and role instructions into an `AnimaWeave` that The Animator consumes to launch AI sessions. The work prompt (what the anima should do) bypasses The Loom — it is not a composition concern.
-
-MVP: system prompt composition is not yet implemented — `weave()` returns an empty `AnimaWeave` (systemPrompt undefined). The role is accepted but not yet used. The seam exists now so the contract is stable as composition logic is built out.
+The Loom — the guild's session context composer. This apparatus owns system prompt assembly: given a role name, it weaves charter, tool instructions, and role instructions into an `AnimaWeave` that The Animator consumes to launch AI sessions. The work prompt (what the anima should do) bypasses The Loom — it is not a composition concern.
 
 ```
 caller (Animator.summon)         → weave({ role })
-@shardworks/loom-apparatus       → AnimaWeave { systemPrompt? }
+@shardworks/loom-apparatus       → AnimaWeave { systemPrompt?, tools?, environment? }
 The Animator                     → launches session with weave + work prompt
 ```
 
@@ -44,8 +42,8 @@ interface LoomApi {
   /**
    * Weave an anima's session context.
    *
-   * Given a role name, produces an AnimaWeave containing the composed
-   * system prompt. MVP: returns undefined for systemPrompt.
+   * Given a role name, produces an AnimaWeave with a composed system prompt,
+   * resolved tool set, and git identity environment variables.
    */
   weave(request: WeaveRequest): Promise<AnimaWeave>;
 }
@@ -57,8 +55,8 @@ interface LoomApi {
 interface WeaveRequest {
   /**
    * The role to weave context for (e.g. 'artificer', 'scribe').
-   * MVP: accepted but not used. Future: resolves role instructions,
-   * curriculum, temperament, and composes the system prompt.
+   * Determines tool resolution and role instructions. When omitted,
+   * only charter content is included in the system prompt.
    */
   role?: string;
 }
@@ -68,8 +66,14 @@ interface WeaveRequest {
 
 ```typescript
 interface AnimaWeave {
-  /** The system prompt for the AI process. Undefined until composition is implemented. */
+  /**
+   * The system prompt for the AI process. Composed from guild charter,
+   * tool instructions, and role instructions. Undefined when no
+   * composition layers produce content.
+   */
   systemPrompt?: string;
+  /** The resolved tool set for this role. Undefined when no role is specified or no tools match. */
+  tools?: ResolvedTool[];
   /**
    * Environment variables for the session process.
    * Default: git identity derived from role name.
@@ -88,7 +92,8 @@ const loom = guild().apparatus<LoomApi>('loom');
 
 const weave = await loom.weave({ role: 'artificer' });
 // → {
-//     systemPrompt: undefined,  // MVP — composition not yet implemented
+//     systemPrompt: '...charter...\n\n## Tool: ...\n\n...role instructions...',
+//     tools: [...],
 //     environment: {
 //       GIT_AUTHOR_NAME: 'Artificer',
 //       GIT_AUTHOR_EMAIL: 'artificer@nexus.local',
@@ -115,7 +120,7 @@ const result = await animator.summon({
 
 The Loom reads role definitions from `guild.json["loom"]["roles"]`. See the [architecture spec](../../docs/architecture/apparatus/loom.md) for role configuration format.
 
-MVP: role configuration is used for tool resolution (permissions) and environment variables (git identity). System prompt composition is not yet implemented — future versions will also read anima identity records, charter content, and curricula from guild config and The Stacks.
+Role configuration is used for tool resolution (permissions), environment variables (git identity), and role instruction file lookup (`roles/{role}.md`). Future: curricula and temperament composition.
 
 ---
 

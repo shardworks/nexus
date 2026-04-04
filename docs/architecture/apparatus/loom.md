@@ -1,10 +1,8 @@
 # The Loom — API Contract
 
-Status: **Draft — MVP**
+Status: **Active — Layers 1, 4, 5**
 
 Package: `@shardworks/loom-apparatus` · Plugin id: `loom`
-
-> **⚠️ MVP scope.** This spec covers the seam only — the Loom accepts a role name and returns an `AnimaWeave`, but does not yet compose a system prompt. Role resolution, tool instructions, anima identity, curricula, temperaments, and charter composition are all future work. See [Future: Full Composition](#future-full-composition) for the target design.
 
 ---
 
@@ -12,14 +10,14 @@ Package: `@shardworks/loom-apparatus` · Plugin id: `loom`
 
 The Loom weaves anima identity into session contexts. Given a role name, it produces an `AnimaWeave` — the composed identity context that The Animator uses to launch a session. The work prompt (what the anima should do) is not the Loom's concern — it bypasses the Loom and goes directly from the caller to the session provider.
 
-MVP: system prompt composition is not yet implemented — `weave()` returns an empty `AnimaWeave` (systemPrompt undefined). The role is accepted on the API surface but not yet used. The seam exists so The Animator never assembles prompts itself; as composition is built out, The Loom's internals change but its output shape stays the same.
+System prompt composition is active for layers 1 (guild charter), 4 (role instructions), and 5 (tool instructions). The Loom reads charter and role instruction files at startup and caches them; tool instructions come from the Instrumentarium's pre-loaded tool definitions. Layers 2 (curriculum) and 3 (temperament) remain future work.
 
 ---
 
 ## Dependencies
 
 ```
-requires: []    — MVP has no apparatus dependencies
+requires: ['tools']    — needs the Instrumentarium for tool resolution and tool instructions
 ```
 
 ---
@@ -31,8 +29,8 @@ interface LoomApi {
   /**
    * Weave an anima's session context.
    *
-   * Given a role name, produces an AnimaWeave containing the composed
-   * system prompt. MVP: returns undefined for systemPrompt.
+   * Given a role name, produces an AnimaWeave with a composed system prompt,
+   * resolved tool set, and git identity environment variables.
    */
   weave(request: WeaveRequest): Promise<AnimaWeave>
 }
@@ -40,21 +38,26 @@ interface LoomApi {
 interface WeaveRequest {
   /**
    * The role to weave context for (e.g. 'artificer', 'scribe').
-   * MVP: accepted but not used. Future: resolves role instructions,
-   * curriculum, temperament, and composes the system prompt.
+   * Determines tool resolution and role instructions. When omitted,
+   * only charter content is included in the system prompt.
    */
   role?: string
 }
 
 /**
  * The output of The Loom's weave() — the composed anima identity context.
- * Contains the system prompt produced from the anima's identity layers,
- * and environment variables for the session process.
+ * Contains the system prompt, resolved tool set, and environment variables.
  * The work prompt is not part of the weave.
  */
 interface AnimaWeave {
-  /** The system prompt for the AI process. Undefined until composition is implemented. */
+  /**
+   * The system prompt for the AI process. Composed from guild charter,
+   * tool instructions, and role instructions. Undefined when no
+   * composition layers produce content.
+   */
   systemPrompt?: string
+  /** The resolved tool set for this role. Undefined when no role is specified or no tools match. */
+  tools?: ResolvedTool[]
   /**
    * Environment variables for the session process.
    * Derived from role configuration. The Animator merges these with
@@ -68,18 +71,14 @@ interface AnimaWeave {
 }
 ```
 
-The MVP Loom is a stub for system prompt composition — the value is in the seam, not the logic. The contract is stable: as composition is built out, `systemPrompt` gains a value but the shape doesn't change.
-
 The `environment` field is active at MVP: the Loom derives git identity from the role name and populates `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL`. The committer identity is intentionally left to the system default so that commit signatures remain verified on GitHub. The Animator merges these into the spawned process environment, giving each role a distinct author identity. Orchestrators (e.g. the Dispatch) can override specific variables per-request — for example, setting the email to a writ ID for per-commission attribution.
 
 ---
 
-## What The Loom does NOT do (MVP)
+## What The Loom does NOT do
 
-- **Compose system prompts** — the role is accepted but not used; systemPrompt is undefined.
-- **Resolve roles or tools** — no role instructions, no tool instructions, no charter.
-- **Read files from disk** — no file I/O at all.
-- **Look up anima identity** — no identity records exist in MVP.
+- **Compose curricula or temperaments** — layers 2 and 3 remain future work.
+- **Look up anima identity** — no identity records exist yet.
 - **Handle work prompts** — the work prompt bypasses the Loom entirely.
 - **Launch sessions** — that's The Animator's job.
 
@@ -116,16 +115,16 @@ interface AnimaWeave {
 }
 ```
 
-### Future composition order
+### Composition order
 
-The system prompt is woven by combining, in order:
+The system prompt is woven by combining active layers in order:
 
-1. **Guild charter** — institutional policy, applies to all animas
-2. **Curriculum** — what the anima knows (versioned, immutable per version)
-3. **Temperament** — who the anima is (versioned, immutable per version)
-4. **Role instructions** — read from the path in `guild.json` roles config
-5. **Tool instructions** — per-tool `instructions.md` for the resolved tool set
-6. **Writ context** — the specific work being done
+1. **Guild charter** ✅ active — `charter.md` or `charter/*.md` at the guild root
+2. **Curriculum** — future work (what the anima knows)
+3. **Temperament** — future work (who the anima is)
+4. **Role instructions** ✅ active — `roles/{role}.md` relative to the guild root
+5. **Tool instructions** ✅ active — `definition.instructions` from resolved tools, formatted as `## Tool: {name}`
+6. **Writ context** — future work (the specific work being done)
 
 ### Future: System Prompt Appendix
 

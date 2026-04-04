@@ -429,9 +429,8 @@ Every session passes through the same funnel regardless of how it was triggered:
   Trigger (summon relay / nsg consult / nsg convene)
     │
     ├─ 1. Weave context  (The Loom)
-    │     system prompt + initial prompt
-    │     future: + role instructions + tool instructions
-    │             + curriculum + temperament + charter
+    │     system prompt: charter + tool instructions + role instructions
+    │     future: + curriculum + temperament
     │
     ├─ 2. Launch process  (The Animator → Session Provider)
     │     AI process starts in a working directory

@@ -7,6 +7,9 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { z } from 'zod';
 
 import { setGuild, clearGuild } from '@shardworks/nexus-core';
@@ -46,10 +49,11 @@ function mockInstrumentarium(resolvedTools: ResolvedTool[] = []) {
 function setupGuild(opts: {
   loomConfig?: LoomConfig;
   apparatuses?: Record<string, unknown>;
+  home?: string;
 }) {
   const apparatuses = opts.apparatuses ?? {};
   setGuild({
-    home: '/tmp/test-guild',
+    home: opts.home ?? '/tmp/test-guild',
     apparatus: <T>(id: string): T => {
       const a = apparatuses[id];
       if (!a) throw new Error(`Apparatus '${id}' not installed`);
@@ -321,6 +325,438 @@ describe('The Loom', () => {
       assert.ok(weave.environment, 'environment should be defined for any role string');
       assert.equal(weave.environment?.GIT_AUTHOR_NAME, 'Unknown-role');
       assert.equal(weave.environment?.GIT_AUTHOR_EMAIL, 'unknown-role@nexus.local');
+    });
+  });
+
+  // ── System prompt composition ──────────────────────────────────────
+
+  describe('weave() — charter composition', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-test-'));
+    });
+
+    afterEach(() => {
+      clearGuild();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('includes charter.md content in systemPrompt', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'charter.md'), 'Guild policy: be excellent.');
+      setupGuild({ home: tmpDir });
+      const api = startLoom();
+      const weave = await api.weave({});
+      assert.equal(weave.systemPrompt, 'Guild policy: be excellent.');
+    });
+
+    it('composes charter from directory files in alphabetical order', async () => {
+      const charterDir = path.join(tmpDir, 'charter');
+      fs.mkdirSync(charterDir);
+      fs.writeFileSync(path.join(charterDir, '02-rules.md'), 'Rule 1');
+      fs.writeFileSync(path.join(charterDir, '01-values.md'), 'Value 1');
+      setupGuild({ home: tmpDir });
+      const api = startLoom();
+      const weave = await api.weave({});
+      assert.equal(weave.systemPrompt, 'Value 1\n\nRule 1');
+    });
+
+    it('charter.md takes priority over charter/ directory', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'charter.md'), 'Single file');
+      const charterDir = path.join(tmpDir, 'charter');
+      fs.mkdirSync(charterDir);
+      fs.writeFileSync(path.join(charterDir, '01.md'), 'Dir file');
+      setupGuild({ home: tmpDir });
+      const api = startLoom();
+      const weave = await api.weave({});
+      assert.equal(weave.systemPrompt, 'Single file');
+    });
+
+    it('returns undefined systemPrompt when no charter exists', async () => {
+      setupGuild({ home: tmpDir });
+      const api = startLoom();
+      const weave = await api.weave({});
+      assert.strictEqual(weave.systemPrompt, undefined);
+    });
+
+    it('returns undefined systemPrompt when charter/ directory has no .md files', async () => {
+      const charterDir = path.join(tmpDir, 'charter');
+      fs.mkdirSync(charterDir);
+      fs.writeFileSync(path.join(charterDir, '.gitkeep'), '');
+      setupGuild({ home: tmpDir });
+      const api = startLoom();
+      const weave = await api.weave({});
+      assert.strictEqual(weave.systemPrompt, undefined);
+    });
+
+    it('charter directory with mixed file types only reads .md files', async () => {
+      const charterDir = path.join(tmpDir, 'charter');
+      fs.mkdirSync(charterDir);
+      fs.writeFileSync(path.join(charterDir, 'a.md'), 'A content');
+      fs.writeFileSync(path.join(charterDir, 'b.txt'), 'B content');
+      fs.writeFileSync(path.join(charterDir, 'c.md'), 'C content');
+      setupGuild({ home: tmpDir });
+      const api = startLoom();
+      const weave = await api.weave({});
+      assert.equal(weave.systemPrompt, 'A content\n\nC content');
+    });
+
+    it('includes charter when weave() is called without a role', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'charter.md'), 'Charter text');
+      setupGuild({ home: tmpDir });
+      const api = startLoom();
+      const weave1 = await api.weave({});
+      const weave2 = await api.weave({ role: undefined });
+      assert.equal(weave1.systemPrompt, 'Charter text');
+      assert.equal(weave2.systemPrompt, 'Charter text');
+    });
+  });
+
+  describe('weave() — role instructions composition', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-test-'));
+    });
+
+    afterEach(() => {
+      clearGuild();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('includes role instructions when roles/{role}.md exists', async () => {
+      const rolesDir = path.join(tmpDir, 'roles');
+      fs.mkdirSync(rolesDir);
+      fs.writeFileSync(path.join(rolesDir, 'artificer.md'), 'You are the artificer.');
+      setupGuild({
+        home: tmpDir,
+        loomConfig: { roles: { artificer: { permissions: ['*:*'] } } },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'artificer' });
+      assert.ok(weave.systemPrompt?.includes('You are the artificer.'));
+    });
+
+    it('omits role instructions silently when roles/{role}.md is missing', async () => {
+      setupGuild({
+        home: tmpDir,
+        loomConfig: { roles: { scribe: { permissions: ['stacks:read'] } } },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'scribe' });
+      assert.strictEqual(weave.systemPrompt, undefined);
+    });
+
+    it('omits role instructions for roles not in config even if file exists on disk', async () => {
+      const rolesDir = path.join(tmpDir, 'roles');
+      fs.mkdirSync(rolesDir);
+      fs.writeFileSync(path.join(rolesDir, 'ghost.md'), 'Ghost instructions');
+      setupGuild({
+        home: tmpDir,
+        loomConfig: { roles: { artificer: { permissions: ['*:*'] } } },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'ghost' });
+      assert.strictEqual(weave.systemPrompt, undefined);
+    });
+
+    it('omits role instructions layer when no role is provided', async () => {
+      const rolesDir = path.join(tmpDir, 'roles');
+      fs.mkdirSync(rolesDir);
+      fs.writeFileSync(path.join(rolesDir, 'artificer.md'), 'Role text');
+      setupGuild({
+        home: tmpDir,
+        loomConfig: { roles: { artificer: { permissions: ['*:*'] } } },
+      });
+      const api = startLoom();
+      const weave = await api.weave({});
+      assert.strictEqual(weave.systemPrompt, undefined);
+    });
+
+    it('omits role instructions layer when role instruction file is empty', async () => {
+      const rolesDir = path.join(tmpDir, 'roles');
+      fs.mkdirSync(rolesDir);
+      fs.writeFileSync(path.join(rolesDir, 'artificer.md'), '');
+      setupGuild({
+        home: tmpDir,
+        loomConfig: { roles: { artificer: { permissions: ['*:*'] } } },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'artificer' });
+      assert.strictEqual(weave.systemPrompt, undefined);
+    });
+  });
+
+  describe('weave() — tool instructions composition', () => {
+    afterEach(() => {
+      clearGuild();
+    });
+
+    it('includes tool instructions formatted with ## Tool: header', async () => {
+      const toolA = tool({
+        name: 'tool-a',
+        description: 'Tool A',
+        instructions: 'Guide A',
+        params: {},
+        handler: async () => ({}),
+      });
+      const toolB = tool({
+        name: 'tool-b',
+        description: 'Tool B',
+        instructions: 'Guide B',
+        params: {},
+        handler: async () => ({}),
+      });
+      const resolved: ResolvedTool[] = [
+        { definition: toolA, pluginId: 'test' },
+        { definition: toolB, pluginId: 'test' },
+      ];
+      const { api: instrumentarium } = mockInstrumentarium(resolved);
+      setupGuild({
+        loomConfig: { roles: { artificer: { permissions: ['*:*'] } } },
+        apparatuses: { tools: instrumentarium },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'artificer' });
+      assert.ok(weave.systemPrompt?.includes('## Tool: tool-a\n\nGuide A'));
+      assert.ok(weave.systemPrompt?.includes('## Tool: tool-b\n\nGuide B'));
+    });
+
+    it('omits tool instructions layer when tools have no instructions', async () => {
+      const resolved: ResolvedTool[] = [
+        { definition: testTool('plain-tool'), pluginId: 'test' },
+      ];
+      const { api: instrumentarium } = mockInstrumentarium(resolved);
+      setupGuild({
+        loomConfig: { roles: { artificer: { permissions: ['*:*'] } } },
+        apparatuses: { tools: instrumentarium },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'artificer' });
+      assert.strictEqual(weave.systemPrompt, undefined);
+    });
+
+    it('only includes tool instructions for tools that have them', async () => {
+      const toolWithInstructions = tool({
+        name: 'tool-a',
+        description: 'Tool A',
+        instructions: 'Use this carefully.',
+        params: {},
+        handler: async () => ({}),
+      });
+      const toolWithout = testTool('tool-b');
+      const resolved: ResolvedTool[] = [
+        { definition: toolWithInstructions, pluginId: 'test' },
+        { definition: toolWithout, pluginId: 'test' },
+      ];
+      const { api: instrumentarium } = mockInstrumentarium(resolved);
+      setupGuild({
+        loomConfig: { roles: { artificer: { permissions: ['*:*'] } } },
+        apparatuses: { tools: instrumentarium },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'artificer' });
+      assert.ok(weave.systemPrompt?.includes('## Tool: tool-a'));
+      assert.ok(!weave.systemPrompt?.includes('## Tool: tool-b'));
+    });
+  });
+
+  describe('weave() — composition order and assembly', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-test-'));
+    });
+
+    afterEach(() => {
+      clearGuild();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('assembles full composition in order: charter → tool instructions → role instructions', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'charter.md'), 'Charter text');
+      const rolesDir = path.join(tmpDir, 'roles');
+      fs.mkdirSync(rolesDir);
+      fs.writeFileSync(path.join(rolesDir, 'artificer.md'), 'Role text');
+
+      const signalTool = tool({
+        name: 'signal',
+        description: 'Signal tool',
+        instructions: 'Signal guide',
+        params: {},
+        handler: async () => ({}),
+      });
+      const resolved: ResolvedTool[] = [{ definition: signalTool, pluginId: 'test' }];
+      const { api: instrumentarium } = mockInstrumentarium(resolved);
+
+      setupGuild({
+        home: tmpDir,
+        loomConfig: { roles: { artificer: { permissions: ['*:*'] } } },
+        apparatuses: { tools: instrumentarium },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'artificer' });
+
+      assert.equal(
+        weave.systemPrompt,
+        'Charter text\n\n## Tool: signal\n\nSignal guide\n\nRole text',
+      );
+    });
+
+    it('charter only (no role) — systemPrompt equals charter content', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'charter.md'), 'Charter text');
+      setupGuild({ home: tmpDir });
+      const api = startLoom();
+      const weave = await api.weave({});
+      assert.equal(weave.systemPrompt, 'Charter text');
+    });
+
+    it('role instructions only (no charter, no tool instructions)', async () => {
+      const rolesDir = path.join(tmpDir, 'roles');
+      fs.mkdirSync(rolesDir);
+      fs.writeFileSync(path.join(rolesDir, 'artificer.md'), 'Role text');
+
+      const resolved: ResolvedTool[] = [{ definition: testTool('plain'), pluginId: 'test' }];
+      const { api: instrumentarium } = mockInstrumentarium(resolved);
+
+      setupGuild({
+        home: tmpDir,
+        loomConfig: { roles: { artificer: { permissions: ['*:*'] } } },
+        apparatuses: { tools: instrumentarium },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'artificer' });
+      assert.equal(weave.systemPrompt, 'Role text');
+    });
+
+    it('tool instructions only (no charter, no role.md)', async () => {
+      const toolA = tool({
+        name: 'my-tool',
+        description: 'My tool',
+        instructions: 'Tool guide',
+        params: {},
+        handler: async () => ({}),
+      });
+      const resolved: ResolvedTool[] = [{ definition: toolA, pluginId: 'test' }];
+      const { api: instrumentarium } = mockInstrumentarium(resolved);
+
+      setupGuild({
+        home: tmpDir,
+        loomConfig: { roles: { artificer: { permissions: ['*:*'] } } },
+        apparatuses: { tools: instrumentarium },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'artificer' });
+      assert.equal(weave.systemPrompt, '## Tool: my-tool\n\nTool guide');
+    });
+
+    it('systemPrompt is undefined when all layers are empty', async () => {
+      const resolved: ResolvedTool[] = [{ definition: testTool('plain'), pluginId: 'test' }];
+      const { api: instrumentarium } = mockInstrumentarium(resolved);
+      setupGuild({
+        home: tmpDir,
+        loomConfig: { roles: { artificer: { permissions: ['*:*'] } } },
+        apparatuses: { tools: instrumentarium },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'artificer' });
+      assert.strictEqual(weave.systemPrompt, undefined);
+    });
+  });
+
+  describe('weave() — startup caching', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-test-'));
+    });
+
+    afterEach(() => {
+      clearGuild();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('content is cached at startup — deleting files after start does not affect weave()', async () => {
+      const charterPath = path.join(tmpDir, 'charter.md');
+      const rolesDir = path.join(tmpDir, 'roles');
+      fs.writeFileSync(charterPath, 'Cached charter');
+      fs.mkdirSync(rolesDir);
+      fs.writeFileSync(path.join(rolesDir, 'artificer.md'), 'Cached role');
+
+      setupGuild({
+        home: tmpDir,
+        loomConfig: { roles: { artificer: { permissions: ['*:*'] } } },
+      });
+      const api = startLoom();
+
+      // Delete the files after startup
+      fs.unlinkSync(charterPath);
+      fs.unlinkSync(path.join(rolesDir, 'artificer.md'));
+
+      const weave = await api.weave({ role: 'artificer' });
+      assert.ok(weave.systemPrompt?.includes('Cached charter'));
+      assert.ok(weave.systemPrompt?.includes('Cached role'));
+    });
+
+    it('roles not in config are not pre-read even if file exists on disk', async () => {
+      const rolesDir = path.join(tmpDir, 'roles');
+      fs.mkdirSync(rolesDir);
+      fs.writeFileSync(path.join(rolesDir, 'phantom.md'), 'Phantom instructions');
+
+      setupGuild({
+        home: tmpDir,
+        loomConfig: { roles: { artificer: { permissions: ['*:*'] } } },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'phantom' });
+      assert.strictEqual(weave.systemPrompt, undefined);
+    });
+  });
+
+  describe('weave() — backward compatibility', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-test-'));
+    });
+
+    afterEach(() => {
+      clearGuild();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('returns systemPrompt: undefined, tools: undefined, environment: undefined with no content', async () => {
+      setupGuild({ home: tmpDir });
+      const api = startLoom();
+      const weave = await api.weave({});
+      assert.strictEqual(weave.systemPrompt, undefined);
+      assert.strictEqual(weave.tools, undefined);
+      assert.strictEqual(weave.environment, undefined);
+    });
+
+    it('tool resolution and git identity are unaffected by composition logic', async () => {
+      const rolesDir = path.join(tmpDir, 'roles');
+      fs.mkdirSync(rolesDir);
+      fs.writeFileSync(path.join(rolesDir, 'artificer.md'), 'Role text');
+
+      const readTool = testTool('stack-query', 'read');
+      const resolved: ResolvedTool[] = [{ definition: readTool, pluginId: 'stacks' }];
+      const { api: instrumentarium } = mockInstrumentarium(resolved);
+
+      setupGuild({
+        home: tmpDir,
+        loomConfig: { roles: { artificer: { permissions: ['stacks:read'] } } },
+        apparatuses: { tools: instrumentarium },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'artificer' });
+
+      assert.equal(weave.tools?.length, 1);
+      assert.equal(weave.tools?.[0]?.definition.name, 'stack-query');
+      assert.deepStrictEqual(weave.environment, {
+        GIT_AUTHOR_NAME: 'Artificer',
+        GIT_AUTHOR_EMAIL: 'artificer@nexus.local',
+      });
     });
   });
 });
