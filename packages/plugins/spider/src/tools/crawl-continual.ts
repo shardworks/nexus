@@ -1,8 +1,9 @@
 /**
- * crawlContinual tool — runs the crawl loop continuously.
+ * crawl-continual tool — runs the crawl loop continuously.
  *
- * Polls crawl() on a configurable interval until stopped or no remaining
- * work exists for the configured number of consecutive idle cycles.
+ * Polls crawl() on a configurable interval. By default the loop runs
+ * indefinitely; pass a positive maxIdleCycles to enable auto-stop after
+ * that many consecutive idle cycles.
  */
 
 import { z } from 'zod';
@@ -11,19 +12,20 @@ import { tool } from '@shardworks/tools-apparatus';
 import type { SpiderApi, SpiderConfig } from '../types.ts';
 
 export default tool({
-  name: 'crawlContinual',
-  description: "Run the Spider's crawl loop continuously until idle",
+  name: 'crawl-continual',
+  description: "Run the Spider's crawl loop continuously",
   instructions:
     'Polls crawl() in a loop, sleeping between steps when idle. ' +
-    'Stops when the configured number of consecutive idle cycles is reached. ' +
+    'By default the loop runs indefinitely. Pass a positive maxIdleCycles ' +
+    'to stop after that many consecutive idle cycles. ' +
     'Returns a summary of all actions taken.',
   params: {
     maxIdleCycles: z
       .number()
       .optional()
-      .default(3)
+      .default(0)
       .describe(
-        'Number of consecutive idle crawl() calls before stopping (default: 3)',
+        'Max consecutive idle cycles before stopping. Pass a positive number to enable auto-stop (default: runs indefinitely)',
       ),
     pollIntervalMs: z
       .number()
@@ -43,23 +45,19 @@ export default tool({
     const actions: unknown[] = [];
     let idleCount = 0;
 
-    while (idleCount < maxIdle) {
+    while (maxIdle === 0 || idleCount < maxIdle) {
       let result: Awaited<ReturnType<typeof spider.crawl>>;
       try {
         result = await spider.crawl();
       } catch (err) {
-        console.error('[crawlContinual] crawl() error:', err instanceof Error ? err.message : String(err));
+        console.error('[crawl-continual] crawl() error:', err instanceof Error ? err.message : String(err));
         idleCount++;
-        if (idleCount < maxIdle) {
-          await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
-        }
+        await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
         continue;
       }
       if (result === null) {
         idleCount++;
-        if (idleCount < maxIdle) {
-          await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
-        }
+        await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
       } else {
         idleCount = 0;
         actions.push(result);

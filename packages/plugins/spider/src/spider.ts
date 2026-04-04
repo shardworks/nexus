@@ -40,7 +40,7 @@ import {
   sealEngine,
 } from './engines/index.ts';
 
-import { crawlTool, crawlContinualTool, rigShowTool, rigListTool, rigForWritTool } from './tools/index.ts';
+import { crawlOneTool, crawlContinualTool, rigShowTool, rigListTool, rigForWritTool } from './tools/index.ts';
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -408,7 +408,7 @@ export function createSpider(): Plugin {
           revise:    reviseEngine,
           seal:      sealEngine,
         },
-        tools: [crawlTool, crawlContinualTool, rigShowTool, rigListTool, rigForWritTool],
+        tools: [crawlOneTool, crawlContinualTool, rigShowTool, rigListTool, rigForWritTool],
       },
 
       provides: api,

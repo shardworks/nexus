@@ -59,14 +59,9 @@ supportKit: {
     revise:    reviseEngine,
     seal:      sealEngine,
   },
-  tools: {
-    walk:          crawlTool,           // single step — do one thing and return
-    crawlContinual: crawlContinualTool,  // polling loop — walk every ~5s until stopped
-  },
+  tools: [crawlOneTool, crawlContinualTool],
 },
 ```
-
-**Tool naming note:** Hyphenated tool names (e.g. `start-walking`) have known issues with CLI argument parsing and tool grouping in `nsg`. The names above use camelCase in code; the CLI surface (`nsg crawl`, `nsg crawl-continual`) needs to work cleanly with the Instrumentarium's tool registration. Final CLI naming TBD — may need to revisit how the Instrumentarium maps tool IDs to CLI commands.
 
 The Fabricator scans kit `engines` contributions at startup (same pattern as the Instrumentarium scanning tools). The Spider contributes its engines like any other kit — no special registration path.
 
@@ -100,16 +95,16 @@ Each `crawl()` call does exactly one thing. The priority ordering:
 
 If nothing qualifies at any level, return null (the guild is idle or all work is blocked on running quick engines).
 
-### Operational model: `start-walking`
+### Operational model
 
-The Spider exports a `start-walking` tool that runs the crawl loop:
+The Spider exports two tools:
 
 ```
-nsg start-crawling    # starts polling loop, walks every ~5s
-nsg crawl             # single step (useful for debugging/testing)
+nsg crawl-continual   # starts polling loop, crawls every ~5s, runs indefinitely
+nsg crawl-one         # single step (useful for debugging/testing)
 ```
 
-The loop: call `crawl()`, sleep `pollIntervalMs` (default 5000), repeat. When `crawl()` returns null, the loop doesn't stop — it keeps polling. New writs posted via `nsg commission-post` from a separate terminal are picked up on the next poll cycle.
+The `crawl-continual` loop: call `crawl()`, sleep `pollIntervalMs` (default 5000), repeat. When `crawl()` returns null, the loop doesn't stop — it keeps polling. New writs posted via `nsg commission-post` from a separate terminal are picked up on the next poll cycle. Pass `--maxIdleCycles N` to stop after N consecutive idle cycles.
 
 ---
 

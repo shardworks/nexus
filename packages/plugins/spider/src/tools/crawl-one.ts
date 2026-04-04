@@ -1,5 +1,5 @@
 /**
- * crawl tool — executes a single step of the crawl loop.
+ * crawl-one tool — executes a single step of the crawl loop.
  *
  * Returns the CrawlResult or null (idle) from one crawl() call.
  * Useful for manual step-through or testing.
@@ -10,7 +10,7 @@ import { tool } from '@shardworks/tools-apparatus';
 import type { SpiderApi } from '../types.ts';
 
 export default tool({
-  name: 'crawl',
+  name: 'crawl-one',
   description: "Execute one step of the Spider's crawl loop",
   instructions:
     'Runs a single crawl() step: collect a pending session result, run the next ' +
