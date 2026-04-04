@@ -446,7 +446,7 @@ The Animator supports environment variable injection into the spawned session pr
 Environment variables come from two sources, merged at session launch time:
 
 1. **AnimaWeave** (`context.environment`) — identity-layer defaults from The Loom. Set per-role. Example: `GIT_AUTHOR_NAME=Artificer`, `GIT_AUTHOR_EMAIL=artificer@nexus.local`.
-2. **Request** (`request.environment`) — per-task overrides from the caller. Example: the Dispatch sets `GIT_AUTHOR_EMAIL=w-{writId}@nexus.local` for per-commission git attribution.
+2. **Request** (`request.environment`) — per-task overrides from the caller. Example: the implement engine sets `GIT_AUTHOR_EMAIL=w-{writId}@nexus.local` for per-commission git attribution.
 
 The merge is simple: `{ ...weave.environment, ...request.environment }`. Request values override weave values for the same key. The merged result is passed to the session provider as `SessionProviderConfig.environment`, which the provider spreads into the child process environment (`{ ...process.env, ...config.environment }`).
 

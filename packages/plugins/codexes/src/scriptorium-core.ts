@@ -517,6 +517,15 @@ export class ScriptoriumCore {
 
         // Check if source is already at target (nothing to seal)
         if (targetRef === sourceRef) {
+          // Push before abandoning draft — if push fails the draft survives for inspection
+          try {
+            await git(['push', 'origin', targetBranch], clonePath);
+          } catch (pushErr) {
+            throw new Error(
+              `Push failed after successful seal: ${pushErr instanceof Error ? pushErr.message : pushErr}`,
+            );
+          }
+
           // Clean up draft unless keepDraft
           if (!request.keepDraft) {
             await this.abandonDraft({
@@ -546,6 +555,15 @@ export class ScriptoriumCore {
             ['update-ref', `refs/heads/${targetBranch}`, sourceRef],
             clonePath,
           );
+
+          // Push before abandoning draft — if push fails the draft survives for inspection
+          try {
+            await git(['push', 'origin', targetBranch], clonePath);
+          } catch (pushErr) {
+            throw new Error(
+              `Push failed after successful seal: ${pushErr instanceof Error ? pushErr.message : pushErr}`,
+            );
+          }
 
           // Clean up draft unless keepDraft
           if (!request.keepDraft) {

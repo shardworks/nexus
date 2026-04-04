@@ -500,14 +500,11 @@ The binding between a session and a draft is the caller's responsibility. The ty
     │     → session runs, anima inscribes in the draft
     │     → session exits
     │
-    ├─ 3. scriptorium.seal({ codexName, sourceBranch })
-    │     → draft sealed into codex
-    │
-    └─ 4. scriptorium.push({ codexName })
-          → sealed binding pushed to remote
+    └─ 3. scriptorium.seal({ codexName, sourceBranch })
+          → draft sealed into codex and pushed to remote
 ```
 
-The anima never touches draft lifecycle — it is launched *inside* the draft's working directory and inscribes there naturally. Infrastructure steps (open, seal, push) happen outside the session, ensuring they execute even if the session crashes or times out.
+The anima never touches draft lifecycle — it is launched *inside* the draft's working directory and inscribes there naturally. Infrastructure steps (open, seal) happen outside the session, ensuring they execute even if the session crashes or times out.
 
 ### The `DraftRecord` as handoff object
 
@@ -523,48 +520,6 @@ The Animator stores these as opaque metadata on the session record. The Scriptor
 ### Why not tighter integration?
 
 Animas cannot reliably manage their own draft lifecycle. A session's working directory is set at launch — the anima cannot relocate itself to a draft it opens mid-session. Even if it could (via absolute paths and `cd`), the failure modes are poor: crashed sessions leave orphaned drafts, forgotten seal steps leave inscriptions stranded, and every anima reimplements the same boilerplate. External orchestration is simpler and more reliable.
-
----
-
-## Interim Dispatch Pattern
-
-Before rig engines and the Clockworks exist, a shell script orchestrates the open → session → seal → push lifecycle. This is the recommended interim pattern:
-
-```bash
-#!/usr/bin/env bash
-# dispatch-commission.sh — open a draft, run a session, seal and push
-set -euo pipefail
-
-CODEX="${1:?codex name required}"
-ROLE="${2:?role required}"
-PROMPT="${3:?prompt required}"
-
-# 1. Open a draft binding (branch auto-generated)
-DRAFT=$(nsg codex draft-open --codexName "$CODEX")
-
-DRAFT_PATH=$(echo "$DRAFT" | jq -r '.path')
-DRAFT_BRANCH=$(echo "$DRAFT" | jq -r '.branch')
-
-# 2. Run the session in the draft
-nsg summon \
-  --role "$ROLE" \
-  --cwd "$DRAFT_PATH" \
-  --prompt "$PROMPT" \
-  --metadata "{\"codex\": \"$CODEX\", \"branch\": \"$DRAFT_BRANCH\"}"
-
-# 3. Seal the draft into the codex
-nsg codex draft-seal \
-  --codexName "$CODEX" \
-  --sourceBranch "$DRAFT_BRANCH"
-
-# 4. Push the sealed binding to the remote
-nsg codex codex-push \
-  --codexName "$CODEX"
-
-echo "Commission sealed and pushed for $CODEX ($DRAFT_BRANCH)"
-```
-
-This script is intentionally simple — no error recovery, no retry logic beyond what `draft-seal` provides internally. A failed seal leaves the draft in place for manual inspection. A failed push leaves the sealed binding local — re-running `codex-push` is safe. The auto-generated branch name flows through the `DraftRecord` — the orchestrator never needs to invent one.
 
 ---
 
@@ -616,7 +571,8 @@ draft-seal
   │        └─ If rebase conflicts: FAIL (no auto-resolution)
   │        └─ If rebase succeeds: retry ff (up to maxRetries)
   ├─ 4. Update target branch ref in bare clone
-  └─ 5. Abandon draft (unless keepDraft)
+  ├─ 5. Push target branch to remote (git push origin <branch>)
+  └─ 6. Abandon draft (unless keepDraft)
 
 codex-push
   ├─ 1. git push origin <branch> (from bare clone)

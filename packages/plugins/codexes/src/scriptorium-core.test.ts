@@ -1003,19 +1003,113 @@ describe('ScriptoriumCore', () => {
       // External push advances remote
       pushExternalCommit(remote.url, 'external.txt', 'external\n');
 
-      // Seal — must rebase onto the remote-advanced main
+      // Seal — must rebase onto the remote-advanced main; seal now also pushes
       const result = await api.seal({ codexName: 'test-codex', sourceBranch: 'my-draft' });
       assert.equal(result.strategy, 'rebase');
 
-      // Push should fast-forward cleanly (the sealed binding is rebased on remote's latest)
-      await assert.doesNotReject(
-        () => api.push({ codexName: 'test-codex' }),
-        'Push should succeed after sealing against diverged remote',
-      );
-
-      // Confirm remote has the sealed commit
+      // Confirm remote has the sealed commit (seal() pushed it)
       const remoteHead = gitSync(['rev-parse', 'main'], remote.path);
       assert.equal(remoteHead, result.sealedCommit);
+    });
+
+    it('seal pushes to remote', async () => {
+      const remote = createRemoteRepo();
+      const { core } = createStartedCore();
+      const api = core.createApi();
+
+      await api.add('test-codex', remote.url);
+      const draft = await api.openDraft({ codexName: 'test-codex', branch: 'my-draft' });
+
+      gitSync(['config', 'user.email', 'test@test.com'], draft.path);
+      gitSync(['config', 'user.name', 'Test'], draft.path);
+      fs.writeFileSync(path.join(draft.path, 'seal-push.txt'), 'seal push\n');
+      gitSync(['add', 'seal-push.txt'], draft.path);
+      gitSync(['commit', '-m', 'Seal push test'], draft.path);
+
+      // seal() should push automatically — no explicit push() call
+      const result = await api.seal({ codexName: 'test-codex', sourceBranch: 'my-draft' });
+      assert.equal(result.success, true);
+
+      // Remote must have the sealed commit without a separate push()
+      const remoteHead = gitSync(['rev-parse', 'main'], remote.path);
+      assert.equal(remoteHead, result.sealedCommit);
+    });
+
+    it('seal pushes on no-op seal', async () => {
+      const remote = createRemoteRepo();
+      const { core } = createStartedCore();
+      const api = core.createApi();
+
+      await api.add('test-codex', remote.url);
+      // Open a draft but make no commits — sealing is a no-op
+      const draft = await api.openDraft({ codexName: 'test-codex', branch: 'my-draft' });
+
+      const result = await api.seal({ codexName: 'test-codex', sourceBranch: 'my-draft' });
+      assert.equal(result.success, true);
+      assert.equal(result.inscriptionsSealed, 0);
+
+      // Remote must match the sealed commit even on a no-op seal
+      const remoteHead = gitSync(['rev-parse', 'main'], remote.path);
+      assert.equal(remoteHead, result.sealedCommit);
+
+      void draft; // suppress unused warning
+    });
+
+    it('push failure after seal throws with distinct message', async () => {
+      const remote = createRemoteRepo();
+      const { core } = createStartedCore();
+      const api = core.createApi();
+
+      await api.add('test-codex', remote.url);
+      const draft = await api.openDraft({ codexName: 'test-codex', branch: 'my-draft' });
+
+      gitSync(['config', 'user.email', 'test@test.com'], draft.path);
+      gitSync(['config', 'user.name', 'Test'], draft.path);
+      fs.writeFileSync(path.join(draft.path, 'push-fail.txt'), 'push fail\n');
+      gitSync(['add', 'push-fail.txt'], draft.path);
+      gitSync(['commit', '-m', 'Push fail test'], draft.path);
+
+      // Corrupt the remote by pointing origin at an invalid path
+      const { bareClonePath } = (() => {
+        // Access the bare clone path via the guild home
+        const guildState = (core as unknown as { guildState?: never })['guildState'];
+        return { bareClonePath: null };
+      })();
+
+      // Get the bare clone path by reading the guild home from the test setup
+      // We need to change the remote URL in the bare clone to an invalid location.
+      // The bare clone is at <home>/.nexus/codexes/test-codex.git
+      // Find it via the draft's gitdir
+      const gitDir = gitSync(['rev-parse', '--git-dir'], draft.path);
+      // gitDir is something like /tmp/.../codexes/test-codex.git/worktrees/my-draft
+      // The bare clone is the worktrees' parent: go up to the .git directory of the bare clone
+      const cloneGitDir = path.resolve(path.join(gitDir, '..', '..'));
+
+      // Point origin at an invalid URL so push fails
+      gitSync(['remote', 'set-url', 'origin', 'file:///nonexistent/path.git'], cloneGitDir);
+
+      // seal() should fail with a push error, not a seal error
+      await assert.rejects(
+        () => api.seal({ codexName: 'test-codex', sourceBranch: 'my-draft' }),
+        (err: unknown) => {
+          assert.ok(err instanceof Error, 'Expected an Error');
+          assert.match(err.message, /Push failed after successful seal/,
+            `Expected push-failure message, got: ${err instanceof Error ? err.message : err}`);
+          return true;
+        },
+      );
+
+      // The local bare clone's ref should have been updated (seal succeeded locally)
+      // Restore the remote URL temporarily to check
+      gitSync(['remote', 'set-url', 'origin', remote.url], cloneGitDir);
+      const localRef = gitSync(['rev-parse', 'main'], cloneGitDir);
+      // The draft's HEAD should match the local sealed ref
+      const draftHead = gitSync(['rev-parse', 'HEAD'], draft.path);
+      assert.equal(localRef, draftHead);
+
+      // The draft must still exist (push ran before abandonDraft)
+      const drafts = await api.listDrafts();
+      assert.equal(drafts.length, 1, 'Draft should still exist after push failure');
     });
   });
 
@@ -1082,12 +1176,10 @@ describe('ScriptoriumCore', () => {
       gitSync(['config', 'user.name', 'Test'], draft.path);
       gitSync(['commit', '-m', 'Add pushed feature'], draft.path);
 
+      // seal() now pushes automatically — no explicit push() call needed
       const sealResult = await api.seal({ codexName: 'test-codex', sourceBranch: 'my-draft' });
 
-      // Push to remote
-      await api.push({ codexName: 'test-codex' });
-
-      // Verify the remote has the commit
+      // Verify the remote has the commit (pushed by seal())
       const remoteHead = gitSync(['rev-parse', 'main'], remote.path);
       assert.equal(remoteHead, sealResult.sealedCommit);
     });
