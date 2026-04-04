@@ -34,11 +34,11 @@ Use plain git terms (branch, commit, merge) in error messages and logs where pre
 ## Dependencies
 
 ```
-requires: ['stacks']
+requires: []
 consumes: []
 ```
 
-- **The Stacks** — persists the codex registry and draft tracking records. Configuration in `guild.json` is the source of truth for registered codexes; the Stacks tracks runtime state (active drafts, clone status).
+No apparatus dependencies. The codex registry is persisted via `guild.json` config (`guild().config()` / `guild().writeConfig()`). Active draft tracking is in-memory, reconstructed from filesystem state at startup. See [Future State: Draft Persistence via Stacks](#future-state) for the planned Stacks integration.
 
 ---
 
@@ -553,12 +553,12 @@ The Scriptorium maintains **bare clones** of each codex under `.nexus/codexes/<n
 codex-add
   ├─ 1. Write entry to guild.json config
   ├─ 2. git clone --bare <remoteUrl> .nexus/codexes/<name>.git
-  └─ 3. Record clone status in Stacks
+  └─ 3. Track clone status in memory
 
 draft-open
   ├─ 1. git fetch (in bare clone) — ensure refs are current
   ├─ 2. git worktree add .nexus/worktrees/<codex>/<branch> -b <branch> <startPoint>
-  └─ 3. Record draft in Stacks
+  └─ 3. Track draft in memory
 
 draft-seal
   ├─ 1. Fetch remote refs (git fetch --prune origin +refs/heads/*:refs/remotes/origin/*)
@@ -582,7 +582,7 @@ codex-remove
   ├─ 1. Abandon all drafts for codex
   ├─ 2. Remove bare clone directory
   ├─ 3. Remove entry from guild.json
-  └─ 4. Clean up Stacks records
+  └─ 4. Remove in-memory tracking
 ```
 
 ### Sealing Strategy Detail
@@ -634,7 +634,7 @@ On `start()`, the Scriptorium:
 1. Reads the `codexes` config from `guild.json`
 2. For each configured codex, checks whether a bare clone exists at `.nexus/codexes/<name>.git`
 3. Initiates background clones for any missing codexes
-4. Reconciles Stacks records with filesystem state (cleans up records for drafts that no longer exist on disk)
+4. Reconciles in-memory draft tracking with filesystem state (cleans up tracking for drafts that no longer exist on disk)
 
 This means a patron can hand-edit `guild.json` to add a codex, and the Scriptorium will clone it on next startup.
 
