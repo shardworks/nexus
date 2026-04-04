@@ -15,7 +15,7 @@ import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 
 import { createClerk } from './clerk.ts';
-import type { ClerkApi, ClerkConfig } from './types.ts';
+import type { ClerkApi, ClerkConfig, WritLinkDoc } from './types.ts';
 
 // ── Test harness ─────────────────────────────────────────────────────
 
@@ -67,6 +67,9 @@ function setup(options: SetupOptions = {}) {
   // Ensure books exist
   memBackend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
     indexes: ['status', 'type', 'createdAt', ['status', 'type'], ['status', 'createdAt']],
+  });
+  memBackend.ensureBook({ ownerId: 'clerk', book: 'links' }, {
+    indexes: ['sourceId', 'targetId', 'type', ['sourceId', 'type'], ['targetId', 'type']],
   });
 
   // Start clerk
@@ -572,6 +575,273 @@ describe('Clerk', () => {
       assert.notEqual(done.resolvedAt, '1999-01-01T00:00:00Z');
       // But resolution should pass through
       assert.equal(done.resolution, 'Legit resolution');
+    });
+  });
+
+  // ── link() ──────────────────────────────────────────────────────
+
+  describe('link()', () => {
+    beforeEach(() => { setup(); });
+
+    it('creates a link between two writs and returns a WritLinkDoc', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+
+      const link = await clerk.link(w1.id, w2.id, 'fixes');
+
+      assert.equal(link.sourceId, w1.id);
+      assert.equal(link.targetId, w2.id);
+      assert.equal(link.type, 'fixes');
+      assert.equal(link.id, `${w1.id}:${w2.id}:fixes`);
+      assert.ok(link.createdAt);
+    });
+
+    it('is idempotent — calling twice returns the same link', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+
+      const first = await clerk.link(w1.id, w2.id, 'fixes');
+      const second = await clerk.link(w1.id, w2.id, 'fixes');
+
+      assert.equal(first.id, second.id);
+      assert.equal(first.createdAt, second.createdAt);
+
+      // Only one document should exist
+      const result = await clerk.links(w1.id);
+      assert.equal(result.outbound.length, 1);
+    });
+
+    it('throws for self-link', async () => {
+      const w = await clerk.post({ title: 'Solo', body: 'Body' });
+      await assert.rejects(
+        () => clerk.link(w.id, w.id, 'fixes'),
+        /Cannot link a writ to itself/,
+      );
+    });
+
+    it('throws when source writ does not exist', async () => {
+      const w2 = await clerk.post({ title: 'Target', body: 'Body' });
+      await assert.rejects(
+        () => clerk.link('w-ghost', w2.id, 'fixes'),
+        /not found/,
+      );
+    });
+
+    it('throws when target writ does not exist', async () => {
+      const w1 = await clerk.post({ title: 'Source', body: 'Body' });
+      await assert.rejects(
+        () => clerk.link(w1.id, 'w-ghost', 'fixes'),
+        /not found/,
+      );
+    });
+
+    it('throws for empty type string', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      await assert.rejects(
+        () => clerk.link(w1.id, w2.id, ''),
+        /non-empty/,
+      );
+    });
+
+    it('throws for whitespace-only type string', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      await assert.rejects(
+        () => clerk.link(w1.id, w2.id, '   '),
+        /non-empty/,
+      );
+    });
+
+    it('accepts various non-empty type strings', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+
+      const l1 = await clerk.link(w1.id, w2.id, 'fixes');
+      const l2 = await clerk.link(w1.id, w2.id, 'retries');
+
+      assert.equal(l1.type, 'fixes');
+      assert.equal(l2.type, 'retries');
+
+      const result = await clerk.links(w1.id);
+      assert.equal(result.outbound.length, 2);
+    });
+
+    it('creates separate links for same pair with different types', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+
+      await clerk.link(w1.id, w2.id, 'fixes');
+      await clerk.link(w1.id, w2.id, 'supersedes');
+
+      const result = await clerk.links(w1.id);
+      assert.equal(result.outbound.length, 2);
+    });
+
+    it('creates links to multiple targets', async () => {
+      const w1 = await clerk.post({ title: 'Source', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Target 2', body: 'Body' });
+      const w3 = await clerk.post({ title: 'Target 3', body: 'Body' });
+
+      await clerk.link(w1.id, w2.id, 'fixes');
+      await clerk.link(w1.id, w3.id, 'retries');
+
+      const r1 = await clerk.links(w1.id);
+      assert.equal(r1.outbound.length, 2);
+
+      const r2 = await clerk.links(w2.id);
+      assert.equal(r2.inbound.length, 1);
+
+      const r3 = await clerk.links(w3.id);
+      assert.equal(r3.inbound.length, 1);
+    });
+
+    it('does not update writ timestamps when linking', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const before1 = w1.updatedAt;
+      const before2 = w2.updatedAt;
+
+      await clerk.link(w1.id, w2.id, 'fixes');
+
+      const after1 = await clerk.show(w1.id);
+      const after2 = await clerk.show(w2.id);
+      assert.equal(after1.updatedAt, before1);
+      assert.equal(after2.updatedAt, before2);
+    });
+  });
+
+  // ── links() ──────────────────────────────────────────────────────
+
+  describe('links()', () => {
+    beforeEach(() => { setup(); });
+
+    it('returns outbound and inbound links', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w3 = await clerk.post({ title: 'Writ 3', body: 'Body' });
+
+      await clerk.link(w1.id, w2.id, 'fixes');
+      await clerk.link(w3.id, w1.id, 'supersedes');
+
+      const result = await clerk.links(w1.id);
+      assert.equal(result.outbound.length, 1);
+      assert.equal(result.outbound[0]!.targetId, w2.id);
+      assert.equal(result.inbound.length, 1);
+      assert.equal(result.inbound[0]!.sourceId, w3.id);
+    });
+
+    it('returns empty arrays for a writ with no links', async () => {
+      const w = await clerk.post({ title: 'Lonely writ', body: 'Body' });
+      const result = await clerk.links(w.id);
+      assert.deepEqual(result, { outbound: [], inbound: [] });
+    });
+
+    it('returns empty arrays for a non-existent writ id', async () => {
+      const result = await clerk.links('w-doesnotexist');
+      assert.deepEqual(result, { outbound: [], inbound: [] });
+    });
+  });
+
+  // ── unlink() ─────────────────────────────────────────────────────
+
+  describe('unlink()', () => {
+    beforeEach(() => { setup(); });
+
+    it('removes an existing link', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      await clerk.link(w1.id, w2.id, 'fixes');
+
+      await clerk.unlink(w1.id, w2.id, 'fixes');
+
+      const result = await clerk.links(w1.id);
+      assert.equal(result.outbound.length, 0);
+    });
+
+    it('is idempotent — no error when link does not exist', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+
+      // No error — link was never created
+      await clerk.unlink(w1.id, w2.id, 'fixes');
+    });
+
+    it('is idempotent — no error when called twice', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      await clerk.link(w1.id, w2.id, 'fixes');
+
+      await clerk.unlink(w1.id, w2.id, 'fixes');
+      await clerk.unlink(w1.id, w2.id, 'fixes'); // second call — no error
+    });
+
+    it('does not affect other links', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      await clerk.link(w1.id, w2.id, 'fixes');
+      await clerk.link(w1.id, w2.id, 'retries');
+
+      await clerk.unlink(w1.id, w2.id, 'fixes');
+
+      const result = await clerk.links(w1.id);
+      assert.equal(result.outbound.length, 1);
+      assert.equal(result.outbound[0]!.type, 'retries');
+    });
+
+    it('does not update writ timestamps when unlinking', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      await clerk.link(w1.id, w2.id, 'fixes');
+      const before1 = (await clerk.show(w1.id)).updatedAt;
+      const before2 = (await clerk.show(w2.id)).updatedAt;
+
+      await clerk.unlink(w1.id, w2.id, 'fixes');
+
+      const after1 = await clerk.show(w1.id);
+      const after2 = await clerk.show(w2.id);
+      assert.equal(after1.updatedAt, before1);
+      assert.equal(after2.updatedAt, before2);
+    });
+  });
+
+  // ── writ-show tool with links ─────────────────────────────────────
+
+  describe('writ-show tool — includes links', () => {
+    beforeEach(() => { setup(); });
+
+    it('includes links key with outbound and inbound arrays', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      await clerk.link(w1.id, w2.id, 'fixes');
+
+      // Call clerk.show() and clerk.links() like the tool handler does
+      const [writ, links] = await Promise.all([
+        clerk.show(w1.id),
+        clerk.links(w1.id),
+      ]);
+      const result = { ...writ, links };
+
+      assert.equal(result.id, w1.id);
+      assert.equal(result.title, 'Writ 1');
+      assert.ok(Array.isArray(result.links.outbound));
+      assert.ok(Array.isArray(result.links.inbound));
+      assert.equal(result.links.outbound.length, 1);
+      assert.equal(result.links.inbound.length, 0);
+      assert.equal((result.links.outbound[0] as WritLinkDoc).targetId, w2.id);
+    });
+
+    it('returns empty link arrays for a writ with no links', async () => {
+      const w = await clerk.post({ title: 'Solo', body: 'Body' });
+
+      const [writ, links] = await Promise.all([
+        clerk.show(w.id),
+        clerk.links(w.id),
+      ]);
+      const result = { ...writ, links };
+
+      assert.deepEqual(result.links.outbound, []);
+      assert.deepEqual(result.links.inbound, []);
     });
   });
 

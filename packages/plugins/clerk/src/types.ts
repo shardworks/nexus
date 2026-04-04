@@ -116,6 +116,36 @@ declare module '@shardworks/nexus-core' {
   }
 }
 
+// ── Link documents ───────────────────────────────────────────────────
+
+/**
+ * A link document as stored in The Stacks (clerk/links book).
+ */
+export interface WritLinkDoc {
+  /** Index signature required to satisfy BookEntry constraint. */
+  [key: string]: unknown;
+  /** Deterministic composite key: `{sourceId}:{targetId}:{type}`. */
+  id: string;
+  /** The writ that is the origin of this relationship. */
+  sourceId: string;
+  /** The writ that is the target of this relationship. */
+  targetId: string;
+  /** Relationship type — an open string (e.g. "fixes", "retries", "supersedes", "duplicates"). */
+  type: string;
+  /** ISO timestamp when the link was created. */
+  createdAt: string;
+}
+
+/**
+ * Result of querying links for a writ — both directions in one response.
+ */
+export interface WritLinks {
+  /** Links where this writ is the source (this writ → other writ). */
+  outbound: WritLinkDoc[];
+  /** Links where this writ is the target (other writ → this writ). */
+  inbound: WritLinkDoc[];
+}
+
 // ── API ──────────────────────────────────────────────────────────────
 
 /**
@@ -148,4 +178,22 @@ export interface ClerkApi {
    * Validates that the transition is legal.
    */
   transition(id: string, to: WritStatus, fields?: Partial<WritDoc>): Promise<WritDoc>;
+
+  /**
+   * Create a typed directional link from one writ to another.
+   * Both writs must exist. Self-links are rejected. Idempotent — returns
+   * the existing link if the (sourceId, targetId, type) triple already exists.
+   */
+  link(sourceId: string, targetId: string, type: string): Promise<WritLinkDoc>;
+
+  /**
+   * Query all links for a writ — both outbound (this writ is the source)
+   * and inbound (this writ is the target).
+   */
+  links(writId: string): Promise<WritLinks>;
+
+  /**
+   * Remove a link. Idempotent — no error if the link does not exist.
+   */
+  unlink(sourceId: string, targetId: string, type: string): Promise<void>;
 }

@@ -13,6 +13,10 @@ export default tool({
   permission: 'clerk:read',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
-    return clerk.show(params.id);
+    const [writ, links] = await Promise.all([
+      clerk.show(params.id),
+      clerk.links(params.id),
+    ]);
+    return { ...writ, links };
   },
 });

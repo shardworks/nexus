@@ -17,6 +17,8 @@ export {
   type ClerkConfig,
   type WritTypeEntry,
   type WritDoc,
+  type WritLinkDoc,
+  type WritLinks,
   type WritStatus,
   type PostCommissionRequest,
   type WritFilters,

@@ -20,6 +20,8 @@ import type {
   ClerkApi,
   ClerkConfig,
   WritDoc,
+  WritLinkDoc,
+  WritLinks,
   WritStatus,
   PostCommissionRequest,
   WritFilters,
@@ -33,6 +35,8 @@ import {
   writComplete,
   writFail,
   writCancel,
+  writLink,
+  writUnlink,
 } from './tools/index.ts';
 
 // ── Built-in writ types ──────────────────────────────────────────────
@@ -55,6 +59,7 @@ const TERMINAL_STATUSES = new Set<WritStatus>(['completed', 'failed', 'cancelled
 
 export function createClerk(): Plugin {
   let writs: Book<WritDoc>;
+  let links: Book<WritLinkDoc>;
 
   // ── Helpers ──────────────────────────────────────────────────────
 
@@ -139,6 +144,53 @@ export function createClerk(): Plugin {
       return writs.count(where);
     },
 
+    async link(sourceId: string, targetId: string, type: string): Promise<WritLinkDoc> {
+      if (sourceId === targetId) {
+        throw new Error(`Cannot link a writ to itself: "${sourceId}".`);
+      }
+      if (!type || !type.trim()) {
+        throw new Error('Link type must be a non-empty string.');
+      }
+
+      const source = await writs.get(sourceId);
+      if (!source) {
+        throw new Error(`Writ "${sourceId}" not found.`);
+      }
+      const target = await writs.get(targetId);
+      if (!target) {
+        throw new Error(`Writ "${targetId}" not found.`);
+      }
+
+      const id = `${sourceId}:${targetId}:${type}`;
+      const existing = await links.get(id);
+      if (existing) {
+        return existing;
+      }
+
+      const doc: WritLinkDoc = {
+        id,
+        sourceId,
+        targetId,
+        type,
+        createdAt: new Date().toISOString(),
+      };
+      await links.put(doc);
+      return doc;
+    },
+
+    async links(writId: string): Promise<WritLinks> {
+      const [outbound, inbound] = await Promise.all([
+        links.find({ where: [['sourceId', '=', writId]] }),
+        links.find({ where: [['targetId', '=', writId]] }),
+      ]);
+      return { outbound, inbound };
+    },
+
+    async unlink(sourceId: string, targetId: string, type: string): Promise<void> {
+      const id = `${sourceId}:${targetId}:${type}`;
+      await links.delete(id);
+    },
+
     async transition(id: string, to: WritStatus, fields?: Partial<WritDoc>): Promise<WritDoc> {
       const writ = await writs.get(id);
       if (!writ) {
@@ -183,6 +235,9 @@ export function createClerk(): Plugin {
           writs: {
             indexes: ['status', 'type', 'createdAt', ['status', 'type'], ['status', 'createdAt']],
           },
+          links: {
+            indexes: ['sourceId', 'targetId', 'type', ['sourceId', 'type'], ['targetId', 'type']],
+          },
         },
         tools: [
           commissionPost,
@@ -192,6 +247,8 @@ export function createClerk(): Plugin {
           writComplete,
           writFail,
           writCancel,
+          writLink,
+          writUnlink,
         ],
       },
 
@@ -200,6 +257,7 @@ export function createClerk(): Plugin {
       start(_ctx: StartupContext): void {
         const stacks = guild().apparatus<StacksApi>('stacks');
         writs = stacks.book<WritDoc>('clerk', 'writs');
+        links = stacks.book<WritLinkDoc>('clerk', 'links');
       },
     },
   };
