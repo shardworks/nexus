@@ -122,7 +122,7 @@ function buildFixture(
     indexes: ['status', 'type', 'createdAt', ['status', 'type'], ['status', 'createdAt']],
   });
   memBackend.ensureBook({ ownerId: 'spider', book: 'rigs' }, {
-    indexes: ['status', 'writId', ['status', 'writId']],
+    indexes: ['status', 'writId', ['status', 'writId'], 'createdAt'],
   });
   memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, {
     indexes: ['startedAt', 'status'],
@@ -1429,6 +1429,144 @@ describe('Spider', () => {
       const yields = reviseEngine?.yields as { sessionId: string; sessionStatus: string };
       assert.equal(yields.sessionId, fakeSessionId);
       assert.equal(yields.sessionStatus, 'completed');
+    });
+  });
+
+  // ── show / list / forWrit ─────────────────────────────────────────
+
+  describe('show()', () => {
+    it('returns the full RigDoc for a valid rig id', async () => {
+      const { clerk, spider } = fix;
+      const writ = await postWrit(clerk);
+      await spider.crawl(); // spawn
+
+      const rigs = await spider.list();
+      assert.equal(rigs.length, 1);
+      const rigId = rigs[0].id;
+
+      const rig = await spider.show(rigId);
+      assert.equal(rig.id, rigId);
+      assert.equal(rig.writId, writ.id);
+      assert.equal(rig.status, 'running');
+      assert.equal(rig.engines.length, 5);
+      assert.equal(typeof rig.createdAt, 'string');
+    });
+
+    it('throws with "not found" message for an unknown rig id', async () => {
+      const { spider } = fix;
+      await assert.rejects(
+        () => spider.show('rig-nonexistent'),
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.equal(err.message, 'Rig "rig-nonexistent" not found.');
+          return true;
+        },
+      );
+    });
+  });
+
+  describe('list()', () => {
+    it('returns empty array when no rigs exist', async () => {
+      const { spider } = fix;
+      const rigs = await spider.list();
+      assert.deepEqual(rigs, []);
+    });
+
+    it('returns rigs ordered by createdAt descending', async () => {
+      const { stacks, spider } = fix;
+      const book = rigsBook(stacks);
+      const older = new Date(Date.now() - 100).toISOString();
+      const newer = new Date().toISOString();
+      await book.put({ id: 'rig-old', writId: 'w-1', status: 'running', engines: [], createdAt: older });
+      await book.put({ id: 'rig-new', writId: 'w-2', status: 'running', engines: [], createdAt: newer });
+
+      const rigs = await spider.list();
+      assert.equal(rigs.length, 2);
+      // Newest first
+      assert.ok(rigs[0].createdAt >= rigs[1].createdAt);
+    });
+
+    it('filters by status', async () => {
+      const { clerk, spider } = fix;
+      await postWrit(clerk);
+      await spider.crawl(); // spawn (status: running)
+
+      const running = await spider.list({ status: 'running' });
+      assert.equal(running.length, 1);
+      assert.equal(running[0].status, 'running');
+
+      const completed = await spider.list({ status: 'completed' });
+      assert.equal(completed.length, 0);
+    });
+
+    it('respects limit', async () => {
+      const { stacks, spider } = fix;
+      const book = rigsBook(stacks);
+      for (let i = 0; i < 3; i++) {
+        await book.put({ id: `rig-limit-${i}`, writId: `w-${i}`, status: 'running', engines: [], createdAt: new Date().toISOString() });
+      }
+
+      const limited = await spider.list({ limit: 2 });
+      assert.equal(limited.length, 2);
+    });
+
+    it('respects offset', async () => {
+      const { stacks, spider } = fix;
+      const book = rigsBook(stacks);
+      for (let i = 0; i < 3; i++) {
+        await book.put({ id: `rig-offset-${i}`, writId: `w-${i}`, status: 'running', engines: [], createdAt: new Date().toISOString() });
+      }
+
+      const all = await spider.list();
+      assert.equal(all.length, 3);
+
+      const page = await spider.list({ limit: 2, offset: 2 });
+      assert.equal(page.length, 1);
+    });
+  });
+
+  describe('forWrit()', () => {
+    it('returns the rig for a writ that has been spawned', async () => {
+      const { clerk, spider } = fix;
+      const writ = await postWrit(clerk);
+      await spider.crawl(); // spawn
+
+      const rig = await spider.forWrit(writ.id);
+      assert.ok(rig !== null);
+      assert.equal(rig.writId, writ.id);
+    });
+
+    it('returns null when no rig exists for a writ', async () => {
+      const { clerk, spider } = fix;
+      const writ = await postWrit(clerk);
+      // Do not crawl — no rig spawned yet
+
+      const rig = await spider.forWrit(writ.id);
+      assert.equal(rig, null);
+    });
+
+    it('returns null for a non-existent writ id', async () => {
+      const { spider } = fix;
+      const rig = await spider.forWrit('w-nonexistent');
+      assert.equal(rig, null);
+    });
+  });
+
+  describe('createdAt', () => {
+    it('is set to a valid ISO timestamp when a rig is spawned', async () => {
+      const { clerk, spider } = fix;
+      const before = new Date().toISOString();
+      await postWrit(clerk);
+      await spider.crawl(); // spawn
+      const after = new Date().toISOString();
+
+      const rigs = await spider.list();
+      assert.equal(rigs.length, 1);
+      const { createdAt } = rigs[0];
+      assert.equal(typeof createdAt, 'string');
+      assert.ok(!isNaN(new Date(createdAt).getTime()), 'createdAt must be a valid date');
+      assert.ok(createdAt >= before, 'createdAt must not be before spawn');
+      assert.ok(createdAt <= after, 'createdAt must not be after spawn');
     });
   });
 

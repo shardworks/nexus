@@ -18,13 +18,14 @@
 
 import type { Plugin, StartupContext } from '@shardworks/nexus-core';
 import { guild, generateId } from '@shardworks/nexus-core';
-import type { StacksApi, Book, ReadOnlyBook } from '@shardworks/stacks-apparatus';
+import type { StacksApi, Book, ReadOnlyBook, WhereClause } from '@shardworks/stacks-apparatus';
 import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import type { FabricatorApi } from '@shardworks/fabricator-apparatus';
 import type { SessionDoc } from '@shardworks/animator-apparatus';
 
 import type {
   RigDoc,
+  RigFilters,
   EngineInstance,
   SpiderApi,
   CrawlResult,
@@ -39,7 +40,7 @@ import {
   sealEngine,
 } from './engines/index.ts';
 
-import { crawlTool, crawlContinualTool } from './tools/index.ts';
+import { crawlTool, crawlContinualTool, rigShowTool, rigListTool, rigForWritTool } from './tools/index.ts';
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -320,6 +321,7 @@ export function createSpider(): Plugin {
         writId: writ.id,
         status: 'running',
         engines,
+        createdAt: new Date().toISOString(),
       };
 
       await rigsBook.put(rig);
@@ -358,6 +360,33 @@ export function createSpider(): Plugin {
 
       return null;
     },
+
+    async show(id: string): Promise<RigDoc> {
+      const results = await rigsBook.find({ where: [['id', '=', id]], limit: 1 });
+      if (results.length === 0) {
+        throw new Error(`Rig "${id}" not found.`);
+      }
+      return results[0];
+    },
+
+    async list(filters?: RigFilters): Promise<RigDoc[]> {
+      const where: WhereClause = [];
+      if (filters?.status !== undefined) {
+        where.push(['status', '=', filters.status]);
+      }
+      const limit = filters?.limit ?? 20;
+      return rigsBook.find({
+        where,
+        orderBy: ['createdAt', 'desc'],
+        limit,
+        ...(filters?.offset !== undefined ? { offset: filters.offset } : {}),
+      });
+    },
+
+    async forWrit(writId: string): Promise<RigDoc | null> {
+      const results = await rigsBook.find({ where: [['writId', '=', writId]], limit: 1 });
+      return results[0] ?? null;
+    },
   };
 
   // ── Apparatus ─────────────────────────────────────────────────────
@@ -369,7 +398,7 @@ export function createSpider(): Plugin {
       supportKit: {
         books: {
           rigs: {
-            indexes: ['status', 'writId', ['status', 'writId']],
+            indexes: ['status', 'writId', ['status', 'writId'], 'createdAt'],
           },
         },
         engines: {
@@ -379,7 +408,7 @@ export function createSpider(): Plugin {
           revise:    reviseEngine,
           seal:      sealEngine,
         },
-        tools: [crawlTool, crawlContinualTool],
+        tools: [crawlTool, crawlContinualTool, rigShowTool, rigListTool, rigForWritTool],
       },
 
       provides: api,

@@ -67,6 +67,22 @@ export interface RigDoc {
   status: RigStatus;
   /** Ordered engine pipeline. */
   engines: EngineInstance[];
+  /** ISO timestamp when the rig was created. */
+  createdAt: string;
+}
+
+// ── Rig filters ───────────────────────────────────────────────────────
+
+/**
+ * Filters for listing rigs.
+ */
+export interface RigFilters {
+  /** Filter by rig status. */
+  status?: RigStatus;
+  /** Maximum number of results (default: 20). */
+  limit?: number;
+  /** Number of results to skip. */
+  offset?: number;
 }
 
 // ── CrawlResult ────────────────────────────────────────────────────────
@@ -101,6 +117,21 @@ export interface SpiderApi {
    * Returns null when no work is available.
    */
   crawl(): Promise<CrawlResult | null>;
+
+  /**
+   * Show a rig by id. Throws if not found.
+   */
+  show(id: string): Promise<RigDoc>;
+
+  /**
+   * List rigs with optional filters, ordered by createdAt descending.
+   */
+  list(filters?: RigFilters): Promise<RigDoc[]>;
+
+  /**
+   * Find the rig for a given writ. Returns null if no rig exists.
+   */
+  forWrit(writId: string): Promise<RigDoc | null>;
 }
 
 // ── Configuration ─────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ export type {
   EngineInstance,
   RigStatus,
   RigDoc,
+  RigFilters,
   CrawlResult,
   SpiderApi,
   SpiderConfig,
