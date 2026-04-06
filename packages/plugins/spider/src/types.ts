@@ -93,6 +93,8 @@ export interface RigDoc {
   engines: EngineInstance[];
   /** ISO timestamp when the rig was created. */
   createdAt: string;
+  /** Engine id whose yields provide the resolution summary. Set at spawn time. */
+  resolutionEngineId?: string;
 }
 
 // ── Rig filters ───────────────────────────────────────────────────────
@@ -107,6 +109,40 @@ export interface RigFilters {
   limit?: number;
   /** Number of results to skip. */
   offset?: number;
+}
+
+// ── Rig templates ─────────────────────────────────────────────────────
+
+/**
+ * A single engine slot declared in a rig template.
+ */
+export interface RigTemplateEngine {
+  /** Engine id unique within this template. */
+  id: string;
+  /** Engine design id to look up in the Fabricator. */
+  designId: string;
+  /** Engine ids within this template whose completion is required first. Defaults to []. */
+  upstream?: string[];
+  /**
+   * Givens to pass at spawn time.
+   * String values starting with '$' are variable references resolved at spawn time.
+   * Non-string values are passed through literally.
+   * Variables that resolve to undefined cause the key to be omitted.
+   */
+  givens?: Record<string, unknown>;
+}
+
+/**
+ * A complete rig template.
+ */
+export interface RigTemplate {
+  /** Ordered list of engine slot declarations. */
+  engines: RigTemplateEngine[];
+  /**
+   * Engine id whose yields provide the writ resolution summary.
+   * Falls back to seal engine, then last completed engine in array order.
+   */
+  resolutionEngine?: string;
 }
 
 // ── CrawlResult ────────────────────────────────────────────────────────
@@ -216,6 +252,12 @@ export interface SpiderConfig {
    * Test command to pass to quick engines.
    */
   testCommand?: string;
+  /**
+   * Writ type → rig template mappings.
+   * 'default' key is the fallback for unmatched writ types.
+   * Spawning fails if no matching template is found.
+   */
+  rigTemplates?: Record<string, RigTemplate>;
 }
 
 // ── Engine yield shapes ───────────────────────────────────────────────

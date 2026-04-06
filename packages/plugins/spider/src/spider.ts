@@ -34,6 +34,7 @@ import type {
   SpiderConfig,
   BlockRecord,
   BlockType,
+  RigTemplate,
 } from './types.ts';
 
 import {
@@ -143,6 +144,182 @@ function buildStaticEngines(writ: WritDoc, config: SpiderConfig): EngineInstance
     { id: 'revise',    designId: 'revise',    status: 'pending', upstream: ['review'],    givensSpec: { writ, role } },
     { id: 'seal',      designId: 'seal',      status: 'pending', upstream: ['revise'],    givensSpec: {} },
   ];
+}
+
+// ── Template-based rig building ────────────────────────────────────────
+
+/**
+ * Look up the rig template for a given writ type.
+ * Falls back to 'default' template if no exact match.
+ * Throws if no matching template is found.
+ */
+function lookupTemplate(writType: string, config: SpiderConfig): RigTemplate {
+  const templates = config.rigTemplates;
+  if (templates) {
+    if (writType in templates) return templates[writType];
+    if ('default' in templates) return templates['default'];
+  }
+  throw new Error(
+    `[spider] No rig template found for writ type "${writType}" and no "default" template configured.`
+  );
+}
+
+/**
+ * Resolve a template engine's givens map using a variables context.
+ * '$writ' → WritDoc, '$role' → role string, '$spider.<key>' → spiderConfig[key].
+ * Keys resolving to undefined are omitted from the output.
+ * Non-'$' prefixed values are passed through as literals.
+ */
+function resolveGivens(
+  givens: Record<string, unknown> | undefined,
+  context: { writ: WritDoc; role: string; spiderConfig: SpiderConfig },
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(givens ?? {})) {
+    if (typeof value !== 'string' || !value.startsWith('$')) {
+      result[key] = value;
+    } else if (value === '$writ') {
+      result[key] = context.writ;
+    } else if (value === '$role') {
+      result[key] = context.role;
+    } else if (/^\$spider\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) {
+      const spiderKey = value.slice('$spider.'.length);
+      const resolved = (context.spiderConfig as Record<string, unknown>)[spiderKey];
+      if (resolved !== undefined) {
+        result[key] = resolved;
+      }
+      // undefined → omit key entirely
+    }
+    // Unrecognized $-prefixed strings are caught at validation time
+  }
+  return result;
+}
+
+/**
+ * Build EngineInstance array and resolutionEngineId from a RigTemplate.
+ */
+function buildFromTemplate(
+  template: RigTemplate,
+  context: { writ: WritDoc; role: string; spiderConfig: SpiderConfig },
+): { engines: EngineInstance[]; resolutionEngineId?: string } {
+  const engines: EngineInstance[] = template.engines.map((entry) => ({
+    id: entry.id,
+    designId: entry.designId,
+    status: 'pending' as const,
+    upstream: entry.upstream ?? [],
+    givensSpec: resolveGivens(entry.givens, context),
+  }));
+  return { engines, resolutionEngineId: template.resolutionEngine };
+}
+
+/**
+ * Validate all configured rig templates at startup.
+ * Fails fast on the first error with a '[spider]' prefixed message.
+ */
+function validateTemplates(
+  rigTemplates: Record<string, RigTemplate>,
+  fabricator: FabricatorApi,
+): void {
+  const builtinEngineIds = new Set([
+    draftEngine.id,
+    implementEngine.id,
+    reviewEngine.id,
+    reviseEngine.id,
+    sealEngine.id,
+  ]);
+
+  for (const [templateKey, template] of Object.entries(rigTemplates)) {
+    const engines = template.engines;
+
+    // R13: Non-empty check
+    if (engines.length === 0) {
+      throw new Error(`[spider] rigTemplates.${templateKey}: template has no engines`);
+    }
+
+    // R6b: Duplicate ID check
+    const engineIds = new Set<string>();
+    for (const engine of engines) {
+      if (engineIds.has(engine.id)) {
+        throw new Error(
+          `[spider] rigTemplates.${templateKey}: duplicate engine id "${engine.id}"`
+        );
+      }
+      engineIds.add(engine.id);
+    }
+
+    // R6a: designId check
+    for (const engine of engines) {
+      const knownInFabricator = fabricator.getEngineDesign(engine.designId) !== undefined;
+      const knownBuiltin = builtinEngineIds.has(engine.designId);
+      if (!knownInFabricator && !knownBuiltin) {
+        throw new Error(
+          `[spider] rigTemplates.${templateKey}: engine "${engine.id}" references unknown designId "${engine.designId}"`
+        );
+      }
+    }
+
+    // R6c: Upstream reference check
+    for (const engine of engines) {
+      for (const upstreamId of engine.upstream ?? []) {
+        if (!engineIds.has(upstreamId)) {
+          throw new Error(
+            `[spider] rigTemplates.${templateKey}: engine "${engine.id}" references unknown upstream "${upstreamId}"`
+          );
+        }
+      }
+    }
+
+    // R6d: Cycle detection (DFS)
+    {
+      const visiting = new Set<string>();
+      const visited = new Set<string>();
+
+      const visit = (id: string): void => {
+        if (visited.has(id)) return;
+        if (visiting.has(id)) {
+          throw new Error(
+            `[spider] rigTemplates.${templateKey}: dependency cycle detected involving engine "${id}"`
+          );
+        }
+        visiting.add(id);
+        const engine = engines.find((e) => e.id === id)!;
+        for (const dep of engine.upstream ?? []) {
+          visit(dep);
+        }
+        visiting.delete(id);
+        visited.add(id);
+      };
+
+      for (const engine of engines) {
+        visit(engine.id);
+      }
+    }
+
+    // R6e: resolutionEngine check
+    if (template.resolutionEngine !== undefined && !engineIds.has(template.resolutionEngine)) {
+      throw new Error(
+        `[spider] rigTemplates.${templateKey}: resolutionEngine "${template.resolutionEngine}" is not an engine id in this template`
+      );
+    }
+
+    // R7: Variable reference validation
+    for (const engine of engines) {
+      for (const value of Object.values(engine.givens ?? {})) {
+        if (typeof value === 'string' && value.startsWith('$')) {
+          if (
+            value === '$writ' ||
+            value === '$role' ||
+            /^\$spider\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)
+          ) {
+            continue; // valid
+          }
+          throw new Error(
+            `[spider] rigTemplates.${templateKey}: engine "${engine.id}" has unrecognized variable "${value}"`
+          );
+        }
+      }
+    }
+  }
 }
 
 // ── Block type type guard ──────────────────────────────────────────────
@@ -548,7 +725,12 @@ export function createSpider(): Plugin {
       if (existing.length > 0) continue;
 
       const rigId = generateId('rig', 4);
-      const engines = buildStaticEngines(writ, spiderConfig);
+      const template = lookupTemplate(writ.type, spiderConfig);
+      const { engines, resolutionEngineId } = buildFromTemplate(template, {
+        writ,
+        role: spiderConfig.role ?? 'artificer',
+        spiderConfig,
+      });
 
       const rig: RigDoc = {
         id: rigId,
@@ -556,6 +738,7 @@ export function createSpider(): Plugin {
         status: 'running',
         engines,
         createdAt: new Date().toISOString(),
+        ...(resolutionEngineId !== undefined ? { resolutionEngineId } : {}),
       };
 
       await rigsBook.put(rig);
@@ -699,6 +882,11 @@ export function createSpider(): Plugin {
         clerk = g.apparatus<ClerkApi>('clerk');
         fabricator = g.apparatus<FabricatorApi>('fabricator');
 
+        // Validate templates before any rig operations can occur
+        if (spiderConfig.rigTemplates) {
+          validateTemplates(spiderConfig.rigTemplates, fabricator);
+        }
+
         rigsBook = stacks.book<RigDoc>('spider', 'rigs');
         sessionsBook = stacks.readBook<SessionDoc>('animator', 'sessions');
         writsBook = stacks.readBook<WritDoc>('clerk', 'writs');
@@ -734,10 +922,36 @@ export function createSpider(): Plugin {
             if (rig.status === prev.status) return;
 
             if (rig.status === 'completed') {
-              // Use seal yields as the resolution summary
-              const sealEngine = rig.engines.find((e) => e.id === 'seal');
-              const resolution = sealEngine?.yields
-                ? JSON.stringify(sealEngine.yields)
+              let resolutionYields: unknown;
+
+              // 1. Try the declared resolution engine
+              if (rig.resolutionEngineId) {
+                const declared = rig.engines.find((e) => e.id === rig.resolutionEngineId);
+                if (declared?.yields !== undefined) {
+                  resolutionYields = declared.yields;
+                }
+              }
+
+              // 2. Fall back to seal engine (backwards compat for pre-existing rigs)
+              if (resolutionYields === undefined) {
+                const seal = rig.engines.find((e) => e.id === 'seal');
+                if (seal?.yields !== undefined) {
+                  resolutionYields = seal.yields;
+                }
+              }
+
+              // 3. Fall back to last completed engine in array order
+              if (resolutionYields === undefined) {
+                const lastCompleted = [...rig.engines]
+                  .reverse()
+                  .find((e) => e.status === 'completed' && e.yields !== undefined);
+                if (lastCompleted) {
+                  resolutionYields = lastCompleted.yields;
+                }
+              }
+
+              const resolution = resolutionYields !== undefined
+                ? JSON.stringify(resolutionYields)
                 : 'Rig completed';
               await clerk.transition(rig.writId, 'completed', { resolution });
             } else if (rig.status === 'failed') {

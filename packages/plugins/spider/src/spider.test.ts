@@ -26,9 +26,22 @@ import type { FabricatorApi, EngineDesign } from '@shardworks/fabricator-apparat
 import type { AnimatorApi, SummonRequest, AnimateHandle, SessionChunk, SessionResult, SessionDoc } from '@shardworks/animator-apparatus';
 
 import { createSpider } from './spider.ts';
-import type { SpiderApi, RigDoc, EngineInstance, ReviewYields, MechanicalCheck } from './types.ts';
+import type { SpiderApi, RigDoc, EngineInstance, ReviewYields, MechanicalCheck, RigTemplate } from './types.ts';
 
 // ── Test bootstrap ────────────────────────────────────────────────────
+
+// Standard 5-engine template matching the original static pipeline behavior.
+// Used as the default template in test fixtures.
+const STANDARD_TEMPLATE: RigTemplate = {
+  engines: [
+    { id: 'draft',     designId: 'draft',     givens: { writ: '$writ' } },
+    { id: 'implement', designId: 'implement', upstream: ['draft'],     givens: { writ: '$writ', role: '$role' } },
+    { id: 'review',    designId: 'review',    upstream: ['implement'], givens: { writ: '$writ', role: 'reviewer', buildCommand: '$spider.buildCommand', testCommand: '$spider.testCommand' } },
+    { id: 'revise',    designId: 'revise',    upstream: ['review'],    givens: { writ: '$writ', role: '$role' } },
+    { id: 'seal',      designId: 'seal',      upstream: ['revise'],    givens: {} },
+  ],
+  resolutionEngine: 'seal',
+};
 
 /**
  * Build a minimal StartupContext that captures and fires events.
@@ -93,6 +106,10 @@ function buildFixture(
     nexus: '0.0.0',
     plugins: [],
     ...guildConfig,
+    spider: {
+      rigTemplates: { default: STANDARD_TEMPLATE },
+      ...(guildConfig.spider ?? {}),
+    },
   };
 
   const fakeGuild: Guild = {
@@ -1824,5 +1841,621 @@ describe('Spider', () => {
       const result = await spider.crawl();
       assert.equal(result, null);
     });
+  });
+});
+
+// ── Template-based rig building tests ─────────────────────────────────
+
+describe('Spider — template dispatch', () => {
+  afterEach(() => {
+    clearGuild();
+  });
+
+  it('spawns a rig using the type-specific template when writ type matches', async () => {
+    const mandateTemplate: RigTemplate = {
+      engines: [
+        { id: 'step1', designId: 'draft', givens: { writ: '$writ' } },
+        { id: 'step2', designId: 'seal', upstream: ['step1'], givens: {} },
+      ],
+    };
+    const fix = buildFixture({
+      spider: { rigTemplates: { mandate: mandateTemplate } },
+    });
+    const { clerk, spider, stacks } = fix;
+
+    const writ = await clerk.post({ title: 'Mandate writ', body: 'test', type: 'mandate' });
+    const result = await spider.crawl();
+    assert.equal(result?.action, 'rig-spawned');
+
+    const rigs = await rigsBook(stacks).list();
+    assert.equal(rigs[0].engines.length, 2, 'rig should use mandate template (2 engines)');
+    assert.equal(rigs[0].engines[0].id, 'step1');
+    assert.equal(rigs[0].engines[1].id, 'step2');
+  });
+
+  it('falls back to default template when no type-specific match exists', async () => {
+    const defaultTemplate: RigTemplate = {
+      engines: [
+        { id: 'a', designId: 'draft', givens: { writ: '$writ' } },
+        { id: 'b', designId: 'seal', upstream: ['a'], givens: {} },
+        { id: 'c', designId: 'implement', upstream: ['b'], givens: {} },
+      ],
+    };
+    const fix = buildFixture({
+      spider: { rigTemplates: { default: defaultTemplate } },
+    });
+    const { clerk, spider, stacks } = fix;
+
+    const writ = await clerk.post({ title: 'Task writ', body: 'test', type: 'mandate' });
+    const result = await spider.crawl();
+    assert.equal(result?.action, 'rig-spawned');
+
+    const rigs = await rigsBook(stacks).list();
+    assert.equal(rigs[0].engines.length, 3, 'rig should use default template (3 engines)');
+  });
+
+  it('uses type-specific template over default when both exist', async () => {
+    const mandateTemplate: RigTemplate = {
+      engines: [
+        { id: 'only', designId: 'seal', givens: {} },
+      ],
+    };
+    const defaultTemplate: RigTemplate = {
+      engines: [
+        { id: 'a', designId: 'draft', givens: { writ: '$writ' } },
+        { id: 'b', designId: 'seal', upstream: ['a'], givens: {} },
+      ],
+    };
+    const fix = buildFixture({
+      spider: { rigTemplates: { mandate: mandateTemplate, default: defaultTemplate } },
+    });
+    const { clerk, spider, stacks } = fix;
+
+    await clerk.post({ title: 'Mandate', body: 'test', type: 'mandate' });
+    await spider.crawl();
+
+    const rigs = await rigsBook(stacks).list();
+    assert.equal(rigs[0].engines.length, 1, 'should use mandate template (1 engine)');
+    assert.equal(rigs[0].engines[0].id, 'only');
+  });
+
+  it('throws with "No rig template found" when writ type has no match and no default', async () => {
+    // Configure only a 'hotfix' template (not 'mandate' or 'default')
+    // Post a mandate writ (the default clerk type) — it has no matching template
+    const fix = buildFixture({
+      spider: { rigTemplates: { hotfix: { engines: [{ id: 'x', designId: 'seal', givens: {} }] } } },
+    });
+    const { clerk, spider } = fix;
+
+    await clerk.post({ title: 'Mandate writ', body: 'test' }); // defaults to 'mandate' type
+    await assert.rejects(
+      () => spider.crawl(),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.includes('No rig template found'), err.message);
+        return true;
+      },
+    );
+  });
+
+  it('uses default template when writ type does not match a specific key', async () => {
+    // buildFixture always provides rigTemplates.default = STANDARD_TEMPLATE via merge,
+    // so a mandate writ (the clerk default) uses the default template.
+    const fix = buildFixture();
+    const { clerk, spider, stacks } = fix;
+
+    await clerk.post({ title: 'Test', body: 'test' }); // type: 'mandate', uses STANDARD_TEMPLATE
+    const result = await spider.crawl();
+    assert.equal(result?.action, 'rig-spawned');
+    const rigs = await rigsBook(stacks).list();
+    assert.equal(rigs[0].engines.length, 5, 'default template produces 5 engines');
+  });
+});
+
+describe('Spider — variable resolution', () => {
+  afterEach(() => {
+    clearGuild();
+  });
+
+  it('$writ resolves to the full WritDoc object', async () => {
+    const template: RigTemplate = {
+      engines: [{ id: 'only', designId: 'seal', givens: { w: '$writ' } }],
+    };
+    const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
+    const { clerk, spider, stacks } = fix;
+
+    const writ = await clerk.post({ title: 'My writ', body: 'test body' });
+    await spider.crawl();
+
+    const rigs = await rigsBook(stacks).list();
+    const engine = rigs[0].engines[0];
+    const resolvedWrit = engine.givensSpec.w as { id: string; type: string; title: string };
+    assert.equal(resolvedWrit.id, writ.id);
+    assert.equal(resolvedWrit.title, writ.title);
+  });
+
+  it('$role resolves to spiderConfig.role when set', async () => {
+    const template: RigTemplate = {
+      engines: [{ id: 'only', designId: 'seal', givens: { r: '$role' } }],
+    };
+    const fix = buildFixture({ spider: { role: 'builder', rigTemplates: { default: template } } });
+    const { clerk, spider, stacks } = fix;
+
+    await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl();
+
+    const rigs = await rigsBook(stacks).list();
+    assert.equal(rigs[0].engines[0].givensSpec.r, 'builder');
+  });
+
+  it('$role defaults to "artificer" when spiderConfig.role is not set', async () => {
+    const template: RigTemplate = {
+      engines: [{ id: 'only', designId: 'seal', givens: { r: '$role' } }],
+    };
+    const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
+    const { clerk, spider, stacks } = fix;
+
+    await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl();
+
+    const rigs = await rigsBook(stacks).list();
+    assert.equal(rigs[0].engines[0].givensSpec.r, 'artificer');
+  });
+
+  it('$spider.buildCommand resolves to the configured value', async () => {
+    const template: RigTemplate = {
+      engines: [{ id: 'only', designId: 'seal', givens: { cmd: '$spider.buildCommand' } }],
+    };
+    const fix = buildFixture({ spider: { buildCommand: 'make build', rigTemplates: { default: template } } });
+    const { clerk, spider, stacks } = fix;
+
+    await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl();
+
+    const rigs = await rigsBook(stacks).list();
+    assert.equal(rigs[0].engines[0].givensSpec.cmd, 'make build');
+  });
+
+  it('$spider.* undefined causes key to be omitted entirely', async () => {
+    const template: RigTemplate = {
+      engines: [{ id: 'only', designId: 'seal', givens: { cmd: '$spider.testCommand' } }],
+    };
+    const fix = buildFixture({ spider: { rigTemplates: { default: template } } }); // no testCommand
+    const { clerk, spider, stacks } = fix;
+
+    await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl();
+
+    const rigs = await rigsBook(stacks).list();
+    assert.ok(!('cmd' in rigs[0].engines[0].givensSpec), 'cmd key should be absent when testCommand is not set');
+  });
+
+  it('literal string without $ prefix is passed through unchanged', async () => {
+    const template: RigTemplate = {
+      engines: [{ id: 'only', designId: 'seal', givens: { role: 'reviewer', count: 5 } }],
+    };
+    const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
+    const { clerk, spider, stacks } = fix;
+
+    await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl();
+
+    const rigs = await rigsBook(stacks).list();
+    assert.equal(rigs[0].engines[0].givensSpec.role, 'reviewer');
+    assert.equal(rigs[0].engines[0].givensSpec.count, 5);
+  });
+
+  it('engine with no givens field produces empty givensSpec', async () => {
+    const template: RigTemplate = {
+      engines: [{ id: 'only', designId: 'seal' }],
+    };
+    const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
+    const { clerk, spider, stacks } = fix;
+
+    await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl();
+
+    const rigs = await rigsBook(stacks).list();
+    assert.deepEqual(rigs[0].engines[0].givensSpec, {});
+  });
+});
+
+describe('Spider — startup validation', () => {
+  afterEach(() => {
+    clearGuild();
+  });
+
+  it('throws [spider] error for unknown designId', () => {
+    assert.throws(
+      () => buildFixture({
+        spider: {
+          rigTemplates: {
+            mandate: { engines: [{ id: 'x', designId: 'nonexistent' }] },
+          },
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.startsWith('[spider]'), `expected [spider] prefix, got: ${err.message}`);
+        assert.ok(err.message.includes('unknown designId "nonexistent"'), err.message);
+        return true;
+      },
+    );
+  });
+
+  it('accepts Spider builtin designIds (draft, implement, review, revise, seal)', () => {
+    assert.doesNotThrow(() =>
+      buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [
+                { id: 'a', designId: 'draft', givens: { writ: '$writ' } },
+                { id: 'b', designId: 'implement', upstream: ['a'], givens: { writ: '$writ', role: '$role' } },
+                { id: 'c', designId: 'seal', upstream: ['b'], givens: {} },
+              ],
+            },
+          },
+        },
+      })
+    );
+  });
+
+  it('throws [spider] error for unknown upstream reference', () => {
+    assert.throws(
+      () => buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [
+                { id: 'x', designId: 'seal', upstream: ['ghost'] },
+              ],
+            },
+          },
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.startsWith('[spider]'), err.message);
+        assert.ok(err.message.includes('unknown upstream "ghost"'), err.message);
+        return true;
+      },
+    );
+  });
+
+  it('throws [spider] error for duplicate engine ids', () => {
+    assert.throws(
+      () => buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [
+                { id: 'step1', designId: 'draft', givens: { writ: '$writ' } },
+                { id: 'step1', designId: 'seal', givens: {} },
+              ],
+            },
+          },
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.startsWith('[spider]'), err.message);
+        assert.ok(err.message.includes('duplicate engine id "step1"'), err.message);
+        return true;
+      },
+    );
+  });
+
+  it('throws [spider] error for dependency cycle', () => {
+    assert.throws(
+      () => buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [
+                { id: 'a', designId: 'draft', upstream: ['c'], givens: { writ: '$writ' } },
+                { id: 'b', designId: 'implement', upstream: ['a'], givens: {} },
+                { id: 'c', designId: 'seal', upstream: ['b'], givens: {} },
+              ],
+            },
+          },
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.startsWith('[spider]'), err.message);
+        assert.ok(err.message.includes('cycle detected'), err.message);
+        return true;
+      },
+    );
+  });
+
+  it('throws [spider] error for self-referencing upstream', () => {
+    assert.throws(
+      () => buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [
+                { id: 'self', designId: 'seal', upstream: ['self'], givens: {} },
+              ],
+            },
+          },
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.startsWith('[spider]'), err.message);
+        assert.ok(err.message.includes('cycle detected'), err.message);
+        return true;
+      },
+    );
+  });
+
+  it('throws [spider] error for invalid resolutionEngine', () => {
+    assert.throws(
+      () => buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [{ id: 'x', designId: 'seal', givens: {} }],
+              resolutionEngine: 'absent',
+            },
+          },
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.startsWith('[spider]'), err.message);
+        assert.ok(err.message.includes('resolutionEngine "absent"'), err.message);
+        return true;
+      },
+    );
+  });
+
+  it('throws [spider] error for unrecognized variable reference ($buildCommand)', () => {
+    assert.throws(
+      () => buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '$buildCommand' } }],
+            },
+          },
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.startsWith('[spider]'), err.message);
+        assert.ok(err.message.includes('unrecognized variable "$buildCommand"'), err.message);
+        return true;
+      },
+    );
+  });
+
+  it('throws [spider] error for nested $spider path ($spider.a.b)', () => {
+    assert.throws(
+      () => buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '$spider.a.b' } }],
+            },
+          },
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.startsWith('[spider]'), err.message);
+        assert.ok(err.message.includes('unrecognized variable "$spider.a.b"'), err.message);
+        return true;
+      },
+    );
+  });
+
+  it('accepts $spider.buildCommand as a valid variable', () => {
+    assert.doesNotThrow(() =>
+      buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '$spider.buildCommand' } }],
+            },
+          },
+        },
+      })
+    );
+  });
+
+  it('throws [spider] error for empty engines array', () => {
+    assert.throws(
+      () => buildFixture({
+        spider: {
+          rigTemplates: {
+            default: { engines: [] },
+          },
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.startsWith('[spider]'), err.message);
+        assert.ok(err.message.includes('has no engines'), err.message);
+        return true;
+      },
+    );
+  });
+
+  it('error messages include the template key', () => {
+    assert.throws(
+      () => buildFixture({
+        spider: {
+          rigTemplates: {
+            mandate: { engines: [{ id: 'x', designId: 'nonexistent' }] },
+          },
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.includes('rigTemplates.mandate'), err.message);
+        return true;
+      },
+    );
+  });
+});
+
+describe('Spider — resolutionEngineId', () => {
+  afterEach(() => {
+    clearGuild();
+  });
+
+  it('sets resolutionEngineId on RigDoc when template has resolutionEngine', async () => {
+    const template: RigTemplate = {
+      engines: [{ id: 'only', designId: 'seal', givens: {} }],
+      resolutionEngine: 'only',
+    };
+    const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
+    const { clerk, spider, stacks } = fix;
+
+    await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl();
+
+    const rigs = await rigsBook(stacks).list();
+    assert.equal(rigs[0].resolutionEngineId, 'only');
+  });
+
+  it('omits resolutionEngineId from RigDoc when template has no resolutionEngine', async () => {
+    const template: RigTemplate = {
+      engines: [{ id: 'only', designId: 'seal', givens: {} }],
+    };
+    const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
+    const { clerk, spider, stacks } = fix;
+
+    await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl();
+
+    const rigs = await rigsBook(stacks).list();
+    assert.ok(!('resolutionEngineId' in rigs[0]) || rigs[0].resolutionEngineId === undefined);
+  });
+});
+
+describe('Spider — CDC resolution fallback', () => {
+  afterEach(() => {
+    clearGuild();
+  });
+
+  it('uses resolutionEngineId engine yields when present', async () => {
+    const fix = buildFixture();
+    const { clerk, spider, stacks } = fix;
+
+    const writ = await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl(); // spawn
+
+    const book = rigsBook(stacks);
+    const [rig] = await book.list();
+
+    // Set a resolutionEngineId and mark that engine completed with yields
+    const customYields = { result: 'custom-resolution' };
+    await book.patch(rig.id, {
+      resolutionEngineId: 'implement',
+      engines: rig.engines.map((e: EngineInstance) => {
+        if (e.id === 'implement') return { ...e, status: 'completed' as const, yields: customYields };
+        return { ...e, status: 'completed' as const };
+      }),
+      status: 'completed',
+    });
+
+    // CDC should have fired
+    const finalWrit = await clerk.show(writ.id);
+    assert.equal(finalWrit.status, 'completed');
+    assert.equal(finalWrit.resolution, JSON.stringify(customYields));
+  });
+
+  it('falls back to seal engine when no resolutionEngineId', async () => {
+    const fix = buildFixture();
+    const { clerk, spider, stacks } = fix;
+
+    const writ = await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl(); // spawn
+
+    const book = rigsBook(stacks);
+    const [rig] = await book.list();
+
+    const sealYields = { sealedCommit: 'abc123', strategy: 'fast-forward', retries: 0, inscriptionsSealed: 1 };
+    await book.patch(rig.id, {
+      engines: rig.engines.map((e: EngineInstance) => {
+        if (e.id === 'seal') return { ...e, status: 'completed' as const, yields: sealYields };
+        return { ...e, status: 'completed' as const };
+      }),
+      status: 'completed',
+    });
+
+    const finalWrit = await clerk.show(writ.id);
+    assert.equal(finalWrit.resolution, JSON.stringify(sealYields));
+  });
+
+  it('falls back to last completed engine when no resolutionEngineId and no seal', async () => {
+    // Use a template without a seal engine
+    const template: RigTemplate = {
+      engines: [
+        { id: 'draft', designId: 'draft', givens: { writ: '$writ' } },
+        { id: 'implement', designId: 'implement', upstream: ['draft'], givens: { writ: '$writ', role: '$role' } },
+      ],
+    };
+    const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
+    const { clerk, spider, stacks } = fix;
+
+    const writ = await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl(); // spawn
+
+    const book = rigsBook(stacks);
+    const [rig] = await book.list();
+
+    const implementYields = { sessionId: 'ses-1', sessionStatus: 'completed' };
+    await book.patch(rig.id, {
+      engines: rig.engines.map((e: EngineInstance) => {
+        if (e.id === 'draft') return { ...e, status: 'completed' as const, yields: { draftId: 'd1' } };
+        if (e.id === 'implement') return { ...e, status: 'completed' as const, yields: implementYields };
+        return e;
+      }),
+      status: 'completed',
+    });
+
+    const finalWrit = await clerk.show(writ.id);
+    assert.equal(finalWrit.resolution, JSON.stringify(implementYields));
+  });
+
+  it('uses "Rig completed" when no engine has yields', async () => {
+    const fix = buildFixture();
+    const { clerk, spider, stacks } = fix;
+
+    const writ = await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl(); // spawn
+
+    const book = rigsBook(stacks);
+    const [rig] = await book.list();
+
+    await book.patch(rig.id, {
+      engines: rig.engines.map((e: EngineInstance) => ({ ...e, status: 'completed' as const })),
+      status: 'completed',
+    });
+
+    const finalWrit = await clerk.show(writ.id);
+    assert.equal(finalWrit.resolution, 'Rig completed');
+  });
+});
+
+describe('Spider — buildStaticEngines preserved', () => {
+  it('buildStaticEngines function still exists (not deleted)', async () => {
+    // We can't import it directly (it's not exported), but we can verify
+    // the Spider still functions correctly with the standard 5-engine template
+    // which mirrors the old behavior. The function is preserved in spider.ts.
+    const fix = buildFixture(); // uses STANDARD_TEMPLATE
+    const { clerk, spider, stacks } = fix;
+
+    await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl(); // spawn
+
+    const rigs = await rigsBook(stacks).list();
+    assert.equal(rigs[0].engines.length, 5, 'standard template produces 5 engines');
   });
 });

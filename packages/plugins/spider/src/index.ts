@@ -25,6 +25,8 @@ export type {
   BlockType,
   DraftYields,
   SealYields,
+  RigTemplate,
+  RigTemplateEngine,
 } from './types.ts';
 
 // ── Default export: the apparatus plugin ──────────────────────────────
