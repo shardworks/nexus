@@ -6,9 +6,31 @@
  * packages can import them without depending on the engine implementation files.
  */
 
+import type { ZodSchema } from 'zod';
+
 // ── Engine instance status ────────────────────────────────────────────
 
-export type EngineStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type EngineStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked';
+
+// ── Block record ──────────────────────────────────────────────────────
+
+/**
+ * Persisted record of an active engine block.
+ * Present on an EngineInstance when status === 'blocked'.
+ * Cleared when the block is resolved.
+ */
+export interface BlockRecord {
+  /** Block type identifier (matches a registered BlockType.id). */
+  type: string;
+  /** Structured condition payload — shape validated by the block type's conditionSchema. */
+  condition: unknown;
+  /** ISO timestamp when the engine was blocked. */
+  blockedAt: string;
+  /** Optional human-readable message from the engine. */
+  message?: string;
+  /** ISO timestamp of the last checker evaluation. Updated on every check cycle. */
+  lastCheckedAt?: string;
+}
 
 // ── Engine instance ───────────────────────────────────────────────────
 
@@ -43,11 +65,13 @@ export interface EngineInstance {
   startedAt?: string;
   /** ISO timestamp when execution completed (or failed). */
   completedAt?: string;
+  /** Present when status === 'blocked'. Cleared when the block is resolved. */
+  block?: BlockRecord;
 }
 
 // ── Rig ──────────────────────────────────────────────────────────────
 
-export type RigStatus = 'running' | 'completed' | 'failed';
+export type RigStatus = 'running' | 'completed' | 'failed' | 'blocked';
 
 /**
  * A rig — the execution context for a single writ.
@@ -90,19 +114,42 @@ export interface RigFilters {
 /**
  * The result of a single crawl() call.
  *
- * Four variants, ordered by priority:
- * - 'engine-completed' — an engine finished (collected or ran inline); rig still running
- * - 'engine-started'   — launched a quick engine's session
- * - 'rig-spawned'      — created a new rig for a ready writ
- * - 'rig-completed'    — the crawl step caused a rig to reach a terminal state
+ * Variants, ordered by priority:
+ * - 'engine-completed'  — an engine finished (collected or ran inline); rig still running
+ * - 'engine-started'    — launched a quick engine's session
+ * - 'engine-blocked'    — engine entered blocked status; rig is still running (other engines active)
+ * - 'engine-unblocked'  — a blocked engine's condition cleared; engine returned to pending
+ * - 'rig-spawned'       — created a new rig for a ready writ
+ * - 'rig-completed'     — the crawl step caused a rig to reach a terminal state
+ * - 'rig-blocked'       — all forward progress stalled; rig entered blocked status
  *
  * null means no work was available.
  */
 export type CrawlResult =
   | { action: 'engine-completed'; rigId: string; engineId: string }
   | { action: 'engine-started'; rigId: string; engineId: string }
+  | { action: 'engine-blocked'; rigId: string; engineId: string; blockType: string }
+  | { action: 'engine-unblocked'; rigId: string; engineId: string }
   | { action: 'rig-spawned'; rigId: string; writId: string }
-  | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'failed' };
+  | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'failed' }
+  | { action: 'rig-blocked'; rigId: string; writId: string };
+
+// ── Block type ────────────────────────────────────────────────────────
+
+/**
+ * A registered block type — defines how to check whether a blocking
+ * condition has cleared. Contributed via kit/supportKit `blockTypes`.
+ */
+export interface BlockType {
+  /** Unique identifier (e.g. 'writ-status', 'scheduled-time'). */
+  id: string;
+  /** Lightweight checker — returns true if the blocking condition has cleared. */
+  check: (condition: unknown) => Promise<boolean>;
+  /** Zod schema for validating the condition payload at block time. */
+  conditionSchema: ZodSchema;
+  /** Suggested poll interval in milliseconds. If absent, check every crawl cycle. */
+  pollIntervalMs?: number;
+}
 
 // ── SpiderApi ─────────────────────────────────────────────────────────
 
@@ -113,7 +160,7 @@ export interface SpiderApi {
   /**
    * Execute one step of the crawl loop.
    *
-   * Priority ordering: collect > run > spawn.
+   * Priority ordering: collect > checkBlocked > run > spawn.
    * Returns null when no work is available.
    */
   crawl(): Promise<CrawlResult | null>;
@@ -132,6 +179,17 @@ export interface SpiderApi {
    * Find the rig for a given writ. Returns null if no rig exists.
    */
   forWrit(writId: string): Promise<RigDoc | null>;
+
+  /**
+   * Manually clear a block on a specific engine, regardless of checker result.
+   * Throws if the engine is not blocked.
+   */
+  resume(rigId: string, engineId: string): Promise<void>;
+
+  /**
+   * Look up a registered block type by ID.
+   */
+  getBlockType(id: string): BlockType | undefined;
 }
 
 // ── Configuration ─────────────────────────────────────────────────────

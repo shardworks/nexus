@@ -15,7 +15,7 @@ export default tool({
     'Optionally filter by status and control pagination with limit and offset.',
   params: {
     status: z
-      .enum(['running', 'completed', 'failed'])
+      .enum(['running', 'completed', 'failed', 'blocked'])
       .optional()
       .describe('Filter by rig status.'),
     limit: z

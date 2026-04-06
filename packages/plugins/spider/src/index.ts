@@ -21,6 +21,8 @@ export type {
   CrawlResult,
   SpiderApi,
   SpiderConfig,
+  BlockRecord,
+  BlockType,
   DraftYields,
   SealYields,
 } from './types.ts';

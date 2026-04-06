@@ -28,6 +28,20 @@ export interface EngineRunContext {
   engineId: string;
   /** All upstream yields, keyed by engine id. Escape hatch for engines that need to inspect the full upstream chain. */
   upstream: Record<string, unknown>;
+  /**
+   * Present when this engine was previously blocked and has been restarted.
+   * Advisory — do not depend on for correctness.
+   *
+   * Note: Defined inline to avoid a circular package dependency with spider-apparatus.
+   * Shape matches spider-apparatus BlockRecord exactly.
+   */
+  priorBlock?: {
+    type: string;
+    condition: unknown;
+    blockedAt: string;
+    message?: string;
+    lastCheckedAt?: string;
+  };
 }
 
 /**
@@ -35,10 +49,13 @@ export interface EngineRunContext {
  *
  * 'completed' — synchronous work done inline, yields are available immediately.
  * 'launched'  — async work launched in a session; the Spider polls for completion.
+ * 'blocked'   — engine is waiting for an external condition; Spider will poll
+ *               the registered block type's checker and restart when cleared.
  */
 export type EngineRunResult =
   | { status: 'completed'; yields: unknown }
-  | { status: 'launched'; sessionId: string };
+  | { status: 'launched'; sessionId: string }
+  | { status: 'blocked'; blockType: string; condition: unknown; message?: string };
 
 /**
  * An engine design — the unit of work the Fabricator catalogues and the

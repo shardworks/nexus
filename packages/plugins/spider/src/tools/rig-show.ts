@@ -10,7 +10,9 @@ import type { SpiderApi } from '../types.ts';
 export default tool({
   name: 'rig-show',
   description: 'Retrieve a rig by id',
-  instructions: 'Returns the full RigDoc for the given rig id. Throws if the rig does not exist.',
+  instructions:
+    'Returns the full RigDoc for the given rig id. Throws if the rig does not exist. ' +
+    'Blocked engines include a block record with type, condition, blockedAt, and lastCheckedAt timestamps.',
   params: {
     id: z.string().describe('The rig id to look up.'),
   },
