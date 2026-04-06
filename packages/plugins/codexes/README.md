@@ -1,6 +1,6 @@
 # `@shardworks/codexes-apparatus`
 
-The Scriptorium — guild codex management apparatus. Manages the guild's codexes (git repositories), draft bindings (isolated worktrees for concurrent work), and the sealing lifecycle that incorporates drafts into the sealed binding. Depends on `@shardworks/stacks-apparatus` for state tracking.
+The Scriptorium — guild codex management apparatus. Manages the guild's codexes (git repositories), draft bindings (isolated worktrees for concurrent work), and the sealing lifecycle that incorporates drafts into the sealed binding.
 
 The Scriptorium is pure git infrastructure. It does not know what a codex contains or what work applies to it — that's the Surveyor's domain. It does not orchestrate which anima works in which draft — that's the caller's concern.
 

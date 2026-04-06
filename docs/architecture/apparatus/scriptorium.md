@@ -4,7 +4,7 @@ Status: **Draft**
 
 Package: `@shardworks/codexes-apparatus` · Plugin id: `codexes`
 
-> **⚠️ MVP scope.** This spec covers codex registration, draft binding lifecycle, and sealing/push operations. Clockworks integration (events, standing orders) is future work — the Scriptorium will emit events when the Clockworks apparatus exists. The Surveyor's codex-awareness integration is also out of scope for now.
+> **⚠️ Future work.** Clockworks event emission (see [Future: Clockworks Events](#future-clockworks-events)) and the Surveyor's codex-awareness integration are not yet implemented.
 
 ---
 
@@ -12,7 +12,7 @@ Package: `@shardworks/codexes-apparatus` · Plugin id: `codexes`
 
 The Scriptorium manages the guild's codexes — the git repositories where the guild's inscriptions accumulate. It owns the registry of known codexes, maintains local bare clones for efficient access, opens and closes draft bindings (worktrees) for concurrent work, and handles the sealing lifecycle that incorporates drafts into the sealed binding.
 
-The Scriptorium does **not** know what a codex contains or what work applies to it (that's the Surveyor's domain). It does **not** orchestrate which anima works in which draft (that's the caller's concern — rig engines, dispatch scripts, or direct human invocation). It is pure git infrastructure — repository lifecycle, draft isolation, and branch management.
+The Scriptorium does **not** know what a codex contains or what work applies to it (that's the Surveyor's domain). It does **not** orchestrate which anima works in which draft (that's the caller's concern — rig engines or direct invocation). It is pure git infrastructure — repository lifecycle, draft isolation, and branch management.
 
 ### Vocabulary Mapping
 
@@ -28,17 +28,6 @@ The Scriptorium's tools use the [guild metaphor's binding vocabulary](../../guil
 | **Inscription** | Commit | *(not managed by the Scriptorium — animas inscribe directly via git)* |
 
 Use plain git terms (branch, commit, merge) in error messages and logs where precision matters; the binding vocabulary is for the tool-facing API and documentation.
-
----
-
-## Dependencies
-
-```
-requires: []
-consumes: []
-```
-
-No apparatus dependencies. The codex registry is persisted via `guild.json` config (`guild().config()` / `guild().writeConfig()`). Active draft tracking is in-memory, reconstructed from filesystem state at startup. See [Future State: Draft Persistence via Stacks](#future-state) for the planned Stacks integration.
 
 ---
 
@@ -491,7 +480,7 @@ The Scriptorium and the Animator are **intentionally decoupled**. The Scriptoriu
 The binding between a session and a draft is the caller's responsibility. The typical flow:
 
 ```
-  Orchestrator (dispatch script, rig engine, standing order)
+  Spider engine (or other caller)
     │
     ├─ 1. scriptorium.openDraft({ codexName, branch })
     │     → DraftRecord { path: '.nexus/worktrees/nexus/writ-42' }
@@ -582,7 +571,7 @@ codex-remove
   ├─ 1. Abandon all drafts for codex
   ├─ 2. Remove bare clone directory
   ├─ 3. Remove entry from guild.json
-  └─ 4. Remove in-memory tracking
+  └─ 4. Clean up in-memory state
 ```
 
 ### Sealing Strategy Detail
@@ -648,7 +637,7 @@ If a caller requests a draft with a branch name that already exists for that cod
 
 ## Draft Cleanup
 
-The Scriptorium does **not** automatically reap stale drafts. It provides the `abandonDraft` API; when and why to call it is an external concern. A future reaper process, standing order, or manual cleanup can use `draft-list` and `draft-abandon` as needed. This keeps the Scriptorium ignorant of writ lifecycle and other domain concerns.
+The Scriptorium does **not** automatically reap stale drafts. It provides the `abandonDraft` API; when and why to call it is an external concern. A future reaper process, automated process, or manual cleanup can use `draft-list` and `draft-abandon` as needed. This keeps the Scriptorium ignorant of writ lifecycle and other domain concerns.
 
 ---
 
