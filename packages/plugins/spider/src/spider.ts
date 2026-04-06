@@ -367,8 +367,10 @@ export function createSpider(): Plugin {
             : e,
         );
 
-        // Restore rig to running if it was blocked
-        const rigStatus = rig.status === 'blocked' ? 'running' : rig.status;
+        // Restore rig to running if it was blocked; use isRigBlocked on updatedEngines
+        // (always false after unblocking, but keeps call sites consistent per R13)
+        const stillBlocked = isRigBlocked(updatedEngines);
+        const rigStatus = stillBlocked ? 'blocked' : 'running';
 
         await rigsBook.patch(rig.id, {
           engines: updatedEngines,
@@ -664,6 +666,7 @@ export function createSpider(): Plugin {
   return {
     apparatus: {
       requires: ['stacks', 'clerk', 'fabricator'],
+      consumes: ['blockTypes'],
 
       supportKit: {
         books: {
@@ -688,7 +691,7 @@ export function createSpider(): Plugin {
 
       provides: api,
 
-      start(_ctx: StartupContext): void {
+      start(ctx: StartupContext): void {
         const g = guild();
         spiderConfig = g.guildConfig().spider ?? {};
 
@@ -708,7 +711,7 @@ export function createSpider(): Plugin {
 
         // Subscribe to plugin:initialized for apparatus supportKits that
         // fire after us in the startup sequence.
-        _ctx.on('plugin:initialized', (plugin: unknown) => {
+        ctx.on('plugin:initialized', (plugin: unknown) => {
           const loaded = plugin as LoadedPlugin;
           if (isLoadedApparatus(loaded)) {
             blockTypeRegistry.register(loaded);
