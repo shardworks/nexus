@@ -174,6 +174,7 @@ Rig and crawl commands come from the `spider` plugin.
 | `nsg rig list` | spider | List rigs with optional filters |
 | `nsg rig show` | spider | Retrieve a rig by id |
 | `nsg rig for-writ` | spider | Find the rig for a given writ |
+| `nsg rig resume` | spider | Manually clear a block on a specific engine, regardless of checker result |
 | `nsg crawl one` | spider | Execute one step of the Spider's crawl loop |
 | `nsg crawl continual` | spider | Run the Spider's crawl loop continuously |
 
