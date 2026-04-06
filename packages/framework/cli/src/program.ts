@@ -24,7 +24,7 @@ import { findGuildRoot, guild } from '@shardworks/nexus-core';
 import type { ToolDefinition, InstrumentariumApi } from '@shardworks/tools-apparatus';
 import { createGuild } from '@shardworks/nexus-arbor';
 import { frameworkCommands } from './commands/index.ts';
-import { toFlag, isBooleanSchema, findGroupPrefixes } from './helpers.ts';
+import { toFlag, isBooleanSchema, findGroupPrefixes, coerceCliOpts } from './helpers.ts';
 
 type ZodShape = Record<string, z.ZodTypeAny>;
 
@@ -58,9 +58,10 @@ function buildToolCommand(
     }
   }
 
-  cmd.action(async (opts: Record<string, string | undefined>) => {
+  cmd.action(async (opts: Record<string, unknown>) => {
     try {
-      const validated = toolDef.params.parse(opts);
+      const coerced = coerceCliOpts(shape, opts);
+      const validated = toolDef.params.parse(coerced);
       const result = await toolDef.handler(validated);
 
       const output =

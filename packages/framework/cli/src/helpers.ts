@@ -30,6 +30,55 @@ export function isBooleanSchema(schema: z.ZodTypeAny): boolean {
 }
 
 /**
+ * Check whether a Zod schema is a number type, possibly wrapped
+ * in ZodOptional and/or ZodDefault.
+ */
+function isNumberSchema(schema: z.ZodTypeAny): boolean {
+  let inner: z.ZodTypeAny = schema;
+
+  if (inner instanceof z.ZodOptional) {
+    inner = inner.unwrap();
+  }
+  if (inner instanceof z.ZodDefault) {
+    inner = inner.unwrap();
+  }
+  // Handle the reverse nesting order too (default wrapping optional)
+  if (inner instanceof z.ZodOptional) {
+    inner = inner.unwrap();
+  }
+
+  return inner instanceof z.ZodNumber;
+}
+
+/**
+ * Coerce Commander string opts to match the expected Zod schema types.
+ *
+ * Commander passes all --option <value> arguments as strings. This function
+ * walks the Zod shape and converts string values to numbers where the
+ * schema expects z.number() (including when wrapped in ZodOptional/ZodDefault).
+ *
+ * Undefined values pass through unchanged — Zod handles optional/default.
+ * Non-number schemas are left untouched.
+ */
+export function coerceCliOpts(
+  shape: Record<string, z.ZodTypeAny>,
+  opts: Record<string, unknown>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...opts };
+
+  for (const [key, schema] of Object.entries(shape)) {
+    const value = result[key];
+    if (typeof value !== 'string') continue;
+
+    if (isNumberSchema(schema)) {
+      result[key] = Number(value);
+    }
+  }
+
+  return result;
+}
+
+/**
  * Determine which hyphen prefixes have enough tools to warrant a group.
  *
  * Returns a Set of prefixes that have 2+ tools sharing them.
