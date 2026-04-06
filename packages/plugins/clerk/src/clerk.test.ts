@@ -16,6 +16,10 @@ import type { StacksApi } from '@shardworks/stacks-apparatus';
 
 import { createClerk } from './clerk.ts';
 import type { ClerkApi, ClerkConfig, WritLinkDoc } from './types.ts';
+import type { WritLinks } from './index.ts';
+import writShow from './tools/writ-show.ts';
+import writLink from './tools/writ-link.ts';
+import writUnlink from './tools/writ-unlink.ts';
 
 // ── Test harness ─────────────────────────────────────────────────────
 
@@ -76,6 +80,9 @@ function setup(options: SetupOptions = {}) {
   const clerkApparatus = (clerkPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
   clerkApparatus.start({ on: () => {} });
   clerk = clerkApparatus.provides as ClerkApi;
+
+  // Expose clerk as an apparatus so tool handlers can resolve it via guild()
+  apparatusMap.set('clerk', clerk);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -842,6 +849,156 @@ describe('Clerk', () => {
 
       assert.deepEqual(result.links.outbound, []);
       assert.deepEqual(result.links.inbound, []);
+    });
+  });
+
+  // ── writ-show tool handler ────────────────────────────────────────
+
+  describe('writ-show tool handler (via guild apparatus)', () => {
+    beforeEach(() => { setup(); });
+
+    it('returns all writ fields plus a links key with outbound and inbound arrays', async () => {
+      const w1 = await clerk.post({ title: 'Source writ', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Target writ', body: 'Body' });
+      await clerk.link(w1.id, w2.id, 'fixes');
+
+      const result = await writShow.handler({ id: w1.id }) as WritLinkDoc & { links: WritLinks };
+
+      assert.equal(result.id, w1.id);
+      assert.equal((result as unknown as { title: string }).title, 'Source writ');
+      assert.ok('links' in result, 'result should have a links key');
+      assert.ok(Array.isArray(result.links.outbound));
+      assert.ok(Array.isArray(result.links.inbound));
+      assert.equal(result.links.outbound.length, 1);
+      assert.equal(result.links.outbound[0]!.targetId, w2.id);
+      assert.equal(result.links.inbound.length, 0);
+    });
+
+    it('returns empty link arrays for a writ with no links', async () => {
+      const w = await clerk.post({ title: 'Lone writ', body: 'Body' });
+
+      const result = await writShow.handler({ id: w.id }) as { links: WritLinks };
+
+      assert.deepEqual(result.links.outbound, []);
+      assert.deepEqual(result.links.inbound, []);
+    });
+
+    it('throws when the writ does not exist', async () => {
+      await assert.rejects(
+        () => writShow.handler({ id: 'w-ghost' }),
+        /not found/,
+      );
+    });
+
+    it('returns inbound links when the writ is a target', async () => {
+      const w1 = await clerk.post({ title: 'Source', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Target', body: 'Body' });
+      await clerk.link(w1.id, w2.id, 'supersedes');
+
+      const result = await writShow.handler({ id: w2.id }) as { links: WritLinks };
+
+      assert.equal(result.links.outbound.length, 0);
+      assert.equal(result.links.inbound.length, 1);
+      assert.equal(result.links.inbound[0]!.sourceId, w1.id);
+    });
+  });
+
+  // ── writ-link tool handler ────────────────────────────────────────
+
+  describe('writ-link tool handler (via guild apparatus)', () => {
+    beforeEach(() => { setup(); });
+
+    it('creates a link and returns a WritLinkDoc', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+
+      const result = await writLink.handler({ sourceId: w1.id, targetId: w2.id, type: 'fixes' }) as WritLinkDoc;
+
+      assert.equal(result.sourceId, w1.id);
+      assert.equal(result.targetId, w2.id);
+      assert.equal(result.type, 'fixes');
+      assert.equal(result.id, `${w1.id}:${w2.id}:fixes`);
+      assert.ok(result.createdAt);
+    });
+
+    it('is idempotent — returns the same link on duplicate call', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+
+      const r1 = await writLink.handler({ sourceId: w1.id, targetId: w2.id, type: 'fixes' }) as WritLinkDoc;
+      const r2 = await writLink.handler({ sourceId: w1.id, targetId: w2.id, type: 'fixes' }) as WritLinkDoc;
+
+      assert.equal(r1.id, r2.id);
+      assert.equal(r1.createdAt, r2.createdAt);
+    });
+
+    it('propagates self-link error from clerk.link()', async () => {
+      const w = await clerk.post({ title: 'Solo', body: 'Body' });
+      await assert.rejects(
+        () => writLink.handler({ sourceId: w.id, targetId: w.id, type: 'fixes' }),
+        /Cannot link a writ to itself/,
+      );
+    });
+
+    it('propagates missing source error from clerk.link()', async () => {
+      const w2 = await clerk.post({ title: 'Target', body: 'Body' });
+      await assert.rejects(
+        () => writLink.handler({ sourceId: 'w-ghost', targetId: w2.id, type: 'fixes' }),
+        /not found/,
+      );
+    });
+  });
+
+  // ── writ-unlink tool handler ──────────────────────────────────────
+
+  describe('writ-unlink tool handler (via guild apparatus)', () => {
+    beforeEach(() => { setup(); });
+
+    it('removes an existing link and returns { ok: true }', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      await clerk.link(w1.id, w2.id, 'fixes');
+
+      const result = await writUnlink.handler({ sourceId: w1.id, targetId: w2.id, type: 'fixes' });
+
+      assert.deepEqual(result, { ok: true });
+
+      const linksResult = await clerk.links(w1.id);
+      assert.equal(linksResult.outbound.length, 0);
+    });
+
+    it('is idempotent — returns { ok: true } when link does not exist', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+
+      // Link was never created — no error
+      const result = await writUnlink.handler({ sourceId: w1.id, targetId: w2.id, type: 'fixes' });
+      assert.deepEqual(result, { ok: true });
+    });
+
+    it('does not remove other links when unlinking by type', async () => {
+      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      await clerk.link(w1.id, w2.id, 'fixes');
+      await clerk.link(w1.id, w2.id, 'retries');
+
+      await writUnlink.handler({ sourceId: w1.id, targetId: w2.id, type: 'fixes' });
+
+      const linksResult = await clerk.links(w1.id);
+      assert.equal(linksResult.outbound.length, 1);
+      assert.equal(linksResult.outbound[0]!.type, 'retries');
+    });
+  });
+
+  // ── Package exports (V14) ────────────────────────────────────────
+
+  describe('package entry point exports', () => {
+    it('WritLinks type is importable from the package index (verified by import at top of file)', () => {
+      // The import `import type { WritLinks } from './index.ts'` at the top of
+      // this file statically verifies that WritLinks is exported from the
+      // package entry point. If it were missing, the file would fail to compile.
+      // This test acts as a living marker for that verification (V14).
+      assert.ok(true, 'WritLinks is exported from ./index.ts');
     });
   });
 
