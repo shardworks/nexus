@@ -1,6 +1,8 @@
 # The Review Loop — Design Spec
 
-Status: **Design** (not yet implemented)
+Status: **Design**
+
+> **Implementation status (2026-04):** The Spider implements a five-engine linear pipeline (`draft → implement → review → revise → seal`) in `packages/plugins/spider/src/engines/`. The review and revise engines exist and are functional. The branching rig pattern (conditional pass/fail routing, escalation engine, retry budget) described below is not yet implemented — the current pipeline always runs all five engines in sequence. Configuration lives under `guild.json["spider"]`, not `guild.json["review"]`. See `packages/plugins/spider/src/types.ts` for `SpiderConfig`.
 
 > **Not a traditional apparatus.** The review loop does not have a `start()`/`stop()` lifecycle or a persistent runtime API. It is a composition pattern — a pair of engine designs and a rig structure — within the rigging system. This document specifies the design as implemented in the Spider.
 
@@ -91,6 +93,8 @@ The review engine runs the same three checks as the MVP. It writes a `ReviewResu
 
 The downstream engine (either a `seal` engine or a `revise` engine) reads `reviewResult.passed` to decide what to do. The Spider sees a completed engine regardless of outcome; the branching logic lives in the rig structure (see Rig Pattern below).
 
+> **Implementation note:** The shipped engine is kind `quick` (Animator-backed), not `clockwork`. It launches a reviewer session that assesses the diff against the spec. Mechanical checks (build/test) run synchronously before the session, but `uncommitted_changes` is not a separate pass/fail check — git status is included in the reviewer's prompt. The engine receives the full `WritDoc` via `givens.writ` and reads `DraftYields` from `context.upstream['draft']`. There is no `attempt` tracking.
+
 #### `revise` engine (quick)
 
 **Design:**
@@ -105,6 +109,8 @@ The downstream engine (either a `seal` engine or a `revise` engine) reads `revie
 ```
 
 The revise engine assembles the revision prompt (same template as MVP) and launches an anima session. The session runs in the existing worktree — it does not open a new draft.
+
+> **Implementation note:** The shipped engine matches the design: kind `quick`, receives the writ and review findings. When the review passed, the prompt instructs the anima to confirm and exit without changes. The role is set via `givens.role` (configurable), not hardcoded to `artificer`.
 
 ### Rig Pattern
 
@@ -151,6 +157,8 @@ The Spider traverses this graph naturally. Each engine completes and propagates 
 
 **Dynamic extension (future):** A more sophisticated design would have the review engine declare a `need: 'revision'` when it fails, and the Fabricator would resolve and graft the next revise+review pair. This avoids pre-seeding the full graph and enables arbitrary retry depths. This is Future scope — the fixed graph is sufficient for MVP and avoids Spider complexity in the initial rigging implementation.
 
+> **Implementation note:** The shipped pipeline is linear: `draft → implement → review → revise → seal`. There is no conditional branching — the revise engine always runs (it no-ops when the review passed). There is no escalation engine. The branching graph described above is the target design for a future phase.
+
 ### Spider Integration
 
 The Spider needs no changes to support the review loop. It already:
@@ -190,6 +198,8 @@ The LLM-as-judge `spec_coverage` check is the most valuable future criterion —
 ---
 
 ## Artifact Schema
+
+> **Implementation note:** The shipped review engine does not write filesystem artifacts. Review findings are stored as session output in the Stacks (via the Animator's sessions book). The artifact schema described here is a target design.
 
 Every review pass writes an artifact. Artifacts live in the commission data directory alongside the existing artifacts written by the Laboratory.
 
@@ -272,6 +282,8 @@ achieving a passing review. The draft has been abandoned.
 ---
 
 ## Configuration
+
+> **Implementation note:** Configuration currently lives under `guild.json["spider"]` as part of `SpiderConfig`, not under a separate `"review"` key. Available fields: `buildCommand`, `testCommand`, `role`, `pollIntervalMs`. The `enabled` and `maxRetries` fields are not yet implemented.
 
 Review configuration lives in `guild.json`:
 

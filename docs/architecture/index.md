@@ -290,7 +290,7 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 | **clockworks** (supportKit) | Clockworks tools (clock-start, clock-stop, clock-status, event-list, signal) |
 | **sessions** (supportKit) | Session tools (session-list, session-show, conversation-list) |
 
-> **Note:** The list above is provisional. The standard guild configuration is still being finalized as individual apparatus are built out. Some entries listed as apparatus are not yet implemented as separate packages — see [What's Implemented vs. Aspirational](_agent-context.md#whats-implemented-vs-aspirational) for the current state. Treat this as a working inventory, not a commitment.
+> **Note:** The list above is provisional. The standard guild configuration is still being finalized as individual apparatus are built out. Some entries listed as apparatus are not yet implemented as separate packages. Treat this as a working inventory, not a commitment.
 
 ---
 
