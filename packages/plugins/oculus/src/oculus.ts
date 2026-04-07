@@ -205,12 +205,32 @@ function extractParams(schema: z.ZodObject<z.ZodRawShape>): Record<string, Param
 export function createOculus(): Plugin {
   let serverPort = 7470;
   let server: Server | null = null;
+  let honoApp: Hono | null = null;
 
   const api: OculusApi = {
     port(): number {
       return serverPort;
     },
+    startServer(): Promise<void> {
+      return startServer();
+    },
   };
+
+  /** Start the HTTP server (called explicitly via the oculus tool). */
+  async function startServer(): Promise<void> {
+    if (server) return; // already running
+    if (!honoApp) throw new Error('[oculus] Cannot start server — apparatus not initialized');
+
+    const app = honoApp;
+    const port = serverPort;
+    await new Promise<void>((resolve, reject) => {
+      server = serve({ fetch: app.fetch, port }, () => {
+        console.log(`[oculus] Listening on http://localhost:${port}`);
+        resolve();
+      }) as Server;
+      server.on('error', reject);
+    });
+  }
 
   return {
     apparatus: {
@@ -221,9 +241,10 @@ export function createOculus(): Plugin {
       async start(ctx: StartupContext): Promise<void> {
         const g = guild();
         const oculusConfig: OculusConfig = g.guildConfig().oculus ?? {};
-        const port = oculusConfig.port ?? 7470;
+        serverPort = oculusConfig.port ?? 7470;
 
         const app = new Hono();
+        honoApp = app;
 
         // Track registered pages and custom route paths
         const pages: PageContribution[] = [];
@@ -614,15 +635,7 @@ ${navHtml}
           }
         });
 
-        // ── Start HTTP server ─────────────────────────────────────────
-        await new Promise<void>((resolve, reject) => {
-          server = serve({ fetch: app.fetch, port }, () => {
-            serverPort = port;
-            console.log(`[oculus] Listening on http://localhost:${port}`);
-            resolve();
-          }) as Server;
-          server.on('error', reject);
-        });
+        // Server is NOT started here — use the `oculus` tool to start it explicitly.
       },
 
       async stop(): Promise<void> {
@@ -645,6 +658,8 @@ ${navHtml}
             callableBy: ['patron'],
             params: {},
             handler: async () => {
+              await api.startServer();
+
               const port = api.port();
               console.log(`\n  Oculus is running at http://localhost:${port}/\n`);
               console.log('  Press Ctrl+C to stop.\n');

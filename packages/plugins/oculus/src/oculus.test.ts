@@ -314,14 +314,47 @@ describe('Oculus server lifecycle', () => {
       await plugin.apparatus.start(ctx);
     }
 
+    const api = plugin.apparatus.provides as { port(): number; startServer(): Promise<void> };
+    await api.startServer();
+
     try {
       // Server should be listening
       const res = await fetch(`http://localhost:${port}/`);
       assert.ok(res.status > 0);
 
       // api.port() should return the port
-      const api = plugin.apparatus.provides as { port(): number };
       assert.equal(api.port(), port);
+    } finally {
+      if ('apparatus' in plugin) {
+        await plugin.apparatus.stop?.();
+      }
+    }
+  });
+
+  it('does not start server on start() alone', async () => {
+    const home = makeTmpDir();
+    const instrumentarium = createMockInstrumentarium([]);
+    const port = 17475 + Math.floor(Math.random() * 100);
+
+    wireGuild({ home, kits: [], instrumentarium, oculusPort: port });
+
+    const plugin = createOculus();
+    const { ctx } = buildTestContext();
+
+    if ('apparatus' in plugin) {
+      await plugin.apparatus.start(ctx);
+    }
+
+    try {
+      // Server should NOT be listening — fetch should fail
+      let fetchSucceeded = false;
+      try {
+        await fetch(`http://localhost:${port}/`);
+        fetchSucceeded = true;
+      } catch {
+        // Expected — connection refused
+      }
+      assert.ok(!fetchSucceeded, 'Server should not be listening after start() alone');
     } finally {
       if ('apparatus' in plugin) {
         await plugin.apparatus.stop?.();
@@ -362,6 +395,8 @@ describe('Oculus page serving', () => {
     const { ctx } = buildTestContext();
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
+      const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
+      await api.startServer();
     }
   });
 
@@ -426,6 +461,8 @@ describe('Oculus static assets', () => {
     const { ctx } = buildTestContext();
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
+      const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
+      await api.startServer();
     }
   });
 
@@ -484,6 +521,8 @@ describe('Oculus home page', () => {
     const { ctx } = buildTestContext();
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
+      const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
+      await api.startServer();
     }
   });
 
@@ -950,6 +989,8 @@ describe('Oculus tool routes', () => {
     const { ctx } = buildTestContext();
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
+      const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
+      await api.startServer();
     }
   });
 
@@ -1052,6 +1093,8 @@ describe('Oculus /api/_tools', () => {
     const { ctx } = buildTestContext();
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
+      const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
+      await api.startServer();
     }
   });
 
@@ -1113,6 +1156,8 @@ describe('Oculus custom routes', () => {
     const { ctx } = buildTestContext();
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
+      const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
+      await api.startServer();
     }
   });
 
@@ -1153,6 +1198,8 @@ describe('Oculus invalid custom routes', () => {
     const { ctx } = buildTestContext();
     if ('apparatus' in plugin) {
       await plugin.apparatus.start(ctx);
+      const api = plugin.apparatus.provides as { startServer(): Promise<void> };
+      await api.startServer();
     }
 
     try {

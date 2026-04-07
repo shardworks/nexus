@@ -38,6 +38,8 @@ export interface OculusConfig {
 
 /** The Oculus's public API, exposed via provides. */
 export interface OculusApi {
-  /** The port the server is listening on. */
+  /** The port the server will listen on (or is listening on). */
   port(): number;
+  /** Start the HTTP server. No-op if already running. */
+  startServer(): Promise<void>;
 }
