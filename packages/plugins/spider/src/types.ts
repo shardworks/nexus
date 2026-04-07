@@ -276,11 +276,17 @@ export interface SpiderConfig {
    */
   testCommand?: string;
   /**
-   * Writ type → rig template mappings.
-   * 'default' key is the fallback for unmatched writ types.
-   * Spawning fails if no matching template is found.
+   * Named rig templates. Keys are template names (not writ types).
+   * Templates are looked up by name via rigTemplateMappings.
+   * A template named 'default' is used as the fallback when no mapping matches.
    */
   rigTemplates?: Record<string, RigTemplate>;
+  /**
+   * Writ type → rig template name mappings.
+   * 'default' key is the fallback for unmatched writ types.
+   * Config mappings override kit-contributed mappings for the same writ type.
+   */
+  rigTemplateMappings?: Record<string, string>;
   /**
    * User-defined variables available in rig template givens via '$vars.<key>'.
    * Values are passed through literally (string, number, boolean).

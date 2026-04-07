@@ -8,12 +8,13 @@
  *
  * Writ types are validated against the guild config's writTypes field plus the
  * built-in type ('mandate'). An unknown type is rejected at post time.
+ * Kits may also contribute writ types via their writTypes field.
  *
  * See: docs/architecture/apparatus/clerk.md
  */
 
-import type { Plugin, StartupContext } from '@shardworks/nexus-core';
-import { guild, generateId } from '@shardworks/nexus-core';
+import type { Plugin, StartupContext, LoadedPlugin } from '@shardworks/nexus-core';
+import { guild, generateId, isLoadedApparatus } from '@shardworks/nexus-core';
 import type { StacksApi, Book, WhereClause } from '@shardworks/stacks-apparatus';
 
 import type {
@@ -25,6 +26,7 @@ import type {
   WritStatus,
   PostCommissionRequest,
   WritFilters,
+  WritTypeEntry,
 } from './types.ts';
 
 import {
@@ -38,6 +40,14 @@ import {
   writLink,
   writUnlink,
 } from './tools/index.ts';
+
+// ── Kit contribution interface ────────────────────────────────────────
+
+/** Kit contribution interface for the Clerk's writ type system. */
+export interface ClerkKit {
+  /** Writ type descriptors to register with the Clerk. Names are unqualified. */
+  writTypes?: WritTypeEntry[];
+}
 
 // ── Built-in writ types ──────────────────────────────────────────────
 
@@ -61,6 +71,12 @@ export function createClerk(): Plugin {
   let writs: Book<WritDoc>;
   let links: Book<WritLinkDoc>;
 
+  /** Merged set of valid writ type names: builtins + config + kit contributions. */
+  let mergedWritTypes: Set<string> = new Set(BUILTIN_TYPES);
+
+  /** Config-declared writ type names, for override checking during kit registration. */
+  let configWritTypeNames: Set<string> = new Set();
+
   // ── Helpers ──────────────────────────────────────────────────────
 
   function resolveClerkConfig(): ClerkConfig {
@@ -68,9 +84,7 @@ export function createClerk(): Plugin {
   }
 
   function resolveWritTypes(): Set<string> {
-    const config = resolveClerkConfig();
-    const declared = (config.writTypes ?? []).map((entry) => entry.name);
-    return new Set([...BUILTIN_TYPES, ...declared]);
+    return mergedWritTypes;
   }
 
   function resolveDefaultType(): string {
@@ -87,6 +101,38 @@ export function createClerk(): Plugin {
       conditions.push(['type', '=', filters.type]);
     }
     return conditions.length > 0 ? conditions : undefined;
+  }
+
+  function registerKitWritTypes(pluginId: string, kit: Record<string, unknown>): void {
+    const raw = kit.writTypes;
+    if (!Array.isArray(raw)) return;
+
+    for (const entry of raw) {
+      if (
+        typeof entry !== 'object' ||
+        entry === null ||
+        typeof (entry as Record<string, unknown>).name !== 'string'
+      ) {
+        console.warn(
+          `[clerk] Kit "${pluginId}" writTypes: entry is missing required "name" field — skipped`
+        );
+        continue;
+      }
+      const name = (entry as WritTypeEntry).name;
+
+      // Config override: skip silently
+      if (configWritTypeNames.has(name)) continue;
+
+      // Duplicate kit contribution: first wins, warn
+      if (mergedWritTypes.has(name)) {
+        console.warn(
+          `[clerk] Kit "${pluginId}" writTypes: type "${name}" already registered by another kit — skipped`
+        );
+        continue;
+      }
+
+      mergedWritTypes.add(name);
+    }
   }
 
   // ── API ──────────────────────────────────────────────────────────
@@ -229,6 +275,7 @@ export function createClerk(): Plugin {
   return {
     apparatus: {
       requires: ['stacks'],
+      consumes: ['writTypes'],
 
       supportKit: {
         books: {
@@ -254,10 +301,36 @@ export function createClerk(): Plugin {
 
       provides: api,
 
-      start(_ctx: StartupContext): void {
-        const stacks = guild().apparatus<StacksApi>('stacks');
+      start(ctx: StartupContext): void {
+        const g = guild();
+        const stacks = g.apparatus<StacksApi>('stacks');
         writs = stacks.book<WritDoc>('clerk', 'writs');
         links = stacks.book<WritLinkDoc>('clerk', 'links');
+
+        // Initialize merged writ types from builtins + config
+        const config = resolveClerkConfig();
+        configWritTypeNames = new Set((config.writTypes ?? []).map((e) => e.name));
+        mergedWritTypes = new Set([...BUILTIN_TYPES, ...configWritTypeNames]);
+
+        // Phase 1a: Scan standalone kits
+        for (const kit of g.kits()) {
+          registerKitWritTypes(kit.id, kit.kit);
+        }
+
+        // Phase 1b: Scan already-started apparatus supportKits
+        for (const app of g.apparatuses()) {
+          if (app.apparatus.supportKit) {
+            registerKitWritTypes(app.id, app.apparatus.supportKit);
+          }
+        }
+
+        // Phase 2: Subscribe for late-arriving apparatus supportKits
+        ctx.on('plugin:initialized', (plugin: unknown) => {
+          const loaded = plugin as LoadedPlugin;
+          if (isLoadedApparatus(loaded) && loaded.apparatus.supportKit) {
+            registerKitWritTypes(loaded.id, loaded.apparatus.supportKit);
+          }
+        });
       },
     },
   };

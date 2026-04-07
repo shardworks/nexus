@@ -80,6 +80,7 @@ function buildCtx(): {
 function buildFixture(
   guildConfig: Partial<GuildConfig> = {},
   initialSessionOutcome: { status: 'completed' | 'failed'; error?: string; output?: string } = { status: 'completed' },
+  extra: { kits?: LoadedKit[]; apparatuses?: LoadedApparatus[] } = {},
 ): {
   stacks: StacksApi;
   clerk: ClerkApi;
@@ -87,6 +88,7 @@ function buildFixture(
   spider: SpiderApi;
   memBackend: InstanceType<typeof MemoryBackend>;
   fire: (event: string, ...args: unknown[]) => Promise<void>;
+  spiderFire: (event: string, ...args: unknown[]) => Promise<void>;
   summonCalls: SummonRequest[];
   setSessionOutcome: (outcome: { status: 'completed' | 'failed'; error?: string; output?: string }) => void;
 } {
@@ -130,8 +132,8 @@ function buildFixture(
     config<T>(_pluginId: string): T { return {} as T; },
     writeConfig() {},
     guildConfig() { return fakeGuildConfig; },
-    kits(): LoadedKit[] { return []; },
-    apparatuses(): LoadedApparatus[] { return []; },
+    kits(): LoadedKit[] { return extra.kits ?? []; },
+    apparatuses(): LoadedApparatus[] { return extra.apparatuses ?? []; },
     startupWarnings() { return []; },
   };
 
@@ -217,8 +219,9 @@ function buildFixture(
   const fabricator = fabricatorApparatus.provides as FabricatorApi;
   apparatusMap.set('fabricator', fabricator);
 
-  // Start spider
-  spiderApparatus.start(noopCtx);
+  // Start spider with a real ctx so we can fire events to it (for Phase 2 testing)
+  const { ctx: spiderCtx, fire: spiderFire } = buildCtx();
+  spiderApparatus.start(spiderCtx);
   const spider = spiderApparatus.provides as SpiderApi;
   apparatusMap.set('spider', spider);
 
@@ -234,7 +237,7 @@ function buildFixture(
   void fire('plugin:initialized', spiderLoaded);
 
   return {
-    stacks, clerk, fabricator, spider, memBackend, fire,
+    stacks, clerk, fabricator, spider, memBackend, fire, spiderFire,
     summonCalls,
     setSessionOutcome(outcome: { status: 'completed' | 'failed'; error?: string; output?: string }) {
       currentSessionOutcome = outcome;
@@ -1867,7 +1870,7 @@ describe('Spider — template dispatch', () => {
       ],
     };
     const fix = buildFixture({
-      spider: { rigTemplates: { mandate: mandateTemplate } },
+      spider: { rigTemplates: { mandate: mandateTemplate }, rigTemplateMappings: { mandate: 'mandate' } },
     });
     const { clerk, spider, stacks } = fix;
 
@@ -1915,7 +1918,7 @@ describe('Spider — template dispatch', () => {
       ],
     };
     const fix = buildFixture({
-      spider: { rigTemplates: { mandate: mandateTemplate, default: defaultTemplate } },
+      spider: { rigTemplates: { mandate: mandateTemplate, default: defaultTemplate }, rigTemplateMappings: { mandate: 'mandate' } },
     });
     const { clerk, spider, stacks } = fix;
 
@@ -4737,3 +4740,435 @@ describe('Spider — engine blocking on external conditions', () => {
   }); // Built-in block types
 
 }); // Spider — engine blocking on external conditions
+
+// ── Kit contributions — rig templates and mappings ─────────────────
+
+describe('Kit contributions — rig templates and mappings', () => {
+  // Helper to make a LoadedKit with the given kit contributions
+  function makeKit(id: string, kit: Record<string, unknown>): LoadedKit {
+    return { packageName: `@test/${id}`, id, version: '0.0.0', kit };
+  }
+
+  // Helper to collect console.warn calls
+  function captureWarnings(): { warnings: string[]; restore: () => void } {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+    return { warnings, restore: () => { console.warn = original; } };
+  }
+
+  // Simple 1-engine template using the built-in 'draft' designId
+  const SIMPLE_TEMPLATE: RigTemplate = {
+    engines: [{ id: 'step1', designId: 'draft', givens: { writ: '$writ' } }],
+  };
+
+  afterEach(() => {
+    clearGuild();
+  });
+
+  describe('V1 — kit template registered under qualified name', () => {
+    it('registers kit template under pluginId.templateName', async () => {
+      const kit = makeKit('quality-tools', {
+        rigTemplates: { audit: SIMPLE_TEMPLATE },
+        rigTemplateMappings: { mandate: 'quality-tools.audit' },
+      });
+      const fix = buildFixture({}, { status: 'completed' }, { kits: [kit] });
+
+      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'mandate' });
+      const result = await fix.spider.crawl();
+      assert.equal(result?.action, 'rig-spawned');
+
+      const rig = await fix.spider.forWrit(writ.id);
+      assert.ok(rig);
+      assert.equal(rig!.engines.length, 1);
+      assert.equal(rig!.engines[0].id, 'step1');
+      assert.equal(rig!.engines[0].designId, 'draft');
+    });
+
+    it('skips kit contribution when config defines the qualified name', async () => {
+      const differentTemplate: RigTemplate = {
+        engines: [{ id: 'config-step', designId: 'draft', givens: {} }],
+      };
+      // Config defines 'quality-tools.audit' directly
+      const kit = makeKit('quality-tools', {
+        rigTemplates: { audit: SIMPLE_TEMPLATE },
+        rigTemplateMappings: { mandate: 'quality-tools.audit' },
+      });
+      const fix = buildFixture({
+        spider: {
+          rigTemplates: { 'quality-tools.audit': differentTemplate },
+          rigTemplateMappings: { mandate: 'quality-tools.audit' },
+        },
+      }, { status: 'completed' }, { kits: [kit] });
+
+      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'mandate' });
+      await fix.spider.crawl();
+      const rig = await fix.spider.forWrit(writ.id);
+      assert.ok(rig);
+      // Should use config template (1 engine named 'config-step'), not kit template
+      assert.equal(rig!.engines[0].id, 'config-step');
+    });
+  });
+
+  describe('V2 — dependency-scoped designId validation', () => {
+    it('rejects kit template referencing designId from undeclared plugin', () => {
+      const { warnings, restore } = captureWarnings();
+      try {
+        // Kit has no requires, but references a non-builtin engine from 'fabricator'
+        const customEngineKit = makeKit('fabricator', {
+          engines: {
+            custom: { id: 'custom-engine', run: async () => ({ status: 'completed', yields: {} }) },
+          },
+        });
+        const badKit = makeKit('quality-tools', {
+          rigTemplates: {
+            audit: {
+              engines: [{ id: 'step1', designId: 'custom-engine', givens: {} }],
+            },
+          },
+        });
+        // quality-tools has no requires: ['fabricator'], so custom-engine is disallowed
+        buildFixture({}, { status: 'completed' }, { kits: [customEngineKit, badKit] });
+        assert.ok(
+          warnings.some(w => w.includes('quality-tools') && w.includes('rigTemplates.audit')),
+          `Expected warning about quality-tools audit, got: ${JSON.stringify(warnings)}`
+        );
+      } finally {
+        restore();
+      }
+    });
+
+    it('allows designId from declared dependency', () => {
+      const { warnings, restore } = captureWarnings();
+      try {
+        const customEngineKit = makeKit('fabricator', {
+          engines: {
+            custom: { id: 'custom-engine', run: async () => ({ status: 'completed', yields: {} }) },
+          },
+        });
+        const goodKit = makeKit('quality-tools', {
+          requires: ['fabricator'],
+          rigTemplates: {
+            audit: {
+              engines: [{ id: 'step1', designId: 'custom-engine', givens: {} }],
+            },
+          },
+          rigTemplateMappings: { mandate: 'quality-tools.audit' },
+        });
+        buildFixture({}, { status: 'completed' }, { kits: [customEngineKit, goodKit] });
+        assert.ok(
+          !warnings.some(w => w.includes('quality-tools') && w.includes('rigTemplates.audit')),
+          `Unexpected warning: ${JSON.stringify(warnings)}`
+        );
+      } finally {
+        restore();
+      }
+    });
+
+    it('allows built-in Spider engine designIds without any requires', () => {
+      const { warnings, restore } = captureWarnings();
+      try {
+        const kit = makeKit('quality-tools', {
+          // No requires — but uses built-in 'draft' engine
+          rigTemplates: { audit: SIMPLE_TEMPLATE },
+          rigTemplateMappings: { mandate: 'quality-tools.audit' },
+        });
+        buildFixture({}, { status: 'completed' }, { kits: [kit] });
+        assert.ok(
+          !warnings.some(w => w.includes('quality-tools') && w.includes('rigTemplates')),
+          `Unexpected warning: ${JSON.stringify(warnings)}`
+        );
+      } finally {
+        restore();
+      }
+    });
+  });
+
+  describe('V4 — kit mapping routes writ type to template', () => {
+    it('uses kit-contributed mapping when spawning', async () => {
+      const kit = makeKit('quality-tools', {
+        rigTemplates: { audit: SIMPLE_TEMPLATE },
+        rigTemplateMappings: { mandate: 'quality-tools.audit' },
+      });
+      const fix = buildFixture(
+        { spider: { variables: { role: 'artificer' } } },
+        { status: 'completed' },
+        { kits: [kit] }
+      );
+
+      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'mandate' });
+      const result = await fix.spider.crawl();
+      assert.equal(result?.action, 'rig-spawned');
+      const rig = await fix.spider.forWrit(writ.id);
+      assert.ok(rig);
+      assert.equal(rig!.engines.length, 1);
+      assert.equal(rig!.engines[0].id, 'step1');
+    });
+
+    it('config mapping overrides kit mapping for same writ type', async () => {
+      const kit = makeKit('quality-tools', {
+        rigTemplates: { audit: SIMPLE_TEMPLATE },
+        rigTemplateMappings: { mandate: 'quality-tools.audit' },
+      });
+      const configTemplate: RigTemplate = {
+        engines: [{ id: 'config-engine', designId: 'draft', givens: {} }],
+      };
+      const fix = buildFixture(
+        {
+          spider: {
+            rigTemplates: { 'my-template': configTemplate },
+            rigTemplateMappings: { mandate: 'my-template' },
+          },
+        },
+        { status: 'completed' },
+        { kits: [kit] }
+      );
+
+      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'mandate' });
+      await fix.spider.crawl();
+      const rig = await fix.spider.forWrit(writ.id);
+      assert.ok(rig);
+      // Should use config template (engine named 'config-engine')
+      assert.equal(rig!.engines[0].id, 'config-engine');
+    });
+
+    it('emits warning when two kits map same writ type (first wins)', () => {
+      const { warnings, restore } = captureWarnings();
+      try {
+        const kitA = makeKit('kit-a', {
+          rigTemplates: { tmpl: SIMPLE_TEMPLATE },
+          rigTemplateMappings: { mandate: 'kit-a.tmpl' },
+        });
+        const kitB = makeKit('kit-b', {
+          rigTemplates: { tmpl: SIMPLE_TEMPLATE },
+          rigTemplateMappings: { mandate: 'kit-b.tmpl' },
+        });
+        buildFixture({}, { status: 'completed' }, { kits: [kitA, kitB] });
+        assert.ok(
+          warnings.some(w => w.includes('kit-b') && w.includes('mandate')),
+          `Expected warning about kit-b duplicate mandate mapping, got: ${JSON.stringify(warnings)}`
+        );
+      } finally {
+        restore();
+      }
+    });
+  });
+
+  describe('V5, V6 — lookup chain (mappings and default template)', () => {
+    it('config rigTemplateMappings routes writ type (R10)', async () => {
+      const configTemplate: RigTemplate = {
+        engines: [{ id: 'standard-engine', designId: 'draft', givens: {} }],
+      };
+      const fix = buildFixture({
+        spider: {
+          rigTemplates: { standard: configTemplate },
+          rigTemplateMappings: { mandate: 'standard' },
+        },
+      });
+
+      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'mandate' });
+      await fix.spider.crawl();
+      const rig = await fix.spider.forWrit(writ.id);
+      assert.ok(rig);
+      assert.equal(rig!.engines[0].id, 'standard-engine');
+    });
+
+    it('default mapping serves as fallback for unmatched writ type (R11)', async () => {
+      const fix = buildFixture({
+        spider: {
+          rigTemplates: { standard: { engines: [{ id: 'std', designId: 'draft', givens: {} }] } },
+          rigTemplateMappings: { default: 'standard' },
+          variables: {},
+        },
+        clerk: { writTypes: [{ name: 'custom-type' }] },
+      });
+
+      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'custom-type' });
+      const result = await fix.spider.crawl();
+      assert.equal(result?.action, 'rig-spawned');
+      const rig = await fix.spider.forWrit(writ.id);
+      assert.ok(rig);
+      assert.equal(rig!.engines[0].id, 'std');
+    });
+
+    it('uses default template when no mappings defined (R9 step 3)', async () => {
+      const fix = buildFixture({
+        spider: {
+          rigTemplates: { default: { engines: [{ id: 'fallback', designId: 'draft', givens: {} }] } },
+          variables: {},
+        },
+        clerk: { writTypes: [{ name: 'any-type' }] },
+      });
+
+      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'any-type' });
+      await fix.spider.crawl();
+      const rig = await fix.spider.forWrit(writ.id);
+      assert.ok(rig);
+      assert.equal(rig!.engines[0].id, 'fallback');
+    });
+  });
+
+  describe('V7 — dangling mapping references', () => {
+    it('warns and removes kit mapping pointing to nonexistent template', () => {
+      const { warnings, restore } = captureWarnings();
+      try {
+        const kit = makeKit('kit-a', {
+          // No rigTemplates contributed, but mapping points to kit-a.nonexistent
+          rigTemplateMappings: { mandate: 'kit-a.nonexistent' },
+        });
+        buildFixture({}, { status: 'completed' }, { kits: [kit] });
+        assert.ok(
+          warnings.some(w => w.includes('kit-a.nonexistent') || w.includes('template not found')),
+          `Expected dangling mapping warning, got: ${JSON.stringify(warnings)}`
+        );
+      } finally {
+        restore();
+      }
+    });
+
+    it('throws when config mapping points to nonexistent template', () => {
+      assert.throws(() => {
+        buildFixture({
+          spider: {
+            rigTemplateMappings: { mandate: 'nonexistent-template' },
+          },
+        });
+      }, /nonexistent-template/);
+    });
+  });
+
+  describe('V8 — Spider consumes declaration', () => {
+    it('declares consumes with blockTypes, rigTemplates, rigTemplateMappings', () => {
+      const plugin = createSpider();
+      assert.ok('apparatus' in plugin);
+      const apparatus = (plugin as { apparatus: { consumes?: string[] } }).apparatus;
+      assert.ok(Array.isArray(apparatus.consumes));
+      assert.ok(apparatus.consumes!.includes('blockTypes'));
+      assert.ok(apparatus.consumes!.includes('rigTemplates'));
+      assert.ok(apparatus.consumes!.includes('rigTemplateMappings'));
+    });
+  });
+
+  describe('V10 — Phase 1b and Phase 2 scanning', () => {
+    it('Phase 1b: picks up apparatus supportKit rigTemplates at startup', async () => {
+      const supportKit = {
+        rigTemplates: { audit: SIMPLE_TEMPLATE },
+        rigTemplateMappings: { mandate: 'quality-tools.audit' },
+      };
+      const app: LoadedApparatus = {
+        packageName: '@test/quality-tools',
+        id: 'quality-tools',
+        version: '0.0.0',
+        apparatus: {
+          requires: [],
+          start: () => {},
+          supportKit,
+        },
+      };
+      const fix = buildFixture({}, { status: 'completed' }, { apparatuses: [app] });
+
+      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'mandate' });
+      const result = await fix.spider.crawl();
+      assert.equal(result?.action, 'rig-spawned');
+      const rig = await fix.spider.forWrit(writ.id);
+      assert.ok(rig);
+      assert.equal(rig!.engines[0].id, 'step1');
+    });
+
+    it('Phase 2: late-arriving apparatus supportKit registers via plugin:initialized', async () => {
+      const fix = buildFixture();
+
+      const supportKit = {
+        rigTemplates: { audit: SIMPLE_TEMPLATE },
+        rigTemplateMappings: { mandate: 'late-app.audit' },
+      };
+      const lateApp: LoadedApparatus = {
+        packageName: '@test/late-app',
+        id: 'late-app',
+        version: '0.0.0',
+        apparatus: {
+          requires: [],
+          start: () => {},
+          supportKit,
+        },
+      };
+
+      await fix.spiderFire('plugin:initialized', lateApp);
+
+      const writ = await fix.clerk.post({ title: 'Late test', body: 'Body', type: 'mandate' });
+      const result = await fix.spider.crawl();
+      assert.equal(result?.action, 'rig-spawned');
+      const rig = await fix.spider.forWrit(writ.id);
+      assert.ok(rig);
+      assert.equal(rig!.engines[0].id, 'step1');
+    });
+  });
+
+  describe('V12 — malformed kit contributions', () => {
+    it('warns when kit rigTemplates is not an object', () => {
+      const { warnings, restore } = captureWarnings();
+      try {
+        const kit = makeKit('bad-kit', { rigTemplates: 'invalid' });
+        buildFixture({}, { status: 'completed' }, { kits: [kit] });
+        assert.ok(
+          warnings.some(w => w.includes('bad-kit') && w.includes('rigTemplates')),
+          `Expected warning about bad-kit rigTemplates, got: ${JSON.stringify(warnings)}`
+        );
+      } finally {
+        restore();
+      }
+    });
+
+    it('warns when kit template is missing engines array', () => {
+      const { warnings, restore } = captureWarnings();
+      try {
+        const kit = makeKit('bad-kit', {
+          rigTemplates: { broken: { notEngines: [] } },
+        });
+        buildFixture({}, { status: 'completed' }, { kits: [kit] });
+        assert.ok(
+          warnings.some(w => w.includes('bad-kit') && w.includes('rigTemplates.broken')),
+          `Expected warning about bad-kit rigTemplates.broken, got: ${JSON.stringify(warnings)}`
+        );
+      } finally {
+        restore();
+      }
+    });
+  });
+
+  describe('Cross-kit mapping reference (test 14)', () => {
+    it('kit B can reference a template contributed by kit A', async () => {
+      const kitA = makeKit('kit-a', {
+        rigTemplates: { pipeline: SIMPLE_TEMPLATE },
+      });
+      const kitB = makeKit('kit-b', {
+        rigTemplateMappings: { mandate: 'kit-a.pipeline' },
+      });
+      const fix = buildFixture({}, { status: 'completed' }, { kits: [kitA, kitB] });
+
+      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'mandate' });
+      const result = await fix.spider.crawl();
+      assert.equal(result?.action, 'rig-spawned');
+      const rig = await fix.spider.forWrit(writ.id);
+      assert.ok(rig);
+      assert.equal(rig!.engines[0].id, 'step1');
+    });
+  });
+
+  describe('No template and no mapping (test 17)', () => {
+    it('throws with descriptive error when no template found', async () => {
+      // Config has no templates, no mappings, no default
+      // Set rigTemplates to undefined to override the buildFixture default
+      const fix = buildFixture({
+        spider: { rigTemplates: undefined, variables: {} },
+        clerk: { writTypes: [{ name: 'orphan-type' }] },
+      });
+
+      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'orphan-type' });
+      await assert.rejects(
+        () => fix.spider.crawl(),
+        /orphan-type/,
+      );
+    });
+  });
+});

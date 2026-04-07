@@ -38,6 +38,8 @@ export type {
   AnswerValue,
 } from './types.ts';
 
+export type { SpiderKit } from './spider.ts';
+
 // ── Default export: the apparatus plugin ──────────────────────────────
 
 export default createSpider();

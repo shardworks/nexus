@@ -18,7 +18,7 @@
  * See: docs/architecture/apparatus/spider.md
  */
 
-import type { Plugin, StartupContext, LoadedPlugin } from '@shardworks/nexus-core';
+import type { Plugin, StartupContext, LoadedPlugin, LoadedKit, LoadedApparatus } from '@shardworks/nexus-core';
 import { guild, generateId, isLoadedKit, isLoadedApparatus } from '@shardworks/nexus-core';
 import type { StacksApi, Book, ReadOnlyBook, WhereClause } from '@shardworks/stacks-apparatus';
 import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
@@ -68,6 +68,16 @@ import {
   inputRequestExportTool,
   inputRequestImportTool,
 } from './tools/index.ts';
+
+// ── Kit contribution interface ─────────────────────────────────────────
+
+/** Kit contribution interface for the Spider's rig template system. */
+export interface SpiderKit {
+  /** Named rig templates. Keys are unqualified; registered as pluginId.key. */
+  rigTemplates?: Record<string, RigTemplate>;
+  /** Writ type → rig template name mappings. Keys are unqualified writ type names. */
+  rigTemplateMappings?: Record<string, string>;
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -144,22 +154,6 @@ function normalizeVarRef(value: string): string {
     return '$' + value.slice(2, -1);
   }
   return value;
-}
-
-/**
- * Look up the rig template for a given writ type.
- * Falls back to 'default' template if no exact match.
- * Throws if no matching template is found.
- */
-function lookupTemplate(writType: string, config: SpiderConfig): RigTemplate {
-  const templates = config.rigTemplates;
-  if (templates) {
-    if (writType in templates) return templates[writType];
-    if ('default' in templates) return templates['default'];
-  }
-  throw new Error(
-    `[spider] No rig template found for writ type "${writType}" and no "default" template configured.`
-  );
 }
 
 /**
@@ -362,6 +356,364 @@ class BlockTypeRegistry {
   }
 }
 
+// ── Rig template registry ──────────────────────────────────────────────
+
+/**
+ * Manages merged rig template and mapping registries.
+ * Config templates/mappings override kit contributions.
+ * Kit templates are registered under qualified names (pluginId.templateName).
+ */
+class RigTemplateRegistry {
+  /** Merged template registry: template name → RigTemplate */
+  readonly templates = new Map<string, RigTemplate>();
+  /** Config writ-type-to-template-name mappings */
+  readonly configMappings = new Map<string, string>();
+  /** Kit-contributed mappings (first-registered wins) */
+  readonly kitMappings = new Map<string, string>();
+  /** Config-declared template names (for override checking) */
+  private configTemplateNames = new Set<string>();
+  /** designId → pluginId that contributed it */
+  private designSourceMap = new Map<string, string>();
+
+  /**
+   * Build the designId → pluginId map from all loaded kits and apparatuses.
+   * Called once at startup before any kit registration.
+   */
+  buildDesignSourceMap(kits: LoadedKit[], apparatuses: LoadedApparatus[]): void {
+    // Spider's built-in engines always map to 'spider'
+    const builtinIds = [
+      draftEngine.id,
+      implementEngine.id,
+      reviewEngine.id,
+      reviseEngine.id,
+      sealEngine.id,
+    ];
+    for (const id of builtinIds) {
+      this.designSourceMap.set(id, 'spider');
+    }
+
+    // Scan standalone kits for engine contributions
+    for (const kit of kits) {
+      this.registerEnginesFromKit(kit.id, kit.kit);
+    }
+
+    // Scan apparatus supportKits for engine contributions
+    for (const app of apparatuses) {
+      if (app.apparatus.supportKit) {
+        this.registerEnginesFromKit(app.id, app.apparatus.supportKit);
+      }
+    }
+  }
+
+  private registerEnginesFromKit(pluginId: string, kit: Record<string, unknown>): void {
+    const raw = kit.engines;
+    if (typeof raw !== 'object' || raw === null) return;
+    for (const value of Object.values(raw as Record<string, unknown>)) {
+      if (
+        typeof value === 'object' &&
+        value !== null &&
+        typeof (value as Record<string, unknown>).id === 'string' &&
+        typeof (value as Record<string, unknown>).run === 'function'
+      ) {
+        const engineId = (value as Record<string, unknown>).id as string;
+        this.designSourceMap.set(engineId, pluginId);
+      }
+    }
+  }
+
+  /**
+   * Register config-declared templates. Called after validateTemplates() succeeds.
+   */
+  registerConfigTemplates(rigTemplates: Record<string, RigTemplate>): void {
+    for (const [name, template] of Object.entries(rigTemplates)) {
+      this.templates.set(name, template);
+      this.configTemplateNames.add(name);
+    }
+  }
+
+  /**
+   * Register config-declared mappings.
+   */
+  registerConfigMappings(rigTemplateMappings: Record<string, string>): void {
+    for (const [writType, templateName] of Object.entries(rigTemplateMappings)) {
+      this.configMappings.set(writType, templateName);
+    }
+  }
+
+  /**
+   * Register kit contributions (rigTemplates + rigTemplateMappings).
+   * Validates and skips with console.warn on failure.
+   */
+  registerFromKit(pluginId: string, kit: Record<string, unknown>): void {
+    // Handle rigTemplates
+    const rawTemplates = kit.rigTemplates;
+    if (rawTemplates !== undefined) {
+      if (typeof rawTemplates !== 'object' || rawTemplates === null || Array.isArray(rawTemplates)) {
+        console.warn(`[spider] Kit "${pluginId}" rigTemplates: expected an object — skipped`);
+      } else {
+        this.registerKitTemplates(pluginId, kit, rawTemplates as Record<string, unknown>);
+      }
+    }
+
+    // Handle rigTemplateMappings
+    const rawMappings = kit.rigTemplateMappings;
+    if (rawMappings !== undefined) {
+      if (typeof rawMappings !== 'object' || rawMappings === null || Array.isArray(rawMappings)) {
+        console.warn(`[spider] Kit "${pluginId}" rigTemplateMappings: expected an object — skipped`);
+      } else {
+        this.registerKitMappings(pluginId, rawMappings as Record<string, unknown>);
+      }
+    }
+  }
+
+  private registerKitTemplates(
+    pluginId: string,
+    kit: Record<string, unknown>,
+    rawTemplates: Record<string, unknown>,
+  ): void {
+    const allowedPlugins = new Set<string>([
+      pluginId,
+      ...((kit.requires as string[] | undefined) ?? []),
+      ...((kit.recommends as string[] | undefined) ?? []),
+      'spider',
+    ]);
+
+    for (const [templateName, rawTemplate] of Object.entries(rawTemplates)) {
+      const qualifiedName = `${pluginId}.${templateName}`;
+
+      // Config override check: skip silently
+      if (this.configTemplateNames.has(qualifiedName)) continue;
+
+      // Validate template shape
+      if (
+        typeof rawTemplate !== 'object' ||
+        rawTemplate === null ||
+        !Array.isArray((rawTemplate as Record<string, unknown>).engines)
+      ) {
+        console.warn(
+          `[spider] Kit "${pluginId}" rigTemplates.${templateName}: missing required "engines" array — skipped`
+        );
+        continue;
+      }
+
+      const template = rawTemplate as RigTemplate;
+      const validationError = this.validateKitTemplate(pluginId, templateName, template, allowedPlugins);
+      if (validationError !== null) {
+        console.warn(validationError);
+        continue;
+      }
+
+      this.templates.set(qualifiedName, template);
+    }
+  }
+
+  /**
+   * Validate a kit-contributed template. Returns null on success, or an error message string.
+   */
+  private validateKitTemplate(
+    pluginId: string,
+    templateName: string,
+    template: RigTemplate,
+    allowedPlugins: Set<string>,
+  ): string | null {
+    const engines = template.engines;
+    const prefix = `[spider] Kit "${pluginId}" rigTemplates.${templateName}`;
+
+    if (engines.length === 0) {
+      return `${prefix}: template has no engines`;
+    }
+
+    const engineIds = new Set<string>();
+    for (const engine of engines) {
+      if (engineIds.has(engine.id)) {
+        return `${prefix}: duplicate engine id "${engine.id}"`;
+      }
+      engineIds.add(engine.id);
+    }
+
+    // Dependency-scoped designId check
+    for (const engine of engines) {
+      const sourcePlugin = this.designSourceMap.get(engine.designId);
+      if (sourcePlugin === undefined) {
+        return `${prefix}: engine "${engine.id}" references unknown designId "${engine.designId}"`;
+      }
+      if (!allowedPlugins.has(sourcePlugin)) {
+        return `${prefix}: engine "${engine.id}" references designId "${engine.designId}" from plugin "${sourcePlugin}" which is not in requires/recommends`;
+      }
+    }
+
+    // Upstream reference check
+    for (const engine of engines) {
+      for (const upId of engine.upstream ?? []) {
+        if (!engineIds.has(upId)) {
+          return `${prefix}: engine "${engine.id}" references unknown upstream "${upId}"`;
+        }
+      }
+    }
+
+    // Cycle detection (DFS)
+    {
+      const visiting = new Set<string>();
+      const visited = new Set<string>();
+      let cycleError: string | null = null;
+
+      const visit = (id: string): void => {
+        if (cycleError !== null || visited.has(id)) return;
+        if (visiting.has(id)) {
+          cycleError = `${prefix}: dependency cycle detected involving engine "${id}"`;
+          return;
+        }
+        visiting.add(id);
+        const eng = engines.find((e) => e.id === id)!;
+        for (const dep of eng.upstream ?? []) {
+          visit(dep);
+        }
+        visiting.delete(id);
+        visited.add(id);
+      };
+
+      for (const engine of engines) {
+        visit(engine.id);
+        if (cycleError !== null) return cycleError;
+      }
+    }
+
+    // resolutionEngine check
+    if (template.resolutionEngine !== undefined && !engineIds.has(template.resolutionEngine)) {
+      return `${prefix}: resolutionEngine "${template.resolutionEngine}" is not an engine id in this template`;
+    }
+
+    // Variable reference validation
+    for (const engine of engines) {
+      for (const value of Object.values(engine.givens ?? {})) {
+        if (typeof value === 'string' && value.startsWith('$')) {
+          const normalized = normalizeVarRef(value);
+          if (
+            normalized === '$writ' ||
+            /^\$vars\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(normalized)
+          ) {
+            continue;
+          }
+          return `${prefix}: engine "${engine.id}" has unrecognized variable "${value}"`;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private registerKitMappings(pluginId: string, rawMappings: Record<string, unknown>): void {
+    for (const [writType, templateName] of Object.entries(rawMappings)) {
+      if (typeof templateName !== 'string') {
+        console.warn(
+          `[spider] Kit "${pluginId}" rigTemplateMappings.${writType}: value must be a string — skipped`
+        );
+        continue;
+      }
+
+      // Config override: skip silently
+      if (this.configMappings.has(writType)) continue;
+
+      // Duplicate kit mapping: first-registered wins
+      if (this.kitMappings.has(writType)) {
+        console.warn(
+          `[spider] Kit "${pluginId}" rigTemplateMappings.${writType}: mapping for "${writType}" already registered by another kit — skipped`
+        );
+        continue;
+      }
+
+      this.kitMappings.set(writType, templateName);
+    }
+  }
+
+  /**
+   * Validate all mappings after Phase 1 scanning completes.
+   * Config dangling mappings throw; kit dangling mappings warn and are removed.
+   */
+  validateDeferredMappings(): void {
+    // Config mappings — throw on dangling
+    for (const [writType, templateName] of this.configMappings) {
+      if (!this.templates.has(templateName)) {
+        throw new Error(
+          `[spider] rigTemplateMappings.${writType}: references unknown template "${templateName}"`
+        );
+      }
+    }
+
+    // Kit mappings — warn and remove on dangling
+    for (const [writType, templateName] of [...this.kitMappings]) {
+      if (!this.templates.has(templateName)) {
+        console.warn(
+          `[spider] Kit mapping "${writType}" → "${templateName}": template not found — removed`
+        );
+        this.kitMappings.delete(writType);
+      }
+    }
+  }
+
+  /**
+   * Validate kit mappings incrementally (for Phase 2 late-arriving apparatus).
+   * Since deferred validation already ran, validate immediately.
+   */
+  validateIncrementalMappings(): void {
+    for (const [writType, templateName] of [...this.kitMappings]) {
+      if (!this.templates.has(templateName)) {
+        console.warn(
+          `[spider] Kit mapping "${writType}" → "${templateName}": template not found — removed`
+        );
+        this.kitMappings.delete(writType);
+      }
+    }
+  }
+
+  /**
+   * Look up the rig template for a given writ type using the full precedence chain.
+   * R9 precedence: config mapping → kit mapping → config 'default' mapping → kit 'default' mapping → 'default' template → throw
+   */
+  lookup(writType: string): RigTemplate {
+    // Step 1: Config mapping for this specific writ type
+    const configMapped = this.configMappings.get(writType);
+    if (configMapped !== undefined) {
+      const t = this.templates.get(configMapped);
+      if (t) return t;
+      // Config points to nonexistent template — validated at startup, should not happen at runtime
+    }
+
+    // Step 2: Kit mapping for this specific writ type
+    const kitMapped = this.kitMappings.get(writType);
+    if (kitMapped !== undefined) {
+      const t = this.templates.get(kitMapped);
+      if (t) return t;
+    }
+
+    // Steps 1-2 for 'default' fallback (only when writType is not 'default')
+    if (writType !== 'default') {
+      // Config mapping for 'default'
+      const configDefault = this.configMappings.get('default');
+      if (configDefault !== undefined) {
+        const t = this.templates.get(configDefault);
+        if (t) return t;
+      }
+
+      // Kit mapping for 'default'
+      const kitDefault = this.kitMappings.get('default');
+      if (kitDefault !== undefined) {
+        const t = this.templates.get(kitDefault);
+        if (t) return t;
+      }
+    }
+
+    // Step 3: Template named 'default' in merged registry
+    const defaultTemplate = this.templates.get('default');
+    if (defaultTemplate) return defaultTemplate;
+
+    // Step 4: Throw
+    throw new Error(
+      `[spider] No rig template found for writ type "${writType}" and no "default" template or mapping configured.`
+    );
+  }
+}
+
 // ── Apparatus factory ──────────────────────────────────────────────────
 
 export function createSpider(): Plugin {
@@ -373,6 +725,7 @@ export function createSpider(): Plugin {
   let spiderConfig: SpiderConfig = {};
 
   const blockTypeRegistry = new BlockTypeRegistry();
+  const rigTemplateRegistry = new RigTemplateRegistry();
 
   /**
    * In-memory store for block records that have been cleared.
@@ -734,7 +1087,7 @@ export function createSpider(): Plugin {
       if (existing.length > 0) continue;
 
       const rigId = generateId('rig', 4);
-      const template = lookupTemplate(writ.type, spiderConfig);
+      const template = rigTemplateRegistry.lookup(writ.type);
       const { engines, resolutionEngineId } = buildFromTemplate(template, {
         writ,
         spiderConfig,
@@ -857,7 +1210,7 @@ export function createSpider(): Plugin {
   return {
     apparatus: {
       requires: ['stacks', 'clerk', 'fabricator'],
-      consumes: ['blockTypes'],
+      consumes: ['blockTypes', 'rigTemplates', 'rigTemplateMappings'],
 
       supportKit: {
         books: {
@@ -908,29 +1261,51 @@ export function createSpider(): Plugin {
         clerk = g.apparatus<ClerkApi>('clerk');
         fabricator = g.apparatus<FabricatorApi>('fabricator');
 
-        // Validate templates before any rig operations can occur
+        // 1. Build designId → pluginId map from all kits and apparatuses
+        rigTemplateRegistry.buildDesignSourceMap(g.kits(), g.apparatuses());
+
+        // 2. Validate and register config templates
         if (spiderConfig.rigTemplates) {
           validateTemplates(spiderConfig.rigTemplates, fabricator);
+          rigTemplateRegistry.registerConfigTemplates(spiderConfig.rigTemplates);
         }
 
-        rigsBook = stacks.book<RigDoc>('spider', 'rigs');
-        sessionsBook = stacks.readBook<SessionDoc>('animator', 'sessions');
-        writsBook = stacks.readBook<WritDoc>('clerk', 'writs');
+        // 3. Register config mappings
+        if (spiderConfig.rigTemplateMappings) {
+          rigTemplateRegistry.registerConfigMappings(spiderConfig.rigTemplateMappings);
+        }
 
-        // Scan all already-loaded kits for block types.
-        // These fired plugin:initialized before any apparatus started.
+        // 4. Phase 1a: Scan standalone kits for block types and rig templates
         for (const kit of g.kits()) {
           blockTypeRegistry.register(kit);
+          rigTemplateRegistry.registerFromKit(kit.id, kit.kit);
         }
 
-        // Subscribe to plugin:initialized for apparatus supportKits that
-        // fire after us in the startup sequence.
+        // 5. Phase 1b: Scan already-started apparatus supportKits for rig templates
+        for (const app of g.apparatuses()) {
+          if (app.apparatus.supportKit) {
+            rigTemplateRegistry.registerFromKit(app.id, app.apparatus.supportKit);
+          }
+        }
+
+        // 6. Deferred mapping validation (after all Phase 1 scanning)
+        rigTemplateRegistry.validateDeferredMappings();
+
+        // 7. Phase 2: Subscribe for late-arriving apparatus supportKits
         ctx.on('plugin:initialized', (plugin: unknown) => {
           const loaded = plugin as LoadedPlugin;
           if (isLoadedApparatus(loaded)) {
             blockTypeRegistry.register(loaded);
+            if (loaded.apparatus.supportKit) {
+              rigTemplateRegistry.registerFromKit(loaded.id, loaded.apparatus.supportKit);
+              rigTemplateRegistry.validateIncrementalMappings();
+            }
           }
         });
+
+        rigsBook = stacks.book<RigDoc>('spider', 'rigs');
+        sessionsBook = stacks.readBook<SessionDoc>('animator', 'sessions');
+        writsBook = stacks.readBook<WritDoc>('clerk', 'writs');
 
         // CDC — Phase 1 cascade on rigs book.
         // When a rig reaches a terminal state, transition the associated writ.

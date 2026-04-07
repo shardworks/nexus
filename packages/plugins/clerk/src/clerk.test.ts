@@ -9,12 +9,13 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { setGuild, clearGuild } from '@shardworks/nexus-core';
-import type { Guild, GuildConfig } from '@shardworks/nexus-core';
+import type { Guild, GuildConfig, LoadedKit, LoadedApparatus, StartupContext } from '@shardworks/nexus-core';
 import { createStacksApparatus } from '@shardworks/stacks-apparatus';
 import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 
 import { createClerk } from './clerk.ts';
+import type { ClerkKit } from './clerk.ts';
 import type { ClerkApi, ClerkConfig, WritLinkDoc } from './types.ts';
 import type { WritLinks } from './index.ts';
 import writShow from './tools/writ-show.ts';
@@ -27,9 +28,29 @@ let clerk: ClerkApi;
 
 interface SetupOptions {
   clerkConfig?: ClerkConfig;
+  extraKits?: LoadedKit[];
+  extraApparatuses?: LoadedApparatus[];
 }
 
-function setup(options: SetupOptions = {}) {
+function buildClerkCtx(): {
+  ctx: StartupContext;
+  fire: (event: string, ...args: unknown[]) => Promise<void>;
+} {
+  const handlers = new Map<string, Array<(...args: unknown[]) => void | Promise<void>>>();
+  const ctx: StartupContext = {
+    on(event, handler) {
+      const list = handlers.get(event) ?? [];
+      list.push(handler);
+      handlers.set(event, list);
+    },
+  };
+  async function fire(event: string, ...args: unknown[]): Promise<void> {
+    for (const h of handlers.get(event) ?? []) await h(...args);
+  }
+  return { ctx, fire };
+}
+
+function setupCore(options: SetupOptions = {}, clerkCtx: StartupContext = { on: () => {} }) {
   const memBackend = new MemoryBackend();
   const stacksPlugin = createStacksApparatus(memBackend);
   const clerkPlugin = createClerk();
@@ -56,8 +77,8 @@ function setup(options: SetupOptions = {}) {
     },
     writeConfig() { /* noop */ },
     guildConfig() { return fakeGuildConfig; },
-    kits: () => [],
-    apparatuses: () => [],
+    kits: () => options.extraKits ?? [],
+    apparatuses: () => options.extraApparatuses ?? [],
     startupWarnings() { return []; },
   };
 
@@ -79,11 +100,15 @@ function setup(options: SetupOptions = {}) {
 
   // Start clerk
   const clerkApparatus = (clerkPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-  clerkApparatus.start({ on: () => {} });
+  clerkApparatus.start(clerkCtx);
   clerk = clerkApparatus.provides as ClerkApi;
 
   // Expose clerk as an apparatus so tool handlers can resolve it via guild()
   apparatusMap.set('clerk', clerk);
+}
+
+function setup(options: SetupOptions = {}) {
+  setupCore(options);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -1050,6 +1075,183 @@ describe('Clerk', () => {
       });
       const w = await clerk.post({ title: 'Default errand', body: 'Body' });
       assert.equal(w.type, 'errand');
+    });
+  });
+
+  // ── Kit-contributed writ types ────────────────────────────────────
+
+  describe('Kit-contributed writ types', () => {
+    describe('V3 — basic kit writ type', () => {
+      it('allows posting with kit-contributed writ type', async () => {
+        const kit: LoadedKit = {
+          packageName: '@test/quality-tools',
+          id: 'quality-tools',
+          version: '0.0.0',
+          kit: { writTypes: [{ name: 'quality-audit' }] },
+        };
+        setup({ extraKits: [kit] });
+
+        const writ = await clerk.post({ title: 'Audit', body: 'Run audit', type: 'quality-audit' });
+        assert.equal(writ.type, 'quality-audit');
+      });
+
+      it('config writType with same name silently skips kit contribution', async () => {
+        const kit: LoadedKit = {
+          packageName: '@test/quality-tools',
+          id: 'quality-tools',
+          version: '0.0.0',
+          kit: { writTypes: [{ name: 'quality-audit' }] },
+        };
+        setup({
+          clerkConfig: { writTypes: [{ name: 'quality-audit' }] },
+          extraKits: [kit],
+        });
+        // No warning should be emitted; posting should still work
+        const writ = await clerk.post({ title: 'Audit', body: 'Run audit', type: 'quality-audit' });
+        assert.equal(writ.type, 'quality-audit');
+      });
+
+      it('warns when two kits contribute same writ type (first wins)', async () => {
+        const warnings: string[] = [];
+        const original = console.warn;
+        console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+
+        try {
+          const kitA: LoadedKit = {
+            packageName: '@test/kit-a',
+            id: 'kit-a',
+            version: '0.0.0',
+            kit: { writTypes: [{ name: 'quality-audit' }] },
+          };
+          const kitB: LoadedKit = {
+            packageName: '@test/kit-b',
+            id: 'kit-b',
+            version: '0.0.0',
+            kit: { writTypes: [{ name: 'quality-audit' }] },
+          };
+          setup({ extraKits: [kitA, kitB] });
+
+          assert.ok(
+            warnings.some(w => w.includes('kit-b') && w.includes('quality-audit')),
+            `Expected duplicate writ type warning, got: ${JSON.stringify(warnings)}`
+          );
+          // Posting still works (first kit won)
+          const writ = await clerk.post({ title: 'Audit', body: 'Run audit', type: 'quality-audit' });
+          assert.equal(writ.type, 'quality-audit');
+        } finally {
+          console.warn = original;
+        }
+      });
+
+      it('built-in mandate type still works even if kit contributes it', async () => {
+        const kit: LoadedKit = {
+          packageName: '@test/kit-a',
+          id: 'kit-a',
+          version: '0.0.0',
+          kit: { writTypes: [{ name: 'mandate' }] },
+        };
+        setup({ extraKits: [kit] });
+        // mandate is built-in, kit contribution is harmless but redundant
+        const writ = await clerk.post({ title: 'Mandate', body: 'Body', type: 'mandate' });
+        assert.equal(writ.type, 'mandate');
+      });
+
+      it('rejects unknown type even with kits loaded', async () => {
+        const kit: LoadedKit = {
+          packageName: '@test/kit-a',
+          id: 'kit-a',
+          version: '0.0.0',
+          kit: { writTypes: [{ name: 'known-type' }] },
+        };
+        setup({ extraKits: [kit] });
+        await assert.rejects(
+          () => clerk.post({ title: 'Test', body: 'Body', type: 'unknown-type' }),
+          /Unknown writ type/
+        );
+      });
+
+      it('warns on malformed writTypes entry missing name field', async () => {
+        const warnings: string[] = [];
+        const original = console.warn;
+        console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+
+        try {
+          const kit: LoadedKit = {
+            packageName: '@test/bad-kit',
+            id: 'bad-kit',
+            version: '0.0.0',
+            kit: { writTypes: [{ notName: 'bad' }] },
+          };
+          setup({ extraKits: [kit] });
+          assert.ok(
+            warnings.some(w => w.includes('bad-kit') && w.includes('writTypes')),
+            `Expected warning about bad-kit writTypes, got: ${JSON.stringify(warnings)}`
+          );
+        } finally {
+          console.warn = original;
+        }
+      });
+    });
+
+    describe('V9 — Clerk consumes declaration', () => {
+      it('declares consumes with writTypes', () => {
+        const plugin = createClerk();
+        assert.ok('apparatus' in plugin);
+        const apparatus = (plugin as { apparatus: { consumes?: string[] } }).apparatus;
+        assert.ok(Array.isArray(apparatus.consumes));
+        assert.ok(apparatus.consumes!.includes('writTypes'));
+      });
+    });
+
+    describe('V11 — exports', () => {
+      it('ClerkKit is exported from clerk module', async () => {
+        // Just verify the import works — if it compiles, the export exists
+        const mod = await import('./clerk.ts');
+        // ClerkKit is a type export; we can't check it at runtime directly,
+        // but we verify createClerk is still exported
+        assert.ok(typeof mod.createClerk === 'function');
+      });
+    });
+
+    describe('V13 — resolveWritTypes uses in-memory set', () => {
+      it('kit-contributed type is valid for posting without re-reading config', async () => {
+        const kit: LoadedKit = {
+          packageName: '@test/quality-tools',
+          id: 'quality-tools',
+          version: '0.0.0',
+          kit: { writTypes: [{ name: 'quality-audit' }] },
+        };
+        setup({ extraKits: [kit] });
+
+        // Post multiple writs to confirm the set is stable
+        const w1 = await clerk.post({ title: 'Audit 1', body: 'Body', type: 'quality-audit' });
+        const w2 = await clerk.post({ title: 'Audit 2', body: 'Body', type: 'quality-audit' });
+        assert.equal(w1.type, 'quality-audit');
+        assert.equal(w2.type, 'quality-audit');
+      });
+    });
+
+    describe('V25 — Phase 2 late-arriving apparatus supportKit', () => {
+      it('late-arriving apparatus writ type is valid for posting', async () => {
+        const { ctx: clerkCtx, fire: clerkFire } = buildClerkCtx();
+        setupCore({}, clerkCtx);
+
+        const lateApp: LoadedApparatus = {
+          packageName: '@test/late-app',
+          id: 'late-app',
+          version: '0.0.0',
+          apparatus: {
+            requires: [],
+            start: () => {},
+            supportKit: { writTypes: [{ name: 'late-type' }] },
+          },
+        };
+
+        await clerkFire('plugin:initialized', lateApp);
+
+        const writ = await clerk.post({ title: 'Late', body: 'Body', type: 'late-type' });
+        assert.equal(writ.type, 'late-type');
+      });
     });
   });
 });

@@ -25,6 +25,7 @@ export {
 } from './types.ts';
 
 export { createClerk } from './clerk.ts';
+export type { ClerkKit } from './clerk.ts';
 
 // ── Default export: the apparatus plugin ──────────────────────────────
 
