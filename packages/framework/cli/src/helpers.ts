@@ -37,14 +37,14 @@ function isNumberSchema(schema: z.ZodTypeAny): boolean {
   let inner: z.ZodTypeAny = schema;
 
   if (inner instanceof z.ZodOptional) {
-    inner = inner.unwrap();
+    inner = inner.unwrap() as z.ZodTypeAny;
   }
   if (inner instanceof z.ZodDefault) {
-    inner = inner.unwrap();
+    inner = inner.unwrap() as z.ZodTypeAny;
   }
   // Handle the reverse nesting order too (default wrapping optional)
   if (inner instanceof z.ZodOptional) {
-    inner = inner.unwrap();
+    inner = inner.unwrap() as z.ZodTypeAny;
   }
 
   return inner instanceof z.ZodNumber;

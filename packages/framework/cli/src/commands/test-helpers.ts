@@ -24,6 +24,7 @@ export function setupGuildAccessor(home: string): void {
     guildConfig: () => ({}) as never,
     kits: () => [],
     apparatuses: () => [],
+    failedPlugins: () => [],
   });
 }
 
