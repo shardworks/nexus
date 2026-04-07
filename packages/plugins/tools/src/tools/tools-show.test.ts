@@ -90,7 +90,7 @@ describe('tools-show', () => {
       name: 'writ-create',
       description: 'Create a new writ',
       permission: 'write',
-      callableBy: ['cli', 'anima'],
+      callableBy: ['patron', 'anima'],
       params: {
         title: z.string().describe('The writ title'),
         priority: z.number().optional().describe('Priority level'),
@@ -108,7 +108,7 @@ describe('tools-show', () => {
     assert.equal(result.description, 'Create a new writ');
     assert.equal(result.pluginId, 'stdlib');
     assert.equal(result.permission, 'write');
-    assert.deepStrictEqual(result.callableBy, ['cli', 'anima']);
+    assert.deepStrictEqual(result.callableBy, ['patron', 'anima']);
   });
 
   it('extracts parameter schema with types and descriptions', async () => {

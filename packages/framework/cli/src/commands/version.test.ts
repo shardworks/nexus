@@ -57,7 +57,7 @@ describe('version tool definition', () => {
   });
 
   it('is callable from cli only', () => {
-    assert.deepEqual(versionTool.callableBy, ['cli']);
+    assert.deepEqual(versionTool.callableBy, ['patron']);
   });
 });
 

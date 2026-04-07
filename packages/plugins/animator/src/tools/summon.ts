@@ -26,7 +26,7 @@ export default tool({
     prompt: z.string().describe('The work prompt — what the anima should do'),
     role: z.string().optional().describe('Role to summon (e.g. "artificer", "scribe")'),
   },
-  callableBy: 'cli',
+  callableBy: 'patron',
   permission: 'animate',
   handler: async (params) => {
     const animator = guild().apparatus<AnimatorApi>('animator');

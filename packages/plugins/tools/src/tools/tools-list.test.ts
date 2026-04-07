@@ -28,7 +28,7 @@ import {
 function testTool(
   name: string,
   opts?: {
-    callableBy?: ('cli' | 'anima' | 'library')[];
+    callableBy?: ('patron' | 'anima' | 'library')[];
     permission?: string;
     description?: string;
   },
@@ -145,7 +145,7 @@ describe('tools-list', () => {
 
   it('filters by caller type', async () => {
     const kit = mockKit('stdlib', [
-      testTool('cli-only', { callableBy: ['cli'], permission: 'read' }),
+      testTool('cli-only', { callableBy: ['patron'], permission: 'read' }),
       testTool('anima-only', { callableBy: ['anima'], permission: 'read' }),
       testTool('unrestricted', { permission: 'read' }),
     ]);

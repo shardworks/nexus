@@ -42,13 +42,13 @@ type ZodShape = Record<string, z.ZodType>;
 
 /**
  * The caller types a tool can be invoked by.
- * - `'cli'` — accessible via `nsg` commands (human-facing)
+ * - `'patron'` — accessible via `nsg` commands (human-facing)
  * - `'anima'` — accessible via MCP server (anima-facing, in sessions)
  * - `'library'` — accessible programmatically via direct import
  *
  * Defaults to all caller types if `callableBy` is unspecified.
  */
-export type ToolCaller = 'cli' | 'anima' | 'library';
+export type ToolCaller = 'patron' | 'anima' | 'library';
 
 /**
  * A fully-defined tool — the return type of `tool()`.

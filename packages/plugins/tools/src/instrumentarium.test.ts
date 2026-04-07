@@ -35,7 +35,7 @@ import {
 /** Create a minimal tool definition for testing. */
 function testTool(
   name: string,
-  opts?: { callableBy?: ('cli' | 'anima' | 'library')[]; permission?: string },
+  opts?: { callableBy?: ('patron' | 'anima' | 'library')[]; permission?: string },
 ) {
   return tool({
     name,
@@ -525,14 +525,14 @@ describe('Instrumentarium', () => {
 
     it('includes tools that match the requested caller', () => {
       const kit = mockKit('nexus-stdlib', [
-        testTool('cli-only', { callableBy: ['cli'], permission: 'read' }),
+        testTool('cli-only', { callableBy: ['patron'], permission: 'read' }),
       ]);
 
       const { api } = startInstrumentarium({ kits: [kit] });
 
       const resolved = api.resolve({
         permissions: ['nexus-stdlib:read'],
-        caller: 'cli',
+        caller: 'patron',
       });
       assert.equal(resolved.length, 1);
     });
@@ -546,14 +546,14 @@ describe('Instrumentarium', () => {
 
       const resolved = api.resolve({
         permissions: ['nexus-stdlib:read'],
-        caller: 'cli',
+        caller: 'patron',
       });
       assert.equal(resolved.length, 0);
     });
 
     it('does not filter by caller when caller is omitted', () => {
       const kit = mockKit('nexus-stdlib', [
-        testTool('cli-only', { callableBy: ['cli'], permission: 'read' }),
+        testTool('cli-only', { callableBy: ['patron'], permission: 'read' }),
         testTool('anima-only', { callableBy: ['anima'], permission: 'read' }),
       ]);
 
@@ -571,7 +571,7 @@ describe('Instrumentarium', () => {
       const { api } = startInstrumentarium({ kits: [kit] });
 
       assert.equal(
-        api.resolve({ permissions: [], caller: 'cli' }).length,
+        api.resolve({ permissions: [], caller: 'patron' }).length,
         0,
       );
       assert.equal(

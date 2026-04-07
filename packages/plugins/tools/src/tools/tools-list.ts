@@ -30,7 +30,7 @@ export function createToolsList(getApi: () => InstrumentariumApi) {
     permission: 'read',
     params: {
       caller: z
-        .enum(['cli', 'anima', 'library'])
+        .enum(['patron', 'anima', 'library'])
         .optional()
         .describe('Filter to tools callable by this caller type.'),
       permission: z

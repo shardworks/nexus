@@ -6,7 +6,7 @@
  * Dynamically discovers installed tools via plugins, registers them as Commander
  * commands, and delegates argument parsing and invocation to Commander.
  *
- * Tools are filtered to those with 'cli' in callableBy (or no callableBy
+ * Tools are filtered to those with 'patron' in callableBy (or no callableBy
  * set, which defaults to all callers). Tools marked 'anima'-only are invisible here.
  */
 

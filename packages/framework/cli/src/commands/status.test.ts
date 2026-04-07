@@ -34,7 +34,7 @@ describe('status tool definition', () => {
   });
 
   it('is callable from cli only', () => {
-    assert.deepEqual(statusTool.callableBy, ['cli']);
+    assert.deepEqual(statusTool.callableBy, ['patron']);
   });
 });
 

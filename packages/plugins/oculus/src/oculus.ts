@@ -1,0 +1,537 @@
+/**
+ * The Oculus — web dashboard apparatus.
+ *
+ * Serves a web dashboard via Hono. Plugins contribute pages as static asset
+ * directories and custom API routes through kit contributions. Guild tools are
+ * automatically exposed as REST endpoints.
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { Hono } from 'hono';
+import { serve } from '@hono/node-server';
+import type { Server } from 'node:http';
+import { z } from 'zod';
+
+import type { Plugin, StartupContext, LoadedKit, LoadedApparatus } from '@shardworks/nexus-core';
+import { guild } from '@shardworks/nexus-core';
+import type { InstrumentariumApi } from '@shardworks/tools-apparatus';
+
+import type { OculusApi, OculusConfig, OculusKit, PageContribution, RouteContribution } from './types.ts';
+
+// ── MIME types ────────────────────────────────────────────────────────
+
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.map': 'application/json',
+};
+
+function getMimeType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  return MIME_TYPES[ext] ?? 'application/octet-stream';
+}
+
+// ── Tool→REST mapping helpers ─────────────────────────────────────────
+
+export function toolNameToRoute(name: string): string {
+  const idx = name.indexOf('-');
+  if (idx === -1) return `/api/${name}`;
+  return `/api/${name.slice(0, idx)}/${name.slice(idx + 1)}`;
+}
+
+export function permissionToMethod(permission: string | undefined): 'GET' | 'POST' | 'DELETE' {
+  if (permission === undefined) return 'GET';
+  const level = permission.includes(':')
+    ? permission.slice(permission.lastIndexOf(':') + 1)
+    : permission;
+  if (level === 'read') return 'GET';
+  if (level === 'write' || level === 'admin') return 'POST';
+  if (level === 'delete') return 'DELETE';
+  return 'POST';
+}
+
+// ── Query param coercion ──────────────────────────────────────────────
+
+function isNumberSchema(schema: z.ZodTypeAny): boolean {
+  let inner: z.ZodTypeAny = schema;
+  if (inner instanceof z.ZodOptional) inner = inner.unwrap() as z.ZodTypeAny;
+  if (inner instanceof z.ZodDefault) inner = inner.unwrap() as z.ZodTypeAny;
+  if (inner instanceof z.ZodOptional) inner = inner.unwrap() as z.ZodTypeAny;
+  return inner instanceof z.ZodNumber;
+}
+
+function isBooleanSchema(schema: z.ZodTypeAny): boolean {
+  let inner: z.ZodTypeAny = schema;
+  if (inner instanceof z.ZodOptional) inner = inner.unwrap() as z.ZodTypeAny;
+  if (inner instanceof z.ZodDefault) inner = inner.unwrap() as z.ZodTypeAny;
+  if (inner instanceof z.ZodOptional) inner = inner.unwrap() as z.ZodTypeAny;
+  return inner instanceof z.ZodBoolean;
+}
+
+export function coerceParams(
+  shape: Record<string, z.ZodTypeAny>,
+  params: Record<string, string>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...params };
+  for (const [key, schema] of Object.entries(shape)) {
+    const value = result[key];
+    if (typeof value !== 'string') continue;
+    if (isNumberSchema(schema)) {
+      result[key] = Number(value);
+    } else if (isBooleanSchema(schema)) {
+      result[key] = value === 'true';
+    }
+  }
+  return result;
+}
+
+// ── Chrome injection ─────────────────────────────────────────────────
+
+export function injectChrome(html: string, stylesheetPath: string, navHtml: string): string {
+  // Check for </head> case-insensitively
+  const headCloseMatch = html.match(/<\/head>/i);
+  const bodyOpenMatch = html.match(/<body[^>]*>/i);
+
+  // If neither tag present, return unmodified
+  if (!headCloseMatch && !bodyOpenMatch) return html;
+
+  let result = html;
+
+  // Insert stylesheet link before </head>
+  if (headCloseMatch && headCloseMatch.index !== undefined) {
+    const idx = headCloseMatch.index;
+    result =
+      result.slice(0, idx) +
+      `<link rel="stylesheet" href="${stylesheetPath}">` +
+      result.slice(idx);
+  }
+
+  // Insert nav after <body...>
+  // Need to recalculate position after potential head insertion
+  const bodyMatch = result.match(/<body[^>]*>/i);
+  if (bodyMatch && bodyMatch.index !== undefined) {
+    const idx = bodyMatch.index + bodyMatch[0].length;
+    result = result.slice(0, idx) + navHtml + result.slice(idx);
+  }
+
+  return result;
+}
+
+function buildNavHtml(pages: PageContribution[]): string {
+  const pageLinks = pages
+    .map((p) => `<a href="/pages/${p.id}/">${p.title}</a>`)
+    .join('\n  ');
+  return `<nav id="oculus-nav">
+  <a href="/">Guild</a>
+  ${pageLinks}
+</nav>`;
+}
+
+// ── Tool param extraction (reimplemented from tools-show) ────────────
+
+interface ParamInfo {
+  type: string;
+  description: string | null;
+  optional: boolean;
+}
+
+function zodTypeToJsonType(zodType: z.ZodType): string {
+  if (zodType instanceof z.ZodString) return 'string';
+  if (zodType instanceof z.ZodNumber) return 'number';
+  if (zodType instanceof z.ZodBoolean) return 'boolean';
+  if (zodType instanceof z.ZodArray) return 'array';
+  if (zodType instanceof z.ZodObject) return 'object';
+  if (zodType instanceof z.ZodEnum) return 'string';
+  if (zodType instanceof z.ZodLiteral) return typeof zodType._def.values[0];
+  if (zodType instanceof z.ZodUnion) return 'union';
+  if (zodType instanceof z.ZodNullable) return zodTypeToJsonType(zodType.unwrap() as z.ZodType);
+  return 'unknown';
+}
+
+function extractSingleParam(zodType: z.ZodType): ParamInfo {
+  let isOptional = false;
+  let inner: z.ZodType = zodType;
+
+  if (inner instanceof z.ZodOptional) {
+    isOptional = true;
+    inner = inner.unwrap() as z.ZodType;
+  }
+  if (inner instanceof z.ZodDefault) {
+    isOptional = true;
+    inner = inner.unwrap() as z.ZodType;
+  }
+
+  return {
+    type: zodTypeToJsonType(inner),
+    description: inner.description ?? null,
+    optional: isOptional,
+  };
+}
+
+function extractParams(schema: z.ZodObject<z.ZodRawShape>): Record<string, ParamInfo> {
+  const shape = schema.shape;
+  const result: Record<string, ParamInfo> = {};
+  for (const [key, zodType] of Object.entries(shape)) {
+    result[key] = extractSingleParam(zodType as z.ZodType);
+  }
+  return result;
+}
+
+// ── Apparatus factory ─────────────────────────────────────────────────
+
+export function createOculus(): Plugin {
+  let serverPort = 7470;
+  let server: Server | null = null;
+
+  const api: OculusApi = {
+    port(): number {
+      return serverPort;
+    },
+  };
+
+  return {
+    apparatus: {
+      requires: ['tools'],
+      consumes: ['pages', 'routes'],
+      provides: api,
+
+      async start(ctx: StartupContext): Promise<void> {
+        const g = guild();
+        const oculusConfig: OculusConfig = g.guildConfig().oculus ?? {};
+        const port = oculusConfig.port ?? 7470;
+
+        const app = new Hono();
+
+        // Track registered pages and custom route paths
+        const pages: PageContribution[] = [];
+        const customRoutePaths = new Set<string>();
+        const mappedToolRoutes = new Set<string>();
+
+        // ── Custom route registration helper ─────────────────────────
+        function registerCustomRoute(route: RouteContribution, pluginId: string): void {
+          if (!route.path.startsWith('/api/')) {
+            console.warn(`[oculus] Custom route "${route.path}" from "${pluginId}" must start with /api/ — skipped`);
+            return;
+          }
+          const method = route.method.toLowerCase() as keyof typeof app;
+          (app[method] as (path: string, handler: (c: unknown) => unknown) => void)(
+            route.path,
+            route.handler as (c: unknown) => unknown,
+          );
+          customRoutePaths.add(route.path);
+        }
+
+        // ── Page serving helper ───────────────────────────────────────
+        function resolveDirForPackage(packageName: string, dir: string): string {
+          return path.join(g.home, 'node_modules', packageName, dir);
+        }
+
+        function registerPage(page: PageContribution, resolvedDir: string): void {
+          pages.push({ ...page });
+
+          app.get(`/pages/${page.id}/*`, async (c) => {
+            const requestPath = c.req.path;
+            const prefix = `/pages/${page.id}/`;
+            const filePath = requestPath.slice(prefix.length) || 'index.html';
+
+            // Prevent directory traversal
+            if (filePath.includes('..')) {
+              return c.text('Not found', 404);
+            }
+
+            const absolutePath = path.join(resolvedDir, filePath);
+
+            // Ensure file is within resolved dir
+            if (!absolutePath.startsWith(resolvedDir)) {
+              return c.text('Not found', 404);
+            }
+
+            try {
+              const content = fs.readFileSync(absolutePath);
+              const mimeType = getMimeType(absolutePath);
+
+              // Only inject chrome for the root index.html
+              const isIndexHtml = filePath === 'index.html' || filePath === '';
+              if (isIndexHtml && mimeType.startsWith('text/html')) {
+                const html = content.toString('utf-8');
+                const navHtml = buildNavHtml(pages);
+                const injected = injectChrome(html, '/static/style.css', navHtml);
+                return new Response(injected, {
+                  headers: { 'Content-Type': 'text/html; charset=utf-8' },
+                });
+              }
+
+              return new Response(content, {
+                headers: { 'Content-Type': mimeType },
+              });
+            } catch {
+              return c.text('Not found', 404);
+            }
+          });
+        }
+
+        // ── Tool route registration helper ───────────────────────────
+        function registerToolRoute(
+          toolDef: import('@shardworks/tools-apparatus').ToolDefinition,
+          instrumentarium: InstrumentariumApi,
+        ): void {
+          const routePath = toolNameToRoute(toolDef.name);
+          const method = permissionToMethod(toolDef.permission);
+
+          if (mappedToolRoutes.has(routePath)) return;
+
+          if (customRoutePaths.has(routePath)) {
+            console.warn(
+              `[oculus] Tool route ${method} ${routePath} conflicts with custom route from plugin — skipped`,
+            );
+            return;
+          }
+
+          void instrumentarium; // suppress unused warning
+
+          const shape = toolDef.params.shape as Record<string, z.ZodTypeAny>;
+
+          if (method === 'GET') {
+            app.get(routePath, async (c) => {
+              try {
+                const rawQuery = c.req.query();
+                const coerced = coerceParams(shape, rawQuery);
+                const validated = toolDef.params.parse(coerced);
+                const result = await toolDef.handler(validated);
+                return c.json(result);
+              } catch (err) {
+                if (err instanceof z.ZodError) {
+                  return c.json({ error: err.message, details: err.issues }, 400);
+                }
+                const message = err instanceof Error ? err.message : String(err);
+                return c.json({ error: message }, 500);
+              }
+            });
+          } else if (method === 'DELETE') {
+            app.delete(routePath, async (c) => {
+              try {
+                const body = await c.req.json();
+                const validated = toolDef.params.parse(body);
+                const result = await toolDef.handler(validated);
+                return c.json(result);
+              } catch (err) {
+                if (err instanceof z.ZodError) {
+                  return c.json({ error: err.message, details: err.issues }, 400);
+                }
+                const message = err instanceof Error ? err.message : String(err);
+                return c.json({ error: message }, 500);
+              }
+            });
+          } else {
+            app.post(routePath, async (c) => {
+              try {
+                const body = await c.req.json();
+                const validated = toolDef.params.parse(body);
+                const result = await toolDef.handler(validated);
+                return c.json(result);
+              } catch (err) {
+                if (err instanceof z.ZodError) {
+                  return c.json({ error: err.message, details: err.issues }, 400);
+                }
+                const message = err instanceof Error ? err.message : String(err);
+                return c.json({ error: message }, 500);
+              }
+            });
+          }
+
+          mappedToolRoutes.add(routePath);
+        }
+
+        // ── Scan contributions from a kit ────────────────────────────
+        function scanKit(kit: LoadedKit): void {
+          const oculusKit = kit.kit as OculusKit;
+
+          if (oculusKit.routes) {
+            for (const route of oculusKit.routes) {
+              registerCustomRoute(route, kit.id);
+            }
+          }
+
+          if (oculusKit.pages) {
+            for (const page of oculusKit.pages) {
+              const resolvedDir = resolveDirForPackage(kit.packageName, page.dir);
+              registerPage(page, resolvedDir);
+            }
+          }
+        }
+
+        function scanApparatus(apparatus: LoadedApparatus): void {
+          if (!apparatus.apparatus.supportKit) return;
+          const oculusKit = apparatus.apparatus.supportKit as OculusKit;
+
+          if (oculusKit.routes) {
+            for (const route of oculusKit.routes) {
+              registerCustomRoute(route, apparatus.id);
+            }
+          }
+
+          if (oculusKit.pages) {
+            for (const page of oculusKit.pages) {
+              const resolvedDir = resolveDirForPackage(apparatus.packageName, page.dir);
+              registerPage(page, resolvedDir);
+            }
+          }
+        }
+
+        // ── Scan existing kits and apparatuses ───────────────────────
+        for (const kit of g.kits()) {
+          scanKit(kit);
+        }
+        for (const apparatus of g.apparatuses()) {
+          scanApparatus(apparatus);
+        }
+
+        // ── Register custom routes first ─────────────────────────────
+        // (already done in scanKit/scanApparatus above)
+
+        // ── Register tool routes ─────────────────────────────────────
+        const instrumentarium = g.apparatus<InstrumentariumApi>('tools');
+        const allTools = instrumentarium.list();
+        const patronTools = allTools.filter(
+          (r) => !r.definition.callableBy || r.definition.callableBy.includes('patron'),
+        );
+
+        for (const resolved of patronTools) {
+          registerToolRoute(resolved.definition, instrumentarium);
+        }
+
+        // ── GET /api/_tools ──────────────────────────────────────────
+        app.get('/api/_tools', (c) => {
+          const tools = instrumentarium.list().filter(
+            (r) => !r.definition.callableBy || r.definition.callableBy.includes('patron'),
+          );
+
+          const entries = tools.map((r) => ({
+            name: r.definition.name,
+            route: toolNameToRoute(r.definition.name),
+            method: permissionToMethod(r.definition.permission),
+            description: r.definition.description,
+            params: extractParams(r.definition.params),
+          }));
+
+          return c.json(entries);
+        });
+
+        // ── Static assets ────────────────────────────────────────────
+        const staticDir = path.join(import.meta.dirname, 'static');
+        app.get('/static/*', (c) => {
+          const requestPath = c.req.path;
+          const filePath = requestPath.slice('/static/'.length);
+
+          if (filePath.includes('..')) {
+            return c.text('Not found', 404);
+          }
+
+          const absolutePath = path.join(staticDir, filePath);
+          try {
+            const content = fs.readFileSync(absolutePath);
+            const mimeType = getMimeType(absolutePath);
+            return new Response(content, {
+              headers: { 'Content-Type': mimeType },
+            });
+          } catch {
+            return c.text('Not found', 404);
+          }
+        });
+
+        // ── Home page ────────────────────────────────────────────────
+        app.get('/', (c) => {
+          const guildName = g.guildConfig().name;
+          const navHtml = buildNavHtml(pages);
+
+          const pageLinks =
+            pages.length > 0
+              ? pages
+                  .map(
+                    (p) =>
+                      `<li><a href="/pages/${p.id}/">${p.title}</a></li>`,
+                  )
+                  .join('\n        ')
+              : '<li class="empty-state">No pages registered.</li>';
+
+          const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${guildName} — Guild Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+${navHtml}
+<main style="padding: 24px;">
+  <h1>${guildName}</h1>
+  <div class="card">
+    <h2>Pages</h2>
+    <ul>
+        ${pageLinks}
+    </ul>
+  </div>
+</main>
+</body>
+</html>`;
+
+          return c.html(html);
+        });
+
+        // ── Late-arriving plugins ─────────────────────────────────────
+        ctx.on('plugin:initialized', (plugin: unknown) => {
+          const loaded = plugin as LoadedApparatus | LoadedKit;
+          if ('apparatus' in loaded) {
+            scanApparatus(loaded as LoadedApparatus);
+          } else if ('kit' in loaded) {
+            scanKit(loaded as LoadedKit);
+          }
+
+          // Check for new patron-callable tools
+          const currentTools = instrumentarium.list().filter(
+            (r) => !r.definition.callableBy || r.definition.callableBy.includes('patron'),
+          );
+          for (const resolved of currentTools) {
+            registerToolRoute(resolved.definition, instrumentarium);
+          }
+        });
+
+        // ── Start HTTP server ─────────────────────────────────────────
+        await new Promise<void>((resolve, reject) => {
+          server = serve({ fetch: app.fetch, port }, () => {
+            serverPort = port;
+            console.log(`[oculus] Listening on http://localhost:${port}`);
+            resolve();
+          }) as Server;
+          server.on('error', reject);
+        });
+      },
+
+      async stop(): Promise<void> {
+        if (server) {
+          await new Promise<void>((resolve, reject) => {
+            server!.close((err) => {
+              if (err) reject(err);
+              else resolve();
+            });
+          });
+          server = null;
+        }
+      },
+    },
+  };
+}

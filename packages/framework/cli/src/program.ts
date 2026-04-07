@@ -172,7 +172,7 @@ export async function main(): Promise<void> {
     try {
       const instrumentarium = guild().apparatus<InstrumentariumApi>('tools');
       const pluginTools = instrumentarium.list()
-        .filter((r) => !r.definition.callableBy || r.definition.callableBy.includes('cli'))
+        .filter((r) => !r.definition.callableBy || r.definition.callableBy.includes('patron'))
         .map((r) => r.definition);
       registerTools(program, pluginTools);
     } catch {

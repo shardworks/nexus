@@ -20,7 +20,7 @@ function makeTool(overrides: {
   name?: string;
   description?: string;
   permission?: string;
-  callableBy?: ('cli' | 'anima' | 'library')[];
+  callableBy?: ('patron' | 'anima' | 'library')[];
   handler?: () => unknown;
 } = {}) {
   return tool({
@@ -53,9 +53,9 @@ describe('createMcpServer()', () => {
 
   it('filters out tools not callable by animas', async () => {
     const tools = [
-      makeTool({ name: 'cli-only', callableBy: ['cli'] }),
+      makeTool({ name: 'cli-only', callableBy: ['patron'] }),
       makeTool({ name: 'anima-ok', callableBy: ['anima'] }),
-      makeTool({ name: 'both', callableBy: ['cli', 'anima'] }),
+      makeTool({ name: 'both', callableBy: ['patron', 'anima'] }),
       makeTool({ name: 'no-restriction' }), // no callableBy → available to everyone
     ];
 

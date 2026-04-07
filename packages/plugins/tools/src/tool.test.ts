@@ -30,14 +30,14 @@ describe('tool()', () => {
 
   it('normalizes callableBy single string to array', () => {
     const t = tool({
-      name: 'cli-tool',
+      name: 'patron-tool',
       description: 'CLI only',
       params: {},
       handler: async () => ({}),
-      callableBy: 'cli',
+      callableBy: 'patron',
     });
 
-    assert.deepStrictEqual(t.callableBy, ['cli']);
+    assert.deepStrictEqual(t.callableBy, ['patron']);
   });
 
   it('preserves callableBy when already an array', () => {
@@ -46,10 +46,10 @@ describe('tool()', () => {
       description: 'Both callers',
       params: {},
       handler: async () => ({}),
-      callableBy: ['cli', 'anima'],
+      callableBy: ['patron', 'anima'],
     });
 
-    assert.deepStrictEqual(t.callableBy, ['cli', 'anima']);
+    assert.deepStrictEqual(t.callableBy, ['patron', 'anima']);
   });
 
   it('omits callableBy when not provided', () => {
