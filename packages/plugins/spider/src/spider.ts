@@ -37,6 +37,7 @@ import type {
   BlockTypeInfo,
   CheckResult,
   RigTemplate,
+  RigTemplateEngine,
   RigTemplateInfo,
 } from './types.ts';
 
@@ -163,6 +164,73 @@ function normalizeVarRef(value: string): string {
 }
 
 /**
+ * Regex matching a valid yield reference after normalizeVarRef() stripping.
+ * '$yields.<engine_id>.<yield_name>' where engine_id allows hyphens and
+ * yield_name uses standard JS identifier characters.
+ */
+const YIELD_REF_RE = /^\$yields\.[a-zA-Z][a-zA-Z0-9-]*\.[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/**
+ * Compute the set of engine ids transitively reachable upstream of a given engine.
+ * Uses BFS over the template's upstream arrays.
+ */
+function computeUpstreamReachable(
+  engineId: string,
+  engines: RigTemplateEngine[],
+): Set<string> {
+  const engineMap = new Map(engines.map((e) => [e.id, e]));
+  const reachable = new Set<string>();
+  const queue: string[] = [...(engineMap.get(engineId)?.upstream ?? [])];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (reachable.has(current)) continue;
+    reachable.add(current);
+    const deps = engineMap.get(current)?.upstream ?? [];
+    queue.push(...deps);
+  }
+  return reachable;
+}
+
+/**
+ * Resolve yield references in a givens map using the upstream yields.
+ * '$yields.<engineId>.<prop>' → upstream[engineId][prop].
+ * Keys resolving to undefined are omitted.
+ * Non-yield-ref values are passed through unchanged.
+ */
+function resolveYieldRefs(
+  givensSpec: Record<string, unknown>,
+  upstream: Record<string, unknown>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(givensSpec)) {
+    if (typeof value === 'string' && YIELD_REF_RE.test(normalizeVarRef(value))) {
+      const normalized = normalizeVarRef(value);
+      // Extract engine_id and property from '$yields.<engine_id>.<property>'
+      const withoutPrefix = normalized.slice('$yields.'.length);
+      const dotIndex = withoutPrefix.indexOf('.');
+      const engineId = withoutPrefix.slice(0, dotIndex);
+      const prop = withoutPrefix.slice(dotIndex + 1);
+      const engineYields = upstream[engineId];
+      if (
+        engineYields !== null &&
+        engineYields !== undefined &&
+        typeof engineYields === 'object'
+      ) {
+        const resolved = (engineYields as Record<string, unknown>)[prop];
+        if (resolved !== undefined) {
+          result[key] = resolved;
+        }
+        // undefined property → omit key
+      }
+      // engine not in upstream (shouldn't happen — validated at startup) → omit key
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+/**
  * Resolve a template engine's givens map using a variables context.
  * '$writ' → WritDoc, '$vars.<key>' → spiderConfig.variables[key].
  * Keys resolving to undefined are omitted from the output.
@@ -187,6 +255,9 @@ function resolveGivens(
           result[key] = resolved;
         }
         // undefined → omit key entirely
+      } else if (YIELD_REF_RE.test(normalized)) {
+        // Yield references are resolved at run time — pass through as literal string
+        result[key] = value;
       }
       // Unrecognized $-prefixed strings are caught at validation time
     }
@@ -310,6 +381,29 @@ function validateTemplates(
             normalized === '$writ' ||
             /^\$vars\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(normalized)
           ) {
+            continue; // valid
+          }
+          if (YIELD_REF_RE.test(normalized)) {
+            // Extract engine_id from '$yields.<engine_id>.<property>'
+            const withoutPrefix = normalized.slice('$yields.'.length);
+            const dotIndex = withoutPrefix.indexOf('.');
+            const refEngineId = withoutPrefix.slice(0, dotIndex);
+            const yieldProp = withoutPrefix.slice(dotIndex + 1);
+
+            // Check engine_id exists in template
+            if (!engineIds.has(refEngineId)) {
+              throw new Error(
+                `[spider] rigTemplates.${templateKey}: engine "${engine.id}" references $yields.${refEngineId} but "${refEngineId}" is not an engine in this template`
+              );
+            }
+
+            // Check engine_id is transitively upstream
+            const reachable = computeUpstreamReachable(engine.id, engines);
+            if (!reachable.has(refEngineId)) {
+              throw new Error(
+                `[spider] rigTemplates.${templateKey}: engine "${engine.id}" references $yields.${refEngineId}.${yieldProp} but "${refEngineId}" is not upstream of "${engine.id}"`
+              );
+            }
             continue; // valid
           }
           throw new Error(
@@ -637,6 +731,22 @@ class RigTemplateRegistry {
           ) {
             continue;
           }
+          if (YIELD_REF_RE.test(normalized)) {
+            const withoutPrefix = normalized.slice('$yields.'.length);
+            const dotIndex = withoutPrefix.indexOf('.');
+            const refEngineId = withoutPrefix.slice(0, dotIndex);
+            const yieldProp = withoutPrefix.slice(dotIndex + 1);
+
+            if (!engineIds.has(refEngineId)) {
+              return `${prefix}: engine "${engine.id}" references $yields.${refEngineId} but "${refEngineId}" is not an engine in this template`;
+            }
+
+            const reachable = computeUpstreamReachable(engine.id, template.engines);
+            if (!reachable.has(refEngineId)) {
+              return `${prefix}: engine "${engine.id}" references $yields.${refEngineId}.${yieldProp} but "${refEngineId}" is not upstream of "${engine.id}"`;
+            }
+            continue;
+          }
           return `${prefix}: engine "${engine.id}" has unrecognized variable "${value}"`;
         }
       }
@@ -869,8 +979,8 @@ export function createSpider(): Plugin {
         const design = fabricator.getEngineDesign(engine.designId);
         let yields: unknown;
         if (design?.collect) {
-          const givens = { ...engine.givensSpec };
           const upstream = buildUpstreamMap(rig);
+          const givens = resolveYieldRefs({ ...engine.givensSpec }, upstream);
           const context = { rigId: rig.id, engineId: engine.id, upstream };
           yields = await design.collect(engine.sessionId!, givens, context);
         } else {
@@ -1023,7 +1133,7 @@ export function createSpider(): Plugin {
 
       const now = new Date().toISOString();
       const upstream = buildUpstreamMap(rig);
-      const givens = { ...pending.givensSpec };
+      const givens = resolveYieldRefs({ ...pending.givensSpec }, upstream);
 
       // Check for a prior block record (engine was previously blocked and unblocked)
       const priorBlockKey = `${rig.id}:${pending.id}`;

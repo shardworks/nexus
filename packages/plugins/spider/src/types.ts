@@ -40,9 +40,9 @@ export interface BlockRecord {
  * `id` is the engine's position identifier (e.g. 'draft', 'implement').
  * For the static pipeline it matches `designId`.
  *
- * `givensSpec` holds literal values set at spawn time (writ, role, commands).
- * The Spider assembles `givens` from this directly; upstream yields arrive
- * via `context.upstream` as the escape hatch.
+ * `givensSpec` holds values set at spawn time (writ, role, commands) and
+ * may contain unresolved yield reference strings ('$yields.<id>.<prop>')
+ * that the Spider resolves at run time from upstream engine yields.
  */
 export interface EngineInstance {
   /** Unique identifier within the rig (e.g. 'draft', 'implement'). */
@@ -53,7 +53,11 @@ export interface EngineInstance {
   status: EngineStatus;
   /** Engine IDs that must be completed before this engine can run. */
   upstream: string[];
-  /** Literal givens values set at rig spawn time. */
+  /**
+   * Givens values. Spawn-time references ($writ, $vars.*) are resolved to
+   * their values. Yield references ($yields.*.*) remain as strings and are
+   * resolved at run time when the engine is executed.
+   */
   givensSpec: Record<string, unknown>;
   /** Yields from a completed engine run (JSON-serializable). */
   yields?: unknown;
@@ -124,11 +128,13 @@ export interface RigTemplateEngine {
   /** Engine ids within this template whose completion is required first. Defaults to []. */
   upstream?: string[];
   /**
-   * Givens to pass at spawn time.
+   * Givens to pass to the engine.
    * String values starting with '$' (either $name or ${name}) are variable
-   * references resolved at spawn time:
+   * references:
    *   '$writ' or '${writ}' — the WritDoc for this rig's writ
    *   '$vars.<key>' or '${vars.<key>}' — value from spider.variables config
+   *   '$yields.<engine_id>.<property>' or '${yields.<engine_id>.<property>}'
+   *       — a property from an upstream engine's yields (resolved at run time)
    * Non-string values are passed through literally.
    * Variables that resolve to undefined cause the key to be omitted.
    */
