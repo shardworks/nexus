@@ -14,7 +14,7 @@ import type { Server } from 'node:http';
 import { z } from 'zod';
 
 import type { Plugin, StartupContext, LoadedKit, LoadedApparatus } from '@shardworks/nexus-core';
-import { guild } from '@shardworks/nexus-core';
+import { guild, VERSION } from '@shardworks/nexus-core';
 import type { InstrumentariumApi } from '@shardworks/tools-apparatus';
 import { tool } from '@shardworks/tools-apparatus';
 
@@ -139,6 +139,15 @@ function buildNavHtml(pages: PageContribution[]): string {
   <a href="/">Guild</a>
   ${pageLinks}
 </nav>`;
+}
+
+// ── HTML escaping ─────────────────────────────────────────────────────
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 // ── Tool param extraction (reimplemented from tools-show) ────────────
@@ -414,6 +423,23 @@ export function createOculus(): Plugin {
           registerToolRoute(resolved.definition, instrumentarium);
         }
 
+        // ── GET /api/_status ─────────────────────────────────────────
+        app.get('/api/_status', (c) => {
+          const config = g.guildConfig();
+          return c.json({
+            guild: config.name,
+            nexus: VERSION,
+            home: g.home,
+            model: config.settings?.model ?? '(not set)',
+            port: port,
+            apparatuses: g.apparatuses().map((a) => ({ id: a.id, version: a.version })),
+            kits: g.kits().map((k) => ({ id: k.id, version: k.version })),
+            failedPlugins: g.failedPlugins().map((f) => ({ id: f.id, reason: f.reason })),
+            warnings: g.startupWarnings(),
+            config: config,
+          });
+        });
+
         // ── GET /api/_tools ──────────────────────────────────────────
         app.get('/api/_tools', (c) => {
           const tools = instrumentarium.list().filter(
@@ -455,37 +481,114 @@ export function createOculus(): Plugin {
 
         // ── Home page ────────────────────────────────────────────────
         app.get('/', (c) => {
-          const guildName = g.guildConfig().name;
+          const config = g.guildConfig();
+          const guildName = config.name;
           const navHtml = buildNavHtml(pages);
+          const model = config.settings?.model ?? '(not set)';
 
-          const pageLinks =
-            pages.length > 0
-              ? pages
-                  .map(
-                    (p) =>
-                      `<li><a href="/pages/${p.id}/">${p.title}</a></li>`,
-                  )
-                  .join('\n        ')
-              : '<li class="empty-state">No pages registered.</li>';
+          // ── Identity card ──────────────────────────────────────────
+          const identityCard = `<div class="card" style="margin-bottom: 16px;">
+    <h2>Identity</h2>
+    <table class="data-table">
+      <tbody>
+        <tr><td>Guild</td><td>${escapeHtml(guildName)}</td></tr>
+        <tr><td>Nexus</td><td>${escapeHtml(VERSION)}</td></tr>
+        <tr><td>Home</td><td>${escapeHtml(g.home)}</td></tr>
+        <tr><td>Model</td><td>${escapeHtml(model)}</td></tr>
+        <tr><td>Port</td><td>${port}</td></tr>
+      </tbody>
+    </table>
+  </div>`;
+
+          // ── Warnings card (conditional) ────────────────────────────
+          const warnings = g.startupWarnings();
+          const warningsCard = warnings.length > 0
+            ? `<div class="card" style="margin-bottom: 16px;">
+    <h2>Warnings</h2>
+    <ul>
+      ${warnings.map((w) => `<li><span class="badge badge--warning">${escapeHtml(w)}</span></li>`).join('\n      ')}
+    </ul>
+  </div>`
+            : '';
+
+          // ── Plugins table ──────────────────────────────────────────
+          const apparatuses = g.apparatuses();
+          const kits = g.kits();
+          const failedPlugins = g.failedPlugins();
+
+          let pluginRows = '';
+          if (apparatuses.length === 0 && kits.length === 0 && failedPlugins.length === 0) {
+            pluginRows = `<tr><td colspan="4" class="empty-state">No plugins loaded.</td></tr>`;
+          } else {
+            pluginRows += apparatuses.map((a) =>
+              `<tr>
+          <td>${escapeHtml(a.id)}</td>
+          <td>apparatus</td>
+          <td>${escapeHtml(a.version)}</td>
+          <td><span class="badge badge--success">apparatus</span></td>
+        </tr>`,
+            ).join('\n');
+            pluginRows += kits.map((k) =>
+              `<tr>
+          <td>${escapeHtml(k.id)}</td>
+          <td>kit</td>
+          <td>${escapeHtml(k.version)}</td>
+          <td><span class="badge badge--info">kit</span></td>
+        </tr>`,
+            ).join('\n');
+            pluginRows += failedPlugins.map((f) =>
+              `<tr>
+          <td>${escapeHtml(f.id)}</td>
+          <td>—</td>
+          <td>—</td>
+          <td><span class="badge badge--error" title="${escapeHtml(f.reason)}">failed</span> <span style="color: var(--text-dim); font-size: 11px;">${escapeHtml(f.reason)}</span></td>
+        </tr>`,
+            ).join('\n');
+          }
+
+          const pluginsCard = `<div class="card" style="margin-bottom: 16px;">
+    <h2>Plugins</h2>
+    <table class="data-table">
+      <thead>
+        <tr><th>Id</th><th>Type</th><th>Version</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        ${pluginRows}
+      </tbody>
+    </table>
+  </div>`;
+
+          // ── Configuration card ─────────────────────────────────────
+          let rawConfig = '';
+          try {
+            rawConfig = fs.readFileSync(path.join(g.home, 'guild.json'), 'utf-8');
+          } catch {
+            rawConfig = '(unable to read guild.json)';
+          }
+
+          const configCard = `<div class="card">
+    <details>
+      <summary>guild.json</summary>
+      <pre class="config-block"><code>${escapeHtml(rawConfig)}</code></pre>
+    </details>
+  </div>`;
 
           const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${guildName} — Guild Dashboard</title>
+  <title>${escapeHtml(guildName)} — Guild Dashboard</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 ${navHtml}
 <main style="padding: 24px;">
-  <h1>${guildName}</h1>
-  <div class="card">
-    <h2>Pages</h2>
-    <ul>
-        ${pageLinks}
-    </ul>
-  </div>
+  <h1>${escapeHtml(guildName)}</h1>
+  ${identityCard}
+  ${warningsCard}
+  ${pluginsCard}
+  ${configCard}
 </main>
 </body>
 </html>`;

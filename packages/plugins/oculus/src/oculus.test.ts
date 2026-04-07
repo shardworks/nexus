@@ -102,12 +102,16 @@ function wireGuild(opts: {
   home: string;
   kits?: LoadedKit[];
   apparatuses?: LoadedApparatus[];
+  failedPlugins?: import('@shardworks/nexus-core').FailedPlugin[];
   instrumentarium: InstrumentariumApi;
   guildName?: string;
   oculusPort?: number;
+  model?: string;
+  startupWarnings?: string[];
 }): void {
   const kits = opts.kits ?? [];
   const apparatuses = opts.apparatuses ?? [];
+  const failedPlugins = opts.failedPlugins ?? [];
   const oculusPort = opts.oculusPort;
 
   const mockGuild: Guild = {
@@ -125,12 +129,14 @@ function wireGuild(opts: {
         name: opts.guildName ?? 'test-guild',
         nexus: '0.0.0',
         plugins: [],
+        ...(opts.model !== undefined ? { settings: { model: opts.model } } : {}),
         ...(oculusPort !== undefined ? { oculus: { port: oculusPort } } : {}),
       };
     },
     kits() { return [...kits]; },
     apparatuses() { return [...apparatuses]; },
-    failedPlugins() { return []; },
+    failedPlugins() { return [...failedPlugins]; },
+    startupWarnings() { return [...(opts.startupWarnings ?? [])]; },
   };
   setGuild(mockGuild);
 }
@@ -449,9 +455,10 @@ describe('Oculus static assets', () => {
 describe('Oculus home page', () => {
   let port: number;
   let oculusPlugin: ReturnType<typeof createOculus>;
+  let guildHome: string;
 
   before(async () => {
-    const home = makeTmpDir();
+    guildHome = makeTmpDir();
     port = 17790 + Math.floor(Math.random() * 100);
 
     const pages: PageContribution[] = [
@@ -461,11 +468,17 @@ describe('Oculus home page', () => {
     const instrumentarium = createMockInstrumentarium([]);
 
     // Create minimal node_modules structure for the page
-    const nmDir = path.join(home, 'node_modules', '@test', 'my-kit', 'pages', 'dash');
+    const nmDir = path.join(guildHome, 'node_modules', '@test', 'my-kit', 'pages', 'dash');
     fs.mkdirSync(nmDir, { recursive: true });
     fs.writeFileSync(path.join(nmDir, 'index.html'), '<html><head></head><body>Dash</body></html>');
 
-    wireGuild({ home, kits, instrumentarium, guildName: 'my-guild', oculusPort: port });
+    // Write guild.json to the home dir for the config display
+    fs.writeFileSync(
+      path.join(guildHome, 'guild.json'),
+      JSON.stringify({ name: 'my-guild', nexus: '0.0.0', plugins: [] }, null, 2),
+    );
+
+    wireGuild({ home: guildHome, kits, instrumentarium, guildName: 'my-guild', oculusPort: port });
 
     oculusPlugin = createOculus();
     const { ctx } = buildTestContext();
@@ -482,14 +495,404 @@ describe('Oculus home page', () => {
     cleanupTmpDir();
   });
 
-  it('returns HTML with guild name and page links', async () => {
+  it('returns HTML with guild name and nav page links', async () => {
     const res = await fetch(`http://localhost:${port}/`);
     assert.equal(res.status, 200);
     const text = await res.text();
     assert.ok(text.includes('my-guild'));
-    assert.ok(text.includes('/pages/dash/'));
     assert.ok(text.includes('/static/style.css'));
     assert.ok(text.includes('<nav id="oculus-nav">'));
+    // Nav bar still has page links
+    assert.ok(text.includes('/pages/dash/'));
+  });
+
+  it('does not contain a Pages widget heading', async () => {
+    const res = await fetch(`http://localhost:${port}/`);
+    const text = await res.text();
+    // Old "Pages" card heading must be gone
+    assert.ok(!text.includes('<h2>Pages</h2>'));
+  });
+
+  it('contains identity card with guild name, nexus, home, model, port', async () => {
+    const res = await fetch(`http://localhost:${port}/`);
+    const text = await res.text();
+    assert.ok(text.includes('my-guild'));
+    assert.ok(text.includes('Nexus'));
+    assert.ok(text.includes('Home'));
+    assert.ok(text.includes('Model'));
+    assert.ok(text.includes('Port'));
+    assert.ok(text.includes(String(port)));
+  });
+
+  it('shows (not set) when model is absent', async () => {
+    const res = await fetch(`http://localhost:${port}/`);
+    const text = await res.text();
+    assert.ok(text.includes('(not set)'));
+  });
+
+  it('contains guild.json config block inside details/summary', async () => {
+    const res = await fetch(`http://localhost:${port}/`);
+    const text = await res.text();
+    assert.ok(text.includes('<details'));
+    assert.ok(text.includes('<summary'));
+    assert.ok(text.includes('guild.json'));
+    assert.ok(text.includes('<pre'));
+    // Raw JSON content should appear (escaped)
+    assert.ok(text.includes('"my-guild"') || text.includes('&quot;my-guild&quot;') || text.includes('my-guild'));
+  });
+
+  it('does not contain a script tag (no client-side JS)', async () => {
+    const res = await fetch(`http://localhost:${port}/`);
+    const text = await res.text();
+    assert.ok(!text.includes('<script'));
+  });
+
+  it('does not show warnings card when there are no warnings', async () => {
+    const res = await fetch(`http://localhost:${port}/`);
+    const text = await res.text();
+    assert.ok(!text.includes('<h2>Warnings</h2>'));
+  });
+});
+
+// ── Integration tests: home page — identity with model ───────────────
+
+describe('Oculus home page — model set', () => {
+  let port: number;
+  let oculusPlugin: ReturnType<typeof createOculus>;
+
+  before(async () => {
+    const home = makeTmpDir();
+    port = 17830 + Math.floor(Math.random() * 100);
+    const instrumentarium = createMockInstrumentarium([]);
+    fs.writeFileSync(path.join(home, 'guild.json'), JSON.stringify({ name: 'test-guild', nexus: '0.0.0', plugins: [] }));
+    wireGuild({ home, instrumentarium, guildName: 'test-guild', oculusPort: port, model: 'claude-opus-4' });
+    oculusPlugin = createOculus();
+    const { ctx } = buildTestContext();
+    if ('apparatus' in oculusPlugin) { await oculusPlugin.apparatus.start(ctx); }
+  });
+
+  after(async () => {
+    if (oculusPlugin && 'apparatus' in oculusPlugin) { await oculusPlugin.apparatus.stop?.(); }
+    clearGuild();
+    cleanupTmpDir();
+  });
+
+  it('shows model name when set', async () => {
+    const res = await fetch(`http://localhost:${port}/`);
+    const text = await res.text();
+    assert.ok(text.includes('claude-opus-4'));
+    assert.ok(!text.includes('(not set)'));
+  });
+});
+
+// ── Integration tests: home page — warnings ───────────────────────────
+
+describe('Oculus home page — startup warnings', () => {
+  let port: number;
+  let oculusPlugin: ReturnType<typeof createOculus>;
+
+  before(async () => {
+    const home = makeTmpDir();
+    port = 17840 + Math.floor(Math.random() * 100);
+    const instrumentarium = createMockInstrumentarium([]);
+    fs.writeFileSync(path.join(home, 'guild.json'), JSON.stringify({ name: 'test-guild', nexus: '0.0.0', plugins: [] }));
+    wireGuild({
+      home,
+      instrumentarium,
+      guildName: 'test-guild',
+      oculusPort: port,
+      startupWarnings: ['[arbor] warn: "x" recommends "y" but it is not installed.'],
+    });
+    oculusPlugin = createOculus();
+    const { ctx } = buildTestContext();
+    if ('apparatus' in oculusPlugin) { await oculusPlugin.apparatus.start(ctx); }
+  });
+
+  after(async () => {
+    if (oculusPlugin && 'apparatus' in oculusPlugin) { await oculusPlugin.apparatus.stop?.(); }
+    clearGuild();
+    cleanupTmpDir();
+  });
+
+  it('shows Warnings card when warnings are present', async () => {
+    const res = await fetch(`http://localhost:${port}/`);
+    const text = await res.text();
+    assert.ok(text.includes('Warnings'));
+    assert.ok(text.includes('[arbor] warn'));
+  });
+});
+
+// ── Integration tests: home page — plugins table ──────────────────────
+
+describe('Oculus home page — plugins table', () => {
+  let port: number;
+  let oculusPlugin: ReturnType<typeof createOculus>;
+
+  before(async () => {
+    const home = makeTmpDir();
+    port = 17850 + Math.floor(Math.random() * 100);
+    const instrumentarium = createMockInstrumentarium([]);
+
+    const apparatuses: LoadedApparatus[] = [
+      {
+        packageName: '@test/tools',
+        id: 'tools',
+        version: '1.0.0',
+        apparatus: {
+          requires: [],
+          provides: {},
+          async start() {},
+        },
+      },
+    ];
+    const kits: LoadedKit[] = [mockKit('my-kit', [], undefined, undefined)];
+    kits[0] = { ...kits[0], version: '2.0.0' };
+
+    const failedPlugins: import('@shardworks/nexus-core').FailedPlugin[] = [
+      { id: 'broken', reason: 'missing dependency' },
+    ];
+
+    fs.writeFileSync(path.join(home, 'guild.json'), JSON.stringify({ name: 'test-guild', nexus: '0.0.0', plugins: [] }));
+    wireGuild({ home, instrumentarium, guildName: 'test-guild', oculusPort: port, apparatuses, kits, failedPlugins });
+    oculusPlugin = createOculus();
+    const { ctx } = buildTestContext();
+    if ('apparatus' in oculusPlugin) { await oculusPlugin.apparatus.start(ctx); }
+  });
+
+  after(async () => {
+    if (oculusPlugin && 'apparatus' in oculusPlugin) { await oculusPlugin.apparatus.stop?.(); }
+    clearGuild();
+    cleanupTmpDir();
+  });
+
+  it('shows apparatus rows with badge--success', async () => {
+    const res = await fetch(`http://localhost:${port}/`);
+    const text = await res.text();
+    assert.ok(text.includes('badge--success'));
+    assert.ok(text.includes('tools'));
+  });
+
+  it('shows kit rows with badge--info', async () => {
+    const res = await fetch(`http://localhost:${port}/`);
+    const text = await res.text();
+    assert.ok(text.includes('badge--info'));
+    assert.ok(text.includes('my-kit'));
+  });
+
+  it('shows failed plugin rows with badge--error and reason', async () => {
+    const res = await fetch(`http://localhost:${port}/`);
+    const text = await res.text();
+    assert.ok(text.includes('badge--error'));
+    assert.ok(text.includes('broken'));
+    assert.ok(text.includes('missing dependency'));
+  });
+
+  it('shows a table with data-table class', async () => {
+    const res = await fetch(`http://localhost:${port}/`);
+    const text = await res.text();
+    assert.ok(text.includes('data-table'));
+  });
+});
+
+// ── Integration tests: home page — HTML escaping ──────────────────────
+
+describe('Oculus home page — HTML escaping', () => {
+  let port: number;
+  let oculusPlugin: ReturnType<typeof createOculus>;
+
+  before(async () => {
+    const home = makeTmpDir();
+    port = 17860 + Math.floor(Math.random() * 100);
+    const instrumentarium = createMockInstrumentarium([]);
+    // Write guild.json with content that needs escaping
+    fs.writeFileSync(
+      path.join(home, 'guild.json'),
+      '{"name":"test","nexus":"0.0.0","plugins":[],"evil":"<script>alert(\\"xss\\")</script>"}',
+    );
+    wireGuild({ home, instrumentarium, guildName: 'test-guild', oculusPort: port });
+    oculusPlugin = createOculus();
+    const { ctx } = buildTestContext();
+    if ('apparatus' in oculusPlugin) { await oculusPlugin.apparatus.start(ctx); }
+  });
+
+  after(async () => {
+    if (oculusPlugin && 'apparatus' in oculusPlugin) { await oculusPlugin.apparatus.stop?.(); }
+    clearGuild();
+    cleanupTmpDir();
+  });
+
+  it('HTML-escapes the guild.json content in config block', async () => {
+    const res = await fetch(`http://localhost:${port}/`);
+    const text = await res.text();
+    assert.ok(text.includes('&lt;script&gt;'));
+    assert.ok(!text.match(/<script>alert/));
+  });
+});
+
+// ── Integration tests: /api/_status ───────────────────────────────────
+
+describe('Oculus /api/_status', () => {
+  let port: number;
+  let oculusPlugin: ReturnType<typeof createOculus>;
+
+  before(async () => {
+    const home = makeTmpDir();
+    port = 17870 + Math.floor(Math.random() * 100);
+    const instrumentarium = createMockInstrumentarium([]);
+
+    const apparatuses: LoadedApparatus[] = [
+      {
+        packageName: '@test/tools',
+        id: 'tools',
+        version: '1.2.3',
+        apparatus: {
+          requires: [],
+          provides: {},
+          async start() {},
+        },
+      },
+    ];
+    const kits: LoadedKit[] = [{ ...mockKit('my-kit', []), version: '4.5.6' }];
+
+    fs.writeFileSync(path.join(home, 'guild.json'), JSON.stringify({ name: 'test-guild', nexus: '0.0.0', plugins: [] }));
+    wireGuild({
+      home,
+      instrumentarium,
+      guildName: 'status-guild',
+      oculusPort: port,
+      apparatuses,
+      kits,
+    });
+    oculusPlugin = createOculus();
+    const { ctx } = buildTestContext();
+    if ('apparatus' in oculusPlugin) { await oculusPlugin.apparatus.start(ctx); }
+  });
+
+  after(async () => {
+    if (oculusPlugin && 'apparatus' in oculusPlugin) { await oculusPlugin.apparatus.stop?.(); }
+    clearGuild();
+    cleanupTmpDir();
+  });
+
+  it('returns 200 with JSON', async () => {
+    const res = await fetch(`http://localhost:${port}/api/_status`);
+    assert.equal(res.status, 200);
+    const data = await res.json() as Record<string, unknown>;
+    assert.ok(typeof data === 'object');
+  });
+
+  it('has all required top-level keys', async () => {
+    const res = await fetch(`http://localhost:${port}/api/_status`);
+    const data = await res.json() as Record<string, unknown>;
+    for (const key of ['guild', 'nexus', 'home', 'model', 'port', 'apparatuses', 'kits', 'failedPlugins', 'warnings', 'config']) {
+      assert.ok(key in data, `missing key: ${key}`);
+    }
+  });
+
+  it('guild name is correct', async () => {
+    const res = await fetch(`http://localhost:${port}/api/_status`);
+    const data = await res.json() as Record<string, unknown>;
+    assert.equal(data.guild, 'status-guild');
+  });
+
+  it('apparatuses is array with id and version', async () => {
+    const res = await fetch(`http://localhost:${port}/api/_status`);
+    const data = await res.json() as Record<string, unknown>;
+    assert.ok(Array.isArray(data.apparatuses));
+    const apps = data.apparatuses as Array<{ id: string; version: string }>;
+    assert.equal(apps.length, 1);
+    assert.equal(apps[0].id, 'tools');
+    assert.equal(apps[0].version, '1.2.3');
+  });
+
+  it('kits is array with id and version', async () => {
+    const res = await fetch(`http://localhost:${port}/api/_status`);
+    const data = await res.json() as Record<string, unknown>;
+    assert.ok(Array.isArray(data.kits));
+    const ks = data.kits as Array<{ id: string; version: string }>;
+    assert.equal(ks.length, 1);
+    assert.equal(ks[0].id, 'my-kit');
+    assert.equal(ks[0].version, '4.5.6');
+  });
+
+  it('failedPlugins and warnings are empty arrays', async () => {
+    const res = await fetch(`http://localhost:${port}/api/_status`);
+    const data = await res.json() as Record<string, unknown>;
+    assert.ok(Array.isArray(data.failedPlugins));
+    assert.equal((data.failedPlugins as unknown[]).length, 0);
+    assert.ok(Array.isArray(data.warnings));
+    assert.equal((data.warnings as unknown[]).length, 0);
+  });
+
+  it('config is an object not a string', async () => {
+    const res = await fetch(`http://localhost:${port}/api/_status`);
+    const data = await res.json() as Record<string, unknown>;
+    assert.equal(typeof data.config, 'object');
+    assert.ok(data.config !== null);
+  });
+
+  it('model is (not set) when not configured', async () => {
+    const res = await fetch(`http://localhost:${port}/api/_status`);
+    const data = await res.json() as Record<string, unknown>;
+    assert.equal(data.model, '(not set)');
+  });
+
+  it('port matches the configured port', async () => {
+    const res = await fetch(`http://localhost:${port}/api/_status`);
+    const data = await res.json() as Record<string, unknown>;
+    assert.equal(data.port, port);
+  });
+});
+
+// ── Integration tests: /api/_status with failed plugins and warnings ──
+
+describe('Oculus /api/_status — failed plugins and warnings', () => {
+  let port: number;
+  let oculusPlugin: ReturnType<typeof createOculus>;
+
+  before(async () => {
+    const home = makeTmpDir();
+    port = 17880 + Math.floor(Math.random() * 100);
+    const instrumentarium = createMockInstrumentarium([]);
+    const failedPlugins: import('@shardworks/nexus-core').FailedPlugin[] = [
+      { id: 'broken', reason: 'missing dependency' },
+    ];
+    fs.writeFileSync(path.join(home, 'guild.json'), JSON.stringify({ name: 'test-guild', nexus: '0.0.0', plugins: [] }));
+    wireGuild({
+      home,
+      instrumentarium,
+      guildName: 'test-guild',
+      oculusPort: port,
+      failedPlugins,
+      startupWarnings: ['warning one', 'warning two'],
+    });
+    oculusPlugin = createOculus();
+    const { ctx } = buildTestContext();
+    if ('apparatus' in oculusPlugin) { await oculusPlugin.apparatus.start(ctx); }
+  });
+
+  after(async () => {
+    if (oculusPlugin && 'apparatus' in oculusPlugin) { await oculusPlugin.apparatus.stop?.(); }
+    clearGuild();
+    cleanupTmpDir();
+  });
+
+  it('failedPlugins contains entries with id and reason', async () => {
+    const res = await fetch(`http://localhost:${port}/api/_status`);
+    const data = await res.json() as Record<string, unknown>;
+    const fp = data.failedPlugins as Array<{ id: string; reason: string }>;
+    assert.equal(fp.length, 1);
+    assert.equal(fp[0].id, 'broken');
+    assert.equal(fp[0].reason, 'missing dependency');
+  });
+
+  it('warnings contains string entries', async () => {
+    const res = await fetch(`http://localhost:${port}/api/_status`);
+    const data = await res.json() as Record<string, unknown>;
+    const w = data.warnings as string[];
+    assert.equal(w.length, 2);
+    assert.ok(w.includes('warning one'));
+    assert.ok(w.includes('warning two'));
   });
 });
 

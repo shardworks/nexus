@@ -120,7 +120,8 @@ export async function createGuild(root?: string): Promise<Guild> {
 
   // ── Startup warnings ───────────────────────────────────────────────
 
-  for (const warning of collectStartupWarnings(kits, apparatuses)) {
+  const allWarnings = collectStartupWarnings(kits, apparatuses);
+  for (const warning of allWarnings) {
     console.warn(warning);
   }
 
@@ -171,9 +172,10 @@ export async function createGuild(root?: string): Promise<Guild> {
       return config;
     },
 
-    kits()          { return [...kits]; },
-    apparatuses()   { return [...orderedApparatuses]; },
-    failedPlugins() { return [...allFailures]; },
+    kits()             { return [...kits]; },
+    apparatuses()      { return [...orderedApparatuses]; },
+    failedPlugins()    { return [...allFailures]; },
+    startupWarnings()  { return [...allWarnings]; },
   };
   setGuild(guildInstance);
 

@@ -73,6 +73,9 @@ export interface Guild {
 
   /** Snapshot of plugins that failed to load, validate, or start. */
   failedPlugins(): FailedPlugin[]
+
+  /** Advisory warnings collected during guild startup (missing recommends, unconsumed contributions). */
+  startupWarnings(): string[]
 }
 
 // ── Singleton ──────────────────────────────────────────────────────────
