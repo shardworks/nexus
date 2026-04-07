@@ -607,7 +607,11 @@ describe('Oculus home page — model set', () => {
     wireGuild({ home, instrumentarium, guildName: 'test-guild', oculusPort: port, model: 'claude-opus-4' });
     oculusPlugin = createOculus();
     const { ctx } = buildTestContext();
-    if ('apparatus' in oculusPlugin) { await oculusPlugin.apparatus.start(ctx); }
+    if ('apparatus' in oculusPlugin) {
+      await oculusPlugin.apparatus.start(ctx);
+      const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
+      await api.startServer();
+    }
   });
 
   after(async () => {
@@ -644,7 +648,11 @@ describe('Oculus home page — startup warnings', () => {
     });
     oculusPlugin = createOculus();
     const { ctx } = buildTestContext();
-    if ('apparatus' in oculusPlugin) { await oculusPlugin.apparatus.start(ctx); }
+    if ('apparatus' in oculusPlugin) {
+      await oculusPlugin.apparatus.start(ctx);
+      const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
+      await api.startServer();
+    }
   });
 
   after(async () => {
@@ -695,7 +703,11 @@ describe('Oculus home page — plugins table', () => {
     wireGuild({ home, instrumentarium, guildName: 'test-guild', oculusPort: port, apparatuses, kits, failedPlugins });
     oculusPlugin = createOculus();
     const { ctx } = buildTestContext();
-    if ('apparatus' in oculusPlugin) { await oculusPlugin.apparatus.start(ctx); }
+    if ('apparatus' in oculusPlugin) {
+      await oculusPlugin.apparatus.start(ctx);
+      const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
+      await api.startServer();
+    }
   });
 
   after(async () => {
@@ -751,7 +763,11 @@ describe('Oculus home page — HTML escaping', () => {
     wireGuild({ home, instrumentarium, guildName: 'test-guild', oculusPort: port });
     oculusPlugin = createOculus();
     const { ctx } = buildTestContext();
-    if ('apparatus' in oculusPlugin) { await oculusPlugin.apparatus.start(ctx); }
+    if ('apparatus' in oculusPlugin) {
+      await oculusPlugin.apparatus.start(ctx);
+      const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
+      await api.startServer();
+    }
   });
 
   after(async () => {
@@ -804,7 +820,11 @@ describe('Oculus /api/_status', () => {
     });
     oculusPlugin = createOculus();
     const { ctx } = buildTestContext();
-    if ('apparatus' in oculusPlugin) { await oculusPlugin.apparatus.start(ctx); }
+    if ('apparatus' in oculusPlugin) {
+      await oculusPlugin.apparatus.start(ctx);
+      const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
+      await api.startServer();
+    }
   });
 
   after(async () => {
@@ -907,7 +927,11 @@ describe('Oculus /api/_status — failed plugins and warnings', () => {
     });
     oculusPlugin = createOculus();
     const { ctx } = buildTestContext();
-    if ('apparatus' in oculusPlugin) { await oculusPlugin.apparatus.start(ctx); }
+    if ('apparatus' in oculusPlugin) {
+      await oculusPlugin.apparatus.start(ctx);
+      const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
+      await api.startServer();
+    }
   });
 
   after(async () => {

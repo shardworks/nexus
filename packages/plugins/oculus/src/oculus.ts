@@ -452,7 +452,7 @@ export function createOculus(): Plugin {
             nexus: VERSION,
             home: g.home,
             model: config.settings?.model ?? '(not set)',
-            port: port,
+            port: serverPort,
             apparatuses: g.apparatuses().map((a) => ({ id: a.id, version: a.version })),
             kits: g.kits().map((k) => ({ id: k.id, version: k.version })),
             failedPlugins: g.failedPlugins().map((f) => ({ id: f.id, reason: f.reason })),
@@ -516,7 +516,7 @@ export function createOculus(): Plugin {
         <tr><td>Nexus</td><td>${escapeHtml(VERSION)}</td></tr>
         <tr><td>Home</td><td>${escapeHtml(g.home)}</td></tr>
         <tr><td>Model</td><td>${escapeHtml(model)}</td></tr>
-        <tr><td>Port</td><td>${port}</td></tr>
+        <tr><td>Port</td><td>${serverPort}</td></tr>
       </tbody>
     </table>
   </div>`;
