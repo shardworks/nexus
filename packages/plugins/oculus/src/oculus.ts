@@ -16,6 +16,7 @@ import { z } from 'zod';
 import type { Plugin, StartupContext, LoadedKit, LoadedApparatus } from '@shardworks/nexus-core';
 import { guild } from '@shardworks/nexus-core';
 import type { InstrumentariumApi } from '@shardworks/tools-apparatus';
+import { tool } from '@shardworks/tools-apparatus';
 
 import type { OculusApi, OculusConfig, OculusKit, PageContribution, RouteContribution } from './types.ts';
 
@@ -531,6 +532,31 @@ ${navHtml}
           });
           server = null;
         }
+      },
+
+      supportKit: {
+        tools: [
+          tool({
+            name: 'oculus',
+            description: 'Start the Oculus web dashboard and keep it running',
+            callableBy: ['patron'],
+            params: {},
+            handler: async () => {
+              const port = api.port();
+              console.log(`\n  Oculus is running at http://localhost:${port}/\n`);
+              console.log('  Press Ctrl+C to stop.\n');
+
+              // Block until the process is interrupted.
+              await new Promise<void>((resolve) => {
+                const onSignal = () => { resolve(); };
+                process.once('SIGINT', onSignal);
+                process.once('SIGTERM', onSignal);
+              });
+
+              return 'Oculus stopped.';
+            },
+          }),
+        ],
       },
     },
   };
