@@ -11,7 +11,7 @@
 import { z } from 'zod';
 import { guild } from '@shardworks/nexus-core';
 import type { StacksApi, BookEntry } from '@shardworks/stacks-apparatus';
-import type { BlockType } from '../types.ts';
+import type { BlockType, CheckResult } from '../types.ts';
 
 const conditionSchema = z.object({
   ownerId: z.string(),
@@ -23,18 +23,18 @@ const bookUpdatedBlockType: BlockType = {
   id: 'book-updated',
   conditionSchema,
   pollIntervalMs: 10_000,
-  async check(condition: unknown): Promise<boolean> {
+  async check(condition: unknown): Promise<CheckResult> {
     const { ownerId, book, documentId } = conditionSchema.parse(condition);
     const stacks = guild().apparatus<StacksApi>('stacks');
     const targetBook = stacks.readBook<BookEntry>(ownerId, book);
     if (documentId) {
       // Per-document: check if the document exists
       const doc = await targetBook.get(documentId);
-      return doc !== null && doc !== undefined;
+      return (doc !== null && doc !== undefined) ? { status: 'cleared' } : { status: 'pending' };
     }
     // Per-book: check if any documents exist
     const docs = await targetBook.find({ limit: 1 });
-    return docs.length > 0;
+    return docs.length > 0 ? { status: 'cleared' } : { status: 'pending' };
   },
 };
 

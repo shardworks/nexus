@@ -28,7 +28,7 @@ import type { AnimatorApi, SummonRequest, AnimateHandle, SessionChunk, SessionRe
 import { z } from 'zod';
 
 import { createSpider } from './spider.ts';
-import type { SpiderApi, RigDoc, EngineInstance, ReviewYields, MechanicalCheck, RigTemplate, BlockRecord, BlockType } from './types.ts';
+import type { SpiderApi, RigDoc, EngineInstance, ReviewYields, MechanicalCheck, RigTemplate, BlockRecord, BlockType, CheckResult } from './types.ts';
 
 import rigShowTool from './tools/rig-show.ts';
 import rigListTool from './tools/rig-list.ts';
@@ -3343,7 +3343,7 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fix.fireAll, {
         id: 'phase-hold',
         conditionSchema: z.object({ go: z.boolean() }),
-        async check() { return true; }, // always clears — ensures unblock is immediately available
+        async check(): Promise<CheckResult> { return { status: 'cleared' }; }, // always clears — ensures unblock is immediately available
       });
 
       await fix.clerk.post({ title: 'Ordering Writ', body: 'Body' });
@@ -3398,7 +3398,7 @@ describe('Spider — engine blocking on external conditions', () => {
       const custom: BlockType = {
         id: 'my-custom-type',
         conditionSchema: z.object({ key: z.string() }),
-        async check() { return false; },
+        async check(): Promise<CheckResult> { return { status: 'pending' }; },
       };
       await registerBlockType(fireAll, custom);
       assert.ok(spider.getBlockType('my-custom-type') !== undefined, 'custom block type should be registered');
@@ -3427,7 +3427,7 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fix.fireAll, {
         id: 'test-block',
         conditionSchema: z.object({ x: z.number() }),
-        async check() { return false; },
+        async check(): Promise<CheckResult> { return { status: 'pending' }; },
       });
 
       await fix.clerk.post({ title: 'Blocking writ', body: 'Wait' });
@@ -3507,7 +3507,7 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fix.fireAll, {
         id: 'strict-type',
         conditionSchema: z.object({ required: z.string() }),
-        async check() { return false; },
+        async check(): Promise<CheckResult> { return { status: 'pending' }; },
       });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
@@ -3558,7 +3558,7 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fix.fireAll, {
         id: 'dep-hold',
         conditionSchema: z.object({ w: z.boolean() }),
-        async check() { return false; },
+        async check(): Promise<CheckResult> { return { status: 'pending' }; },
       });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
@@ -3600,7 +3600,7 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fix.fireAll, {
         id: 'indep-hold',
         conditionSchema: z.object({ w: z.boolean() }),
-        async check() { return false; },
+        async check(): Promise<CheckResult> { return { status: 'pending' }; },
       });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
@@ -3633,7 +3633,7 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fix.fireAll, {
         id: 'ctrl-block',
         conditionSchema: z.object({ go: z.boolean() }),
-        async check() { return true; }, // immediately clears
+        async check(): Promise<CheckResult> { return { status: 'cleared' }; }, // immediately clears
       });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
@@ -3664,7 +3664,7 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fix.fireAll, {
         id: 'nc-block',
         conditionSchema: z.object({ val: z.string() }),
-        async check() { return false; },
+        async check(): Promise<CheckResult> { return { status: 'pending' }; },
         // No pollIntervalMs → checked every cycle
       });
 
@@ -3692,7 +3692,7 @@ describe('Spider — engine blocking on external conditions', () => {
 
   describe('Checker clears block → engine returns to pending (V5, R9)', () => {
     it('engine transitions to pending and block field is cleared when checker returns true', async () => {
-      let checkerResult = false;
+      let checkerResult: CheckResult = { status: 'pending' };
       const ctrlEngine2: EngineDesign = {
         id: 'ctrl2-engine',
         async run(_g: Record<string, unknown>, ctx: EngineRunContext) {
@@ -3709,7 +3709,7 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fix.fireAll, {
         id: 'ctrl2-block',
         conditionSchema: z.object({ key: z.string() }),
-        async check() { return checkerResult; },
+        async check(): Promise<CheckResult> { return checkerResult; },
       });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
@@ -3722,8 +3722,8 @@ describe('Spider — engine blocking on external conditions', () => {
       let engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
       assert.equal(engine?.status, 'blocked', 'engine should remain blocked');
 
-      // Set checker to return true → next crawl unblocks
-      checkerResult = true;
+      // Set checker to return cleared → next crawl unblocks
+      checkerResult = { status: 'cleared' };
       const unblockResult = await fix.spider.crawl(); // checkBlocked → engine-unblocked
       assert.ok(unblockResult !== null);
       assert.equal(unblockResult.action, 'engine-unblocked');
@@ -3789,9 +3789,9 @@ describe('Spider — engine blocking on external conditions', () => {
         id: 'polled-block',
         conditionSchema: z.object({ w: z.boolean() }),
         pollIntervalMs: 60_000, // 60 seconds
-        async check() {
+        async check(): Promise<CheckResult> {
           checkCallCount++;
-          return false;
+          return { status: 'pending' };
         },
       });
 
@@ -3856,7 +3856,7 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fix.fireAll, {
         id: 'clearable-block',
         conditionSchema: z.object({ go: z.boolean() }),
-        async check() { return shouldClear; },
+        async check(): Promise<CheckResult> { return shouldClear ? { status: 'cleared' } : { status: 'pending' }; },
       });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
@@ -3899,7 +3899,7 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fix.fireAll, {
         id: 'hold-block',
         conditionSchema: z.object({ hold: z.boolean() }),
-        async check() { return false; }, // never clears automatically
+        async check(): Promise<CheckResult> { return { status: 'pending' }; }, // never clears automatically
       });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
@@ -3968,7 +3968,7 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fix.fireAll, {
         id: 'prior-block',
         conditionSchema: z.object({ val: z.string() }),
-        async check() { return true; }, // always clears immediately
+        async check(): Promise<CheckResult> { return { status: 'cleared' }; }, // always clears immediately
       });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
@@ -4031,7 +4031,7 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fix.fireAll, {
         id: 'resume-block',
         conditionSchema: z.object({ go: z.boolean() }),
-        async check() { return false; }, // never auto-clears
+        async check(): Promise<CheckResult> { return { status: 'pending' }; }, // never auto-clears
       });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
@@ -4156,7 +4156,7 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fix.fireAll, {
         id: 'cdc-hold',
         conditionSchema: z.object({ w: z.boolean() }),
-        async check() { return false; },
+        async check(): Promise<CheckResult> { return { status: 'pending' }; },
       });
 
       const writ = await fix.clerk.post({ title: 'CDC Writ', body: 'Body' });
@@ -4251,7 +4251,7 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fix.fireAll, {
         id: 'hold2-block',
         conditionSchema: z.object({ hold: z.boolean() }),
-        async check() { return false; },
+        async check(): Promise<CheckResult> { return { status: 'pending' }; },
       });
 
       await fix.clerk.post({ title: 'Resume Tool Writ', body: 'Body' });
@@ -4328,6 +4328,261 @@ describe('Spider — engine blocking on external conditions', () => {
     });
   });
 
+  // ── Checker failure path (R4, R5, R8, R9) ────────────────────────────────
+
+  describe('Checker failure path — permanent block failure', () => {
+    it('checker returns { status: "failed" } with no reason — engine/rig failed permanently', async () => {
+      const failingEngine: EngineDesign = {
+        id: 'fail-engine',
+        async run() {
+          return { status: 'blocked' as const, blockType: 'perm-fail-block', condition: {} };
+        },
+      };
+      const fix = buildBlockingFixture(
+        { 'fail-engine': failingEngine },
+        { engines: [{ id: 'sole', designId: 'fail-engine', givens: {} }], resolutionEngine: 'sole' },
+      );
+      await registerBlockType(fix.fireAll, {
+        id: 'perm-fail-block',
+        conditionSchema: z.object({}),
+        async check(): Promise<CheckResult> { return { status: 'failed' }; },
+      });
+
+      await fix.clerk.post({ title: 'Failing Writ', body: 'Body' });
+      await fix.spider.crawl(); // spawn
+      await fix.spider.crawl(); // run → blocked
+
+      const result = await fix.spider.crawl(); // checkBlocked → failed
+      assert.ok(result !== null);
+      assert.equal(result.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
+
+      const [rig] = await fix.spider.list();
+      assert.equal(rig.status, 'failed');
+      const engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
+      assert.ok(engine !== undefined);
+      assert.equal(engine.status, 'failed');
+      assert.ok(
+        engine.error?.includes('failed permanently'),
+        `expected error to include "failed permanently", got: ${engine.error}`,
+      );
+      assert.ok(
+        engine.error?.includes('perm-fail-block'),
+        `expected error to include block type name, got: ${engine.error}`,
+      );
+    });
+
+    it('checker returns { status: "failed", reason: "resource deleted" } — error includes reason', async () => {
+      const failReasonEngine: EngineDesign = {
+        id: 'fail-reason-engine',
+        async run() {
+          return { status: 'blocked' as const, blockType: 'reason-fail-block', condition: {} };
+        },
+      };
+      const fix = buildBlockingFixture(
+        { 'fail-reason-engine': failReasonEngine },
+        { engines: [{ id: 'sole', designId: 'fail-reason-engine', givens: {} }], resolutionEngine: 'sole' },
+      );
+      await registerBlockType(fix.fireAll, {
+        id: 'reason-fail-block',
+        conditionSchema: z.object({}),
+        async check(): Promise<CheckResult> { return { status: 'failed', reason: 'resource deleted' }; },
+      });
+
+      await fix.clerk.post({ title: 'Reason Fail Writ', body: 'Body' });
+      await fix.spider.crawl(); // spawn
+      await fix.spider.crawl(); // run → blocked
+
+      const result = await fix.spider.crawl(); // checkBlocked → failed
+      assert.ok(result !== null);
+      assert.equal(result.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
+
+      const [rig] = await fix.spider.list();
+      const engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
+      assert.ok(engine !== undefined);
+      assert.ok(
+        engine.error?.includes('failed: resource deleted'),
+        `expected error to include "failed: resource deleted", got: ${engine.error}`,
+      );
+    });
+
+    it('checker failure with multiple engines — sibling cancelled', async () => {
+      const blockingA: EngineDesign = {
+        id: 'sib-blocking-a',
+        async run() {
+          return { status: 'blocked' as const, blockType: 'sib-fail-block', condition: {} };
+        },
+      };
+      const dependentB: EngineDesign = {
+        id: 'sib-dependent-b',
+        async run() { return { status: 'completed' as const, yields: {} }; },
+      };
+      const fix = buildBlockingFixture(
+        { 'sib-blocking-a': blockingA, 'sib-dependent-b': dependentB },
+        {
+          engines: [
+            { id: 'a', designId: 'sib-blocking-a', givens: {} },
+            { id: 'b', designId: 'sib-dependent-b', upstream: ['a'], givens: {} },
+          ],
+          resolutionEngine: 'b',
+        },
+      );
+      await registerBlockType(fix.fireAll, {
+        id: 'sib-fail-block',
+        conditionSchema: z.object({}),
+        async check(): Promise<CheckResult> { return { status: 'failed' }; },
+      });
+
+      await fix.clerk.post({ title: 'Sibling Writ', body: 'Body' });
+      await fix.spider.crawl(); // spawn
+      await fix.spider.crawl(); // run a → rig-blocked (b depends on a)
+
+      const result = await fix.spider.crawl(); // checkBlocked → a fails → rig failed
+      assert.ok(result !== null);
+      assert.equal(result.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
+
+      const [rig] = await fix.spider.list();
+      assert.equal(rig.status, 'failed');
+      const engineA = rig.engines.find((e: EngineInstance) => e.id === 'a');
+      const engineB = rig.engines.find((e: EngineInstance) => e.id === 'b');
+      assert.equal(engineA?.status, 'failed');
+      assert.equal(engineB?.status, 'cancelled');
+    });
+
+    it('checker failure does not update lastCheckedAt (R8)', async () => {
+      const noLastCheckedEngine: EngineDesign = {
+        id: 'no-lc-engine',
+        async run() {
+          return { status: 'blocked' as const, blockType: 'no-lc-block', condition: {} };
+        },
+      };
+      const fix = buildBlockingFixture(
+        { 'no-lc-engine': noLastCheckedEngine },
+        { engines: [{ id: 'sole', designId: 'no-lc-engine', givens: {} }], resolutionEngine: 'sole' },
+      );
+      await registerBlockType(fix.fireAll, {
+        id: 'no-lc-block',
+        conditionSchema: z.object({}),
+        async check(): Promise<CheckResult> { return { status: 'failed' }; },
+      });
+
+      await fix.clerk.post({ title: 'No LC Writ', body: 'Body' });
+      await fix.spider.crawl(); // spawn
+      await fix.spider.crawl(); // run → blocked
+
+      // Verify no lastCheckedAt before failure crawl
+      let [rig] = await fix.spider.list();
+      let engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
+      assert.equal(engine?.block?.lastCheckedAt, undefined, 'lastCheckedAt should be unset before check');
+
+      await fix.spider.crawl(); // checkBlocked → failed
+
+      [rig] = await fix.spider.list();
+      assert.equal(rig.status, 'failed');
+      // Engine is now failed; the block record should be gone (failEngine cleared it)
+      engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
+      assert.equal(engine?.status, 'failed');
+      // lastCheckedAt was never set (failure path skips it)
+    });
+
+    it('checker failure on rig with blocked status — rig transitions to failed', async () => {
+      const blockedThenFailEngine: EngineDesign = {
+        id: 'btf-engine',
+        async run() {
+          return { status: 'blocked' as const, blockType: 'btf-block', condition: {} };
+        },
+      };
+      const fix = buildBlockingFixture(
+        { 'btf-engine': blockedThenFailEngine },
+        { engines: [{ id: 'sole', designId: 'btf-engine', givens: {} }], resolutionEngine: 'sole' },
+      );
+      await registerBlockType(fix.fireAll, {
+        id: 'btf-block',
+        conditionSchema: z.object({}),
+        async check(): Promise<CheckResult> { return { status: 'failed', reason: 'gone' }; },
+      });
+
+      await fix.clerk.post({ title: 'BTF Writ', body: 'Body' });
+      await fix.spider.crawl(); // spawn
+      await fix.spider.crawl(); // run → rig-blocked (sole engine)
+
+      let [rig] = await fix.spider.list();
+      assert.equal(rig.status, 'blocked', 'rig should be blocked before failure crawl');
+
+      const result = await fix.spider.crawl(); // checkBlocked → failed
+      assert.ok(result !== null);
+      assert.equal(result.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
+
+      [rig] = await fix.spider.list();
+      assert.equal(rig.status, 'failed', 'rig should transition from blocked to failed');
+      const engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
+      assert.ok(engine?.error?.includes('gone'), `expected error to include "gone", got: ${engine?.error}`);
+    });
+  });
+
+  // ── writ-status checker additional cases (R12–R16) ─────────────────────
+
+  describe('writ-status checker — additional failure cases', () => {
+    it('returns failed with terminal-mismatch reason when writ is failed but target is completed', async () => {
+      const fix = buildBlockingFixture();
+      const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
+      await fix.clerk.transition(writ.id, 'active');
+      await fix.clerk.transition(writ.id, 'failed');
+
+      const blockType = fix.spider.getBlockType('writ-status');
+      assert.ok(blockType !== undefined);
+
+      const result = await blockType.check({ writId: writ.id, targetStatus: 'completed' });
+      assert.deepEqual(result, {
+        status: 'failed',
+        reason: 'Writ reached terminal status "failed" instead of "completed"',
+      });
+    });
+
+    it('returns cleared when writ is at failed status and target is failed (target match wins)', async () => {
+      const fix = buildBlockingFixture();
+      const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
+      await fix.clerk.transition(writ.id, 'active');
+      await fix.clerk.transition(writ.id, 'failed');
+
+      const blockType = fix.spider.getBlockType('writ-status');
+      assert.ok(blockType !== undefined);
+
+      const result = await blockType.check({ writId: writ.id, targetStatus: 'failed' });
+      assert.deepEqual(result, { status: 'cleared' }, 'target match takes priority over terminal-mismatch');
+    });
+
+    it('returns failed with terminal-mismatch reason when writ is cancelled but target is completed', async () => {
+      const fix = buildBlockingFixture();
+      const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
+      await fix.clerk.transition(writ.id, 'cancelled');
+
+      const blockType = fix.spider.getBlockType('writ-status');
+      assert.ok(blockType !== undefined);
+
+      const result = await blockType.check({ writId: writ.id, targetStatus: 'completed' });
+      assert.deepEqual(result, {
+        status: 'failed',
+        reason: 'Writ reached terminal status "cancelled" instead of "completed"',
+      });
+    });
+
+    it('returns pending when writ is at non-terminal, non-target status', async () => {
+      const fix = buildBlockingFixture();
+      const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
+      // writ starts at 'ready' status, which is neither completed nor a terminal mismatch for 'completed' target
+
+      const blockType = fix.spider.getBlockType('writ-status');
+      assert.ok(blockType !== undefined);
+
+      const result = await blockType.check({ writId: writ.id, targetStatus: 'completed' });
+      assert.deepEqual(result, { status: 'pending' }, 'non-terminal non-target status should return pending');
+    });
+  });
+
   // ── Built-in block types (R22–R25, V16–V18) ───────────────────────────
 
   describe('Built-in block types', () => {
@@ -4335,7 +4590,7 @@ describe('Spider — engine blocking on external conditions', () => {
     // ── writ-status (R23, V16) ───────────────────────────────────────────
 
     describe('writ-status block type (R23, V16)', () => {
-      it('checker returns false when writ is not at target status', async () => {
+      it('checker returns pending when writ is not at target status', async () => {
         const fix = buildBlockingFixture();
         const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
 
@@ -4343,10 +4598,10 @@ describe('Spider — engine blocking on external conditions', () => {
         assert.ok(blockType !== undefined, 'writ-status block type should be registered');
 
         const result = await blockType.check({ writId: writ.id, targetStatus: 'completed' });
-        assert.equal(result, false, 'checker should return false when writ is not completed');
+        assert.deepEqual(result, { status: 'pending' }, 'checker should return pending when writ is not completed');
       });
 
-      it('checker returns true when writ reaches target status', async () => {
+      it('checker returns cleared when writ reaches target status', async () => {
         const fix = buildBlockingFixture();
         const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
         await fix.clerk.transition(writ.id, 'active');
@@ -4356,16 +4611,16 @@ describe('Spider — engine blocking on external conditions', () => {
         assert.ok(blockType !== undefined);
 
         const result = await blockType.check({ writId: writ.id, targetStatus: 'completed' });
-        assert.equal(result, true, 'checker should return true when writ is completed');
+        assert.deepEqual(result, { status: 'cleared' }, 'checker should return cleared when writ is completed');
       });
 
-      it('checker returns false when writ does not exist', async () => {
+      it('checker returns failed when writ does not exist', async () => {
         const fix = buildBlockingFixture();
         const blockType = fix.spider.getBlockType('writ-status');
         assert.ok(blockType !== undefined);
 
         const result = await blockType.check({ writId: 'nonexistent-writ-99', targetStatus: 'completed' });
-        assert.equal(result, false, 'checker should return false when writ not found');
+        assert.deepEqual(result, { status: 'failed', reason: 'Writ not found' }, 'checker should return failed when writ not found');
       });
 
       it('writ-status has pollIntervalMs of 10000 (R23)', () => {
@@ -4379,24 +4634,24 @@ describe('Spider — engine blocking on external conditions', () => {
     // ── scheduled-time (R24, V17) ───────────────────────────────────────
 
     describe('scheduled-time block type (R24, V17)', () => {
-      it('checker returns false for a future timestamp', async () => {
+      it('checker returns pending for a future timestamp', async () => {
         const fix = buildBlockingFixture();
         const blockType = fix.spider.getBlockType('scheduled-time');
         assert.ok(blockType !== undefined);
 
         const futureTime = new Date(Date.now() + 3_600_000).toISOString(); // 1 hour from now
         const result = await blockType.check({ resumeAt: futureTime });
-        assert.equal(result, false, 'checker should return false for future timestamp');
+        assert.deepEqual(result, { status: 'pending' }, 'checker should return pending for future timestamp');
       });
 
-      it('checker returns true for a past timestamp', async () => {
+      it('checker returns cleared for a past timestamp', async () => {
         const fix = buildBlockingFixture();
         const blockType = fix.spider.getBlockType('scheduled-time');
         assert.ok(blockType !== undefined);
 
         const pastTime = new Date(Date.now() - 3_600_000).toISOString(); // 1 hour ago
         const result = await blockType.check({ resumeAt: pastTime });
-        assert.equal(result, true, 'checker should return true for past timestamp');
+        assert.deepEqual(result, { status: 'cleared' }, 'checker should return cleared for past timestamp');
       });
 
       it('scheduled-time has pollIntervalMs of 30000 (R24)', () => {
@@ -4410,7 +4665,7 @@ describe('Spider — engine blocking on external conditions', () => {
     // ── book-updated (R25, V18) ─────────────────────────────────────────
 
     describe('book-updated block type (R25, V18)', () => {
-      it('checker returns false when book is empty', async () => {
+      it('checker returns pending when book is empty', async () => {
         const fix = buildBlockingFixture();
         fix.memBackend.ensureBook({ ownerId: 'test-owner', book: 'empty-data' }, {});
 
@@ -4418,10 +4673,10 @@ describe('Spider — engine blocking on external conditions', () => {
         assert.ok(blockType !== undefined);
 
         const result = await blockType.check({ ownerId: 'test-owner', book: 'empty-data' });
-        assert.equal(result, false, 'checker should return false when book is empty');
+        assert.deepEqual(result, { status: 'pending' }, 'checker should return pending when book is empty');
       });
 
-      it('checker returns true when book has at least one document', async () => {
+      it('checker returns cleared when book has at least one document', async () => {
         const fix = buildBlockingFixture();
         fix.memBackend.ensureBook({ ownerId: 'test-owner', book: 'nonempty-data' }, {});
         const book = fix.stacks.book<{ id: string; value: string }>('test-owner', 'nonempty-data');
@@ -4431,10 +4686,10 @@ describe('Spider — engine blocking on external conditions', () => {
         assert.ok(blockType !== undefined);
 
         const result = await blockType.check({ ownerId: 'test-owner', book: 'nonempty-data' });
-        assert.equal(result, true, 'checker should return true when book has documents');
+        assert.deepEqual(result, { status: 'cleared' }, 'checker should return cleared when book has documents');
       });
 
-      it('checker returns false when specific documentId is not found', async () => {
+      it('checker returns pending when specific documentId is not found', async () => {
         const fix = buildBlockingFixture();
         fix.memBackend.ensureBook({ ownerId: 'test-owner', book: 'doc-data' }, {});
 
@@ -4446,10 +4701,10 @@ describe('Spider — engine blocking on external conditions', () => {
           book: 'doc-data',
           documentId: 'nonexistent-doc',
         });
-        assert.equal(result, false, 'checker should return false when document not found');
+        assert.deepEqual(result, { status: 'pending' }, 'checker should return pending when document not found');
       });
 
-      it('checker returns true when specific documentId is found', async () => {
+      it('checker returns cleared when specific documentId is found', async () => {
         const fix = buildBlockingFixture();
         fix.memBackend.ensureBook({ ownerId: 'test-owner', book: 'doc-data-2' }, {});
         const book = fix.stacks.book<{ id: string; content: string }>('test-owner', 'doc-data-2');
@@ -4463,7 +4718,7 @@ describe('Spider — engine blocking on external conditions', () => {
           book: 'doc-data-2',
           documentId: 'target-doc',
         });
-        assert.equal(result, true, 'checker should return true when document exists');
+        assert.deepEqual(result, { status: 'cleared' }, 'checker should return cleared when document exists');
       });
 
       it('book-updated has pollIntervalMs of 10000 (R25)', () => {

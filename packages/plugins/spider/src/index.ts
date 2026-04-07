@@ -23,6 +23,7 @@ export type {
   SpiderConfig,
   BlockRecord,
   BlockType,
+  CheckResult,
   DraftYields,
   SealYields,
   RigTemplate,

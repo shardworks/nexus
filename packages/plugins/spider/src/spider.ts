@@ -34,6 +34,7 @@ import type {
   SpiderConfig,
   BlockRecord,
   BlockType,
+  CheckResult,
   RigTemplate,
 } from './types.ts';
 
@@ -500,9 +501,9 @@ export function createSpider(): Plugin {
           if (elapsed < blockType.pollIntervalMs) continue;
         }
 
-        let cleared: boolean;
+        let result: CheckResult;
         try {
-          cleared = await blockType.check(engine.block.condition);
+          result = await blockType.check(engine.block.condition);
         } catch (err) {
           // Log warning, skip — engine stays blocked, retry next cycle
           console.warn(
@@ -512,8 +513,17 @@ export function createSpider(): Plugin {
           continue;
         }
 
-        if (!cleared) {
-          // Update lastCheckedAt and continue checking other engines
+        if (result.status === 'failed') {
+          // Permanent failure — fail the engine and rig immediately
+          const message = result.reason
+            ? `Block "${engine.block.type}" failed: ${result.reason}`
+            : `Block "${engine.block.type}" failed permanently`;
+          await failEngine(rig, engine.id, message);
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+        }
+
+        if (result.status !== 'cleared') {
+          // Pending (or any unexpected status) — update lastCheckedAt and continue checking other engines
           const now = new Date().toISOString();
           const updatedEngines = rig.engines.map((e) =>
             e.id === engine.id

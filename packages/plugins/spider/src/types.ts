@@ -176,14 +176,39 @@ export type CrawlResult =
 // ── Block type ────────────────────────────────────────────────────────
 
 /**
+ * Result of a block type check.
+ *
+ * 'cleared' — condition met, unblock the engine.
+ * 'pending' — condition not yet met, keep polling.
+ * 'failed'  — condition is permanently unresolvable, fail the engine.
+ *
+ * When status is 'failed', an optional reason provides a human-readable
+ * explanation that the Spider includes in the engine error message.
+ */
+export interface CheckResult {
+  status: 'cleared' | 'pending' | 'failed';
+  reason?: string;
+}
+
+/**
  * A registered block type — defines how to check whether a blocking
  * condition has cleared. Contributed via kit/supportKit `blockTypes`.
  */
 export interface BlockType {
   /** Unique identifier (e.g. 'writ-status', 'scheduled-time'). */
   id: string;
-  /** Lightweight checker — returns true if the blocking condition has cleared. */
-  check: (condition: unknown) => Promise<boolean>;
+  /**
+   * Check whether the blocking condition has been resolved.
+   *
+   * Return { status: 'cleared' } when the condition is met.
+   * Return { status: 'pending' } when the condition is not yet met.
+   * Return { status: 'failed' } or { status: 'failed', reason: '...' }
+   * when the condition is permanently unresolvable.
+   *
+   * Throwing is reserved for transient errors (network failures, etc.)
+   * — the engine stays blocked and the checker is retried next cycle.
+   */
+  check: (condition: unknown) => Promise<CheckResult>;
   /** Zod schema for validating the condition payload at block time. */
   conditionSchema: ZodSchema;
   /** Suggested poll interval in milliseconds. If absent, check every crawl cycle. */
