@@ -125,7 +125,9 @@ export interface RigTemplateEngine {
   upstream?: string[];
   /**
    * Givens to pass at spawn time.
-   * String values starting with '$' are variable references resolved at spawn time.
+   * String values starting with '$' are variable references resolved at spawn time:
+   *   '$writ' — the WritDoc for this rig's writ
+   *   '$vars.<key>' — value from spider.variables config
    * Non-string values are passed through literally.
    * Variables that resolve to undefined cause the key to be omitted.
    */
@@ -235,11 +237,6 @@ export interface SpiderApi {
  */
 export interface SpiderConfig {
   /**
-   * Role to summon for quick engine sessions.
-   * Default: 'artificer'.
-   */
-  role?: string;
-  /**
    * Polling interval for crawlContinual tool (milliseconds).
    * Default: 5000.
    */
@@ -258,6 +255,12 @@ export interface SpiderConfig {
    * Spawning fails if no matching template is found.
    */
   rigTemplates?: Record<string, RigTemplate>;
+  /**
+   * User-defined variables available in rig template givens via '$vars.<key>'.
+   * Values are passed through literally (string, number, boolean).
+   * Variables resolving to undefined (key absent) cause the givens key to be omitted.
+   */
+  variables?: Record<string, unknown>;
 }
 
 // ── Engine yield shapes ───────────────────────────────────────────────

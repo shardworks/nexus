@@ -648,12 +648,16 @@ These are known directions the Spider and its data model will grow. None are in 
 ```json
 {
   "spider": {
-    "role": "artificer",
     "pollIntervalMs": 5000,
     "buildCommand": "pnpm build",
-    "testCommand": "pnpm test"
+    "testCommand": "pnpm test",
+    "variables": {
+      "role": "artificer"
+    }
   }
 }
 ```
 
-All fields optional. `role` defaults to `"artificer"`. `pollIntervalMs` defaults to `5000`. `buildCommand` and `testCommand` are run by the review engine before launching the reviewer; omitted means those mechanical checks are skipped (reviewer anima still does spec-vs-diff assessment).
+All fields optional. `pollIntervalMs` defaults to `5000`. `buildCommand` and `testCommand` are run by the review engine before launching the reviewer; omitted means those mechanical checks are skipped (reviewer anima still does spec-vs-diff assessment).
+
+The `variables` dict contains user-defined values available in rig template givens as `$vars.<key>`. For example, `"$vars.role"` in a template givens entry resolves to `variables.role` at rig spawn time. The only other supported variable reference is `"$writ"`, which resolves to the full WritDoc for the spawned rig. Variables resolving to `undefined` (key absent from `variables`) cause the givens key to be omitted entirely.

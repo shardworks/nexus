@@ -42,9 +42,9 @@ import rigResumeTool from './tools/rig-resume.ts';
 const STANDARD_TEMPLATE: RigTemplate = {
   engines: [
     { id: 'draft',     designId: 'draft',     givens: { writ: '$writ' } },
-    { id: 'implement', designId: 'implement', upstream: ['draft'],     givens: { writ: '$writ', role: '$role' } },
-    { id: 'review',    designId: 'review',    upstream: ['implement'], givens: { writ: '$writ', role: 'reviewer', buildCommand: '$spider.buildCommand', testCommand: '$spider.testCommand' } },
-    { id: 'revise',    designId: 'revise',    upstream: ['review'],    givens: { writ: '$writ', role: '$role' } },
+    { id: 'implement', designId: 'implement', upstream: ['draft'],     givens: { writ: '$writ', role: '$vars.role' } },
+    { id: 'review',    designId: 'review',    upstream: ['implement'], givens: { writ: '$writ', role: 'reviewer', buildCommand: '$vars.buildCommand', testCommand: '$vars.testCommand' } },
+    { id: 'revise',    designId: 'revise',    upstream: ['review'],    givens: { writ: '$writ', role: '$vars.role' } },
     { id: 'seal',      designId: 'seal',      upstream: ['revise'],    givens: {} },
   ],
   resolutionEngine: 'seal',
@@ -115,6 +115,7 @@ function buildFixture(
     ...guildConfig,
     spider: {
       rigTemplates: { default: STANDARD_TEMPLATE },
+      variables: { role: 'artificer' },
       ...(guildConfig.spider ?? {}),
     },
   };
@@ -1283,8 +1284,7 @@ describe('Spider', () => {
     beforeEach(() => {
       mechFix = buildFixture({
         spider: {
-          buildCommand: 'echo "build output"',
-          testCommand: 'exit 1',
+          variables: { buildCommand: 'echo "build output"', testCommand: 'exit 1' },
         },
       });
     });
@@ -1349,7 +1349,7 @@ describe('Spider', () => {
 
     it('truncates check output to 4KB', async () => {
       const bigFix = buildFixture({
-        spider: { buildCommand: 'python3 -c "print(\'x\' * 8192)"' },
+        spider: { variables: { buildCommand: 'python3 -c "print(\'x\' * 8192)"' } },
       });
       const { clerk, spider: w, stacks: s, summonCalls: sc } = bigFix;
       await postWrit(clerk);
@@ -1999,39 +1999,11 @@ describe('Spider — variable resolution', () => {
     assert.equal(resolvedWrit.title, writ.title);
   });
 
-  it('$role resolves to spiderConfig.role when set', async () => {
+  it('$vars.<key> resolves to the value from spiderConfig.variables', async () => {
     const template: RigTemplate = {
-      engines: [{ id: 'only', designId: 'seal', givens: { r: '$role' } }],
+      engines: [{ id: 'only', designId: 'seal', givens: { cmd: '$vars.buildCommand' } }],
     };
-    const fix = buildFixture({ spider: { role: 'builder', rigTemplates: { default: template } } });
-    const { clerk, spider, stacks } = fix;
-
-    await clerk.post({ title: 'test', body: 'test' });
-    await spider.crawl();
-
-    const rigs = await rigsBook(stacks).list();
-    assert.equal(rigs[0].engines[0].givensSpec.r, 'builder');
-  });
-
-  it('$role defaults to "artificer" when spiderConfig.role is not set', async () => {
-    const template: RigTemplate = {
-      engines: [{ id: 'only', designId: 'seal', givens: { r: '$role' } }],
-    };
-    const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
-    const { clerk, spider, stacks } = fix;
-
-    await clerk.post({ title: 'test', body: 'test' });
-    await spider.crawl();
-
-    const rigs = await rigsBook(stacks).list();
-    assert.equal(rigs[0].engines[0].givensSpec.r, 'artificer');
-  });
-
-  it('$spider.buildCommand resolves to the configured value', async () => {
-    const template: RigTemplate = {
-      engines: [{ id: 'only', designId: 'seal', givens: { cmd: '$spider.buildCommand' } }],
-    };
-    const fix = buildFixture({ spider: { buildCommand: 'make build', rigTemplates: { default: template } } });
+    const fix = buildFixture({ spider: { variables: { buildCommand: 'make build' }, rigTemplates: { default: template } } });
     const { clerk, spider, stacks } = fix;
 
     await clerk.post({ title: 'test', body: 'test' });
@@ -2041,11 +2013,25 @@ describe('Spider — variable resolution', () => {
     assert.equal(rigs[0].engines[0].givensSpec.cmd, 'make build');
   });
 
-  it('$spider.* undefined causes key to be omitted entirely', async () => {
+  it('$vars.<key> resolves non-string value types correctly', async () => {
     const template: RigTemplate = {
-      engines: [{ id: 'only', designId: 'seal', givens: { cmd: '$spider.testCommand' } }],
+      engines: [{ id: 'only', designId: 'seal', givens: { n: '$vars.count' } }],
     };
-    const fix = buildFixture({ spider: { rigTemplates: { default: template } } }); // no testCommand
+    const fix = buildFixture({ spider: { variables: { count: 42 }, rigTemplates: { default: template } } });
+    const { clerk, spider, stacks } = fix;
+
+    await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl();
+
+    const rigs = await rigsBook(stacks).list();
+    assert.equal(rigs[0].engines[0].givensSpec.n, 42);
+  });
+
+  it('$vars.<key> omits the key when the variable is absent from variables dict', async () => {
+    const template: RigTemplate = {
+      engines: [{ id: 'only', designId: 'seal', givens: { cmd: '$vars.testCommand' } }],
+    };
+    const fix = buildFixture({ spider: { variables: {}, rigTemplates: { default: template } } });
     const { clerk, spider, stacks } = fix;
 
     await clerk.post({ title: 'test', body: 'test' });
@@ -2053,6 +2039,21 @@ describe('Spider — variable resolution', () => {
 
     const rigs = await rigsBook(stacks).list();
     assert.ok(!('cmd' in rigs[0].engines[0].givensSpec), 'cmd key should be absent when testCommand is not set');
+  });
+
+  it('$vars.<key> omits the key when the variables dict itself is absent from config', async () => {
+    const template: RigTemplate = {
+      engines: [{ id: 'only', designId: 'seal', givens: { cmd: '$vars.testCommand' } }],
+    };
+    // No variables key in spider config
+    const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
+    const { clerk, spider, stacks } = fix;
+
+    await clerk.post({ title: 'test', body: 'test' });
+    await spider.crawl();
+
+    const rigs = await rigsBook(stacks).list();
+    assert.ok(!('cmd' in rigs[0].engines[0].givensSpec), 'cmd key should be absent when no variables dict');
   });
 
   it('literal string without $ prefix is passed through unchanged', async () => {
@@ -2072,9 +2073,9 @@ describe('Spider — variable resolution', () => {
 
   it('mixed literals and $-variables resolve correctly together', async () => {
     const template: RigTemplate = {
-      engines: [{ id: 'only', designId: 'seal', givens: { writ: '$writ', role: 'reviewer', cmd: '$spider.buildCommand' } }],
+      engines: [{ id: 'only', designId: 'seal', givens: { writ: '$writ', role: 'reviewer', cmd: '$vars.buildCommand' } }],
     };
-    const fix = buildFixture({ spider: { buildCommand: 'pnpm build', rigTemplates: { default: template } } });
+    const fix = buildFixture({ spider: { variables: { buildCommand: 'pnpm build' }, rigTemplates: { default: template } } });
     const { clerk, spider, stacks } = fix;
 
     const writ = await clerk.post({ title: 'Mixed test', body: 'mixed body' });
@@ -2084,10 +2085,10 @@ describe('Spider — variable resolution', () => {
     const givens = rigs[0].engines[0].givensSpec;
     // $writ resolves to the WritDoc object
     assert.equal((givens.writ as { id: string }).id, writ.id, '$writ should resolve to WritDoc');
-    // literal string "reviewer" passes through unchanged (not affected by spiderConfig.role)
+    // literal string "reviewer" passes through unchanged
     assert.equal(givens.role, 'reviewer', 'literal "reviewer" should pass through unchanged');
-    // $spider.buildCommand resolves to the configured value
-    assert.equal(givens.cmd, 'pnpm build', '$spider.buildCommand should resolve to configured value');
+    // $vars.buildCommand resolves to the configured value
+    assert.equal(givens.cmd, 'pnpm build', '$vars.buildCommand should resolve to configured value');
   });
 
   it('engine with no givens field produces empty givensSpec', async () => {
@@ -2136,7 +2137,7 @@ describe('Spider — startup validation', () => {
             default: {
               engines: [
                 { id: 'a', designId: 'draft', givens: { writ: '$writ' } },
-                { id: 'b', designId: 'implement', upstream: ['a'], givens: { writ: '$writ', role: '$role' } },
+                { id: 'b', designId: 'implement', upstream: ['a'], givens: { writ: '$writ', role: '$vars.role' } },
                 { id: 'c', designId: 'seal', upstream: ['b'], givens: {} },
               ],
             },
@@ -2278,6 +2279,46 @@ describe('Spider — startup validation', () => {
     );
   });
 
+  it('throws [spider] error for $role variable (no longer valid)', () => {
+    assert.throws(
+      () => buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [{ id: 'x', designId: 'seal', givens: { r: '$role' } }],
+            },
+          },
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.startsWith('[spider]'), err.message);
+        assert.ok(err.message.includes('unrecognized variable "$role"'), err.message);
+        return true;
+      },
+    );
+  });
+
+  it('throws [spider] error for $spider.buildCommand (no longer valid)', () => {
+    assert.throws(
+      () => buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '$spider.buildCommand' } }],
+            },
+          },
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.startsWith('[spider]'), err.message);
+        assert.ok(err.message.includes('unrecognized variable "$spider.buildCommand"'), err.message);
+        return true;
+      },
+    );
+  });
+
   it('throws [spider] error for nested $spider path ($spider.a.b)', () => {
     assert.throws(
       () => buildFixture({
@@ -2298,13 +2339,33 @@ describe('Spider — startup validation', () => {
     );
   });
 
-  it('accepts $spider.buildCommand as a valid variable', () => {
+  it('throws [spider] error for nested $vars path ($vars.a.b)', () => {
+    assert.throws(
+      () => buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '$vars.a.b' } }],
+            },
+          },
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.startsWith('[spider]'), err.message);
+        assert.ok(err.message.includes('unrecognized variable "$vars.a.b"'), err.message);
+        return true;
+      },
+    );
+  });
+
+  it('accepts $vars.buildCommand as a valid variable', () => {
     assert.doesNotThrow(() =>
       buildFixture({
         spider: {
           rigTemplates: {
             default: {
-              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '$spider.buildCommand' } }],
+              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '$vars.buildCommand' } }],
             },
           },
         },
@@ -2443,7 +2504,7 @@ describe('Spider — CDC resolution fallback', () => {
     const template: RigTemplate = {
       engines: [
         { id: 'draft', designId: 'draft', givens: { writ: '$writ' } },
-        { id: 'implement', designId: 'implement', upstream: ['draft'], givens: { writ: '$writ', role: '$role' } },
+        { id: 'implement', designId: 'implement', upstream: ['draft'], givens: { writ: '$writ', role: '$vars.role' } },
       ],
     };
     const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
@@ -2522,12 +2583,13 @@ describe('Spider — CDC resolution fallback', () => {
   });
 });
 
-describe('Spider — buildStaticEngines preserved', () => {
-  it('buildStaticEngines function still exists (not deleted)', async () => {
-    // We can't import it directly (it's not exported), but we can verify
-    // the Spider still functions correctly with the standard 5-engine template
-    // which mirrors the old behavior. The function is preserved in spider.ts.
-    const fix = buildFixture(); // uses STANDARD_TEMPLATE
+describe('Spider — STANDARD_TEMPLATE full pipeline givens', () => {
+  afterEach(() => {
+    clearGuild();
+  });
+
+  it('STANDARD_TEMPLATE spawns a 5-engine rig with correct givens (using $vars.role)', async () => {
+    const fix = buildFixture(); // uses STANDARD_TEMPLATE with variables: { role: 'artificer' }
     const { clerk, spider, stacks } = fix;
 
     await clerk.post({ title: 'test', body: 'test' });
@@ -2535,6 +2597,16 @@ describe('Spider — buildStaticEngines preserved', () => {
 
     const rigs = await rigsBook(stacks).list();
     assert.equal(rigs[0].engines.length, 5, 'standard template produces 5 engines');
+
+    const implement = rigs[0].engines.find((e: EngineInstance) => e.id === 'implement');
+    const revise = rigs[0].engines.find((e: EngineInstance) => e.id === 'revise');
+    const review = rigs[0].engines.find((e: EngineInstance) => e.id === 'review');
+
+    assert.equal(implement?.givensSpec.role, 'artificer', 'implement $vars.role resolves to "artificer"');
+    assert.equal(revise?.givensSpec.role, 'artificer', 'revise $vars.role resolves to "artificer"');
+    assert.equal(review?.givensSpec.role, 'reviewer', 'review literal "reviewer" passes through');
+    assert.ok(!('buildCommand' in (review?.givensSpec ?? {})), 'review buildCommand absent when not set in variables');
+    assert.ok(!('testCommand' in (review?.givensSpec ?? {})), 'review testCommand absent when not set in variables');
   });
 });
 
@@ -2613,7 +2685,7 @@ describe('Spider — full pipeline integration', () => {
     const template: RigTemplate = {
       engines: [
         { id: 'draft',     designId: 'draft',     givens: { writ: '$writ' } },
-        { id: 'implement', designId: 'implement', upstream: ['draft'],     givens: { writ: '$writ', role: '$role' } },
+        { id: 'implement', designId: 'implement', upstream: ['draft'],     givens: { writ: '$writ', role: '$vars.role' } },
         { id: 'review',    designId: 'review',    upstream: ['implement'], givens: { writ: '$writ' } },
       ],
       resolutionEngine: 'review',

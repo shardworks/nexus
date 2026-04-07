@@ -123,29 +123,6 @@ function isRigBlocked(engines: EngineInstance[]): boolean {
   return findRunnableEngine(syntheticRig) === null;
 }
 
-/**
- * Produce the five-engine static pipeline for a writ.
- * Each engine receives only the givens it needs.
- * Upstream yields arrive via context.upstream at run time.
- */
-function buildStaticEngines(writ: WritDoc, config: SpiderConfig): EngineInstance[] {
-  const role = config.role ?? 'artificer';
-  const reviewGivens: Record<string, unknown> = {
-    writ,
-    role: 'reviewer',
-    ...(config.buildCommand !== undefined ? { buildCommand: config.buildCommand } : {}),
-    ...(config.testCommand !== undefined ? { testCommand: config.testCommand } : {}),
-  };
-
-  return [
-    { id: 'draft',     designId: 'draft',     status: 'pending', upstream: [],           givensSpec: { writ } },
-    { id: 'implement', designId: 'implement', status: 'pending', upstream: ['draft'],     givensSpec: { writ, role } },
-    { id: 'review',    designId: 'review',    status: 'pending', upstream: ['implement'], givensSpec: reviewGivens },
-    { id: 'revise',    designId: 'revise',    status: 'pending', upstream: ['review'],    givensSpec: { writ, role } },
-    { id: 'seal',      designId: 'seal',      status: 'pending', upstream: ['revise'],    givensSpec: {} },
-  ];
-}
-
 // ── Template-based rig building ────────────────────────────────────────
 
 /**
@@ -166,13 +143,13 @@ function lookupTemplate(writType: string, config: SpiderConfig): RigTemplate {
 
 /**
  * Resolve a template engine's givens map using a variables context.
- * '$writ' → WritDoc, '$role' → role string, '$spider.<key>' → spiderConfig[key].
+ * '$writ' → WritDoc, '$vars.<key>' → spiderConfig.variables[key].
  * Keys resolving to undefined are omitted from the output.
  * Non-'$' prefixed values are passed through as literals.
  */
 function resolveGivens(
   givens: Record<string, unknown> | undefined,
-  context: { writ: WritDoc; role: string; spiderConfig: SpiderConfig },
+  context: { writ: WritDoc; spiderConfig: SpiderConfig },
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(givens ?? {})) {
@@ -180,11 +157,9 @@ function resolveGivens(
       result[key] = value;
     } else if (value === '$writ') {
       result[key] = context.writ;
-    } else if (value === '$role') {
-      result[key] = context.role;
-    } else if (/^\$spider\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) {
-      const spiderKey = value.slice('$spider.'.length);
-      const resolved = (context.spiderConfig as Record<string, unknown>)[spiderKey];
+    } else if (/^\$vars\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) {
+      const varKey = value.slice('$vars.'.length);
+      const resolved = (context.spiderConfig.variables ?? {})[varKey];
       if (resolved !== undefined) {
         result[key] = resolved;
       }
@@ -200,7 +175,7 @@ function resolveGivens(
  */
 function buildFromTemplate(
   template: RigTemplate,
-  context: { writ: WritDoc; role: string; spiderConfig: SpiderConfig },
+  context: { writ: WritDoc; spiderConfig: SpiderConfig },
 ): { engines: EngineInstance[]; resolutionEngineId?: string } {
   const engines: EngineInstance[] = template.engines.map((entry) => ({
     id: entry.id,
@@ -308,8 +283,7 @@ function validateTemplates(
         if (typeof value === 'string' && value.startsWith('$')) {
           if (
             value === '$writ' ||
-            value === '$role' ||
-            /^\$spider\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)
+            /^\$vars\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)
           ) {
             continue; // valid
           }
@@ -728,7 +702,6 @@ export function createSpider(): Plugin {
       const template = lookupTemplate(writ.type, spiderConfig);
       const { engines, resolutionEngineId } = buildFromTemplate(template, {
         writ,
-        role: spiderConfig.role ?? 'artificer',
         spiderConfig,
       });
 
