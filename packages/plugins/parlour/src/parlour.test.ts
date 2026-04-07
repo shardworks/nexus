@@ -103,6 +103,28 @@ function createStreamingFakeProvider(
   };
 }
 
+/** Fake provider that returns output text and token usage. */
+function createOutputFakeProvider(outputText: string = 'Test response'): AnimatorSessionProvider {
+  let callCount = 0;
+  return {
+    name: 'fake-output',
+    launch(_config: SessionProviderConfig) {
+      callCount++;
+      return {
+        chunks: emptyChunks,
+        result: Promise.resolve({
+          status: 'completed' as const,
+          exitCode: 0,
+          providerSessionId: `fake-output-sess-${callCount}`,
+          tokenUsage: { inputTokens: 200, outputTokens: 100 },
+          costUsd: 0.02,
+          output: outputText,
+        }),
+      };
+    },
+  };
+}
+
 // ── Test harness ─────────────────────────────────────────────────────
 
 let parlour: ParlourApi;
@@ -1099,6 +1121,261 @@ describe('Parlour', () => {
       // confirming a new session was launched (the Parlour doesn't
       // control resume, it just passes the id through)
       assert.notEqual(t1.sessionResult!.id, t2.sessionResult!.id);
+    });
+  });
+
+  // ── show() enrichment (TurnSummary output/costUsd/tokenUsage) ───────
+
+  describe('show() enrichment — output, costUsd, tokenUsage', () => {
+    beforeEach(() => { setup(createOutputFakeProvider('Hello from anima!')); });
+
+    it('anima turn includes output from session doc', async () => {
+      const { conversationId, participants } = await parlour.create({
+        kind: 'consult',
+        cwd: '/tmp/workspace',
+        participants: [
+          { kind: 'human', name: 'User' },
+          { kind: 'anima', name: 'Artificer' },
+        ],
+      });
+
+      const human = participants.find((p) => p.kind === 'human')!;
+      const anima = participants.find((p) => p.kind === 'anima')!;
+
+      await parlour.takeTurn({ conversationId, participantId: human.id, message: 'Hello' });
+      await parlour.takeTurn({ conversationId, participantId: anima.id });
+
+      const detail = await parlour.show(conversationId);
+      assert.ok(detail);
+
+      const animaTurn = detail.turns.find((t) => t.sessionId !== null);
+      assert.ok(animaTurn, 'Should have an anima turn');
+      assert.equal(animaTurn.output, 'Hello from anima!');
+    });
+
+    it('anima turn includes costUsd from session doc', async () => {
+      const { conversationId, participants } = await parlour.create({
+        kind: 'consult',
+        cwd: '/tmp/workspace',
+        participants: [
+          { kind: 'human', name: 'User' },
+          { kind: 'anima', name: 'Artificer' },
+        ],
+      });
+
+      const human = participants.find((p) => p.kind === 'human')!;
+      const anima = participants.find((p) => p.kind === 'anima')!;
+
+      await parlour.takeTurn({ conversationId, participantId: human.id, message: 'Hello' });
+      await parlour.takeTurn({ conversationId, participantId: anima.id });
+
+      const detail = await parlour.show(conversationId);
+      assert.ok(detail);
+
+      const animaTurn = detail.turns.find((t) => t.sessionId !== null);
+      assert.ok(animaTurn);
+      assert.equal(animaTurn.costUsd, 0.02);
+    });
+
+    it('anima turn includes tokenUsage from session doc', async () => {
+      const { conversationId, participants } = await parlour.create({
+        kind: 'consult',
+        cwd: '/tmp/workspace',
+        participants: [
+          { kind: 'human', name: 'User' },
+          { kind: 'anima', name: 'Artificer' },
+        ],
+      });
+
+      const human = participants.find((p) => p.kind === 'human')!;
+      const anima = participants.find((p) => p.kind === 'anima')!;
+
+      await parlour.takeTurn({ conversationId, participantId: human.id, message: 'Hello' });
+      await parlour.takeTurn({ conversationId, participantId: anima.id });
+
+      const detail = await parlour.show(conversationId);
+      assert.ok(detail);
+
+      const animaTurn = detail.turns.find((t) => t.sessionId !== null);
+      assert.ok(animaTurn);
+      assert.ok(animaTurn.tokenUsage, 'Should have tokenUsage');
+      assert.equal(animaTurn.tokenUsage!.inputTokens, 200);
+      assert.equal(animaTurn.tokenUsage!.outputTokens, 100);
+    });
+
+    it('human turn has null output, costUsd, and tokenUsage', async () => {
+      const { conversationId, participants } = await parlour.create({
+        kind: 'consult',
+        cwd: '/tmp/workspace',
+        participants: [
+          { kind: 'human', name: 'User' },
+          { kind: 'anima', name: 'Artificer' },
+        ],
+      });
+
+      const human = participants.find((p) => p.kind === 'human')!;
+
+      await parlour.takeTurn({ conversationId, participantId: human.id, message: 'Hello' });
+
+      const detail = await parlour.show(conversationId);
+      assert.ok(detail);
+
+      const humanTurn = detail.turns.find((t) => t.sessionId === null);
+      assert.ok(humanTurn);
+      assert.equal(humanTurn.output, null);
+      assert.equal(humanTurn.costUsd, null);
+      assert.equal(humanTurn.tokenUsage, null);
+    });
+  });
+
+  // ── Route behavior — conversation list filtering ────────────────────
+
+  describe('conversation list filtering (route logic)', () => {
+    beforeEach(() => { setup(); });
+
+    it('list() returns only consult conversations matching a role name', async () => {
+      // Create a conversation with artificer
+      const { conversationId: c1 } = await parlour.create({
+        kind: 'consult',
+        cwd: '/tmp/workspace',
+        participants: [
+          { kind: 'human', name: 'User' },
+          { kind: 'anima', name: 'artificer' },
+        ],
+      });
+
+      // Create a conversation with scribe
+      await parlour.create({
+        kind: 'consult',
+        cwd: '/tmp/workspace',
+        participants: [
+          { kind: 'human', name: 'User' },
+          { kind: 'anima', name: 'scribe' },
+        ],
+      });
+
+      // List all active consult conversations
+      const all = await parlour.list({ status: 'active', kind: 'consult', limit: 50 });
+
+      // Filter in-memory by role name (as the route handler does)
+      const forArtificer = all.filter((conv) =>
+        conv.participants.some((p) => p.name === 'artificer'),
+      );
+
+      assert.equal(forArtificer.length, 1);
+      assert.equal(forArtificer[0]!.id, c1);
+    });
+
+    it('list() excludes concluded conversations when status=active', async () => {
+      const { conversationId } = await parlour.create({
+        kind: 'consult',
+        cwd: '/tmp/workspace',
+        participants: [
+          { kind: 'human', name: 'User' },
+          { kind: 'anima', name: 'artificer' },
+        ],
+      });
+
+      // End the conversation
+      await parlour.end(conversationId, 'concluded');
+
+      const active = await parlour.list({ status: 'active', kind: 'consult', limit: 50 });
+      const forArtificer = active.filter((conv) =>
+        conv.participants.some((p) => p.name === 'artificer'),
+      );
+
+      assert.equal(forArtificer.length, 0);
+    });
+
+    it('show() conversation with topic uses topic as title', async () => {
+      const { conversationId } = await parlour.create({
+        kind: 'consult',
+        topic: 'Refactoring session',
+        cwd: '/tmp/workspace',
+        participants: [
+          { kind: 'human', name: 'User' },
+          { kind: 'anima', name: 'artificer' },
+        ],
+      });
+
+      const detail = await parlour.show(conversationId);
+      assert.ok(detail);
+      assert.equal(detail.topic, 'Refactoring session');
+    });
+
+    it('show() first human message is accessible from turns', async () => {
+      const { conversationId, participants } = await parlour.create({
+        kind: 'consult',
+        cwd: '/tmp/workspace',
+        participants: [
+          { kind: 'human', name: 'User' },
+          { kind: 'anima', name: 'artificer' },
+        ],
+      });
+
+      const human = participants.find((p) => p.kind === 'human')!;
+      await parlour.takeTurn({
+        conversationId,
+        participantId: human.id,
+        message: 'Help me fix the tests',
+      });
+
+      const detail = await parlour.show(conversationId);
+      assert.ok(detail);
+      const humanTurn = detail.turns.find((t) => t.sessionId === null && t.message !== null);
+      assert.ok(humanTurn);
+      assert.equal(humanTurn.message, 'Help me fix the tests');
+    });
+
+    it('conversation with no topic and no turns falls back to createdAt', async () => {
+      const { conversationId } = await parlour.create({
+        kind: 'consult',
+        cwd: '/tmp/workspace',
+        participants: [
+          { kind: 'human', name: 'User' },
+          { kind: 'anima', name: 'artificer' },
+        ],
+      });
+
+      const detail = await parlour.show(conversationId);
+      assert.ok(detail);
+      assert.equal(detail.topic, null);
+      assert.equal(detail.turns.length, 0);
+      // The route handler falls back to createdAt when no topic and no turns
+      // We verify the createdAt is a valid ISO string
+      assert.ok(!isNaN(Date.parse(detail.createdAt)));
+    });
+  });
+
+  // ── supportKit pages and routes registration ─────────────────────────
+
+  describe('supportKit contributions', () => {
+    it('parlour apparatus exports pages in supportKit', () => {
+      const plugin = createParlour();
+      const apparatus = (plugin as { apparatus: Record<string, unknown> }).apparatus;
+      const supportKit = apparatus.supportKit as Record<string, unknown>;
+      assert.ok(supportKit, 'supportKit should exist');
+      const pages = supportKit.pages as Array<{ id: string; title: string; dir: string }>;
+      assert.ok(Array.isArray(pages), 'pages should be an array');
+      const parlourPage = pages.find((p) => p.id === 'parlour');
+      assert.ok(parlourPage, 'parlour page should be contributed');
+      assert.equal(parlourPage.title, 'Parlour');
+      assert.ok(parlourPage.dir.includes('parlour'), 'dir should reference parlour directory');
+    });
+
+    it('parlour apparatus exports routes in supportKit', () => {
+      const plugin = createParlour();
+      const apparatus = (plugin as { apparatus: Record<string, unknown> }).apparatus;
+      const supportKit = apparatus.supportKit as Record<string, unknown>;
+      const routes = supportKit.routes as Array<{ method: string; path: string; handler: unknown }>;
+      assert.ok(Array.isArray(routes), 'routes should be an array');
+      assert.equal(routes.length, 4, 'Should have 4 routes');
+
+      const paths = routes.map((r) => `${r.method} ${r.path}`);
+      assert.ok(paths.includes('GET /api/parlour/roles'), 'Should have roles route');
+      assert.ok(paths.includes('GET /api/parlour/conversations'), 'Should have conversations route');
+      assert.ok(paths.includes('POST /api/parlour/create'), 'Should have create route');
+      assert.ok(paths.includes('POST /api/parlour/turn'), 'Should have turn route');
     });
   });
 });

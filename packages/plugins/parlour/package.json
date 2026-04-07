@@ -23,13 +23,15 @@
     "@shardworks/nexus-core": "workspace:*",
     "@shardworks/stacks-apparatus": "workspace:*",
     "@shardworks/tools-apparatus": "workspace:*",
+    "hono": "^4.7.11",
     "zod": "4.3.6"
   },
   "devDependencies": {
     "@types/node": "25.5.0"
   },
   "files": [
-    "dist"
+    "dist",
+    "src/static"
   ],
   "publishConfig": {
     "exports": {

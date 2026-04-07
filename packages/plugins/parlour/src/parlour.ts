@@ -37,6 +37,7 @@ import type {
 } from './types.ts';
 
 import { conversationList, conversationShow, conversationEnd } from './tools/index.ts';
+import { parlourRoutes } from './routes.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -645,26 +646,53 @@ export function createParlour(): Plugin {
       if (!conv) return null;
 
       const convTurns = await getAllTurns(turns, conv.id);
-      const sessionIds = convTurns
-        .map((t) => t.sessionId)
-        .filter((id): id is string => id !== null);
 
-      // Aggregate cost
+      // Fetch session docs for all anima turns in one pass.
+      // Used for both per-turn enrichment and aggregate cost.
+      const sessionDocMap = new Map<string, Awaited<ReturnType<typeof sessions.get>>>();
+      for (const t of convTurns) {
+        if (t.sessionId !== null) {
+          const session = await sessions.get(t.sessionId);
+          sessionDocMap.set(t.sessionId, session);
+        }
+      }
+
+      // Aggregate cost across all anima turns
       let totalCostUsd = 0;
-      for (const sessionId of sessionIds) {
-        const session = await sessions.get(sessionId);
+      for (const session of sessionDocMap.values()) {
         if (session?.costUsd) totalCostUsd += session.costUsd;
       }
 
-      // Build turn summaries
-      const turnSummaries: TurnSummary[] = convTurns.map((t) => ({
-        sessionId: t.sessionId,
-        turnNumber: t.turnNumber,
-        participant: t.participantName,
-        message: t.message,
-        startedAt: t.startedAt,
-        endedAt: t.endedAt,
-      }));
+      // Build enriched turn summaries
+      const turnSummaries: TurnSummary[] = convTurns.map((t) => {
+        if (t.sessionId === null) {
+          // Human turn — no session data
+          return {
+            sessionId: null,
+            turnNumber: t.turnNumber,
+            participant: t.participantName,
+            message: t.message,
+            startedAt: t.startedAt,
+            endedAt: t.endedAt,
+            output: null,
+            costUsd: null,
+            tokenUsage: null,
+          };
+        }
+
+        const session = sessionDocMap.get(t.sessionId);
+        return {
+          sessionId: t.sessionId,
+          turnNumber: t.turnNumber,
+          participant: t.participantName,
+          message: t.message,
+          startedAt: t.startedAt,
+          endedAt: t.endedAt,
+          output: session?.output ?? null,
+          costUsd: session?.costUsd ?? null,
+          tokenUsage: session?.tokenUsage ?? null,
+        };
+      });
 
       return {
         id: conv.id,
@@ -696,6 +724,10 @@ export function createParlour(): Plugin {
           },
         },
         tools: [conversationList, conversationShow, conversationEnd],
+        pages: [
+          { id: 'parlour', title: 'Parlour', dir: 'src/static/parlour' },
+        ],
+        routes: parlourRoutes,
       },
 
       provides: api,

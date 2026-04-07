@@ -149,6 +149,17 @@ export interface TurnSummary {
   message: string | null;
   startedAt: string;
   endedAt: string | null;
+  /** The anima's response text. Populated from SessionDoc.output. Null for human turns or when no output was recorded. */
+  output: string | null;
+  /** Cost in USD for this turn. Null for human turns. */
+  costUsd: number | null;
+  /** Token usage for this turn. Null for human turns. */
+  tokenUsage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  } | null;
 }
 
 export interface ListConversationsOptions {

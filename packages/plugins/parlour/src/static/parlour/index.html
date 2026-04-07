@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Parlour</title>
+  <link rel="stylesheet" href="parlour.css">
+</head>
+<body>
+  <div id="parlour-app">
+    <div id="parlour-toolbar">
+      <label for="role-select">Role</label>
+      <select id="role-select"><option value="">Select a role…</option></select>
+      <label for="codex-select">Codex</label>
+      <select id="codex-select"><option value="">No codex (guild home)</option></select>
+    </div>
+    <div id="parlour-main" class="hidden">
+      <aside id="parlour-sidebar">
+        <button id="new-conversation-btn" class="btn btn--primary">+ New Conversation</button>
+        <div id="conversation-list"></div>
+        <div id="cost-card" class="card hidden">
+          <h4>Cost</h4>
+          <div id="cost-details"></div>
+        </div>
+      </aside>
+      <div id="parlour-chat">
+        <div id="chat-messages" class="empty-state">Select or start a conversation</div>
+        <div id="chat-input-area">
+          <textarea id="chat-input" rows="3" placeholder="Type a message…"></textarea>
+          <button id="send-btn" class="btn btn--primary" disabled>Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
