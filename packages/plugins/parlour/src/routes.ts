@@ -257,6 +257,7 @@ function turnRoute(): RouteContribution {
           const { chunks, result } = parlour.takeTurnStreaming({
             conversationId,
             participantId: animaParticipantId,
+            message: message.trim(),
           });
 
           // Stream chunks to client
