@@ -52,6 +52,7 @@ function setup() {
     }),
     kits: () => [],
     apparatuses: () => [],
+    startupWarnings() { return []; },
   };
 
   setGuild(fakeGuild);

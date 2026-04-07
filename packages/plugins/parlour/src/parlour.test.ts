@@ -145,6 +145,7 @@ function setup(provider: AnimatorSessionProvider = createFakeProvider()) {
     },
     kits: () => [],
     apparatuses: () => [],
+    startupWarnings() { return []; },
   };
 
   setGuild(fakeGuild);

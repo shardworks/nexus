@@ -86,6 +86,7 @@ function wireGuild(opts: {
     },
     kits() { return [...kits]; },
     apparatuses() { return [...apparatuses]; },
+    startupWarnings() { return []; },
   };
 
   setGuild(mockGuild);

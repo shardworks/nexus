@@ -51,6 +51,7 @@ function wireGuild(kits: LoadedKit[]): void {
     },
     kits() { return [...kits]; },
     apparatuses() { return []; },
+    startupWarnings() { return []; },
   };
   setGuild(mockGuild);
 }

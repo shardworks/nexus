@@ -132,6 +132,7 @@ function buildFixture(
     guildConfig() { return fakeGuildConfig; },
     kits(): LoadedKit[] { return []; },
     apparatuses(): LoadedApparatus[] { return []; },
+    startupWarnings() { return []; },
   };
 
   setGuild(fakeGuild);
@@ -3157,6 +3158,7 @@ describe('Spider — engine blocking on external conditions', () => {
       guildConfig() { return fakeGuildConfig; },
       kits(): LoadedKit[] { return []; },
       apparatuses(): LoadedApparatus[] { return []; },
+      startupWarnings() { return []; },
     };
 
     setGuild(fakeGuild);

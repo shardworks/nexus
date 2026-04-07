@@ -209,6 +209,7 @@ function setup(
     },
     kits: () => [],
     apparatuses: () => [],
+    startupWarnings() { return []; },
   };
 
   // Must set guild before starting apparatus that call guild() in start()
@@ -465,6 +466,7 @@ describe('Animator', () => {
         }),
         kits: () => [],
         apparatuses: () => [],
+        startupWarnings() { return []; },
       });
 
       const sa = (stacksPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;

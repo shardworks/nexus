@@ -51,6 +51,7 @@ function makeGuild(
     guildConfig() { return fakeGuildConfig; },
     kits(): LoadedKit[] { return []; },
     apparatuses(): LoadedApparatus[] { return []; },
+    startupWarnings() { return []; },
   };
 
   return fakeGuild;

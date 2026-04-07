@@ -58,6 +58,7 @@ function setup(options: SetupOptions = {}) {
     guildConfig() { return fakeGuildConfig; },
     kits: () => [],
     apparatuses: () => [],
+    startupWarnings() { return []; },
   };
 
   setGuild(fakeGuild);

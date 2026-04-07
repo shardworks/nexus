@@ -56,6 +56,7 @@ function buildFixture(): {
     },
     kits(): LoadedKit[] { return []; },
     apparatuses(): LoadedApparatus[] { return []; },
+    startupWarnings() { return []; },
   };
 
   setGuild(fakeGuild);
