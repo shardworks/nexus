@@ -8,7 +8,7 @@
     .error-msg { color: var(--red, #f7768e); font-size: 0.875rem; margin-top: 0.25rem; }
     .warn-msg  { color: var(--yellow, #e0af68); font-size: 0.875rem; margin-top: 0.25rem; }
     .detail-row td { background: var(--bg2, #1a1b26); padding: 1rem; }
-    .detail-row pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: monospace; }
+    .detail-row pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: monospace; max-height: 280px; overflow-y: auto; }
     .detail-section { margin-bottom: 1rem; }
     .detail-section h4 { margin: 0 0 0.4rem; font-size: 0.875rem; text-transform: uppercase; opacity: 0.6; }
     .detail-grid { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; font-size: 0.875rem; }
@@ -74,30 +74,31 @@
       <select id="post-type-select"></select>
     </div>
     <div class="form-row">
-      <label for="post-codex-input">Codex (optional)</label>
-      <input type="text" id="post-codex-input" placeholder="Codex (optional)">
+      <label for="post-codex-select">Codex</label>
+      <select id="post-codex-select" required>
+        <option value="">Select a codex…</option>
+      </select>
+      <div id="post-codex-error" class="error-msg" style="display:none"></div>
     </div>
     <button class="btn btn--primary" id="post-submit-btn">Post Writ</button>
     <div id="post-error" class="error-msg" style="display:none"></div>
     <div id="post-warn" class="warn-msg" style="display:none"></div>
   </div>
 
-  <div class="card">
-    <table class="data-table" id="writ-table">
-      <thead>
-        <tr>
-          <th class="th-sortable" data-col="id">ID <span class="sort-ind" data-col="id"></span></th>
-          <th class="th-sortable" data-col="type">Type <span class="sort-ind" data-col="type"></span></th>
-          <th class="th-sortable" data-col="status">Status <span class="sort-ind" data-col="status"></span></th>
-          <th class="th-sortable" data-col="title">Title <span class="sort-ind" data-col="title"></span></th>
-          <th class="th-sortable" data-col="createdAt">Created <span class="sort-ind" data-col="createdAt"></span></th>
-        </tr>
-      </thead>
-      <tbody id="writ-tbody"></tbody>
-    </table>
-    <div id="load-more-row" style="display:none">
-      <button class="btn" id="load-more-btn">Load more</button>
-    </div>
+  <table class="data-table" id="writ-table">
+    <thead>
+      <tr>
+        <th class="th-sortable" data-col="status">Status <span class="sort-ind" data-col="status"></span></th>
+        <th class="th-sortable" data-col="title">Title <span class="sort-ind" data-col="title"></span></th>
+        <th class="th-sortable" data-col="type">Type <span class="sort-ind" data-col="type"></span></th>
+        <th class="th-sortable" data-col="id">ID <span class="sort-ind" data-col="id"></span></th>
+        <th class="th-sortable" data-col="createdAt">Created <span class="sort-ind" data-col="createdAt"></span></th>
+      </tr>
+    </thead>
+    <tbody id="writ-tbody"></tbody>
+  </table>
+  <div id="load-more-row" style="display:none">
+    <button class="btn" id="load-more-btn">Load more</button>
   </div>
 
   <datalist id="link-types">
@@ -202,10 +203,10 @@
         tr.dataset.id = w.id;
         tr.style.display = '';
         tr.innerHTML = `
-          <td><code>${w.id}</code></td>
-          <td>${w.type ?? ''}</td>
           <td>${statusBadge(w.status)}</td>
           <td>${escHtml(w.title ?? '')}</td>
+          <td>${w.type ?? ''}</td>
+          <td><code>${w.id}</code></td>
           <td>${fmtDate(w.createdAt)}</td>
         `;
         tr.addEventListener('click', () => toggleExpand(w.id, tr));
@@ -515,9 +516,9 @@
       if (!writ) return;
       const row = document.querySelector(`tr.writ-row[data-id="${id}"]`);
       if (!row) return;
-      // Update status badge cell (3rd column, index 2)
+      // Update status badge cell (1st column, index 0)
       const cells = row.querySelectorAll('td');
-      if (cells[2]) cells[2].innerHTML = statusBadge(writ.status);
+      if (cells[0]) cells[0].innerHTML = statusBadge(writ.status);
     }
 
     // ── Expand/Collapse ────────────────────────────────────────────────
@@ -637,6 +638,55 @@
       }
     }
 
+    async function loadCodexes() {
+      const sel = document.getElementById('post-codex-select');
+      const errEl = document.getElementById('post-codex-error');
+      const submitBtn = document.getElementById('post-submit-btn');
+
+      let codexes;
+      try {
+        codexes = await api('GET', '/api/codex/list');
+      } catch (e) {
+        console.error('Failed to load codexes:', e);
+        sel.innerHTML = '<option value="">No codexes available</option>';
+        sel.disabled = true;
+        submitBtn.disabled = true;
+        showError(errEl, 'Could not load codexes. A codex is required to post writs.');
+        return;
+      }
+
+      if (!codexes || codexes.length === 0) {
+        sel.innerHTML = '<option value="">No codexes configured</option>';
+        sel.disabled = true;
+        submitBtn.disabled = true;
+        showError(errEl, 'No codexes are configured. A codex is required to post writs.');
+        return;
+      }
+
+      // Populate dropdown
+      sel.innerHTML = '';
+      if (codexes.length > 1) {
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = 'Select a codex…';
+        sel.appendChild(placeholder);
+      }
+      for (const c of codexes) {
+        const opt = document.createElement('option');
+        opt.value = c.name;
+        opt.textContent = c.name;
+        if (c.cloneStatus !== 'ready') opt.title = `Status: ${c.cloneStatus}`;
+        sel.appendChild(opt);
+      }
+      // Pre-select if only one
+      if (codexes.length === 1) {
+        sel.value = codexes[0].name;
+      }
+      sel.disabled = false;
+      submitBtn.disabled = false;
+      clearError(errEl);
+    }
+
     // ── Post form ───────────────────────────────────────────────────────
 
     function openPostForm() {
@@ -656,13 +706,18 @@
     function clearPostForm() {
       document.getElementById('post-title-input').value = '';
       document.getElementById('post-body-input').value = '';
-      document.getElementById('post-codex-input').value = '';
       clearError(document.getElementById('post-error'));
       clearError(document.getElementById('post-warn'));
+      clearError(document.getElementById('post-codex-error'));
       // Reset type to default
-      const sel = document.getElementById('post-type-select');
-      for (const opt of sel.options) {
+      const typeSel = document.getElementById('post-type-select');
+      for (const opt of typeSel.options) {
         if (opt.dataset.default === 'true') opt.selected = true;
+      }
+      // Reset codex to first item (pre-selected if single, placeholder if multiple)
+      const codexSel = document.getElementById('post-codex-select');
+      if (!codexSel.disabled && codexSel.options.length > 0) {
+        codexSel.selectedIndex = 0;
       }
     }
 
@@ -672,11 +727,21 @@
       document.getElementById('post-title-input').value = `[Repost] ${writ.title ?? ''}`;
       document.getElementById('post-body-input').value = writ.body ?? '';
       // Set type
-      const sel = document.getElementById('post-type-select');
-      for (const opt of sel.options) {
+      const typeSel = document.getElementById('post-type-select');
+      for (const opt of typeSel.options) {
         if (opt.value === writ.type) {
           opt.selected = true;
           break;
+        }
+      }
+      // Set codex if available
+      if (writ.codex) {
+        const codexSel = document.getElementById('post-codex-select');
+        for (const opt of codexSel.options) {
+          if (opt.value === writ.codex) {
+            opt.selected = true;
+            break;
+          }
         }
       }
       repostSourceId = writ.id;
@@ -688,7 +753,7 @@
       const titleInput = document.getElementById('post-title-input');
       const bodyInput = document.getElementById('post-body-input');
       const typeSelect = document.getElementById('post-type-select');
-      const codexInput = document.getElementById('post-codex-input');
+      const codexSelect = document.getElementById('post-codex-select');
       const submitBtn = document.getElementById('post-submit-btn');
       const errEl = document.getElementById('post-error');
       const warnEl = document.getElementById('post-warn');
@@ -699,10 +764,11 @@
       const title = titleInput.value.trim();
       const body = bodyInput.value.trim();
       const type = typeSelect.value;
-      const codex = codexInput.value.trim() || undefined;
+      const codex = codexSelect.value || undefined;
 
       if (!title) { showError(errEl, 'Title is required.'); return; }
       if (!body)  { showError(errEl, 'Body is required.'); return; }
+      if (!codex) { showError(errEl, 'A codex is required.'); codexSelect.focus(); return; }
 
       submitBtn.disabled = true;
       submitBtn.textContent = 'Posting...';
@@ -790,6 +856,7 @@
 
     // ── Init ────────────────────────────────────────────────────────────
     loadWritTypes();
+    loadCodexes();
     loadWrits(true);
   })();
   </script>
