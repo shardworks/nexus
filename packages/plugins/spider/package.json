@@ -25,6 +25,7 @@
     "@shardworks/tools-apparatus": "workspace:*",
     "@shardworks/animator-apparatus": "workspace:*",
     "@shardworks/codexes-apparatus": "workspace:*",
+    "yaml": "^2.0.0",
     "zod": "4.3.6"
   },
   "devDependencies": {

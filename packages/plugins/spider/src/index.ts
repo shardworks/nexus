@@ -28,6 +28,14 @@ export type {
   SealYields,
   RigTemplate,
   RigTemplateEngine,
+  InputRequestStatus,
+  InputRequestDoc,
+  ChoiceQuestionSpec,
+  BooleanQuestionSpec,
+  TextQuestionSpec,
+  QuestionSpec,
+  ChoiceAnswer,
+  AnswerValue,
 } from './types.ts';
 
 // ── Default export: the apparatus plugin ──────────────────────────────

@@ -24,6 +24,8 @@ import {
 
 /** Minimal execution context passed to an engine's run() method. */
 export interface EngineRunContext {
+  /** The rig this engine instance belongs to. */
+  rigId: string;
   /** Simple string identity for this engine instance (e.g. 'draft', 'implement'). */
   engineId: string;
   /** All upstream yields, keyed by engine id. Escape hatch for engines that need to inspect the full upstream chain. */

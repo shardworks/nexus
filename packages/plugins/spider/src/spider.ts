@@ -50,6 +50,7 @@ import {
   writStatusBlockType,
   scheduledTimeBlockType,
   bookUpdatedBlockType,
+  patronInputBlockType,
 } from './block-types/index.ts';
 
 import {
@@ -59,6 +60,13 @@ import {
   rigListTool,
   rigForWritTool,
   rigResumeTool,
+  inputRequestListTool,
+  inputRequestShowTool,
+  inputRequestAnswerTool,
+  inputRequestCompleteTool,
+  inputRequestRejectTool,
+  inputRequestExportTool,
+  inputRequestImportTool,
 } from './tools/index.ts';
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -433,7 +441,7 @@ export function createSpider(): Plugin {
         if (design?.collect) {
           const givens = { ...engine.givensSpec };
           const upstream = buildUpstreamMap(rig);
-          const context = { engineId: engine.id, upstream };
+          const context = { rigId: rig.id, engineId: engine.id, upstream };
           yields = await design.collect(engine.sessionId!, givens, context);
         } else {
           yields = {
@@ -593,6 +601,7 @@ export function createSpider(): Plugin {
       if (priorBlock) pendingPriorBlocks.delete(priorBlockKey);
 
       const context = {
+        rigId: rig.id,
         engineId: pending.id,
         upstream,
         ...(priorBlock ? { priorBlock } : {}),
@@ -855,6 +864,9 @@ export function createSpider(): Plugin {
           rigs: {
             indexes: ['status', 'writId', ['status', 'writId'], 'createdAt'],
           },
+          'input-requests': {
+            indexes: ['status', 'rigId', 'engineId', 'createdAt', ['rigId', 'engineId', 'status']],
+          },
         },
         engines: {
           draft:     draftEngine,
@@ -867,8 +879,23 @@ export function createSpider(): Plugin {
           'writ-status':    writStatusBlockType,
           'scheduled-time': scheduledTimeBlockType,
           'book-updated':   bookUpdatedBlockType,
+          'patron-input':   patronInputBlockType,
         },
-        tools: [crawlOneTool, crawlContinualTool, rigShowTool, rigListTool, rigForWritTool, rigResumeTool],
+        tools: [
+          crawlOneTool,
+          crawlContinualTool,
+          rigShowTool,
+          rigListTool,
+          rigForWritTool,
+          rigResumeTool,
+          inputRequestListTool,
+          inputRequestShowTool,
+          inputRequestAnswerTool,
+          inputRequestCompleteTool,
+          inputRequestRejectTool,
+          inputRequestExportTool,
+          inputRequestImportTool,
+        ],
       },
 
       provides: api,

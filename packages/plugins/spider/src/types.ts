@@ -375,6 +375,73 @@ export interface ReviseYields {
   sessionStatus: 'completed' | 'failed';
 }
 
+// ── Input request types ──────────────────────────────────────────────
+
+export type InputRequestStatus = 'pending' | 'completed' | 'rejected';
+
+export interface ChoiceQuestionSpec {
+  type: 'choice';
+  /** Human-readable question text. */
+  label: string;
+  /** Key → display label options map. */
+  options: Record<string, string>;
+  /** When true, the patron can supply a freeform answer instead of selecting. */
+  allowCustom: boolean;
+}
+
+export interface BooleanQuestionSpec {
+  type: 'boolean';
+  /** Human-readable question text. */
+  label: string;
+}
+
+export interface TextQuestionSpec {
+  type: 'text';
+  /** Human-readable question text. */
+  label: string;
+}
+
+export type QuestionSpec = ChoiceQuestionSpec | BooleanQuestionSpec | TextQuestionSpec;
+
+/** Discriminated choice answer — selected from options or freeform custom. */
+export type ChoiceAnswer = { selected: string } | { custom: string };
+
+/**
+ * Answer value union. Runtime type is determined by the corresponding QuestionSpec:
+ * - choice → ChoiceAnswer (object with 'selected' or 'custom' key)
+ * - boolean → boolean
+ * - text → string
+ */
+export type AnswerValue = ChoiceAnswer | boolean | string;
+
+/**
+ * An input request document stored in the spider/input-requests book.
+ * Created by engines before blocking; answered by patrons via CLI tools.
+ */
+export interface InputRequestDoc {
+  [key: string]: unknown;
+  /** Unique ID via generateId('ir', 4). */
+  id: string;
+  /** Rig this request belongs to. */
+  rigId: string;
+  /** Engine that created this request. */
+  engineId: string;
+  /** Request lifecycle status. */
+  status: InputRequestStatus;
+  /** Optional human-readable context from the engine. */
+  message?: string;
+  /** Question key → question spec. */
+  questions: Record<string, QuestionSpec>;
+  /** Question key → answer value. Partially filled until completion. */
+  answers: Record<string, AnswerValue>;
+  /** Set when status transitions to 'rejected'. */
+  rejectionReason?: string;
+  /** ISO timestamp when the request was created. */
+  createdAt: string;
+  /** ISO timestamp of the last mutation. */
+  updatedAt: string;
+}
+
 // Augment GuildConfig so `guild().guildConfig().spider` is typed.
 declare module '@shardworks/nexus-core' {
   interface GuildConfig {

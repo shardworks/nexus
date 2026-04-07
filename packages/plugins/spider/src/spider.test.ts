@@ -3172,6 +3172,9 @@ describe('Spider — engine blocking on external conditions', () => {
     memBackend.ensureBook({ ownerId: 'spider', book: 'rigs' }, {
       indexes: ['status', 'writId', ['status', 'writId'], 'createdAt'],
     });
+    memBackend.ensureBook({ ownerId: 'spider', book: 'input-requests' }, {
+      indexes: ['status', 'rigId', 'engineId', 'createdAt', ['rigId', 'engineId', 'status']],
+    });
     memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, {
       indexes: ['startedAt', 'status'],
     });
