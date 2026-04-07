@@ -18,6 +18,8 @@ export {
   type AnimaWeave,
   type LoomConfig,
   type RoleDefinition,
+  type KitRoleDefinition,
+  type LoomKit,
   createLoom,
 } from './loom.ts';
 

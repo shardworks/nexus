@@ -15,8 +15,8 @@
  * See: docs/specification.md (loom)
  */
 
-import type { Plugin, StartupContext } from '@shardworks/nexus-core';
-import { guild } from '@shardworks/nexus-core';
+import type { Plugin, StartupContext, LoadedPlugin } from '@shardworks/nexus-core';
+import { guild, isLoadedApparatus } from '@shardworks/nexus-core';
 import type { InstrumentariumApi, ResolvedTool } from '@shardworks/tools-apparatus';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -91,6 +91,30 @@ export interface LoomConfig {
   roles?: Record<string, RoleDefinition>;
 }
 
+/** Role definition contributed by a kit or apparatus supportKit. */
+export interface KitRoleDefinition {
+  /** Permission grants in `plugin:level` format. */
+  permissions: string[];
+  /**
+   * When true, permissionless tools are excluded unless the role grants
+   * `plugin:*` or `*:*` for the tool's plugin. Default: false.
+   */
+  strict?: boolean;
+  /** Inline role instructions injected into the system prompt. */
+  instructions?: string;
+  /**
+   * Path to an instructions file, relative to the kit's npm package root.
+   * Resolved at registration time. Mutually exclusive with `instructions`
+   * (if both are present, `instructions` wins).
+   */
+  instructionsFile?: string;
+}
+
+/** Kit contribution interface for role definitions. */
+export interface LoomKit {
+  roles?: Record<string, KitRoleDefinition>;
+}
+
 // ── Apparatus factory ─────────────────────────────────────────────────
 
 /**
@@ -98,20 +122,104 @@ export interface LoomConfig {
  *
  * Returns a Plugin with:
  * - `requires: ['tools']` — needs the Instrumentarium for tool resolution
+ * - `consumes: ['roles']` — declares that the Loom consumes kit role contributions
  * - `provides: LoomApi` — the context composition API
  */
 export function createLoom(): Plugin {
   let config: LoomConfig = {};
   let charterContent: string | undefined;
   let roleInstructions: Map<string, string> = new Map();
+  let kitRoles: Map<string, RoleDefinition> = new Map();
+
+  function registerKitRoles(
+    pluginId: string,
+    packageName: string,
+    kit: Record<string, unknown>,
+    home: string,
+  ): void {
+    const rawRoles = kit.roles;
+    if (typeof rawRoles !== 'object' || rawRoles === null || Array.isArray(rawRoles)) return;
+
+    // Compute allowed plugin IDs for dependency-scoped validation
+    const allowedPlugins = new Set<string>([
+      pluginId,
+      ...((kit.requires as string[] | undefined) ?? []),
+      ...((kit.recommends as string[] | undefined) ?? []),
+    ]);
+
+    for (const [roleName, rawDef] of Object.entries(rawRoles as Record<string, unknown>)) {
+      // Skip non-object entries silently
+      if (typeof rawDef !== 'object' || rawDef === null || Array.isArray(rawDef)) continue;
+
+      const def = rawDef as Record<string, unknown>;
+
+      // Validate permissions field exists and is an array
+      if (!Array.isArray(def.permissions)) {
+        console.warn(
+          `[loom] Kit "${pluginId}" role "${roleName}" is missing required "permissions" array — skipped`,
+        );
+        continue;
+      }
+
+      const qualifiedName = `${pluginId}.${roleName}`;
+
+      // Guild override check at registration time — skip if guild defines this role
+      if (config.roles && config.roles[qualifiedName]) continue;
+
+      // Dependency-scoped permission filtering
+      const validPermissions: string[] = [];
+      for (const perm of def.permissions as string[]) {
+        if (typeof perm !== 'string') continue;
+        const colonIdx = perm.indexOf(':');
+        if (colonIdx === -1) {
+          console.warn(
+            `[loom] Kit "${pluginId}" role "${roleName}" permission "${perm}" has no colon separator — dropped`,
+          );
+          continue;
+        }
+        const permPluginId = perm.slice(0, colonIdx);
+        if (permPluginId === '*' || !allowedPlugins.has(permPluginId)) {
+          console.warn(
+            `[loom] Kit "${pluginId}" role "${roleName}" permission "${perm}" references undeclared plugin "${permPluginId}" — dropped`,
+          );
+          continue;
+        }
+        validPermissions.push(perm);
+      }
+
+      // Register the role
+      kitRoles.set(qualifiedName, {
+        permissions: validPermissions,
+        ...(def.strict === true ? { strict: true } : {}),
+      });
+
+      // Resolve instructions — inline takes precedence over file
+      if (typeof def.instructions === 'string' && def.instructions) {
+        roleInstructions.set(qualifiedName, def.instructions);
+      } else if (typeof def.instructionsFile === 'string' && def.instructionsFile) {
+        const filePath = path.join(home, 'node_modules', packageName, def.instructionsFile);
+        try {
+          const content = fs.readFileSync(filePath, 'utf-8');
+          if (content) {
+            roleInstructions.set(qualifiedName, content);
+          }
+        } catch {
+          console.warn(
+            `[loom] Could not read instructions file for kit "${pluginId}" role "${roleName}": ${filePath}`,
+          );
+        }
+      }
+    }
+  }
 
   const api: LoomApi = {
     async weave(request: WeaveRequest): Promise<AnimaWeave> {
       const weave: AnimaWeave = {};
 
       // Resolve tools if a role is provided and has a definition.
-      if (request.role && config.roles) {
-        const roleDef = config.roles[request.role];
+      // Guild-defined roles take precedence over kit-contributed roles.
+      if (request.role) {
+        const roleDef = config.roles?.[request.role] ?? kitRoles.get(request.role);
         if (roleDef) {
           try {
             const instrumentarium = guild().apparatus<InstrumentariumApi>('tools');
@@ -168,9 +276,10 @@ export function createLoom(): Plugin {
   return {
     apparatus: {
       requires: ['tools'],
+      consumes: ['roles'],
       provides: api,
 
-      start(_ctx: StartupContext): void {
+      start(ctx: StartupContext): void {
         const g = guild();
         config = g.guildConfig().loom ?? {};
         const home = g.home;
@@ -201,7 +310,7 @@ export function createLoom(): Plugin {
           }
         }
 
-        // Read role instruction files at startup for all configured roles.
+        // Read role instruction files at startup for all configured (guild) roles.
         roleInstructions = new Map();
         if (config.roles) {
           for (const roleName of Object.keys(config.roles)) {
@@ -216,6 +325,32 @@ export function createLoom(): Plugin {
             }
           }
         }
+
+        // ── Kit role scanning ──────────────────────────────────────────
+        kitRoles = new Map();
+
+        // Phase 1a: Scan all already-loaded standalone kits.
+        for (const kit of g.kits()) {
+          registerKitRoles(kit.id, kit.packageName, kit.kit, home);
+        }
+
+        // Phase 1b: Scan already-started apparatus for supportKit roles.
+        // The Loom requires ['tools'], so apparatus that started before it
+        // (e.g. Instrumentarium) have already fired plugin:initialized.
+        for (const app of g.apparatuses()) {
+          if (app.apparatus.supportKit) {
+            registerKitRoles(app.id, app.packageName, app.apparatus.supportKit, home);
+          }
+        }
+
+        // Phase 2: Subscribe to plugin:initialized for apparatus supportKits
+        // that start after the Loom in the dependency order.
+        ctx.on('plugin:initialized', (plugin: unknown) => {
+          const loaded = plugin as LoadedPlugin;
+          if (isLoadedApparatus(loaded) && loaded.apparatus.supportKit) {
+            registerKitRoles(loaded.id, loaded.packageName, loaded.apparatus.supportKit, home);
+          }
+        });
       },
     },
   };
