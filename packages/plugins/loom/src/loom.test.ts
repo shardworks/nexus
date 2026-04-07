@@ -1476,4 +1476,274 @@ describe('The Loom', () => {
       assert.ok(!calls[0]!.strict, 'strict should not be set when not declared');
     });
   });
+
+  // ── listRoles() ───────────────────────────────────────────────────────
+
+  describe('listRoles() — guild roles only', () => {
+    afterEach(() => clearGuild());
+
+    it('returns guild roles with source: guild', () => {
+      setupGuild({
+        loomConfig: {
+          roles: {
+            artificer: { permissions: ['*:*'] },
+            scribe: { permissions: ['stdlib:read'], strict: true },
+          },
+        },
+      });
+      const api = startLoom();
+      const roles = api.listRoles();
+
+      assert.equal(roles.length, 2);
+
+      const artificer = roles.find(r => r.name === 'artificer');
+      assert.ok(artificer, 'should have artificer role');
+      assert.deepStrictEqual(artificer!.permissions, ['*:*']);
+      assert.strictEqual(artificer!.source, 'guild');
+      assert.strictEqual(artificer!.strict, undefined);
+
+      const scribe = roles.find(r => r.name === 'scribe');
+      assert.ok(scribe, 'should have scribe role');
+      assert.deepStrictEqual(scribe!.permissions, ['stdlib:read']);
+      assert.strictEqual(scribe!.strict, true);
+      assert.strictEqual(scribe!.source, 'guild');
+    });
+
+    it('returns empty array when no roles configured', () => {
+      setupGuild({ loomConfig: {} });
+      const api = startLoom();
+      assert.deepStrictEqual(api.listRoles(), []);
+    });
+
+    it('returns empty array when loomConfig is undefined', () => {
+      setupGuild({});
+      const api = startLoom();
+      assert.deepStrictEqual(api.listRoles(), []);
+    });
+  });
+
+  describe('listRoles() — kit roles only', () => {
+    afterEach(() => clearGuild());
+
+    it('returns kit roles with source equal to plugin ID', () => {
+      setupGuild({
+        kits: [makeLoadedKit('spider', '@test/spider', {
+          roles: { crawler: { permissions: ['spider:read'] } },
+        })],
+      });
+      const api = startLoom();
+      const roles = api.listRoles();
+
+      assert.equal(roles.length, 1);
+      const crawler = roles[0]!;
+      assert.strictEqual(crawler.name, 'spider.crawler');
+      assert.deepStrictEqual(crawler.permissions, ['spider:read']);
+      assert.strictEqual(crawler.source, 'spider');
+      assert.strictEqual(crawler.strict, undefined);
+    });
+  });
+
+  describe('listRoles() — mixed guild and kit roles', () => {
+    afterEach(() => clearGuild());
+
+    it('returns guild roles first, then kit roles', () => {
+      setupGuild({
+        loomConfig: {
+          roles: {
+            artificer: { permissions: ['*:*'] },
+          },
+        },
+        kits: [makeLoadedKit('spider', '@test/spider', {
+          roles: { crawler: { permissions: ['spider:read'] } },
+        })],
+      });
+      const api = startLoom();
+      const roles = api.listRoles();
+
+      assert.equal(roles.length, 2);
+      assert.strictEqual(roles[0]!.name, 'artificer');
+      assert.strictEqual(roles[0]!.source, 'guild');
+      assert.strictEqual(roles[1]!.name, 'spider.crawler');
+      assert.strictEqual(roles[1]!.source, 'spider');
+    });
+  });
+
+  describe('listRoles() — guild override of kit role', () => {
+    afterEach(() => clearGuild());
+
+    it('guild override wins; kit version is not registered', () => {
+      setupGuild({
+        loomConfig: {
+          roles: {
+            'spider.crawler': { permissions: ['*:*'] },
+          },
+        },
+        kits: [makeLoadedKit('spider', '@test/spider', {
+          roles: { crawler: { permissions: ['spider:read'] } },
+        })],
+      });
+      const api = startLoom();
+      const roles = api.listRoles();
+
+      assert.equal(roles.length, 1);
+      const role = roles[0]!;
+      assert.strictEqual(role.name, 'spider.crawler');
+      assert.strictEqual(role.source, 'guild');
+      assert.deepStrictEqual(role.permissions, ['*:*']);
+    });
+  });
+
+  // ── apparatus shape (recommends, supportKit) ──────────────────────────
+
+  describe('apparatus shape — recommends and supportKit', () => {
+    it('includes recommends: [oculus]', () => {
+      const plugin = createLoom();
+      const apparatus = (plugin as { apparatus: Record<string, unknown> }).apparatus;
+      assert.deepStrictEqual(apparatus.recommends, ['oculus']);
+    });
+
+    it('includes supportKit with pages contribution', () => {
+      const plugin = createLoom();
+      const apparatus = (plugin as { apparatus: Record<string, unknown> }).apparatus;
+      const supportKit = apparatus.supportKit as Record<string, unknown>;
+      assert.ok(supportKit, 'should have supportKit');
+      assert.deepStrictEqual(supportKit.pages, [{ id: 'loom', title: 'Roles', dir: 'pages/loom' }]);
+    });
+
+    it('includes supportKit with two tools', () => {
+      const plugin = createLoom();
+      const apparatus = (plugin as { apparatus: Record<string, unknown> }).apparatus;
+      const supportKit = apparatus.supportKit as Record<string, unknown>;
+      const tools = supportKit.tools as unknown[];
+      assert.ok(Array.isArray(tools), 'supportKit.tools should be an array');
+      assert.equal(tools.length, 2);
+    });
+
+    it('loom-roles tool has correct name and no callableBy/permission', () => {
+      const plugin = createLoom();
+      const apparatus = (plugin as { apparatus: Record<string, unknown> }).apparatus;
+      const supportKit = apparatus.supportKit as Record<string, unknown>;
+      const tools = supportKit.tools as Array<Record<string, unknown>>;
+      const loomRoles = tools.find(t => t.name === 'loom-roles');
+      assert.ok(loomRoles, 'should have loom-roles tool');
+      assert.strictEqual(loomRoles!.callableBy, undefined);
+      assert.strictEqual(loomRoles!.permission, undefined);
+    });
+
+    it('loom-weave tool has correct name, role param, no callableBy/permission', () => {
+      const plugin = createLoom();
+      const apparatus = (plugin as { apparatus: Record<string, unknown> }).apparatus;
+      const supportKit = apparatus.supportKit as Record<string, unknown>;
+      const tools = supportKit.tools as Array<Record<string, unknown>>;
+      const loomWeave = tools.find(t => t.name === 'loom-weave');
+      assert.ok(loomWeave, 'should have loom-weave tool');
+      assert.strictEqual(loomWeave!.callableBy, undefined);
+      assert.strictEqual(loomWeave!.permission, undefined);
+      // params is a ZodObject with role key
+      const params = loomWeave!.params as { shape: Record<string, unknown> };
+      assert.ok(params && params.shape && params.shape.role, 'should have role param');
+    });
+  });
+
+  // ── loom-roles tool handler ───────────────────────────────────────────
+
+  describe('loom-roles tool handler', () => {
+    afterEach(() => clearGuild());
+
+    it('returns the same result as api.listRoles()', async () => {
+      setupGuild({
+        loomConfig: {
+          roles: {
+            artificer: { permissions: ['*:*'] },
+          },
+        },
+      });
+      const plugin = createLoom();
+      const apparatus = (plugin as { apparatus: Record<string, unknown> & { start: (ctx: unknown) => void; provides: LoomApi } }).apparatus;
+      apparatus.start({ on: () => {} });
+      const api = apparatus.provides;
+
+      const supportKit = apparatus.supportKit as Record<string, unknown>;
+      const tools = supportKit.tools as Array<{ name: string; handler: (p: Record<string, unknown>) => unknown }>;
+      const loomRoles = tools.find(t => t.name === 'loom-roles');
+      assert.ok(loomRoles);
+
+      const result = await loomRoles!.handler({});
+      assert.deepStrictEqual(result, api.listRoles());
+    });
+  });
+
+  // ── loom-weave tool handler ───────────────────────────────────────────
+
+  describe('loom-weave tool handler', () => {
+    afterEach(() => clearGuild());
+
+    it('returns JSON-serializable result with tools mapped to plain objects', async () => {
+      const readTool = testTool('stack-query', 'read');
+      const resolved: ResolvedTool[] = [
+        { definition: readTool, pluginId: 'stacks' },
+      ];
+      const { api: instrumentarium } = mockInstrumentarium(resolved);
+
+      setupGuild({
+        loomConfig: {
+          roles: {
+            artificer: { permissions: ['stacks:read'] },
+          },
+        },
+        apparatuses: { tools: instrumentarium },
+      });
+
+      const plugin = createLoom();
+      const apparatus = (plugin as { apparatus: Record<string, unknown> & { start: (ctx: unknown) => void } }).apparatus;
+      apparatus.start({ on: () => {} });
+
+      const supportKit = apparatus.supportKit as Record<string, unknown>;
+      const tools = supportKit.tools as Array<{ name: string; handler: (p: Record<string, unknown>) => unknown }>;
+      const loomWeave = tools.find(t => t.name === 'loom-weave');
+      assert.ok(loomWeave);
+
+      const result = await loomWeave!.handler({ role: 'artificer' }) as Record<string, unknown>;
+
+      // Verify tools array contains plain objects (JSON-serializable)
+      assert.ok(Array.isArray(result.tools), 'tools should be an array');
+      const toolEntry = (result.tools as Array<Record<string, unknown>>)[0]!;
+      assert.strictEqual(toolEntry.name, 'stack-query');
+      assert.strictEqual(toolEntry.permission, 'read');
+      assert.strictEqual(toolEntry.pluginId, 'stacks');
+      // Should not have handler or params (Zod) on the plain object
+      assert.ok(!('handler' in toolEntry), 'should not have handler');
+      assert.ok(!('params' in toolEntry), 'should not have params/Zod schema');
+
+      // Verify environment is present
+      assert.ok(result.environment, 'should have environment');
+
+      // Verify JSON serializable
+      assert.doesNotThrow(() => JSON.stringify(result), 'result should be JSON serializable');
+    });
+
+    it('returns result for unknown role (no tools, has environment)', async () => {
+      const { api: instrumentarium } = mockInstrumentarium([]);
+
+      setupGuild({
+        apparatuses: { tools: instrumentarium },
+      });
+
+      const plugin = createLoom();
+      const apparatus = (plugin as { apparatus: Record<string, unknown> & { start: (ctx: unknown) => void } }).apparatus;
+      apparatus.start({ on: () => {} });
+
+      const supportKit = apparatus.supportKit as Record<string, unknown>;
+      const tools = supportKit.tools as Array<{ name: string; handler: (p: Record<string, unknown>) => unknown }>;
+      const loomWeave = tools.find(t => t.name === 'loom-weave');
+      assert.ok(loomWeave);
+
+      const result = await loomWeave!.handler({ role: 'nonexistent' }) as Record<string, unknown>;
+
+      assert.strictEqual(result.systemPrompt, undefined);
+      assert.strictEqual(result.tools, undefined);
+      // environment is derived from role name even for unknown roles
+      assert.ok(result.environment, 'should have environment derived from role name');
+    });
+  });
 });

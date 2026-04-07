@@ -18,6 +18,8 @@
 import type { Plugin, StartupContext, LoadedPlugin } from '@shardworks/nexus-core';
 import { guild, isLoadedApparatus } from '@shardworks/nexus-core';
 import type { InstrumentariumApi, ResolvedTool } from '@shardworks/tools-apparatus';
+import { tool } from '@shardworks/tools-apparatus';
+import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -56,6 +58,18 @@ export interface AnimaWeave {
   environment?: Record<string, string>;
 }
 
+/** Metadata for a registered role, returned by listRoles(). */
+export interface RoleInfo {
+  /** Role name — the value you pass to weave({ role }). Qualified for kit roles (e.g. 'animator.scribe'). */
+  name: string;
+  /** Permission grants in plugin:level format. */
+  permissions: string[];
+  /** When true, permissionless tools are excluded unless the role grants plugin:* or *:*. */
+  strict?: boolean;
+  /** Source of the role definition: 'guild' for guild.json roles, or the plugin ID for kit-contributed roles. */
+  source: string;
+}
+
 /** The Loom's public API, exposed via `provides`. */
 export interface LoomApi {
   /**
@@ -70,6 +84,8 @@ export interface LoomApi {
    * is installed, the Loom resolves role → permissions → tools.
    */
   weave(request: WeaveRequest): Promise<AnimaWeave>;
+  /** List all registered roles with their metadata. */
+  listRoles(): RoleInfo[];
 }
 
 // ── Config types ─────────────────────────────────────────────────────
@@ -213,6 +229,36 @@ export function createLoom(): Plugin {
   }
 
   const api: LoomApi = {
+    listRoles(): RoleInfo[] {
+      const roles: RoleInfo[] = [];
+
+      // Guild roles first
+      if (config.roles) {
+        for (const [name, def] of Object.entries(config.roles)) {
+          roles.push({
+            name,
+            permissions: def.permissions,
+            ...(def.strict === true ? { strict: true } : {}),
+            source: 'guild',
+          });
+        }
+      }
+
+      // Kit roles after
+      for (const [name, def] of kitRoles.entries()) {
+        const dotIdx = name.indexOf('.');
+        const source = dotIdx !== -1 ? name.slice(0, dotIdx) : name;
+        roles.push({
+          name,
+          permissions: def.permissions,
+          ...(def.strict === true ? { strict: true } : {}),
+          source,
+        });
+      }
+
+      return roles;
+    },
+
     async weave(request: WeaveRequest): Promise<AnimaWeave> {
       const weave: AnimaWeave = {};
 
@@ -273,11 +319,47 @@ export function createLoom(): Plugin {
     },
   };
 
+  // ── Patron-callable introspection tools ──────────────────────────────
+
+  const loomRolesTool = tool({
+    name: 'loom-roles',
+    description: 'List all roles and their configuration',
+    params: {},
+    handler: async () => api.listRoles(),
+  });
+
+  const loomWeaveTool = tool({
+    name: 'loom-weave',
+    description: 'Preview the weave result for a role',
+    params: {
+      role: z.string().describe('Role name to weave'),
+    },
+    handler: async ({ role }) => {
+      const weave = await api.weave({ role });
+      return {
+        systemPrompt: weave.systemPrompt,
+        tools: weave.tools?.map(t => ({
+          name: t.definition.name,
+          description: t.definition.description,
+          permission: t.definition.permission,
+          pluginId: t.pluginId,
+        })),
+        environment: weave.environment,
+      };
+    },
+  });
+
   return {
     apparatus: {
       requires: ['tools'],
+      recommends: ['oculus'],
       consumes: ['roles'],
       provides: api,
+
+      supportKit: {
+        tools: [loomRolesTool, loomWeaveTool],
+        pages: [{ id: 'loom', title: 'Roles', dir: 'pages/loom' }],
+      },
 
       start(ctx: StartupContext): void {
         const g = guild();

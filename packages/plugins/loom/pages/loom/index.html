@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Roles — Loom</title>
+</head>
+<body>
+<main style="padding: 24px;">
+  <h1>Roles</h1>
+  <div class="card" style="margin-bottom: 16px;">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Permissions</th>
+          <th>Strict</th>
+          <th>Source</th>
+        </tr>
+      </thead>
+      <tbody id="roles-body"></tbody>
+    </table>
+  </div>
+  <div id="detail" style="display:none;">
+    <div id="tools-card" class="card" style="margin-bottom: 16px;">
+      <h2>Tools</h2>
+      <div id="tools-content"></div>
+    </div>
+    <div id="env-card" class="card" style="margin-bottom: 16px;">
+      <h2>Environment</h2>
+      <div id="env-content"></div>
+    </div>
+    <div id="prompt-card" class="card">
+      <h2>System Prompt</h2>
+      <div id="prompt-content"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+  function escapeHtml(text) {
+    if (typeof text !== 'string') text = String(text);
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  let selectedRow = null;
+
+  async function loadRoles() {
+    const tbody = document.getElementById('roles-body');
+    let roles = [];
+    try {
+      const res = await fetch('/api/loom/roles');
+      roles = await res.json();
+    } catch (err) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty-state">Failed to load roles.</td></tr>';
+      return;
+    }
+
+    if (!roles || roles.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No roles configured.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = '';
+    for (const role of roles) {
+      const tr = document.createElement('tr');
+      tr.style.cursor = 'pointer';
+
+      const tdName = document.createElement('td');
+      tdName.textContent = role.name;
+
+      const tdPerms = document.createElement('td');
+      tdPerms.textContent = String(role.permissions ? role.permissions.length : 0);
+
+      const tdStrict = document.createElement('td');
+      tdStrict.textContent = role.strict ? 'yes' : 'no';
+
+      const tdSource = document.createElement('td');
+      const badge = document.createElement('span');
+      badge.className = role.source === 'guild' ? 'badge' : 'badge badge--info';
+      badge.textContent = role.source;
+      tdSource.appendChild(badge);
+
+      tr.appendChild(tdName);
+      tr.appendChild(tdPerms);
+      tr.appendChild(tdStrict);
+      tr.appendChild(tdSource);
+
+      tr.addEventListener('click', () => selectRole(tr, role));
+      tbody.appendChild(tr);
+    }
+  }
+
+  async function selectRole(row, role) {
+    if (selectedRow) {
+      selectedRow.style.background = '';
+    }
+    selectedRow = row;
+    row.style.background = 'var(--surface2)';
+
+    let weave = {};
+    try {
+      const res = await fetch('/api/loom/weave?role=' + encodeURIComponent(role.name));
+      weave = await res.json();
+    } catch (err) {
+      weave = {};
+    }
+
+    renderDetail(weave);
+    document.getElementById('detail').style.display = '';
+  }
+
+  function renderDetail(weave) {
+    // Tools
+    const toolsContent = document.getElementById('tools-content');
+    if (!weave.tools || weave.tools.length === 0) {
+      toolsContent.innerHTML = '<p class="empty-state">No tools resolved.</p>';
+    } else {
+      let html = '<table class="data-table"><thead><tr><th>Name</th><th>Permission</th><th>Plugin</th></tr></thead><tbody>';
+      for (const t of weave.tools) {
+        html += '<tr>';
+        html += '<td>' + escapeHtml(t.name) + '</td>';
+        html += '<td>' + escapeHtml(t.permission != null ? t.permission : '(none)') + '</td>';
+        html += '<td>' + escapeHtml(t.pluginId) + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      toolsContent.innerHTML = html;
+    }
+
+    // Environment
+    const envContent = document.getElementById('env-content');
+    const envEntries = weave.environment ? Object.entries(weave.environment) : [];
+    if (envEntries.length === 0) {
+      envContent.innerHTML = '<p class="empty-state">No environment variables.</p>';
+    } else {
+      let html = '<table class="data-table"><thead><tr><th>Variable</th><th>Value</th></tr></thead><tbody>';
+      for (const [key, val] of envEntries) {
+        html += '<tr>';
+        html += '<td>' + escapeHtml(key) + '</td>';
+        html += '<td>' + escapeHtml(val) + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      envContent.innerHTML = html;
+    }
+
+    // System Prompt
+    const promptContent = document.getElementById('prompt-content');
+    if (!weave.systemPrompt) {
+      promptContent.innerHTML = '<p class="empty-state">No system prompt composed.</p>';
+    } else {
+      const len = weave.systemPrompt.length;
+      promptContent.innerHTML =
+        '<details>' +
+        '<summary>Show system prompt (' + escapeHtml(String(len)) + ' chars)</summary>' +
+        '<pre><code>' + escapeHtml(weave.systemPrompt) + '</code></pre>' +
+        '</details>';
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', loadRoles);
+</script>
+</body>
+</html>

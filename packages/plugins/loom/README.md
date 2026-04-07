@@ -46,6 +46,14 @@ interface LoomApi {
    * resolved tool set, and git identity environment variables.
    */
   weave(request: WeaveRequest): Promise<AnimaWeave>;
+
+  /**
+   * List all registered roles with their metadata.
+   *
+   * Returns both guild-configured roles (source: 'guild') and kit-contributed
+   * roles (source: pluginId). Guild roles appear first.
+   */
+  listRoles(): RoleInfo[];
 }
 ```
 
@@ -80,6 +88,23 @@ interface AnimaWeave {
    * The Animator merges these with any per-request overrides.
    */
   environment?: Record<string, string>;
+}
+```
+
+### `RoleInfo`
+
+Returned by `listRoles()`:
+
+```typescript
+interface RoleInfo {
+  /** Role name — the value you pass to weave({ role }). Qualified for kit roles (e.g. 'animator.scribe'). */
+  name: string;
+  /** Permission grants in plugin:level format. */
+  permissions: string[];
+  /** When true, permissionless tools are excluded unless the role grants plugin:* or *:*. */
+  strict?: boolean;
+  /** Source of the role definition: 'guild' for guild.json roles, or the plugin ID for kit-contributed roles. */
+  source: string;
 }
 ```
 
@@ -124,6 +149,22 @@ Role configuration is used for tool resolution (permissions), environment variab
 
 ---
 
+## Dashboard Page
+
+When The Oculus is installed, the Loom contributes a **Roles** page (`/pages/loom/`) to the Oculus dashboard. The page:
+
+- Lists all registered roles (guild and kit) with their permission count, strict flag, and source.
+- On row click, shows a detail panel with: resolved tools (Name, Permission, Plugin), environment variables, and the composed system prompt.
+
+The page also exposes two patron-callable REST endpoints (auto-mapped by Oculus):
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/loom/roles` | Returns `RoleInfo[]` — all registered roles. |
+| `GET /api/loom/weave?role=<name>` | Returns the weave preview for a role (tools, environment, systemPrompt). |
+
+---
+
 ## Exports
 
 ```typescript
@@ -132,6 +173,7 @@ import {
   type LoomApi,
   type WeaveRequest,
   type AnimaWeave,
+  type RoleInfo,
   createLoom,
 } from '@shardworks/loom-apparatus';
 ```

@@ -16,6 +16,7 @@ export {
   type LoomApi,
   type WeaveRequest,
   type AnimaWeave,
+  type RoleInfo,
   type LoomConfig,
   type RoleDefinition,
   type KitRoleDefinition,
