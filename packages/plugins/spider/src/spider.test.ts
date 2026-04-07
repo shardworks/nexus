@@ -2104,6 +2104,24 @@ describe('Spider — variable resolution', () => {
     const rigs = await rigsBook(stacks).list();
     assert.deepEqual(rigs[0].engines[0].givensSpec, {});
   });
+
+  it('${writ} and ${vars.<key>} resolve identically to their bare-form equivalents', async () => {
+    const template: RigTemplate = {
+      engines: [{ id: 'only', designId: 'seal', givens: { w: '${writ}', cmd: '${vars.buildCommand}' } }],
+    };
+    const fix = buildFixture({ spider: { variables: { buildCommand: 'make build' }, rigTemplates: { default: template } } });
+    const { clerk, spider, stacks } = fix;
+
+    const writ = await clerk.post({ title: 'Curly brace test', body: 'test body' });
+    await spider.crawl();
+
+    const rigs = await rigsBook(stacks).list();
+    const givensSpec = rigs[0].engines[0].givensSpec;
+    // ${writ} resolves to the WritDoc object (same as $writ)
+    assert.equal((givensSpec.w as { id: string }).id, writ.id, '${writ} should resolve to WritDoc');
+    // ${vars.buildCommand} resolves to the configured value (same as $vars.buildCommand)
+    assert.equal(givensSpec.cmd, 'make build', '${vars.buildCommand} should resolve to configured value');
+  });
 });
 
 describe('Spider — startup validation', () => {
@@ -2370,6 +2388,40 @@ describe('Spider — startup validation', () => {
           },
         },
       })
+    );
+  });
+
+  it('accepts ${writ}, ${vars.<key>} curly-brace forms without throwing', () => {
+    assert.doesNotThrow(() =>
+      buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [{ id: 'x', designId: 'seal', givens: { w: '${writ}', cmd: '${vars.buildCommand}' } }],
+            },
+          },
+        },
+      })
+    );
+  });
+
+  it('throws [spider] error for invalid curly-brace variable, error includes original ${...} form', () => {
+    assert.throws(
+      () => buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [{ id: 'x', designId: 'seal', givens: { x: '${badVar}' } }],
+            },
+          },
+        },
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.startsWith('[spider]'), err.message);
+        assert.ok(err.message.includes('"${badVar}"'), err.message);
+        return true;
+      },
     );
   });
 

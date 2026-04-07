@@ -125,9 +125,10 @@ export interface RigTemplateEngine {
   upstream?: string[];
   /**
    * Givens to pass at spawn time.
-   * String values starting with '$' are variable references resolved at spawn time:
-   *   '$writ' — the WritDoc for this rig's writ
-   *   '$vars.<key>' — value from spider.variables config
+   * String values starting with '$' (either $name or ${name}) are variable
+   * references resolved at spawn time:
+   *   '$writ' or '${writ}' — the WritDoc for this rig's writ
+   *   '$vars.<key>' or '${vars.<key>}' — value from spider.variables config
    * Non-string values are passed through literally.
    * Variables that resolve to undefined cause the key to be omitted.
    */

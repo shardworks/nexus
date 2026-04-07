@@ -126,6 +126,18 @@ function isRigBlocked(engines: EngineInstance[]): boolean {
 // ── Template-based rig building ────────────────────────────────────────
 
 /**
+ * Normalize a variable reference by stripping optional curly braces.
+ * '${foo}' → '$foo', '$foo' → '$foo' (unchanged).
+ * Called before matching against known variable patterns.
+ */
+function normalizeVarRef(value: string): string {
+  if (value.startsWith('${') && value.endsWith('}')) {
+    return '$' + value.slice(2, -1);
+  }
+  return value;
+}
+
+/**
  * Look up the rig template for a given writ type.
  * Falls back to 'default' template if no exact match.
  * Throws if no matching template is found.
@@ -155,17 +167,20 @@ function resolveGivens(
   for (const [key, value] of Object.entries(givens ?? {})) {
     if (typeof value !== 'string' || !value.startsWith('$')) {
       result[key] = value;
-    } else if (value === '$writ') {
-      result[key] = context.writ;
-    } else if (/^\$vars\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) {
-      const varKey = value.slice('$vars.'.length);
-      const resolved = (context.spiderConfig.variables ?? {})[varKey];
-      if (resolved !== undefined) {
-        result[key] = resolved;
+    } else {
+      const normalized = normalizeVarRef(value);
+      if (normalized === '$writ') {
+        result[key] = context.writ;
+      } else if (/^\$vars\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(normalized)) {
+        const varKey = normalized.slice('$vars.'.length);
+        const resolved = (context.spiderConfig.variables ?? {})[varKey];
+        if (resolved !== undefined) {
+          result[key] = resolved;
+        }
+        // undefined → omit key entirely
       }
-      // undefined → omit key entirely
+      // Unrecognized $-prefixed strings are caught at validation time
     }
-    // Unrecognized $-prefixed strings are caught at validation time
   }
   return result;
 }
@@ -281,9 +296,10 @@ function validateTemplates(
     for (const engine of engines) {
       for (const value of Object.values(engine.givens ?? {})) {
         if (typeof value === 'string' && value.startsWith('$')) {
+          const normalized = normalizeVarRef(value);
           if (
-            value === '$writ' ||
-            /^\$vars\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)
+            normalized === '$writ' ||
+            /^\$vars\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(normalized)
           ) {
             continue; // valid
           }
