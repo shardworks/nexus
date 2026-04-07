@@ -200,3 +200,61 @@ details.collapsible pre {
   overflow: auto;
   padding: 12px;
 }
+
+/* ── Writ body textarea ─────────────────────────────────────────────── */
+
+.writ-body-textarea {
+  background: var(--bg, #0d0d0d);
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  color: var(--text, #eee);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  height: 200px;
+  margin-top: 8px;
+  padding: 10px;
+  resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* ── Session log textarea ───────────────────────────────────────────── */
+
+.session-log-textarea {
+  background: var(--bg, #0d0d0d);
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  color: var(--text, #eee);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  height: 300px;
+  margin-top: 8px;
+  padding: 10px;
+  resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* ── Template table row interactivity ───────────────────────────────── */
+
+#templates-tbody tr {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+#templates-tbody tr:hover {
+  background: var(--surface2, #2f3549);
+}
+
+#templates-tbody tr.selected {
+  background: var(--surface2, #2f3549);
+  border-left: 3px solid var(--cyan, #0ff);
+}
+
+/* ── Elapsed placeholder ────────────────────────────────────────────── */
+
+.elapsed-running {
+  color: var(--cyan, #7dcfff);
+  animation: pulse 2s infinite;
+  font-style: italic;
+}

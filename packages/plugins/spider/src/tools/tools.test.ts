@@ -31,6 +31,9 @@ function makeGuild(
     forWrit: async () => null,
     resume: async () => {},
     getBlockType: () => undefined,
+    listBlockTypes: () => [],
+    listTemplates: () => [],
+    listTemplateMappings: () => ({}),
   };
 
   const fakeGuildConfig: GuildConfig = {

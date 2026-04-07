@@ -26,7 +26,7 @@
           <option value="failed">failed</option>
           <option value="blocked">blocked</option>
         </select>
-        <input id="writ-filter" type="text" placeholder="Filter by writ ID...">
+        <input id="writ-filter" type="text" placeholder="Filter by writ ID or title...">
         <label>From <input id="date-from" type="date"></label>
         <label>To <input id="date-to" type="date"></label>
         <button id="refresh-btn" class="btn btn--primary">Refresh</button>
@@ -34,10 +34,11 @@
       <table class="data-table" id="rig-table">
         <thead>
           <tr>
-            <th data-sort="id">ID</th>
-            <th data-sort="writId">Writ</th>
             <th data-sort="status">Status</th>
+            <th>Writ Title</th>
             <th>Engines</th>
+            <th data-sort="id">Rig Id</th>
+            <th data-sort="writId">Writ Id</th>
             <th data-sort="createdAt">Created</th>
           </tr>
         </thead>
@@ -52,11 +53,19 @@
       <div class="card" style="margin-bottom:16px">
         <table class="data-table" id="detail-meta"></table>
       </div>
+      <div id="writ-details-card" class="card" style="margin-bottom:16px;display:none">
+        <h3 id="writ-detail-title"></h3>
+        <textarea id="writ-detail-body" readonly class="writ-body-textarea"></textarea>
+      </div>
       <h3>Engine Pipeline</h3>
       <div id="pipeline" class="pipeline"></div>
       <div id="engine-detail" class="card" style="margin-top:16px;display:none">
         <h3 id="engine-detail-title"></h3>
         <div id="engine-detail-body"></div>
+        <div id="session-log-section" style="display:none">
+          <h4>Session Log <span id="session-log-spinner" class="badge badge--active" style="display:none">loading...</span></h4>
+          <textarea id="session-log" readonly class="session-log-textarea"></textarea>
+        </div>
       </div>
     </div>
   </div>
@@ -64,7 +73,31 @@
   <!-- Config tab -->
   <div id="config-tab" class="tab-content" style="display:none">
     <h2>Rig Templates</h2>
-    <div id="templates-section"></div>
+    <table class="data-table" id="templates-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Source</th>
+          <th>Engines</th>
+          <th>Resolution Engine</th>
+          <th>Writ Types</th>
+        </tr>
+      </thead>
+      <tbody id="templates-tbody"></tbody>
+    </table>
+    <div id="template-empty" class="empty-state" style="display:none">No rig templates configured.</div>
+    <div id="template-detail" style="display:none">
+      <h3 id="template-detail-title"></h3>
+      <div id="template-pipeline" class="pipeline"></div>
+      <div id="template-engine-detail" class="card" style="margin-top:16px;display:none">
+        <h3 id="template-engine-detail-title"></h3>
+        <div id="template-engine-detail-body"></div>
+      </div>
+      <details class="collapsible">
+        <summary>Template Spec (JSON)</summary>
+        <pre><code id="template-json"></code></pre>
+      </details>
+    </div>
     <h2>Engine Designs</h2>
     <table class="data-table" id="designs-table">
       <thead><tr><th>ID</th><th>Plugin</th><th>Has Collect</th></tr></thead>

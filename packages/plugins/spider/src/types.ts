@@ -200,6 +200,16 @@ export interface BlockTypeInfo {
   pollIntervalMs?: number;
 }
 
+/** Summary info for a registered rig template. */
+export interface RigTemplateInfo {
+  /** Template name (plain for config, qualified pluginId.name for kit). */
+  name: string;
+  /** 'config' for guild.json templates, or the pluginId for kit-contributed templates. */
+  source: string;
+  /** The template definition. */
+  template: RigTemplate;
+}
+
 /**
  * A registered block type — defines how to check whether a blocking
  * condition has cleared. Contributed via kit/supportKit `blockTypes`.
@@ -269,6 +279,17 @@ export interface SpiderApi {
    * List all registered block types with summary info.
    */
   listBlockTypes(): BlockTypeInfo[];
+
+  /**
+   * List all registered rig templates with provenance info.
+   */
+  listTemplates(): RigTemplateInfo[];
+
+  /**
+   * Return the merged effective writ-type → template-name mapping.
+   * Config mappings override kit mappings for the same writ type.
+   */
+  listTemplateMappings(): Record<string, string>;
 }
 
 // ── Configuration ─────────────────────────────────────────────────────

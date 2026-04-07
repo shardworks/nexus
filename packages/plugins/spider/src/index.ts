@@ -29,6 +29,7 @@ export type {
   SealYields,
   RigTemplate,
   RigTemplateEngine,
+  RigTemplateInfo,
   InputRequestStatus,
   InputRequestDoc,
   ChoiceQuestionSpec,

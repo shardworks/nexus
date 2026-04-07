@@ -37,6 +37,7 @@ import type {
   BlockTypeInfo,
   CheckResult,
   RigTemplate,
+  RigTemplateInfo,
 } from './types.ts';
 
 import {
@@ -731,6 +732,40 @@ class RigTemplateRegistry {
       `[spider] No rig template found for writ type "${writType}" and no "default" template or mapping configured.`
     );
   }
+
+  /**
+   * List all registered templates with provenance info.
+   */
+  listTemplates(): RigTemplateInfo[] {
+    const result: RigTemplateInfo[] = [];
+    for (const [name, template] of this.templates) {
+      let source: string;
+      if (this.configTemplateNames.has(name)) {
+        source = 'config';
+      } else {
+        // Kit templates are stored as "pluginId.templateName"
+        const dotIdx = name.indexOf('.');
+        source = dotIdx >= 0 ? name.slice(0, dotIdx) : name;
+      }
+      result.push({ name, source, template });
+    }
+    return result;
+  }
+
+  /**
+   * Return the merged effective writ-type → template-name mapping.
+   * Config mappings override kit mappings for the same writ type.
+   */
+  listTemplateMappings(): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const [writType, templateName] of this.kitMappings) {
+      result[writType] = templateName;
+    }
+    for (const [writType, templateName] of this.configMappings) {
+      result[writType] = templateName;
+    }
+    return result;
+  }
 }
 
 // ── Apparatus factory ──────────────────────────────────────────────────
@@ -1225,6 +1260,14 @@ export function createSpider(): Plugin {
 
     listBlockTypes(): BlockTypeInfo[] {
       return blockTypeRegistry.list();
+    },
+
+    listTemplates(): RigTemplateInfo[] {
+      return rigTemplateRegistry.listTemplates();
+    },
+
+    listTemplateMappings(): Record<string, string> {
+      return rigTemplateRegistry.listTemplateMappings();
     },
   };
 
