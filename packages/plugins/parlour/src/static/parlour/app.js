@@ -12,7 +12,10 @@ let currentRole = null;
 let currentCodex = '';       // empty = guild home
 let currentConversationId = null;
 let isStreaming = false;
-let currentAnimaMessageEl = null;  // the anima message bubble being streamed
+let currentAnimaMessageEl = null;  // the anima message wrapper div being streamed
+let currentAnimaTextEl = null;     // the text content element within the current anima bubble
+let currentAnimaToolsEl = null;    // the tool-pills row element within the current anima bubble
+let currentAnimaText = '';         // accumulated raw markdown text for the current anima turn
 
 // Per-conversation cost aggregation (updated after each turn)
 let turnCostData = [];  // [{ costUsd, inputTokens, outputTokens }, ...]
@@ -85,6 +88,9 @@ function onRoleChange(role) {
   currentRole = role;
   currentConversationId = null;
   currentAnimaMessageEl = null;
+  currentAnimaTextEl = null;
+  currentAnimaToolsEl = null;
+  currentAnimaText = '';
   turnCostData = [];
   clearChat();
   parlourMain.classList.remove('hidden');
@@ -159,6 +165,9 @@ newConvBtn.addEventListener('click', onNewConversation);
 function onNewConversation() {
   currentConversationId = null;
   currentAnimaMessageEl = null;
+  currentAnimaTextEl = null;
+  currentAnimaToolsEl = null;
+  currentAnimaText = '';
   turnCostData = [];
   clearChat();
   costCard.classList.add('hidden');
@@ -202,6 +211,9 @@ async function onEndConversation(id) {
 async function onSelectConversation(id) {
   currentConversationId = id;
   currentAnimaMessageEl = null;
+  currentAnimaTextEl = null;
+  currentAnimaToolsEl = null;
+  currentAnimaText = '';
   turnCostData = [];
   setActiveConversationInSidebar(id);
 
@@ -268,6 +280,67 @@ function clearChat() {
   chatMessages.className = 'empty-state';
 }
 
+/**
+ * Convert a raw tool name into a human-friendly label.
+ * MCP guild tools arrive as e.g. "mcp__nexus-guild__tools-list" —
+ * strip the prefix and convert separators to spaces.
+ */
+function formatToolName(name) {
+  if (!name) return 'tool';
+  if (name.startsWith('mcp__')) {
+    const parts = name.split('__');
+    name = parts[parts.length - 1];
+  }
+  return name.replace(/[-_]/g, ' ');
+}
+
+/**
+ * Render markdown text safely as HTML.
+ * Falls back to plain-text (escaped) when marked.js is not loaded.
+ */
+function renderMarkdown(text) {
+  if (typeof marked !== 'undefined') {
+    return marked.parse(text);
+  }
+  // Minimal fallback: escape HTML and convert newlines
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>');
+}
+
+/**
+ * Ensure the current anima streaming bubble exists and return it.
+ * Creates the bubble (author + tool-pills row + text content) on first call.
+ */
+function ensureAnimaMessage() {
+  if (currentAnimaMessageEl) return;
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'message message--anima';
+
+  const authorEl = document.createElement('div');
+  authorEl.className = 'message-author';
+  authorEl.textContent = currentRole || 'Anima';
+
+  const toolsEl = document.createElement('div');
+  toolsEl.className = 'tool-pills-row';
+
+  const contentEl = document.createElement('div');
+  contentEl.className = 'message-content message-content--markdown';
+
+  wrapper.appendChild(authorEl);
+  wrapper.appendChild(toolsEl);
+  wrapper.appendChild(contentEl);
+  chatMessages.appendChild(wrapper);
+
+  currentAnimaMessageEl = wrapper;
+  currentAnimaToolsEl = toolsEl;
+  currentAnimaTextEl = contentEl;
+  currentAnimaText = '';
+}
+
 function appendMessage({ role, author, text, dim = false }) {
   const wrapper = document.createElement('div');
   wrapper.className = `message message--${role}`;
@@ -277,9 +350,15 @@ function appendMessage({ role, author, text, dim = false }) {
   authorEl.textContent = author;
 
   const contentEl = document.createElement('div');
-  contentEl.className = 'message-content';
   if (dim) contentEl.style.color = 'var(--text-dim, #787c99)';
-  contentEl.textContent = text;
+
+  if (role === 'anima') {
+    contentEl.className = 'message-content message-content--markdown';
+    contentEl.innerHTML = renderMarkdown(text);
+  } else {
+    contentEl.className = 'message-content';
+    contentEl.textContent = text;
+  }
 
   wrapper.appendChild(authorEl);
   wrapper.appendChild(contentEl);
@@ -378,6 +457,9 @@ async function sendMessage() {
 
   // Start anima message bubble (will be filled progressively)
   currentAnimaMessageEl = null;
+  currentAnimaTextEl = null;
+  currentAnimaToolsEl = null;
+  currentAnimaText = '';
 
   // Build request body
   const body = {
@@ -508,62 +590,31 @@ function handleSSEEvent(event, data) {
 function handleChunk(chunk) {
   switch (chunk.type) {
     case 'text': {
-      // Remove typing indicator on first text chunk
       removeTypingIndicator();
-
-      if (!currentAnimaMessageEl) {
-        // Create the anima message bubble
-        const wrapper = document.createElement('div');
-        wrapper.className = 'message message--anima';
-
-        const authorEl = document.createElement('div');
-        authorEl.className = 'message-author';
-        authorEl.textContent = currentRole || 'Anima';
-
-        const contentEl = document.createElement('div');
-        contentEl.className = 'message-content';
-
-        wrapper.appendChild(authorEl);
-        wrapper.appendChild(contentEl);
-        chatMessages.appendChild(wrapper);
-        currentAnimaMessageEl = contentEl;
-      }
-
-      currentAnimaMessageEl.textContent += chunk.text;
+      ensureAnimaMessage();
+      currentAnimaText += chunk.text;
+      currentAnimaTextEl.innerHTML = renderMarkdown(currentAnimaText);
       scrollToBottom();
       break;
     }
 
     case 'tool_use': {
       removeTypingIndicator();
-      if (!currentAnimaMessageEl) {
-        // Create bubble if needed
-        const wrapper = document.createElement('div');
-        wrapper.className = 'message message--anima';
-        const authorEl = document.createElement('div');
-        authorEl.className = 'message-author';
-        authorEl.textContent = currentRole || 'Anima';
-        const contentEl = document.createElement('div');
-        contentEl.className = 'message-content';
-        wrapper.appendChild(authorEl);
-        wrapper.appendChild(contentEl);
-        chatMessages.appendChild(wrapper);
-        currentAnimaMessageEl = contentEl;
-      }
+      ensureAnimaMessage();
       const pill = document.createElement('span');
       pill.className = 'tool-indicator';
-      pill.textContent = `⚙ ${chunk.name || 'tool'}`;
-      currentAnimaMessageEl.appendChild(pill);
+      pill.textContent = `⚙ ${formatToolName(chunk.name)}`;
+      currentAnimaToolsEl.appendChild(pill);
       scrollToBottom();
       break;
     }
 
     case 'tool_result': {
-      if (currentAnimaMessageEl) {
+      if (currentAnimaToolsEl) {
         const pill = document.createElement('span');
-        pill.className = 'tool-indicator';
-        pill.textContent = `✓ ${chunk.name || 'result'}`;
-        currentAnimaMessageEl.appendChild(pill);
+        pill.className = 'tool-indicator tool-indicator--done';
+        pill.textContent = `✓ ${formatToolName(chunk.name)}`;
+        currentAnimaToolsEl.appendChild(pill);
         scrollToBottom();
       }
       break;
@@ -582,6 +633,9 @@ function handleChunk(chunk) {
       }
 
       currentAnimaMessageEl = null;
+      currentAnimaTextEl = null;
+      currentAnimaToolsEl = null;
+      currentAnimaText = '';
       isStreaming = false;
       sendBtn.disabled = false;
 
