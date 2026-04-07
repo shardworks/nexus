@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Spider</title>
+  <link rel="stylesheet" href="spider.css">
+</head>
+<body>
+<main style="padding: 24px;">
+  <h1>Spider</h1>
+
+  <div class="tab-bar">
+    <button class="tab active" data-tab="rigs">Rigs</button>
+    <button class="tab" data-tab="config">Config</button>
+  </div>
+
+  <!-- Rigs tab -->
+  <div id="rigs-tab" class="tab-content">
+    <div id="rig-list-view">
+      <div class="toolbar">
+        <select id="status-filter">
+          <option value="">All statuses</option>
+          <option value="running">running</option>
+          <option value="completed">completed</option>
+          <option value="failed">failed</option>
+          <option value="blocked">blocked</option>
+        </select>
+        <input id="writ-filter" type="text" placeholder="Filter by writ ID...">
+        <label>From <input id="date-from" type="date"></label>
+        <label>To <input id="date-to" type="date"></label>
+        <button id="refresh-btn" class="btn btn--primary">Refresh</button>
+      </div>
+      <table class="data-table" id="rig-table">
+        <thead>
+          <tr>
+            <th data-sort="id">ID</th>
+            <th data-sort="writId">Writ</th>
+            <th data-sort="status">Status</th>
+            <th>Engines</th>
+            <th data-sort="createdAt">Created</th>
+          </tr>
+        </thead>
+        <tbody id="rig-tbody"></tbody>
+      </table>
+      <div id="rig-empty" class="empty-state" style="display:none">No rigs found.</div>
+    </div>
+
+    <div id="rig-detail-view" style="display:none">
+      <button id="back-btn" class="btn">&#8592; Back to list</button>
+      <h2 id="detail-title"></h2>
+      <div class="card" style="margin-bottom:16px">
+        <table class="data-table" id="detail-meta"></table>
+      </div>
+      <h3>Engine Pipeline</h3>
+      <div id="pipeline" class="pipeline"></div>
+      <div id="engine-detail" class="card" style="margin-top:16px;display:none">
+        <h3 id="engine-detail-title"></h3>
+        <div id="engine-detail-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Config tab -->
+  <div id="config-tab" class="tab-content" style="display:none">
+    <h2>Rig Templates</h2>
+    <div id="templates-section"></div>
+    <h2>Engine Designs</h2>
+    <table class="data-table" id="designs-table">
+      <thead><tr><th>ID</th><th>Plugin</th><th>Has Collect</th></tr></thead>
+      <tbody id="designs-tbody"></tbody>
+    </table>
+    <h2>Block Types</h2>
+    <table class="data-table" id="blocktypes-table">
+      <thead><tr><th>ID</th><th>Plugin</th><th>Poll Interval (ms)</th></tr></thead>
+      <tbody id="blocktypes-tbody"></tbody>
+    </table>
+  </div>
+</main>
+<script src="spider.js"></script>
+</body>
+</html>

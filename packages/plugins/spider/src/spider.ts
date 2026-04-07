@@ -34,6 +34,7 @@ import type {
   SpiderConfig,
   BlockRecord,
   BlockType,
+  BlockTypeInfo,
   CheckResult,
   RigTemplate,
 } from './types.ts';
@@ -67,7 +68,11 @@ import {
   inputRequestRejectTool,
   inputRequestExportTool,
   inputRequestImportTool,
+  engineDesignsTool,
+  blockTypesTool,
 } from './tools/index.ts';
+
+import { spiderRoutes } from './oculus-routes.ts';
 
 // ── Kit contribution interface ─────────────────────────────────────────
 
@@ -330,29 +335,43 @@ function isBlockType(value: unknown): value is BlockType {
 
 class BlockTypeRegistry {
   private readonly types = new Map<string, BlockType>();
+  private readonly provenance = new Map<string, string>();
 
   register(plugin: LoadedPlugin): void {
     if (isLoadedKit(plugin)) {
-      this.registerFromKit(plugin.kit);
+      this.registerFromKit(plugin.kit, plugin.id);
     } else if (isLoadedApparatus(plugin)) {
       if (plugin.apparatus.supportKit) {
-        this.registerFromKit(plugin.apparatus.supportKit);
+        this.registerFromKit(plugin.apparatus.supportKit, plugin.id);
       }
     }
   }
 
-  private registerFromKit(kit: Record<string, unknown>): void {
+  private registerFromKit(kit: Record<string, unknown>, pluginId: string): void {
     const raw = kit.blockTypes;
     if (typeof raw !== 'object' || raw === null) return;
     for (const value of Object.values(raw as Record<string, unknown>)) {
       if (isBlockType(value)) {
         this.types.set(value.id, value);
+        this.provenance.set(value.id, pluginId);
       }
     }
   }
 
   get(id: string): BlockType | undefined {
     return this.types.get(id);
+  }
+
+  list(): BlockTypeInfo[] {
+    const result: BlockTypeInfo[] = [];
+    for (const [id, blockType] of this.types) {
+      result.push({
+        id,
+        pluginId: this.provenance.get(id) ?? 'unknown',
+        ...(blockType.pollIntervalMs !== undefined ? { pollIntervalMs: blockType.pollIntervalMs } : {}),
+      });
+    }
+    return result;
   }
 }
 
@@ -1203,6 +1222,10 @@ export function createSpider(): Plugin {
     getBlockType(id: string): BlockType | undefined {
       return blockTypeRegistry.get(id);
     },
+
+    listBlockTypes(): BlockTypeInfo[] {
+      return blockTypeRegistry.list();
+    },
   };
 
   // ── Apparatus ─────────────────────────────────────────────────────
@@ -1210,6 +1233,7 @@ export function createSpider(): Plugin {
   return {
     apparatus: {
       requires: ['stacks', 'clerk', 'fabricator'],
+      recommends: ['oculus'],
       consumes: ['blockTypes', 'rigTemplates', 'rigTemplateMappings'],
 
       supportKit: {
@@ -1234,6 +1258,12 @@ export function createSpider(): Plugin {
           'book-updated':   bookUpdatedBlockType,
           'patron-input':   patronInputBlockType,
         },
+        pages: [{
+          id: 'spider',
+          title: 'Spider',
+          dir: 'src/static',
+        }],
+        routes: spiderRoutes,
         tools: [
           crawlOneTool,
           crawlContinualTool,
@@ -1248,6 +1278,8 @@ export function createSpider(): Plugin {
           inputRequestRejectTool,
           inputRequestExportTool,
           inputRequestImportTool,
+          engineDesignsTool,
+          blockTypesTool,
         ],
       },
 

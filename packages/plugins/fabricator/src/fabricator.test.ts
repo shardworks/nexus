@@ -295,4 +295,76 @@ describe('Fabricator', () => {
       assert.equal(api.getEngineDesign('apparatus-engine'), apparatusEngine);
     });
   });
+
+  describe('listEngineDesigns()', () => {
+    it('returns empty array before registering anything', () => {
+      const { api } = startFabricator({});
+      const result = api.listEngineDesigns();
+      assert.deepEqual(result, []);
+    });
+
+    it('returns correct EngineDesignInfo for two designs from different plugins', () => {
+      const engineA = mockEngine('alpha');
+      const engineB = mockEngine('beta');
+      const { api } = startFabricator({
+        kits: [
+          mockKit('plugin-a', { alpha: engineA }),
+          mockKit('plugin-b', { beta: engineB }),
+        ],
+      });
+
+      const result = api.listEngineDesigns();
+      assert.equal(result.length, 2);
+
+      const alpha = result.find((d) => d.id === 'alpha');
+      assert.ok(alpha, 'alpha should be in list');
+      assert.equal(alpha.pluginId, 'plugin-a');
+      assert.equal(alpha.hasCollect, false);
+
+      const beta = result.find((d) => d.id === 'beta');
+      assert.ok(beta, 'beta should be in list');
+      assert.equal(beta.pluginId, 'plugin-b');
+      assert.equal(beta.hasCollect, false);
+    });
+
+    it('reports hasCollect: true for engine with collect method', () => {
+      const engineWithCollect: EngineDesign = {
+        id: 'quick-engine',
+        async run() { return { status: 'completed', yields: null }; },
+        async collect() { return { result: 'done' }; },
+      };
+      const engineWithoutCollect = mockEngine('plain-engine');
+
+      const { api } = startFabricator({
+        kits: [
+          mockKit('my-kit', { quick: engineWithCollect, plain: engineWithoutCollect }),
+        ],
+      });
+
+      const result = api.listEngineDesigns();
+      const quick = result.find((d) => d.id === 'quick-engine');
+      assert.ok(quick, 'quick-engine should be in list');
+      assert.equal(quick.hasCollect, true);
+
+      const plain = result.find((d) => d.id === 'plain-engine');
+      assert.ok(plain, 'plain-engine should be in list');
+      assert.equal(plain.hasCollect, false);
+    });
+
+    it('second registration wins for duplicate ID (last-write-wins)', () => {
+      const engine1 = mockEngine('shared');
+      const engine2 = mockEngine('shared');
+      const { api } = startFabricator({
+        kits: [
+          mockKit('plugin-1', { e: engine1 }),
+          mockKit('plugin-2', { e: engine2 }),
+        ],
+      });
+
+      const result = api.listEngineDesigns();
+      const shared = result.find((d) => d.id === 'shared');
+      assert.ok(shared, 'shared engine should be in list');
+      assert.equal(shared.pluginId, 'plugin-2');
+    });
+  });
 });

@@ -14,6 +14,7 @@ import { createFabricator } from './fabricator.ts';
 
 export type {
   EngineDesign,
+  EngineDesignInfo,
   EngineRunContext,
   EngineRunResult,
 } from './fabricator.ts';

@@ -3411,6 +3411,59 @@ describe('Spider — engine blocking on external conditions', () => {
       await registerBlockType(fireAll, custom);
       assert.ok(spider.getBlockType('my-custom-type') !== undefined, 'custom block type should be registered');
     });
+
+    it('listBlockTypes returns all built-in block types with correct info', () => {
+      const { spider } = buildBlockingFixture();
+      const result = spider.listBlockTypes();
+      assert.ok(Array.isArray(result), 'listBlockTypes should return an array');
+
+      const ids = result.map((bt) => bt.id);
+      assert.ok(ids.includes('writ-status'), 'writ-status should be in list');
+      assert.ok(ids.includes('scheduled-time'), 'scheduled-time should be in list');
+      assert.ok(ids.includes('book-updated'), 'book-updated should be in list');
+      assert.ok(ids.includes('patron-input'), 'patron-input should be in list');
+
+      const writStatus = result.find((bt) => bt.id === 'writ-status');
+      assert.ok(writStatus, 'writ-status should be found');
+      assert.equal(typeof writStatus.pluginId, 'string', 'pluginId should be a string');
+      assert.equal(writStatus.pollIntervalMs, 10_000, 'writ-status should have 10s poll interval');
+
+      const scheduledTime = result.find((bt) => bt.id === 'scheduled-time');
+      assert.ok(scheduledTime, 'scheduled-time should be found');
+      assert.equal(scheduledTime.pollIntervalMs, 30_000, 'scheduled-time should have 30s poll interval');
+    });
+
+    it('listBlockTypes includes custom block type registered via plugin:initialized', async () => {
+      const { spider, fireAll } = buildBlockingFixture();
+      const custom: BlockType = {
+        id: 'my-custom-type',
+        conditionSchema: z.object({ key: z.string() }),
+        pollIntervalMs: 5000,
+        async check(): Promise<CheckResult> { return { status: 'pending' }; },
+      };
+      await registerBlockType(fireAll, custom);
+
+      const result = spider.listBlockTypes();
+      const found = result.find((bt) => bt.id === 'my-custom-type');
+      assert.ok(found, 'custom block type should appear in listBlockTypes');
+      assert.equal(found.pollIntervalMs, 5000, 'pollIntervalMs should match');
+    });
+
+    it('listBlockTypes block type without pollIntervalMs has undefined pollIntervalMs', async () => {
+      const { spider, fireAll } = buildBlockingFixture();
+      const noPollType: BlockType = {
+        id: 'no-poll-type',
+        conditionSchema: z.object({}),
+        // No pollIntervalMs
+        async check(): Promise<CheckResult> { return { status: 'pending' }; },
+      };
+      await registerBlockType(fireAll, noPollType);
+
+      const result = spider.listBlockTypes();
+      const found = result.find((bt) => bt.id === 'no-poll-type');
+      assert.ok(found, 'no-poll-type should be in list');
+      assert.equal(found.pollIntervalMs, undefined, 'pollIntervalMs should be undefined when not set');
+    });
   });
 
   // ── Engine blocked result → blocked status and block record (V1, V2, R1–R3) ─

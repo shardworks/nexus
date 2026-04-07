@@ -190,6 +190,16 @@ export interface CheckResult {
   reason?: string;
 }
 
+/** Summary info for a registered block type. */
+export interface BlockTypeInfo {
+  /** Block type id. */
+  id: string;
+  /** Plugin id that contributed this block type. */
+  pluginId: string;
+  /** Suggested poll interval in milliseconds, if set. */
+  pollIntervalMs?: number;
+}
+
 /**
  * A registered block type — defines how to check whether a blocking
  * condition has cleared. Contributed via kit/supportKit `blockTypes`.
@@ -254,6 +264,11 @@ export interface SpiderApi {
    * Look up a registered block type by ID.
    */
   getBlockType(id: string): BlockType | undefined;
+
+  /**
+   * List all registered block types with summary info.
+   */
+  listBlockTypes(): BlockTypeInfo[];
 }
 
 // ── Configuration ─────────────────────────────────────────────────────

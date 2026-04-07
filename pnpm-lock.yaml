@@ -247,6 +247,9 @@ importers:
       '@shardworks/tools-apparatus':
         specifier: workspace:*
         version: link:../tools
+      hono:
+        specifier: ^4.7.11
+        version: 4.12.9
       yaml:
         specifier: ^2.0.0
         version: 2.8.3

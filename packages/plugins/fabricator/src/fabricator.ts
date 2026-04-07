@@ -95,6 +95,16 @@ export interface EngineDesign {
   collect?(sessionId: string, givens: Record<string, unknown>, context: EngineRunContext): Promise<unknown>;
 }
 
+/** Summary info for a registered engine design. */
+export interface EngineDesignInfo {
+  /** Engine design id. */
+  id: string;
+  /** Plugin id that contributed this design. */
+  pluginId: string;
+  /** Whether the design defines a collect() method (indicates quick engine with custom yield assembly). */
+  hasCollect: boolean;
+}
+
 /** The Fabricator's public API, exposed via `provides`. */
 export interface FabricatorApi {
   /**
@@ -102,6 +112,11 @@ export interface FabricatorApi {
    * Returns the design if registered, undefined otherwise.
    */
   getEngineDesign(id: string): EngineDesign | undefined;
+
+  /**
+   * List all registered engine designs with summary info.
+   */
+  listEngineDesigns(): EngineDesignInfo[];
 }
 
 // ── Type guard ────────────────────────────────────────────────────────
@@ -121,26 +136,28 @@ function isEngineDesign(value: unknown): value is EngineDesign {
 /** The engine design registry — populated at startup, queried at runtime. */
 class EngineRegistry {
   private readonly designs = new Map<string, EngineDesign>();
+  private readonly provenance = new Map<string, string>();
 
   /** Register all engine designs from a loaded plugin. */
   register(plugin: LoadedPlugin): void {
     if (isLoadedKit(plugin)) {
-      this.registerFromKit(plugin.kit);
+      this.registerFromKit(plugin.kit, plugin.id);
     } else if (isLoadedApparatus(plugin)) {
       if (plugin.apparatus.supportKit) {
-        this.registerFromKit(plugin.apparatus.supportKit);
+        this.registerFromKit(plugin.apparatus.supportKit, plugin.id);
       }
     }
   }
 
   /** Extract and register engine designs from a kit (or supportKit) contribution. */
-  private registerFromKit(kit: Record<string, unknown>): void {
+  private registerFromKit(kit: Record<string, unknown>, pluginId: string): void {
     const rawEngines = kit.engines;
     if (typeof rawEngines !== 'object' || rawEngines === null) return;
 
     for (const value of Object.values(rawEngines as Record<string, unknown>)) {
       if (isEngineDesign(value)) {
         this.designs.set(value.id, value);
+        this.provenance.set(value.id, pluginId);
       }
     }
   }
@@ -148,6 +165,19 @@ class EngineRegistry {
   /** Look up an engine design by ID. */
   get(id: string): EngineDesign | undefined {
     return this.designs.get(id);
+  }
+
+  /** List all registered engine designs with summary info. */
+  list(): EngineDesignInfo[] {
+    const result: EngineDesignInfo[] = [];
+    for (const [id, design] of this.designs) {
+      result.push({
+        id,
+        pluginId: this.provenance.get(id) ?? 'unknown',
+        hasCollect: typeof design.collect === 'function',
+      });
+    }
+    return result;
   }
 }
 
@@ -166,6 +196,9 @@ export function createFabricator(): Plugin {
   const api: FabricatorApi = {
     getEngineDesign(id: string): EngineDesign | undefined {
       return registry.get(id);
+    },
+    listEngineDesigns(): EngineDesignInfo[] {
+      return registry.list();
     },
   };
 
