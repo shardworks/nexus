@@ -331,7 +331,7 @@ export function createParlour(): Plugin {
       }
 
       // Weave anima context via The Loom
-      const context = await loom.weave({ role: undefined });
+      const context = await loom.weave({ role: participant.name });
 
       // Call The Animator
       const { result: resultPromise } = animator.animate({
@@ -466,7 +466,7 @@ export function createParlour(): Plugin {
         }
 
         // Weave + animate with streaming
-        const context = await loom.weave({ role: undefined });
+        const context = await loom.weave({ role: participant.name });
         const handle = animator.animate({
           context,
           prompt: message,
