@@ -66,7 +66,7 @@
 
   function formatElapsed(startedAt, completedAt) {
     var diffMs = new Date(completedAt) - new Date(startedAt);
-    if (diffMs <= 0) return '<1s';
+    if (diffMs < 1000) return '<1s';
     var totalSeconds = Math.floor(diffMs / 1000);
     var hours = Math.floor(totalSeconds / 3600);
     var minutes = Math.floor((totalSeconds % 3600) / 60);
