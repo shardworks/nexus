@@ -1950,6 +1950,24 @@ describe('Spider — template dispatch', () => {
     const rigs = await rigsBook(stacks).list();
     assert.equal(rigs[0].engines.length, 5, 'default template produces 5 engines');
   });
+
+  it('throws with "No rig template found" when rigTemplates is not configured at all', async () => {
+    // Override the fixture's default rigTemplates injection by setting rigTemplates to undefined.
+    // The spread in buildFixture resolves to: { rigTemplates: { default: STANDARD_TEMPLATE }, ...{ rigTemplates: undefined } }
+    // which gives { rigTemplates: undefined }, exercising the absent-rigTemplates code path.
+    const fix = buildFixture({ spider: { rigTemplates: undefined } });
+    const { clerk, spider } = fix;
+
+    await clerk.post({ title: 'Test writ', body: 'test' });
+    await assert.rejects(
+      () => spider.crawl(),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.includes('No rig template found'), err.message);
+        return true;
+      },
+    );
+  });
 });
 
 describe('Spider — variable resolution', () => {
@@ -2043,6 +2061,26 @@ describe('Spider — variable resolution', () => {
     const rigs = await rigsBook(stacks).list();
     assert.equal(rigs[0].engines[0].givensSpec.role, 'reviewer');
     assert.equal(rigs[0].engines[0].givensSpec.count, 5);
+  });
+
+  it('mixed literals and $-variables resolve correctly together', async () => {
+    const template: RigTemplate = {
+      engines: [{ id: 'only', designId: 'seal', givens: { writ: '$writ', role: 'reviewer', cmd: '$spider.buildCommand' } }],
+    };
+    const fix = buildFixture({ spider: { buildCommand: 'pnpm build', rigTemplates: { default: template } } });
+    const { clerk, spider, stacks } = fix;
+
+    const writ = await clerk.post({ title: 'Mixed test', body: 'mixed body' });
+    await spider.crawl();
+
+    const rigs = await rigsBook(stacks).list();
+    const givens = rigs[0].engines[0].givensSpec;
+    // $writ resolves to the WritDoc object
+    assert.equal((givens.writ as { id: string }).id, writ.id, '$writ should resolve to WritDoc');
+    // literal string "reviewer" passes through unchanged (not affected by spiderConfig.role)
+    assert.equal(givens.role, 'reviewer', 'literal "reviewer" should pass through unchanged');
+    // $spider.buildCommand resolves to the configured value
+    assert.equal(givens.cmd, 'pnpm build', '$spider.buildCommand should resolve to configured value');
   });
 
   it('engine with no givens field produces empty givensSpec', async () => {
@@ -2442,6 +2480,39 @@ describe('Spider — CDC resolution fallback', () => {
     const finalWrit = await clerk.show(writ.id);
     assert.equal(finalWrit.resolution, 'Rig completed');
   });
+
+  it('pre-existing rig without resolutionEngineId falls through to seal then last completed', async () => {
+    // Simulate a rig created before the resolutionEngineId feature was added.
+    // It has no resolutionEngineId field at all — the CDC handler must degrade gracefully.
+    const fix = buildFixture();
+    const { clerk, spider, stacks } = fix;
+
+    const writ = await clerk.post({ title: 'pre-existing rig', body: 'test' });
+    await spider.crawl(); // spawn (creates rig with resolutionEngineId: 'seal' from STANDARD_TEMPLATE)
+
+    const book = rigsBook(stacks);
+    const [rig] = await book.list();
+
+    // Remove resolutionEngineId entirely to simulate a pre-existing rig and
+    // set seal with yields — the fallback chain should find seal.
+    const sealYields = { sealedCommit: 'legacy-abc', strategy: 'fast-forward', retries: 0, inscriptionsSealed: 3 };
+    const { resolutionEngineId: _removed, ...rigWithoutResolutionEngineId } = rig as typeof rig & { resolutionEngineId?: string };
+
+    // Patch the rig to remove resolutionEngineId and set seal yields
+    await book.patch(rig.id, {
+      ...rigWithoutResolutionEngineId,
+      engines: rig.engines.map((e: EngineInstance) => {
+        if (e.id === 'seal') return { ...e, status: 'completed' as const, yields: sealYields };
+        return { ...e, status: 'completed' as const };
+      }),
+      status: 'completed',
+    });
+
+    // CDC should fall through to seal engine (backwards compat path)
+    const finalWrit = await clerk.show(writ.id);
+    assert.equal(finalWrit.status, 'completed');
+    assert.equal(finalWrit.resolution, JSON.stringify(sealYields), 'should fall back to seal engine yields');
+  });
 });
 
 describe('Spider — buildStaticEngines preserved', () => {
@@ -2457,5 +2528,143 @@ describe('Spider — buildStaticEngines preserved', () => {
 
     const rigs = await rigsBook(stacks).list();
     assert.equal(rigs[0].engines.length, 5, 'standard template produces 5 engines');
+  });
+});
+
+// ── Full pipeline integration tests ───────────────────────────────────────
+
+describe('Spider — full pipeline integration', () => {
+  afterEach(() => {
+    clearGuild();
+  });
+
+  it('custom 2-engine template (draft → seal): crawls spawn → both engines complete → writ completed', async () => {
+    // Configure a custom 2-engine template for 'mandate' writs (the only declared clerk type).
+    // Register stub clockwork implementations so no Scriptorium or Animator is needed.
+    const twoEngineTemplate: RigTemplate = {
+      engines: [
+        { id: 'step1', designId: 'draft', givens: { writ: '$writ' } },
+        { id: 'step2', designId: 'seal', upstream: ['step1'], givens: {} },
+      ],
+      resolutionEngine: 'step2',
+    };
+    const fix = buildFixture({
+      spider: { rigTemplates: { default: twoEngineTemplate } },
+    });
+    const { clerk, spider, stacks, fire } = fix;
+
+    // Override builtin engines with stub clockwork implementations
+    const step1Yields = { draftComplete: true };
+    const step2Yields = { sealedCommit: 'custom-sha', strategy: 'fast-forward' as const, retries: 0, inscriptionsSealed: 1 };
+
+    const stubPlugin: LoadedApparatus = {
+      packageName: '@test/stub-2engine',
+      id: 'test-2engine',
+      version: '0.0.0',
+      apparatus: {
+        requires: [],
+        supportKit: {
+          engines: {
+            draft: { id: 'draft', async run() { return { status: 'completed' as const, yields: step1Yields }; } },
+            seal:  { id: 'seal',  async run() { return { status: 'completed' as const, yields: step2Yields }; } },
+          },
+        },
+        provides: {},
+        start() {},
+      },
+    };
+    void fire('plugin:initialized', stubPlugin);
+
+    const writ = await clerk.post({ title: '2-engine writ', body: 'custom pipeline' });
+
+    // spawn: rig created with 2 engines and resolutionEngineId: 'step2'
+    const r1 = await spider.crawl();
+    assert.equal(r1?.action, 'rig-spawned');
+    const rigs = await rigsBook(stacks).list();
+    assert.equal(rigs[0].engines.length, 2, 'custom template creates 2-engine rig');
+    assert.equal(rigs[0].resolutionEngineId, 'step2', 'resolutionEngineId set from template');
+
+    // step1 (draft stub — clockwork) runs and completes
+    const r2 = await spider.crawl();
+    assert.equal(r2?.action, 'engine-completed');
+    assert.equal((r2 as { engineId: string }).engineId, 'step1');
+
+    // step2 (seal stub — clockwork) runs; all engines done → rig-completed
+    const r3 = await spider.crawl();
+    assert.equal(r3?.action, 'rig-completed');
+    assert.equal((r3 as { outcome: string }).outcome, 'completed');
+
+    // CDC: writ transitions to completed using step2's yields (resolutionEngineId: 'step2')
+    const finalWrit = await clerk.show(writ.id);
+    assert.equal(finalWrit.status, 'completed');
+    assert.equal(finalWrit.resolution, JSON.stringify(step2Yields), 'resolution uses step2 yields via resolutionEngineId');
+  });
+
+  it('3-engine template without seal uses resolutionEngine for writ resolution', async () => {
+    // Configure a template with draft → implement → review, no seal engine.
+    // resolutionEngine: 'review' directs the CDC handler to use review's yields.
+    const template: RigTemplate = {
+      engines: [
+        { id: 'draft',     designId: 'draft',     givens: { writ: '$writ' } },
+        { id: 'implement', designId: 'implement', upstream: ['draft'],     givens: { writ: '$writ', role: '$role' } },
+        { id: 'review',    designId: 'review',    upstream: ['implement'], givens: { writ: '$writ' } },
+      ],
+      resolutionEngine: 'review',
+    };
+    const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
+    const { clerk, spider, stacks, fire } = fix;
+
+    // Override builtin engines with stub clockwork implementations
+    const draftYields = { drafted: true };
+    const implementYields = { implemented: true };
+    const reviewYields = { passed: true, findings: '### Overall: PASS\nAll requirements met.', sessionId: 'rev-1', mechanicalChecks: [] };
+
+    const stubPlugin: LoadedApparatus = {
+      packageName: '@test/stub-3engine',
+      id: 'test-3engine',
+      version: '0.0.0',
+      apparatus: {
+        requires: [],
+        supportKit: {
+          engines: {
+            draft:     { id: 'draft',     async run() { return { status: 'completed' as const, yields: draftYields }; } },
+            implement: { id: 'implement', async run() { return { status: 'completed' as const, yields: implementYields }; } },
+            review:    { id: 'review',    async run() { return { status: 'completed' as const, yields: reviewYields }; } },
+          },
+        },
+        provides: {},
+        start() {},
+      },
+    };
+    void fire('plugin:initialized', stubPlugin);
+
+    const writ = await clerk.post({ title: '3-engine test', body: 'no seal needed' });
+
+    // spawn: rig created with 3 engines, resolutionEngineId: 'review'
+    const r1 = await spider.crawl();
+    assert.equal(r1?.action, 'rig-spawned');
+    const [rig] = await rigsBook(stacks).list();
+    assert.equal(rig.engines.length, 3);
+    assert.equal(rig.resolutionEngineId, 'review');
+
+    // draft runs → engine-completed
+    const r2 = await spider.crawl();
+    assert.equal(r2?.action, 'engine-completed');
+    assert.equal((r2 as { engineId: string }).engineId, 'draft');
+
+    // implement runs → engine-completed
+    const r3 = await spider.crawl();
+    assert.equal(r3?.action, 'engine-completed');
+    assert.equal((r3 as { engineId: string }).engineId, 'implement');
+
+    // review runs → all done → rig-completed
+    const r4 = await spider.crawl();
+    assert.equal(r4?.action, 'rig-completed');
+    assert.equal((r4 as { outcome: string }).outcome, 'completed');
+
+    // CDC: writ transitions to completed using review's yields (no seal engine present)
+    const finalWrit = await clerk.show(writ.id);
+    assert.equal(finalWrit.status, 'completed');
+    assert.equal(finalWrit.resolution, JSON.stringify(reviewYields), 'resolution uses review yields via resolutionEngineId');
   });
 });
