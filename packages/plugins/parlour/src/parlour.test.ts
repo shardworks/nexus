@@ -23,8 +23,11 @@ import type {
   SessionChunk,
 } from '@shardworks/animator-apparatus';
 
+import { Hono } from 'hono';
+
 import { createParlour } from './parlour.ts';
 import type { ParlourApi } from './types.ts';
+import { parlourRoutes } from './routes.ts';
 
 // ── Shared empty chunks iterable ─────────────────────────────────────
 
@@ -129,7 +132,10 @@ function createOutputFakeProvider(outputText: string = 'Test response'): Animato
 
 let parlour: ParlourApi;
 
-function setup(provider: AnimatorSessionProvider = createFakeProvider()) {
+function setup(
+  provider: AnimatorSessionProvider = createFakeProvider(),
+  extraApparatuses: Record<string, unknown> = {},
+) {
   const memBackend = new MemoryBackend();
   const stacksPlugin = createStacksApparatus(memBackend);
   const animatorPlugin = createAnimator();
@@ -138,6 +144,11 @@ function setup(provider: AnimatorSessionProvider = createFakeProvider()) {
 
   const apparatusMap = new Map<string, unknown>();
   apparatusMap.set('fake-provider', provider);
+
+  // Register any extra apparatuses (e.g. mock codexes for route tests)
+  for (const [name, api] of Object.entries(extraApparatuses)) {
+    apparatusMap.set(name, api);
+  }
 
   const fakeGuild: Guild = {
     home: '/tmp/fake-guild',
@@ -163,6 +174,13 @@ function setup(provider: AnimatorSessionProvider = createFakeProvider()) {
         plugins: [],
         settings: { model: 'sonnet' },
         animator: { sessionProvider: 'fake-provider' },
+        // Provide guild-defined loom roles so listRoles() tests have data
+        loom: {
+          roles: {
+            artificer: { permissions: ['read', 'write'] },
+            scribe: { permissions: ['read'] },
+          },
+        },
       };
     },
     kits: () => [],
@@ -203,6 +221,9 @@ function setup(provider: AnimatorSessionProvider = createFakeProvider()) {
   const parlourApparatus = (parlourPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
   parlourApparatus.start({ on: () => {} });
   parlour = parlourApparatus.provides as ParlourApi;
+
+  // Register parlour in apparatus map so route handlers can access it via guild().apparatus('parlour')
+  apparatusMap.set('parlour', parlour);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -1376,6 +1397,253 @@ describe('Parlour', () => {
       assert.ok(paths.includes('GET /api/parlour/conversations'), 'Should have conversations route');
       assert.ok(paths.includes('POST /api/parlour/create'), 'Should have create route');
       assert.ok(paths.includes('POST /api/parlour/turn'), 'Should have turn route');
+    });
+  });
+
+  // ── Route handler integration tests ─────────────────────────────────
+  //
+  // Tests 9–16 from the commission spec. These test the four custom API
+  // routes via a real Hono app instance, using the same fake guild
+  // infrastructure as the other test suites.
+
+  describe('route handler integration', () => {
+    let testApp: InstanceType<typeof Hono>;
+
+    /** Parse SSE response body into an array of { event, data } objects. */
+    async function collectSSEEvents(
+      res: Response,
+    ): Promise<Array<{ event: string; data: unknown }>> {
+      const text = await res.text();
+      const events: Array<{ event: string; data: unknown }> = [];
+      for (const block of text.split('\n\n')) {
+        if (!block.trim()) continue;
+        let eventName = 'message';
+        let dataStr = '';
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event: ')) eventName = line.slice(7).trim();
+          if (line.startsWith('data: ')) dataStr = line.slice(6).trim();
+        }
+        if (dataStr) {
+          try {
+            events.push({ event: eventName, data: JSON.parse(dataStr) });
+          } catch {
+            events.push({ event: eventName, data: dataStr });
+          }
+        }
+      }
+      return events;
+    }
+
+    beforeEach(() => {
+      setup();
+      testApp = new Hono();
+      for (const route of parlourRoutes) {
+        testApp.on(
+          [route.method],
+          route.path,
+          route.handler as Parameters<typeof testApp.on>[2],
+        );
+      }
+    });
+
+    // ── Test 9: GET /api/parlour/roles ───────────────────────────────
+
+    it('GET /api/parlour/roles returns sorted array of role info objects', async () => {
+      const res = await testApp.request('/api/parlour/roles');
+      assert.equal(res.status, 200);
+      const data = await res.json() as Array<{ name: string; source: string; permissions: string[] }>;
+      assert.ok(Array.isArray(data), 'Response should be an array');
+      // The setup guildConfig includes artificer and scribe loom roles
+      assert.equal(data.length, 2, 'Should have 2 configured roles');
+      // Sorted alphabetically
+      assert.equal(data[0]!.name, 'artificer');
+      assert.equal(data[1]!.name, 'scribe');
+      assert.equal(data[0]!.source, 'guild');
+      assert.ok(Array.isArray(data[0]!.permissions), 'Role should have permissions array');
+    });
+
+    // ── Test 10: GET /api/parlour/conversations filters by role ──────
+
+    it('GET /api/parlour/conversations returns only conversations for the specified role', async () => {
+      await parlour.create({
+        kind: 'consult',
+        cwd: '/tmp/workspace',
+        participants: [
+          { kind: 'human', name: 'User' },
+          { kind: 'anima', name: 'artificer' },
+        ],
+      });
+      await parlour.create({
+        kind: 'consult',
+        cwd: '/tmp/workspace',
+        participants: [
+          { kind: 'human', name: 'User' },
+          { kind: 'anima', name: 'scribe' },
+        ],
+      });
+
+      const res = await testApp.request('/api/parlour/conversations?role=artificer');
+      assert.equal(res.status, 200);
+      const data = await res.json() as Array<{ id: string }>;
+      assert.equal(data.length, 1, 'Should return only artificer conversations');
+    });
+
+    // ── Test 11: GET /api/parlour/conversations excludes concluded ────
+
+    it('GET /api/parlour/conversations excludes concluded conversations when status=active', async () => {
+      const { conversationId } = await parlour.create({
+        kind: 'consult',
+        cwd: '/tmp/workspace',
+        participants: [
+          { kind: 'human', name: 'User' },
+          { kind: 'anima', name: 'artificer' },
+        ],
+      });
+      await parlour.end(conversationId, 'concluded');
+
+      const res = await testApp.request('/api/parlour/conversations?role=artificer&status=active');
+      assert.equal(res.status, 200);
+      const data = await res.json() as unknown[];
+      assert.equal(data.length, 0, 'Concluded conversation should not appear in active list');
+    });
+
+    // ── Test 12: POST /api/parlour/turn lazy conversation creation ────
+
+    it('POST /api/parlour/turn creates conversation lazily and emits conversation_created event', async () => {
+      const res = await testApp.request('/api/parlour/turn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'artificer', message: 'Hello' }),
+      });
+      assert.equal(res.status, 200);
+
+      const events = await collectSSEEvents(res);
+      const createdEvent = events.find((e) => e.event === 'conversation_created');
+      assert.ok(createdEvent, 'Should emit conversation_created SSE event');
+
+      const payload = createdEvent.data as { conversationId: string; participants: unknown[] };
+      assert.ok(payload.conversationId, 'conversation_created event should include conversationId');
+      assert.ok(Array.isArray(payload.participants), 'conversation_created event should include participants');
+
+      const turnComplete = events.find(
+        (e) => e.event === 'chunk' && (e.data as { type: string }).type === 'turn_complete',
+      );
+      assert.ok(turnComplete, 'Should emit turn_complete chunk after streaming');
+    });
+
+    // ── Test 13: POST /api/parlour/turn continues existing ───────────
+
+    it('POST /api/parlour/turn continues existing conversation without conversation_created event', async () => {
+      // Set up a conversation with one completed round
+      const { conversationId, participants } = await parlour.create({
+        kind: 'consult',
+        cwd: '/tmp/workspace',
+        participants: [
+          { kind: 'human', name: 'User' },
+          { kind: 'anima', name: 'artificer' },
+        ],
+      });
+      const human = participants.find((p) => p.kind === 'human')!;
+      await parlour.takeTurn({ conversationId, participantId: human.id, message: 'Hello' });
+      const anima = participants.find((p) => p.kind === 'anima')!;
+      const { result } = parlour.takeTurnStreaming({ conversationId, participantId: anima.id });
+      await result;
+
+      const res = await testApp.request('/api/parlour/turn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId, message: 'follow-up' }),
+      });
+      assert.equal(res.status, 200);
+
+      const events = await collectSSEEvents(res);
+      const createdEvent = events.find((e) => e.event === 'conversation_created');
+      assert.equal(createdEvent, undefined, 'Should NOT emit conversation_created for existing conversation');
+
+      const turnComplete = events.find(
+        (e) => e.event === 'chunk' && (e.data as { type: string }).type === 'turn_complete',
+      );
+      assert.ok(turnComplete, 'Should still emit turn_complete chunk');
+    });
+
+    // ── Test 14: POST /api/parlour/turn HTTP 400 validation ──────────
+
+    it('POST /api/parlour/turn returns 400 when neither role nor conversationId is provided', async () => {
+      const res = await testApp.request('/api/parlour/turn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'hello' }),
+      });
+      assert.equal(res.status, 400, 'Should return HTTP 400 for missing role/conversationId');
+    });
+
+    it('POST /api/parlour/turn returns 400 when message is empty or missing', async () => {
+      const res = await testApp.request('/api/parlour/turn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'artificer', message: '   ' }),
+      });
+      assert.equal(res.status, 400, 'Should return HTTP 400 for empty message');
+    });
+
+    // ── Test 15: POST /api/parlour/turn with codexName ───────────────
+
+    it('POST /api/parlour/turn with codexName calls openDraft on the codexes apparatus', async () => {
+      let openDraftCalled = false;
+      let openDraftArg: string | undefined;
+      const worktreePath = '/tmp/worktrees/my-codex-abc123';
+
+      // Re-setup with a mock codexes apparatus
+      setup(createFakeProvider(), {
+        codexes: {
+          openDraft({ codexName }: { codexName: string }) {
+            openDraftCalled = true;
+            openDraftArg = codexName;
+            return Promise.resolve({ path: worktreePath });
+          },
+        },
+      });
+      // Rebuild testApp with the new guild
+      testApp = new Hono();
+      for (const route of parlourRoutes) {
+        testApp.on(
+          [route.method],
+          route.path,
+          route.handler as Parameters<typeof testApp.on>[2],
+        );
+      }
+
+      const res = await testApp.request('/api/parlour/turn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'artificer', message: 'Hello', codexName: 'my-codex' }),
+      });
+      assert.equal(res.status, 200);
+
+      // Drain the stream so the handler fully executes
+      await collectSSEEvents(res);
+
+      assert.ok(openDraftCalled, 'openDraft should have been called on the codexes apparatus');
+      assert.equal(openDraftArg, 'my-codex', 'openDraft should be called with the provided codexName');
+    });
+
+    // ── Test 16: POST /api/parlour/turn without codexes apparatus ────
+
+    it('POST /api/parlour/turn with codexName falls back to guild home when codexes not installed', async () => {
+      // Standard setup has no codexes apparatus — guild().apparatus('codexes') throws
+      const res = await testApp.request('/api/parlour/turn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'artificer', message: 'Hello', codexName: 'missing-codex' }),
+      });
+      assert.equal(res.status, 200, 'Should succeed (fall back to guild home) when codexes not installed');
+
+      const events = await collectSSEEvents(res);
+      // Should still create the conversation (no error event)
+      const errorEvent = events.find((e) => e.event === 'error');
+      assert.equal(errorEvent, undefined, 'Should not emit an error event when codexes not installed');
+      const createdEvent = events.find((e) => e.event === 'conversation_created');
+      assert.ok(createdEvent, 'Should still create the conversation using guild home as cwd');
     });
   });
 });

@@ -163,40 +163,32 @@ function turnRoute(): RouteContribution {
   return {
     method: 'POST',
     path: '/api/parlour/turn',
-    handler: (c: Context) => {
+    handler: async (c: Context) => {
+      // Parse and validate body BEFORE entering the SSE stream so we can
+      // return proper HTTP 400 responses for invalid input.
+      let body: {
+        conversationId?: string;
+        role?: string;
+        message?: string;
+        codexName?: string;
+      };
+
+      try {
+        body = await c.req.json() as typeof body;
+      } catch {
+        return c.json({ error: 'Invalid JSON body' }, 400);
+      }
+
+      const { conversationId: reqConversationId, role, message, codexName } = body;
+
+      if (!reqConversationId && !role) {
+        return c.json({ error: 'Either conversationId or role is required' }, 400);
+      }
+      if (!message || message.trim() === '') {
+        return c.json({ error: 'message is required and must not be empty' }, 400);
+      }
+
       return streamSSE(c, async (stream) => {
-        let body: {
-          conversationId?: string;
-          role?: string;
-          message?: string;
-          codexName?: string;
-        };
-
-        try {
-          body = await c.req.json();
-        } catch {
-          await stream.writeSSE({ event: 'error', data: JSON.stringify({ error: 'Invalid JSON body' }) });
-          return;
-        }
-
-        const { conversationId: reqConversationId, role, message, codexName } = body;
-
-        // Validation
-        if (!reqConversationId && !role) {
-          await stream.writeSSE({
-            event: 'error',
-            data: JSON.stringify({ error: 'Either conversationId or role is required' }),
-          });
-          return;
-        }
-        if (!message || message.trim() === '') {
-          await stream.writeSSE({
-            event: 'error',
-            data: JSON.stringify({ error: 'message is required and must not be empty' }),
-          });
-          return;
-        }
-
         const parlour = guild().apparatus<ParlourApi>('parlour');
 
         let conversationId: string;
@@ -278,10 +270,10 @@ function turnRoute(): RouteContribution {
           // Await result to ensure turn recording completes
           await result;
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
+          const errMessage = err instanceof Error ? err.message : String(err);
           await stream.writeSSE({
             event: 'error',
-            data: JSON.stringify({ error: message }),
+            data: JSON.stringify({ error: errMessage }),
           });
         }
       });
