@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Writs</title>
+  <style>
+    .error-msg { color: var(--red, #f7768e); font-size: 0.875rem; margin-top: 0.25rem; }
+    .warn-msg  { color: var(--yellow, #e0af68); font-size: 0.875rem; margin-top: 0.25rem; }
+    .detail-row td { background: var(--bg2, #1a1b26); padding: 1rem; }
+    .detail-row pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: monospace; }
+    .detail-section { margin-bottom: 1rem; }
+    .detail-section h4 { margin: 0 0 0.4rem; font-size: 0.875rem; text-transform: uppercase; opacity: 0.6; }
+    .detail-grid { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; font-size: 0.875rem; }
+    .detail-grid dt { opacity: 0.6; }
+    .link-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; margin-bottom: 0.25rem; }
+    .link-dir { font-weight: bold; opacity: 0.5; }
+    .link-id { cursor: pointer; text-decoration: underline; color: var(--blue, #7aa2f7); }
+    .link-id:hover { opacity: 0.8; }
+    .add-link-form { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: flex-end; margin-top: 0.5rem; }
+    .add-link-form input { padding: 0.3rem 0.5rem; background: var(--bg3, #24283b); border: 1px solid var(--border, #414868); border-radius: 4px; color: inherit; font-size: 0.875rem; }
+    .confirm-section { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: flex-end; margin-top: 0.5rem; padding: 0.75rem; background: var(--bg3, #24283b); border-radius: 6px; }
+    .confirm-section label { font-size: 0.875rem; opacity: 0.8; }
+    .confirm-section input { padding: 0.3rem 0.5rem; background: var(--bg, #1a1b26); border: 1px solid var(--border, #414868); border-radius: 4px; color: inherit; min-width: 220px; }
+    tr.writ-row { cursor: pointer; }
+    tr.writ-row:hover { opacity: 0.85; }
+    tr.writ-row.expanded { background: var(--bg2, #1f2335); }
+    #post-section { margin-bottom: 1rem; padding: 1rem; background: var(--bg2, #1f2335); border-radius: 6px; display: none; }
+    #post-section.open { display: block; }
+    #post-section h3 { margin: 0 0 0.75rem; }
+    .form-row { margin-bottom: 0.75rem; display: flex; flex-direction: column; gap: 0.3rem; }
+    .form-row label { font-size: 0.875rem; opacity: 0.7; }
+    .form-row input, .form-row textarea, .form-row select {
+      padding: 0.4rem 0.6rem; background: var(--bg3, #24283b);
+      border: 1px solid var(--border, #414868); border-radius: 4px;
+      color: inherit; font-size: 0.9rem;
+    }
+    .form-row textarea { resize: vertical; font-family: monospace; }
+    .th-sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+    .th-sortable:hover { opacity: 0.8; }
+    #load-more-row { text-align: center; padding: 0.75rem; }
+    #search-input { padding: 0.35rem 0.6rem; background: var(--bg3, #24283b); border: 1px solid var(--border, #414868); border-radius: 4px; color: inherit; min-width: 180px; }
+    .action-buttons { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <div class="toolbar" id="toolbar">
+    <button class="btn btn--primary" id="btn-new-writ">New Writ</button>
+    <button class="btn" id="btn-refresh">Refresh</button>
+    <span style="display:inline-flex;gap:0.4rem;flex-wrap:wrap;align-items:center">
+      <span style="font-size:0.875rem;opacity:0.6">Status:</span>
+      <button class="btn filter-btn active-filter" data-status="">All</button>
+      <button class="btn filter-btn" data-status="ready">ready</button>
+      <button class="btn filter-btn" data-status="active">active</button>
+      <button class="btn filter-btn" data-status="completed">completed</button>
+      <button class="btn filter-btn" data-status="failed">failed</button>
+      <button class="btn filter-btn" data-status="cancelled">cancelled</button>
+    </span>
+    <input type="text" id="search-input" placeholder="Search title...">
+  </div>
+
+  <div id="post-section">
+    <h3 id="post-title">New Writ</h3>
+    <div class="form-row">
+      <label for="post-title-input">Title</label>
+      <input type="text" id="post-title-input" placeholder="Writ title" required>
+    </div>
+    <div class="form-row">
+      <label for="post-body-input">Body</label>
+      <textarea id="post-body-input" rows="8" placeholder="Detail text..." required></textarea>
+    </div>
+    <div class="form-row">
+      <label for="post-type-select">Type</label>
+      <select id="post-type-select"></select>
+    </div>
+    <div class="form-row">
+      <label for="post-codex-input">Codex (optional)</label>
+      <input type="text" id="post-codex-input" placeholder="Codex (optional)">
+    </div>
+    <button class="btn btn--primary" id="post-submit-btn">Post Writ</button>
+    <div id="post-error" class="error-msg" style="display:none"></div>
+    <div id="post-warn" class="warn-msg" style="display:none"></div>
+  </div>
+
+  <div class="card">
+    <table class="data-table" id="writ-table">
+      <thead>
+        <tr>
+          <th class="th-sortable" data-col="id">ID <span class="sort-ind" data-col="id"></span></th>
+          <th class="th-sortable" data-col="type">Type <span class="sort-ind" data-col="type"></span></th>
+          <th class="th-sortable" data-col="status">Status <span class="sort-ind" data-col="status"></span></th>
+          <th class="th-sortable" data-col="title">Title <span class="sort-ind" data-col="title"></span></th>
+          <th class="th-sortable" data-col="createdAt">Created <span class="sort-ind" data-col="createdAt"></span></th>
+        </tr>
+      </thead>
+      <tbody id="writ-tbody"></tbody>
+    </table>
+    <div id="load-more-row" style="display:none">
+      <button class="btn" id="load-more-btn">Load more</button>
+    </div>
+  </div>
+
+  <datalist id="link-types">
+    <option value="retries"></option>
+    <option value="supersedes"></option>
+    <option value="fixes"></option>
+    <option value="duplicates"></option>
+    <option value="blocks"></option>
+  </datalist>
+
+  <script>
+  (() => {
+    // ── State ──────────────────────────────────────────────────────────
+    let writs = [];          // currently loaded writs array
+    let offset = 0;
+    let currentStatus = '';  // '' = all
+    let searchText = '';
+    let sortCol = 'createdAt';
+    let sortDir = 'desc';
+    let expandedId = null;   // currently expanded writ id
+    let repostSourceId = null;
+
+    const LIMIT = 20;
+
+    // ── Helpers ────────────────────────────────────────────────────────
+
+    async function api(method, path, body) {
+      const opts = { method, headers: { 'Content-Type': 'application/json' } };
+      if (body !== undefined) opts.body = JSON.stringify(body);
+      const res = await fetch(path, opts);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+      return json;
+    }
+
+    function statusBadge(status) {
+      const map = {
+        ready: 'badge',
+        active: 'badge badge--active',
+        completed: 'badge badge--success',
+        failed: 'badge badge--error',
+        cancelled: 'badge badge--warning',
+      };
+      const cls = map[status] ?? 'badge';
+      return `<span class="${cls}">${status}</span>`;
+    }
+
+    function fmtDate(iso) {
+      if (!iso) return '';
+      return new Date(iso).toLocaleString();
+    }
+
+    function compareVal(a, b, col) {
+      const av = a[col] ?? '';
+      const bv = b[col] ?? '';
+      if (av < bv) return -1;
+      if (av > bv) return 1;
+      return 0;
+    }
+
+    function sortedFilteredWrits() {
+      let arr = writs.slice();
+      // Text filter
+      if (searchText) {
+        const q = searchText.toLowerCase();
+        arr = arr.filter(w => (w.title ?? '').toLowerCase().includes(q));
+      }
+      // Sort
+      arr.sort((a, b) => {
+        const cmp = compareVal(a, b, sortCol);
+        return sortDir === 'asc' ? cmp : -cmp;
+      });
+      return arr;
+    }
+
+    function showError(el, msg) {
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+
+    function clearError(el) {
+      el.textContent = '';
+      el.style.display = 'none';
+    }
+
+    // ── Render ─────────────────────────────────────────────────────────
+
+    function renderTable() {
+      const tbody = document.getElementById('writ-tbody');
+      const visible = sortedFilteredWrits();
+
+      if (visible.length === 0 && writs.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5"><div class="empty-state">No writs found.</div></td></tr>`;
+        return;
+      }
+
+      // Preserve expanded state if row still visible
+      tbody.innerHTML = '';
+      for (const w of visible) {
+        const tr = document.createElement('tr');
+        tr.className = 'writ-row' + (expandedId === w.id ? ' expanded' : '');
+        tr.dataset.id = w.id;
+        tr.style.display = '';
+        tr.innerHTML = `
+          <td><code>${w.id}</code></td>
+          <td>${w.type ?? ''}</td>
+          <td>${statusBadge(w.status)}</td>
+          <td>${escHtml(w.title ?? '')}</td>
+          <td>${fmtDate(w.createdAt)}</td>
+        `;
+        tr.addEventListener('click', () => toggleExpand(w.id, tr));
+        tbody.appendChild(tr);
+
+        if (expandedId === w.id) {
+          const detailTr = buildDetailRow(w);
+          tbody.appendChild(detailTr);
+        }
+      }
+
+      updateSortIndicators();
+    }
+
+    function escHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function updateSortIndicators() {
+      document.querySelectorAll('.sort-ind').forEach(el => {
+        const col = el.dataset.col;
+        el.textContent = col === sortCol ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+      });
+    }
+
+    // ── Detail row ─────────────────────────────────────────────────────
+
+    function buildDetailRow(writ) {
+      const tr = document.createElement('tr');
+      tr.className = 'detail-row';
+      tr.dataset.detailFor = writ.id;
+
+      const td = document.createElement('td');
+      td.colSpan = 5;
+      td.innerHTML = renderDetail(writ);
+
+      // Wire up events after inserting
+      tr.appendChild(td);
+      requestAnimationFrame(() => wireDetailEvents(tr, writ));
+      return tr;
+    }
+
+    function renderDetail(writ) {
+      const isTerminal = ['completed', 'failed', 'cancelled'].includes(writ.status);
+      let html = '';
+
+      // Body
+      html += `<div class="detail-section"><h4>Body</h4><pre>${escHtml(writ.body ?? '')}</pre></div>`;
+
+      // Timestamps + metadata
+      html += `<div class="detail-section"><h4>Details</h4><dl class="detail-grid">`;
+      if (writ.codex) html += `<dt>Codex</dt><dd>${escHtml(writ.codex)}</dd>`;
+      html += `<dt>Created</dt><dd>${fmtDate(writ.createdAt)}</dd>`;
+      html += `<dt>Updated</dt><dd>${fmtDate(writ.updatedAt)}</dd>`;
+      if (writ.acceptedAt) html += `<dt>Accepted</dt><dd>${fmtDate(writ.acceptedAt)}</dd>`;
+      if (writ.resolvedAt) html += `<dt>Resolved</dt><dd>${fmtDate(writ.resolvedAt)}</dd>`;
+      if (writ.resolution) html += `<dt>Resolution</dt><dd>${escHtml(writ.resolution)}</dd>`;
+      html += `</dl></div>`;
+
+      // Transition actions
+      if (!isTerminal) {
+        html += `<div class="detail-section action-buttons" id="actions-${writ.id}">`;
+        if (writ.status === 'ready') {
+          html += `<button class="btn btn--primary" data-action="accept" data-id="${writ.id}">Accept</button>`;
+          html += `<button class="btn btn--danger" data-action="cancel" data-id="${writ.id}">Cancel</button>`;
+        } else if (writ.status === 'active') {
+          html += `<button class="btn btn--success" data-action="complete" data-id="${writ.id}">Complete</button>`;
+          html += `<button class="btn btn--danger" data-action="fail" data-id="${writ.id}">Fail</button>`;
+          html += `<button class="btn btn--danger" data-action="cancel" data-id="${writ.id}">Cancel</button>`;
+        }
+        html += `<div class="error-msg" id="action-error-${writ.id}" style="display:none"></div>`;
+        html += `<div id="confirm-area-${writ.id}"></div>`;
+        html += `</div>`;
+      }
+
+      // Repost for failed/cancelled
+      if (writ.status === 'failed' || writ.status === 'cancelled') {
+        html += `<div class="detail-section"><button class="btn" data-action="repost" data-id="${writ.id}">Repost</button></div>`;
+      }
+
+      // Links
+      html += `<div class="detail-section" id="links-section-${writ.id}">`;
+      html += renderLinksSection(writ);
+      html += `</div>`;
+
+      return html;
+    }
+
+    function renderLinksSection(writ) {
+      const outbound = (writ.links?.outbound ?? []);
+      const inbound = (writ.links?.inbound ?? []);
+      let html = `<h4>Links</h4>`;
+
+      if (outbound.length === 0 && inbound.length === 0) {
+        html += `<p style="font-size:0.875rem;opacity:0.5">No links.</p>`;
+      }
+
+      for (const l of outbound) {
+        html += `<div class="link-row">
+          <span class="link-dir">→</span>
+          <a class="link-id" data-writ-id="${l.targetId}">${l.targetId}</a>
+          <span>(${escHtml(l.type)})</span>
+          <button class="btn btn--danger" style="padding:0.1rem 0.5rem;font-size:0.75rem"
+            data-action="unlink" data-source="${l.sourceId}" data-target="${l.targetId}" data-type="${l.type}">×</button>
+        </div>`;
+      }
+      for (const l of inbound) {
+        html += `<div class="link-row">
+          <span class="link-dir">←</span>
+          <a class="link-id" data-writ-id="${l.sourceId}">${l.sourceId}</a>
+          <span>(${escHtml(l.type)})</span>
+          <button class="btn btn--danger" style="padding:0.1rem 0.5rem;font-size:0.75rem"
+            data-action="unlink" data-source="${l.sourceId}" data-target="${l.targetId}" data-type="${l.type}">×</button>
+        </div>`;
+      }
+
+      // Add link form
+      html += `<div class="add-link-form" id="add-link-form-${writ.id}">
+        <input type="text" id="link-target-${writ.id}" placeholder="Target writ id" style="width:140px">
+        <input type="text" id="link-type-${writ.id}" list="link-types" placeholder="Link type" style="width:120px">
+        <button class="btn" data-action="addlink" data-id="${writ.id}">Link</button>
+        <div class="error-msg" id="link-error-${writ.id}" style="display:none"></div>
+      </div>`;
+
+      return html;
+    }
+
+    function wireDetailEvents(tr, writ) {
+      const td = tr.querySelector('td');
+      if (!td) return;
+
+      // Transition action buttons
+      td.querySelectorAll('[data-action]').forEach(btn => {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const action = btn.dataset.action;
+          const id = btn.dataset.id;
+          handleDetailAction(action, id, btn, td, writ);
+        });
+      });
+
+      // Link-id clicks
+      td.querySelectorAll('.link-id').forEach(a => {
+        a.addEventListener('click', e => {
+          e.stopPropagation();
+          const targetId = a.dataset.writId;
+          scrollAndExpand(targetId);
+        });
+      });
+    }
+
+    function handleDetailAction(action, id, btn, td, writ) {
+      if (action === 'accept') {
+        doAccept(id, btn, td);
+      } else if (action === 'cancel') {
+        showConfirm(id, 'cancel', btn, td, false);
+      } else if (action === 'complete') {
+        showConfirm(id, 'complete', btn, td, true);
+      } else if (action === 'fail') {
+        showConfirm(id, 'fail', btn, td, true);
+      } else if (action === 'repost') {
+        openRepost(writ);
+      } else if (action === 'unlink') {
+        doUnlink(btn.dataset.source, btn.dataset.target, btn.dataset.type, btn, id);
+      } else if (action === 'addlink') {
+        const targetInput = document.getElementById(`link-target-${id}`);
+        const typeInput = document.getElementById(`link-type-${id}`);
+        const errEl = document.getElementById(`link-error-${id}`);
+        doAddLink(id, targetInput.value.trim(), typeInput.value.trim(), btn, errEl, targetInput, typeInput);
+      }
+    }
+
+    async function doAccept(id, btn, td) {
+      const errEl = td.querySelector(`#action-error-${id}`);
+      clearError(errEl);
+      btn.disabled = true;
+      const orig = btn.textContent;
+      btn.textContent = 'Accepting...';
+      try {
+        await api('POST', '/api/writ/accept', { id });
+        await refreshDetail(id);
+        updateRowStatus(id);
+      } catch (e) {
+        showError(errEl, e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }
+
+    function showConfirm(id, action, btn, td, resRequired) {
+      const area = document.getElementById(`confirm-area-${id}`);
+      const errEl = td.querySelector(`#action-error-${id}`);
+      clearError(errEl);
+      if (!area) return;
+
+      const label = resRequired
+        ? `Resolution (required)`
+        : `Resolution (optional)`;
+      const confirmLabel = action === 'cancel' ? 'Confirm Cancel'
+        : action === 'complete' ? 'Confirm Complete'
+        : 'Confirm Fail';
+
+      area.innerHTML = `
+        <div class="confirm-section">
+          <label>${label}</label>
+          <input type="text" id="confirm-res-${id}" placeholder="${label}">
+          <button class="btn ${action === 'complete' ? 'btn--success' : 'btn--danger'}"
+            id="confirm-btn-${id}" ${resRequired ? 'disabled' : ''}>
+            ${confirmLabel}
+          </button>
+          <div class="error-msg" id="confirm-error-${id}" style="display:none"></div>
+        </div>`;
+
+      const resInput = document.getElementById(`confirm-res-${id}`);
+      const confirmBtn = document.getElementById(`confirm-btn-${id}`);
+      const confirmErr = document.getElementById(`confirm-error-${id}`);
+
+      if (resRequired) {
+        resInput.addEventListener('input', () => {
+          confirmBtn.disabled = !resInput.value.trim();
+          clearError(confirmErr);
+        });
+      } else {
+        resInput.addEventListener('input', () => clearError(confirmErr));
+      }
+
+      confirmBtn.addEventListener('click', async () => {
+        const resolution = resInput.value.trim() || undefined;
+        clearError(confirmErr);
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = `${confirmLabel.replace('Confirm ', '')}ing...`;
+        try {
+          const body = { id, ...(resolution ? { resolution } : {}) };
+          if (action === 'cancel') await api('POST', '/api/writ/cancel', body);
+          else if (action === 'complete') await api('POST', '/api/writ/complete', body);
+          else if (action === 'fail') await api('POST', '/api/writ/fail', body);
+          await refreshDetail(id);
+          updateRowStatus(id);
+          area.innerHTML = '';
+        } catch (e) {
+          showError(confirmErr, e.message);
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = confirmLabel;
+        }
+      });
+    }
+
+    async function doUnlink(sourceId, targetId, type, btn, writId) {
+      const orig = btn.textContent;
+      btn.disabled = true;
+      try {
+        await api('POST', '/api/writ/unlink', { sourceId, targetId, type });
+        await refreshDetail(writId);
+      } catch (e) {
+        alert(`Unlink failed: ${e.message}`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }
+
+    async function doAddLink(writId, targetId, type, btn, errEl, targetInput, typeInput) {
+      clearError(errEl);
+      if (!targetId || !type) {
+        showError(errEl, 'Target writ id and link type are required.');
+        return;
+      }
+      btn.disabled = true;
+      const orig = btn.textContent;
+      btn.textContent = 'Linking...';
+      try {
+        await api('POST', '/api/writ/link', { sourceId: writId, targetId, type });
+        targetInput.value = '';
+        typeInput.value = '';
+        await refreshDetail(writId);
+      } catch (e) {
+        showError(errEl, e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }
+
+    async function refreshDetail(id) {
+      let writ;
+      try {
+        writ = await api('GET', `/api/writ/show?id=${encodeURIComponent(id)}`);
+      } catch (e) {
+        return;
+      }
+      // Update writs array
+      const idx = writs.findIndex(w => w.id === id);
+      if (idx >= 0) writs[idx] = writ;
+
+      // Re-render detail row
+      const detailTr = document.querySelector(`tr[data-detail-for="${id}"]`);
+      if (detailTr) {
+        const td = detailTr.querySelector('td');
+        td.innerHTML = renderDetail(writ);
+        wireDetailEvents(detailTr, writ);
+      }
+    }
+
+    function updateRowStatus(id) {
+      const writ = writs.find(w => w.id === id);
+      if (!writ) return;
+      const row = document.querySelector(`tr.writ-row[data-id="${id}"]`);
+      if (!row) return;
+      // Update status badge cell (3rd column, index 2)
+      const cells = row.querySelectorAll('td');
+      if (cells[2]) cells[2].innerHTML = statusBadge(writ.status);
+    }
+
+    // ── Expand/Collapse ────────────────────────────────────────────────
+
+    async function toggleExpand(id, tr) {
+      const tbody = document.getElementById('writ-tbody');
+      const existing = document.querySelector(`tr[data-detail-for="${id}"]`);
+
+      if (existing) {
+        // Collapse
+        existing.remove();
+        tr.classList.remove('expanded');
+        expandedId = null;
+        return;
+      }
+
+      // Collapse any other expanded row
+      if (expandedId) {
+        const prevDetail = document.querySelector(`tr[data-detail-for="${expandedId}"]`);
+        if (prevDetail) prevDetail.remove();
+        const prevRow = document.querySelector(`tr.writ-row[data-id="${expandedId}"]`);
+        if (prevRow) prevRow.classList.remove('expanded');
+      }
+
+      expandedId = id;
+      tr.classList.add('expanded');
+
+      // Fetch fresh writ data
+      let writ;
+      try {
+        writ = await api('GET', `/api/writ/show?id=${encodeURIComponent(id)}`);
+      } catch (e) {
+        expandedId = null;
+        tr.classList.remove('expanded');
+        return;
+      }
+
+      // Update in writs array
+      const idx = writs.findIndex(w => w.id === id);
+      if (idx >= 0) writs[idx] = writ;
+
+      const detailTr = buildDetailRow(writ);
+      tr.insertAdjacentElement('afterend', detailTr);
+    }
+
+    function scrollAndExpand(id) {
+      // Check if writ is in loaded list
+      const writ = writs.find(w => w.id === id);
+      if (!writ) return; // not loaded — no-op
+
+      const row = document.querySelector(`tr.writ-row[data-id="${id}"]`);
+      if (!row) return;
+
+      row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      // Only expand if not already expanded
+      if (expandedId !== id) {
+        toggleExpand(id, row);
+      }
+    }
+
+    // ── Data loading ────────────────────────────────────────────────────
+
+    async function loadWrits(replace = true) {
+      if (replace) {
+        offset = 0;
+        writs = [];
+        expandedId = null;
+      }
+
+      const params = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) });
+      if (currentStatus) params.set('status', currentStatus);
+
+      let result;
+      try {
+        result = await api('GET', `/api/writ/list?${params}`);
+      } catch (e) {
+        console.error('Failed to load writs:', e);
+        return;
+      }
+
+      if (replace) {
+        writs = result;
+      } else {
+        writs = writs.concat(result);
+      }
+
+      offset = writs.length;
+      renderTable();
+
+      const loadMoreRow = document.getElementById('load-more-row');
+      if (result.length < LIMIT) {
+        loadMoreRow.style.display = 'none';
+      } else {
+        loadMoreRow.style.display = 'block';
+      }
+    }
+
+    async function loadWritTypes() {
+      let types;
+      try {
+        types = await api('GET', '/api/writ/types');
+      } catch (e) {
+        console.error('Failed to load writ types:', e);
+        return;
+      }
+
+      const sel = document.getElementById('post-type-select');
+      sel.innerHTML = '';
+      for (const t of types) {
+        const opt = document.createElement('option');
+        opt.value = t.name;
+        opt.textContent = t.name;
+        if (t.description) opt.title = t.description;
+        if (t.default) opt.selected = true;
+        sel.appendChild(opt);
+      }
+    }
+
+    // ── Post form ───────────────────────────────────────────────────────
+
+    function openPostForm() {
+      const section = document.getElementById('post-section');
+      section.classList.add('open');
+      document.getElementById('post-title-input').focus();
+    }
+
+    function closePostForm() {
+      const section = document.getElementById('post-section');
+      section.classList.remove('open');
+      // Reset repost state
+      repostSourceId = null;
+      document.getElementById('post-title').textContent = 'New Writ';
+    }
+
+    function clearPostForm() {
+      document.getElementById('post-title-input').value = '';
+      document.getElementById('post-body-input').value = '';
+      document.getElementById('post-codex-input').value = '';
+      clearError(document.getElementById('post-error'));
+      clearError(document.getElementById('post-warn'));
+      // Reset type to default
+      const sel = document.getElementById('post-type-select');
+      for (const opt of sel.options) {
+        if (opt.dataset.default === 'true') opt.selected = true;
+      }
+    }
+
+    function openRepost(writ) {
+      openPostForm();
+      document.getElementById('post-title').textContent = 'Repost Writ';
+      document.getElementById('post-title-input').value = `[Repost] ${writ.title ?? ''}`;
+      document.getElementById('post-body-input').value = writ.body ?? '';
+      // Set type
+      const sel = document.getElementById('post-type-select');
+      for (const opt of sel.options) {
+        if (opt.value === writ.type) {
+          opt.selected = true;
+          break;
+        }
+      }
+      repostSourceId = writ.id;
+      // Scroll to form
+      document.getElementById('post-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    async function submitPostForm() {
+      const titleInput = document.getElementById('post-title-input');
+      const bodyInput = document.getElementById('post-body-input');
+      const typeSelect = document.getElementById('post-type-select');
+      const codexInput = document.getElementById('post-codex-input');
+      const submitBtn = document.getElementById('post-submit-btn');
+      const errEl = document.getElementById('post-error');
+      const warnEl = document.getElementById('post-warn');
+
+      clearError(errEl);
+      clearError(warnEl);
+
+      const title = titleInput.value.trim();
+      const body = bodyInput.value.trim();
+      const type = typeSelect.value;
+      const codex = codexInput.value.trim() || undefined;
+
+      if (!title) { showError(errEl, 'Title is required.'); return; }
+      if (!body)  { showError(errEl, 'Body is required.'); return; }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Posting...';
+
+      try {
+        const payload = { title, body, type, ...(codex ? { codex } : {}) };
+        const newWrit = await api('POST', '/api/commission/post', payload);
+
+        // If reposting, create retries link
+        if (repostSourceId) {
+          const srcId = repostSourceId;
+          repostSourceId = null;
+          try {
+            await api('POST', '/api/writ/link', { sourceId: newWrit.id, targetId: srcId, type: 'retries' });
+          } catch (le) {
+            warnEl.textContent = `Writ posted but link to original failed: ${le.message}. You can add the link manually.`;
+            warnEl.style.display = 'block';
+          }
+        }
+
+        clearPostForm();
+        closePostForm();
+        await loadWrits(true);
+      } catch (e) {
+        showError(errEl, e.message);
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Post Writ';
+      }
+    }
+
+    // ── Filter / sort ───────────────────────────────────────────────────
+
+    function setActiveFilter(status) {
+      currentStatus = status;
+      document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.classList.toggle('active-filter', btn.dataset.status === status);
+      });
+      loadWrits(true);
+    }
+
+    // ── Event wiring ────────────────────────────────────────────────────
+
+    document.getElementById('btn-new-writ').addEventListener('click', () => {
+      const section = document.getElementById('post-section');
+      if (section.classList.contains('open') && !repostSourceId) {
+        closePostForm();
+      } else {
+        openPostForm();
+      }
+    });
+
+    document.getElementById('btn-refresh').addEventListener('click', () => loadWrits(true));
+
+    document.getElementById('post-submit-btn').addEventListener('click', submitPostForm);
+
+    document.getElementById('load-more-btn').addEventListener('click', () => loadWrits(false));
+
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+      btn.addEventListener('click', () => setActiveFilter(btn.dataset.status));
+    });
+
+    document.getElementById('search-input').addEventListener('input', e => {
+      searchText = e.target.value;
+      renderTable();
+    });
+
+    document.querySelectorAll('.th-sortable').forEach(th => {
+      th.addEventListener('click', () => {
+        const col = th.dataset.col;
+        if (sortCol === col) {
+          sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+          sortCol = col;
+          sortDir = 'asc';
+        }
+        renderTable();
+      });
+    });
+
+    // ── Style for active filter button ──────────────────────────────────
+    const styleEl = document.createElement('style');
+    styleEl.textContent = `.filter-btn.active-filter { background: var(--blue, #7aa2f7); color: var(--bg, #1a1b26); }`;
+    document.head.appendChild(styleEl);
+
+    // ── Init ────────────────────────────────────────────────────────────
+    loadWritTypes();
+    loadWrits(true);
+  })();
+  </script>
+</body>
+</html>

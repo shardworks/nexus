@@ -7,6 +7,9 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { join, dirname } from 'node:path';
 
 import { setGuild, clearGuild } from '@shardworks/nexus-core';
 import type { Guild, GuildConfig, LoadedKit, LoadedApparatus, StartupContext } from '@shardworks/nexus-core';
@@ -50,7 +53,9 @@ function buildClerkCtx(): {
   return { ctx, fire };
 }
 
-function setupCore(options: SetupOptions = {}, clerkCtx: StartupContext = { on: () => {} }) {
+type ClerkPlugin = ReturnType<typeof createClerk>;
+
+function setupCore(options: SetupOptions = {}, clerkCtx: StartupContext = { on: () => {} }): ClerkPlugin {
   const memBackend = new MemoryBackend();
   const stacksPlugin = createStacksApparatus(memBackend);
   const clerkPlugin = createClerk();
@@ -105,6 +110,8 @@ function setupCore(options: SetupOptions = {}, clerkCtx: StartupContext = { on: 
 
   // Expose clerk as an apparatus so tool handlers can resolve it via guild()
   apparatusMap.set('clerk', clerk);
+
+  return clerkPlugin;
 }
 
 function setup(options: SetupOptions = {}) {
@@ -1253,5 +1260,133 @@ describe('Clerk', () => {
         assert.equal(writ.type, 'late-type');
       });
     });
+  });
+});
+
+// ── writ-types tool tests ─────────────────────────────────────────────
+
+type AnyTool = { name: string; permission?: string; callableBy?: unknown; handler: (p: Record<string, unknown>) => Promise<unknown> };
+
+function getTools(plugin: ClerkPlugin): AnyTool[] {
+  const p = plugin as { apparatus: { supportKit: { tools: AnyTool[] } } };
+  return p.apparatus.supportKit.tools;
+}
+
+function getWritTypesTool(plugin: ClerkPlugin): AnyTool {
+  const t = getTools(plugin).find(t => t.name === 'writ-types');
+  if (!t) throw new Error('writ-types tool not found');
+  return t;
+}
+
+describe('writ-types tool', () => {
+  afterEach(() => { clearGuild(); });
+
+  it('returns builtin type with default config', async () => {
+    const plugin = setupCore();
+    const writTypesTool = getWritTypesTool(plugin);
+    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; default: boolean }>;
+    const mandate = result.find(t => t.name === 'mandate');
+    assert.ok(mandate, 'mandate should be in result');
+    assert.equal(mandate.description, null);
+    assert.equal(mandate.default, true);
+  });
+
+  it('returns config-declared types with description', async () => {
+    const plugin = setupCore({ clerkConfig: { writTypes: [{ name: 'task', description: 'A task' }] } });
+    const writTypesTool = getWritTypesTool(plugin);
+    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; default: boolean }>;
+    const task = result.find(t => t.name === 'task');
+    assert.ok(task, 'task should be in result');
+    assert.equal(task.description, 'A task');
+    assert.equal(task.default, false);
+    // mandate should still be there
+    assert.ok(result.find(t => t.name === 'mandate'), 'mandate should still appear');
+  });
+
+  it('marks configured defaultType as default', async () => {
+    const plugin = setupCore({ clerkConfig: { writTypes: [{ name: 'task' }], defaultType: 'task' } });
+    const writTypesTool = getWritTypesTool(plugin);
+    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; default: boolean }>;
+    const task = result.find(t => t.name === 'task');
+    const mandate = result.find(t => t.name === 'mandate');
+    assert.ok(task, 'task should be in result');
+    assert.equal(task.default, true);
+    assert.ok(mandate, 'mandate should be in result');
+    assert.equal(mandate.default, false);
+  });
+
+  it('includes kit-contributed types', async () => {
+    const kit: LoadedKit = {
+      packageName: '@test/kit-a',
+      id: 'kit-a',
+      version: '0.0.0',
+      kit: { writTypes: [{ name: 'quality-audit' }] },
+    };
+    const plugin = setupCore({ extraKits: [kit] });
+    const writTypesTool = getWritTypesTool(plugin);
+    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; default: boolean }>;
+    const qa = result.find(t => t.name === 'quality-audit');
+    assert.ok(qa, 'quality-audit should be in result');
+    assert.equal(qa.description, null);
+    assert.equal(qa.default, false);
+  });
+
+  it('tool is registered in supportKit.tools', () => {
+    const plugin = createClerk();
+    const tools = getTools(plugin);
+    assert.ok(tools.some(t => t.name === 'writ-types'), 'writ-types tool should be in supportKit.tools');
+  });
+
+  it('tool has clerk:read permission', () => {
+    const plugin = createClerk();
+    const t = getWritTypesTool(plugin);
+    assert.equal(t.permission, 'clerk:read');
+  });
+
+  it('tool has no callableBy restriction', () => {
+    const plugin = createClerk();
+    const t = getWritTypesTool(plugin);
+    assert.equal(t.callableBy, undefined);
+  });
+});
+
+// ── Apparatus wiring tests ────────────────────────────────────────────
+
+describe('Apparatus wiring', () => {
+  it('apparatus declares recommends oculus', () => {
+    const plugin = createClerk();
+    const p = plugin as { apparatus: { recommends?: string[] } };
+    assert.ok(Array.isArray(p.apparatus.recommends), 'recommends should be an array');
+    assert.ok(p.apparatus.recommends!.includes('oculus'), 'recommends should include "oculus"');
+  });
+
+  it('supportKit includes pages contribution for writs', () => {
+    const plugin = createClerk();
+    const p = plugin as { apparatus: { supportKit: { pages?: Array<{ id: string; title: string; dir: string }> } } };
+    const pages = p.apparatus.supportKit.pages;
+    assert.ok(Array.isArray(pages), 'pages should be an array');
+    const writPage = pages!.find(pg => pg.id === 'writs');
+    assert.ok(writPage, 'pages should include a writs entry');
+    assert.equal(writPage.title, 'Writs');
+    assert.equal(writPage.dir, 'pages/writs');
+  });
+});
+
+// ── Page file structure tests ─────────────────────────────────────────
+
+describe('Page file structure', () => {
+  it('index.html exists and contains required HTML structural tags', () => {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const htmlPath = join(__dirname, '..', 'pages', 'writs', 'index.html');
+    let content: string;
+    try {
+      content = readFileSync(htmlPath, 'utf-8');
+    } catch {
+      assert.fail(`Expected pages/writs/index.html to exist at: ${htmlPath}`);
+    }
+    assert.ok(content.includes('<html'), 'index.html must contain <html tag');
+    assert.ok(content.includes('<head'), 'index.html must contain <head tag');
+    assert.ok(content.includes('<body'), 'index.html must contain <body tag');
   });
 });

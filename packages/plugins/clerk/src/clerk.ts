@@ -15,6 +15,7 @@
 
 import type { Plugin, StartupContext, LoadedPlugin } from '@shardworks/nexus-core';
 import { guild, generateId, isLoadedApparatus } from '@shardworks/nexus-core';
+import { tool } from '@shardworks/tools-apparatus';
 import type { StacksApi, Book, WhereClause } from '@shardworks/stacks-apparatus';
 
 import type {
@@ -270,11 +271,39 @@ export function createClerk(): Plugin {
     },
   };
 
+  // ── writ-types tool ──────────────────────────────────────────────
+
+  const writTypesTool = tool({
+    name: 'writ-types',
+    description: 'List available writ types for this guild',
+    instructions:
+      'Returns the available writ types including built-in types, types declared ' +
+      'in guild config, and types contributed by kits. Each entry includes the ' +
+      'type name, optional description, and whether it is the default type.',
+    params: {},
+    permission: 'clerk:read',
+    handler: async () => {
+      const config = resolveClerkConfig();
+      const defaultType = resolveDefaultType();
+      const configEntries = config.writTypes ?? [];
+
+      return [...mergedWritTypes].map((name) => {
+        const entry = configEntries.find((e) => e.name === name);
+        return {
+          name,
+          description: entry?.description ?? null,
+          default: name === defaultType,
+        };
+      });
+    },
+  });
+
   // ── Apparatus ────────────────────────────────────────────────────
 
   return {
     apparatus: {
       requires: ['stacks'],
+      recommends: ['oculus'],
       consumes: ['writTypes'],
 
       supportKit: {
@@ -296,6 +325,10 @@ export function createClerk(): Plugin {
           writCancel,
           writLink,
           writUnlink,
+          writTypesTool,
+        ],
+        pages: [
+          { id: 'writs', title: 'Writs', dir: 'pages/writs' },
         ],
       },
 

@@ -27,7 +27,8 @@
     "@types/node": "25.5.0"
   },
   "files": [
-    "dist"
+    "dist",
+    "pages"
   ],
   "publishConfig": {
     "exports": {
