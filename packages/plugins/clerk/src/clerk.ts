@@ -38,6 +38,7 @@ import {
   writComplete,
   writFail,
   writCancel,
+  writPublish,
   writLink,
   writUnlink,
 } from './tools/index.ts';
@@ -57,11 +58,12 @@ const BUILTIN_TYPES = new Set(['mandate']);
 // ── Status machine ───────────────────────────────────────────────────
 
 const ALLOWED_FROM: Record<WritStatus, WritStatus[]> = {
+  ready: ['new'],
   active: ['ready'],
   completed: ['active'],
   failed: ['active'],
-  cancelled: ['ready', 'active'],
-  ready: [],
+  cancelled: ['new', 'ready', 'active'],
+  new: [],
 };
 
 const TERMINAL_STATUSES = new Set<WritStatus>(['completed', 'failed', 'cancelled']);
@@ -153,7 +155,7 @@ export function createClerk(): Plugin {
       const writ: WritDoc = {
         id: generateId('w', 6),
         type,
-        status: 'ready',
+        status: request.draft === true ? 'new' : 'ready',
         title: request.title,
         body: request.body,
         ...(request.codex !== undefined ? { codex: request.codex } : {}),
@@ -323,6 +325,7 @@ export function createClerk(): Plugin {
           writComplete,
           writFail,
           writCancel,
+          writPublish,
           writLink,
           writUnlink,
           writTypesTool,

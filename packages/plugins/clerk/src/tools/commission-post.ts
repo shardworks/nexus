@@ -5,9 +5,11 @@ import type { ClerkApi } from '../types.ts';
 
 export default tool({
   name: 'commission-post',
-  description: 'Post a new commission, creating a writ in ready status',
+  description: 'Post a new commission, creating a writ in ready or new (draft) status',
   instructions:
-    'Creates a new writ and places it in ready status awaiting acceptance. ' +
+    'Creates a new writ. By default the writ is placed in ready status and enters the queue ' +
+    'immediately. Pass draft: true to create the writ in new (draft) status instead — draft ' +
+    'writs are held out of the queue until explicitly published with writ-publish. ' +
     'The writ type must be a type declared in the guild config, or the built-in type "mandate". ' +
     'If type is omitted, the guild\'s configured default type is used (defaults to "mandate").',
   params: {
@@ -15,6 +17,13 @@ export default tool({
     body: z.string().describe('Detail text or description'),
     type: z.string().optional().describe('Writ type (default: guild defaultType or "mandate")'),
     codex: z.string().optional().describe('Target codex name'),
+    draft: z
+      .boolean()
+      .optional()
+      .describe(
+        'When true, create the writ in new (draft) status instead of ready. ' +
+        'Draft writs must be published before they enter the execution queue.',
+      ),
   },
   permission: 'clerk:write',
   handler: async (params) => {
@@ -24,6 +33,7 @@ export default tool({
       body: params.body,
       type: params.type,
       codex: params.codex,
+      draft: params.draft,
     });
   },
 });

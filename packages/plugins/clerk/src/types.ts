@@ -10,14 +10,16 @@
  * A writ's position in its lifecycle.
  *
  * Transitions:
- *   ready → active (accept)
+ *   new   → ready     (publish)   — draft held for review before entering the queue
+ *   new   → cancelled (cancel)
+ *   ready → active    (accept)
  *   active → completed (complete)
- *   active → failed (fail)
+ *   active → failed    (fail)
  *   ready | active → cancelled (cancel)
  *
  * completed, failed, cancelled are terminal — no further transitions.
  */
-export type WritStatus = 'ready' | 'active' | 'completed' | 'failed' | 'cancelled';
+export type WritStatus = 'new' | 'ready' | 'active' | 'completed' | 'failed' | 'cancelled';
 
 // ── Documents ────────────────────────────────────────────────────────
 
@@ -68,6 +70,13 @@ export interface PostCommissionRequest {
   body: string;
   /** Optional target codex name. */
   codex?: string;
+  /**
+   * When true, the writ is created in 'new' (draft) status instead of 'ready'.
+   * Draft writs are invisible to the Spider and must be explicitly published
+   * (new → ready) before they can be picked up for execution.
+   * Defaults to false (writ enters the queue immediately).
+   */
+  draft?: boolean;
 }
 
 // ── Filters ──────────────────────────────────────────────────────────
@@ -153,7 +162,9 @@ export interface WritLinks {
  */
 export interface ClerkApi {
   /**
-   * Post a new commission, creating a writ in 'ready' status.
+   * Post a new commission, creating a writ in 'ready' status by default.
+   * If `request.draft` is true, the writ is created in 'new' status instead
+   * and will not be picked up by the Spider until explicitly published.
    * Validates the writ type against declared types in guild config.
    */
   post(request: PostCommissionRequest): Promise<WritDoc>;

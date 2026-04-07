@@ -5,5 +5,6 @@ export { default as writAccept } from './writ-accept.ts';
 export { default as writComplete } from './writ-complete.ts';
 export { default as writFail } from './writ-fail.ts';
 export { default as writCancel } from './writ-cancel.ts';
+export { default as writPublish } from './writ-publish.ts';
 export { default as writLink } from './writ-link.ts';
 export { default as writUnlink } from './writ-unlink.ts';

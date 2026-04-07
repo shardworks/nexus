@@ -53,13 +53,14 @@ supportKit: {
     writComplete,
     writFail,
     writCancel,
+    writPublish,
   ],
 },
 ```
 
 ### `commission-post` tool
 
-Post a new commission. Creates a mandate writ in `ready` status.
+Post a new commission. Creates a writ in `ready` status by default, or in `new` (draft) status when `draft: true` is passed.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -67,6 +68,7 @@ Post a new commission. Creates a mandate writ in `ready` status.
 | `body` | `string` | yes | Full spec — what to do, acceptance criteria, context |
 | `codex` | `string` | no | Target codex name |
 | `type` | `string` | no | Writ type (default: `"mandate"`) |
+| `draft` | `boolean` | no | When `true`, create in `new` status — held out of the queue until published (default: `false`) |
 
 Returns the created `WritDoc`.
 
@@ -128,12 +130,24 @@ Permission: `clerk:write`
 
 ### `writ-cancel` tool
 
-Cancel a writ. Transitions `ready|active → cancelled`.
+Cancel a writ. Transitions `new|ready|active → cancelled`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | `string` | yes | Writ id |
 | `resolution` | `string` | no | Why the writ was cancelled |
+
+Permission: `clerk:write`
+
+### `writ-publish` tool
+
+Publish a draft writ. Transitions `new → ready`, placing it in the execution queue.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | `string` | yes | Writ id |
+
+Returns the updated `WritDoc`.
 
 Permission: `clerk:write`
 
@@ -146,10 +160,11 @@ interface ClerkApi {
   // ── Commission Intake ─────────────────────────────────────────
 
   /**
-   * Post a commission — create a mandate writ in ready status.
+   * Post a commission — create a writ in ready status (or new if draft: true).
    *
    * This is the primary entry point for patron-originated work.
    * Creates a WritDoc and persists it to the writs book.
+   * Draft writs (new status) are invisible to the Spider until published.
    */
   post(request: PostCommissionRequest): Promise<WritDoc>
 
@@ -173,6 +188,8 @@ interface ClerkApi {
    * Updates the writ document and sets timestamp fields.
    *
    * Valid transitions:
+   *   new   → ready      (publish — enter the queue)
+   *   new   → cancelled
    *   ready → active
    *   active → completed
    *   active → failed
@@ -222,7 +239,8 @@ interface WritDoc {
 }
 
 type WritStatus =
-  | "ready"       // Posted, awaiting acceptance or dispatch
+  | "new"         // Draft — held out of the queue, not yet published
+  | "ready"       // In the queue, awaiting acceptance or dispatch
   | "active"      // Claimed by an anima, work in progress
   | "completed"   // Work done successfully
   | "failed"      // Work failed
@@ -233,6 +251,7 @@ interface PostCommissionRequest {
   body: string
   codex?: string
   type?: string       // default: "mandate"
+  draft?: boolean     // When true, create in 'new' status (default: false → 'ready')
 }
 
 interface WritFilters {
@@ -298,30 +317,44 @@ The writ status machine governs all transitions. The Clerk enforces this — inv
 
 ```
             ┌──────────────┐
-            │    ready     │──────────┐
-            └──────┬───────┘          │
-                   │                  │
-              accept               cancel
-                   │                  │
-                   ▼                  │
-            ┌──────────────┐          │
-            │    active    │──────┐   │
-            └──┬───────┬───┘      │   │
-               │       │          │   │
-          complete    fail     cancel  │
-               │       │          │   │
-               ▼       ▼          │   │
-        ┌───────────┐ ┌────────┐  │   │
-        │ completed │ │ failed │  │   │
-        └───────────┘ └────────┘  │   │
-                                  │   │
-              ┌───────────┐       │   │
-              │ cancelled │◀──────┘   │
-              │           │◀──────────┘
+            │     new      │──────────────────┐
+            └──────┬───────┘                  │
+                   │                          │
+               publish                     cancel
+                   │                          │
+                   ▼                          │
+            ┌──────────────┐                  │
+            │    ready     │──────────┐       │
+            └──────┬───────┘          │       │
+                   │                  │       │
+              accept               cancel     │
+                   │                  │       │
+                   ▼                  │       │
+            ┌──────────────┐          │       │
+            │    active    │──────┐   │       │
+            └──┬───────┬───┘      │   │       │
+               │       │          │   │       │
+          complete    fail     cancel  │       │
+               │       │          │   │       │
+               ▼       ▼          │   │       │
+        ┌───────────┐ ┌────────┐  │   │       │
+        │ completed │ │ failed │  │   │       │
+        └───────────┘ └────────┘  │   │       │
+                                  │   │       │
+              ┌───────────┐       │   │       │
+              │ cancelled │◀──────┘   │       │
+              │           │◀──────────┘       │
+              │           │◀──────────────────┘
               └───────────┘
 ```
 
 Terminal statuses: `completed`, `failed`, `cancelled`. No transitions out of terminal states.
+
+The `new` status is a pre-queue holding state. A writ in `new` status:
+- Is **not** visible to the Spider's spawn phase (which queries exclusively for `ready` writs)
+- Can be reviewed, linked to other writs, and edited before entering the queue
+- Must be explicitly published (`new → ready`) via the `writ-publish` tool before it will be picked up
+- Can be cancelled directly from `new` without ever entering the queue
 
 ### [Future] The `pending` status
 
@@ -343,11 +376,13 @@ Commission intake is a single synchronous step:
 ```
 ├─ 1. Patron calls commission-post (or ClerkApi.post())
 ├─ 2. Clerk validates input, generates ULID, creates WritDoc
-├─ 3. Clerk writes WritDoc to writs book (status: ready)
-└─ 4. Returns WritDoc to caller
+├─ 3a. draft: false (default) → Clerk writes WritDoc with status: ready
+│       └─ Spider will pick up on next crawl tick
+└─ 3b. draft: true → Clerk writes WritDoc with status: new
+        └─ Held out of queue; patron calls writ-publish to enter queue
 ```
 
-One commission = one mandate writ. No planning, no decomposition. Execution is handled by the Spider, which spawns a rig for each ready writ and drives it through the engine pipeline.
+One commission = one mandate writ. No planning, no decomposition. Execution is handled by the Spider, which spawns a rig for each **ready** writ and drives it through the engine pipeline. Writs in `new` status are invisible to the Spider until published.
 
 ---
 

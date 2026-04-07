@@ -7,6 +7,7 @@
   <style>
     .error-msg { color: var(--red, #f7768e); font-size: 0.875rem; margin-top: 0.25rem; }
     .warn-msg  { color: var(--yellow, #e0af68); font-size: 0.875rem; margin-top: 0.25rem; }
+    .badge--draft { background: var(--purple, #9d7cd8); color: var(--bg, #1a1b26); }
     .detail-row td { background: var(--bg2, #1a1b26); padding: 1rem; }
     .detail-row pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: monospace; max-height: 280px; overflow-y: auto; }
     .detail-section { margin-bottom: 1rem; }
@@ -50,6 +51,7 @@
     <span style="display:inline-flex;gap:0.4rem;flex-wrap:wrap;align-items:center">
       <span style="font-size:0.875rem;opacity:0.6">Status:</span>
       <button class="btn filter-btn active-filter" data-status="">All</button>
+      <button class="btn filter-btn" data-status="new">new</button>
       <button class="btn filter-btn" data-status="ready">ready</button>
       <button class="btn filter-btn" data-status="active">active</button>
       <button class="btn filter-btn" data-status="completed">completed</button>
@@ -80,6 +82,10 @@
       </select>
       <div id="post-codex-error" class="error-msg" style="display:none"></div>
     </div>
+    <div class="form-row" style="flex-direction:row;align-items:center;gap:0.5rem">
+      <input type="checkbox" id="post-draft-checkbox" style="width:auto;accent-color:var(--blue,#7aa2f7)">
+      <label for="post-draft-checkbox" style="opacity:1;cursor:pointer">Draft — hold in <em>new</em> status, do not enter queue yet</label>
+    </div>
     <button class="btn btn--primary" id="post-submit-btn">Post Writ</button>
     <div id="post-error" class="error-msg" style="display:none"></div>
     <div id="post-warn" class="warn-msg" style="display:none"></div>
@@ -93,6 +99,7 @@
         <th class="th-sortable" data-col="type">Type <span class="sort-ind" data-col="type"></span></th>
         <th class="th-sortable" data-col="id">ID <span class="sort-ind" data-col="id"></span></th>
         <th class="th-sortable" data-col="createdAt">Created <span class="sort-ind" data-col="createdAt"></span></th>
+        <th>Actions</th>
       </tr>
     </thead>
     <tbody id="writ-tbody"></tbody>
@@ -136,6 +143,7 @@
 
     function statusBadge(status) {
       const map = {
+        new: 'badge badge--draft',
         ready: 'badge',
         active: 'badge badge--active',
         completed: 'badge badge--success',
@@ -184,6 +192,63 @@
       el.style.display = 'none';
     }
 
+    // ── Row actions ────────────────────────────────────────────────────
+
+    /** Returns the HTML for the context-aware Actions cell for a writ row. */
+    function rowActions(w) {
+      const isTerminal = ['completed', 'failed', 'cancelled'].includes(w.status);
+      if (isTerminal) return '';
+      const btns = [];
+      if (w.status === 'new') {
+        btns.push(`<button class="btn btn--primary row-action-btn" style="padding:0.15rem 0.5rem;font-size:0.8rem" data-action="row-publish" data-id="${w.id}">Start</button>`);
+      }
+      btns.push(`<button class="btn btn--danger row-action-btn" style="padding:0.15rem 0.5rem;font-size:0.8rem" data-action="row-cancel" data-id="${w.id}">Cancel</button>`);
+      return btns.join(' ');
+    }
+
+    async function handleRowAction(action, id, btn) {
+      const orig = btn.textContent;
+      btn.disabled = true;
+      try {
+        if (action === 'row-publish') {
+          btn.textContent = '…';
+          await api('POST', '/api/writ/publish', { id });
+        } else if (action === 'row-cancel') {
+          btn.textContent = '…';
+          await api('POST', '/api/writ/cancel', { id });
+        }
+        // Reload this writ and update the row
+        const writ = await api('GET', `/api/writ/show?id=${encodeURIComponent(id)}`);
+        const idx = writs.findIndex(w => w.id === id);
+        if (idx >= 0) writs[idx] = writ;
+        updateRowStatus(id);
+        updateRowActions(id);
+        // Refresh expanded detail if open
+        if (expandedId === id) await refreshDetail(id);
+      } catch (e) {
+        alert(`Action failed: ${e.message}`);
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }
+
+    function updateRowActions(id) {
+      const writ = writs.find(w => w.id === id);
+      if (!writ) return;
+      const row = document.querySelector(`tr.writ-row[data-id="${id}"]`);
+      if (!row) return;
+      const cells = row.querySelectorAll('td');
+      const actionsCell = cells[5];
+      if (!actionsCell) return;
+      actionsCell.innerHTML = rowActions(writ);
+      actionsCell.querySelectorAll('.row-action-btn').forEach(btn => {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          handleRowAction(btn.dataset.action, btn.dataset.id, btn);
+        });
+      });
+    }
+
     // ── Render ─────────────────────────────────────────────────────────
 
     function renderTable() {
@@ -191,7 +256,7 @@
       const visible = sortedFilteredWrits();
 
       if (visible.length === 0 && writs.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="5"><div class="empty-state">No writs found.</div></td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state">No writs found.</div></td></tr>`;
         return;
       }
 
@@ -208,7 +273,15 @@
           <td>${w.type ?? ''}</td>
           <td><code>${w.id}</code></td>
           <td>${fmtDate(w.createdAt)}</td>
+          <td class="row-actions" style="white-space:nowrap">${rowActions(w)}</td>
         `;
+        // Wire row-action buttons (stop row-click propagation)
+        tr.querySelectorAll('.row-action-btn').forEach(btn => {
+          btn.addEventListener('click', e => {
+            e.stopPropagation();
+            handleRowAction(btn.dataset.action, btn.dataset.id, btn);
+          });
+        });
         tr.addEventListener('click', () => toggleExpand(w.id, tr));
         tbody.appendChild(tr);
 
@@ -240,7 +313,7 @@
       tr.dataset.detailFor = writ.id;
 
       const td = document.createElement('td');
-      td.colSpan = 5;
+      td.colSpan = 6;
       td.innerHTML = renderDetail(writ);
 
       // Wire up events after inserting
@@ -269,7 +342,10 @@
       // Transition actions
       if (!isTerminal) {
         html += `<div class="detail-section action-buttons" id="actions-${writ.id}">`;
-        if (writ.status === 'ready') {
+        if (writ.status === 'new') {
+          html += `<button class="btn btn--primary" data-action="publish" data-id="${writ.id}">Start (Publish)</button>`;
+          html += `<button class="btn btn--danger" data-action="cancel" data-id="${writ.id}">Cancel</button>`;
+        } else if (writ.status === 'ready') {
           html += `<button class="btn btn--primary" data-action="accept" data-id="${writ.id}">Accept</button>`;
           html += `<button class="btn btn--danger" data-action="cancel" data-id="${writ.id}">Cancel</button>`;
         } else if (writ.status === 'active') {
@@ -359,7 +435,9 @@
     }
 
     function handleDetailAction(action, id, btn, td, writ) {
-      if (action === 'accept') {
+      if (action === 'publish') {
+        doPublish(id, btn, td);
+      } else if (action === 'accept') {
         doAccept(id, btn, td);
       } else if (action === 'cancel') {
         showConfirm(id, 'cancel', btn, td, false);
@@ -379,6 +457,25 @@
       }
     }
 
+    async function doPublish(id, btn, td) {
+      const errEl = td.querySelector(`#action-error-${id}`);
+      clearError(errEl);
+      btn.disabled = true;
+      const orig = btn.textContent;
+      btn.textContent = 'Publishing...';
+      try {
+        await api('POST', '/api/writ/publish', { id });
+        await refreshDetail(id);
+        updateRowStatus(id);
+        updateRowActions(id);
+      } catch (e) {
+        showError(errEl, e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }
+
     async function doAccept(id, btn, td) {
       const errEl = td.querySelector(`#action-error-${id}`);
       clearError(errEl);
@@ -389,6 +486,7 @@
         await api('POST', '/api/writ/accept', { id });
         await refreshDetail(id);
         updateRowStatus(id);
+        updateRowActions(id);
       } catch (e) {
         showError(errEl, e.message);
       } finally {
@@ -446,6 +544,7 @@
           else if (action === 'fail') await api('POST', '/api/writ/fail', body);
           await refreshDetail(id);
           updateRowStatus(id);
+          updateRowActions(id);
           area.innerHTML = '';
         } catch (e) {
           showError(confirmErr, e.message);
@@ -706,6 +805,7 @@
     function clearPostForm() {
       document.getElementById('post-title-input').value = '';
       document.getElementById('post-body-input').value = '';
+      document.getElementById('post-draft-checkbox').checked = false;
       clearError(document.getElementById('post-error'));
       clearError(document.getElementById('post-warn'));
       clearError(document.getElementById('post-codex-error'));
@@ -765,16 +865,17 @@
       const body = bodyInput.value.trim();
       const type = typeSelect.value;
       const codex = codexSelect.value || undefined;
+      const draft = document.getElementById('post-draft-checkbox').checked;
 
       if (!title) { showError(errEl, 'Title is required.'); return; }
       if (!body)  { showError(errEl, 'Body is required.'); return; }
       if (!codex) { showError(errEl, 'A codex is required.'); codexSelect.focus(); return; }
 
       submitBtn.disabled = true;
-      submitBtn.textContent = 'Posting...';
+      submitBtn.textContent = draft ? 'Saving Draft...' : 'Posting...';
 
       try {
-        const payload = { title, body, type, ...(codex ? { codex } : {}) };
+        const payload = { title, body, type, ...(codex ? { codex } : {}), ...(draft ? { draft: true } : {}) };
         const newWrit = await api('POST', '/api/commission/post', payload);
 
         // If reposting, create retries link
@@ -797,6 +898,7 @@
       } finally {
         submitBtn.disabled = false;
         submitBtn.textContent = 'Post Writ';
+        document.getElementById('post-draft-checkbox').checked = false;
       }
     }
 

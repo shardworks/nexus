@@ -210,6 +210,23 @@ describe('Clerk', () => {
       const writ = await clerk.post({ title: 'Timestamps', body: 'Body' });
       assert.equal(writ.createdAt, writ.updatedAt);
     });
+
+    it('creates a writ in new (draft) status when draft: true', async () => {
+      const writ = await clerk.post({ title: 'Draft writ', body: 'Details', draft: true });
+      assert.equal(writ.status, 'new');
+      assert.equal(writ.acceptedAt, undefined);
+      assert.equal(writ.resolvedAt, undefined);
+    });
+
+    it('creates a writ in ready status when draft: false (explicit)', async () => {
+      const writ = await clerk.post({ title: 'Explicit ready', body: 'Body', draft: false });
+      assert.equal(writ.status, 'ready');
+    });
+
+    it('creates a writ in ready status when draft is omitted (backward compat)', async () => {
+      const writ = await clerk.post({ title: 'Default ready', body: 'Body' });
+      assert.equal(writ.status, 'ready');
+    });
   });
 
   // ── show() ───────────────────────────────────────────────────────
@@ -302,6 +319,19 @@ describe('Clerk', () => {
       const completed = await clerk.list({ status: 'completed' });
       assert.equal(completed.length, 0);
     });
+
+    it('filters by new status', async () => {
+      await clerk.post({ title: 'Draft writ', body: 'Body', draft: true });
+      await clerk.post({ title: 'Ready writ', body: 'Body' });
+
+      const newWrits = await clerk.list({ status: 'new' });
+      const readyWrits = await clerk.list({ status: 'ready' });
+
+      assert.equal(newWrits.length, 1);
+      assert.equal(newWrits[0]!.status, 'new');
+      assert.equal(readyWrits.length, 1);
+      assert.equal(readyWrits[0]!.status, 'ready');
+    });
   });
 
   // ── count() ──────────────────────────────────────────────────────
@@ -334,6 +364,62 @@ describe('Clerk', () => {
 
       assert.equal(await clerk.count({ type: 'mandate' }), 1);
       assert.equal(await clerk.count({ type: 'errand' }), 1);
+    });
+  });
+
+  // ── transition() — new → ready (publish) ────────────────────────
+
+  describe('transition() to ready (publish)', () => {
+    beforeEach(() => { setup(); });
+
+    it('publishes a new (draft) writ to ready status', async () => {
+      const writ = await clerk.post({ title: 'Draft writ', body: 'Body', draft: true });
+      assert.equal(writ.status, 'new');
+
+      const published = await clerk.transition(writ.id, 'ready');
+      assert.equal(published.status, 'ready');
+      assert.equal(published.acceptedAt, undefined);
+      assert.equal(published.resolvedAt, undefined);
+    });
+
+    it('updates updatedAt on publish', async () => {
+      const writ = await clerk.post({ title: 'Draft', body: 'Body', draft: true });
+      await new Promise(r => setTimeout(r, 2));
+      const published = await clerk.transition(writ.id, 'ready');
+      assert.ok(published.updatedAt >= writ.updatedAt);
+    });
+
+    it('throws when publishing a writ that is already ready', async () => {
+      const writ = await clerk.post({ title: 'Already ready', body: 'Body' });
+      await assert.rejects(
+        () => clerk.transition(writ.id, 'ready'),
+        /Cannot transition/,
+      );
+    });
+
+    it('throws when publishing an active writ', async () => {
+      const writ = await clerk.post({ title: 'Active', body: 'Body' });
+      await clerk.transition(writ.id, 'active');
+      await assert.rejects(
+        () => clerk.transition(writ.id, 'ready'),
+        /Cannot transition/,
+      );
+    });
+
+    it('throws when publishing a cancelled writ', async () => {
+      const writ = await clerk.post({ title: 'Cancelled', body: 'Body', draft: true });
+      await clerk.transition(writ.id, 'cancelled');
+      await assert.rejects(
+        () => clerk.transition(writ.id, 'ready'),
+        /Cannot transition/,
+      );
+    });
+
+    it('a published writ can then be accepted (new → ready → active)', async () => {
+      const writ = await clerk.post({ title: 'Full draft flow', body: 'Body', draft: true });
+      await clerk.transition(writ.id, 'ready');
+      const active = await clerk.transition(writ.id, 'active');
+      assert.equal(active.status, 'active');
     });
   });
 
@@ -477,6 +563,14 @@ describe('Clerk', () => {
 
   describe('transition() to cancelled', () => {
     beforeEach(() => { setup(); });
+
+    it('cancels a new (draft) writ', async () => {
+      const writ = await clerk.post({ title: 'Cancel me (new)', body: 'Body', draft: true });
+      const cancelled = await clerk.transition(writ.id, 'cancelled');
+
+      assert.equal(cancelled.status, 'cancelled');
+      assert.ok(cancelled.resolvedAt);
+    });
 
     it('cancels a ready writ', async () => {
       const writ = await clerk.post({ title: 'Cancel me (ready)', body: 'Body' });

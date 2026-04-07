@@ -5,9 +5,9 @@ import type { ClerkApi } from '../types.ts';
 
 export default tool({
   name: 'writ-cancel',
-  description: 'Cancel a writ, transitioning it from ready or active to cancelled',
+  description: 'Cancel a writ, transitioning it from new, ready, or active to cancelled',
   instructions:
-    'Cancels the writ. Both ready and active writs can be cancelled. ' +
+    'Cancels the writ. Writs in new (draft), ready, or active status can all be cancelled. ' +
     'Optionally record a resolution explaining why. ' +
     'Returns the updated writ.',
   params: {
