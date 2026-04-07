@@ -65,7 +65,7 @@ export interface Guild {
    */
   guildConfig(): GuildConfig
 
-  /** Snapshot of all loaded kits (including apparatus supportKits). */
+  /** Snapshot of all loaded standalone kit plugins. Does not include apparatus supportKits. */
   kits(): LoadedKit[]
 
   /** Snapshot of all started apparatuses. */

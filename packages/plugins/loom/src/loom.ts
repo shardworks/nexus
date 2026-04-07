@@ -15,8 +15,8 @@
  * See: docs/specification.md (loom)
  */
 
-import type { Plugin, StartupContext, LoadedPlugin } from '@shardworks/nexus-core';
-import { guild, isLoadedApparatus } from '@shardworks/nexus-core';
+import type { Plugin, StartupContext, KitEntry } from '@shardworks/nexus-core';
+import { guild } from '@shardworks/nexus-core';
 import type { InstrumentariumApi, ResolvedTool } from '@shardworks/tools-apparatus';
 import { tool } from '@shardworks/tools-apparatus';
 import { z } from 'zod';
@@ -148,19 +148,42 @@ export function createLoom(): Plugin {
   let kitRoles: Map<string, RoleDefinition> = new Map();
 
   function registerKitRoles(
-    pluginId: string,
-    packageName: string,
-    kit: Record<string, unknown>,
+    entry: KitEntry,
     home: string,
   ): void {
-    const rawRoles = kit.roles;
+    const rawRoles = entry.value;
     if (typeof rawRoles !== 'object' || rawRoles === null || Array.isArray(rawRoles)) return;
+
+    const pluginId = entry.pluginId;
+    const packageName = entry.packageName;
+
+    // Determine allowed plugins for dependency-scoped permission validation.
+    // For standalone kits: use the kit's own requires/recommends.
+    // For apparatus supportKits: use the parent apparatus's requires/recommends.
+    const g = guild();
+    const standaloneKit = g.kits().find(k => k.id === pluginId);
+    let parentRequires: string[] = [];
+    let parentRecommends: string[] = [];
+
+    if (standaloneKit) {
+      parentRequires = standaloneKit.kit.requires ?? [];
+      parentRecommends = standaloneKit.kit.recommends ?? [];
+    } else {
+      // Apparatus supportKit — look up apparatus deps from already-started apparatuses
+      const app = g.apparatuses().find(a => a.id === pluginId);
+      if (app) {
+        parentRequires = app.apparatus.requires ?? [];
+        parentRecommends = app.apparatus.recommends ?? [];
+      }
+      // If not found (apparatus not yet started), fall through with empty deps —
+      // pluginId is still in allowedPlugins.
+    }
 
     // Compute allowed plugin IDs for dependency-scoped validation
     const allowedPlugins = new Set<string>([
       pluginId,
-      ...((kit.requires as string[] | undefined) ?? []),
-      ...((kit.recommends as string[] | undefined) ?? []),
+      ...parentRequires,
+      ...parentRecommends,
     ]);
 
     for (const [roleName, rawDef] of Object.entries(rawRoles as Record<string, unknown>)) {
@@ -411,28 +434,11 @@ export function createLoom(): Plugin {
         // ── Kit role scanning ──────────────────────────────────────────
         kitRoles = new Map();
 
-        // Phase 1a: Scan all already-loaded standalone kits.
-        for (const kit of g.kits()) {
-          registerKitRoles(kit.id, kit.packageName, kit.kit, home);
+        // All kit contributions (standalone kits + apparatus supportKits) are
+        // available via the Wire-phase ctx.kits('roles') snapshot.
+        for (const entry of ctx.kits('roles')) {
+          registerKitRoles(entry, home);
         }
-
-        // Phase 1b: Scan already-started apparatus for supportKit roles.
-        // The Loom requires ['tools'], so apparatus that started before it
-        // (e.g. Instrumentarium) have already fired plugin:initialized.
-        for (const app of g.apparatuses()) {
-          if (app.apparatus.supportKit) {
-            registerKitRoles(app.id, app.packageName, app.apparatus.supportKit, home);
-          }
-        }
-
-        // Phase 2: Subscribe to plugin:initialized for apparatus supportKits
-        // that start after the Loom in the dependency order.
-        ctx.on('plugin:initialized', (plugin: unknown) => {
-          const loaded = plugin as LoadedPlugin;
-          if (isLoadedApparatus(loaded) && loaded.apparatus.supportKit) {
-            registerKitRoles(loaded.id, loaded.packageName, loaded.apparatus.supportKit, home);
-          }
-        });
       },
     },
   };

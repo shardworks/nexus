@@ -18,8 +18,8 @@
  * See: docs/architecture/apparatus/spider.md
  */
 
-import type { Plugin, StartupContext, LoadedPlugin, LoadedKit, LoadedApparatus } from '@shardworks/nexus-core';
-import { guild, generateId, isLoadedKit, isLoadedApparatus } from '@shardworks/nexus-core';
+import type { Plugin, StartupContext, KitEntry, LoadedKit, LoadedApparatus } from '@shardworks/nexus-core';
+import { guild, generateId } from '@shardworks/nexus-core';
 import type { StacksApi, Book, ReadOnlyBook, WhereClause } from '@shardworks/stacks-apparatus';
 import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import type { FabricatorApi } from '@shardworks/fabricator-apparatus';
@@ -338,14 +338,12 @@ class BlockTypeRegistry {
   private readonly types = new Map<string, BlockType>();
   private readonly provenance = new Map<string, string>();
 
-  register(plugin: LoadedPlugin): void {
-    if (isLoadedKit(plugin)) {
-      this.registerFromKit(plugin.kit, plugin.id);
-    } else if (isLoadedApparatus(plugin)) {
-      if (plugin.apparatus.supportKit) {
-        this.registerFromKit(plugin.apparatus.supportKit, plugin.id);
-      }
-    }
+  registerFromEntry(entry: KitEntry): void {
+    const raw = entry.value;
+    if (typeof raw !== 'object' || raw === null) return;
+    // entry.value IS the blockTypes record — wrap it back so registerFromKit
+    // can find it via kit.blockTypes (consistent with the fabricator pattern).
+    this.registerFromKit({ blockTypes: raw } as Record<string, unknown>, entry.pluginId);
   }
 
   private registerFromKit(kit: Record<string, unknown>, pluginId: string): void {
@@ -396,10 +394,10 @@ class RigTemplateRegistry {
   private designSourceMap = new Map<string, string>();
 
   /**
-   * Build the designId → pluginId map from all loaded kits and apparatuses.
+   * Build the designId → pluginId map from all engine KitEntries.
    * Called once at startup before any kit registration.
    */
-  buildDesignSourceMap(kits: LoadedKit[], apparatuses: LoadedApparatus[]): void {
+  buildDesignSourceMap(engineEntries: KitEntry[]): void {
     // Spider's built-in engines always map to 'spider'
     const builtinIds = [
       draftEngine.id,
@@ -412,16 +410,11 @@ class RigTemplateRegistry {
       this.designSourceMap.set(id, 'spider');
     }
 
-    // Scan standalone kits for engine contributions
-    for (const kit of kits) {
-      this.registerEnginesFromKit(kit.id, kit.kit);
-    }
-
-    // Scan apparatus supportKits for engine contributions
-    for (const app of apparatuses) {
-      if (app.apparatus.supportKit) {
-        this.registerEnginesFromKit(app.id, app.apparatus.supportKit);
-      }
+    // Scan engine entries from all sources
+    // entry.value IS the engines bag (e.g. { draft: engine }) — wrap it back so
+    // registerEnginesFromKit can find it via kit.engines (consistent with kit layout).
+    for (const entry of engineEntries) {
+      this.registerEnginesFromKit(entry.pluginId, { engines: entry.value } as Record<string, unknown>);
     }
   }
 
@@ -458,6 +451,36 @@ class RigTemplateRegistry {
     for (const [writType, templateName] of Object.entries(rigTemplateMappings)) {
       this.configMappings.set(writType, templateName);
     }
+  }
+
+  /**
+   * Register a rigTemplates or rigTemplateMappings KitEntry.
+   * Looks up requires/recommends from guild state for dependency-scoped validation.
+   */
+  registerFromEntry(entry: KitEntry): void {
+    const g = guild();
+    const standaloneKit = g.kits().find(k => k.id === entry.pluginId);
+    let requires: string[] = [];
+    let recommends: string[] = [];
+
+    if (standaloneKit) {
+      requires = standaloneKit.kit.requires ?? [];
+      recommends = standaloneKit.kit.recommends ?? [];
+    } else {
+      const app = g.apparatuses().find(a => a.id === entry.pluginId);
+      if (app) {
+        requires = app.apparatus.requires ?? [];
+        recommends = app.apparatus.recommends ?? [];
+      }
+    }
+
+    // Reconstruct a kit-like record with requires/recommends for the existing logic
+    const kitLike: Record<string, unknown> = {
+      requires,
+      recommends,
+      [entry.type]: entry.value,
+    };
+    this.registerFromKit(entry.pluginId, kitLike);
   }
 
   /**
@@ -1336,8 +1359,8 @@ export function createSpider(): Plugin {
         clerk = g.apparatus<ClerkApi>('clerk');
         fabricator = g.apparatus<FabricatorApi>('fabricator');
 
-        // 1. Build designId → pluginId map from all kits and apparatuses
-        rigTemplateRegistry.buildDesignSourceMap(g.kits(), g.apparatuses());
+        // 1. Build designId → pluginId map from all engine contributions
+        rigTemplateRegistry.buildDesignSourceMap(ctx.kits('engines'));
 
         // 2. Validate and register config templates
         if (spiderConfig.rigTemplates) {
@@ -1350,33 +1373,23 @@ export function createSpider(): Plugin {
           rigTemplateRegistry.registerConfigMappings(spiderConfig.rigTemplateMappings);
         }
 
-        // 4. Phase 1a: Scan standalone kits for block types and rig templates
-        for (const kit of g.kits()) {
-          blockTypeRegistry.register(kit);
-          rigTemplateRegistry.registerFromKit(kit.id, kit.kit);
+        // 4. Register all block types via Wire-phase snapshot
+        for (const entry of ctx.kits('blockTypes')) {
+          blockTypeRegistry.registerFromEntry(entry);
         }
 
-        // 5. Phase 1b: Scan already-started apparatus supportKits for rig templates
-        for (const app of g.apparatuses()) {
-          if (app.apparatus.supportKit) {
-            rigTemplateRegistry.registerFromKit(app.id, app.apparatus.supportKit);
-          }
+        // 5. Register all kit-contributed rig templates via Wire-phase snapshot
+        for (const entry of ctx.kits('rigTemplates')) {
+          rigTemplateRegistry.registerFromEntry(entry);
         }
 
-        // 6. Deferred mapping validation (after all Phase 1 scanning)
+        // 6. Register all kit-contributed rig template mappings
+        for (const entry of ctx.kits('rigTemplateMappings')) {
+          rigTemplateRegistry.registerFromEntry(entry);
+        }
+
+        // 7. Validate all mappings (single pass — no late arrivals)
         rigTemplateRegistry.validateDeferredMappings();
-
-        // 7. Phase 2: Subscribe for late-arriving apparatus supportKits
-        ctx.on('plugin:initialized', (plugin: unknown) => {
-          const loaded = plugin as LoadedPlugin;
-          if (isLoadedApparatus(loaded)) {
-            blockTypeRegistry.register(loaded);
-            if (loaded.apparatus.supportKit) {
-              rigTemplateRegistry.registerFromKit(loaded.id, loaded.apparatus.supportKit);
-              rigTemplateRegistry.validateIncrementalMappings();
-            }
-          }
-        });
 
         rigsBook = stacks.book<RigDoc>('spider', 'rigs');
         sessionsBook = stacks.readBook<SessionDoc>('animator', 'sessions');

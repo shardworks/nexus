@@ -13,7 +13,7 @@ import { serve } from '@hono/node-server';
 import type { Server } from 'node:http';
 import { z } from 'zod';
 
-import type { Plugin, StartupContext, LoadedKit, LoadedApparatus } from '@shardworks/nexus-core';
+import type { Plugin, StartupContext } from '@shardworks/nexus-core';
 import { guild, VERSION } from '@shardworks/nexus-core';
 import type { InstrumentariumApi } from '@shardworks/tools-apparatus';
 import { tool } from '@shardworks/tools-apparatus';
@@ -386,52 +386,20 @@ export function createOculus(): Plugin {
           mappedToolRoutes.add(routePath);
         }
 
-        // ── Scan contributions from a kit ────────────────────────────
-        function scanKit(kit: LoadedKit): void {
-          const oculusKit = kit.kit as OculusKit;
-
-          if (oculusKit.routes) {
-            for (const route of oculusKit.routes) {
-              registerCustomRoute(route, kit.id);
-            }
-          }
-
-          if (oculusKit.pages) {
-            for (const page of oculusKit.pages) {
-              const resolvedDir = resolveDirForPackage(kit.packageName, page.dir);
-              registerPage(page, resolvedDir);
-            }
+        // ── Register pages from all kit contributions ────────────────────
+        for (const entry of ctx.kits('pages')) {
+          for (const page of entry.value as PageContribution[]) {
+            const resolvedDir = resolveDirForPackage(entry.packageName, page.dir);
+            registerPage(page, resolvedDir);
           }
         }
 
-        function scanApparatus(apparatus: LoadedApparatus): void {
-          if (!apparatus.apparatus.supportKit) return;
-          const oculusKit = apparatus.apparatus.supportKit as OculusKit;
-
-          if (oculusKit.routes) {
-            for (const route of oculusKit.routes) {
-              registerCustomRoute(route, apparatus.id);
-            }
-          }
-
-          if (oculusKit.pages) {
-            for (const page of oculusKit.pages) {
-              const resolvedDir = resolveDirForPackage(apparatus.packageName, page.dir);
-              registerPage(page, resolvedDir);
-            }
+        // ── Register custom routes from all kit contributions ────────────
+        for (const entry of ctx.kits('routes')) {
+          for (const route of entry.value as RouteContribution[]) {
+            registerCustomRoute(route, entry.pluginId);
           }
         }
-
-        // ── Scan existing kits and apparatuses ───────────────────────
-        for (const kit of g.kits()) {
-          scanKit(kit);
-        }
-        for (const apparatus of g.apparatuses()) {
-          scanApparatus(apparatus);
-        }
-
-        // ── Register custom routes first ─────────────────────────────
-        // (already done in scanKit/scanApparatus above)
 
         // ── Register tool routes ─────────────────────────────────────
         const instrumentarium = g.apparatus<InstrumentariumApi>('tools');
@@ -615,24 +583,6 @@ ${navHtml}
 </html>`;
 
           return c.html(html);
-        });
-
-        // ── Late-arriving plugins ─────────────────────────────────────
-        ctx.on('plugin:initialized', (plugin: unknown) => {
-          const loaded = plugin as LoadedApparatus | LoadedKit;
-          if ('apparatus' in loaded) {
-            scanApparatus(loaded as LoadedApparatus);
-          } else if ('kit' in loaded) {
-            scanKit(loaded as LoadedKit);
-          }
-
-          // Check for new patron-callable tools
-          const currentTools = instrumentarium.list().filter(
-            (r) => !r.definition.callableBy || r.definition.callableBy.includes('patron'),
-          );
-          for (const resolved of currentTools) {
-            registerToolRoute(resolved.definition, instrumentarium);
-          }
         });
 
         // Server is NOT started here — use the `oculus` tool to start it explicitly.

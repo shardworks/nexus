@@ -11,7 +11,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { setGuild, clearGuild, generateId } from '@shardworks/nexus-core';
-import type { Guild, GuildConfig, LoadedKit, LoadedApparatus, StartupContext } from '@shardworks/nexus-core';
+import type { Guild, GuildConfig, LoadedKit, LoadedApparatus, StartupContext, KitEntry } from '@shardworks/nexus-core';
 
 import { createStacksApparatus } from '@shardworks/stacks-apparatus';
 import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
@@ -50,10 +50,31 @@ const STANDARD_TEMPLATE: RigTemplate = {
   resolutionEngine: 'seal',
 };
 
+const FRAMEWORK_KIT_FIELDS = new Set(['requires', 'recommends']);
+
+function buildKitEntries(kits: LoadedKit[], apparatuses: LoadedApparatus[]): KitEntry[] {
+  const entries: KitEntry[] = [];
+  for (const kit of kits) {
+    for (const [type, value] of Object.entries(kit.kit)) {
+      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
+      entries.push({ pluginId: kit.id, packageName: kit.packageName, type, value });
+    }
+  }
+  for (const app of apparatuses) {
+    const bag = app.apparatus.supportKit;
+    if (!bag || typeof bag !== 'object') continue;
+    for (const [type, value] of Object.entries(bag)) {
+      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
+      entries.push({ pluginId: app.id, packageName: app.packageName, type, value });
+    }
+  }
+  return entries;
+}
+
 /**
  * Build a minimal StartupContext that captures and fires events.
  */
-function buildCtx(): {
+function buildCtx(kitEntries: KitEntry[] = []): {
   ctx: StartupContext;
   fire: (event: string, ...args: unknown[]) => Promise<void>;
 } {
@@ -63,6 +84,9 @@ function buildCtx(): {
       const list = handlers.get(event) ?? [];
       list.push(handler);
       handlers.set(event, list);
+    },
+    kits(type: string): KitEntry[] {
+      return [...kitEntries.filter(e => e.type === type)];
     },
   };
   async function fire(event: string, ...args: unknown[]): Promise<void> {
@@ -80,7 +104,7 @@ function buildCtx(): {
 function buildFixture(
   guildConfig: Partial<GuildConfig> = {},
   initialSessionOutcome: { status: 'completed' | 'failed'; error?: string; output?: string } = { status: 'completed' },
-  extra: { kits?: LoadedKit[]; apparatuses?: LoadedApparatus[] } = {},
+  extra: { kits?: LoadedKit[]; apparatuses?: LoadedApparatus[]; customEngines?: Record<string, unknown> } = {},
 ): {
   stacks: StacksApi;
   clerk: ClerkApi;
@@ -139,8 +163,40 @@ function buildFixture(
 
   setGuild(fakeGuild);
 
+  const spiderAsLoaded: LoadedApparatus = {
+    packageName: '@shardworks/spider-apparatus',
+    id: 'spider',
+    version: '0.0.0',
+    apparatus: spiderApparatus,
+  };
+
+  const customEngineApparatuses: LoadedApparatus[] = [];
+  if (extra.customEngines && Object.keys(extra.customEngines).length > 0) {
+    customEngineApparatuses.push({
+      packageName: '@test/custom-engines',
+      id: 'test-custom-engines',
+      version: '0.0.0',
+      apparatus: {
+        requires: [],
+        supportKit: { engines: extra.customEngines },
+        provides: {},
+        start() {},
+      },
+    });
+  }
+
+  const fabricatorKitEntries = buildKitEntries(
+    extra.kits ?? [],
+    [spiderAsLoaded, ...customEngineApparatuses, ...(extra.apparatuses ?? [])],
+  );
+
+  const spiderKitEntries = buildKitEntries(
+    extra.kits ?? [],
+    [spiderAsLoaded, ...(extra.apparatuses ?? [])],
+  );
+
   // Start stacks with memory backend
-  const noopCtx = { on: () => {} };
+  const noopCtx = { on: () => {}, kits: () => [] as KitEntry[] };
   stacksApparatus.start(noopCtx);
   const stacks = stacksApparatus.provides as StacksApi;
   apparatusMap.set('stacks', stacks);
@@ -213,28 +269,17 @@ function buildFixture(
   const clerk = clerkApparatus.provides as ClerkApi;
   apparatusMap.set('clerk', clerk);
 
-  // Start fabricator with its own ctx so we can fire events
-  const { ctx: fabricatorCtx, fire } = buildCtx();
+  // Start fabricator with kit entries from Spider's engines
+  const { ctx: fabricatorCtx, fire } = buildCtx(fabricatorKitEntries);
   fabricatorApparatus.start(fabricatorCtx);
   const fabricator = fabricatorApparatus.provides as FabricatorApi;
   apparatusMap.set('fabricator', fabricator);
 
-  // Start spider with a real ctx so we can fire events to it (for Phase 2 testing)
-  const { ctx: spiderCtx, fire: spiderFire } = buildCtx();
+  // Start spider with kit entries from Spider's supportKit
+  const { ctx: spiderCtx, fire: spiderFire } = buildCtx(spiderKitEntries);
   spiderApparatus.start(spiderCtx);
   const spider = spiderApparatus.provides as SpiderApi;
   apparatusMap.set('spider', spider);
-
-  // Simulate plugin:initialized for the Spider so the Fabricator scans
-  // its supportKit and picks up the five engine designs.
-  const spiderLoaded: LoadedApparatus = {
-    packageName: '@shardworks/spider-apparatus',
-    id: 'spider',
-    version: '0.0.0',
-    apparatus: spiderApparatus,
-  };
-  // Fire synchronously — fabricator's handler is sync
-  void fire('plugin:initialized', spiderLoaded);
 
   return {
     stacks, clerk, fabricator, spider, memBackend, fire, spiderFire,
@@ -517,8 +562,6 @@ describe('Spider', () => {
 
   describe('yield serialization failure', () => {
     it('non-serializable engine yields cause engine and rig failure', async () => {
-      const { clerk, spider, stacks, fire } = fix;
-
       // Register an engine design that returns non-JSON-serializable yields
       const badEngine: EngineDesign = {
         id: 'bad-engine',
@@ -527,18 +570,9 @@ describe('Spider', () => {
           return { status: 'completed' as const, yields: { fn: (() => {}) as any } };
         },
       };
-      const fakePlugin: LoadedApparatus = {
-        packageName: '@test/bad-engine',
-        id: 'test-bad',
-        version: '0.0.0',
-        apparatus: {
-          requires: [],
-          supportKit: { engines: { 'bad-engine': badEngine } },
-          provides: {},
-          start() {},
-        },
-      };
-      void fire('plugin:initialized', fakePlugin);
+      const { clerk, spider, stacks } = buildFixture({}, { status: 'completed' }, {
+        customEngines: { 'bad-engine': badEngine },
+      });
 
       await postWrit(clerk);
       await spider.crawl(); // spawn
@@ -1045,8 +1079,6 @@ describe('Spider', () => {
     });
 
     it('walks all 5 engines to rig completion without manual seal patching', async () => {
-      const { clerk, spider, stacks, fire } = fix;
-
       // Register a stub seal engine that doesn't require Scriptorium
       const stubSealEngine: EngineDesign = {
         id: 'seal',
@@ -1057,18 +1089,9 @@ describe('Spider', () => {
           };
         },
       };
-      const fakePlugin: LoadedApparatus = {
-        packageName: '@test/stub-seal',
-        id: 'test-seal',
-        version: '0.0.0',
-        apparatus: {
-          requires: [],
-          supportKit: { engines: { seal: stubSealEngine } },
-          provides: {},
-          start() {},
-        },
-      };
-      void fire('plugin:initialized', fakePlugin);
+      const { clerk, spider, stacks, setSessionOutcome } = buildFixture({}, { status: 'completed' }, {
+        customEngines: { seal: stubSealEngine },
+      });
 
       const writ = await postWrit(clerk, 'Full pipeline stub seal');
       await spider.crawl(); // spawn (writ → active)
@@ -2683,32 +2706,22 @@ describe('Spider — full pipeline integration', () => {
       ],
       resolutionEngine: 'step2',
     };
-    const fix = buildFixture({
-      spider: { rigTemplates: { default: twoEngineTemplate } },
-    });
-    const { clerk, spider, stacks, fire } = fix;
 
     // Override builtin engines with stub clockwork implementations
     const step1Yields = { draftComplete: true };
     const step2Yields = { sealedCommit: 'custom-sha', strategy: 'fast-forward' as const, retries: 0, inscriptionsSealed: 1 };
 
-    const stubPlugin: LoadedApparatus = {
-      packageName: '@test/stub-2engine',
-      id: 'test-2engine',
-      version: '0.0.0',
-      apparatus: {
-        requires: [],
-        supportKit: {
-          engines: {
-            draft: { id: 'draft', async run() { return { status: 'completed' as const, yields: step1Yields }; } },
-            seal:  { id: 'seal',  async run() { return { status: 'completed' as const, yields: step2Yields }; } },
-          },
+    const fix = buildFixture(
+      { spider: { rigTemplates: { default: twoEngineTemplate } } },
+      { status: 'completed' },
+      {
+        customEngines: {
+          draft: { id: 'draft', async run() { return { status: 'completed' as const, yields: step1Yields }; } },
+          seal:  { id: 'seal',  async run() { return { status: 'completed' as const, yields: step2Yields }; } },
         },
-        provides: {},
-        start() {},
       },
-    };
-    void fire('plugin:initialized', stubPlugin);
+    );
+    const { clerk, spider, stacks } = fix;
 
     const writ = await clerk.post({ title: '2-engine writ', body: 'custom pipeline' });
 
@@ -2746,32 +2759,23 @@ describe('Spider — full pipeline integration', () => {
       ],
       resolutionEngine: 'review',
     };
-    const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
-    const { clerk, spider, stacks, fire } = fix;
-
     // Override builtin engines with stub clockwork implementations
     const draftYields = { drafted: true };
     const implementYields = { implemented: true };
     const reviewYields = { passed: true, findings: '### Overall: PASS\nAll requirements met.', sessionId: 'rev-1', mechanicalChecks: [] };
 
-    const stubPlugin: LoadedApparatus = {
-      packageName: '@test/stub-3engine',
-      id: 'test-3engine',
-      version: '0.0.0',
-      apparatus: {
-        requires: [],
-        supportKit: {
-          engines: {
-            draft:     { id: 'draft',     async run() { return { status: 'completed' as const, yields: draftYields }; } },
-            implement: { id: 'implement', async run() { return { status: 'completed' as const, yields: implementYields }; } },
-            review:    { id: 'review',    async run() { return { status: 'completed' as const, yields: reviewYields }; } },
-          },
+    const fix = buildFixture(
+      { spider: { rigTemplates: { default: template } } },
+      { status: 'completed' },
+      {
+        customEngines: {
+          draft:     { id: 'draft',     async run() { return { status: 'completed' as const, yields: draftYields }; } },
+          implement: { id: 'implement', async run() { return { status: 'completed' as const, yields: implementYields }; } },
+          review:    { id: 'review',    async run() { return { status: 'completed' as const, yields: reviewYields }; } },
         },
-        provides: {},
-        start() {},
       },
-    };
-    void fire('plugin:initialized', stubPlugin);
+    );
+    const { clerk, spider, stacks } = fix;
 
     const writ = await clerk.post({ title: '3-engine test', body: 'no seal needed' });
 
@@ -3111,6 +3115,7 @@ describe('Spider — engine blocking on external conditions', () => {
   function buildBlockingFixture(
     customEngines: Record<string, EngineDesign> = {},
     customTemplate?: RigTemplate,
+    customBlockTypes?: BlockType[],
   ): {
     stacks: StacksApi;
     clerk: ClerkApi;
@@ -3120,8 +3125,6 @@ describe('Spider — engine blocking on external conditions', () => {
     fire: (event: string, ...args: unknown[]) => Promise<void>;
     summonCalls: SummonRequest[];
     setSessionOutcome: (outcome: { status: 'completed' | 'failed'; error?: string; output?: string }) => void;
-    /** Fire a plugin:initialized event on both Fabricator and Spider ctxs. */
-    fireAll: (event: string, ...args: unknown[]) => Promise<void>;
   } {
     const memBackend = new MemoryBackend();
     const stacksPlugin = createStacksApparatus(memBackend);
@@ -3166,7 +3169,57 @@ describe('Spider — engine blocking on external conditions', () => {
 
     setGuild(fakeGuild);
 
-    const noopCtx = { on: () => {} };
+    const spiderAsLoaded: LoadedApparatus = {
+      packageName: '@shardworks/spider-apparatus',
+      id: 'spider',
+      version: '0.0.0',
+      apparatus: spiderApparatus,
+    };
+
+    const customEngineApparatuses: LoadedApparatus[] = [];
+    if (Object.keys(customEngines).length > 0) {
+      customEngineApparatuses.push({
+        packageName: '@test/custom-engines',
+        id: 'test-custom-engines',
+        version: '0.0.0',
+        apparatus: {
+          requires: [],
+          supportKit: { engines: customEngines },
+          provides: {},
+          start() {},
+        },
+      });
+    }
+
+    const customBlockTypeApparatuses: LoadedApparatus[] = [];
+    if (customBlockTypes && customBlockTypes.length > 0) {
+      const blockTypesRecord: Record<string, BlockType> = {};
+      for (const bt of customBlockTypes) {
+        blockTypesRecord[bt.id] = bt;
+      }
+      customBlockTypeApparatuses.push({
+        packageName: '@test/custom-block-types',
+        id: 'test-custom-block-types',
+        version: '0.0.0',
+        apparatus: {
+          requires: [],
+          supportKit: { blockTypes: blockTypesRecord },
+          provides: {},
+          start() {},
+        },
+      });
+    }
+
+    const fabricatorKitEntries = buildKitEntries(
+      [],
+      [spiderAsLoaded, ...customEngineApparatuses],
+    );
+    const spiderKitEntries = buildKitEntries(
+      [],
+      [spiderAsLoaded, ...customBlockTypeApparatuses],
+    );
+
+    const noopCtx = { on: () => {}, kits: () => [] as KitEntry[] };
     stacksApparatus.start(noopCtx);
     const stacks = stacksApparatus.provides as StacksApi;
     apparatusMap.set('stacks', stacks);
@@ -3232,52 +3285,17 @@ describe('Spider — engine blocking on external conditions', () => {
     const clerk = clerkApparatus.provides as ClerkApi;
     apparatusMap.set('clerk', clerk);
 
-    // Both Fabricator and Spider get real ctxs so plugin:initialized propagates.
-    const { ctx: fabricatorCtx, fire: fireFabricator } = buildCtx();
-    const { ctx: spiderCtx, fire: fireSpider } = buildCtx();
+    // Both Fabricator and Spider get real ctxs so late plugin:initialized events propagate.
+    const { ctx: fabricatorCtx, fire: fireFabricator } = buildCtx(fabricatorKitEntries);
+    const { ctx: spiderCtx, fire: fireSpider } = buildCtx(spiderKitEntries);
 
     fabricatorApparatus.start(fabricatorCtx);
     const fabricator = fabricatorApparatus.provides as FabricatorApi;
     apparatusMap.set('fabricator', fabricator);
 
-    // Register custom engines in Fabricator BEFORE Spider starts so template
-    // validation (which runs during Spider.start()) sees them.
-    if (Object.keys(customEngines).length > 0) {
-      const customEnginePlugin: LoadedApparatus = {
-        packageName: '@test/custom-engines',
-        id: 'test-custom-engines',
-        version: '0.0.0',
-        apparatus: {
-          requires: [],
-          supportKit: { engines: customEngines },
-          provides: {},
-          start() {},
-        },
-      };
-      void fireFabricator('plugin:initialized', customEnginePlugin);
-    }
-
     spiderApparatus.start(spiderCtx);
     const spider = spiderApparatus.provides as SpiderApi;
     apparatusMap.set('spider', spider);
-
-    const spiderLoaded: LoadedApparatus = {
-      packageName: '@shardworks/spider-apparatus',
-      id: 'spider',
-      version: '0.0.0',
-      apparatus: spiderApparatus,
-    };
-
-    // Fire plugin:initialized on Fabricator ctx → Fabricator scans Spider's engines.
-    // Fire plugin:initialized on Spider ctx → Spider scans Spider's own blockTypes
-    //   (writ-status, scheduled-time, book-updated) and registers them.
-    void fireFabricator('plugin:initialized', spiderLoaded);
-    void fireSpider('plugin:initialized', spiderLoaded);
-
-    async function fireAll(event: string, ...args: unknown[]): Promise<void> {
-      await fireFabricator(event, ...args);
-      await fireSpider(event, ...args);
-    }
 
     return {
       stacks,
@@ -3290,27 +3308,7 @@ describe('Spider — engine blocking on external conditions', () => {
       setSessionOutcome(outcome: { status: 'completed' | 'failed'; error?: string; output?: string }) {
         currentSessionOutcome = outcome;
       },
-      fireAll,
     };
-  }
-
-  /** Register a block type via a fake apparatus plugin. */
-  async function registerBlockType(
-    fireAll: (event: string, ...args: unknown[]) => Promise<void>,
-    blockType: BlockType,
-  ): Promise<void> {
-    const plugin: LoadedApparatus = {
-      packageName: `@test/block-type-${blockType.id}`,
-      id: `bt-${blockType.id}`,
-      version: '0.0.0',
-      apparatus: {
-        requires: [],
-        supportKit: { blockTypes: { [blockType.id]: blockType } },
-        provides: {},
-        start() {},
-      },
-    };
-    await fireAll('plugin:initialized', plugin);
   }
 
   afterEach(() => {
@@ -3347,12 +3345,12 @@ describe('Spider — engine blocking on external conditions', () => {
           ],
           resolutionEngine: 'b',
         },
+        [{
+          id: 'phase-hold',
+          conditionSchema: z.object({ go: z.boolean() }),
+          async check(): Promise<CheckResult> { return { status: 'cleared' }; }, // always clears — ensures unblock is immediately available
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'phase-hold',
-        conditionSchema: z.object({ go: z.boolean() }),
-        async check(): Promise<CheckResult> { return { status: 'cleared' }; }, // always clears — ensures unblock is immediately available
-      });
 
       await fix.clerk.post({ title: 'Ordering Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -3402,13 +3400,12 @@ describe('Spider — engine blocking on external conditions', () => {
     });
 
     it('registers a custom block type contributed via plugin:initialized (R5)', async () => {
-      const { spider, fireAll } = buildBlockingFixture();
       const custom: BlockType = {
         id: 'my-custom-type',
         conditionSchema: z.object({ key: z.string() }),
         async check(): Promise<CheckResult> { return { status: 'pending' }; },
       };
-      await registerBlockType(fireAll, custom);
+      const { spider } = buildBlockingFixture({}, undefined, [custom]);
       assert.ok(spider.getBlockType('my-custom-type') !== undefined, 'custom block type should be registered');
     });
 
@@ -3434,14 +3431,13 @@ describe('Spider — engine blocking on external conditions', () => {
     });
 
     it('listBlockTypes includes custom block type registered via plugin:initialized', async () => {
-      const { spider, fireAll } = buildBlockingFixture();
       const custom: BlockType = {
         id: 'my-custom-type',
         conditionSchema: z.object({ key: z.string() }),
         pollIntervalMs: 5000,
         async check(): Promise<CheckResult> { return { status: 'pending' }; },
       };
-      await registerBlockType(fireAll, custom);
+      const { spider } = buildBlockingFixture({}, undefined, [custom]);
 
       const result = spider.listBlockTypes();
       const found = result.find((bt) => bt.id === 'my-custom-type');
@@ -3450,14 +3446,13 @@ describe('Spider — engine blocking on external conditions', () => {
     });
 
     it('listBlockTypes block type without pollIntervalMs has undefined pollIntervalMs', async () => {
-      const { spider, fireAll } = buildBlockingFixture();
       const noPollType: BlockType = {
         id: 'no-poll-type',
         conditionSchema: z.object({}),
         // No pollIntervalMs
         async check(): Promise<CheckResult> { return { status: 'pending' }; },
       };
-      await registerBlockType(fireAll, noPollType);
+      const { spider } = buildBlockingFixture({}, undefined, [noPollType]);
 
       const result = spider.listBlockTypes();
       const found = result.find((bt) => bt.id === 'no-poll-type');
@@ -3484,12 +3479,12 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'blk-engine': blockingEngine },
         { engines: [{ id: 'sole', designId: 'blk-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'test-block',
+          conditionSchema: z.object({ x: z.number() }),
+          async check(): Promise<CheckResult> { return { status: 'pending' }; },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'test-block',
-        conditionSchema: z.object({ x: z.number() }),
-        async check(): Promise<CheckResult> { return { status: 'pending' }; },
-      });
 
       await fix.clerk.post({ title: 'Blocking writ', body: 'Wait' });
       await fix.spider.crawl(); // spawn
@@ -3564,12 +3559,12 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'bad-cond-engine': badCondEngine },
         { engines: [{ id: 'sole', designId: 'bad-cond-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'strict-type',
+          conditionSchema: z.object({ required: z.string() }),
+          async check(): Promise<CheckResult> { return { status: 'pending' }; },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'strict-type',
-        conditionSchema: z.object({ required: z.string() }),
-        async check(): Promise<CheckResult> { return { status: 'pending' }; },
-      });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -3615,12 +3610,12 @@ describe('Spider — engine blocking on external conditions', () => {
           ],
           resolutionEngine: 'b',
         },
+        [{
+          id: 'dep-hold',
+          conditionSchema: z.object({ w: z.boolean() }),
+          async check(): Promise<CheckResult> { return { status: 'pending' }; },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'dep-hold',
-        conditionSchema: z.object({ w: z.boolean() }),
-        async check(): Promise<CheckResult> { return { status: 'pending' }; },
-      });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -3657,12 +3652,12 @@ describe('Spider — engine blocking on external conditions', () => {
           ],
           resolutionEngine: 'b',
         },
+        [{
+          id: 'indep-hold',
+          conditionSchema: z.object({ w: z.boolean() }),
+          async check(): Promise<CheckResult> { return { status: 'pending' }; },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'indep-hold',
-        conditionSchema: z.object({ w: z.boolean() }),
-        async check(): Promise<CheckResult> { return { status: 'pending' }; },
-      });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -3690,12 +3685,12 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'ctrl-engine': ctrlEngine },
         { engines: [{ id: 'sole', designId: 'ctrl-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'ctrl-block',
+          conditionSchema: z.object({ go: z.boolean() }),
+          async check(): Promise<CheckResult> { return { status: 'cleared' }; }, // immediately clears
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'ctrl-block',
-        conditionSchema: z.object({ go: z.boolean() }),
-        async check(): Promise<CheckResult> { return { status: 'cleared' }; }, // immediately clears
-      });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -3721,13 +3716,13 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'nc-engine': neverClearEngine },
         { engines: [{ id: 'sole', designId: 'nc-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'nc-block',
+          conditionSchema: z.object({ val: z.string() }),
+          async check(): Promise<CheckResult> { return { status: 'pending' }; },
+          // No pollIntervalMs → checked every cycle
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'nc-block',
-        conditionSchema: z.object({ val: z.string() }),
-        async check(): Promise<CheckResult> { return { status: 'pending' }; },
-        // No pollIntervalMs → checked every cycle
-      });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -3766,12 +3761,12 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'ctrl2-engine': ctrlEngine2 },
         { engines: [{ id: 'sole', designId: 'ctrl2-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'ctrl2-block',
+          conditionSchema: z.object({ key: z.string() }),
+          async check(): Promise<CheckResult> { return checkerResult; },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'ctrl2-block',
-        conditionSchema: z.object({ key: z.string() }),
-        async check(): Promise<CheckResult> { return checkerResult; },
-      });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -3810,12 +3805,12 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'throw-engine': throwEngine },
         { engines: [{ id: 'sole', designId: 'throw-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'throw-block',
+          conditionSchema: z.object({ v: z.number() }),
+          async check() { throw new Error('network error'); },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'throw-block',
-        conditionSchema: z.object({ v: z.number() }),
-        async check() { throw new Error('network error'); },
-      });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -3845,16 +3840,16 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'polled-engine': polledEngine },
         { engines: [{ id: 'sole', designId: 'polled-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'polled-block',
+          conditionSchema: z.object({ w: z.boolean() }),
+          pollIntervalMs: 60_000, // 60 seconds
+          async check(): Promise<CheckResult> {
+            checkCallCount++;
+            return { status: 'pending' };
+          },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'polled-block',
-        conditionSchema: z.object({ w: z.boolean() }),
-        pollIntervalMs: 60_000, // 60 seconds
-        async check(): Promise<CheckResult> {
-          checkCallCount++;
-          return { status: 'pending' };
-        },
-      });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -3913,12 +3908,12 @@ describe('Spider — engine blocking on external conditions', () => {
           ],
           resolutionEngine: 'b',
         },
+        [{
+          id: 'clearable-block',
+          conditionSchema: z.object({ go: z.boolean() }),
+          async check(): Promise<CheckResult> { return shouldClear ? { status: 'cleared' } : { status: 'pending' }; },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'clearable-block',
-        conditionSchema: z.object({ go: z.boolean() }),
-        async check(): Promise<CheckResult> { return shouldClear ? { status: 'cleared' } : { status: 'pending' }; },
-      });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -3956,12 +3951,12 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'hold-engine': holdEngine },
         { engines: [{ id: 'sole', designId: 'hold-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'hold-block',
+          conditionSchema: z.object({ hold: z.boolean() }),
+          async check(): Promise<CheckResult> { return { status: 'pending' }; }, // never clears automatically
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'hold-block',
-        conditionSchema: z.object({ hold: z.boolean() }),
-        async check(): Promise<CheckResult> { return { status: 'pending' }; }, // never clears automatically
-      });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -4025,12 +4020,12 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'prior-capture-engine': priorCapture },
         { engines: [{ id: 'sole', designId: 'prior-capture-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'prior-block',
+          conditionSchema: z.object({ val: z.string() }),
+          async check(): Promise<CheckResult> { return { status: 'cleared' }; }, // always clears immediately
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'prior-block',
-        conditionSchema: z.object({ val: z.string() }),
-        async check(): Promise<CheckResult> { return { status: 'cleared' }; }, // always clears immediately
-      });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -4088,12 +4083,12 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'resume-capture-engine': resumeCapture },
         { engines: [{ id: 'sole', designId: 'resume-capture-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'resume-block',
+          conditionSchema: z.object({ go: z.boolean() }),
+          async check(): Promise<CheckResult> { return { status: 'pending' }; }, // never auto-clears
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'resume-block',
-        conditionSchema: z.object({ go: z.boolean() }),
-        async check(): Promise<CheckResult> { return { status: 'pending' }; }, // never auto-clears
-      });
 
       await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -4213,12 +4208,12 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'cdc-blk-engine': cdcBlockEngine },
         { engines: [{ id: 'sole', designId: 'cdc-blk-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'cdc-hold',
+          conditionSchema: z.object({ w: z.boolean() }),
+          async check(): Promise<CheckResult> { return { status: 'pending' }; },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'cdc-hold',
-        conditionSchema: z.object({ w: z.boolean() }),
-        async check(): Promise<CheckResult> { return { status: 'pending' }; },
-      });
 
       const writ = await fix.clerk.post({ title: 'CDC Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn (writ → active)
@@ -4308,12 +4303,12 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'hold2-engine': holdEngine2 },
         { engines: [{ id: 'sole', designId: 'hold2-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'hold2-block',
+          conditionSchema: z.object({ hold: z.boolean() }),
+          async check(): Promise<CheckResult> { return { status: 'pending' }; },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'hold2-block',
-        conditionSchema: z.object({ hold: z.boolean() }),
-        async check(): Promise<CheckResult> { return { status: 'pending' }; },
-      });
 
       await fix.clerk.post({ title: 'Resume Tool Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -4402,12 +4397,12 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'fail-engine': failingEngine },
         { engines: [{ id: 'sole', designId: 'fail-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'perm-fail-block',
+          conditionSchema: z.object({}),
+          async check(): Promise<CheckResult> { return { status: 'failed' }; },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'perm-fail-block',
-        conditionSchema: z.object({}),
-        async check(): Promise<CheckResult> { return { status: 'failed' }; },
-      });
 
       await fix.clerk.post({ title: 'Failing Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -4443,12 +4438,12 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'fail-reason-engine': failReasonEngine },
         { engines: [{ id: 'sole', designId: 'fail-reason-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'reason-fail-block',
+          conditionSchema: z.object({}),
+          async check(): Promise<CheckResult> { return { status: 'failed', reason: 'resource deleted' }; },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'reason-fail-block',
-        conditionSchema: z.object({}),
-        async check(): Promise<CheckResult> { return { status: 'failed', reason: 'resource deleted' }; },
-      });
 
       await fix.clerk.post({ title: 'Reason Fail Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -4488,12 +4483,12 @@ describe('Spider — engine blocking on external conditions', () => {
           ],
           resolutionEngine: 'b',
         },
+        [{
+          id: 'sib-fail-block',
+          conditionSchema: z.object({}),
+          async check(): Promise<CheckResult> { return { status: 'failed' }; },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'sib-fail-block',
-        conditionSchema: z.object({}),
-        async check(): Promise<CheckResult> { return { status: 'failed' }; },
-      });
 
       await fix.clerk.post({ title: 'Sibling Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -4522,12 +4517,12 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'no-lc-engine': noLastCheckedEngine },
         { engines: [{ id: 'sole', designId: 'no-lc-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'no-lc-block',
+          conditionSchema: z.object({}),
+          async check(): Promise<CheckResult> { return { status: 'failed' }; },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'no-lc-block',
-        conditionSchema: z.object({}),
-        async check(): Promise<CheckResult> { return { status: 'failed' }; },
-      });
 
       await fix.clerk.post({ title: 'No LC Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -4558,12 +4553,12 @@ describe('Spider — engine blocking on external conditions', () => {
       const fix = buildBlockingFixture(
         { 'btf-engine': blockedThenFailEngine },
         { engines: [{ id: 'sole', designId: 'btf-engine', givens: {} }], resolutionEngine: 'sole' },
+        [{
+          id: 'btf-block',
+          conditionSchema: z.object({}),
+          async check(): Promise<CheckResult> { return { status: 'failed', reason: 'gone' }; },
+        }],
       );
-      await registerBlockType(fix.fireAll, {
-        id: 'btf-block',
-        conditionSchema: z.object({}),
-        async check(): Promise<CheckResult> { return { status: 'failed', reason: 'gone' }; },
-      });
 
       await fix.clerk.post({ title: 'BTF Writ', body: 'Body' });
       await fix.spider.crawl(); // spawn
@@ -5128,9 +5123,7 @@ describe('Kit contributions — rig templates and mappings', () => {
       assert.equal(rig!.engines[0].id, 'step1');
     });
 
-    it('Phase 2: late-arriving apparatus supportKit registers via plugin:initialized', async () => {
-      const fix = buildFixture();
-
+    it('apparatus supportKit contributes rig templates and mappings (via Wire phase)', async () => {
       const supportKit = {
         rigTemplates: { audit: SIMPLE_TEMPLATE },
         rigTemplateMappings: { mandate: 'late-app.audit' },
@@ -5146,7 +5139,7 @@ describe('Kit contributions — rig templates and mappings', () => {
         },
       };
 
-      await fix.spiderFire('plugin:initialized', lateApp);
+      const fix = buildFixture({}, { status: 'completed' }, { apparatuses: [lateApp] });
 
       const writ = await fix.clerk.post({ title: 'Late test', body: 'Body', type: 'mandate' });
       const result = await fix.spider.crawl();

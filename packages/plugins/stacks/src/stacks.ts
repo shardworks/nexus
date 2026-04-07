@@ -10,7 +10,6 @@
 
 import type {
   StartupContext,
-  LoadedPlugin,
   Plugin,
 } from '@shardworks/nexus-core';
 import { guild } from '@shardworks/nexus-core';
@@ -36,7 +35,7 @@ class StacksApparatus {
 
   // ── Startup ───────────────────────────────────────────────────────
 
-  start(_: StartupContext): void {
+  start(ctx: StartupContext): void {
     const g = guild();
     const config = g.guildConfig().stacks ?? {};
     const autoMigrate = config.autoMigrate ?? true;
@@ -44,8 +43,7 @@ class StacksApparatus {
     this.core.backend.open({ home: g.home });
 
     if (autoMigrate) {
-      const allPlugins = [...g.kits(), ...g.apparatuses()];
-      this.reconcileSchemas(allPlugins);
+      this.reconcileSchemas(ctx);
     }
   }
 
@@ -59,27 +57,14 @@ class StacksApparatus {
 
   // ── Schema reconciliation ─────────────────────────────────────────
 
-  private reconcileSchemas(plugins: LoadedPlugin[]): void {
-    for (const plugin of plugins) {
-      const books = this.extractBooks(plugin);
-      for (const [bookName, schema] of Object.entries(books)) {
-        this.core.backend.ensureBook({ ownerId: plugin.id, book: bookName }, schema);
+  private reconcileSchemas(ctx: StartupContext): void {
+    for (const entry of ctx.kits('books')) {
+      const books = entry.value;
+      if (typeof books !== 'object' || books === null) continue;
+      for (const [bookName, schema] of Object.entries(books as Record<string, BookSchema>)) {
+        this.core.backend.ensureBook({ ownerId: entry.pluginId, book: bookName }, schema);
       }
     }
-  }
-
-  private extractBooks(
-    plugin: LoadedPlugin,
-  ): Record<string, BookSchema> {
-    // Kits have a `kit` property, apparatuses have an `apparatus` property
-    const source = 'kit' in plugin
-      ? plugin.kit
-      : 'apparatus' in plugin && plugin.apparatus.supportKit
-        ? plugin.apparatus.supportKit
-        : null;
-
-    if (!source) return {};
-    return ((source as Record<string, unknown>).books ?? {}) as Record<string, BookSchema>;
   }
 }
 
@@ -100,7 +85,7 @@ export function createStacksApparatus(
       get provides() { return api; },
 
       start(ctx: StartupContext): void {
-        impl.start(ctx);
+        impl.start(ctx);   // pass ctx through for ctx.kits('books')
         api = impl.createApi();
       },
 

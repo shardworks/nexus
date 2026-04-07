@@ -219,13 +219,13 @@ function setup(
   if (opts.installLoom) {
     const loomPlugin = createLoom();
     const loomApparatus = (loomPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-    loomApparatus.start({ on: () => {} });
+    loomApparatus.start({ on: () => {}, kits: () => [] });
     apparatusMap.set('loom', loomApparatus.provides);
   }
 
   // Start stacks
   const stacksApparatus = (stacksPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-  stacksApparatus.start({ on: () => {} });
+  stacksApparatus.start({ on: () => {}, kits: () => [] });
   stacks = stacksApparatus.provides as StacksApi;
   apparatusMap.set('stacks', stacks);
 
@@ -239,7 +239,7 @@ function setup(
 
   // Start animator
   const animatorApparatus = (animatorPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-  animatorApparatus.start({ on: () => {} });
+  animatorApparatus.start({ on: () => {}, kits: () => [] });
   animator = animatorApparatus.provides as AnimatorApi;
 }
 
@@ -470,12 +470,12 @@ describe('Animator', () => {
       });
 
       const sa = (stacksPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-      sa.start({ on: () => {} });
+      sa.start({ on: () => {}, kits: () => [] });
       apparatusMap.set('stacks', sa.provides);
       memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, { indexes: [] });
 
       const aa = (animatorPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-      aa.start({ on: () => {} });
+      aa.start({ on: () => {}, kits: () => [] });
       const a = aa.provides as AnimatorApi;
 
       // animate() resolves the provider synchronously — throws before

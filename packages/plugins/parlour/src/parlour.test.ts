@@ -192,7 +192,7 @@ function setup(
 
   // Start stacks
   const stacksApparatus = (stacksPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-  stacksApparatus.start({ on: () => {} });
+  stacksApparatus.start({ on: () => {}, kits: () => [] });
   const stacks = stacksApparatus.provides as StacksApi;
   apparatusMap.set('stacks', stacks);
 
@@ -209,17 +209,17 @@ function setup(
 
   // Start loom
   const loomApparatus = (loomPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-  loomApparatus.start({ on: () => {} });
+  loomApparatus.start({ on: () => {}, kits: () => [] });
   apparatusMap.set('loom', loomApparatus.provides);
 
   // Start animator
   const animatorApparatus = (animatorPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-  animatorApparatus.start({ on: () => {} });
+  animatorApparatus.start({ on: () => {}, kits: () => [] });
   apparatusMap.set('animator', animatorApparatus.provides);
 
   // Start parlour
   const parlourApparatus = (parlourPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-  parlourApparatus.start({ on: () => {} });
+  parlourApparatus.start({ on: () => {}, kits: () => [] });
   parlour = parlourApparatus.provides as ParlourApi;
 
   // Register parlour in apparatus map so route handlers can access it via guild().apparatus('parlour')

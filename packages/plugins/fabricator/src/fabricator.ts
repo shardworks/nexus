@@ -10,14 +10,7 @@
 
 import type {
   StartupContext,
-  LoadedPlugin,
-  LoadedApparatus,
   Plugin,
-} from '@shardworks/nexus-core';
-import {
-  guild,
-  isLoadedKit,
-  isLoadedApparatus,
 } from '@shardworks/nexus-core';
 
 // ── Public types ──────────────────────────────────────────────────────
@@ -138,19 +131,8 @@ class EngineRegistry {
   private readonly designs = new Map<string, EngineDesign>();
   private readonly provenance = new Map<string, string>();
 
-  /** Register all engine designs from a loaded plugin. */
-  register(plugin: LoadedPlugin): void {
-    if (isLoadedKit(plugin)) {
-      this.registerFromKit(plugin.kit, plugin.id);
-    } else if (isLoadedApparatus(plugin)) {
-      if (plugin.apparatus.supportKit) {
-        this.registerFromKit(plugin.apparatus.supportKit, plugin.id);
-      }
-    }
-  }
-
   /** Extract and register engine designs from a kit (or supportKit) contribution. */
-  private registerFromKit(kit: Record<string, unknown>, pluginId: string): void {
+  registerFromKit(kit: Record<string, unknown>, pluginId: string): void {
     const rawEngines = kit.engines;
     if (typeof rawEngines !== 'object' || rawEngines === null) return;
 
@@ -209,23 +191,16 @@ export function createFabricator(): Plugin {
       provides: api,
 
       start(ctx: StartupContext): void {
-        const g = guild();
-
-        // Scan all already-loaded kits. These fired plugin:initialized before
-        // any apparatus started, so we can't catch them via events.
-        for (const kit of g.kits()) {
-          registry.register(kit);
+        // Register all engine design contributions (standalone kits + apparatus supportKits)
+        // via the Wire-phase ctx.kits('engines') snapshot.
+        // entry.value IS the engines record (e.g. { draft: engine }) — wrap it back
+        // into the shape registerFromKit expects: { engines: <engines record> }.
+        for (const entry of ctx.kits('engines')) {
+          registry.registerFromKit(
+            { engines: entry.value } as Record<string, unknown>,
+            entry.pluginId,
+          );
         }
-
-        // Subscribe to plugin:initialized for apparatus supportKits that
-        // fire after us in the startup sequence.
-        ctx.on('plugin:initialized', (plugin: unknown) => {
-          const loaded = plugin as LoadedPlugin;
-          // Skip kits — we already scanned them above.
-          if (isLoadedApparatus(loaded)) {
-            registry.register(loaded);
-          }
-        });
       },
     },
   };

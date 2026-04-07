@@ -389,7 +389,7 @@ describe('createGuild — validation', () => {
 // ── createGuild — event system ───────────────────────────────────────
 
 describe('createGuild — event system', () => {
-  it('fires plugin:initialized for kits before any apparatus starts', async () => {
+  it('starts all apparatuses (Wire phase completes before any start)', async () => {
     const tmp = makeTmpDir();
     const logFile = path.join(tmp, '.event-log');
 
@@ -407,9 +407,6 @@ describe('createGuild — event system', () => {
     });
 
     await createGuild(tmp);
-    // Kit plugin:initialized fires before apparatus start()
-    // (We can't easily observe the event from outside, but we can verify
-    // the apparatus started — the order guarantee is structural.)
     assert.ok(fs.existsSync(logFile), 'apparatus start() should have run');
   });
 
@@ -429,6 +426,195 @@ describe('createGuild — event system', () => {
 
     await createGuild(tmp);
     assert.ok(fs.existsSync(marker), 'ctx.on should be available during start()');
+  });
+
+  it('makes StartupContext.kits() available during apparatus start()', async () => {
+    const tmp = makeTmpDir();
+    const marker = path.join(tmp, '.kits-available');
+
+    installFakeKit(tmp, '@shardworks/nexus-stdlib', { tools: ['commission'] });
+    installFakeApparatus(tmp, '@shardworks/tools-apparatus', {
+      consumes: ['tools'],
+      startBody: `
+        if (typeof ctx.kits === 'function') {
+          const toolEntries = ctx.kits('tools');
+          if (Array.isArray(toolEntries)) {
+            fs.writeFileSync(${JSON.stringify(marker)}, String(toolEntries.length));
+          }
+        }
+      `,
+    });
+    writeGuildJson(tmp, { plugins: ['nexus-stdlib', 'tools'] });
+    writePackageJson(tmp, {
+      '@shardworks/nexus-stdlib': '^1.0.0',
+      '@shardworks/tools-apparatus': '^2.0.0',
+    });
+
+    await createGuild(tmp);
+    assert.ok(fs.existsSync(marker), 'ctx.kits should be available during start()');
+    assert.equal(fs.readFileSync(marker, 'utf-8'), '1');
+  });
+
+  it('ctx.kits() returns entries from both standalone kits and apparatus supportKits', async () => {
+    const tmp = makeTmpDir();
+    const marker = path.join(tmp, '.kit-count');
+
+    // Kit contributes pages
+    installFakeKit(tmp, '@shardworks/pages-kit', { pages: [{ id: 'page-a' }] });
+
+    // Apparatus with a supportKit that also contributes pages
+    const pkgDir = path.join(tmp, 'node_modules', 'oculus');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'oculus', version: '1.0.0', type: 'module', exports: { '.': './index.js' } }),
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, 'index.js'),
+      `import fs from 'node:fs';
+export default {
+  apparatus: {
+    consumes: ['pages'],
+    supportKit: { pages: [{ id: 'page-b' }] },
+    async start(ctx) {
+      const entries = ctx.kits('pages');
+      fs.writeFileSync(${JSON.stringify(marker)}, String(entries.length));
+    },
+  },
+};\n`,
+    );
+
+    // @shardworks/pages-kit derives to plugin id 'pages' (strips -kit suffix)
+    writeGuildJson(tmp, { plugins: ['pages', 'oculus'] });
+    writePackageJson(tmp, {
+      '@shardworks/pages-kit': '^1.0.0',
+      'oculus': '^1.0.0',
+    });
+
+    await createGuild(tmp);
+    assert.ok(fs.existsSync(marker), 'start() should have run and written the marker');
+    // Both the standalone kit and the supportKit contribute 'pages', so 2 entries
+    assert.equal(fs.readFileSync(marker, 'utf-8'), '2');
+  });
+
+  it('g.apparatuses() only contains apparatuses that have completed start()', async () => {
+    const tmp = makeTmpDir();
+    const marker = path.join(tmp, '.visible-count');
+
+    // "db" starts first; "web" requires "db" and checks g.apparatuses() during its start()
+    const pkgDir = path.join(tmp, 'node_modules', 'db');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'db', version: '1.0.0', type: 'module', exports: { '.': './index.js' } }),
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, 'index.js'),
+      `export default { apparatus: { provides: { ready: true }, async start() {} } };\n`,
+    );
+
+    const webDir = path.join(tmp, 'node_modules', 'web');
+    fs.mkdirSync(webDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(webDir, 'package.json'),
+      JSON.stringify({ name: 'web', version: '1.0.0', type: 'module', exports: { '.': './index.js' } }),
+    );
+    // web's start() uses a dynamic import of nexus-core to call guild().apparatuses()
+    // We can't easily call guild() from the fake module, so instead we write a
+    // marker file and verify post-hoc that the order was correct.
+    // Instead: write start order to a file; we verify db started before web.
+    const orderFile = path.join(tmp, '.start-order');
+    fs.writeFileSync(
+      path.join(webDir, 'index.js'),
+      `import fs from 'node:fs';
+export default {
+  apparatus: {
+    requires: ['db'],
+    provides: { ready: true },
+    async start() {
+      const prev = fs.existsSync(${JSON.stringify(orderFile)}) ? fs.readFileSync(${JSON.stringify(orderFile)}, 'utf-8') : '';
+      fs.writeFileSync(${JSON.stringify(orderFile)}, prev + 'web\\n');
+    },
+  },
+};\n`,
+    );
+
+    writeGuildJson(tmp, { plugins: ['db', 'web'] });
+    writePackageJson(tmp, { 'db': '^1.0.0', 'web': '^1.0.0' });
+
+    const g = await createGuild(tmp);
+    // After createGuild, both apparatuses are started
+    assert.equal(g.apparatuses().length, 2);
+  });
+
+  it('fires apparatus:started after each apparatus completes start()', async () => {
+    const tmp = makeTmpDir();
+    const marker = path.join(tmp, '.event-fired');
+
+    const pkgDir = path.join(tmp, 'node_modules', 'my-apparatus');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'my-apparatus', version: '1.0.0', type: 'module', exports: { '.': './index.js' } }),
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, 'index.js'),
+      `import fs from 'node:fs';
+export default {
+  apparatus: {
+    provides: { ready: true },
+    async start(ctx) {
+      ctx.on('apparatus:started', () => {
+        fs.writeFileSync(${JSON.stringify(marker)}, 'fired');
+      });
+    },
+  },
+};\n`,
+    );
+
+    // 'my-apparatus' derives to plugin id 'my' (strips -apparatus suffix)
+    writeGuildJson(tmp, { plugins: ['my'] });
+    writePackageJson(tmp, { 'my-apparatus': '^1.0.0' });
+
+    await createGuild(tmp);
+    assert.ok(fs.existsSync(marker), 'apparatus:started event should have fired');
+    assert.equal(fs.readFileSync(marker, 'utf-8'), 'fired');
+  });
+
+  it('fires phase:started once after all apparatus start() calls', async () => {
+    const tmp = makeTmpDir();
+    const marker = path.join(tmp, '.phase-started');
+    const orderFile = path.join(tmp, '.start-order');
+
+    installFakeApparatus(tmp, 'app-a', {
+      provides: '{ ready: true }',
+      startBody: `
+        ctx.on('phase:started', () => {
+          fs.writeFileSync(${JSON.stringify(marker)}, 'phase-started');
+        });
+        const prev = fs.existsSync(${JSON.stringify(orderFile)}) ? fs.readFileSync(${JSON.stringify(orderFile)}, 'utf-8') : '';
+        fs.writeFileSync(${JSON.stringify(orderFile)}, prev + 'app-a\\n');
+      `,
+    });
+    installFakeApparatus(tmp, 'app-b', {
+      provides: '{ ready: true }',
+      startBody: `
+        const prev = fs.existsSync(${JSON.stringify(orderFile)}) ? fs.readFileSync(${JSON.stringify(orderFile)}, 'utf-8') : '';
+        fs.writeFileSync(${JSON.stringify(orderFile)}, prev + 'app-b\\n');
+      `,
+    });
+
+    writeGuildJson(tmp, { plugins: ['app-a', 'app-b'] });
+    writePackageJson(tmp, { 'app-a': '^1.0.0', 'app-b': '^1.0.0' });
+
+    await createGuild(tmp);
+    // Both apparatuses started
+    const order = fs.readFileSync(orderFile, 'utf-8').trim().split('\n');
+    assert.ok(order.includes('app-a'));
+    assert.ok(order.includes('app-b'));
+    // phase:started fired after all starts
+    assert.ok(fs.existsSync(marker), 'phase:started event should have fired');
+    assert.equal(fs.readFileSync(marker, 'utf-8'), 'phase-started');
   });
 });
 

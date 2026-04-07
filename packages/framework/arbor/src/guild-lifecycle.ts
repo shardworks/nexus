@@ -11,6 +11,7 @@
 
 import type {
   StartupContext,
+  KitEntry,
   LoadedKit,
   LoadedApparatus,
   FailedPlugin,
@@ -216,6 +217,43 @@ export function topoSort(apparatuses: LoadedApparatus[]): LoadedApparatus[] {
   return sorted;
 }
 
+// ── Wire phase ───────────────────────────────────────────────────────
+
+/** Framework-level kit fields excluded from KitEntry collection. */
+const FRAMEWORK_KIT_FIELDS = new Set(['requires', 'recommends']);
+
+/**
+ * Collect all kit contributions from standalone kits and apparatus supportKits
+ * into a flat KitEntry array. Called during the Wire phase before any start().
+ *
+ * Iteration order: standalone kits first, then ordered apparatuses.
+ * Framework fields (requires, recommends) are excluded.
+ */
+export function wireKitEntries(
+  kits: LoadedKit[],
+  orderedApparatuses: LoadedApparatus[],
+): KitEntry[] {
+  const entries: KitEntry[] = [];
+
+  for (const kit of kits) {
+    for (const [type, value] of Object.entries(kit.kit)) {
+      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
+      entries.push({ pluginId: kit.id, packageName: kit.packageName, type, value });
+    }
+  }
+
+  for (const app of orderedApparatuses) {
+    const bag = app.apparatus.supportKit;
+    if (!bag || typeof bag !== 'object') continue;
+    for (const [type, value] of Object.entries(bag)) {
+      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
+      entries.push({ pluginId: app.id, packageName: app.packageName, type, value });
+    }
+  }
+
+  return entries;
+}
+
 // ── Startup warnings ─────────────────────────────────────────────────
 
 /**
@@ -271,6 +309,19 @@ export function collectStartupWarnings(
     }
   }
 
+  // Check apparatus supportKit contribution types against consumes
+  for (const app of apparatuses) {
+    if (!app.apparatus.supportKit) continue;
+    for (const key of Object.keys(app.apparatus.supportKit)) {
+      if (key === 'requires' || key === 'recommends') continue;
+      if (!consumedTypes.has(key)) {
+        warnings.push(
+          `[arbor] warn: "${app.id}" supportKit contributes "${key}" but no installed apparatus declares consumes: ["${key}"]`,
+        );
+      }
+    }
+  }
+
   return warnings;
 }
 
@@ -278,17 +329,31 @@ export function collectStartupWarnings(
 
 /**
  * Build a StartupContext for an apparatus's start() call.
- * The context provides event subscription; handlers are stored in the
- * shared eventHandlers map so fireEvent can invoke them later.
+ * The context provides event subscription and kit contribution queries.
+ * Handlers are stored in the shared eventHandlers map so fireEvent can
+ * invoke them later. Kit entries are pre-indexed by type for efficient lookup.
  */
 export function buildStartupContext(
   eventHandlers: EventHandlerMap,
+  kitEntries: KitEntry[],
 ): StartupContext {
+  // Pre-index by type for efficient lookup
+  const index = new Map<string, KitEntry[]>();
+  for (const entry of kitEntries) {
+    const list = index.get(entry.type) ?? [];
+    list.push(entry);
+    index.set(entry.type, list);
+  }
+
   return {
     on(event: string, handler: (...args: unknown[]) => void | Promise<void>) {
       const list = eventHandlers.get(event) ?? [];
       list.push(handler);
       eventHandlers.set(event, list);
+    },
+
+    kits(type: string): KitEntry[] {
+      return [...(index.get(type) ?? [])];
     },
   };
 }

@@ -39,19 +39,48 @@ export interface FailedPlugin {
 
 // ── Context types ──────────────────────────────────────────────────────
 
+// ── KitEntry ───────────────────────────────────────────────────────────
+
+/**
+ * A single kit contribution collected during the Wire phase.
+ *
+ * Each key/value pair from a kit or supportKit (excluding framework fields
+ * `requires` and `recommends`) becomes one KitEntry. Available via
+ * `ctx.kits(type)` during and after `start()`.
+ */
+export interface KitEntry {
+  /** Plugin id of the kit or apparatus that contributed this entry. */
+  readonly pluginId: string
+  /** npm package name of the contributing plugin. */
+  readonly packageName: string
+  /** The contribution key: 'tools', 'pages', 'routes', 'engines', 'roles', 'books', etc. */
+  readonly type: string
+  /** The contributed value — type varies by contribution type. */
+  readonly value: unknown
+}
+
 /**
  * Startup context passed to an apparatus's start(ctx).
  *
- * Provides lifecycle-event subscription — the only capability that is
- * meaningful only during startup. All other guild access (apparatus APIs,
- * config, home path, loaded plugins) goes through the `guild()` singleton,
- * which is available during start() and in all handlers.
+ * Provides lifecycle-event subscription and kit contribution queries.
+ * All other guild access (apparatus APIs, config, home path, loaded plugins)
+ * goes through the `guild()` singleton, which is available during start()
+ * and in all handlers.
  *
  * See: docs/architecture/plugins.md
  */
 export interface StartupContext {
   /** Subscribe to a guild lifecycle event. Handlers may be async; run sequentially. */
   on(event: string, handler: (...args: unknown[]) => void | Promise<void>): void
+
+  /**
+   * Query kit contributions collected during the Wire phase.
+   *
+   * Returns all KitEntry records with the given contribution type.
+   * Returns [] if no plugin contributes the requested type.
+   * Each call returns a new array (snapshot copy).
+   */
+  kits(type: string): KitEntry[]
 }
 
 // ── Kit ────────────────────────────────────────────────────────────────

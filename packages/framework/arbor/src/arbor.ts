@@ -8,9 +8,11 @@
  * The full plugin lifecycle:
  *   1. Load    — imports all declared plugin packages, discriminates kit vs apparatus
  *   2. Validate — checks `requires` declarations, detects circular dependencies
- *   3. Start   — calls start(ctx) on each apparatus in dependency-resolved order
- *   4. Events  — fires `plugin:initialized` after each plugin loads
- *   5. Warn    — advisory warnings for mismatched kit contributions / recommends
+ *   3. Warn    — advisory warnings for mismatched kit contributions / recommends
+ *   4. Wire    — collects all kit contributions (kits + supportKits) into KitEntry[]
+ *   5. Start   — calls start(ctx) on each apparatus in dependency-resolved order;
+ *                ctx.kits(type) returns Wire-phase entries; fires `apparatus:started`
+ *                after each apparatus; fires `phase:started` when all are done
  *
  * Pure logic (validation, ordering, events) lives in guild-lifecycle.ts.
  * This file handles I/O and orchestration.
@@ -41,6 +43,7 @@ import {
   collectStartupWarnings,
   buildStartupContext,
   fireEvent,
+  wireKitEntries,
 } from './guild-lifecycle.ts';
 import type { EventHandlerMap } from './guild-lifecycle.ts';
 
@@ -129,6 +132,11 @@ export async function createGuild(root?: string): Promise<Guild> {
 
   const orderedApparatuses = topoSort(apparatuses);
   const provides = new Map<string, unknown>();
+  const startedApparatuses: LoadedApparatus[] = [];
+
+  // ── Wire phase ─────────────────────────────────────────────────────
+  // Collect all kit contributions before any apparatus starts.
+  const kitEntries = wireKitEntries(kits, orderedApparatuses);
 
   // Wire guild singleton before any apparatus starts so start() methods
   // can call guild(). The provides Map is populated progressively as each
@@ -173,19 +181,14 @@ export async function createGuild(root?: string): Promise<Guild> {
     },
 
     kits()             { return [...kits]; },
-    apparatuses()      { return [...orderedApparatuses]; },
+    apparatuses()      { return [...startedApparatuses]; },
     failedPlugins()    { return [...allFailures]; },
     startupWarnings()  { return [...allWarnings]; },
   };
   setGuild(guildInstance);
 
-  // Fire plugin:initialized for all kits before starting any apparatus
-  for (const kit of kits) {
-    await fireEvent(eventHandlers, 'plugin:initialized', kit);
-  }
-
   // Start each apparatus in dependency order
-  const startupCtx = buildStartupContext(eventHandlers);
+  const startupCtx = buildStartupContext(eventHandlers, kitEntries);
   for (const app of orderedApparatuses) {
     // Register provides before start() so apparatuses with eager provides are
     // visible to later startups that run during this loop.
@@ -201,8 +204,15 @@ export async function createGuild(root?: string): Promise<Guild> {
       provides.set(app.id, app.apparatus.provides);
     }
 
-    await fireEvent(eventHandlers, 'plugin:initialized', app);
+    // Add to started list BEFORE firing event
+    startedApparatuses.push(app);
+
+    // Fire apparatus:started (replaces plugin:initialized — no deprecation period)
+    await fireEvent(eventHandlers, 'apparatus:started', app);
   }
+
+  // Fire phase:started after all apparatus start + events complete
+  await fireEvent(eventHandlers, 'phase:started');
 
   return guildInstance;
 }

@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
 
 import { setGuild, clearGuild } from '@shardworks/nexus-core';
-import type { Guild, GuildConfig, LoadedKit, LoadedApparatus, StartupContext } from '@shardworks/nexus-core';
+import type { Guild, GuildConfig, LoadedKit, LoadedApparatus, StartupContext, KitEntry } from '@shardworks/nexus-core';
 import { createStacksApparatus } from '@shardworks/stacks-apparatus';
 import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
@@ -35,7 +35,7 @@ interface SetupOptions {
   extraApparatuses?: LoadedApparatus[];
 }
 
-function buildClerkCtx(): {
+function buildClerkCtx(kitEntries: KitEntry[] = []): {
   ctx: StartupContext;
   fire: (event: string, ...args: unknown[]) => Promise<void>;
 } {
@@ -46,6 +46,9 @@ function buildClerkCtx(): {
       list.push(handler);
       handlers.set(event, list);
     },
+    kits(type: string): KitEntry[] {
+      return [...kitEntries.filter(e => e.type === type)];
+    },
   };
   async function fire(event: string, ...args: unknown[]): Promise<void> {
     for (const h of handlers.get(event) ?? []) await h(...args);
@@ -53,9 +56,30 @@ function buildClerkCtx(): {
   return { ctx, fire };
 }
 
+const FRAMEWORK_KIT_FIELDS = new Set(['requires', 'recommends']);
+
+function buildKitEntries(kits: LoadedKit[], apparatuses: LoadedApparatus[] = []): KitEntry[] {
+  const entries: KitEntry[] = [];
+  for (const kit of kits) {
+    for (const [type, value] of Object.entries(kit.kit)) {
+      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
+      entries.push({ pluginId: kit.id, packageName: kit.packageName, type, value });
+    }
+  }
+  for (const app of apparatuses) {
+    const bag = app.apparatus.supportKit;
+    if (!bag || typeof bag !== 'object') continue;
+    for (const [type, value] of Object.entries(bag)) {
+      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
+      entries.push({ pluginId: app.id, packageName: app.packageName, type, value });
+    }
+  }
+  return entries;
+}
+
 type ClerkPlugin = ReturnType<typeof createClerk>;
 
-function setupCore(options: SetupOptions = {}, clerkCtx: StartupContext = { on: () => {} }): ClerkPlugin {
+function setupCore(options: SetupOptions = {}, clerkCtx?: StartupContext): ClerkPlugin {
   const memBackend = new MemoryBackend();
   const stacksPlugin = createStacksApparatus(memBackend);
   const clerkPlugin = createClerk();
@@ -91,7 +115,7 @@ function setupCore(options: SetupOptions = {}, clerkCtx: StartupContext = { on: 
 
   // Start stacks
   const stacksApparatus = (stacksPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-  stacksApparatus.start({ on: () => {} });
+  stacksApparatus.start({ on: () => {}, kits: () => [] });
   const stacks = stacksApparatus.provides as StacksApi;
   apparatusMap.set('stacks', stacks);
 
@@ -103,9 +127,11 @@ function setupCore(options: SetupOptions = {}, clerkCtx: StartupContext = { on: 
     indexes: ['sourceId', 'targetId', 'type', ['sourceId', 'type'], ['targetId', 'type']],
   });
 
-  // Start clerk
+  // Start clerk — build default ctx with Wire-phase kit entries if not provided
+  const kitEntries = buildKitEntries(options.extraKits ?? [], options.extraApparatuses ?? []);
+  const ctx = clerkCtx ?? buildClerkCtx(kitEntries).ctx;
   const clerkApparatus = (clerkPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-  clerkApparatus.start(clerkCtx);
+  clerkApparatus.start(ctx);
   clerk = clerkApparatus.provides as ClerkApi;
 
   // Expose clerk as an apparatus so tool handlers can resolve it via guild()
@@ -1332,11 +1358,8 @@ describe('Clerk', () => {
       });
     });
 
-    describe('V25 — Phase 2 late-arriving apparatus supportKit', () => {
-      it('late-arriving apparatus writ type is valid for posting', async () => {
-        const { ctx: clerkCtx, fire: clerkFire } = buildClerkCtx();
-        setupCore({}, clerkCtx);
-
+    describe('V25 — apparatus supportKit writ type via Wire phase', () => {
+      it('apparatus supportKit writ type is valid for posting (via Wire phase)', async () => {
         const lateApp: LoadedApparatus = {
           packageName: '@test/late-app',
           id: 'late-app',
@@ -1347,8 +1370,7 @@ describe('Clerk', () => {
             supportKit: { writTypes: [{ name: 'late-type' }] },
           },
         };
-
-        await clerkFire('plugin:initialized', lateApp);
+        setup({ extraApparatuses: [lateApp] });
 
         const writ = await clerk.post({ title: 'Late', body: 'Body', type: 'late-type' });
         assert.equal(writ.type, 'late-type');

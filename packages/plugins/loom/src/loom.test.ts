@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 
-import { setGuild, clearGuild, type LoadedKit, type LoadedApparatus } from '@shardworks/nexus-core';
+import { setGuild, clearGuild, type LoadedKit, type LoadedApparatus, type KitEntry } from '@shardworks/nexus-core';
 import { tool, type InstrumentariumApi, type ResolvedTool, type ResolveOptions } from '@shardworks/tools-apparatus';
 
 import { createLoom, type LoomApi, type LoomConfig, type KitRoleDefinition, type LoomKit } from './loom.ts';
@@ -95,27 +95,38 @@ function makeLoadedApparatus(
   };
 }
 
-/** Create a started Loom and return its API plus event emitter for testing. */
-function startLoom(eventHandlers?: Map<string, ((...args: unknown[]) => void)[]>): LoomApi {
+const FRAMEWORK_KIT_FIELDS = new Set(['requires', 'recommends']);
+
+function buildKitEntries(kits: LoadedKit[], apparatuses: LoadedApparatus[] = []): KitEntry[] {
+  const entries: KitEntry[] = [];
+  for (const kit of kits) {
+    for (const [type, value] of Object.entries(kit.kit)) {
+      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
+      entries.push({ pluginId: kit.id, packageName: kit.packageName, type, value });
+    }
+  }
+  for (const app of apparatuses) {
+    const bag = app.apparatus.supportKit;
+    if (!bag || typeof bag !== 'object') continue;
+    for (const [type, value] of Object.entries(bag)) {
+      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
+      entries.push({ pluginId: app.id, packageName: app.packageName, type, value });
+    }
+  }
+  return entries;
+}
+
+/** Create a started Loom and return its API for testing. */
+function startLoom(kitEntries: KitEntry[] = []): LoomApi {
   const plugin = createLoom();
   const apparatus = (plugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-  const handlers = eventHandlers ?? new Map();
   apparatus.start({
-    on(event: string, handler: (...args: unknown[]) => void) {
-      if (!handlers.has(event)) handlers.set(event, []);
-      handlers.get(event)!.push(handler);
+    on(_event: string, _handler: (...args: unknown[]) => void) {},
+    kits(type: string): KitEntry[] {
+      return [...kitEntries.filter(e => e.type === type)];
     },
   });
   return apparatus.provides as LoomApi;
-}
-
-/** Emit a fake plugin:initialized event to all registered handlers. */
-function emitPluginInitialized(
-  handlers: Map<string, ((...args: unknown[]) => void)[]>,
-  plugin: unknown,
-): void {
-  const list = handlers.get('plugin:initialized') ?? [];
-  for (const h of list) h(plugin);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -825,11 +836,12 @@ describe('The Loom', () => {
       const resolved: ResolvedTool[] = [{ definition: readTool, pluginId: 'spider' }];
       const { api: instrumentarium, calls } = mockInstrumentarium(resolved);
 
+      const loomKits = [makeLoadedKit('spider', '@test/spider-kit', { roles: { crawler: { permissions: ['spider:read'] } } })];
       setupGuild({
-        kits: [makeLoadedKit('spider', '@test/spider-kit', { roles: { crawler: { permissions: ['spider:read'] } } })],
+        kits: loomKits,
         apparatuses: { tools: instrumentarium },
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
       const weave = await api.weave({ role: 'spider.crawler' });
 
       assert.ok(weave.tools, 'tools should be resolved');
@@ -841,11 +853,12 @@ describe('The Loom', () => {
     it('kit role is qualified as {pluginId}.{roleName} (R2)', async () => {
       const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
+      const loomKits = [makeLoadedKit('my-plugin', '@test/my-plugin-kit', { roles: { helper: { permissions: ['my-plugin:read'] } } })];
       setupGuild({
-        kits: [makeLoadedKit('my-plugin', '@test/my-plugin-kit', { roles: { helper: { permissions: ['my-plugin:read'] } } })],
+        kits: loomKits,
         apparatuses: { tools: instrumentarium },
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
 
       // Unqualified name should not resolve
       const weave1 = await api.weave({ role: 'helper' });
@@ -859,14 +872,15 @@ describe('The Loom', () => {
     it('two kits with same short role name register as separate qualified names (namespacing)', async () => {
       const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
+      const loomKits = [
+        makeLoadedKit('kit-a', '@test/kit-a', { roles: { helper: { permissions: ['kit-a:read'] } } }),
+        makeLoadedKit('kit-b', '@test/kit-b', { roles: { helper: { permissions: ['kit-b:read'] } } }),
+      ];
       setupGuild({
-        kits: [
-          makeLoadedKit('kit-a', '@test/kit-a', { roles: { helper: { permissions: ['kit-a:read'] } } }),
-          makeLoadedKit('kit-b', '@test/kit-b', { roles: { helper: { permissions: ['kit-b:read'] } } }),
-        ],
+        kits: loomKits,
         apparatuses: { tools: instrumentarium },
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
 
       await api.weave({ role: 'kit-a.helper' });
       await api.weave({ role: 'kit-b.helper' });
@@ -879,13 +893,14 @@ describe('The Loom', () => {
     it('apparatus supportKit contributes roles (R9, Phase 1b)', async () => {
       const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
+      const loomApparatuses = [
+        makeLoadedApparatus('tools', '@shardworks/tools-apparatus', { roles: { helper: { permissions: ['tools:read'] } } }),
+      ];
       setupGuild({
-        loadedApparatuses: [
-          makeLoadedApparatus('tools', '@shardworks/tools-apparatus', { roles: { helper: { permissions: ['tools:read'] } } }),
-        ],
+        loadedApparatuses: loomApparatuses,
         apparatuses: { tools: instrumentarium },
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries([], loomApparatuses));
       await api.weave({ role: 'tools.helper' });
 
       assert.equal(calls.length, 1);
@@ -895,11 +910,12 @@ describe('The Loom', () => {
     it('weave() with unknown role returns no tools (existing behavior preserved)', async () => {
       const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
+      const loomKits = [makeLoadedKit('spider', '@test/spider-kit', { roles: { crawler: { permissions: ['spider:read'] } } })];
       setupGuild({
-        kits: [makeLoadedKit('spider', '@test/spider-kit', { roles: { crawler: { permissions: ['spider:read'] } } })],
+        kits: loomKits,
         apparatuses: { tools: instrumentarium },
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
       const weave = await api.weave({ role: 'nonexistent' });
 
       assert.strictEqual(weave.tools, undefined);
@@ -921,26 +937,15 @@ describe('The Loom', () => {
     });
   });
 
-  describe('kit role contributions — plugin:initialized (R9, Phase 2)', () => {
+  describe('kit role contributions — Wire phase apparatus supportKit (R9)', () => {
     afterEach(() => {
       clearGuild();
     });
 
-    it('late apparatus supportKit roles become available after plugin:initialized event', async () => {
+    it('apparatus supportKit roles are available via Wire-phase ctx.kits()', async () => {
       const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
-      setupGuild({ apparatuses: { tools: instrumentarium } });
-
-      const handlers = new Map<string, ((...args: unknown[]) => void)[]>();
-      const api = startLoom(handlers);
-
-      // Role not yet available
-      const before = await api.weave({ role: 'late.late' });
-      assert.strictEqual(before.tools, undefined);
-      assert.equal(calls.length, 0);
-
-      // Fire plugin:initialized with a LoadedApparatus containing supportKit
-      const lateApparatus: LoadedApparatus = {
+      const loomApparatuses: LoadedApparatus[] = [{
         id: 'late',
         packageName: '@test/late-apparatus',
         version: '0.0.0',
@@ -948,52 +953,36 @@ describe('The Loom', () => {
           start: () => {},
           supportKit: { roles: { late: { permissions: ['late:read'] } } },
         },
-      };
-      emitPluginInitialized(handlers, lateApparatus);
+      }];
+      setupGuild({ loadedApparatuses: loomApparatuses, apparatuses: { tools: instrumentarium } });
+      const api = startLoom(buildKitEntries([], loomApparatuses));
 
-      // Role now available
-      const after = await api.weave({ role: 'late.late' });
-      assert.ok(after.tools !== undefined || calls.length === 1, 'should have called instrumentarium');
+      const weave = await api.weave({ role: 'late.late' });
+      assert.ok(weave.tools !== undefined || calls.length === 1, 'should have called instrumentarium');
       assert.equal(calls.length, 1);
       assert.deepStrictEqual(calls[0]!.permissions, ['late:read']);
     });
 
-    it('plugin:initialized with LoadedKit (not apparatus) does not crash', async () => {
-      const { api: instrumentarium } = mockInstrumentarium([]);
-
-      setupGuild({ apparatuses: { tools: instrumentarium } });
-
-      const handlers = new Map<string, ((...args: unknown[]) => void)[]>();
-      startLoom(handlers);
-
-      // Fire with a LoadedKit — should be silently ignored (isLoadedApparatus returns false)
-      const loadedKit: LoadedKit = {
-        id: 'some-kit',
-        packageName: '@test/some-kit',
-        version: '0.0.0',
-        kit: { roles: { helper: { permissions: ['some-kit:read'] } } },
-      };
-      assert.doesNotThrow(() => emitPluginInitialized(handlers, loadedKit));
-    });
-
-    it('plugin:initialized with apparatus without supportKit does nothing', async () => {
+    it('apparatus without supportKit contributes no roles', async () => {
       const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
-      setupGuild({ apparatuses: { tools: instrumentarium } });
-
-      const handlers = new Map<string, ((...args: unknown[]) => void)[]>();
-      const api = startLoom(handlers);
-
-      const appWithoutSupportKit: LoadedApparatus = {
+      const loomApparatuses: LoadedApparatus[] = [{
         id: 'plain',
         packageName: '@test/plain',
         version: '0.0.0',
         apparatus: { start: () => {} },
-      };
-      emitPluginInitialized(handlers, appWithoutSupportKit);
+      }];
+      setupGuild({ loadedApparatuses: loomApparatuses, apparatuses: { tools: instrumentarium } });
+      const api = startLoom(buildKitEntries([], loomApparatuses));
 
       await api.weave({ role: 'plain.something' });
       assert.equal(calls.length, 0);
+    });
+
+    it('kit without roles field — no crash', () => {
+      const loomKits = [makeLoadedKit('plain-kit', '@test/plain-kit', { engines: [] })];
+      setupGuild({ kits: loomKits });
+      assert.doesNotThrow(() => startLoom(buildKitEntries(loomKits)));
     });
   });
 
@@ -1010,13 +999,14 @@ describe('The Loom', () => {
     });
 
     it('V2: inline instructions appear in systemPrompt', async () => {
+      const loomKits = [makeLoadedKit('mykit', '@test/mykit', {
+        roles: { worker: { permissions: ['mykit:read'], instructions: 'You are a worker.' } },
+      })];
       setupGuild({
         home: tmpDir,
-        kits: [makeLoadedKit('mykit', '@test/mykit', {
-          roles: { worker: { permissions: ['mykit:read'], instructions: 'You are a worker.' } },
-        })],
+        kits: loomKits,
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
       const weave = await api.weave({ role: 'mykit.worker' });
       assert.ok(weave.systemPrompt?.includes('You are a worker.'));
     });
@@ -1026,13 +1016,14 @@ describe('The Loom', () => {
       fs.mkdirSync(packageDir, { recursive: true });
       fs.writeFileSync(path.join(packageDir, 'role.md'), 'File instructions.');
 
+      const loomKits = [makeLoadedKit('mykit', '@test/mykit', {
+        roles: { worker: { permissions: ['mykit:read'], instructionsFile: 'role.md' } },
+      })];
       setupGuild({
         home: tmpDir,
-        kits: [makeLoadedKit('mykit', '@test/mykit', {
-          roles: { worker: { permissions: ['mykit:read'], instructionsFile: 'role.md' } },
-        })],
+        kits: loomKits,
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
       const weave = await api.weave({ role: 'mykit.worker' });
       assert.ok(weave.systemPrompt?.includes('File instructions.'));
     });
@@ -1043,19 +1034,20 @@ describe('The Loom', () => {
       fs.mkdirSync(packageDir, { recursive: true });
       fs.writeFileSync(path.join(packageDir, 'role.md'), 'File instructions (should not appear).');
 
+      const loomKits = [makeLoadedKit('mykit', '@test/mykit', {
+        roles: {
+          worker: {
+            permissions: ['mykit:read'],
+            instructions: 'Inline wins.',
+            instructionsFile: 'role.md',
+          },
+        },
+      })];
       setupGuild({
         home: tmpDir,
-        kits: [makeLoadedKit('mykit', '@test/mykit', {
-          roles: {
-            worker: {
-              permissions: ['mykit:read'],
-              instructions: 'Inline wins.',
-              instructionsFile: 'role.md',
-            },
-          },
-        })],
+        kits: loomKits,
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
       const weave = await api.weave({ role: 'mykit.worker' });
       assert.ok(weave.systemPrompt?.includes('Inline wins.'));
       assert.ok(!weave.systemPrompt?.includes('File instructions'));
@@ -1067,13 +1059,14 @@ describe('The Loom', () => {
       console.warn = (...args: unknown[]) => { warnings.push(String(args[0])); };
 
       try {
+        const loomKits = [makeLoadedKit('mykit', '@test/mykit', {
+          roles: { worker: { permissions: ['mykit:read'], instructionsFile: './missing.md' } },
+        })];
         setupGuild({
           home: tmpDir,
-          kits: [makeLoadedKit('mykit', '@test/mykit', {
-            roles: { worker: { permissions: ['mykit:read'], instructionsFile: './missing.md' } },
-          })],
+          kits: loomKits,
         });
-        const api = startLoom();
+        const api = startLoom(buildKitEntries(loomKits));
 
         // Role should be registered (tool resolution works)
         // We verify this by checking that weave doesn't throw and there are no instructions
@@ -1095,13 +1088,14 @@ describe('The Loom', () => {
       const rolePath = path.join(packageDir, 'role.md');
       fs.writeFileSync(rolePath, 'Cached kit instructions.');
 
+      const loomKits = [makeLoadedKit('mykit', '@test/mykit', {
+        roles: { worker: { permissions: ['mykit:read'], instructionsFile: 'role.md' } },
+      })];
       setupGuild({
         home: tmpDir,
-        kits: [makeLoadedKit('mykit', '@test/mykit', {
-          roles: { worker: { permissions: ['mykit:read'], instructionsFile: 'role.md' } },
-        })],
+        kits: loomKits,
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
 
       // Delete the file after startup
       fs.unlinkSync(rolePath);
@@ -1119,19 +1113,20 @@ describe('The Loom', () => {
     it('V4: valid permissions from own plugin and declared deps are kept', async () => {
       const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
-      setupGuild({
-        kits: [makeLoadedKit('foo', '@test/foo', {
-          requires: ['bar'],
-          recommends: ['baz'],
-          roles: {
-            worker: {
-              permissions: ['foo:read', 'bar:write', 'baz:admin'],
-            },
+      const loomKits = [makeLoadedKit('foo', '@test/foo', {
+        requires: ['bar'],
+        recommends: ['baz'],
+        roles: {
+          worker: {
+            permissions: ['foo:read', 'bar:write', 'baz:admin'],
           },
-        })],
+        },
+      })];
+      setupGuild({
+        kits: loomKits,
         apparatuses: { tools: instrumentarium },
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
       await api.weave({ role: 'foo.worker' });
 
       assert.equal(calls.length, 1);
@@ -1146,17 +1141,18 @@ describe('The Loom', () => {
       try {
         const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
-        setupGuild({
-          kits: [makeLoadedKit('foo', '@test/foo', {
-            roles: {
-              worker: {
-                permissions: ['foo:read', 'unknown:write'],
-              },
+        const loomKits = [makeLoadedKit('foo', '@test/foo', {
+          roles: {
+            worker: {
+              permissions: ['foo:read', 'unknown:write'],
             },
-          })],
+          },
+        })];
+        setupGuild({
+          kits: loomKits,
           apparatuses: { tools: instrumentarium },
         });
-        const api = startLoom();
+        const api = startLoom(buildKitEntries(loomKits));
         await api.weave({ role: 'foo.worker' });
 
         assert.equal(calls.length, 1);
@@ -1175,17 +1171,18 @@ describe('The Loom', () => {
       try {
         const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
-        setupGuild({
-          kits: [makeLoadedKit('foo', '@test/foo', {
-            roles: {
-              worker: {
-                permissions: ['foo:read', '*:*', '*:level'],
-              },
+        const loomKits = [makeLoadedKit('foo', '@test/foo', {
+          roles: {
+            worker: {
+              permissions: ['foo:read', '*:*', '*:level'],
             },
-          })],
+          },
+        })];
+        setupGuild({
+          kits: loomKits,
           apparatuses: { tools: instrumentarium },
         });
-        const api = startLoom();
+        const api = startLoom(buildKitEntries(loomKits));
         await api.weave({ role: 'foo.worker' });
 
         assert.equal(calls.length, 1);
@@ -1205,17 +1202,18 @@ describe('The Loom', () => {
       try {
         const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
-        setupGuild({
-          kits: [makeLoadedKit('foo', '@test/foo', {
-            roles: {
-              worker: {
-                permissions: ['foo:read', 'nocolon'],
-              },
+        const loomKits = [makeLoadedKit('foo', '@test/foo', {
+          roles: {
+            worker: {
+              permissions: ['foo:read', 'nocolon'],
             },
-          })],
+          },
+        })];
+        setupGuild({
+          kits: loomKits,
           apparatuses: { tools: instrumentarium },
         });
-        const api = startLoom();
+        const api = startLoom(buildKitEntries(loomKits));
         await api.weave({ role: 'foo.worker' });
 
         assert.equal(calls.length, 1);
@@ -1234,19 +1232,20 @@ describe('The Loom', () => {
       try {
         const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
-        setupGuild({
-          kits: [makeLoadedKit('foo', '@test/foo', {
-            requires: ['bar'],
-            recommends: ['baz'],
-            roles: {
-              worker: {
-                permissions: ['foo:read', 'bar:write', 'baz:admin', 'unknown:read', '*:*', 'nocolon'],
-              },
+        const loomKits = [makeLoadedKit('foo', '@test/foo', {
+          requires: ['bar'],
+          recommends: ['baz'],
+          roles: {
+            worker: {
+              permissions: ['foo:read', 'bar:write', 'baz:admin', 'unknown:read', '*:*', 'nocolon'],
             },
-          })],
+          },
+        })];
+        setupGuild({
+          kits: loomKits,
           apparatuses: { tools: instrumentarium },
         });
-        const api = startLoom();
+        const api = startLoom(buildKitEntries(loomKits));
         await api.weave({ role: 'foo.worker' });
 
         assert.deepStrictEqual(calls[0]!.permissions, ['foo:read', 'bar:write', 'baz:admin']);
@@ -1276,6 +1275,9 @@ describe('The Loom', () => {
     it('V5: guild-defined role takes precedence over kit-contributed role at weave time', async () => {
       const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
+      const loomKits = [makeLoadedKit('my-kit', '@test/my-kit', {
+        roles: { artificer: { permissions: ['my-kit:read'] } },
+      })];
       setupGuild({
         home: tmpDir,
         loomConfig: {
@@ -1283,12 +1285,10 @@ describe('The Loom', () => {
             'my-kit.artificer': { permissions: ['*:*'] }, // guild override
           },
         },
-        kits: [makeLoadedKit('my-kit', '@test/my-kit', {
-          roles: { artificer: { permissions: ['my-kit:read'] } },
-        })],
+        kits: loomKits,
         apparatuses: { tools: instrumentarium },
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
       await api.weave({ role: 'my-kit.artificer' });
 
       assert.equal(calls.length, 1);
@@ -1304,6 +1304,14 @@ describe('The Loom', () => {
 
       const { api: instrumentarium } = mockInstrumentarium([]);
 
+      const loomKits = [makeLoadedKit('my-kit', '@test/my-kit', {
+        roles: {
+          artificer: {
+            permissions: ['my-kit:read'],
+            instructionsFile: 'role.md',
+          },
+        },
+      })];
       setupGuild({
         home: tmpDir,
         loomConfig: {
@@ -1311,17 +1319,10 @@ describe('The Loom', () => {
             'my-kit.artificer': { permissions: ['*:*'] },
           },
         },
-        kits: [makeLoadedKit('my-kit', '@test/my-kit', {
-          roles: {
-            artificer: {
-              permissions: ['my-kit:read'],
-              instructionsFile: 'role.md',
-            },
-          },
-        })],
+        kits: loomKits,
         apparatuses: { tools: instrumentarium },
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
       const weave = await api.weave({ role: 'my-kit.artificer' });
 
       // Kit instructions should not appear (registration was skipped)
@@ -1335,24 +1336,21 @@ describe('The Loom', () => {
     });
 
     it('V8: roles field is a string — silently skipped, no crash', () => {
-      setupGuild({
-        kits: [makeLoadedKit('bad-kit', '@test/bad-kit', { roles: 'not-an-object' })],
-      });
-      assert.doesNotThrow(() => startLoom());
+      const loomKits = [makeLoadedKit('bad-kit', '@test/bad-kit', { roles: 'not-an-object' })];
+      setupGuild({ kits: loomKits });
+      assert.doesNotThrow(() => startLoom(buildKitEntries(loomKits)));
     });
 
     it('V8: roles field is an array — silently skipped, no crash', () => {
-      setupGuild({
-        kits: [makeLoadedKit('bad-kit', '@test/bad-kit', { roles: [] })],
-      });
-      assert.doesNotThrow(() => startLoom());
+      const loomKits = [makeLoadedKit('bad-kit', '@test/bad-kit', { roles: [] })];
+      setupGuild({ kits: loomKits });
+      assert.doesNotThrow(() => startLoom(buildKitEntries(loomKits)));
     });
 
     it('V8: roles field is null — silently skipped, no crash', () => {
-      setupGuild({
-        kits: [makeLoadedKit('bad-kit', '@test/bad-kit', { roles: null })],
-      });
-      assert.doesNotThrow(() => startLoom());
+      const loomKits = [makeLoadedKit('bad-kit', '@test/bad-kit', { roles: null })];
+      setupGuild({ kits: loomKits });
+      assert.doesNotThrow(() => startLoom(buildKitEntries(loomKits)));
     });
 
     it('V8: role entry missing permissions — warning emitted and skipped', async () => {
@@ -1363,13 +1361,14 @@ describe('The Loom', () => {
       try {
         const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
+        const loomKits = [makeLoadedKit('mykit', '@test/mykit', {
+          roles: { bad: { strict: true } }, // missing permissions
+        })];
         setupGuild({
-          kits: [makeLoadedKit('mykit', '@test/mykit', {
-            roles: { bad: { strict: true } }, // missing permissions
-          })],
+          kits: loomKits,
           apparatuses: { tools: instrumentarium },
         });
-        const api = startLoom();
+        const api = startLoom(buildKitEntries(loomKits));
         await api.weave({ role: 'mykit.bad' });
 
         // Role should be skipped — no calls to instrumentarium
@@ -1384,22 +1383,22 @@ describe('The Loom', () => {
     it('non-object role entry (number) skipped silently', async () => {
       const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
+      const loomKits = [makeLoadedKit('mykit', '@test/mykit', {
+        roles: { bad: 42 },
+      })];
       setupGuild({
-        kits: [makeLoadedKit('mykit', '@test/mykit', {
-          roles: { bad: 42 },
-        })],
+        kits: loomKits,
         apparatuses: { tools: instrumentarium },
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
       await api.weave({ role: 'mykit.bad' });
       assert.equal(calls.length, 0);
     });
 
     it('kit without roles field — no crash', () => {
-      setupGuild({
-        kits: [makeLoadedKit('plain-kit', '@test/plain-kit', { engines: [] })],
-      });
-      assert.doesNotThrow(() => startLoom());
+      const loomKits = [makeLoadedKit('plain-kit', '@test/plain-kit', { engines: [] })];
+      setupGuild({ kits: loomKits });
+      assert.doesNotThrow(() => startLoom(buildKitEntries(loomKits)));
     });
   });
 
@@ -1425,13 +1424,14 @@ describe('The Loom', () => {
     it('V10: qualified role name gets standard git identity treatment', async () => {
       const { api: instrumentarium } = mockInstrumentarium([]);
 
+      const loomKits = [makeLoadedKit('my-kit', '@test/my-kit', {
+        roles: { artificer: { permissions: ['my-kit:read'] } },
+      })];
       setupGuild({
-        kits: [makeLoadedKit('my-kit', '@test/my-kit', {
-          roles: { artificer: { permissions: ['my-kit:read'] } },
-        })],
+        kits: loomKits,
         apparatuses: { tools: instrumentarium },
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
       const weave = await api.weave({ role: 'my-kit.artificer' });
 
       assert.deepStrictEqual(weave.environment, {
@@ -1449,13 +1449,14 @@ describe('The Loom', () => {
     it('strict flag is passed to instrumentarium when set on kit role', async () => {
       const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
+      const loomKits = [makeLoadedKit('mykit', '@test/mykit', {
+        roles: { 'strict-worker': { permissions: ['mykit:read'], strict: true } },
+      })];
       setupGuild({
-        kits: [makeLoadedKit('mykit', '@test/mykit', {
-          roles: { 'strict-worker': { permissions: ['mykit:read'], strict: true } },
-        })],
+        kits: loomKits,
         apparatuses: { tools: instrumentarium },
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
       await api.weave({ role: 'mykit.strict-worker' });
 
       assert.equal(calls[0]!.strict, true);
@@ -1464,13 +1465,14 @@ describe('The Loom', () => {
     it('strict flag defaults to undefined (not set) when omitted', async () => {
       const { api: instrumentarium, calls } = mockInstrumentarium([]);
 
+      const loomKits = [makeLoadedKit('mykit', '@test/mykit', {
+        roles: { worker: { permissions: ['mykit:read'] } },
+      })];
       setupGuild({
-        kits: [makeLoadedKit('mykit', '@test/mykit', {
-          roles: { worker: { permissions: ['mykit:read'] } },
-        })],
+        kits: loomKits,
         apparatuses: { tools: instrumentarium },
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
       await api.weave({ role: 'mykit.worker' });
 
       assert.ok(!calls[0]!.strict, 'strict should not be set when not declared');
@@ -1526,12 +1528,11 @@ describe('The Loom', () => {
     afterEach(() => clearGuild());
 
     it('returns kit roles with source equal to plugin ID', () => {
-      setupGuild({
-        kits: [makeLoadedKit('spider', '@test/spider', {
-          roles: { crawler: { permissions: ['spider:read'] } },
-        })],
-      });
-      const api = startLoom();
+      const loomKits = [makeLoadedKit('spider', '@test/spider', {
+        roles: { crawler: { permissions: ['spider:read'] } },
+      })];
+      setupGuild({ kits: loomKits });
+      const api = startLoom(buildKitEntries(loomKits));
       const roles = api.listRoles();
 
       assert.equal(roles.length, 1);
@@ -1547,17 +1548,18 @@ describe('The Loom', () => {
     afterEach(() => clearGuild());
 
     it('returns guild roles first, then kit roles', () => {
+      const loomKits = [makeLoadedKit('spider', '@test/spider', {
+        roles: { crawler: { permissions: ['spider:read'] } },
+      })];
       setupGuild({
         loomConfig: {
           roles: {
             artificer: { permissions: ['*:*'] },
           },
         },
-        kits: [makeLoadedKit('spider', '@test/spider', {
-          roles: { crawler: { permissions: ['spider:read'] } },
-        })],
+        kits: loomKits,
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
       const roles = api.listRoles();
 
       assert.equal(roles.length, 2);
@@ -1572,17 +1574,18 @@ describe('The Loom', () => {
     afterEach(() => clearGuild());
 
     it('guild override wins; kit version is not registered', () => {
+      const loomKits = [makeLoadedKit('spider', '@test/spider', {
+        roles: { crawler: { permissions: ['spider:read'] } },
+      })];
       setupGuild({
         loomConfig: {
           roles: {
             'spider.crawler': { permissions: ['*:*'] },
           },
         },
-        kits: [makeLoadedKit('spider', '@test/spider', {
-          roles: { crawler: { permissions: ['spider:read'] } },
-        })],
+        kits: loomKits,
       });
-      const api = startLoom();
+      const api = startLoom(buildKitEntries(loomKits));
       const roles = api.listRoles();
 
       assert.equal(roles.length, 1);
@@ -1660,7 +1663,7 @@ describe('The Loom', () => {
       });
       const plugin = createLoom();
       const apparatus = (plugin as { apparatus: Record<string, unknown> & { start: (ctx: unknown) => void; provides: LoomApi } }).apparatus;
-      apparatus.start({ on: () => {} });
+      apparatus.start({ on: () => {}, kits: () => [] });
       const api = apparatus.provides;
 
       const supportKit = apparatus.supportKit as Record<string, unknown>;
@@ -1696,7 +1699,7 @@ describe('The Loom', () => {
 
       const plugin = createLoom();
       const apparatus = (plugin as { apparatus: Record<string, unknown> & { start: (ctx: unknown) => void } }).apparatus;
-      apparatus.start({ on: () => {} });
+      apparatus.start({ on: () => {}, kits: () => [] });
 
       const supportKit = apparatus.supportKit as Record<string, unknown>;
       const tools = supportKit.tools as Array<{ name: string; handler: (p: Record<string, unknown>) => unknown }>;
@@ -1731,7 +1734,7 @@ describe('The Loom', () => {
 
       const plugin = createLoom();
       const apparatus = (plugin as { apparatus: Record<string, unknown> & { start: (ctx: unknown) => void } }).apparatus;
-      apparatus.start({ on: () => {} });
+      apparatus.start({ on: () => {}, kits: () => [] });
 
       const supportKit = apparatus.supportKit as Record<string, unknown>;
       const tools = supportKit.tools as Array<{ name: string; handler: (p: Record<string, unknown>) => unknown }>;

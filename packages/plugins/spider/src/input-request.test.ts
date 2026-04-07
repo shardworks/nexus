@@ -61,7 +61,7 @@ function buildFixture(): {
 
   setGuild(fakeGuild);
 
-  stacksApparatus.start({ on: () => {} });
+  stacksApparatus.start({ on: () => {}, kits: () => [] });
   const stacks = stacksApparatus.provides as StacksApi;
 
   memBackend.ensureBook({ ownerId: 'spider', book: 'input-requests' }, {

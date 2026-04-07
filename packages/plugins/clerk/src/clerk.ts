@@ -13,8 +13,8 @@
  * See: docs/architecture/apparatus/clerk.md
  */
 
-import type { Plugin, StartupContext, LoadedPlugin } from '@shardworks/nexus-core';
-import { guild, generateId, isLoadedApparatus } from '@shardworks/nexus-core';
+import type { Plugin, StartupContext } from '@shardworks/nexus-core';
+import { guild, generateId } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
 import type { StacksApi, Book, WhereClause } from '@shardworks/stacks-apparatus';
 
@@ -106,8 +106,9 @@ export function createClerk(): Plugin {
     return conditions.length > 0 ? conditions : undefined;
   }
 
-  function registerKitWritTypes(pluginId: string, kit: Record<string, unknown>): void {
-    const raw = kit.writTypes;
+  function registerKitWritTypes(kitEntry: { pluginId: string; value: unknown }): void {
+    const pluginId = kitEntry.pluginId;
+    const raw = kitEntry.value;
     if (!Array.isArray(raw)) return;
 
     for (const entry of raw) {
@@ -348,25 +349,10 @@ export function createClerk(): Plugin {
         configWritTypeNames = new Set((config.writTypes ?? []).map((e) => e.name));
         mergedWritTypes = new Set([...BUILTIN_TYPES, ...configWritTypeNames]);
 
-        // Phase 1a: Scan standalone kits
-        for (const kit of g.kits()) {
-          registerKitWritTypes(kit.id, kit.kit);
+        // Scan all kit-contributed writ types via the Wire-phase snapshot.
+        for (const entry of ctx.kits('writTypes')) {
+          registerKitWritTypes(entry);
         }
-
-        // Phase 1b: Scan already-started apparatus supportKits
-        for (const app of g.apparatuses()) {
-          if (app.apparatus.supportKit) {
-            registerKitWritTypes(app.id, app.apparatus.supportKit);
-          }
-        }
-
-        // Phase 2: Subscribe for late-arriving apparatus supportKits
-        ctx.on('plugin:initialized', (plugin: unknown) => {
-          const loaded = plugin as LoadedPlugin;
-          if (isLoadedApparatus(loaded) && loaded.apparatus.supportKit) {
-            registerKitWritTypes(loaded.id, loaded.apparatus.supportKit);
-          }
-        });
       },
     },
   };

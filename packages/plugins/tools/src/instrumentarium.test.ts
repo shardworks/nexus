@@ -19,6 +19,7 @@ import {
 } from '@shardworks/nexus-core';
 import type {
   Guild,
+  KitEntry,
   LoadedKit,
   LoadedApparatus,
   StartupContext,
@@ -107,11 +108,33 @@ function wireGuild(opts: {
   setGuild(mockGuild);
 }
 
+/** Build KitEntry[] from LoadedKit[] and LoadedApparatus[] (mirrors Wire phase logic). */
+const FRAMEWORK_KIT_FIELDS = new Set(['requires', 'recommends']);
+
+function buildKitEntries(kits: LoadedKit[], apparatuses: LoadedApparatus[]): KitEntry[] {
+  const entries: KitEntry[] = [];
+  for (const kit of kits) {
+    for (const [type, value] of Object.entries(kit.kit)) {
+      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
+      entries.push({ pluginId: kit.id, packageName: kit.packageName, type, value });
+    }
+  }
+  for (const app of apparatuses) {
+    const bag = app.apparatus.supportKit;
+    if (!bag || typeof bag !== 'object') continue;
+    for (const [type, value] of Object.entries(bag)) {
+      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
+      entries.push({ pluginId: app.id, packageName: app.packageName, type, value });
+    }
+  }
+  return entries;
+}
+
 /**
  * Build a StartupContext that captures event subscriptions.
  * Returns both the context and a fire() function to trigger events.
  */
-function buildTestContext(): {
+function buildTestContext(kitEntries: KitEntry[] = []): {
   ctx: StartupContext;
   fire: (event: string, ...args: unknown[]) => Promise<void>;
 } {
@@ -122,6 +145,9 @@ function buildTestContext(): {
       const list = handlers.get(event) ?? [];
       list.push(handler);
       handlers.set(event, list);
+    },
+    kits(type: string): KitEntry[] {
+      return [...kitEntries.filter(e => e.type === type)];
     },
   };
 
@@ -139,19 +165,32 @@ function startInstrumentarium(opts: {
   kits?: LoadedKit[];
   apparatuses?: LoadedApparatus[];
   home?: string;
-}): { api: InstrumentariumApi; fire: (event: string, ...args: unknown[]) => Promise<void> } {
+}): { api: InstrumentariumApi } {
   wireGuild(opts);
 
   const plugin = createInstrumentarium();
   const api = ('apparatus' in plugin ? plugin.apparatus.provides : null) as InstrumentariumApi;
   assert.ok(api, 'Instrumentarium must have provides');
 
-  const { ctx, fire } = buildTestContext();
+  const kitEntries = buildKitEntries(opts.kits ?? [], opts.apparatuses ?? []);
+
+  // Include the Instrumentarium's own supportKit in kit entries (mirrors Wire phase).
+  if ('apparatus' in plugin) {
+    const selfSupportKit = (plugin.apparatus as { supportKit?: Record<string, unknown> }).supportKit;
+    if (selfSupportKit && typeof selfSupportKit === 'object') {
+      for (const [type, value] of Object.entries(selfSupportKit)) {
+        if (type === 'requires' || type === 'recommends') continue;
+        kitEntries.push({ pluginId: 'instrumentarium', packageName: '@shardworks/tools-apparatus', type, value });
+      }
+    }
+  }
+
+  const { ctx } = buildTestContext(kitEntries);
   if ('apparatus' in plugin) {
     plugin.apparatus.start(ctx);
   }
 
-  return { api, fire };
+  return { api };
 }
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -197,14 +236,11 @@ describe('Instrumentarium', () => {
       assert.ok(tools.every((t) => t.pluginId === 'my-kit'));
     });
 
-    it('scans tools from apparatus supportKits via plugin:initialized', async () => {
+    it('scans tools from apparatus supportKits (via Wire phase)', () => {
       const t1 = testTool('gamma');
       const app = mockApparatus('my-apparatus', [t1]);
 
-      const { api, fire } = startInstrumentarium({});
-
-      // Simulate apparatus loading after Instrumentarium started
-      await fire('plugin:initialized', app);
+      const { api } = startInstrumentarium({ apparatuses: [app] });
 
       const tools = externalOnly(api.list());
       assert.equal(tools.length, 1);
@@ -212,12 +248,11 @@ describe('Instrumentarium', () => {
       assert.equal(tools[0]!.pluginId, 'my-apparatus');
     });
 
-    it('combines tools from multiple kits and apparatus', async () => {
+    it('combines tools from multiple kits and apparatus', () => {
       const kit = mockKit('kit-a', [testTool('one'), testTool('two')]);
       const app = mockApparatus('app-b', [testTool('three')]);
 
-      const { api, fire } = startInstrumentarium({ kits: [kit] });
-      await fire('plugin:initialized', app);
+      const { api } = startInstrumentarium({ kits: [kit], apparatuses: [app] });
 
       assert.equal(externalOnly(api.list()).length, 3);
     });

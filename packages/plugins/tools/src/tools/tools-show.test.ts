@@ -17,6 +17,7 @@ import type {
   Guild,
   LoadedKit,
   StartupContext,
+  KitEntry,
 } from '@shardworks/nexus-core';
 
 import { tool } from '../tool.ts';
@@ -62,7 +63,28 @@ function startInstrumentarium(kits: LoadedKit[]): InstrumentariumApi {
   const api = ('apparatus' in plugin ? plugin.apparatus.provides : null) as InstrumentariumApi;
   assert.ok(api);
 
-  const ctx: StartupContext = { on() {} };
+  // Build kit entries for ctx.kits('tools') — include both external kits and
+  // the Instrumentarium's own supportKit (mirroring real Wire phase behaviour).
+  const kitEntries: KitEntry[] = kits.flatMap(kit =>
+    Object.entries(kit.kit)
+      .filter(([type]) => type !== 'requires' && type !== 'recommends')
+      .map(([type, value]) => ({ pluginId: kit.id, packageName: kit.packageName, type, value }))
+  );
+
+  if ('apparatus' in plugin) {
+    const selfSupportKit = (plugin.apparatus as { supportKit?: Record<string, unknown> }).supportKit;
+    if (selfSupportKit && typeof selfSupportKit === 'object') {
+      for (const [type, value] of Object.entries(selfSupportKit)) {
+        if (type === 'requires' || type === 'recommends') continue;
+        kitEntries.push({ pluginId: 'instrumentarium', packageName: '@shardworks/tools-apparatus', type, value });
+      }
+    }
+  }
+
+  const ctx: StartupContext = {
+    on() {},
+    kits(type: string) { return kitEntries.filter(e => e.type === type); },
+  };
   if ('apparatus' in plugin) {
     plugin.apparatus.start(ctx);
   }

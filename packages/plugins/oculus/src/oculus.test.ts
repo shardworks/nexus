@@ -19,6 +19,7 @@ import {
 } from '@shardworks/nexus-core';
 import type {
   Guild,
+  KitEntry,
   LoadedKit,
   LoadedApparatus,
   StartupContext,
@@ -56,7 +57,7 @@ function makePageDir(parentDir: string, name: string, html: string): string {
   return dir;
 }
 
-function buildTestContext(): {
+function buildTestContext(kitEntries: KitEntry[] = []): {
   ctx: StartupContext;
   fire: (event: string, ...args: unknown[]) => Promise<void>;
 } {
@@ -68,6 +69,7 @@ function buildTestContext(): {
       list.push(handler);
       handlers.set(event, list);
     },
+    kits(type: string): KitEntry[] { return [...kitEntries.filter(e => e.type === type)]; },
   };
 
   async function fire(event: string, ...args: unknown[]): Promise<void> {
@@ -77,6 +79,27 @@ function buildTestContext(): {
   }
 
   return { ctx, fire };
+}
+
+const FRAMEWORK_KIT_FIELDS = new Set(['requires', 'recommends']);
+
+function buildKitEntries(kits: LoadedKit[], apparatuses: LoadedApparatus[] = []): KitEntry[] {
+  const entries: KitEntry[] = [];
+  for (const kit of kits) {
+    for (const [type, value] of Object.entries(kit.kit)) {
+      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
+      entries.push({ pluginId: kit.id, packageName: kit.packageName, type, value });
+    }
+  }
+  for (const app of apparatuses) {
+    const bag = app.apparatus.supportKit;
+    if (!bag || typeof bag !== 'object') continue;
+    for (const [type, value] of Object.entries(bag)) {
+      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
+      entries.push({ pluginId: app.id, packageName: app.packageName, type, value });
+    }
+  }
+  return entries;
 }
 
 function mockKit(id: string, tools: unknown[], pages?: PageContribution[], routes?: RouteContribution[]): LoadedKit {
@@ -308,7 +331,7 @@ describe('Oculus server lifecycle', () => {
     const plugin = createOculus();
     assert.ok('apparatus' in plugin);
 
-    const { ctx } = buildTestContext();
+    const { ctx } = buildTestContext([]);
 
     if ('apparatus' in plugin) {
       await plugin.apparatus.start(ctx);
@@ -339,7 +362,7 @@ describe('Oculus server lifecycle', () => {
     wireGuild({ home, kits: [], instrumentarium, oculusPort: port });
 
     const plugin = createOculus();
-    const { ctx } = buildTestContext();
+    const { ctx } = buildTestContext([]);
 
     if ('apparatus' in plugin) {
       await plugin.apparatus.start(ctx);
@@ -392,7 +415,8 @@ describe('Oculus page serving', () => {
     wireGuild({ home: guildHome, kits, instrumentarium, oculusPort: port });
 
     oculusPlugin = createOculus();
-    const { ctx } = buildTestContext();
+    const kitEntries = buildKitEntries(kits);
+    const { ctx } = buildTestContext(kitEntries);
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
       const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
@@ -458,7 +482,7 @@ describe('Oculus static assets', () => {
     wireGuild({ home, instrumentarium, oculusPort: port });
 
     oculusPlugin = createOculus();
-    const { ctx } = buildTestContext();
+    const { ctx } = buildTestContext([]);
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
       const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
@@ -518,7 +542,8 @@ describe('Oculus home page', () => {
     wireGuild({ home: guildHome, kits, instrumentarium, guildName: 'my-guild', oculusPort: port });
 
     oculusPlugin = createOculus();
-    const { ctx } = buildTestContext();
+    const kitEntries = buildKitEntries(kits);
+    const { ctx } = buildTestContext(kitEntries);
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
       const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
@@ -606,7 +631,7 @@ describe('Oculus home page — model set', () => {
     fs.writeFileSync(path.join(home, 'guild.json'), JSON.stringify({ name: 'test-guild', nexus: '0.0.0', plugins: [] }));
     wireGuild({ home, instrumentarium, guildName: 'test-guild', oculusPort: port, model: 'claude-opus-4' });
     oculusPlugin = createOculus();
-    const { ctx } = buildTestContext();
+    const { ctx } = buildTestContext([]);
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
       const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
@@ -647,7 +672,7 @@ describe('Oculus home page — startup warnings', () => {
       startupWarnings: ['[arbor] warn: "x" recommends "y" but it is not installed.'],
     });
     oculusPlugin = createOculus();
-    const { ctx } = buildTestContext();
+    const { ctx } = buildTestContext([]);
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
       const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
@@ -702,7 +727,8 @@ describe('Oculus home page — plugins table', () => {
     fs.writeFileSync(path.join(home, 'guild.json'), JSON.stringify({ name: 'test-guild', nexus: '0.0.0', plugins: [] }));
     wireGuild({ home, instrumentarium, guildName: 'test-guild', oculusPort: port, apparatuses, kits, failedPlugins });
     oculusPlugin = createOculus();
-    const { ctx } = buildTestContext();
+    const kitEntries = buildKitEntries(kits);
+    const { ctx } = buildTestContext(kitEntries);
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
       const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
@@ -762,7 +788,7 @@ describe('Oculus home page — HTML escaping', () => {
     );
     wireGuild({ home, instrumentarium, guildName: 'test-guild', oculusPort: port });
     oculusPlugin = createOculus();
-    const { ctx } = buildTestContext();
+    const { ctx } = buildTestContext([]);
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
       const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
@@ -819,7 +845,8 @@ describe('Oculus /api/_status', () => {
       kits,
     });
     oculusPlugin = createOculus();
-    const { ctx } = buildTestContext();
+    const kitEntries = buildKitEntries(kits);
+    const { ctx } = buildTestContext(kitEntries);
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
       const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
@@ -926,7 +953,7 @@ describe('Oculus /api/_status — failed plugins and warnings', () => {
       startupWarnings: ['warning one', 'warning two'],
     });
     oculusPlugin = createOculus();
-    const { ctx } = buildTestContext();
+    const { ctx } = buildTestContext([]);
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
       const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
@@ -1010,7 +1037,7 @@ describe('Oculus tool routes', () => {
     wireGuild({ home, kits: [], instrumentarium, oculusPort: port });
 
     oculusPlugin = createOculus();
-    const { ctx } = buildTestContext();
+    const { ctx } = buildTestContext([]);
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
       const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
@@ -1114,7 +1141,7 @@ describe('Oculus /api/_tools', () => {
     wireGuild({ home, kits: [], instrumentarium, oculusPort: port });
 
     oculusPlugin = createOculus();
-    const { ctx } = buildTestContext();
+    const { ctx } = buildTestContext([]);
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
       const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
@@ -1177,7 +1204,8 @@ describe('Oculus custom routes', () => {
     wireGuild({ home, kits, instrumentarium, oculusPort: port });
 
     oculusPlugin = createOculus();
-    const { ctx } = buildTestContext();
+    const kitEntries = buildKitEntries(kits);
+    const { ctx } = buildTestContext(kitEntries);
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
       const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
@@ -1219,7 +1247,8 @@ describe('Oculus invalid custom routes', () => {
     wireGuild({ home, kits, instrumentarium, oculusPort: port });
 
     const plugin = createOculus();
-    const { ctx } = buildTestContext();
+    const kitEntries = buildKitEntries(kits);
+    const { ctx } = buildTestContext(kitEntries);
     if ('apparatus' in plugin) {
       await plugin.apparatus.start(ctx);
       const api = plugin.apparatus.provides as { startServer(): Promise<void> };

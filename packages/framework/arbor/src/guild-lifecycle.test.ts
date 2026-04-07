@@ -14,6 +14,7 @@ import {
   topoSort,
   collectStartupWarnings,
   buildStartupContext,
+  wireKitEntries,
   fireEvent,
 } from './guild-lifecycle.ts';
 import type { EventHandlerMap } from './guild-lifecycle.ts';
@@ -36,6 +37,7 @@ function makeApparatus(
     recommends?: string[];
     provides?: unknown;
     consumes?: string[];
+    supportKit?: Record<string, unknown>;
     start?: (ctx: StartupContext) => void | Promise<void>;
   } = {},
 ): LoadedApparatus {
@@ -48,6 +50,7 @@ function makeApparatus(
       recommends: opts.recommends,
       provides: opts.provides,
       consumes: opts.consumes,
+      ...(opts.supportKit !== undefined ? { supportKit: opts.supportKit } : {}),
       start: opts.start ?? (() => {}),
     },
   };
@@ -397,6 +400,133 @@ describe('collectStartupWarnings', () => {
     // At minimum: recommends warning + engines warning + relays warning
     assert.ok(warnings.length >= 3, `Expected at least 3 warnings, got ${warnings.length}`);
   });
+
+  it('warns when an apparatus supportKit contributes a type no apparatus consumes', () => {
+    const apps = [
+      makeApparatus('clerk', {
+        supportKit: { writTypes: ['mandate'] },
+      }),
+    ];
+    const warnings = collectStartupWarnings([], apps);
+    assert.ok(
+      warnings.some((w) => w.includes('writTypes')),
+      `Expected warning about "writTypes", got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  it('does not warn when apparatus supportKit contribution type IS consumed', () => {
+    const apps = [
+      makeApparatus('clerk', {
+        supportKit: { writTypes: ['mandate'] },
+        consumes: ['writTypes'],
+      }),
+    ];
+    const warnings = collectStartupWarnings([], apps);
+    const contribution = warnings.filter((w) => w.includes('writTypes'));
+    assert.equal(contribution.length, 0);
+  });
+
+  it('does not warn about supportKit requires/recommends fields', () => {
+    // requires and recommends inside supportKit are framework fields — not contribution types
+    const apps = [
+      makeApparatus('clerk', {
+        supportKit: { requires: ['tools'], recommends: ['oculus'] },
+      }),
+    ];
+    const warnings = collectStartupWarnings([], apps);
+    const contribution = warnings.filter((w) => w.includes('contributes'));
+    assert.equal(contribution.length, 0);
+  });
+});
+
+// ── wireKitEntries ───────────────────────────────────────────────────
+
+describe('wireKitEntries', () => {
+  it('returns empty array when no kits or apparatuses', () => {
+    assert.deepEqual(wireKitEntries([], []), []);
+  });
+
+  it('collects contribution types from standalone kits', () => {
+    const kits = [makeKit('relay-kit', { tools: ['relay-send'], engines: ['relay-engine'] })];
+    const entries = wireKitEntries(kits, []);
+    assert.equal(entries.length, 2);
+    const types = entries.map((e) => e.type).sort();
+    assert.deepEqual(types, ['engines', 'tools']);
+  });
+
+  it('sets pluginId and packageName from the kit', () => {
+    const kits = [makeKit('relay-kit', { tools: ['relay-send'] })];
+    const entries = wireKitEntries(kits, []);
+    assert.equal(entries[0]!.pluginId, 'relay-kit');
+    assert.equal(entries[0]!.packageName, '@test/relay-kit');
+  });
+
+  it('excludes framework fields (requires, recommends) from standalone kits', () => {
+    const kits = [makeKit('relay-kit', { requires: ['tools'], recommends: ['sessions'], tools: ['relay-send'] })];
+    const entries = wireKitEntries(kits, []);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]!.type, 'tools');
+  });
+
+  it('collects contribution types from apparatus supportKits', () => {
+    const apps = [
+      makeApparatus('clerk', {
+        supportKit: { writTypes: ['mandate'], pages: [{ id: 'writs' }] },
+      }),
+    ];
+    const entries = wireKitEntries([], apps);
+    assert.equal(entries.length, 2);
+    const types = entries.map((e) => e.type).sort();
+    assert.deepEqual(types, ['pages', 'writTypes']);
+  });
+
+  it('sets pluginId and packageName from the apparatus for supportKit entries', () => {
+    const apps = [
+      makeApparatus('clerk', { supportKit: { writTypes: ['mandate'] } }),
+    ];
+    const entries = wireKitEntries([], apps);
+    assert.equal(entries[0]!.pluginId, 'clerk');
+    assert.equal(entries[0]!.packageName, '@test/clerk');
+  });
+
+  it('excludes framework fields from apparatus supportKits', () => {
+    const apps = [
+      makeApparatus('clerk', {
+        supportKit: { requires: ['tools'], writTypes: ['mandate'] },
+      }),
+    ];
+    const entries = wireKitEntries([], apps);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]!.type, 'writTypes');
+  });
+
+  it('skips apparatus with no supportKit', () => {
+    const apps = [makeApparatus('tools')];
+    const entries = wireKitEntries([], apps);
+    assert.deepEqual(entries, []);
+  });
+
+  it('skips apparatus with undefined supportKit', () => {
+    const apps = [makeApparatus('tools', { supportKit: undefined })];
+    const entries = wireKitEntries([], apps);
+    assert.deepEqual(entries, []);
+  });
+
+  it('orders entries: standalone kits first, then apparatus supportKits', () => {
+    const kits = [makeKit('relay-kit', { tools: ['relay-send'] })];
+    const apps = [makeApparatus('clerk', { supportKit: { writTypes: ['mandate'] } })];
+    const entries = wireKitEntries(kits, apps);
+    assert.equal(entries.length, 2);
+    assert.equal(entries[0]!.pluginId, 'relay-kit');
+    assert.equal(entries[1]!.pluginId, 'clerk');
+  });
+
+  it('preserves the value from the kit contribution', () => {
+    const toolsValue = ['tool-a', 'tool-b'];
+    const kits = [makeKit('stdlib', { tools: toolsValue })];
+    const entries = wireKitEntries(kits, []);
+    assert.deepEqual(entries[0]!.value, toolsValue);
+  });
 });
 
 // ── buildStartupContext + fireEvent ──────────────────────────────────
@@ -404,13 +534,13 @@ describe('collectStartupWarnings', () => {
 describe('buildStartupContext', () => {
   it('returns an object with an on() method', () => {
     const handlers: EventHandlerMap = new Map();
-    const ctx = buildStartupContext(handlers);
+    const ctx = buildStartupContext(handlers, []);
     assert.equal(typeof ctx.on, 'function');
   });
 
   it('registers handlers in the event handler map', () => {
     const handlers: EventHandlerMap = new Map();
-    const ctx = buildStartupContext(handlers);
+    const ctx = buildStartupContext(handlers, []);
     const fn = () => {};
     ctx.on('test-event', fn);
     assert.ok(handlers.has('test-event'));
@@ -419,10 +549,60 @@ describe('buildStartupContext', () => {
 
   it('allows multiple handlers for the same event', () => {
     const handlers: EventHandlerMap = new Map();
-    const ctx = buildStartupContext(handlers);
-    ctx.on('plugin:initialized', () => {});
-    ctx.on('plugin:initialized', () => {});
-    assert.equal(handlers.get('plugin:initialized')!.length, 2);
+    const ctx = buildStartupContext(handlers, []);
+    ctx.on('apparatus:started', () => {});
+    ctx.on('apparatus:started', () => {});
+    assert.equal(handlers.get('apparatus:started')!.length, 2);
+  });
+
+  it('returns an object with a kits() method', () => {
+    const handlers: EventHandlerMap = new Map();
+    const ctx = buildStartupContext(handlers, []);
+    assert.equal(typeof ctx.kits, 'function');
+  });
+
+  it('kits() returns entries matching the requested type', () => {
+    const handlers: EventHandlerMap = new Map();
+    const entries = [
+      { pluginId: 'relay-kit', packageName: '@test/relay-kit', type: 'tools', value: ['relay-send'] },
+      { pluginId: 'clerk', packageName: '@test/clerk', type: 'writTypes', value: ['mandate'] },
+    ];
+    const ctx = buildStartupContext(handlers, entries);
+    const tools = ctx.kits('tools');
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0]!.pluginId, 'relay-kit');
+  });
+
+  it('kits() returns empty array for unknown type', () => {
+    const handlers: EventHandlerMap = new Map();
+    const ctx = buildStartupContext(handlers, []);
+    assert.deepEqual(ctx.kits('nonexistent'), []);
+  });
+
+  it('kits() returns a new array each call (snapshot isolation)', () => {
+    const handlers: EventHandlerMap = new Map();
+    const entries = [
+      { pluginId: 'relay-kit', packageName: '@test/relay-kit', type: 'tools', value: ['relay-send'] },
+    ];
+    const ctx = buildStartupContext(handlers, entries);
+    const a = ctx.kits('tools');
+    const b = ctx.kits('tools');
+    assert.notEqual(a, b);
+    assert.deepEqual(a, b);
+  });
+
+  it('kits() returns all entries of a given type across multiple sources', () => {
+    const handlers: EventHandlerMap = new Map();
+    const entries = [
+      { pluginId: 'kit-a', packageName: '@test/kit-a', type: 'pages', value: [{ id: 'page-a' }] },
+      { pluginId: 'kit-b', packageName: '@test/kit-b', type: 'pages', value: [{ id: 'page-b' }] },
+      { pluginId: 'kit-c', packageName: '@test/kit-c', type: 'tools', value: [] },
+    ];
+    const ctx = buildStartupContext(handlers, entries);
+    const pages = ctx.kits('pages');
+    assert.equal(pages.length, 2);
+    const ids = pages.map((e) => e.pluginId).sort();
+    assert.deepEqual(ids, ['kit-a', 'kit-b']);
   });
 });
 

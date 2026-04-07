@@ -58,7 +58,7 @@ function setup() {
   setGuild(fakeGuild);
 
   const sa = (stacksPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-  sa.start({ on: () => {} });
+  sa.start({ on: () => {}, kits: () => [] });
   stacks = sa.provides as StacksApi;
   apparatusMap.set('stacks', stacks);
 

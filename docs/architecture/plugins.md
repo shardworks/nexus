@@ -63,7 +63,7 @@ Type safety for contribution fields is provided by the apparatus that consumes t
 
 Kit authors who don't want or need static type checking simply write a plain object — both approaches are valid.
 
-The framework never inspects contribution field contents. It sees kit records as opaque objects, forwards them to consuming apparatuses via `plugin:initialized`, and cross-references field keys against `consumes` tokens for startup warnings. See [Kit Contribution Consumption](#kit-contribution-consumption).
+The framework never inspects contribution field contents. It sees kit records as opaque objects, collects them into `KitEntry` records during the Wire phase, and makes them available via `ctx.kits(type)` during apparatus `start()`. It also cross-references field keys against `consumes` tokens for startup warnings. See [Kit Contribution Consumption](#kit-contribution-consumption).
 
 ---
 
@@ -256,7 +256,7 @@ type GuildManifest = {
 }
 ```
 
-Lifecycle management (start ordering, shutdown) operates on the apparatus list. Kit records are loaded and cached; their contributions are surfaced via `guild().kits()` and `guild().apparatuses()` for consuming apparatus to pull from.
+Lifecycle management (start ordering, shutdown) operates on the apparatus list. Kit records are loaded and cached; their contributions are collected during the Wire phase into `KitEntry` records and made available to consuming apparatuses via `ctx.kits(type)` during `start()`.
 
 Each consuming apparatus maintains its own registry of the contribution types it understands. A Clockworks apparatus maintains a relay registry populated from both standalone kit packages and apparatus `supportKit`s; callers of the Clockworks API see a single relay list regardless of source. The framework does not maintain cross-apparatus registries — contribution type semantics belong to the apparatus that defined them.
 
@@ -268,19 +268,31 @@ A kit is passive — it declares contributions but has no awareness of whether a
 
 But loose coupling creates a practical problem. An operator installs a relay-heavy kit expecting event handling to work, forgets to install the Clockworks, and gets silent inertness with no indication anything is wrong. The framework addresses this without compromising kit purity or imposing hard couplings.
 
-### Reactive Consumption
+### Wire Phase and `ctx.kits(type)`
 
-Consuming apparatuses register kit contributions reactively using the `plugin:initialized` lifecycle event. The Clockworks, for example, handles both kits already loaded and kits that arrive later in the load sequence:
+Before any apparatus `start()` is called, Arbor runs a **Wire phase**: it collects all kit contributions from standalone kits and apparatus `supportKit`s into a flat list of `KitEntry` records, indexed by contribution type. This snapshot is then made available to every apparatus via `ctx.kits(type)` during `start()`.
+
+```typescript
+interface KitEntry {
+  readonly pluginId:    string   // derived plugin id of the contributing plugin
+  readonly packageName: string   // npm package name
+  readonly type:        string   // contribution field key (e.g. 'relays', 'engines')
+  readonly value:       unknown  // the contribution value (e.g. relay record, engines record)
+}
+```
+
+The Clockworks, for example, scans for all relay contributions in its `start()`:
 
 ```typescript
 // inside Clockworks apparatus start()
 start: (ctx) => {
-  for (const p of [...guild().kits(), ...guild().apparatuses()]) { registerRelays(p) }
-  ctx.on("plugin:initialized", (p) => registerRelays(p))
+  for (const entry of ctx.kits('relays')) {
+    registerRelays(entry.value, entry.pluginId)
+  }
 }
 ```
 
-`guild().kits()` and `guild().apparatuses()` return snapshots of everything loaded so far. `ctx.on("plugin:initialized")` fires for each subsequent plugin as it completes loading. Together they cover the full sequence without requiring load-order guarantees between the Clockworks and any particular relay kit.
+Because the Wire phase completes before any `start()` runs, `ctx.kits(type)` always returns the full snapshot — there are no late arrivals to worry about, and no ordering dependencies between kits and the apparatuses that consume them.
 
 Kits declare; apparatuses consume. Neither needs to know about the other at authoring time.
 
@@ -311,21 +323,22 @@ Several alternatives were considered before arriving at this approach:
 
 **Framework-owned contribution type registry** — rejected. Requires the framework to know about contribution types like `relays` or `engines`, coupling Arbor to apparatus semantics it doesn't need to understand. Type safety for contribution fields belongs to the apparatus packages that define them; kit authors opt into that safety by importing the relevant interfaces. Arbor's concern is loading and warning, not interpreting.
 
-The chosen approach — open `Kit` record with apparatus-published interfaces for type safety, reactive apparatus consumption via `plugin:initialized`, optional `recommends` on kits, `consumes` on apparatuses, advisory startup warnings — keeps each concern where it belongs and surfaces configuration mistakes without imposing constraints that would make valid configurations impossible.
+The chosen approach — open `Kit` record with apparatus-published interfaces for type safety, Wire phase collection via `ctx.kits(type)`, optional `recommends` on kits, `consumes` on apparatuses, advisory startup warnings — keeps each concern where it belongs and surfaces configuration mistakes without imposing constraints that would make valid configurations impossible.
 
 ---
 
 ## StartupContext
 
-The context passed to an apparatus's `start(ctx)`. Provides lifecycle event subscription — the only capability that is meaningful only during startup. All other guild access goes through `guild()`.
+The context passed to an apparatus's `start(ctx)`. Provides kit contribution access and lifecycle event subscription — the only capabilities that are meaningful only during startup. All other guild access goes through `guild()`.
 
 ```typescript
 interface StartupContext {
   on(event: string, handler: (...args: unknown[]) => void | Promise<void>): void
+  kits(type: string): KitEntry[]
 }
 ```
 
-`ctx.on('plugin:initialized', handler)` fires after each plugin completes loading. Used by consuming apparatus to register kit contributions reactively — see [Reactive Consumption](#reactive-consumption).
+`ctx.kits(type)` returns a snapshot of all `KitEntry` records of the given type, collected during the Wire phase before any `start()` ran. Returns a new array on each call (snapshot isolation). Used by consuming apparatuses to register kit contributions — see [Wire Phase and `ctx.kits(type)`](#wire-phase-and-ctxkitstype).
 
 ---
 
@@ -464,8 +477,9 @@ Apparatus plugins subscribe to guild lifecycle events inside `start` via `ctx.on
 ```typescript
 apparatus: {
   start: (ctx) => {
-    ctx.on("plugin:initialized",  (p)    => { ... })  // a kit or apparatus has finished loading
-    ctx.on("guild:shutdown",      ()     => { ... })
+    ctx.on("apparatus:started",  (id)  => { ... })  // an apparatus has completed start()
+    ctx.on("phase:started",      ()    => { ... })  // all apparatus start() calls complete
+    ctx.on("guild:shutdown",     ()    => { ... })
   },
 }
 ```
@@ -474,7 +488,11 @@ Handlers may be async. The framework awaits each handler in turn before invoking
 
 The interface is open-ended — new lifecycle events do not require interface changes. Apparatuses subscribe to what they need.
 
-**`plugin:initialized`** fires after each plugin (kit or apparatus) completes loading, with the loaded plugin record as its argument. Used by consuming apparatuses to register kit contributions reactively — see [Reactive Consumption](#reactive-consumption).
+**`apparatus:started`** fires after each apparatus completes its `start()` call, with the apparatus's plugin id as its argument. Can be used to react to the progressive availability of apparatus APIs.
+
+**`phase:started`** fires once after all apparatus `start()` calls have completed. Useful for work that requires every apparatus to be fully initialised.
+
+Kit contributions should be consumed via `ctx.kits(type)` during `start()` rather than via lifecycle events — the Wire phase guarantees the full snapshot is available before any `start()` runs. See [Wire Phase and `ctx.kits(type)`](#wire-phase-and-ctxkitstype).
 
 ---
 

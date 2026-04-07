@@ -193,7 +193,7 @@ class ToolRegistry {
    *
    * Tools with inline `instructions` or neither field are returned as-is.
    */
-  private preloadInstructions(
+  preloadInstructions(
     tool: ToolDefinition,
     packageName: string,
   ): ToolDefinition {
@@ -333,28 +333,18 @@ export function createInstrumentarium(): Plugin {
         const g = guild();
         registry.setHome(g.home);
 
-        // Register our own supportKit tools (tools-list, tools-show).
-        // These live on this apparatus and aren't discovered through the
-        // normal kit scanning path.
-        for (const t of [toolsList, toolsShow] as ToolDefinition[]) {
-          registry.registerTool(t, 'tools');
-        }
-
-        // Scan all already-loaded kits. These fired plugin:initialized before
-        // any apparatus started, so we can't catch them via events.
-        for (const kit of g.kits()) {
-          registry.register(kit);
-        }
-
-        // Subscribe to plugin:initialized for apparatus supportKits that
-        // fire after us in the startup sequence.
-        ctx.on('plugin:initialized', (plugin: unknown) => {
-          const loaded = plugin as LoadedPlugin;
-          // Skip kits — we already scanned them above.
-          if (isLoadedApparatus(loaded)) {
-            registry.register(loaded);
+        // Register all tool contributions (standalone kits + apparatus supportKits)
+        // via the Wire-phase ctx.kits('tools') snapshot.
+        for (const entry of ctx.kits('tools')) {
+          const rawTools = entry.value;
+          if (!Array.isArray(rawTools)) continue;
+          for (const t of rawTools) {
+            if (isToolDefinition(t)) {
+              const definition = registry.preloadInstructions(t, entry.packageName);
+              registry.registerTool(definition, entry.pluginId);
+            }
           }
-        });
+        }
       },
     },
   };

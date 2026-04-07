@@ -15,6 +15,7 @@ import {
 } from '@shardworks/nexus-core';
 import type {
   Guild,
+  KitEntry,
   LoadedKit,
   LoadedApparatus,
   StartupContext,
@@ -92,11 +93,32 @@ function wireGuild(opts: {
   setGuild(mockGuild);
 }
 
+const FRAMEWORK_KIT_FIELDS = new Set(['requires', 'recommends']);
+
+function buildKitEntries(kits: LoadedKit[], apparatuses: LoadedApparatus[]): KitEntry[] {
+  const entries: KitEntry[] = [];
+  for (const kit of kits) {
+    for (const [type, value] of Object.entries(kit.kit)) {
+      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
+      entries.push({ pluginId: kit.id, packageName: kit.packageName, type, value });
+    }
+  }
+  for (const app of apparatuses) {
+    const bag = app.apparatus.supportKit;
+    if (!bag || typeof bag !== 'object') continue;
+    for (const [type, value] of Object.entries(bag)) {
+      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
+      entries.push({ pluginId: app.id, packageName: app.packageName, type, value });
+    }
+  }
+  return entries;
+}
+
 /**
  * Build a StartupContext that captures event subscriptions.
  * Returns both the context and a fire() function to trigger events.
  */
-function buildTestContext(): {
+function buildTestContext(kitEntries: KitEntry[] = []): {
   ctx: StartupContext;
   fire: (event: string, ...args: unknown[]) => Promise<void>;
 } {
@@ -108,6 +130,7 @@ function buildTestContext(): {
       list.push(handler);
       handlers.set(event, list);
     },
+    kits(type: string): KitEntry[] { return [...kitEntries.filter(e => e.type === type)]; },
   };
 
   async function fire(event: string, ...args: unknown[]): Promise<void> {
@@ -119,23 +142,24 @@ function buildTestContext(): {
   return { ctx, fire };
 }
 
-/** Start the Fabricator and return its API and event-firing capability. */
+/** Start the Fabricator and return its API. */
 function startFabricator(opts: {
   kits?: LoadedKit[];
   apparatuses?: LoadedApparatus[];
-}): { api: FabricatorApi; fire: (event: string, ...args: unknown[]) => Promise<void> } {
+}): { api: FabricatorApi } {
   wireGuild(opts);
+  const kitEntries = buildKitEntries(opts.kits ?? [], opts.apparatuses ?? []);
 
   const plugin = createFabricator();
   const api = ('apparatus' in plugin ? plugin.apparatus.provides : null) as FabricatorApi;
   assert.ok(api, 'Fabricator must expose provides');
 
-  const { ctx, fire } = buildTestContext();
+  const { ctx } = buildTestContext(kitEntries);
   if ('apparatus' in plugin) {
     plugin.apparatus.start(ctx);
   }
 
-  return { api, fire };
+  return { api };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -189,30 +213,16 @@ describe('Fabricator', () => {
       assert.equal(api.getEngineDesign('draft'), engine2);
     });
 
-    it('registers engines from apparatus supportKit via plugin:initialized', async () => {
+    it('registers engines from apparatus supportKit (via Wire phase)', () => {
       const engine = mockEngine('implement');
       const app = mockApparatus('my-apparatus', { implement: engine });
 
-      const { api, fire } = startFabricator({});
-      assert.equal(api.getEngineDesign('implement'), undefined);
-
-      await fire('plugin:initialized', app);
+      const { api } = startFabricator({ apparatuses: [app] });
 
       const found = api.getEngineDesign('implement');
-      assert.ok(found, 'engine should be found after apparatus initialized');
+      assert.ok(found, 'engine should be found');
       assert.equal(found.id, 'implement');
       assert.equal(found, engine);
-    });
-
-    it('ignores kits fired via plugin:initialized (kits are scanned at startup only)', async () => {
-      const engine = mockEngine('late');
-      const kit = mockKit('late-kit', { late: engine });
-
-      const { api, fire } = startFabricator({});
-      await fire('plugin:initialized', kit);
-
-      // Kits fired after startup are intentionally skipped
-      assert.equal(api.getEngineDesign('late'), undefined);
     });
 
     it('skips entries missing the id field silently', () => {
@@ -258,15 +268,14 @@ describe('Fabricator', () => {
       assert.equal(api.getEngineDesign('anything'), undefined);
     });
 
-    it('ignores an apparatus with no supportKit', async () => {
+    it('ignores an apparatus with no supportKit', () => {
       const app = mockApparatus('bare-apparatus');
-      const { api, fire } = startFabricator({});
       // Should not throw
-      await fire('plugin:initialized', app);
+      const { api } = startFabricator({ apparatuses: [app] });
       assert.equal(api.getEngineDesign('anything'), undefined);
     });
 
-    it('ignores an apparatus supportKit with no engines field', async () => {
+    it('ignores an apparatus supportKit with no engines field', () => {
       const app: LoadedApparatus = {
         packageName: '@test/bare',
         id: 'bare',
@@ -276,20 +285,19 @@ describe('Fabricator', () => {
           supportKit: {},
         },
       };
-      const { api, fire } = startFabricator({});
       // Should not throw
-      await fire('plugin:initialized', app);
+      const { api } = startFabricator({ apparatuses: [app] });
       assert.equal(api.getEngineDesign('anything'), undefined);
     });
 
-    it('handles engines from both kits and apparatus supportKits together', async () => {
+    it('handles engines from both kits and apparatus supportKits together', () => {
       const kitEngine = mockEngine('kit-engine');
       const apparatusEngine = mockEngine('apparatus-engine');
 
-      const { api, fire } = startFabricator({
+      const { api } = startFabricator({
         kits: [mockKit('my-kit', { kitEngine })],
+        apparatuses: [mockApparatus('my-apparatus', { apparatusEngine })],
       });
-      await fire('plugin:initialized', mockApparatus('my-apparatus', { apparatusEngine }));
 
       assert.equal(api.getEngineDesign('kit-engine'), kitEngine);
       assert.equal(api.getEngineDesign('apparatus-engine'), apparatusEngine);
