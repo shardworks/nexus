@@ -3185,6 +3185,75 @@ describe('Spider — engine blocking on external conditions', () => {
     clearGuild();
   });
 
+  // ── Crawl phase ordering: checkBlocked before run (R4) ────────────────
+
+  describe('Crawl phase ordering: checkBlocked before run (R4)', () => {
+    it('engine-unblocked is returned before engine-started when both are possible in the same cycle', async () => {
+      // Engine A is blocked and its checker immediately clears the block.
+      // Engine B is an independent pending engine (no upstream) that is ready to run.
+      // When both opportunities exist simultaneously, checkBlocked must take priority:
+      // the first crawl() after blocking should yield engine-unblocked (not engine-started for B).
+      const clearablePhaseA: EngineDesign = {
+        id: 'phase-a-engine',
+        async run(_g: Record<string, unknown>, ctx: EngineRunContext) {
+          if (!ctx.priorBlock) {
+            return { status: 'blocked' as const, blockType: 'phase-hold', condition: { go: false } };
+          }
+          return { status: 'completed' as const, yields: {} };
+        },
+      };
+      const independentPhaseB: EngineDesign = {
+        id: 'phase-b-engine',
+        async run() { return { status: 'completed' as const, yields: {} }; },
+      };
+      const fix = buildBlockingFixture(
+        { 'phase-a-engine': clearablePhaseA, 'phase-b-engine': independentPhaseB },
+        {
+          engines: [
+            { id: 'a', designId: 'phase-a-engine', givens: {} },
+            { id: 'b', designId: 'phase-b-engine', givens: {} }, // no upstream — runnable independently
+          ],
+          resolutionEngine: 'b',
+        },
+      );
+      await registerBlockType(fix.fireAll, {
+        id: 'phase-hold',
+        conditionSchema: z.object({ go: z.boolean() }),
+        async check() { return true; }, // always clears — ensures unblock is immediately available
+      });
+
+      await fix.clerk.post({ title: 'Ordering Writ', body: 'Body' });
+      await fix.spider.crawl(); // spawn
+
+      // Run engine a first → it blocks. Engine b is still pending.
+      // (crawl picks the first pending engine; a is first in the list)
+      const runResult = await fix.spider.crawl();
+      assert.ok(runResult !== null);
+      assert.equal(runResult.action, 'engine-blocked', 'a should block (b still pending → engine-blocked not rig-blocked)');
+      assert.equal((runResult as { engineId: string }).engineId, 'a');
+
+      // Now: a is blocked (checker will clear), b is still pending (can run).
+      // The next crawl must checkBlocked before tryRun → returns engine-unblocked, NOT engine-started.
+      const nextResult = await fix.spider.crawl();
+      assert.ok(nextResult !== null);
+      assert.equal(
+        nextResult.action,
+        'engine-unblocked',
+        'checkBlocked phase must execute before run phase: expected engine-unblocked, not engine-started',
+      );
+      assert.equal((nextResult as { engineId: string }).engineId, 'a');
+
+      // Subsequent crawl runs engine a (now pending after unblock)
+      const afterUnblock = await fix.spider.crawl();
+      assert.ok(afterUnblock !== null);
+      // a or b may run next (both pending), but the point is that unblocked preceded run
+      assert.ok(
+        afterUnblock.action === 'engine-started' || afterUnblock.action === 'engine-completed',
+        `expected engine-started or engine-completed, got: ${afterUnblock.action}`,
+      );
+    });
+  });
+
   // ── Block type registry (V3, R5, R6) ──────────────────────────────────
 
   describe('Block type registry', () => {
@@ -4038,13 +4107,74 @@ describe('Spider — engine blocking on external conditions', () => {
     });
   });
 
+  // ── rig-resume tool — handler delegation (R16, P1) ────────────────────
+
+  describe('rig-resume tool — handler delegation (R16)', () => {
+    it('handler calls spider.resume() and returns { ok: true } when engine is blocked', async () => {
+      const holdEngine2: EngineDesign = {
+        id: 'hold2-engine',
+        async run(_g: Record<string, unknown>, ctx: EngineRunContext) {
+          if (!ctx.priorBlock) {
+            return { status: 'blocked' as const, blockType: 'hold2-block', condition: { hold: true } };
+          }
+          return { status: 'completed' as const, yields: {} };
+        },
+      };
+      const fix = buildBlockingFixture(
+        { 'hold2-engine': holdEngine2 },
+        { engines: [{ id: 'sole', designId: 'hold2-engine', givens: {} }], resolutionEngine: 'sole' },
+      );
+      await registerBlockType(fix.fireAll, {
+        id: 'hold2-block',
+        conditionSchema: z.object({ hold: z.boolean() }),
+        async check() { return false; },
+      });
+
+      await fix.clerk.post({ title: 'Resume Tool Writ', body: 'Body' });
+      await fix.spider.crawl(); // spawn
+      await fix.spider.crawl(); // run → blocked
+
+      const [rig] = await fix.spider.list();
+      assert.equal(rig.status, 'blocked');
+
+      // Call the tool handler directly — it should delegate to spider.resume()
+      const result = await rigResumeTool.handler({ rigId: rig.id, engineId: 'sole' });
+      assert.deepEqual(result, { ok: true }, 'rig-resume handler should return { ok: true }');
+
+      // Verify the block was cleared
+      const [updatedRig] = await fix.spider.list();
+      assert.equal(updatedRig.status, 'running', 'rig should be running after resume');
+      const engine = updatedRig.engines.find((e: EngineInstance) => e.id === 'sole');
+      assert.equal(engine?.status, 'pending', 'engine should be pending after resume');
+      assert.equal(engine?.block, undefined, 'block field should be cleared');
+    });
+
+    it('handler propagates error when engine is not blocked', async () => {
+      const fix = buildBlockingFixture();
+      await fix.clerk.post({ title: 'Resume Error Writ', body: 'Body' });
+      await fix.spider.crawl(); // spawn
+
+      const [rig] = await fix.spider.list();
+      const pendingEngine = rig.engines.find((e: EngineInstance) => e.status === 'pending');
+      assert.ok(pendingEngine !== undefined, 'should have a pending engine');
+
+      // Calling resume on a non-blocked engine should reject
+      await assert.rejects(
+        () => rigResumeTool.handler({ rigId: rig.id, engineId: pendingEngine!.id }),
+        (err: Error) => {
+          assert.ok(err.message.includes('is not blocked'), `error should include "is not blocked", got: ${err.message}`);
+          return true;
+        },
+      );
+    });
+  });
+
   // ── rig-show instructions mention blocked (R19) ────────────────────────
 
   describe('rig-show instructions mention blocked engines and block metadata (R19)', () => {
     it('instructions text contains blocked engine and block record references', () => {
-      // Access the tool definition's instructions field
-      const toolDef = rigShowTool as unknown as { instructions?: string };
-      const instructions = toolDef.instructions ?? '';
+      // ToolDefinition exposes `instructions` as a first-class property — no cast needed.
+      const instructions = rigShowTool.instructions ?? '';
       assert.ok(
         instructions.toLowerCase().includes('block'),
         `rig-show instructions should mention block/blocked, got: "${instructions}"`,
@@ -4063,11 +4193,14 @@ describe('Spider — engine blocking on external conditions', () => {
     it('BlockRecord and BlockType types are exported from the package index', async () => {
       // Dynamic import to verify the index exports these at runtime
       const idx = await import('./index.ts');
-      // Type-only exports have no runtime value, but the module must load without error.
-      // We verify the module loads and createSpider (the default export's factory) is present.
-      assert.ok(idx !== undefined, 'spider index should export without error');
-      // The types BlockRecord and BlockType are accessible at the type level (checked by tsc).
-      // No runtime assertion is possible for type-only exports.
+      // The types BlockRecord and BlockType are type-only exports; no runtime assertion is
+      // possible. Instead confirm the correct module loaded by asserting the default export
+      // is a spider apparatus plugin object with the expected apparatus shape.
+      assert.ok(idx !== null && typeof idx === 'object', 'spider index should export without error');
+      assert.ok('default' in idx, 'spider index should have a default export');
+      const plugin = idx.default as unknown;
+      assert.ok(typeof plugin === 'object' && plugin !== null, 'default export should be an object');
+      assert.ok('apparatus' in (plugin as object), 'default export should have an apparatus property (spider apparatus plugin)');
     });
   });
 
