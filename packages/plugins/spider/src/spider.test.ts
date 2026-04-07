@@ -3091,10 +3091,10 @@ describe('Spider tools — handler delegation', () => {
 // Covers all validation cases (V1–V22) and all spec test cases.
 //
 // Uses buildBlockingFixture() — an extended fixture that gives Spider a
-// real StartupContext so plugin:initialized events propagate to its
-// BlockTypeRegistry. Firing plugin:initialized on Spider's ctx causes
-// Spider to scan its own supportKit.blockTypes, registering the three
-// built-in block types (writ-status, scheduled-time, book-updated).
+// real StartupContext with Wire-phase kit entries. Spider's own supportKit
+// block types (writ-status, scheduled-time, book-updated) are delivered
+// via ctx.kits('blockTypes') during start(), along with any custom block
+// types passed as extra kit entries to the fixture.
 // ──────────────────────────────────────────────────────────────────────
 
 describe('Spider — engine blocking on external conditions', () => {
@@ -3103,8 +3103,8 @@ describe('Spider — engine blocking on external conditions', () => {
 
   /**
    * Builds a test fixture like buildFixture() but gives Spider a real
-   * StartupContext so plugin:initialized events propagate to its
-   * BlockTypeRegistry.
+   * StartupContext with Wire-phase kit entries so block types and engines
+   * are delivered via ctx.kits() during start().
    *
    * @param customEngines  Engine designs registered in Fabricator before
    *                       Spider starts (so template validation passes).
@@ -3285,7 +3285,7 @@ describe('Spider — engine blocking on external conditions', () => {
     const clerk = clerkApparatus.provides as ClerkApi;
     apparatusMap.set('clerk', clerk);
 
-    // Both Fabricator and Spider get real ctxs so late plugin:initialized events propagate.
+    // Both Fabricator and Spider get real ctxs with Wire-phase kit entries.
     const { ctx: fabricatorCtx, fire: fireFabricator } = buildCtx(fabricatorKitEntries);
     const { ctx: spiderCtx, fire: fireSpider } = buildCtx(spiderKitEntries);
 
@@ -3399,7 +3399,7 @@ describe('Spider — engine blocking on external conditions', () => {
       assert.equal(spider.getBlockType('nonexistent'), undefined);
     });
 
-    it('registers a custom block type contributed via plugin:initialized (R5)', async () => {
+    it('registers a custom block type contributed via Wire-phase kit entry (R5)', async () => {
       const custom: BlockType = {
         id: 'my-custom-type',
         conditionSchema: z.object({ key: z.string() }),
@@ -3430,7 +3430,7 @@ describe('Spider — engine blocking on external conditions', () => {
       assert.equal(scheduledTime.pollIntervalMs, 30_000, 'scheduled-time should have 30s poll interval');
     });
 
-    it('listBlockTypes includes custom block type registered via plugin:initialized', async () => {
+    it('listBlockTypes includes custom block type registered via Wire-phase kit entry', async () => {
       const custom: BlockType = {
         id: 'my-custom-type',
         conditionSchema: z.object({ key: z.string() }),

@@ -16,7 +16,7 @@ import { z } from 'zod';
 import type { Plugin, StartupContext } from '@shardworks/nexus-core';
 import { guild, VERSION } from '@shardworks/nexus-core';
 import type { InstrumentariumApi } from '@shardworks/tools-apparatus';
-import { tool } from '@shardworks/tools-apparatus';
+import { tool, isToolDefinition } from '@shardworks/tools-apparatus';
 
 import type { OculusApi, OculusConfig, OculusKit, PageContribution, RouteContribution } from './types.ts';
 
@@ -317,7 +317,6 @@ export function createOculus(): Plugin {
         // ── Tool route registration helper ───────────────────────────
         function registerToolRoute(
           toolDef: import('@shardworks/tools-apparatus').ToolDefinition,
-          instrumentarium: InstrumentariumApi,
         ): void {
           const routePath = toolNameToRoute(toolDef.name);
           const method = permissionToMethod(toolDef.permission);
@@ -330,8 +329,6 @@ export function createOculus(): Plugin {
             );
             return;
           }
-
-          void instrumentarium; // suppress unused warning
 
           const shape = toolDef.params.shape as Record<string, z.ZodTypeAny>;
 
@@ -401,15 +398,15 @@ export function createOculus(): Plugin {
           }
         }
 
-        // ── Register tool routes ─────────────────────────────────────
-        const instrumentarium = g.apparatus<InstrumentariumApi>('tools');
-        const allTools = instrumentarium.list();
-        const patronTools = allTools.filter(
-          (r) => !r.definition.callableBy || r.definition.callableBy.includes('patron'),
-        );
-
-        for (const resolved of patronTools) {
-          registerToolRoute(resolved.definition, instrumentarium);
+        // ── Register tool routes from all kit contributions ──────────
+        for (const entry of ctx.kits('tools')) {
+          const rawTools = entry.value;
+          if (!Array.isArray(rawTools)) continue;
+          for (const t of rawTools) {
+            if (isToolDefinition(t) && (!t.callableBy || t.callableBy.includes('patron'))) {
+              registerToolRoute(t);
+            }
+          }
         }
 
         // ── GET /api/_status ─────────────────────────────────────────
@@ -431,6 +428,7 @@ export function createOculus(): Plugin {
 
         // ── GET /api/_tools ──────────────────────────────────────────
         app.get('/api/_tools', (c) => {
+          const instrumentarium = g.apparatus<InstrumentariumApi>('tools');
           const tools = instrumentarium.list().filter(
             (r) => !r.definition.callableBy || r.definition.callableBy.includes('patron'),
           );

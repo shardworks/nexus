@@ -1037,7 +1037,9 @@ describe('Oculus tool routes', () => {
     wireGuild({ home, kits: [], instrumentarium, oculusPort: port });
 
     oculusPlugin = createOculus();
-    const { ctx } = buildTestContext([]);
+    // Pass tool definitions as kit entries so ctx.kits('tools') registers the routes
+    const kitEntries = buildKitEntries([mockKit('test-tools-kit', tools)]);
+    const { ctx } = buildTestContext(kitEntries);
     if ('apparatus' in oculusPlugin) {
       await oculusPlugin.apparatus.start(ctx);
       const api = oculusPlugin.apparatus.provides as { startServer(): Promise<void> };
