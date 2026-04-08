@@ -30,6 +30,8 @@ export type {
   RigTemplate,
   RigTemplateEngine,
   RigTemplateInfo,
+  SpiderEngineRunResult,
+  SpiderCollectResult,
   InputRequestStatus,
   InputRequestDoc,
   ChoiceQuestionSpec,

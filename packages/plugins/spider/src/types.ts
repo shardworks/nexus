@@ -10,7 +10,7 @@ import type { ZodSchema } from 'zod';
 
 // ── Engine instance status ────────────────────────────────────────────
 
-export type EngineStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked';
+export type EngineStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked' | 'skipped';
 
 // ── Block record ──────────────────────────────────────────────────────
 
@@ -59,6 +59,11 @@ export interface EngineInstance {
    * resolved at run time when the engine is executed.
    */
   givensSpec: Record<string, unknown>;
+  /**
+   * Conditional activation expression, copied from the template.
+   * Evaluated at runtime when upstream is all done. Absent means unconditional.
+   */
+  when?: string;
   /** Yields from a completed engine run (JSON-serializable). */
   yields?: unknown;
   /** Error message if this engine failed. */
@@ -139,6 +144,19 @@ export interface RigTemplateEngine {
    * Variables that resolve to undefined cause the key to be omitted.
    */
   givens?: Record<string, unknown>;
+  /**
+   * Conditional activation expression. A `$yields.<engine_id>.<property>` reference
+   * (with optional `!` negation prefix) evaluated at runtime when the engine's upstream
+   * is all done. When the condition is falsy, the engine is set to `skipped` status.
+   * When absent, the engine is unconditional (always runs).
+   *
+   * Examples:
+   *   '$yields.review.passed'    — run this engine when review.passed is truthy
+   *   '!$yields.review.passed'   — run this engine when review.passed is falsy
+   *   '${yields.review.passed}'  — equivalent (curly-brace syntax)
+   *   '!${yields.review.passed}' — equivalent negated
+   */
+  when?: string;
 }
 
 /**
@@ -175,6 +193,8 @@ export type CrawlResult =
   | { action: 'engine-started'; rigId: string; engineId: string }
   | { action: 'engine-blocked'; rigId: string; engineId: string; blockType: string }
   | { action: 'engine-unblocked'; rigId: string; engineId: string }
+  | { action: 'engine-skipped'; rigId: string; engineId: string; cascadeSkipped?: string[] }
+  | { action: 'engine-grafted'; rigId: string; engineId: string; graftedEngineIds: string[] }
   | { action: 'rig-spawned'; rigId: string; writId: string }
   | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'failed' }
   | { action: 'rig-blocked'; rigId: string; writId: string };
@@ -335,6 +355,12 @@ export interface SpiderConfig {
    * Variables resolving to undefined (key absent) cause the givens key to be omitted.
    */
   variables?: Record<string, unknown>;
+  /**
+   * Maximum number of engines allowed in a single rig.
+   * Grafts that would exceed this limit fail the originating engine.
+   * Default: 50.
+   */
+  maxEnginesPerRig?: number;
 }
 
 // ── Engine yield shapes ───────────────────────────────────────────────
@@ -494,6 +520,37 @@ export interface InputRequestDoc {
   createdAt: string;
   /** ISO timestamp of the last mutation. */
   updatedAt: string;
+}
+
+// ── Spider-extended engine run / collect result types ─────────────────
+
+/**
+ * Spider-extended engine run result. Adds an optional `graft` field
+ * to the `completed` variant, allowing engines to dynamically append
+ * new engines to the rig alongside their yields.
+ *
+ * Engines that want to graft import this type from @shardworks/spider-apparatus.
+ * Engines that don't graft use the base EngineRunResult from @shardworks/fabricator-apparatus.
+ *
+ * The Spider internally checks for the `graft` property on any completed result
+ * (duck-typing — the Fabricator type is not modified).
+ */
+export type SpiderEngineRunResult =
+  | { status: 'completed'; yields: unknown; graft?: RigTemplateEngine[] }
+  | { status: 'launched'; sessionId: string }
+  | { status: 'blocked'; blockType: string; condition: unknown; message?: string };
+
+/**
+ * Spider-extended collect result. When a quick engine's collect() method
+ * returns an object with a `graft` property (an array), the Spider extracts
+ * it as a graft request and uses the `yields` property as the engine's yields.
+ *
+ * When collect() returns a value without a `graft` array property, the entire
+ * return value is treated as yields (backward compatible).
+ */
+export interface SpiderCollectResult {
+  yields: unknown;
+  graft?: RigTemplateEngine[];
 }
 
 // Augment GuildConfig so `guild().guildConfig().spider` is typed.

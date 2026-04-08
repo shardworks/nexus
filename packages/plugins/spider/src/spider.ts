@@ -39,6 +39,7 @@ import type {
   RigTemplate,
   RigTemplateEngine,
   RigTemplateInfo,
+  SpiderCollectResult,
 } from './types.ts';
 
 import {
@@ -117,7 +118,7 @@ function buildUpstreamMap(rig: RigDoc): Record<string, unknown> {
 }
 
 /**
- * Find the first pending engine whose entire upstream is completed.
+ * Find the first pending engine whose entire upstream is completed or skipped.
  * Returns null if no runnable engine exists.
  */
 function findRunnableEngine(rig: RigDoc): EngineInstance | null {
@@ -125,7 +126,7 @@ function findRunnableEngine(rig: RigDoc): EngineInstance | null {
     if (engine.status !== 'pending') continue;
     const allUpstreamDone = engine.upstream.every((upstreamId) => {
       const dep = rig.engines.find((e) => e.id === upstreamId);
-      return dep?.status === 'completed';
+      return dep?.status === 'completed' || dep?.status === 'skipped';
     });
     if (allUpstreamDone) return engine;
   }
@@ -190,6 +191,73 @@ function computeUpstreamReachable(
     queue.push(...deps);
   }
   return reachable;
+}
+
+/**
+ * Check whether all engines in the list have reached a terminal state
+ * (completed or skipped) and at least one is completed.
+ */
+function isRigComplete(engines: EngineInstance[]): boolean {
+  const allTerminal = engines.every(
+    (e) => e.status === 'completed' || e.status === 'skipped',
+  );
+  if (!allTerminal) return false;
+  return engines.some((e) => e.status === 'completed');
+}
+
+/**
+ * Evaluate a `when` condition against the upstream yields map.
+ * Returns true if the engine should run, false if it should be skipped.
+ */
+function evaluateWhen(when: string, upstream: Record<string, unknown>): boolean {
+  let expr = when.trim();
+  let negate = false;
+  if (expr.startsWith('!')) {
+    negate = true;
+    expr = expr.slice(1);
+  }
+  const normalized = normalizeVarRef(expr);
+  // Extract engine_id and property from '$yields.<engine_id>.<property>'
+  const withoutPrefix = normalized.slice('$yields.'.length);
+  const dotIndex = withoutPrefix.indexOf('.');
+  const engineId = withoutPrefix.slice(0, dotIndex);
+  const prop = withoutPrefix.slice(dotIndex + 1);
+
+  const engineYields = upstream[engineId];
+  let value: unknown;
+  if (engineYields !== null && engineYields !== undefined && typeof engineYields === 'object') {
+    value = (engineYields as Record<string, unknown>)[prop];
+  }
+  const truthy = !!value;
+  return negate ? !truthy : truthy;
+}
+
+/**
+ * Cascade-skip all pending engines whose `when` is false, given the current
+ * upstream map. Returns the list of additionally skipped engine IDs.
+ * Mutates the engines array in place.
+ * Only engines with a `when` clause participate in cascade skipping.
+ */
+function cascadeSkip(engines: EngineInstance[], upstream: Record<string, unknown>): string[] {
+  const cascaded: string[] = [];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const engine of engines) {
+      if (engine.status !== 'pending' || !engine.when) continue;
+      const allUpstreamDone = engine.upstream.every((upId) => {
+        const dep = engines.find((e) => e.id === upId);
+        return dep?.status === 'completed' || dep?.status === 'skipped';
+      });
+      if (!allUpstreamDone) continue;
+      if (!evaluateWhen(engine.when, upstream)) {
+        engine.status = 'skipped';
+        cascaded.push(engine.id);
+        changed = true;
+      }
+    }
+  }
+  return cascaded;
 }
 
 /**
@@ -279,6 +347,7 @@ function buildFromTemplate(
     status: 'pending' as const,
     upstream: entry.upstream ?? [],
     givensSpec: resolveGivens(entry.givens, context),
+    ...(entry.when !== undefined ? { when: entry.when } : {}),
   }));
   return { engines, resolutionEngineId: template.resolutionEngine };
 }
@@ -414,7 +483,166 @@ function validateTemplates(
         }
       }
     }
+
+    // when condition validation
+    for (const engine of engines) {
+      if (engine.when === undefined) continue;
+      let expr = engine.when.trim();
+      if (expr.startsWith('!')) {
+        expr = expr.slice(1);
+      }
+      const normalized = normalizeVarRef(expr);
+      if (!YIELD_REF_RE.test(normalized)) {
+        throw new Error(
+          `[spider] rigTemplates.${templateKey}: engine "${engine.id}" has invalid when expression "${engine.when}" — must be a $yields.<engine_id>.<property> reference with optional ! prefix`
+        );
+      }
+      const withoutPrefix = normalized.slice('$yields.'.length);
+      const dotIndex = withoutPrefix.indexOf('.');
+      const refEngineId = withoutPrefix.slice(0, dotIndex);
+      const yieldProp = withoutPrefix.slice(dotIndex + 1);
+
+      if (!engineIds.has(refEngineId)) {
+        throw new Error(
+          `[spider] rigTemplates.${templateKey}: engine "${engine.id}" when references $yields.${refEngineId} but "${refEngineId}" is not an engine in this template`
+        );
+      }
+      const reachable = computeUpstreamReachable(engine.id, engines);
+      if (!reachable.has(refEngineId)) {
+        throw new Error(
+          `[spider] rigTemplates.${templateKey}: engine "${engine.id}" when references $yields.${refEngineId}.${yieldProp} but "${refEngineId}" is not upstream of "${engine.id}"`
+        );
+      }
+    }
   }
+}
+
+/**
+ * Validate a set of grafted engines against the current rig.
+ * Returns null if valid, or an error string if invalid.
+ */
+function validateGraft(
+  rig: RigDoc,
+  graft: RigTemplateEngine[],
+  fabricator: FabricatorApi,
+  maxEngines: number,
+): string | null {
+  // Max engines check
+  if (rig.engines.length + graft.length > maxEngines) {
+    return `Graft would exceed maxEnginesPerRig (${maxEngines}): rig has ${rig.engines.length} engines, graft adds ${graft.length}`;
+  }
+
+  const existingIds = new Set(rig.engines.map((e) => e.id));
+
+  // Duplicate ID check
+  const graftIds = new Set<string>();
+  for (const engine of graft) {
+    if (existingIds.has(engine.id) || graftIds.has(engine.id)) {
+      return `Duplicate engine id "${engine.id}"`;
+    }
+    graftIds.add(engine.id);
+  }
+
+  // designId check
+  for (const engine of graft) {
+    if (fabricator.getEngineDesign(engine.designId) === undefined) {
+      return `Engine "${engine.id}" references unknown designId "${engine.designId}"`;
+    }
+  }
+
+  // Upstream reference check (can reference existing rig engines or other graft engines)
+  const allIds = new Set([...existingIds, ...graftIds]);
+  for (const engine of graft) {
+    for (const upId of engine.upstream ?? []) {
+      if (!allIds.has(upId)) {
+        return `Engine "${engine.id}" references unknown upstream "${upId}"`;
+      }
+    }
+  }
+
+  // Cycle detection (DFS on combined engine set)
+  {
+    const allEngines = [
+      ...rig.engines.map((e) => ({ id: e.id, upstream: e.upstream })),
+      ...graft.map((e) => ({ id: e.id, upstream: e.upstream ?? [] })),
+    ];
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+
+    const visit = (id: string): string | null => {
+      if (visited.has(id)) return null;
+      if (visiting.has(id)) return `Dependency cycle detected involving engine "${id}"`;
+      visiting.add(id);
+      const eng = allEngines.find((e) => e.id === id);
+      if (eng) {
+        for (const dep of eng.upstream) {
+          const err = visit(dep);
+          if (err) return err;
+        }
+      }
+      visiting.delete(id);
+      visited.add(id);
+      return null;
+    };
+
+    for (const engine of graft) {
+      const err = visit(engine.id);
+      if (err) return err;
+    }
+  }
+
+  // Build combined template engines list for upstream reachability checks
+  const allTemplateEngines: RigTemplateEngine[] = [
+    ...rig.engines.map((e) => ({ id: e.id, upstream: e.upstream } as RigTemplateEngine)),
+    ...graft,
+  ];
+
+  // when reference validation
+  for (const engine of graft) {
+    if (engine.when === undefined) continue;
+    let expr = engine.when.trim();
+    if (expr.startsWith('!')) expr = expr.slice(1);
+    const normalized = normalizeVarRef(expr);
+    if (!YIELD_REF_RE.test(normalized)) {
+      return `Engine "${engine.id}" has invalid when expression — must be a $yields reference`;
+    }
+    const withoutPrefix = normalized.slice('$yields.'.length);
+    const dotIndex = withoutPrefix.indexOf('.');
+    const refEngineId = withoutPrefix.slice(0, dotIndex);
+    const allIds = new Set([...new Set(rig.engines.map((e) => e.id)), ...graft.map((e) => e.id)]);
+    if (!allIds.has(refEngineId)) {
+      return `Engine "${engine.id}" when references unknown engine "${refEngineId}"`;
+    }
+    const reachable = computeUpstreamReachable(engine.id, allTemplateEngines);
+    if (!reachable.has(refEngineId)) {
+      return `Engine "${engine.id}" when references "${refEngineId}" which is not upstream`;
+    }
+  }
+
+  // yield reference validation in givens
+  for (const engine of graft) {
+    for (const value of Object.values(engine.givens ?? {})) {
+      if (typeof value === 'string' && value.startsWith('$')) {
+        const normalized = normalizeVarRef(value);
+        if (YIELD_REF_RE.test(normalized)) {
+          const withoutPrefix = normalized.slice('$yields.'.length);
+          const dotIndex = withoutPrefix.indexOf('.');
+          const refEngineId = withoutPrefix.slice(0, dotIndex);
+          const yieldProp = withoutPrefix.slice(dotIndex + 1);
+          const allIds = new Set([...new Set(rig.engines.map((e) => e.id)), ...graft.map((e) => e.id)]);
+          if (!allIds.has(refEngineId)) {
+            return `Engine "${engine.id}" references $yields.${refEngineId} but it is not an engine in the rig`;
+          }
+          const reachable = computeUpstreamReachable(engine.id, allTemplateEngines);
+          if (!reachable.has(refEngineId)) {
+            return `Engine "${engine.id}" references $yields.${refEngineId}.${yieldProp} but it is not upstream`;
+          }
+        }
+      }
+    }
+  }
+
+  return null; // Valid
 }
 
 // ── Block type type guard ──────────────────────────────────────────────
@@ -755,6 +983,31 @@ class RigTemplateRegistry {
       }
     }
 
+    // when condition validation
+    for (const engine of engines) {
+      if (engine.when === undefined) continue;
+      let expr = engine.when.trim();
+      if (expr.startsWith('!')) {
+        expr = expr.slice(1);
+      }
+      const normalized = normalizeVarRef(expr);
+      if (!YIELD_REF_RE.test(normalized)) {
+        return `${prefix}: engine "${engine.id}" has invalid when expression "${engine.when}" — must be a $yields.<engine_id>.<property> reference with optional ! prefix`;
+      }
+      const withoutPrefix = normalized.slice('$yields.'.length);
+      const dotIndex = withoutPrefix.indexOf('.');
+      const refEngineId = withoutPrefix.slice(0, dotIndex);
+      const yieldProp = withoutPrefix.slice(dotIndex + 1);
+
+      if (!engineIds.has(refEngineId)) {
+        return `${prefix}: engine "${engine.id}" when references $yields.${refEngineId} but "${refEngineId}" is not an engine in this template`;
+      }
+      const reachable = computeUpstreamReachable(engine.id, template.engines);
+      if (!reachable.has(refEngineId)) {
+        return `${prefix}: engine "${engine.id}" when references $yields.${refEngineId}.${yieldProp} but "${refEngineId}" is not upstream of "${engine.id}"`;
+      }
+    }
+
     return null;
   }
 
@@ -924,6 +1177,14 @@ export function createSpider(): Plugin {
    */
   const pendingPriorBlocks = new Map<string, BlockRecord>();
 
+  /**
+   * In-memory queue of pending grafts.
+   * Key: rigId. Value: { engineId, graft, writId }.
+   * Written by tryCollect/tryRun when a completed engine has a graft.
+   * Consumed by tryProcessGrafts.
+   */
+  const pendingGrafts = new Map<string, { engineId: string; graft: RigTemplateEngine[]; writId: string }>();
+
   // ── Internal crawl operations ─────────────────────────────────────
 
   /**
@@ -981,11 +1242,25 @@ export function createSpider(): Plugin {
         // Completed session — assemble yields via engine's collect() or generic default.
         const design = fabricator.getEngineDesign(engine.designId);
         let yields: unknown;
+        let collectGraft: RigTemplateEngine[] | undefined;
         if (design?.collect) {
           const upstream = buildUpstreamMap(rig);
           const givens = resolveYieldRefs({ ...engine.givensSpec }, upstream);
           const context = { rigId: rig.id, engineId: engine.id, upstream };
-          yields = await design.collect(engine.sessionId!, givens, context);
+          const collectResult = await design.collect(engine.sessionId!, givens, context);
+          // Check for SpiderCollectResult shape (duck-typing)
+          if (
+            collectResult !== null &&
+            collectResult !== undefined &&
+            typeof collectResult === 'object' &&
+            Array.isArray((collectResult as Record<string, unknown>).graft)
+          ) {
+            const scr = collectResult as SpiderCollectResult;
+            yields = scr.yields;
+            collectGraft = scr.graft;
+          } else {
+            yields = collectResult;
+          }
         } else {
           yields = {
             sessionId: session.id,
@@ -1006,9 +1281,17 @@ export function createSpider(): Plugin {
             : e,
         );
 
-        const allCompleted = updatedEngines.every((e) => e.status === 'completed');
+        // Store graft for processing in tryProcessGrafts phase.
+        // Graft takes priority over rig-completion: even if the rig would be complete,
+        // we must queue the graft first and return engine-completed so the graft
+        // is processed on the next crawl step.
+        if (collectGraft !== undefined && collectGraft.length > 0) {
+          pendingGrafts.set(rig.id, { engineId: engine.id, graft: collectGraft, writId: rig.writId });
+          await rigsBook.patch(rig.id, { engines: updatedEngines, status: 'running' });
+          return { action: 'engine-completed', rigId: rig.id, engineId: engine.id };
+        }
 
-        if (allCompleted) {
+        if (isRigComplete(updatedEngines)) {
           await rigsBook.patch(rig.id, { engines: updatedEngines, status: 'completed' });
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'completed' };
         }
@@ -1024,6 +1307,55 @@ export function createSpider(): Plugin {
       }
     }
     return null;
+  }
+
+  /**
+   * Phase 1.5 — processGrafts.
+   *
+   * Process any pending graft requests stored by tryCollect or tryRun.
+   * Validates grafted engines, appends them to the rig, and returns engine-grafted.
+   * If validation fails, fails the originating engine.
+   */
+  async function tryProcessGrafts(): Promise<CrawlResult | null> {
+    if (pendingGrafts.size === 0) return null;
+
+    const [rigId, { engineId, graft, writId }] = pendingGrafts.entries().next().value!;
+    pendingGrafts.delete(rigId);
+
+    // Re-fetch the rig to get the latest state
+    const rig = await rigsBook.get(rigId);
+    if (!rig) return null;
+
+    // Look up the writ by its primary key
+    const writ = await writsBook.get(writId);
+    if (!writ) return null;
+
+    const maxEngines = spiderConfig.maxEnginesPerRig ?? 50;
+    const validationError = validateGraft(rig, graft, fabricator, maxEngines);
+    if (validationError !== null) {
+      await failEngine(rig, engineId, `Graft validation failed: ${validationError}`);
+      return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+    }
+
+    // Convert grafted RigTemplateEngine entries to EngineInstance
+    const graftedInstances: EngineInstance[] = graft.map((entry) => ({
+      id: entry.id,
+      designId: entry.designId,
+      status: 'pending' as const,
+      upstream: entry.upstream ?? [],
+      givensSpec: resolveGivens(entry.givens, { writ, spiderConfig }),
+      ...(entry.when !== undefined ? { when: entry.when } : {}),
+    }));
+
+    const updatedEngines = [...rig.engines, ...graftedInstances];
+    await rigsBook.patch(rig.id, { engines: updatedEngines });
+
+    return {
+      action: 'engine-grafted',
+      rigId: rig.id,
+      engineId,
+      graftedEngineIds: graftedInstances.map((e) => e.id),
+    };
   }
 
   /**
@@ -1129,14 +1461,45 @@ export function createSpider(): Plugin {
       const pending = findRunnableEngine(rig);
       if (!pending) continue;
 
+      const now = new Date().toISOString();
+      const upstream = buildUpstreamMap(rig);
+
+      // Evaluate `when` condition before running the engine
+      if (pending.when !== undefined) {
+        const shouldRun = evaluateWhen(pending.when, upstream);
+        if (!shouldRun) {
+          // Skip this engine and cascade-skip downstream conditionals
+          const mutableEngines = rig.engines.map((e) =>
+            e.id === pending.id ? { ...e, status: 'skipped' as const } : { ...e },
+          );
+          const cascaded = cascadeSkip(mutableEngines, upstream);
+
+          if (isRigComplete(mutableEngines)) {
+            await rigsBook.patch(rig.id, { engines: mutableEngines, status: 'completed' });
+            return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'completed' };
+          }
+
+          if (isRigBlocked(mutableEngines)) {
+            await rigsBook.patch(rig.id, { engines: mutableEngines, status: 'blocked' });
+            return { action: 'rig-blocked', rigId: rig.id, writId: rig.writId };
+          }
+
+          await rigsBook.patch(rig.id, { engines: mutableEngines });
+          return {
+            action: 'engine-skipped',
+            rigId: rig.id,
+            engineId: pending.id,
+            ...(cascaded.length > 0 ? { cascadeSkipped: cascaded } : {}),
+          };
+        }
+      }
+
       const design = fabricator.getEngineDesign(pending.designId);
       if (!design) {
         await failEngine(rig, pending.id, `No engine design found for "${pending.designId}"`);
         return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
       }
 
-      const now = new Date().toISOString();
-      const upstream = buildUpstreamMap(rig);
       const givens = resolveYieldRefs({ ...pending.givensSpec }, upstream);
 
       // Check for a prior block record (engine was previously blocked and unblocked)
@@ -1230,21 +1593,42 @@ export function createSpider(): Plugin {
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
         }
 
+        // Check for graft (SpiderEngineRunResult extension — duck-typing)
+        const runGraft = (engineResult as Record<string, unknown>).graft as RigTemplateEngine[] | undefined;
+
         const completedAt = new Date().toISOString();
         const completedEngines = updatedRig.engines.map((e) =>
           e.id === pending.id
             ? { ...e, status: 'completed' as const, yields, completedAt }
             : e,
         );
-        const allCompleted = completedEngines.every((e) => e.status === 'completed');
-        await rigsBook.patch(rig.id, {
-          engines: completedEngines,
-          status: allCompleted ? 'completed' : 'running',
-        });
 
-        if (allCompleted) {
+        // Store graft for processing in tryProcessGrafts phase.
+        // Graft takes priority over rig-completion: even if the rig would be complete,
+        // we must queue the graft first and return engine-completed so the graft
+        // is processed on the next crawl step.
+        if (runGraft !== undefined && runGraft.length > 0) {
+          pendingGrafts.set(rig.id, { engineId: pending.id, graft: runGraft, writId: rig.writId });
+          await rigsBook.patch(rig.id, {
+            engines: completedEngines,
+            status: 'running',
+          });
+          return { action: 'engine-completed', rigId: rig.id, engineId: pending.id };
+        }
+
+        if (isRigComplete(completedEngines)) {
+          await rigsBook.patch(rig.id, {
+            engines: completedEngines,
+            status: 'completed',
+          });
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'completed' };
         }
+
+        await rigsBook.patch(rig.id, {
+          engines: completedEngines,
+          status: 'running',
+        });
+
         return { action: 'engine-completed', rigId: rig.id, engineId: pending.id };
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
@@ -1320,6 +1704,9 @@ export function createSpider(): Plugin {
     async crawl(): Promise<CrawlResult | null> {
       const collected = await tryCollect();
       if (collected) return collected;
+
+      const grafted = await tryProcessGrafts();
+      if (grafted) return grafted;
 
       const checked = await tryCheckBlocked();
       if (checked) return checked;
