@@ -60,6 +60,7 @@ brief writ posted
   │
   ├─ 4. Inventory checkpoint (astrolabe.inventory-check, clockwork)
   │     → validates inventory was produced in the plans book
+  │     → transitions plan status: 'reading' → 'analyzing'
   │
   ├─ 5. Analyst (anima-session) — produces scope, decisions, observations
   │     → resumes reader's conversation via ${yields.reader.conversationId}
@@ -104,7 +105,7 @@ The sage role carries permissions to read/write the Astrolabe's books, create pa
 The Astrolabe contributes three clockwork engine designs to the Fabricator:
 
 - **`astrolabe.plan-init`** — creates a `PlanDoc` in the plans book, keyed by the brief writ ID. Sets initial status to `reading`. Yields `{ planId }` so downstream engines can reference the plan via `${yields.plan-init.planId}` in their givens/prompts.
-- **`astrolabe.inventory-check`** — reads the plans book, validates that an inventory document exists for the current plan. Completes immediately if valid; fails the engine if no inventory is found.
+- **`astrolabe.inventory-check`** — reads the plans book, validates that an inventory document exists for the current plan. On success, transitions the plan status from `'reading'` to `'analyzing'`, marking the reading phase complete and enabling the analyst stage and subsequent `decision-review` engine to proceed. Fails the engine if no inventory is found.
 - **`astrolabe.decision-review`** — the patron interaction engine. On first run: reads decisions from the plans book, maps them to an `InputRequestDoc` (each `Decision` → `ChoiceQuestionSpec`), pre-fills answers with analyst recommendations, writes the request to the Spider's `input-requests` book, and returns `{ status: 'blocked', blockType: 'patron-input', condition: { requestId } }`. On re-run after block clears (detected via `priorBlock` in context): reads the completed `InputRequestDoc`, reconciles patron answers back into `PlanDoc.decisions` (setting `selected` and `patronOverride` fields), validates all decisions are resolved and scope is consistent, and completes normally. Yields `{ decisionSummary }` — a human-readable string summarizing all decisions and the patron's selections, for injection into the spec-writer's prompt via inline interpolation.
 
 ---

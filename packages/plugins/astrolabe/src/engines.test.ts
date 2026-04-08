@@ -203,7 +203,7 @@ describe('inventory-check engine', () => {
   beforeEach(() => { setup(); });
   afterEach(() => { clearGuild(); });
 
-  it('completes when plan has a non-empty inventory', async () => {
+  it('completes when plan has a non-empty inventory and transitions status to analyzing', async () => {
     const engine = createInventoryCheckEngine(() => plansBook);
     const plan = makePlan({ inventory: 'src/app.ts — main entry point' });
     await plansBook.put(plan);
@@ -211,6 +211,9 @@ describe('inventory-check engine', () => {
     const result = await engine.run({ planId: plan.id }, buildCtx());
     assert.equal(result.status, 'completed');
     assert.deepEqual((result as { status: 'completed'; yields: unknown }).yields, {});
+
+    const updated = await plansBook.get(plan.id);
+    assert.equal(updated?.status, 'analyzing');
   });
 
   it('throws when plan has no inventory field', async () => {
