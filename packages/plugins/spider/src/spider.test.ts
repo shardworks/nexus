@@ -5609,7 +5609,35 @@ describe('$yields.* reference support', () => {
 
       setGuild(fakeGuild);
 
-      const noopCtx = { on: () => {} };
+      const spiderAsLoaded: LoadedApparatus = {
+        packageName: '@shardworks/spider-apparatus',
+        id: 'spider',
+        version: '0.0.0',
+        apparatus: spiderApparatus,
+      };
+
+      const customEngineApparatuses: LoadedApparatus[] = [];
+      if (Object.keys(customEngines).length > 0) {
+        customEngineApparatuses.push({
+          packageName: '@test/custom-engines',
+          id: 'test-custom-engines',
+          version: '0.0.0',
+          apparatus: {
+            requires: [],
+            supportKit: { engines: customEngines },
+            provides: {},
+            start() {},
+          },
+        });
+      }
+
+      const fabricatorKitEntries = buildKitEntries(
+        [],
+        [spiderAsLoaded, ...customEngineApparatuses],
+      );
+      const spiderKitEntries = buildKitEntries([], [spiderAsLoaded]);
+
+      const noopCtx = { on: () => {}, kits: () => [] as KitEntry[] };
       stacksApparatus.start(noopCtx);
       const stacks = stacksApparatus.provides as StacksApi;
       apparatusMap.set('stacks', stacks);
@@ -5639,36 +5667,13 @@ describe('$yields.* reference support', () => {
       const clerk = clerkApparatus.provides as ClerkApi;
       apparatusMap.set('clerk', clerk);
 
-      const { ctx: fabricatorCtx, fire: fireFabricator } = buildCtx();
+      const { ctx: fabricatorCtx } = buildCtx(fabricatorKitEntries);
       fabricatorApparatus.start(fabricatorCtx);
       const fabricator = fabricatorApparatus.provides as FabricatorApi;
       apparatusMap.set('fabricator', fabricator);
 
-      // Register custom engines in Fabricator BEFORE Spider starts so that
-      // validateTemplates() (which runs during spider.start()) sees them.
-      const customEnginePlugin: LoadedApparatus = {
-        packageName: '@test/custom-engines',
-        id: 'test-custom-engines',
-        version: '0.0.0',
-        apparatus: {
-          requires: [],
-          supportKit: { engines: customEngines },
-          provides: {},
-          start() {},
-        },
-      };
-      void fireFabricator('plugin:initialized', customEnginePlugin);
-
-      // Also fire the Spider's own designs so they're registered
-      const spiderLoaded: LoadedApparatus = {
-        packageName: '@shardworks/spider-apparatus',
-        id: 'spider',
-        version: '0.0.0',
-        apparatus: spiderApparatus,
-      };
-      void fireFabricator('plugin:initialized', spiderLoaded);
-
-      spiderApparatus.start(noopCtx);
+      const { ctx: spiderCtx } = buildCtx(spiderKitEntries);
+      spiderApparatus.start(spiderCtx);
       const spider = spiderApparatus.provides as SpiderApi;
       apparatusMap.set('spider', spider);
 
