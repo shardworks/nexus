@@ -25,6 +25,7 @@ export function setupGuildAccessor(home: string): void {
     kits: () => [],
     apparatuses: () => [],
     failedPlugins: () => [],
+    startupWarnings: () => [],
   });
 }
 
