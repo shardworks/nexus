@@ -19,6 +19,7 @@ import {
   createPlanInitEngine,
   createInventoryCheckEngine,
   createDecisionReviewEngine,
+  createSpecPublishEngine,
 } from './engines/index.ts';
 import type { PlanDoc, Decision, ScopeItem } from './types.ts';
 import type { EngineRunContext } from '@shardworks/fabricator-apparatus';
@@ -29,6 +30,12 @@ let stacks: StacksApi;
 let plansBook: Book<PlanDoc>;
 let inputRequestsBook: Book<InputRequestDoc>;
 let memBackend: MemoryBackend;
+
+// Mutable clerk overrides — tests can swap these out per-scenario
+let mockClerkPost: (params: unknown) => Promise<{ id: string; title: string }> =
+  async () => { throw new Error('clerk.post not implemented'); };
+let mockClerkLink: (sourceId: string, targetId: string, type: string) => Promise<void> =
+  async () => { throw new Error('clerk.link not implemented'); };
 
 const mockClerkApi = {
   show: async (id: string) => ({
@@ -41,10 +48,11 @@ const mockClerkApi = {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   }),
-  post: async () => { throw new Error('not implemented'); },
+  post: async (params: unknown) => mockClerkPost(params),
   list: async () => [],
   count: async () => 0,
-  link: async () => { throw new Error('not implemented'); },
+  link: async (sourceId: string, targetId: string, type: string) =>
+    mockClerkLink(sourceId, targetId, type),
   links: async () => ({ outbound: [], inbound: [] }),
   unlink: async () => {},
   transition: async () => { throw new Error('not implemented'); },
@@ -565,5 +573,294 @@ describe('decision-review engine', () => {
     const inputReq = await inputRequestsBook.get(blocked.condition.requestId);
     const q = inputReq?.questions['D1'] as { details?: string };
     assert.equal(q?.details, undefined);
+  });
+
+  it('throws when a decision has no selected or patronOverride after re-run', async () => {
+    const engine = createDecisionReviewEngine(() => plansBook);
+    const decisions: Decision[] = [
+      {
+        id: 'D1',
+        scope: [],
+        question: 'First question?',
+        options: { A: 'Option A', B: 'Option B' },
+      },
+      {
+        id: 'D2',
+        scope: [],
+        question: 'Second question?',
+        options: { X: 'Option X', Y: 'Option Y' },
+      },
+    ];
+
+    const plan = makePlan({ status: 'analyzing', decisions });
+    await plansBook.put(plan);
+
+    // First run — creates InputRequestDoc
+    const firstResult = await engine.run({ planId: plan.id }, buildCtx());
+    const blocked = firstResult as { status: 'blocked'; condition: { requestId: string } };
+    const requestId = blocked.condition.requestId;
+
+    // Only D1 gets an answer; D2 has no answer
+    await inputRequestsBook.patch(requestId, {
+      status: 'completed',
+      answers: { D1: { selected: 'A' } },
+      updatedAt: new Date().toISOString(),
+    });
+
+    const reRunCtx = buildCtx({
+      priorBlock: { type: 'patron-input', condition: { requestId }, blockedAt: new Date().toISOString() },
+    });
+
+    await assert.rejects(
+      () => engine.run({ planId: plan.id }, reRunCtx),
+      (err: Error) => {
+        assert.ok(
+          err.message.includes('Unresolved decisions after patron review: D2'),
+          `Expected message about D2, got: ${err.message}`,
+        );
+        return true;
+      },
+    );
+
+    // PlanDoc must still be in 'reviewing' status — not patched to 'writing'
+    const notPatched = await plansBook.get(plan.id);
+    assert.equal(notPatched?.status, 'reviewing');
+  });
+
+  it('throws listing all unresolved decisions when multiple are unresolved', async () => {
+    const engine = createDecisionReviewEngine(() => plansBook);
+    const decisions: Decision[] = [
+      { id: 'D1', scope: [], question: 'Q1?', options: { A: 'A', B: 'B' } },
+      { id: 'D2', scope: [], question: 'Q2?', options: { X: 'X', Y: 'Y' } },
+      { id: 'D3', scope: [], question: 'Q3?', options: { P: 'P', Q: 'Q' } },
+    ];
+
+    const plan = makePlan({ status: 'analyzing', decisions });
+    await plansBook.put(plan);
+
+    const firstResult = await engine.run({ planId: plan.id }, buildCtx());
+    const blocked = firstResult as { status: 'blocked'; condition: { requestId: string } };
+    const requestId = blocked.condition.requestId;
+
+    // Only D2 gets an answer; D1 and D3 are unresolved
+    await inputRequestsBook.patch(requestId, {
+      status: 'completed',
+      answers: { D2: { selected: 'X' } },
+      updatedAt: new Date().toISOString(),
+    });
+
+    const reRunCtx = buildCtx({
+      priorBlock: { type: 'patron-input', condition: { requestId }, blockedAt: new Date().toISOString() },
+    });
+
+    await assert.rejects(
+      () => engine.run({ planId: plan.id }, reRunCtx),
+      (err: Error) => {
+        assert.ok(
+          err.message.includes('Unresolved decisions after patron review: D1, D3'),
+          `Expected D1 and D3 in message, got: ${err.message}`,
+        );
+        return true;
+      },
+    );
+  });
+
+  it('patronOverride satisfies validation — does not throw', async () => {
+    const engine = createDecisionReviewEngine(() => plansBook);
+    const decisions: Decision[] = [
+      { id: 'D1', scope: [], question: 'Q?', options: { A: 'A', B: 'B' } },
+    ];
+
+    const plan = makePlan({ status: 'analyzing', decisions });
+    await plansBook.put(plan);
+
+    const firstResult = await engine.run({ planId: plan.id }, buildCtx());
+    const blocked = firstResult as { status: 'blocked'; condition: { requestId: string } };
+    const requestId = blocked.condition.requestId;
+
+    // Patron provides a custom (override) answer
+    await inputRequestsBook.patch(requestId, {
+      status: 'completed',
+      answers: { D1: { custom: 'A custom override' } },
+      updatedAt: new Date().toISOString(),
+    });
+
+    const reRunCtx = buildCtx({
+      priorBlock: { type: 'patron-input', condition: { requestId }, blockedAt: new Date().toISOString() },
+    });
+
+    const result = await engine.run({ planId: plan.id }, reRunCtx);
+    assert.equal(result.status, 'completed');
+
+    const finalPlan = await plansBook.get(plan.id);
+    assert.equal(finalPlan?.decisions?.[0].patronOverride, 'A custom override');
+    assert.equal(finalPlan?.decisions?.[0].selected, undefined);
+  });
+});
+
+// ── spec-publish tests ────────────────────────────────────────────────
+
+describe('spec-publish engine', () => {
+  beforeEach(() => {
+    setup();
+    // Reset mocks to safe defaults
+    mockClerkPost = async () => ({ id: 'writ-generated-001', title: 'Generated' });
+    mockClerkLink = async () => {};
+  });
+  afterEach(() => { clearGuild(); });
+
+  it('has id astrolabe.spec-publish and a run function', () => {
+    const engine = createSpecPublishEngine(() => plansBook);
+    assert.equal(engine.id, 'astrolabe.spec-publish');
+    assert.equal(typeof engine.run, 'function');
+  });
+
+  it('happy path — posts writ, links, updates PlanDoc, returns completed', async () => {
+    const engine = createSpecPublishEngine(() => plansBook);
+
+    const postCalls: unknown[] = [];
+    const linkCalls: [string, string, string][] = [];
+
+    mockClerkPost = async (params) => {
+      postCalls.push(params);
+      return { id: 'writ-mandate-001', title: (params as { title: string }).title };
+    };
+    mockClerkLink = async (src, tgt, type) => {
+      linkCalls.push([src, tgt, type]);
+    };
+
+    const plan = makePlan({
+      id: 'w-brief-001',
+      codex: 'my-codex',
+      status: 'writing',
+      spec: '# Spec\nContent here',
+    });
+    await plansBook.put(plan);
+
+    const result = await engine.run({ planId: plan.id }, buildCtx());
+    assert.equal(result.status, 'completed');
+    const yields = (result as { status: 'completed'; yields: { generatedWritId: string } }).yields;
+    assert.equal(yields.generatedWritId, 'writ-mandate-001');
+
+    // Verify clerk.post args
+    assert.equal(postCalls.length, 1);
+    const posted = postCalls[0] as { type: string; title: string; body: string; codex: string };
+    assert.equal(posted.type, 'mandate');
+    assert.equal(posted.title, `Brief for ${plan.id}`); // mockClerkApi.show returns this
+    assert.equal(posted.body, '# Spec\nContent here');
+    assert.equal(posted.codex, 'my-codex');
+
+    // Verify clerk.link args
+    assert.equal(linkCalls.length, 1);
+    assert.deepEqual(linkCalls[0], ['writ-mandate-001', 'w-brief-001', 'refines']);
+
+    // Verify PlanDoc update
+    const updatedPlan = await plansBook.get(plan.id);
+    assert.equal(updatedPlan?.generatedWritId, 'writ-mandate-001');
+    assert.equal(updatedPlan?.status, 'completed');
+    assert.ok(updatedPlan?.updatedAt);
+  });
+
+  it('uses custom generatedWritType from guild config', async () => {
+    const postCalls: unknown[] = [];
+    mockClerkPost = async (params) => {
+      postCalls.push(params);
+      return { id: 'writ-custom-001', title: 'T' };
+    };
+    mockClerkLink = async () => {};
+
+    // Override guild with custom astrolabe config
+    const apparatusMap2 = new Map<string, unknown>();
+    apparatusMap2.set('stacks', stacks);
+    apparatusMap2.set('clerk', mockClerkApi);
+
+    const customGuildConfig: GuildConfig & { astrolabe?: { generatedWritType?: string } } = {
+      name: 'test-guild',
+      nexus: '0.0.0',
+      plugins: [],
+      settings: { model: 'sonnet' },
+      astrolabe: { generatedWritType: 'reviewed-mandate' },
+    };
+
+    const customGuild: Guild = {
+      home: '/tmp/fake-guild',
+      apparatus<T>(name: string): T {
+        const a = apparatusMap2.get(name);
+        if (!a) throw new Error(`Apparatus "${name}" not installed`);
+        return a as T;
+      },
+      config<T>(_pluginId: string): T { return {} as T; },
+      writeConfig() {},
+      guildConfig() { return customGuildConfig as GuildConfig; },
+      kits: () => [],
+      apparatuses: () => [],
+      failedPlugins: () => [],
+      startupWarnings() { return []; },
+    };
+    setGuild(customGuild);
+
+    const plan = makePlan({ id: 'w-custom-001', codex: 'c', status: 'writing', spec: '# Spec' });
+    await plansBook.put(plan);
+
+    const engine = createSpecPublishEngine(() => plansBook);
+    await engine.run({ planId: plan.id }, buildCtx());
+
+    assert.equal(postCalls.length, 1);
+    const posted = postCalls[0] as { type: string };
+    assert.equal(posted.type, 'reviewed-mandate');
+  });
+
+  it('throws when plan not found', async () => {
+    const engine = createSpecPublishEngine(() => plansBook);
+
+    await assert.rejects(
+      () => engine.run({ planId: 'no-such-plan' }, buildCtx()),
+      (err: Error) => {
+        assert.ok(err.message.includes('not found'), `Expected "not found" in: ${err.message}`);
+        return true;
+      },
+    );
+  });
+
+  it('throws when plan status is not writing', async () => {
+    const engine = createSpecPublishEngine(() => plansBook);
+    const plan = makePlan({ status: 'analyzing', spec: '# Spec' });
+    await plansBook.put(plan);
+
+    await assert.rejects(
+      () => engine.run({ planId: plan.id }, buildCtx()),
+      (err: Error) => {
+        assert.ok(err.message.includes('writing'), `Expected "writing" in: ${err.message}`);
+        return true;
+      },
+    );
+  });
+
+  it('throws when plan spec is missing', async () => {
+    const engine = createSpecPublishEngine(() => plansBook);
+    const plan = makePlan({ status: 'writing' });
+    await plansBook.put(plan);
+
+    await assert.rejects(
+      () => engine.run({ planId: plan.id }, buildCtx()),
+      (err: Error) => {
+        assert.ok(err.message.toLowerCase().includes('no spec'), `Expected "no spec" in: ${err.message}`);
+        return true;
+      },
+    );
+  });
+
+  it('throws when plan spec is empty string', async () => {
+    const engine = createSpecPublishEngine(() => plansBook);
+    const plan = makePlan({ status: 'writing', spec: '' });
+    await plansBook.put(plan);
+
+    await assert.rejects(
+      () => engine.run({ planId: plan.id }, buildCtx()),
+      (err: Error) => {
+        assert.ok(err.message.toLowerCase().includes('no spec'), `Expected "no spec" in: ${err.message}`);
+        return true;
+      },
+    );
   });
 });

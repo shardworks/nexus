@@ -85,25 +85,28 @@ describe('Astrolabe supportKit shape', () => {
 
   // ── R7: engines ────────────────────────────────────────────────────
 
-  it('contributes all three engine designs', () => {
+  it('contributes all four engine designs', () => {
     const kit = getKit(plugin);
     const engines = kit.engines as Record<string, { id: string; run: unknown }>;
     assert.ok(engines?.['astrolabe.plan-init'], 'plan-init engine must exist');
     assert.ok(engines?.['astrolabe.inventory-check'], 'inventory-check engine must exist');
     assert.ok(engines?.['astrolabe.decision-review'], 'decision-review engine must exist');
+    assert.ok(engines?.['astrolabe.spec-publish'], 'spec-publish engine must exist');
 
     assert.equal(engines['astrolabe.plan-init'].id, 'astrolabe.plan-init');
     assert.equal(engines['astrolabe.inventory-check'].id, 'astrolabe.inventory-check');
     assert.equal(engines['astrolabe.decision-review'].id, 'astrolabe.decision-review');
+    assert.equal(engines['astrolabe.spec-publish'].id, 'astrolabe.spec-publish');
 
     assert.equal(typeof engines['astrolabe.plan-init'].run, 'function');
     assert.equal(typeof engines['astrolabe.inventory-check'].run, 'function');
     assert.equal(typeof engines['astrolabe.decision-review'].run, 'function');
+    assert.equal(typeof engines['astrolabe.spec-publish'].run, 'function');
   });
 
   // ── R8: rigTemplates and rigTemplateMappings ───────────────────────
 
-  it('contributes planning rig template with 8 engines', () => {
+  it('contributes planning rig template with 9 engines', () => {
     const kit = getKit(plugin);
     const rigTemplates = kit.rigTemplates as Record<string, {
       engines: Array<{ id: string; designId: string }>;
@@ -112,7 +115,7 @@ describe('Astrolabe supportKit shape', () => {
     assert.ok(rigTemplates?.planning, 'planning template must exist');
 
     const templateEngines = rigTemplates.planning.engines;
-    assert.equal(templateEngines.length, 8);
+    assert.equal(templateEngines.length, 9);
 
     const engineIds = templateEngines.map(e => e.id);
     assert.deepEqual(engineIds, [
@@ -123,6 +126,7 @@ describe('Astrolabe supportKit shape', () => {
       'analyst',
       'decision-review',
       'spec-writer',
+      'spec-publish',
       'seal',
     ]);
 
@@ -226,5 +230,27 @@ describe('Astrolabe supportKit shape', () => {
     }>;
     const reader = rigTemplates.planning.engines.find(e => e.id === 'reader');
     assert.equal(reader?.givens?.conversationId, undefined);
+  });
+
+  it('spec-publish engine is upstream of seal', () => {
+    const kit = getKit(plugin);
+    const rigTemplates = kit.rigTemplates as Record<string, {
+      engines: Array<{ id: string; upstream?: string[] }>;
+    }>;
+    const seal = rigTemplates.planning.engines.find(e => e.id === 'seal');
+    assert.deepEqual(seal?.upstream, ['spec-publish']);
+  });
+
+  it('spec-writer prompt includes decisionSummary interpolation', () => {
+    const kit = getKit(plugin);
+    const rigTemplates = kit.rigTemplates as Record<string, {
+      engines: Array<{ id: string; givens?: Record<string, unknown> }>;
+    }>;
+    const specWriter = rigTemplates.planning.engines.find(e => e.id === 'spec-writer');
+    const prompt = specWriter?.givens?.prompt as string;
+    assert.ok(
+      prompt.includes('${yields.decision-review.decisionSummary}'),
+      'spec-writer prompt must include decisionSummary interpolation',
+    );
   });
 });

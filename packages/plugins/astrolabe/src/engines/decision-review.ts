@@ -244,6 +244,15 @@ export function createDecisionReviewEngine(getPlansBook: () => Book<PlanDoc>): E
           }
         }
 
+        // ── Validate consistency ──────────────────────────────────
+        const unresolved = decisions.filter(
+          d => d.selected === undefined && d.patronOverride === undefined,
+        );
+        if (unresolved.length > 0) {
+          const ids = unresolved.map(d => d.id).join(', ');
+          throw new Error(`Unresolved decisions after patron review: ${ids}`);
+        }
+
         const decisionSummary = buildDecisionSummary(decisions, scopeItems);
 
         const now = new Date().toISOString();

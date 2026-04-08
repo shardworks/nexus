@@ -27,6 +27,7 @@ import {
   createPlanInitEngine,
   createInventoryCheckEngine,
   createDecisionReviewEngine,
+  createSpecPublishEngine,
 } from './engines/index.ts';
 
 // ── Config resolver ──────────────────────────────────────────────────
@@ -105,16 +106,25 @@ const planningTemplate: RigTemplate = {
         prompt:
           'MODE: WRITER\n\nPlan ID: ${yields.plan-init.planId}\n\n' +
           'You are continuing the analyst conversation. Use plan-show to read the full ' +
-          'plan including patron-reviewed decisions, then write the specification using spec-write.',
+          'plan including patron-reviewed decisions, then write the specification using spec-write.' +
+          '\n\nDecision summary:\n${yields.decision-review.decisionSummary}',
         cwd: '${yields.draft.path}',
         conversationId: '${yields.analyst.conversationId}',
         writ: '${writ}',
       },
     },
     {
+      id: 'spec-publish',
+      designId: 'astrolabe.spec-publish',
+      upstream: ['spec-writer'],
+      givens: {
+        planId: '${yields.plan-init.planId}',
+      },
+    },
+    {
       id: 'seal',
       designId: 'seal',
-      upstream: ['spec-writer'],
+      upstream: ['spec-publish'],
       givens: { abandon: true },
     },
   ],
@@ -131,6 +141,7 @@ export function createAstrolabe(): Plugin {
   const planInitEngine = createPlanInitEngine(() => plansBook);
   const inventoryCheckEngine = createInventoryCheckEngine(() => plansBook);
   const decisionReviewEngine = createDecisionReviewEngine(() => plansBook);
+  const specPublishEngine = createSpecPublishEngine(() => plansBook);
 
   // ── API ────────────────────────────────────────────────────────
 
@@ -342,6 +353,7 @@ export function createAstrolabe(): Plugin {
           'astrolabe.plan-init': planInitEngine,
           'astrolabe.inventory-check': inventoryCheckEngine,
           'astrolabe.decision-review': decisionReviewEngine,
+          'astrolabe.spec-publish': specPublishEngine,
         },
 
         rigTemplates: {
