@@ -431,6 +431,8 @@ export interface ChoiceQuestionSpec {
   type: 'choice';
   /** Human-readable question text. */
   label: string;
+  /** Optional long-form context, explanation, or instructions for this question. */
+  details?: string;
   /** Key → display label options map. */
   options: Record<string, string>;
   /** When true, the patron can supply a freeform answer instead of selecting. */
@@ -441,12 +443,16 @@ export interface BooleanQuestionSpec {
   type: 'boolean';
   /** Human-readable question text. */
   label: string;
+  /** Optional long-form context, explanation, or instructions for this question. */
+  details?: string;
 }
 
 export interface TextQuestionSpec {
   type: 'text';
   /** Human-readable question text. */
   label: string;
+  /** Optional long-form context, explanation, or instructions for this question. */
+  details?: string;
 }
 
 export type QuestionSpec = ChoiceQuestionSpec | BooleanQuestionSpec | TextQuestionSpec;

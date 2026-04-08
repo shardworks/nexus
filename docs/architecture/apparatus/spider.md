@@ -53,11 +53,12 @@ The Spider contributes its five engine designs via its support kit:
 // In spider-apparatus plugin
 supportKit: {
   engines: {
-    draft:     draftEngine,
-    implement: implementEngine,
-    review:    reviewEngine,
-    revise:    reviseEngine,
-    seal:      sealEngine,
+    'draft':          draftEngine,
+    'implement':      implementEngine,
+    'review':         reviewEngine,
+    'revise':         reviseEngine,
+    'seal':           sealEngine,
+    'anima-session':  animaSessionEngine,
   },
   tools: [crawlOneTool, crawlContinualTool],
 },
@@ -175,7 +176,7 @@ Each engine produces typed yields that downstream engines consume. The yields ar
 
 **Serialization constraint:** Because yields are persisted to the Stacks (JSON-backed), all yield values **must be JSON-serializable**. The Spider should validate this at storage time — if an engine returns a non-serializable value (function, circular reference, etc.), the engine fails with a clear error. This is important because engines are a plugin extension point — kit authors need a hard boundary, not a silent corruption.
 
-When the Spider runs an engine, it assembles givens from the givensSpec only — upstream yields are **not** merged into givens. Engines that need upstream data access it via the `context.upstream` escape hatch:
+When the Spider runs an engine, it assembles givens from the givensSpec. Givens template expressions using `${yields.*}` syntax are resolved at engine start time from upstream yields (see [Givens Template Expressions](#givens-template-expressions)). All upstream yields are also available via the `context.upstream` escape hatch:
 
 ```typescript
 function assembleGivensAndContext(rig: Rig, engine: EngineInstance) {
@@ -226,11 +227,27 @@ interface DraftYields {
 interface ImplementYields {
   sessionId: string
   sessionStatus: 'completed' | 'failed'
+  conversationId?: string
 }
 ```
 
 **Produced by:** `implement` engine (set by Spider's collect step when session completes)
 **Consumed by:** `review` (needs to know the session completed)
+
+### Default Quick-Engine Yields
+
+Quick engines that define no custom `collect` method receive the generic default yields:
+
+```typescript
+interface DefaultQuickYields {
+  sessionId: string
+  sessionStatus: 'completed' | 'failed'
+  output?: string
+  conversationId?: string
+}
+```
+
+The `conversationId` is included when the session provider supports conversation resumption (e.g., Claude Code's `--resume`). This enables conversation chaining across engines via `${yields.<engineId>.conversationId}` in rig template givens. The `anima-session` engine relies on this for multi-step workflows where downstream engines resume an upstream engine's conversation.
 
 ### `ReviewYields`
 
@@ -520,14 +537,62 @@ Commit all changes before ending your session.
 
 **Collect step:** The revise engine has no `collect` method — the Spider uses the generic default: `{ sessionId, sessionStatus, output? }`.
 
-### `seal` (clockwork)
+### `anima-session` (quick)
 
-Seals the draft binding.
+A generic engine that summons an anima session. Unlike the other quick engines which embed prompt logic, `anima-session` is a reusable building block — the prompt, role, and conversation context are supplied entirely through givens.
 
 ```typescript
-async run(_givens: Record<string, unknown>, ctx: EngineRunContext): Promise<EngineRunResult> {
+async run(givens: Record<string, unknown>, context: EngineRunContext): Promise<EngineRunResult> {
+  const animator = guild().apparatus<AnimatorApi>('animator')
+  const writ = givens.writ as WritDoc | undefined
+  const draft = context.upstream['draft'] as DraftYields | undefined
+
+  const handle = animator.summon({
+    role: givens.role as string,
+    prompt: givens.prompt as string,
+    cwd: givens.cwd as string ?? draft?.path,
+    ...(givens.conversationId ? { conversationId: givens.conversationId as string } : {}),
+    environment: writ ? { GIT_AUTHOR_EMAIL: `${writ.id}@nexus.local` } : {},
+    metadata: { engineId: context.engineId, ...(writ ? { writId: writ.id } : {}) },
+  })
+
+  return { status: 'launched', sessionId: handle.sessionId }
+}
+```
+
+**Givens:**
+- `role` *(required)* — the Loom role to summon
+- `prompt` *(required)* — the work prompt for this session
+- `cwd` *(optional)* — working directory; falls back to `upstream.draft.path` if available
+- `conversationId` *(optional)* — conversation to resume (typically wired from an upstream engine's yields via `${yields.<engineId>.conversationId}`)
+- `writ` *(optional)* — the writ, if the engine needs it for git identity or metadata
+
+**Yields:** The default quick-engine yields: `{ sessionId, sessionStatus, output?, conversationId }`. The `conversationId` in yields enables downstream engines to resume the same conversation by referencing `${yields.<engineId>.conversationId}` in their givens.
+
+**Collect step:** No custom `collect` — uses the Spider's generic default.
+
+This engine is contributed by the Spider's support kit alongside the five existing engines. Kit-contributed rig templates and guild-configured templates can both reference `anima-session` as a `designId`.
+
+### `seal` (clockwork)
+
+Closes a draft binding — either sealing (merging inscriptions) or abandoning (discarding the worktree).
+
+**Givens:**
+- `abandon` *(optional, boolean)* — when truthy, abandons the draft instead of sealing. Used by rigs that need codebase access but don't produce inscriptions (e.g. planning rigs).
+
+```typescript
+async run(givens: Record<string, unknown>, ctx: EngineRunContext): Promise<EngineRunResult> {
   const scriptorium = guild().apparatus<ScriptoriumApi>('codexes')
   const draft = ctx.upstream.draft as DraftYields
+
+  if (givens.abandon) {
+    await scriptorium.abandonDraft({
+      codexName: draft.codexName,
+      branch: draft.branch,
+      force: true,
+    })
+    return { status: 'completed', yields: { abandoned: true } }
+  }
 
   const result = await scriptorium.seal({
     codexName: draft.codexName,
@@ -624,7 +689,6 @@ Spider
 
 These are known directions the Spider and its data model will grow. None are in scope for the static rig MVP.
 
-- **givensSpec templates.** The givensSpec currently holds literal values set at rig spawn time. It will grow to support template expressions (e.g. `${draft.worktreePath}`) that resolve specific values from upstream yields into typed givens, replacing the current reliance on the `context.upstream` escape hatch.
 - **Engine needs declarations.** Engine designs will declare a `needs` specification that controls which upstream yields are included and how they're mapped — making the data flow between engines explicit and type-safe.
 - **Typed engine contracts.** The `Record<string, unknown>` givens map with type assertions is scaffolding. The needs/planning system will introduce typed contracts between engines — defining what each engine requires and provides. This scaffolding gets replaced, not extended.
 - **Dynamic rig extension.** Capability resolution (via the Fabricator) and rig growth at runtime. Engines can declare needs that the Fabricator resolves to additional engine chains, grafted onto the rig mid-execution.
@@ -660,4 +724,64 @@ These are known directions the Spider and its data model will grow. None are in 
 
 All fields optional. `pollIntervalMs` defaults to `5000`. `buildCommand` and `testCommand` are run by the review engine before launching the reviewer; omitted means those mechanical checks are skipped (reviewer anima still does spec-vs-diff assessment).
 
-The `variables` dict contains user-defined values available in rig template givens as `$vars.<key>`. For example, `"$vars.role"` in a template givens entry resolves to `variables.role` at rig spawn time. The only other supported variable reference is `"$writ"`, which resolves to the full WritDoc for the spawned rig. Variables resolving to `undefined` (key absent from `variables`) cause the givens key to be omitted entirely.
+The `variables` dict contains user-defined values available in rig template givens as `$vars.<key>`. For example, `"$vars.role"` in a template givens entry resolves to `variables.role` at rig spawn time.
+
+### Givens Template Expressions
+
+Rig template givens support template expressions that are resolved at engine start time:
+
+| Expression | Resolved to | When |
+|---|---|---|
+| `$writ` | The full `WritDoc` for the spawned rig | Rig spawn time |
+| `$vars.<key>` | `spiderConfig.variables[key]` | Rig spawn time |
+| `${yields.<engineId>.<path>}` | Value at `<path>` from the named engine's yields | Engine start time (just before `run()`) |
+
+The `${yields.*}` syntax resolves at **engine start time**, not rig spawn time — the upstream engine must have completed and produced yields before the reference can be resolved. The Spider resolves these references when assembling givens for a ready engine, reading from `context.upstream[engineId]`. If the referenced engine has not completed or the path does not exist in its yields, the givens key is omitted (same behavior as an undefined `$vars` reference).
+
+`<path>` supports dot-separated property access for nested yield objects (e.g., `${yields.draft.path}` resolves to `upstream['draft'].path`).
+
+### Full-value vs. inline resolution
+
+When a givens value is **entirely** a reference (`"$writ"`, `"${yields.reader.conversationId}"`), it resolves to the **typed value** — object, array, number, whatever the source provides. This is full-value resolution.
+
+When a string **contains** references but also has surrounding text, the Spider performs **inline interpolation** — each `${...}` expression within the string is replaced with the stringified value of the reference, leaving the rest of the string intact. This enables prompt composition with embedded dynamic content:
+
+```json
+{
+  "givens": {
+    "writ": "$writ",
+    "conversationId": "${yields.reader.conversationId}",
+    "prompt": "Write the spec.\n\nDecisions:\n${yields.decision-review.decisionSummary}"
+  }
+}
+```
+
+In this example:
+- `writ` resolves to the full `WritDoc` object (full-value — the entire string is a reference)
+- `conversationId` resolves to a string (full-value — preserves the original type from yields)
+- `prompt` resolves to a string with the `decisionSummary` interpolated inline (inline — the `${...}` is embedded in a larger string)
+
+**Resolution rules:**
+- A string that is *exactly* `$<name>` or `${<name>}` with no other characters → **full-value** resolution. The givens key receives the resolved value with its original type.
+- A string that *contains* one or more `${...}` expressions among other text → **inline interpolation**. Each expression is replaced with `String(resolvedValue)`. The givens key receives a string. References that resolve to `undefined` are replaced with the empty string.
+- A string with no `$` prefix and no `${...}` expressions → **literal passthrough**.
+
+All three reference families (`$writ`, `$vars.*`, `$yields.*`) are supported in both full-value and inline modes. Spawn-time references (`$writ`, `$vars.*`) are resolved at spawn time; `$yields.*` references are resolved at engine start time. In inline mode, a string containing both spawn-time and yield references is partially resolved at spawn time (spawn-time expressions replaced, yield expressions left as-is) and fully resolved at engine start time.
+
+### Example: conversation chaining with prompt composition
+
+```json
+{
+  "engines": [
+    { "id": "reader", "designId": "anima-session",
+      "givens": { "role": "$vars.plannerRole", "prompt": "Inventory the codebase." } },
+    { "id": "analyst", "designId": "anima-session", "upstream": ["reader"],
+      "givens": {
+        "role": "$vars.plannerRole",
+        "conversationId": "${yields.reader.conversationId}",
+        "prompt": "Analyze the inventory and produce scope and decisions."
+      }
+    }
+  ]
+}
+```
