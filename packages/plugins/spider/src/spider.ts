@@ -80,7 +80,6 @@ import { spiderRoutes } from './oculus-routes.ts';
 
 import {
   interpolateTemplate,
-  containsTemplate,
   extractExpressions,
   resolveDotPath,
   SKIP,
