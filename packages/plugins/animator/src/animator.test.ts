@@ -338,7 +338,8 @@ describe('Animator', () => {
       const captured = getCapturedConfig();
       assert.ok(captured);
       assert.equal(captured!.systemPrompt, 'System prompt here');
-      assert.equal(captured!.initialPrompt, 'Do the thing');
+      assert.ok(captured!.initialPrompt!.includes('Do the thing'));
+      assert.ok(captured!.initialPrompt!.startsWith('Your working directory is: /tmp/workdir'));
       assert.equal(captured!.model, 'sonnet');
       assert.equal(captured!.cwd, '/tmp/workdir');
     });
@@ -841,10 +842,11 @@ describe('Animator', () => {
       assert.equal(result.status, 'completed');
       assert.ok(result.id.startsWith('ses-'));
 
-      // Verify the provider received the prompt as initialPrompt
+      // Verify the provider received the prompt with cwd preamble prepended
       const captured = getCapturedConfig();
       assert.ok(captured);
-      assert.equal(captured!.initialPrompt, 'Build the frobnicator');
+      assert.ok(captured!.initialPrompt!.includes('Build the frobnicator'));
+      assert.ok(captured!.initialPrompt!.startsWith('Your working directory is: /tmp/workdir'));
       assert.equal(captured!.cwd, '/tmp/workdir');
       assert.equal(captured!.model, 'sonnet');
     });
@@ -896,6 +898,20 @@ describe('Animator', () => {
 
       const captured = getCapturedConfig();
       assert.equal(captured!.conversationId, 'conv-resume-123');
+    });
+
+    it('skips cwd preamble for resumed conversations', async () => {
+      const { provider, getCapturedConfig } = createSpyProvider();
+      setup(provider, 'fake-provider', { installLoom: true });
+
+      await animator.summon({
+        prompt: 'Continue working',
+        cwd: '/tmp/workdir',
+        conversationId: 'conv-resume-123',
+      }).result;
+
+      const captured = getCapturedConfig();
+      assert.equal(captured!.initialPrompt, 'Continue working');
     });
 
     it('records session to Stacks', async () => {
@@ -996,7 +1012,8 @@ describe('Animator', () => {
 
       const captured = getCapturedConfig();
       assert.ok(captured);
-      assert.equal(captured!.initialPrompt, 'Build the frobnicator');
+      assert.ok(captured!.initialPrompt!.includes('Build the frobnicator'));
+      assert.ok(captured!.initialPrompt!.startsWith('Your working directory is:'));
       assert.equal(captured!.systemPrompt, undefined);
     });
 

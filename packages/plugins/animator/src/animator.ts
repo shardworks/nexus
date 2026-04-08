@@ -150,13 +150,38 @@ function resolveModel(): string {
  * The work prompt comes from the request directly (bypasses The Loom).
  * The streaming flag is passed through for the provider to honor (or ignore).
  */
+/**
+ * Build a working-directory preamble that tells the agent where it is.
+ *
+ * Claude Code tools (Glob, Grep) return relative paths; the agent must
+ * construct absolute paths for Read/Edit/Write. Without an explicit
+ * preamble the agent guesses — and when other checkouts exist on the
+ * filesystem (e.g. /workspace/nexus/) it routinely guesses wrong,
+ * committing to the persistent clone instead of its worktree.
+ */
+function cwdPreamble(cwd: string): string {
+  return [
+    `Your working directory is: ${cwd}`,
+    'All file operations (Read, Edit, Write, Glob, Grep) must use paths rooted in this directory.',
+    'Do NOT read, write, or explore files outside this directory.',
+    '',
+  ].join('\n');
+}
+
 function buildProviderConfig(
   request: AnimateRequest,
   model: string,
 ): SessionProviderConfig {
+  // Prepend cwd preamble to the initial prompt so the agent knows where
+  // it is. Skip for resumed conversations — the preamble was already
+  // delivered in the original session's first message.
+  const prompt = request.conversationId
+    ? request.prompt
+    : cwdPreamble(request.cwd) + (request.prompt ?? '');
+
   return {
     systemPrompt: request.context.systemPrompt,
-    initialPrompt: request.prompt,
+    initialPrompt: prompt,
     model,
     conversationId: request.conversationId,
     cwd: request.cwd,
