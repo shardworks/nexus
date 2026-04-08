@@ -43,10 +43,10 @@ import rigResumeTool from './tools/rig-resume.ts';
 // Used as the default template in test fixtures.
 const STANDARD_TEMPLATE: RigTemplate = {
   engines: [
-    { id: 'draft',     designId: 'draft',     givens: { writ: '$writ' } },
-    { id: 'implement', designId: 'implement', upstream: ['draft'],     givens: { writ: '$writ', role: '$vars.role' } },
-    { id: 'review',    designId: 'review',    upstream: ['implement'], givens: { writ: '$writ', role: 'reviewer', buildCommand: '$vars.buildCommand', testCommand: '$vars.testCommand' } },
-    { id: 'revise',    designId: 'revise',    upstream: ['review'],    givens: { writ: '$writ', role: '$vars.role' } },
+    { id: 'draft',     designId: 'draft',     givens: { writ: '${writ}' } },
+    { id: 'implement', designId: 'implement', upstream: ['draft'],     givens: { writ: '${writ}', role: '${vars.role}' } },
+    { id: 'review',    designId: 'review',    upstream: ['implement'], givens: { writ: '${writ}', role: 'reviewer', buildCommand: '${vars.buildCommand}', testCommand: '${vars.testCommand}' } },
+    { id: 'revise',    designId: 'revise',    upstream: ['review'],    givens: { writ: '${writ}', role: '${vars.role}' } },
     { id: 'seal',      designId: 'seal',      upstream: ['revise'],    givens: {} },
   ],
   resolutionEngine: 'seal',
@@ -1890,7 +1890,7 @@ describe('Spider — template dispatch', () => {
   it('spawns a rig using the type-specific template when writ type matches', async () => {
     const mandateTemplate: RigTemplate = {
       engines: [
-        { id: 'step1', designId: 'draft', givens: { writ: '$writ' } },
+        { id: 'step1', designId: 'draft', givens: { writ: '${writ}' } },
         { id: 'step2', designId: 'seal', upstream: ['step1'], givens: {} },
       ],
     };
@@ -1912,7 +1912,7 @@ describe('Spider — template dispatch', () => {
   it('falls back to default template when no type-specific match exists', async () => {
     const defaultTemplate: RigTemplate = {
       engines: [
-        { id: 'a', designId: 'draft', givens: { writ: '$writ' } },
+        { id: 'a', designId: 'draft', givens: { writ: '${writ}' } },
         { id: 'b', designId: 'seal', upstream: ['a'], givens: {} },
         { id: 'c', designId: 'implement', upstream: ['b'], givens: {} },
       ],
@@ -1938,7 +1938,7 @@ describe('Spider — template dispatch', () => {
     };
     const defaultTemplate: RigTemplate = {
       engines: [
-        { id: 'a', designId: 'draft', givens: { writ: '$writ' } },
+        { id: 'a', designId: 'draft', givens: { writ: '${writ}' } },
         { id: 'b', designId: 'seal', upstream: ['a'], givens: {} },
       ],
     };
@@ -2011,9 +2011,9 @@ describe('Spider — variable resolution', () => {
     clearGuild();
   });
 
-  it('$writ resolves to the full WritDoc object', async () => {
+  it('${writ} resolves to the full WritDoc object', async () => {
     const template: RigTemplate = {
-      engines: [{ id: 'only', designId: 'seal', givens: { w: '$writ' } }],
+      engines: [{ id: 'only', designId: 'seal', givens: { w: '${writ}' } }],
     };
     const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
     const { clerk, spider, stacks } = fix;
@@ -2028,9 +2028,9 @@ describe('Spider — variable resolution', () => {
     assert.equal(resolvedWrit.title, writ.title);
   });
 
-  it('$vars.<key> resolves to the value from spiderConfig.variables', async () => {
+  it('${vars.<key>} resolves to the value from spiderConfig.variables', async () => {
     const template: RigTemplate = {
-      engines: [{ id: 'only', designId: 'seal', givens: { cmd: '$vars.buildCommand' } }],
+      engines: [{ id: 'only', designId: 'seal', givens: { cmd: '${vars.buildCommand}' } }],
     };
     const fix = buildFixture({ spider: { variables: { buildCommand: 'make build' }, rigTemplates: { default: template } } });
     const { clerk, spider, stacks } = fix;
@@ -2042,9 +2042,9 @@ describe('Spider — variable resolution', () => {
     assert.equal(rigs[0].engines[0].givensSpec.cmd, 'make build');
   });
 
-  it('$vars.<key> resolves non-string value types correctly', async () => {
+  it('${vars.<key>} resolves non-string value types correctly', async () => {
     const template: RigTemplate = {
-      engines: [{ id: 'only', designId: 'seal', givens: { n: '$vars.count' } }],
+      engines: [{ id: 'only', designId: 'seal', givens: { n: '${vars.count}' } }],
     };
     const fix = buildFixture({ spider: { variables: { count: 42 }, rigTemplates: { default: template } } });
     const { clerk, spider, stacks } = fix;
@@ -2056,9 +2056,9 @@ describe('Spider — variable resolution', () => {
     assert.equal(rigs[0].engines[0].givensSpec.n, 42);
   });
 
-  it('$vars.<key> omits the key when the variable is absent from variables dict', async () => {
+  it('${vars.<key>} omits the key when the variable is absent from variables dict', async () => {
     const template: RigTemplate = {
-      engines: [{ id: 'only', designId: 'seal', givens: { cmd: '$vars.testCommand' } }],
+      engines: [{ id: 'only', designId: 'seal', givens: { cmd: '${vars.testCommand}' } }],
     };
     const fix = buildFixture({ spider: { variables: {}, rigTemplates: { default: template } } });
     const { clerk, spider, stacks } = fix;
@@ -2070,9 +2070,9 @@ describe('Spider — variable resolution', () => {
     assert.ok(!('cmd' in rigs[0].engines[0].givensSpec), 'cmd key should be absent when testCommand is not set');
   });
 
-  it('$vars.<key> omits the key when the variables dict itself is absent from config', async () => {
+  it('${vars.<key>} omits the key when the variables dict itself is absent from config', async () => {
     const template: RigTemplate = {
-      engines: [{ id: 'only', designId: 'seal', givens: { cmd: '$vars.testCommand' } }],
+      engines: [{ id: 'only', designId: 'seal', givens: { cmd: '${vars.testCommand}' } }],
     };
     // No variables key in spider config
     const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
@@ -2100,9 +2100,9 @@ describe('Spider — variable resolution', () => {
     assert.equal(rigs[0].engines[0].givensSpec.count, 5);
   });
 
-  it('mixed literals and $-variables resolve correctly together', async () => {
+  it('mixed literals and ${...} expressions resolve correctly together', async () => {
     const template: RigTemplate = {
-      engines: [{ id: 'only', designId: 'seal', givens: { writ: '$writ', role: 'reviewer', cmd: '$vars.buildCommand' } }],
+      engines: [{ id: 'only', designId: 'seal', givens: { writ: '${writ}', role: 'reviewer', cmd: '${vars.buildCommand}' } }],
     };
     const fix = buildFixture({ spider: { variables: { buildCommand: 'pnpm build' }, rigTemplates: { default: template } } });
     const { clerk, spider, stacks } = fix;
@@ -2112,12 +2112,12 @@ describe('Spider — variable resolution', () => {
 
     const rigs = await rigsBook(stacks).list();
     const givens = rigs[0].engines[0].givensSpec;
-    // $writ resolves to the WritDoc object
-    assert.equal((givens.writ as { id: string }).id, writ.id, '$writ should resolve to WritDoc');
+    // ${writ} resolves to the WritDoc object
+    assert.equal((givens.writ as { id: string }).id, writ.id, '${writ} should resolve to WritDoc');
     // literal string "reviewer" passes through unchanged
     assert.equal(givens.role, 'reviewer', 'literal "reviewer" should pass through unchanged');
-    // $vars.buildCommand resolves to the configured value
-    assert.equal(givens.cmd, 'pnpm build', '$vars.buildCommand should resolve to configured value');
+    // ${vars.buildCommand} resolves to the configured value
+    assert.equal(givens.cmd, 'pnpm build', '${vars.buildCommand} should resolve to configured value');
   });
 
   it('engine with no givens field produces empty givensSpec', async () => {
@@ -2134,7 +2134,7 @@ describe('Spider — variable resolution', () => {
     assert.deepEqual(rigs[0].engines[0].givensSpec, {});
   });
 
-  it('${writ} and ${vars.<key>} resolve identically to their bare-form equivalents', async () => {
+  it('${writ} and ${vars.<key>} resolve to their respective values', async () => {
     const template: RigTemplate = {
       engines: [{ id: 'only', designId: 'seal', givens: { w: '${writ}', cmd: '${vars.buildCommand}' } }],
     };
@@ -2146,9 +2146,9 @@ describe('Spider — variable resolution', () => {
 
     const rigs = await rigsBook(stacks).list();
     const givensSpec = rigs[0].engines[0].givensSpec;
-    // ${writ} resolves to the WritDoc object (same as $writ)
+    // ${writ} resolves to the WritDoc object
     assert.equal((givensSpec.w as { id: string }).id, writ.id, '${writ} should resolve to WritDoc');
-    // ${vars.buildCommand} resolves to the configured value (same as $vars.buildCommand)
+    // ${vars.buildCommand} resolves to the configured value
     assert.equal(givensSpec.cmd, 'make build', '${vars.buildCommand} should resolve to configured value');
   });
 });
@@ -2183,8 +2183,8 @@ describe('Spider — startup validation', () => {
           rigTemplates: {
             default: {
               engines: [
-                { id: 'a', designId: 'draft', givens: { writ: '$writ' } },
-                { id: 'b', designId: 'implement', upstream: ['a'], givens: { writ: '$writ', role: '$vars.role' } },
+                { id: 'a', designId: 'draft', givens: { writ: '${writ}' } },
+                { id: 'b', designId: 'implement', upstream: ['a'], givens: { writ: '${writ}', role: '${vars.role}' } },
                 { id: 'c', designId: 'seal', upstream: ['b'], givens: {} },
               ],
             },
@@ -2223,7 +2223,7 @@ describe('Spider — startup validation', () => {
           rigTemplates: {
             default: {
               engines: [
-                { id: 'step1', designId: 'draft', givens: { writ: '$writ' } },
+                { id: 'step1', designId: 'draft', givens: { writ: '${writ}' } },
                 { id: 'step1', designId: 'seal', givens: {} },
               ],
             },
@@ -2246,7 +2246,7 @@ describe('Spider — startup validation', () => {
           rigTemplates: {
             default: {
               engines: [
-                { id: 'a', designId: 'draft', upstream: ['c'], givens: { writ: '$writ' } },
+                { id: 'a', designId: 'draft', upstream: ['c'], givens: { writ: '${writ}' } },
                 { id: 'b', designId: 'implement', upstream: ['a'], givens: {} },
                 { id: 'c', designId: 'seal', upstream: ['b'], givens: {} },
               ],
@@ -2306,13 +2306,13 @@ describe('Spider — startup validation', () => {
     );
   });
 
-  it('throws [spider] error for unrecognized variable reference ($buildCommand)', () => {
+  it('throws [spider] error for unrecognized expression (${buildCommand})', () => {
     assert.throws(
       () => buildFixture({
         spider: {
           rigTemplates: {
             default: {
-              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '$buildCommand' } }],
+              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '${buildCommand}' } }],
             },
           },
         },
@@ -2320,19 +2320,19 @@ describe('Spider — startup validation', () => {
       (err: unknown) => {
         assert.ok(err instanceof Error);
         assert.ok(err.message.startsWith('[spider]'), err.message);
-        assert.ok(err.message.includes('unrecognized variable "$buildCommand"'), err.message);
+        assert.ok(err.message.includes('unrecognized expression'), err.message);
         return true;
       },
     );
   });
 
-  it('throws [spider] error for $role variable (no longer valid)', () => {
+  it('throws [spider] error for unrecognized expression (${role})', () => {
     assert.throws(
       () => buildFixture({
         spider: {
           rigTemplates: {
             default: {
-              engines: [{ id: 'x', designId: 'seal', givens: { r: '$role' } }],
+              engines: [{ id: 'x', designId: 'seal', givens: { r: '${role}' } }],
             },
           },
         },
@@ -2340,19 +2340,19 @@ describe('Spider — startup validation', () => {
       (err: unknown) => {
         assert.ok(err instanceof Error);
         assert.ok(err.message.startsWith('[spider]'), err.message);
-        assert.ok(err.message.includes('unrecognized variable "$role"'), err.message);
+        assert.ok(err.message.includes('unrecognized expression'), err.message);
         return true;
       },
     );
   });
 
-  it('throws [spider] error for $spider.buildCommand (no longer valid)', () => {
+  it('throws [spider] error for unrecognized expression (${spider.buildCommand})', () => {
     assert.throws(
       () => buildFixture({
         spider: {
           rigTemplates: {
             default: {
-              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '$spider.buildCommand' } }],
+              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '${spider.buildCommand}' } }],
             },
           },
         },
@@ -2360,19 +2360,19 @@ describe('Spider — startup validation', () => {
       (err: unknown) => {
         assert.ok(err instanceof Error);
         assert.ok(err.message.startsWith('[spider]'), err.message);
-        assert.ok(err.message.includes('unrecognized variable "$spider.buildCommand"'), err.message);
+        assert.ok(err.message.includes('unrecognized expression'), err.message);
         return true;
       },
     );
   });
 
-  it('throws [spider] error for nested $spider path ($spider.a.b)', () => {
+  it('throws [spider] error for unrecognized expression (${spider.a.b})', () => {
     assert.throws(
       () => buildFixture({
         spider: {
           rigTemplates: {
             default: {
-              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '$spider.a.b' } }],
+              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '${spider.a.b}' } }],
             },
           },
         },
@@ -2380,33 +2380,42 @@ describe('Spider — startup validation', () => {
       (err: unknown) => {
         assert.ok(err instanceof Error);
         assert.ok(err.message.startsWith('[spider]'), err.message);
-        assert.ok(err.message.includes('unrecognized variable "$spider.a.b"'), err.message);
+        assert.ok(err.message.includes('unrecognized expression'), err.message);
         return true;
       },
     );
   });
 
-  it('throws [spider] error for nested $vars path ($vars.a.b)', () => {
-    assert.throws(
-      () => buildFixture({
+  it('accepts ${vars.a.b} as a valid expression (dot-path traversal)', () => {
+    // Under the new interpolation system, ${vars.*} supports arbitrary dot-path traversal
+    assert.doesNotThrow(() =>
+      buildFixture({
         spider: {
           rigTemplates: {
             default: {
-              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '$vars.a.b' } }],
+              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '${vars.a.b}' } }],
             },
           },
         },
-      }),
-      (err: unknown) => {
-        assert.ok(err instanceof Error);
-        assert.ok(err.message.startsWith('[spider]'), err.message);
-        assert.ok(err.message.includes('unrecognized variable "$vars.a.b"'), err.message);
-        return true;
-      },
+      })
     );
   });
 
-  it('accepts $vars.buildCommand as a valid variable', () => {
+  it('accepts ${vars.buildCommand} as a valid expression', () => {
+    assert.doesNotThrow(() =>
+      buildFixture({
+        spider: {
+          rigTemplates: {
+            default: {
+              engines: [{ id: 'x', designId: 'seal', givens: { cmd: '${vars.buildCommand}' } }],
+            },
+          },
+        },
+      })
+    );
+  });
+
+  it('bare $vars.buildCommand (no ${...}) is treated as a literal string without error', () => {
     assert.doesNotThrow(() =>
       buildFixture({
         spider: {
@@ -2584,8 +2593,8 @@ describe('Spider — CDC resolution fallback', () => {
     // Use a template without a seal engine
     const template: RigTemplate = {
       engines: [
-        { id: 'draft', designId: 'draft', givens: { writ: '$writ' } },
-        { id: 'implement', designId: 'implement', upstream: ['draft'], givens: { writ: '$writ', role: '$vars.role' } },
+        { id: 'draft', designId: 'draft', givens: { writ: '${writ}' } },
+        { id: 'implement', designId: 'implement', upstream: ['draft'], givens: { writ: '${writ}', role: '${vars.role}' } },
       ],
     };
     const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
@@ -2669,7 +2678,7 @@ describe('Spider — STANDARD_TEMPLATE full pipeline givens', () => {
     clearGuild();
   });
 
-  it('STANDARD_TEMPLATE spawns a 5-engine rig with correct givens (using $vars.role)', async () => {
+  it('STANDARD_TEMPLATE spawns a 5-engine rig with correct givens (using ${vars.role})', async () => {
     const fix = buildFixture(); // uses STANDARD_TEMPLATE with variables: { role: 'artificer' }
     const { clerk, spider, stacks } = fix;
 
@@ -2683,8 +2692,8 @@ describe('Spider — STANDARD_TEMPLATE full pipeline givens', () => {
     const revise = rigs[0].engines.find((e: EngineInstance) => e.id === 'revise');
     const review = rigs[0].engines.find((e: EngineInstance) => e.id === 'review');
 
-    assert.equal(implement?.givensSpec.role, 'artificer', 'implement $vars.role resolves to "artificer"');
-    assert.equal(revise?.givensSpec.role, 'artificer', 'revise $vars.role resolves to "artificer"');
+    assert.equal(implement?.givensSpec.role, 'artificer', 'implement ${vars.role} resolves to "artificer"');
+    assert.equal(revise?.givensSpec.role, 'artificer', 'revise ${vars.role} resolves to "artificer"');
     assert.equal(review?.givensSpec.role, 'reviewer', 'review literal "reviewer" passes through');
     assert.ok(!('buildCommand' in (review?.givensSpec ?? {})), 'review buildCommand absent when not set in variables');
     assert.ok(!('testCommand' in (review?.givensSpec ?? {})), 'review testCommand absent when not set in variables');
@@ -2703,7 +2712,7 @@ describe('Spider — full pipeline integration', () => {
     // Register stub clockwork implementations so no Scriptorium or Animator is needed.
     const twoEngineTemplate: RigTemplate = {
       engines: [
-        { id: 'step1', designId: 'draft', givens: { writ: '$writ' } },
+        { id: 'step1', designId: 'draft', givens: { writ: '${writ}' } },
         { id: 'step2', designId: 'seal', upstream: ['step1'], givens: {} },
       ],
       resolutionEngine: 'step2',
@@ -2755,9 +2764,9 @@ describe('Spider — full pipeline integration', () => {
     // resolutionEngine: 'review' directs the CDC handler to use review's yields.
     const template: RigTemplate = {
       engines: [
-        { id: 'draft',     designId: 'draft',     givens: { writ: '$writ' } },
-        { id: 'implement', designId: 'implement', upstream: ['draft'],     givens: { writ: '$writ', role: '$vars.role' } },
-        { id: 'review',    designId: 'review',    upstream: ['implement'], givens: { writ: '$writ' } },
+        { id: 'draft',     designId: 'draft',     givens: { writ: '${writ}' } },
+        { id: 'implement', designId: 'implement', upstream: ['draft'],     givens: { writ: '${writ}', role: '${vars.role}' } },
+        { id: 'review',    designId: 'review',    upstream: ['implement'], givens: { writ: '${writ}' } },
       ],
       resolutionEngine: 'review',
     };
@@ -4809,7 +4818,7 @@ describe('Kit contributions — rig templates and mappings', () => {
 
   // Simple 1-engine template using the built-in 'draft' designId
   const SIMPLE_TEMPLATE: RigTemplate = {
-    engines: [{ id: 'step1', designId: 'draft', givens: { writ: '$writ' } }],
+    engines: [{ id: 'step1', designId: 'draft', givens: { writ: '${writ}' } }],
   };
 
   afterEach(() => {
@@ -5221,9 +5230,9 @@ describe('Kit contributions — rig templates and mappings', () => {
   });
 });
 
-// ── $yields.* reference tests ─────────────────────────────────────────
+// ── ${yields.*} reference tests ───────────────────────────────────────
 
-describe('$yields.* reference support', () => {
+describe('${yields.*} reference support', () => {
   // Helper to make a LoadedKit with the given kit contributions
   function makeKit(id: string, kit: Record<string, unknown>): LoadedKit {
     return { packageName: `@test/${id}`, id, version: '0.0.0', kit };
@@ -5251,7 +5260,7 @@ describe('$yields.* reference support', () => {
             rigTemplates: {
               default: {
                 engines: [
-                  { id: 'step1', designId: 'seal', givens: { x: '$yields.nonexistent.foo' } },
+                  { id: 'step1', designId: 'seal', givens: { x: '${yields.nonexistent.foo}' } },
                 ],
               },
             },
@@ -5275,8 +5284,8 @@ describe('$yields.* reference support', () => {
             rigTemplates: {
               default: {
                 engines: [
-                  { id: 'a', designId: 'seal', givens: { x: '$yields.b.foo' } },
-                  { id: 'b', designId: 'draft', upstream: ['a'], givens: { writ: '$writ' } },
+                  { id: 'a', designId: 'seal', givens: { x: '${yields.b.foo}' } },
+                  { id: 'b', designId: 'draft', upstream: ['a'], givens: { writ: '${writ}' } },
                 ],
               },
             },
@@ -5292,7 +5301,7 @@ describe('$yields.* reference support', () => {
     });
 
     it('V5/R4 — transitive upstream reference is valid (does not throw)', () => {
-      // a → b → c; c references $yields.a.foo (a is transitively upstream of c)
+      // a → b → c; c references ${yields.a.foo} (a is transitively upstream of c)
       assert.doesNotThrow(() =>
         buildFixture({
           spider: {
@@ -5301,7 +5310,7 @@ describe('$yields.* reference support', () => {
                 engines: [
                   { id: 'a', designId: 'seal', givens: {} },
                   { id: 'b', designId: 'seal', upstream: ['a'], givens: {} },
-                  { id: 'c', designId: 'seal', upstream: ['b'], givens: { x: '$yields.a.foo' } },
+                  { id: 'c', designId: 'seal', upstream: ['b'], givens: { x: '${yields.a.foo}' } },
                 ],
               },
             },
@@ -5317,7 +5326,7 @@ describe('$yields.* reference support', () => {
             rigTemplates: {
               default: {
                 engines: [
-                  { id: 'solo', designId: 'seal', givens: { x: '$yields.solo.foo' } },
+                  { id: 'solo', designId: 'seal', givens: { x: '${yields.solo.foo}' } },
                 ],
               },
             },
@@ -5353,7 +5362,7 @@ describe('$yields.* reference support', () => {
       );
     });
 
-    it('invalid syntax $yields.draft (missing property segment) is rejected as unrecognized variable', () => {
+    it('invalid syntax ${yields.a} (missing property segment) is rejected as invalid expression', () => {
       assert.throws(
         () => buildFixture({
           spider: {
@@ -5361,7 +5370,7 @@ describe('$yields.* reference support', () => {
               default: {
                 engines: [
                   { id: 'a', designId: 'seal', givens: {} },
-                  { id: 'b', designId: 'seal', upstream: ['a'], givens: { x: '$yields.a' } },
+                  { id: 'b', designId: 'seal', upstream: ['a'], givens: { x: '${yields.a}' } },
                 ],
               },
             },
@@ -5369,13 +5378,13 @@ describe('$yields.* reference support', () => {
         }),
         (err: unknown) => {
           assert.ok(err instanceof Error);
-          assert.ok(err.message.includes('unrecognized variable'), err.message);
+          assert.ok(err.message.includes('invalid expression'), err.message);
           return true;
         },
       );
     });
 
-    it('valid $yields reference passes validation without throwing', () => {
+    it('valid ${yields.*} reference passes validation without throwing', () => {
       assert.doesNotThrow(() =>
         buildFixture({
           spider: {
@@ -5383,7 +5392,7 @@ describe('$yields.* reference support', () => {
               default: {
                 engines: [
                   { id: 'first', designId: 'seal', givens: {} },
-                  { id: 'second', designId: 'seal', upstream: ['first'], givens: { p: '$yields.first.path' } },
+                  { id: 'second', designId: 'seal', upstream: ['first'], givens: { p: '${yields.first.path}' } },
                 ],
               },
             },
@@ -5420,9 +5429,9 @@ describe('$yields.* reference support', () => {
           rigTemplates: {
             pipeline: {
               engines: [
-                { id: 'step1', designId: 'draft', givens: { writ: '$writ' } },
-                // References $yields.nonexistent.foo where 'nonexistent' is not an engine
-                { id: 'step2', designId: 'seal', upstream: ['step1'], givens: { x: '$yields.nonexistent.foo' } },
+                { id: 'step1', designId: 'draft', givens: { writ: '${writ}' } },
+                // References ${yields.nonexistent.foo} where 'nonexistent' is not an engine
+                { id: 'step2', designId: 'seal', upstream: ['step1'], givens: { x: '${yields.nonexistent.foo}' } },
               ],
             },
           },
@@ -5446,7 +5455,7 @@ describe('$yields.* reference support', () => {
             pipeline: {
               engines: [
                 // 'a' references 'b' but 'b' is downstream of 'a'
-                { id: 'a', designId: 'draft', givens: { writ: '$writ', x: '$yields.b.foo' } },
+                { id: 'a', designId: 'draft', givens: { writ: '${writ}', x: '${yields.b.foo}' } },
                 { id: 'b', designId: 'seal', upstream: ['a'], givens: {} },
               ],
             },
@@ -5469,8 +5478,8 @@ describe('$yields.* reference support', () => {
           rigTemplates: {
             pipeline: {
               engines: [
-                { id: 'step1', designId: 'draft', givens: { writ: '$writ' } },
-                { id: 'step2', designId: 'seal', upstream: ['step1'], givens: { p: '$yields.step1.path' } },
+                { id: 'step1', designId: 'draft', givens: { writ: '${writ}' } },
+                { id: 'step2', designId: 'seal', upstream: ['step1'], givens: { p: '${yields.step1.path}' } },
               ],
             },
           },
@@ -5499,7 +5508,7 @@ describe('$yields.* reference support', () => {
             default: {
               engines: [
                 { id: 'first', designId: 'seal', givens: {} },
-                { id: 'second', designId: 'seal', upstream: ['first'], givens: { p: '$yields.first.path' } },
+                { id: 'second', designId: 'seal', upstream: ['first'], givens: { p: '${yields.first.path}' } },
               ],
             },
           },
@@ -5517,8 +5526,8 @@ describe('$yields.* reference support', () => {
       // The yield ref string must be preserved as-is in givensSpec
       assert.equal(
         secondEngine!.givensSpec.p,
-        '$yields.first.path',
-        'yield ref should be stored as literal string in givensSpec',
+        '${yields.first.path}',
+        'yield ref should be stored as literal ${...} string in givensSpec',
       );
     });
 
@@ -5554,19 +5563,20 @@ describe('$yields.* reference support', () => {
 
   // ── Run-time resolution (R1, R2) ──────────────────────────────────
 
-  describe('Run-time resolution (R1, R2)', () => {
-    /**
-     * Build a minimal fixture for yield-ref runtime tests.
-     *
-     * Custom engine designs must be registered in the Fabricator BEFORE Spider
-     * starts (Spider's validateTemplates() runs at start time and checks the
-     * Fabricator for known designIds). This mirrors the pattern used by
-     * buildBlockingFixture() in the blocking tests.
-     */
-    function buildYieldFixture(
-      customEngines: Record<string, EngineDesign>,
-      template: RigTemplate,
-    ): { stacks: StacksApi; clerk: ClerkApi; spider: SpiderApi } {
+  /**
+   * Build a minimal fixture for yield-ref runtime tests.
+   *
+   * Custom engine designs must be registered in the Fabricator BEFORE Spider
+   * starts (Spider's validateTemplates() runs at start time and checks the
+   * Fabricator for known designIds). This mirrors the pattern used by
+   * buildBlockingFixture() in the blocking tests.
+   *
+   * Shared by Run-time resolution tests and Template interpolation tests.
+   */
+  function buildYieldFixture(
+    customEngines: Record<string, EngineDesign>,
+    template: RigTemplate,
+  ): { stacks: StacksApi; clerk: ClerkApi; spider: SpiderApi } {
       const memBackend = new MemoryBackend();
       const stacksPlugin = createStacksApparatus(memBackend);
       const clerkPlugin = createClerk();
@@ -5678,8 +5688,9 @@ describe('$yields.* reference support', () => {
       apparatusMap.set('spider', spider);
 
       return { stacks, clerk, spider };
-    }
+  }
 
+  describe('Run-time resolution (R1, R2)', () => {
     it('V1/R1 — second engine receives resolved yield value in run()', async () => {
       let capturedGivens: Record<string, unknown> | null = null;
 
@@ -5702,7 +5713,7 @@ describe('$yields.* reference support', () => {
         {
           engines: [
             { id: 'first', designId: 'yr-first', givens: {} },
-            { id: 'second', designId: 'yr-second', upstream: ['first'], givens: { dir: '$yields.first.path' } },
+            { id: 'second', designId: 'yr-second', upstream: ['first'], givens: { dir: '${yields.first.path}' } },
           ],
         },
       );
@@ -5778,7 +5789,7 @@ describe('$yields.* reference support', () => {
               id: 'second',
               designId: 'mr-second',
               upstream: ['first'],
-              givens: { x: '$yields.first.foo', y: '$yields.first.bar', z: 'literal' },
+              givens: { x: '${yields.first.foo}', y: '${yields.first.bar}', z: 'literal' },
             },
           ],
         },
@@ -5819,7 +5830,7 @@ describe('$yields.* reference support', () => {
         {
           engines: [
             { id: 'first', designId: 'mp-first', givens: {} },
-            { id: 'second', designId: 'mp-second', upstream: ['first'], givens: { p: '$yields.first.nonExistentProp' } },
+            { id: 'second', designId: 'mp-second', upstream: ['first'], givens: { p: '${yields.first.nonExistentProp}' } },
           ],
         },
       );
@@ -5862,7 +5873,7 @@ describe('$yields.* reference support', () => {
         {
           engines: [
             { id: 'first', designId: 'col-first', givens: {} },
-            { id: 'second', designId: 'col-second', upstream: ['first'], givens: { r: '$yields.first.result' } },
+            { id: 'second', designId: 'col-second', upstream: ['first'], givens: { r: '${yields.first.result}' } },
           ],
         },
       );
@@ -5921,7 +5932,7 @@ describe('$yields.* reference support', () => {
           engines: [
             { id: 'a', designId: 'tr-a', givens: {} },
             { id: 'b', designId: 'tr-b', upstream: ['a'], givens: {} },
-            { id: 'c', designId: 'tr-c', upstream: ['b'], givens: { val: '$yields.a.someProp' } },
+            { id: 'c', designId: 'tr-c', upstream: ['b'], givens: { val: '${yields.a.someProp}' } },
           ],
         },
       );
@@ -5934,6 +5945,348 @@ describe('$yields.* reference support', () => {
 
       assert.ok(capturedGivens !== null, 'c engine should have been called');
       assert.equal((capturedGivens as Record<string, unknown>).val, 'from-a');
+    });
+  });
+
+  // ── Template interpolation: inline, dot-path, type coercion, escape ──
+
+  describe('Template interpolation — new features', () => {
+    afterEach(() => { clearGuild(); });
+
+    it('V8/R5 — inline interpolation: "Path is ${yields.first.path}" resolves to string', async () => {
+      let captured: Record<string, unknown> | null = null;
+      const design1: EngineDesign = {
+        id: 'inl-first',
+        label: 'Inl First',
+        run: async () => ({ status: 'completed' as const, yields: { path: '/tmp/workdir' } }),
+      };
+      const design2: EngineDesign = {
+        id: 'inl-second',
+        label: 'Inl Second',
+        run: async (givens: Record<string, unknown>) => {
+          captured = { ...givens };
+          return { status: 'completed' as const, yields: {} };
+        },
+      };
+      const { clerk, spider } = buildYieldFixture(
+        { 'inl-first': design1, 'inl-second': design2 },
+        {
+          engines: [
+            { id: 'first', designId: 'inl-first', givens: {} },
+            { id: 'second', designId: 'inl-second', upstream: ['first'], givens: { msg: 'Path is ${yields.first.path}' } },
+          ],
+        },
+      );
+      await clerk.post({ title: 'Test', body: 'Body' });
+      await spider.crawl(); // spawn
+      await spider.crawl(); // run first
+      await spider.crawl(); // run second
+      assert.ok(captured !== null);
+      assert.equal((captured as Record<string, unknown>).msg, 'Path is /tmp/workdir');
+    });
+
+    it('V9/R8 — mixed spawn+run-time: partially resolved at spawn, rest at run-time', async () => {
+      let captured: Record<string, unknown> | null = null;
+      const design1: EngineDesign = {
+        id: 'mix-first',
+        label: 'Mix First',
+        run: async () => ({ status: 'completed' as const, yields: { result: 'done' } }),
+      };
+      const design2: EngineDesign = {
+        id: 'mix-second',
+        label: 'Mix Second',
+        run: async (givens: Record<string, unknown>) => {
+          captured = { ...givens };
+          return { status: 'completed' as const, yields: {} };
+        },
+      };
+      const { clerk, spider, stacks } = buildYieldFixture(
+        { 'mix-first': design1, 'mix-second': design2 },
+        {
+          engines: [
+            { id: 'first', designId: 'mix-first', givens: {} },
+            { id: 'second', designId: 'mix-second', upstream: ['first'],
+              givens: { prompt: '${writ.title}: ${yields.first.result}' } },
+          ],
+        },
+      );
+      const writ = await clerk.post({ title: 'My Writ', body: 'Body' });
+      await spider.crawl(); // spawn — ${writ.title} resolved, ${yields.first.result} preserved
+
+      // Check givensSpec after spawn: writ.title resolved, yields expression still present
+      const book = stacks.book<RigDoc>('spider', 'rigs');
+      const [rig] = await book.list();
+      const secondEngine = rig.engines.find(e => e.id === 'second');
+      assert.ok(secondEngine, 'second engine should exist');
+      assert.equal(
+        secondEngine!.givensSpec.prompt,
+        'My Writ: ${yields.first.result}',
+        'spawn-time: writ.title resolved, yields expr preserved',
+      );
+
+      await spider.crawl(); // run first
+      await spider.crawl(); // run second — yields resolved at run-time
+
+      assert.ok(captured !== null);
+      assert.equal((captured as Record<string, unknown>).prompt, 'My Writ: done',
+        'run-time: yields expression resolved to actual value');
+    });
+
+    it('V11/R7 — number inline-coerced to string, object to JSON', async () => {
+      let captured: Record<string, unknown> | null = null;
+      const design1: EngineDesign = {
+        id: 'coerce-first',
+        label: 'Coerce First',
+        run: async () => ({
+          status: 'completed' as const,
+          yields: { count: 42, flag: true, obj: { a: 1 } },
+        }),
+      };
+      const design2: EngineDesign = {
+        id: 'coerce-second',
+        label: 'Coerce Second',
+        run: async (givens: Record<string, unknown>) => {
+          captured = { ...givens };
+          return { status: 'completed' as const, yields: {} };
+        },
+      };
+      const { clerk, spider } = buildYieldFixture(
+        { 'coerce-first': design1, 'coerce-second': design2 },
+        {
+          engines: [
+            { id: 'first', designId: 'coerce-first', givens: {} },
+            {
+              id: 'second', designId: 'coerce-second', upstream: ['first'],
+              givens: {
+                numStr: 'Count: ${yields.first.count}',
+                boolStr: 'Ok: ${yields.first.flag}',
+                objStr: 'Data: ${yields.first.obj}',
+                // Whole-value — preserves type
+                rawNum: '${yields.first.count}',
+                rawObj: '${yields.first.obj}',
+              },
+            },
+          ],
+        },
+      );
+      await clerk.post({ title: 'Test', body: 'Body' });
+      await spider.crawl(); // spawn
+      await spider.crawl(); // run first
+      await spider.crawl(); // run second
+
+      assert.ok(captured !== null);
+      const g = captured as Record<string, unknown>;
+      assert.equal(g.numStr, 'Count: 42', 'number stringified inline');
+      assert.equal(g.boolStr, 'Ok: true', 'boolean stringified inline');
+      assert.equal(g.objStr, 'Data: {"a":1}', 'object JSON.stringified inline');
+      // Whole-value: raw type preserved
+      assert.equal(g.rawNum, 42, 'whole-value number preserved');
+      assert.deepEqual(g.rawObj, { a: 1 }, 'whole-value object preserved');
+    });
+
+    it('V10/R6 — undefined inline expression replaced with empty string', async () => {
+      const template: RigTemplate = {
+        engines: [{ id: 'only', designId: 'seal', givens: { msg: 'Codex: ${writ.codex}' } }],
+      };
+      const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
+      const { clerk, spider, stacks } = fix;
+
+      // writ has no 'codex' field → should be ''
+      await clerk.post({ title: 'test', body: 'test' });
+      await spider.crawl();
+
+      const rigs = await rigsBook(stacks).list();
+      assert.equal(rigs[0].engines[0].givensSpec.msg, 'Codex: ', 'undefined → empty string inline');
+    });
+
+    it('V2/R2 — ${writ.<field>} accesses a specific field of the WritDoc', async () => {
+      const template: RigTemplate = {
+        engines: [{ id: 'only', designId: 'seal', givens: { title: '${writ.title}' } }],
+      };
+      const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
+      const { clerk, spider, stacks } = fix;
+
+      const writ = await clerk.post({ title: 'Specific Field', body: 'test' });
+      await spider.crawl();
+
+      const rigs = await rigsBook(stacks).list();
+      assert.equal(rigs[0].engines[0].givensSpec.title, writ.title, '${writ.title} resolves to title string');
+    });
+
+    it('V13/R9 — escape sequence \\${ produces literal ${ without interpolation', async () => {
+      const template: RigTemplate = {
+        engines: [{ id: 'only', designId: 'seal', givens: { msg: 'Use \\${this} syntax' } }],
+      };
+      const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
+      const { clerk, spider, stacks } = fix;
+
+      await clerk.post({ title: 'test', body: 'test' });
+      await spider.crawl();
+
+      const rigs = await rigsBook(stacks).list();
+      assert.equal(rigs[0].engines[0].givensSpec.msg, 'Use ${this} syntax', 'escaped \\${ → literal ${');
+    });
+
+    it('V14/R10 — unrecognized expression ${unknown.foo} causes startup error', () => {
+      assert.throws(
+        () => buildFixture({
+          spider: {
+            rigTemplates: {
+              default: {
+                engines: [{ id: 'x', designId: 'seal', givens: { x: '${unknown.foo}' } }],
+              },
+            },
+          },
+        }),
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.ok(err.message.includes('unrecognized expression'), err.message);
+          return true;
+        },
+      );
+    });
+
+    it('V22/R4 — deep dot-path traversal for yields works at run time', async () => {
+      let captured: Record<string, unknown> | null = null;
+      const design1: EngineDesign = {
+        id: 'dp-first',
+        label: 'DP First',
+        run: async () => ({
+          status: 'completed' as const,
+          yields: { nested: { deep: { prop: 'found' } } },
+        }),
+      };
+      const design2: EngineDesign = {
+        id: 'dp-second',
+        label: 'DP Second',
+        run: async (givens: Record<string, unknown>) => {
+          captured = { ...givens };
+          return { status: 'completed' as const, yields: {} };
+        },
+      };
+      const { clerk, spider } = buildYieldFixture(
+        { 'dp-first': design1, 'dp-second': design2 },
+        {
+          engines: [
+            { id: 'first', designId: 'dp-first', givens: {} },
+            { id: 'second', designId: 'dp-second', upstream: ['first'],
+              givens: { val: '${yields.first.nested.deep.prop}' } },
+          ],
+        },
+      );
+      await clerk.post({ title: 'Test', body: 'Body' });
+      await spider.crawl(); // spawn
+      await spider.crawl(); // run first
+      await spider.crawl(); // run second
+
+      assert.ok(captured !== null);
+      assert.equal((captured as Record<string, unknown>).val, 'found', 'deep dot-path traversal works');
+    });
+
+    it('R3 — ${vars.a.b} dot-path traversal for nested config vars', async () => {
+      const template: RigTemplate = {
+        engines: [{ id: 'only', designId: 'seal', givens: { val: '${vars.database.host}' } }],
+      };
+      const fix = buildFixture({
+        spider: {
+          variables: { database: { host: 'localhost' } },
+          rigTemplates: { default: template },
+        },
+      });
+      const { clerk, spider, stacks } = fix;
+
+      await clerk.post({ title: 'test', body: 'test' });
+      await spider.crawl();
+
+      const rigs = await rigsBook(stacks).list();
+      assert.equal(rigs[0].engines[0].givensSpec.val, 'localhost', '${vars.database.host} resolves via dot-path');
+    });
+
+    it('V21/R5 — whole-value ${yields.first.obj} preserves raw object type', async () => {
+      let captured: Record<string, unknown> | null = null;
+      const design1: EngineDesign = {
+        id: 'rv-first',
+        label: 'RV First',
+        run: async () => ({ status: 'completed' as const, yields: { obj: { x: 99 } } }),
+      };
+      const design2: EngineDesign = {
+        id: 'rv-second',
+        label: 'RV Second',
+        run: async (givens: Record<string, unknown>) => {
+          captured = { ...givens };
+          return { status: 'completed' as const, yields: {} };
+        },
+      };
+      const { clerk, spider } = buildYieldFixture(
+        { 'rv-first': design1, 'rv-second': design2 },
+        {
+          engines: [
+            { id: 'first', designId: 'rv-first', givens: {} },
+            { id: 'second', designId: 'rv-second', upstream: ['first'],
+              givens: { data: '${yields.first.obj}' } },
+          ],
+        },
+      );
+      await clerk.post({ title: 'Test', body: 'Body' });
+      await spider.crawl(); // spawn
+      await spider.crawl(); // run first
+      await spider.crawl(); // run second
+
+      assert.ok(captured !== null);
+      assert.deepEqual((captured as Record<string, unknown>).data, { x: 99 },
+        'whole-value object type is preserved (not stringified)');
+    });
+
+    it('bare $writ (no ${...}) is passed through as literal string at spawn time', async () => {
+      // Bare $ without ${...} wrapper is not a template expression → literal
+      const template: RigTemplate = {
+        engines: [{ id: 'only', designId: 'seal', givens: { w: '$writ' } }],
+      };
+      const fix = buildFixture({ spider: { rigTemplates: { default: template } } });
+      const { clerk, spider, stacks } = fix;
+
+      await clerk.post({ title: 'test', body: 'test' });
+      await spider.crawl();
+
+      const rigs = await rigsBook(stacks).list();
+      assert.equal(rigs[0].engines[0].givensSpec.w, '$writ',
+        'bare $writ is not recognized — stored as literal string');
+    });
+
+    it('bare $yields.draft.path (no ${...}) is not resolved at run time', async () => {
+      // Bare $ without ${...} wrapper is not a template expression → literal throughout
+      let captured: Record<string, unknown> | null = null;
+      const design1: EngineDesign = {
+        id: 'bare-first',
+        label: 'Bare First',
+        run: async () => ({ status: 'completed' as const, yields: { path: '/real/path' } }),
+      };
+      const design2: EngineDesign = {
+        id: 'bare-second',
+        label: 'Bare Second',
+        run: async (givens: Record<string, unknown>) => {
+          captured = { ...givens };
+          return { status: 'completed' as const, yields: {} };
+        },
+      };
+      const { clerk, spider } = buildYieldFixture(
+        { 'bare-first': design1, 'bare-second': design2 },
+        {
+          engines: [
+            { id: 'first', designId: 'bare-first', givens: {} },
+            { id: 'second', designId: 'bare-second', upstream: ['first'],
+              givens: { p: '$yields.first.path' } },
+          ],
+        },
+      );
+      await clerk.post({ title: 'Test', body: 'Body' });
+      await spider.crawl(); // spawn
+      await spider.crawl(); // run first
+      await spider.crawl(); // run second
+
+      assert.ok(captured !== null);
+      assert.equal((captured as Record<string, unknown>).p, '$yields.first.path',
+        'bare $yields.first.path is not resolved — passed through as literal string');
     });
   });
 
@@ -6284,7 +6637,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '$yields.A.flag', givens: {} },
+          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.A.flag}', givens: {} },
         ],
       };
       const fix = buildFixture(
@@ -6324,8 +6677,8 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'review',  designId: 'stub-review',  givens: {} },
-          { id: 'seal',    designId: 'stub-seal',    upstream: ['review'], when: '$yields.review.passed' },
-          { id: 'revise',  designId: 'stub-revise',  upstream: ['review'], when: '!$yields.review.passed' },
+          { id: 'seal',    designId: 'stub-seal',    upstream: ['review'], when: '${yields.review.passed}' },
+          { id: 'revise',  designId: 'stub-revise',  upstream: ['review'], when: '!${yields.review.passed}' },
         ],
       };
       const fix = buildFixture(
@@ -6358,8 +6711,8 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'review',  designId: 'stub-review',  givens: {} },
-          { id: 'seal',    designId: 'stub-seal',    upstream: ['review'], when: '$yields.review.passed' },
-          { id: 'revise',  designId: 'stub-revise',  upstream: ['review'], when: '!$yields.review.passed' },
+          { id: 'seal',    designId: 'stub-seal',    upstream: ['review'], when: '${yields.review.passed}' },
+          { id: 'revise',  designId: 'stub-revise',  upstream: ['review'], when: '!${yields.review.passed}' },
         ],
       };
       const fix = buildFixture(
@@ -6441,7 +6794,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '$yields.A.flag', givens: {} },
+          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.A.flag}', givens: {} },
           // C depends on B — B is skipped, C should still become runnable
           { id: 'C', designId: 'stub-c', upstream: ['B'], givens: {} },
         ],
@@ -6476,8 +6829,8 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '$yields.A.go', givens: {} },
-          { id: 'C', designId: 'stub-c', upstream: ['A'], when: '!$yields.A.go', givens: {} },
+          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.A.go}', givens: {} },
+          { id: 'C', designId: 'stub-c', upstream: ['A'], when: '!${yields.A.go}', givens: {} },
         ],
       };
       const fix = buildFixture(
@@ -6542,7 +6895,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '$yields.A.pass' },
+          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.A.pass}' },
         ],
       };
       const fix = buildFixture(
@@ -6620,7 +6973,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '$yields.nonexistent.passed' },
+          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.nonexistent.passed}' },
         ],
       };
       assert.throws(
@@ -6642,7 +6995,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '$yields.C.passed' },
+          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.C.passed}' },
           { id: 'C', designId: 'stub-c', upstream: ['A'] },
         ],
       };
@@ -6665,7 +7018,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '!$yields.A.passed' },
+          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '!${yields.A.passed}' },
         ],
       };
       assert.doesNotThrow(
@@ -6689,7 +7042,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '$yields.A.run' },
+          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.A.run}' },
         ],
       };
       const fix = buildFixture(
@@ -6720,7 +7073,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '$yields.A.run' },
+          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.A.run}' },
           { id: 'C', designId: 'stub-c', upstream: ['B'] }, // unconditional, becomes runnable after B skips
         ],
       };
@@ -6753,7 +7106,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '$yields.A.pass' },
+          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.A.pass}' },
           { id: 'C', designId: 'stub-c', upstream: ['A'] }, // unconditional, will fail
         ],
       };
@@ -6791,9 +7144,9 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '$yields.A.x' },
-          { id: 'C', designId: 'stub-c', upstream: ['B'], when: '$yields.B.y' },
-          { id: 'D', designId: 'stub-d', upstream: ['C'], when: '$yields.C.z' },
+          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.A.x}' },
+          { id: 'C', designId: 'stub-c', upstream: ['B'], when: '${yields.B.y}' },
+          { id: 'D', designId: 'stub-d', upstream: ['C'], when: '${yields.C.z}' },
           { id: 'E', designId: 'stub-e', upstream: ['D'] },
         ],
       };
@@ -6846,7 +7199,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '$yields.A.flag' }, // conditional, skipped
+          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.A.flag}' }, // conditional, skipped
           { id: 'C', designId: 'stub-c', upstream: ['B'] }, // unconditional
         ],
       };
@@ -6890,8 +7243,8 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'X', designId: 'stub-x', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['X'], when: '$yields.X.flag' },
-          { id: 'C', designId: 'stub-c', upstream: ['B'], when: '$yields.B.result' },
+          { id: 'B', designId: 'stub-b', upstream: ['X'], when: '${yields.X.flag}' },
+          { id: 'C', designId: 'stub-c', upstream: ['B'], when: '${yields.B.result}' },
         ],
       };
       const fix = buildFixture(
@@ -6921,8 +7274,8 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'X', designId: 'stub-x', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['X'], when: '$yields.X.flag' },
-          { id: 'C', designId: 'stub-c', upstream: ['B'], when: '!$yields.B.result' },
+          { id: 'B', designId: 'stub-b', upstream: ['X'], when: '${yields.X.flag}' },
+          { id: 'C', designId: 'stub-c', upstream: ['B'], when: '!${yields.B.result}' },
         ],
       };
       const fix = buildFixture(
@@ -7193,7 +7546,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
                     id: 'new-engine',
                     designId: 'stub-new-engine',
                     upstream: ['grafter2'],
-                    when: '$yields.nonexistent.val',
+                    when: '${yields.nonexistent.val}',
                   }],
                 };
               },
@@ -7500,8 +7853,8 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
         engines: [
           { id: 'implement',  designId: 'stub-impl',    givens: {} },
           { id: 'review-1',   designId: 'stub-review1', upstream: ['implement'] },
-          { id: 'revise-1',   designId: 'stub-revise1', upstream: ['review-1'],  when: '!$yields.review-1.passed' },
-          { id: 'review-2',   designId: 'stub-review2', upstream: ['revise-1'],  when: '!$yields.review-1.passed' },
+          { id: 'revise-1',   designId: 'stub-revise1', upstream: ['review-1'],  when: '!${yields.review-1.passed}' },
+          { id: 'review-2',   designId: 'stub-review2', upstream: ['revise-1'],  when: '!${yields.review-1.passed}' },
           { id: 'seal',       designId: 'stub-seal',    upstream: ['review-1', 'review-2'] },
         ],
       };
@@ -7535,8 +7888,8 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
         engines: [
           { id: 'implement',  designId: 'stub-impl',    givens: {} },
           { id: 'review-1',   designId: 'stub-review1', upstream: ['implement'] },
-          { id: 'revise-1',   designId: 'stub-revise1', upstream: ['review-1'],  when: '!$yields.review-1.passed' },
-          { id: 'review-2',   designId: 'stub-review2', upstream: ['revise-1'],  when: '!$yields.review-1.passed' },
+          { id: 'revise-1',   designId: 'stub-revise1', upstream: ['review-1'],  when: '!${yields.review-1.passed}' },
+          { id: 'review-2',   designId: 'stub-review2', upstream: ['revise-1'],  when: '!${yields.review-1.passed}' },
           { id: 'seal',       designId: 'stub-seal',    upstream: ['review-1', 'review-2'] },
         ],
       };
@@ -7573,7 +7926,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const template: RigTemplate = {
         engines: [
           { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '$yields.A.go' },
+          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.A.go}' },
         ],
       };
       const fix = buildFixture(
@@ -7592,7 +7945,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
 
       const [rig] = await rigsBook(stacks).list();
       const engineB = rig.engines.find((e: EngineInstance) => e.id === 'B');
-      assert.equal(engineB?.when, '$yields.A.go', 'when field should be copied to engine instance');
+      assert.equal(engineB?.when, '${yields.A.go}', 'when field should be copied to engine instance');
     });
   });
 });

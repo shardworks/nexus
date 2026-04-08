@@ -724,32 +724,35 @@ These are known directions the Spider and its data model will grow. None are in 
 
 All fields optional. `pollIntervalMs` defaults to `5000`. `buildCommand` and `testCommand` are run by the review engine before launching the reviewer; omitted means those mechanical checks are skipped (reviewer anima still does spec-vs-diff assessment).
 
-The `variables` dict contains user-defined values available in rig template givens as `$vars.<key>`. For example, `"$vars.role"` in a template givens entry resolves to `variables.role` at rig spawn time.
+The `variables` dict contains user-defined values available in rig template givens via `${vars.<path>}`. For example, `"${vars.role}"` in a template givens entry resolves to `variables.role` at rig spawn time.
 
 ### Givens Template Expressions
 
-Rig template givens support template expressions that are resolved at engine start time:
+Rig template givens support `${...}` template expressions that are resolved at rig spawn time or engine start time:
 
 | Expression | Resolved to | When |
 |---|---|---|
-| `$writ` | The full `WritDoc` for the spawned rig | Rig spawn time |
-| `$vars.<key>` | `spiderConfig.variables[key]` | Rig spawn time |
+| `${writ}` | The full `WritDoc` for the spawned rig | Rig spawn time |
+| `${writ.<path>}` | A field of the `WritDoc` (dot-path traversal) | Rig spawn time |
+| `${vars.<path>}` | Value at `<path>` from `spiderConfig.variables` (dot-path traversal) | Rig spawn time |
 | `${yields.<engineId>.<path>}` | Value at `<path>` from the named engine's yields | Engine start time (just before `run()`) |
 
-The `${yields.*}` syntax resolves at **engine start time**, not rig spawn time — the upstream engine must have completed and produced yields before the reference can be resolved. The Spider resolves these references when assembling givens for a ready engine, reading from `context.upstream[engineId]`. If the referenced engine has not completed or the path does not exist in its yields, the givens key is omitted (same behavior as an undefined `$vars` reference).
+The `${yields.*}` expressions resolve at **engine start time**, not rig spawn time — the upstream engine must have completed and produced yields before the reference can be resolved. The Spider resolves these references when assembling givens for a ready engine, reading from `context.upstream[engineId]`. If the referenced engine has not completed or the path does not exist in its yields, the givens key is omitted (same behavior as an undefined `${vars.*}` reference).
 
-`<path>` supports dot-separated property access for nested yield objects (e.g., `${yields.draft.path}` resolves to `upstream['draft'].path`).
+`<path>` supports dot-separated property access for nested objects (e.g., `${yields.draft.nested.prop}` resolves to `upstream['draft'].nested.prop`). Both `${vars.*}` and `${yields.*}` support arbitrary dot-path depth.
+
+The escape sequence `\${` produces a literal `${` in the output — the expression is not interpolated.
 
 ### Full-value vs. inline resolution
 
-When a givens value is **entirely** a reference (`"$writ"`, `"${yields.reader.conversationId}"`), it resolves to the **typed value** — object, array, number, whatever the source provides. This is full-value resolution.
+When a givens value is **entirely** a single `${...}` expression (`"${writ}"`, `"${yields.reader.conversationId}"`), it resolves to the **typed value** — object, array, number, whatever the source provides. This is full-value resolution.
 
-When a string **contains** references but also has surrounding text, the Spider performs **inline interpolation** — each `${...}` expression within the string is replaced with the stringified value of the reference, leaving the rest of the string intact. This enables prompt composition with embedded dynamic content:
+When a string **contains** `${...}` expressions but also has surrounding text, the Spider performs **inline interpolation** — each `${...}` expression within the string is replaced with the stringified value of the reference, leaving the rest of the string intact. This enables prompt composition with embedded dynamic content:
 
 ```json
 {
   "givens": {
-    "writ": "$writ",
+    "writ": "${writ}",
     "conversationId": "${yields.reader.conversationId}",
     "prompt": "Write the spec.\n\nDecisions:\n${yields.decision-review.decisionSummary}"
   }
@@ -757,16 +760,16 @@ When a string **contains** references but also has surrounding text, the Spider 
 ```
 
 In this example:
-- `writ` resolves to the full `WritDoc` object (full-value — the entire string is a reference)
+- `writ` resolves to the full `WritDoc` object (full-value — the entire string is a single expression)
 - `conversationId` resolves to a string (full-value — preserves the original type from yields)
 - `prompt` resolves to a string with the `decisionSummary` interpolated inline (inline — the `${...}` is embedded in a larger string)
 
 **Resolution rules:**
-- A string that is *exactly* `$<name>` or `${<name>}` with no other characters → **full-value** resolution. The givens key receives the resolved value with its original type.
-- A string that *contains* one or more `${...}` expressions among other text → **inline interpolation**. Each expression is replaced with `String(resolvedValue)`. The givens key receives a string. References that resolve to `undefined` are replaced with the empty string.
-- A string with no `$` prefix and no `${...}` expressions → **literal passthrough**.
+- A string that is *exactly* one `${<expr>}` expression with no other characters → **full-value** resolution. The givens key receives the resolved value with its original type.
+- A string that *contains* one or more `${...}` expressions among other text → **inline interpolation**. Each expression is replaced with `String(resolvedValue)`. The givens key receives a string. References that resolve to `undefined` are replaced with the empty string; numbers and booleans are coerced with `String()`; objects and arrays are stringified with `JSON.stringify()`.
+- A string with no `${...}` expressions → **literal passthrough** (unchanged, regardless of `$` prefix).
 
-All three reference families (`$writ`, `$vars.*`, `$yields.*`) are supported in both full-value and inline modes. Spawn-time references (`$writ`, `$vars.*`) are resolved at spawn time; `$yields.*` references are resolved at engine start time. In inline mode, a string containing both spawn-time and yield references is partially resolved at spawn time (spawn-time expressions replaced, yield expressions left as-is) and fully resolved at engine start time.
+All three expression families (`${writ}`, `${vars.*}`, `${yields.*}`) are supported in both full-value and inline modes. Spawn-time expressions (`${writ}`, `${writ.*}`, `${vars.*}`) are resolved at spawn time; `${yields.*}` expressions are resolved at engine start time. In inline mode, a string containing both spawn-time and yield expressions is partially resolved at spawn time (spawn-time expressions replaced, yield expressions left as literal `${yields.*}` text) and fully resolved at engine start time.
 
 ### Example: conversation chaining with prompt composition
 
@@ -774,10 +777,10 @@ All three reference families (`$writ`, `$vars.*`, `$yields.*`) are supported in 
 {
   "engines": [
     { "id": "reader", "designId": "anima-session",
-      "givens": { "role": "$vars.plannerRole", "prompt": "Inventory the codebase." } },
+      "givens": { "role": "${vars.plannerRole}", "prompt": "Inventory the codebase." } },
     { "id": "analyst", "designId": "anima-session", "upstream": ["reader"],
       "givens": {
-        "role": "$vars.plannerRole",
+        "role": "${vars.plannerRole}",
         "conversationId": "${yields.reader.conversationId}",
         "prompt": "Analyze the inventory and produce scope and decisions."
       }

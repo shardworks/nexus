@@ -78,6 +78,14 @@ import {
 
 import { spiderRoutes } from './oculus-routes.ts';
 
+import {
+  interpolateTemplate,
+  containsTemplate,
+  extractExpressions,
+  resolveDotPath,
+  SKIP,
+} from './template.ts';
+
 // ── Kit contribution interface ─────────────────────────────────────────
 
 /** Kit contribution interface for the Spider's rig template system. */
@@ -154,25 +162,6 @@ function isRigBlocked(engines: EngineInstance[]): boolean {
 // ── Template-based rig building ────────────────────────────────────────
 
 /**
- * Normalize a variable reference by stripping optional curly braces.
- * '${foo}' → '$foo', '$foo' → '$foo' (unchanged).
- * Called before matching against known variable patterns.
- */
-function normalizeVarRef(value: string): string {
-  if (value.startsWith('${') && value.endsWith('}')) {
-    return '$' + value.slice(2, -1);
-  }
-  return value;
-}
-
-/**
- * Regex matching a valid yield reference after normalizeVarRef() stripping.
- * '$yields.<engine_id>.<yield_name>' where engine_id allows hyphens and
- * yield_name uses standard JS identifier characters.
- */
-const YIELD_REF_RE = /^\$yields\.[a-zA-Z][a-zA-Z0-9-]*\.[a-zA-Z_][a-zA-Z0-9_]*$/;
-
-/**
  * Compute the set of engine ids transitively reachable upstream of a given engine.
  * Uses BFS over the template's upstream arrays.
  */
@@ -208,6 +197,9 @@ function isRigComplete(engines: EngineInstance[]): boolean {
 /**
  * Evaluate a `when` condition against the upstream yields map.
  * Returns true if the engine should run, false if it should be skipped.
+ *
+ * The `when` expression must be a `${yields.<engineId>.<path>}` reference
+ * with an optional `!` negation prefix.
  */
 function evaluateWhen(when: string, upstream: Record<string, unknown>): boolean {
   let expr = when.trim();
@@ -216,18 +208,20 @@ function evaluateWhen(when: string, upstream: Record<string, unknown>): boolean 
     negate = true;
     expr = expr.slice(1);
   }
-  const normalized = normalizeVarRef(expr);
-  // Extract engine_id and property from '$yields.<engine_id>.<property>'
-  const withoutPrefix = normalized.slice('$yields.'.length);
+  // expr is now a bare yields ref like "${yields.<engineId>.<path>}"
+  // Strip the ${...} wrapper to get the expression body
+  let exprBody = expr;
+  if (exprBody.startsWith('${') && exprBody.endsWith('}')) {
+    exprBody = exprBody.slice(2, -1);
+  }
+  // exprBody: 'yields.<engineId>.<path>'
+  const withoutPrefix = exprBody.slice('yields.'.length);
   const dotIndex = withoutPrefix.indexOf('.');
   const engineId = withoutPrefix.slice(0, dotIndex);
-  const prop = withoutPrefix.slice(dotIndex + 1);
+  const path = withoutPrefix.slice(dotIndex + 1);
 
   const engineYields = upstream[engineId];
-  let value: unknown;
-  if (engineYields !== null && engineYields !== undefined && typeof engineYields === 'object') {
-    value = (engineYields as Record<string, unknown>)[prop];
-  }
+  const value = resolveDotPath(engineYields, path);
   const truthy = !!value;
   return negate ? !truthy : truthy;
 }
@@ -261,10 +255,12 @@ function cascadeSkip(engines: EngineInstance[], upstream: Record<string, unknown
 }
 
 /**
- * Resolve yield references in a givens map using the upstream yields.
- * '$yields.<engineId>.<prop>' → upstream[engineId][prop].
- * Keys resolving to undefined are omitted.
- * Non-yield-ref values are passed through unchanged.
+ * Resolve `${yields.*}` expressions in a givens map at run time.
+ *
+ * Processes all string values containing `${yields.<engineId>.<path>}` and
+ * resolves them from upstream engine yields via dot-path traversal.
+ * Non-yield expressions and non-string values pass through unchanged.
+ * Keys whose whole-value expression resolves to undefined are omitted.
  */
 function resolveYieldRefs(
   givensSpec: Record<string, unknown>,
@@ -272,38 +268,38 @@ function resolveYieldRefs(
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(givensSpec)) {
-    if (typeof value === 'string' && YIELD_REF_RE.test(normalizeVarRef(value))) {
-      const normalized = normalizeVarRef(value);
-      // Extract engine_id and property from '$yields.<engine_id>.<property>'
-      const withoutPrefix = normalized.slice('$yields.'.length);
-      const dotIndex = withoutPrefix.indexOf('.');
-      const engineId = withoutPrefix.slice(0, dotIndex);
-      const prop = withoutPrefix.slice(dotIndex + 1);
-      const engineYields = upstream[engineId];
-      if (
-        engineYields !== null &&
-        engineYields !== undefined &&
-        typeof engineYields === 'object'
-      ) {
-        const resolved = (engineYields as Record<string, unknown>)[prop];
-        if (resolved !== undefined) {
-          result[key] = resolved;
-        }
-        // undefined property → omit key
-      }
-      // engine not in upstream (shouldn't happen — validated at startup) → omit key
-    } else {
+    if (typeof value !== 'string' || !value.includes('${')) {
       result[key] = value;
+      continue;
     }
+    const resolved = interpolateTemplate(value, (expr) => {
+      if (!expr.startsWith('yields.')) {
+        // Not a yield ref — leave in place (shouldn't remain after spawn-time, but safe)
+        return SKIP;
+      }
+      const withoutPrefix = expr.slice('yields.'.length);
+      const dotIndex = withoutPrefix.indexOf('.');
+      if (dotIndex < 0) return undefined; // malformed — validated at startup
+      const engineId = withoutPrefix.slice(0, dotIndex);
+      const propPath = withoutPrefix.slice(dotIndex + 1);
+      const engineYields = upstream[engineId];
+      return resolveDotPath(engineYields, propPath);
+    });
+    if (resolved !== undefined) {
+      result[key] = resolved;
+    }
+    // undefined whole-value → omit key
   }
   return result;
 }
 
 /**
- * Resolve a template engine's givens map using a variables context.
- * '$writ' → WritDoc, '$vars.<key>' → spiderConfig.variables[key].
- * Keys resolving to undefined are omitted from the output.
- * Non-'$' prefixed values are passed through as literals.
+ * Resolve a template engine's givens map at spawn time.
+ *
+ * Resolves `${writ}`, `${writ.<path>}`, and `${vars.<path>}` expressions.
+ * `${yields.*}` expressions are left as-is (resolved at run time).
+ * Keys whose whole-value expression resolves to undefined are omitted.
+ * Non-string values are passed through literally.
  */
 function resolveGivens(
   givens: Record<string, unknown> | undefined,
@@ -311,25 +307,29 @@ function resolveGivens(
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(givens ?? {})) {
-    if (typeof value !== 'string' || !value.startsWith('$')) {
+    // Use includes('${') rather than containsTemplate() so that escape sequences
+    // (\${...}) are also processed and converted to literal ${ in the output.
+    if (typeof value !== 'string' || !value.includes('${')) {
       result[key] = value;
-    } else {
-      const normalized = normalizeVarRef(value);
-      if (normalized === '$writ') {
-        result[key] = context.writ;
-      } else if (/^\$vars\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(normalized)) {
-        const varKey = normalized.slice('$vars.'.length);
-        const resolved = (context.spiderConfig.variables ?? {})[varKey];
-        if (resolved !== undefined) {
-          result[key] = resolved;
-        }
-        // undefined → omit key entirely
-      } else if (YIELD_REF_RE.test(normalized)) {
-        // Yield references are resolved at run time — pass through as literal string
-        result[key] = value;
-      }
-      // Unrecognized $-prefixed strings are caught at validation time
+      continue;
     }
+    const resolved = interpolateTemplate(value, (expr) => {
+      if (expr === 'writ') return context.writ;
+      if (expr.startsWith('writ.')) {
+        return resolveDotPath(context.writ, expr.slice('writ.'.length));
+      }
+      if (expr.startsWith('vars.')) {
+        return resolveDotPath(context.spiderConfig.variables ?? {}, expr.slice('vars.'.length));
+      }
+      if (expr.startsWith('yields.')) {
+        return SKIP; // leave for run-time resolution
+      }
+      return undefined; // unrecognized — caught at validation time
+    });
+    if (resolved !== undefined) {
+      result[key] = resolved;
+    }
+    // undefined whole-value → omit key
   }
   return result;
 }
@@ -350,6 +350,67 @@ function buildFromTemplate(
     ...(entry.when !== undefined ? { when: entry.when } : {}),
   }));
   return { engines, resolutionEngineId: template.resolutionEngine };
+}
+
+/**
+ * Validate all `${...}` expressions in a single engine's givens.
+ *
+ * Returns a human-readable error string on the first invalid expression,
+ * or null if all expressions are valid.
+ *
+ * Checks:
+ * - Expression must start with 'writ', 'vars', or 'yields'
+ * - 'writ' must be bare or have a dot-path ('writ.<path>')
+ * - 'vars' must have at least one key after 'vars.' ('vars.<path>')
+ * - 'yields' must have at least engineId and one path segment
+ * - 'yields' engine IDs must exist in the template and be transitively upstream
+ */
+function validateGivensRefs(
+  givens: Record<string, unknown>,
+  engineId: string,
+  engineIds: Set<string>,
+  allEngines: RigTemplateEngine[],
+): string | null {
+  for (const value of Object.values(givens)) {
+    if (typeof value !== 'string') continue;
+    if (!value.includes('${')) continue; // no template expressions (bare strings or no ${)
+
+    const expressions = extractExpressions(value);
+    for (const expr of expressions) {
+      if (expr === 'writ' || expr.startsWith('writ.')) {
+        continue; // valid — whole writ or writ sub-property
+      }
+      if (expr.startsWith('vars.')) {
+        // Must have at least one segment after 'vars.'
+        if (expr === 'vars.') {
+          return `engine "${engineId}" has invalid expression "\${${expr}}" — vars requires a key`;
+        }
+        continue; // valid
+      }
+      if (expr.startsWith('yields.')) {
+        // Must be yields.<engineId>.<path> — at least two dots total
+        const withoutPrefix = expr.slice('yields.'.length);
+        const dotIndex = withoutPrefix.indexOf('.');
+        if (dotIndex < 0) {
+          return `engine "${engineId}" has invalid expression "\${${expr}}" — yields requires engineId and property path`;
+        }
+        const refEngineId = withoutPrefix.slice(0, dotIndex);
+
+        if (!engineIds.has(refEngineId)) {
+          return `engine "${engineId}" references \${yields.${refEngineId}} but "${refEngineId}" is not an engine in this template`;
+        }
+
+        const reachable = computeUpstreamReachable(engineId, allEngines);
+        if (!reachable.has(refEngineId)) {
+          const yieldPath = withoutPrefix.slice(dotIndex + 1);
+          return `engine "${engineId}" references \${yields.${refEngineId}.${yieldPath}} but "${refEngineId}" is not upstream of "${engineId}"`;
+        }
+        continue; // valid
+      }
+      return `engine "${engineId}" has unrecognized expression "\${${expr}}"`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -445,42 +506,9 @@ function validateTemplates(
 
     // R7: Variable reference validation
     for (const engine of engines) {
-      for (const value of Object.values(engine.givens ?? {})) {
-        if (typeof value === 'string' && value.startsWith('$')) {
-          const normalized = normalizeVarRef(value);
-          if (
-            normalized === '$writ' ||
-            /^\$vars\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(normalized)
-          ) {
-            continue; // valid
-          }
-          if (YIELD_REF_RE.test(normalized)) {
-            // Extract engine_id from '$yields.<engine_id>.<property>'
-            const withoutPrefix = normalized.slice('$yields.'.length);
-            const dotIndex = withoutPrefix.indexOf('.');
-            const refEngineId = withoutPrefix.slice(0, dotIndex);
-            const yieldProp = withoutPrefix.slice(dotIndex + 1);
-
-            // Check engine_id exists in template
-            if (!engineIds.has(refEngineId)) {
-              throw new Error(
-                `[spider] rigTemplates.${templateKey}: engine "${engine.id}" references $yields.${refEngineId} but "${refEngineId}" is not an engine in this template`
-              );
-            }
-
-            // Check engine_id is transitively upstream
-            const reachable = computeUpstreamReachable(engine.id, engines);
-            if (!reachable.has(refEngineId)) {
-              throw new Error(
-                `[spider] rigTemplates.${templateKey}: engine "${engine.id}" references $yields.${refEngineId}.${yieldProp} but "${refEngineId}" is not upstream of "${engine.id}"`
-              );
-            }
-            continue; // valid
-          }
-          throw new Error(
-            `[spider] rigTemplates.${templateKey}: engine "${engine.id}" has unrecognized variable "${value}"`
-          );
-        }
+      const refError = validateGivensRefs(engine.givens ?? {}, engine.id, engineIds, engines);
+      if (refError !== null) {
+        throw new Error(`[spider] rigTemplates.${templateKey}: ${refError}`);
       }
     }
 
@@ -491,26 +519,35 @@ function validateTemplates(
       if (expr.startsWith('!')) {
         expr = expr.slice(1);
       }
-      const normalized = normalizeVarRef(expr);
-      if (!YIELD_REF_RE.test(normalized)) {
+      // Strip ${...} wrapper if present to get the expression body
+      if (expr.startsWith('${') && expr.endsWith('}')) {
+        expr = expr.slice(2, -1);
+      }
+      // Must be yields.<engineId>.<path>
+      if (!expr.startsWith('yields.')) {
         throw new Error(
-          `[spider] rigTemplates.${templateKey}: engine "${engine.id}" has invalid when expression "${engine.when}" — must be a $yields.<engine_id>.<property> reference with optional ! prefix`
+          `[spider] rigTemplates.${templateKey}: engine "${engine.id}" has invalid when expression "${engine.when}" — must be a \${yields.<engine_id>.<property>} reference with optional ! prefix`
         );
       }
-      const withoutPrefix = normalized.slice('$yields.'.length);
+      const withoutPrefix = expr.slice('yields.'.length);
       const dotIndex = withoutPrefix.indexOf('.');
+      if (dotIndex < 0) {
+        throw new Error(
+          `[spider] rigTemplates.${templateKey}: engine "${engine.id}" has invalid when expression "${engine.when}" — must be a \${yields.<engine_id>.<property>} reference with optional ! prefix`
+        );
+      }
       const refEngineId = withoutPrefix.slice(0, dotIndex);
       const yieldProp = withoutPrefix.slice(dotIndex + 1);
 
       if (!engineIds.has(refEngineId)) {
         throw new Error(
-          `[spider] rigTemplates.${templateKey}: engine "${engine.id}" when references $yields.${refEngineId} but "${refEngineId}" is not an engine in this template`
+          `[spider] rigTemplates.${templateKey}: engine "${engine.id}" when references \${yields.${refEngineId}} but "${refEngineId}" is not an engine in this template`
         );
       }
       const reachable = computeUpstreamReachable(engine.id, engines);
       if (!reachable.has(refEngineId)) {
         throw new Error(
-          `[spider] rigTemplates.${templateKey}: engine "${engine.id}" when references $yields.${refEngineId}.${yieldProp} but "${refEngineId}" is not upstream of "${engine.id}"`
+          `[spider] rigTemplates.${templateKey}: engine "${engine.id}" when references \${yields.${refEngineId}.${yieldProp}} but "${refEngineId}" is not upstream of "${engine.id}"`
         );
       }
     }
@@ -602,12 +639,18 @@ function validateGraft(
     if (engine.when === undefined) continue;
     let expr = engine.when.trim();
     if (expr.startsWith('!')) expr = expr.slice(1);
-    const normalized = normalizeVarRef(expr);
-    if (!YIELD_REF_RE.test(normalized)) {
-      return `Engine "${engine.id}" has invalid when expression — must be a $yields reference`;
+    // Strip ${...} wrapper if present
+    if (expr.startsWith('${') && expr.endsWith('}')) {
+      expr = expr.slice(2, -1);
     }
-    const withoutPrefix = normalized.slice('$yields.'.length);
+    if (!expr.startsWith('yields.')) {
+      return `Engine "${engine.id}" has invalid when expression — must be a \${yields.<engineId>.<property>} reference`;
+    }
+    const withoutPrefix = expr.slice('yields.'.length);
     const dotIndex = withoutPrefix.indexOf('.');
+    if (dotIndex < 0) {
+      return `Engine "${engine.id}" has invalid when expression — must be a \${yields.<engineId>.<property>} reference`;
+    }
     const refEngineId = withoutPrefix.slice(0, dotIndex);
     const allIds = new Set([...new Set(rig.engines.map((e) => e.id)), ...graft.map((e) => e.id)]);
     if (!allIds.has(refEngineId)) {
@@ -620,25 +663,11 @@ function validateGraft(
   }
 
   // yield reference validation in givens
+  const allGraftIds = new Set([...new Set(rig.engines.map((e) => e.id)), ...graft.map((e) => e.id)]);
   for (const engine of graft) {
-    for (const value of Object.values(engine.givens ?? {})) {
-      if (typeof value === 'string' && value.startsWith('$')) {
-        const normalized = normalizeVarRef(value);
-        if (YIELD_REF_RE.test(normalized)) {
-          const withoutPrefix = normalized.slice('$yields.'.length);
-          const dotIndex = withoutPrefix.indexOf('.');
-          const refEngineId = withoutPrefix.slice(0, dotIndex);
-          const yieldProp = withoutPrefix.slice(dotIndex + 1);
-          const allIds = new Set([...new Set(rig.engines.map((e) => e.id)), ...graft.map((e) => e.id)]);
-          if (!allIds.has(refEngineId)) {
-            return `Engine "${engine.id}" references $yields.${refEngineId} but it is not an engine in the rig`;
-          }
-          const reachable = computeUpstreamReachable(engine.id, allTemplateEngines);
-          if (!reachable.has(refEngineId)) {
-            return `Engine "${engine.id}" references $yields.${refEngineId}.${yieldProp} but it is not upstream`;
-          }
-        }
-      }
+    const refError = validateGivensRefs(engine.givens ?? {}, engine.id, allGraftIds, allTemplateEngines);
+    if (refError !== null) {
+      return refError;
     }
   }
 
@@ -953,33 +982,9 @@ class RigTemplateRegistry {
 
     // Variable reference validation
     for (const engine of engines) {
-      for (const value of Object.values(engine.givens ?? {})) {
-        if (typeof value === 'string' && value.startsWith('$')) {
-          const normalized = normalizeVarRef(value);
-          if (
-            normalized === '$writ' ||
-            /^\$vars\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(normalized)
-          ) {
-            continue;
-          }
-          if (YIELD_REF_RE.test(normalized)) {
-            const withoutPrefix = normalized.slice('$yields.'.length);
-            const dotIndex = withoutPrefix.indexOf('.');
-            const refEngineId = withoutPrefix.slice(0, dotIndex);
-            const yieldProp = withoutPrefix.slice(dotIndex + 1);
-
-            if (!engineIds.has(refEngineId)) {
-              return `${prefix}: engine "${engine.id}" references $yields.${refEngineId} but "${refEngineId}" is not an engine in this template`;
-            }
-
-            const reachable = computeUpstreamReachable(engine.id, template.engines);
-            if (!reachable.has(refEngineId)) {
-              return `${prefix}: engine "${engine.id}" references $yields.${refEngineId}.${yieldProp} but "${refEngineId}" is not upstream of "${engine.id}"`;
-            }
-            continue;
-          }
-          return `${prefix}: engine "${engine.id}" has unrecognized variable "${value}"`;
-        }
+      const refError = validateGivensRefs(engine.givens ?? {}, engine.id, engineIds, template.engines);
+      if (refError !== null) {
+        return `${prefix}: ${refError}`;
       }
     }
 
@@ -990,21 +995,27 @@ class RigTemplateRegistry {
       if (expr.startsWith('!')) {
         expr = expr.slice(1);
       }
-      const normalized = normalizeVarRef(expr);
-      if (!YIELD_REF_RE.test(normalized)) {
-        return `${prefix}: engine "${engine.id}" has invalid when expression "${engine.when}" — must be a $yields.<engine_id>.<property> reference with optional ! prefix`;
+      // Strip ${...} wrapper if present
+      if (expr.startsWith('${') && expr.endsWith('}')) {
+        expr = expr.slice(2, -1);
       }
-      const withoutPrefix = normalized.slice('$yields.'.length);
+      if (!expr.startsWith('yields.')) {
+        return `${prefix}: engine "${engine.id}" has invalid when expression "${engine.when}" — must be a \${yields.<engine_id>.<property>} reference with optional ! prefix`;
+      }
+      const withoutPrefix = expr.slice('yields.'.length);
       const dotIndex = withoutPrefix.indexOf('.');
+      if (dotIndex < 0) {
+        return `${prefix}: engine "${engine.id}" has invalid when expression "${engine.when}" — must be a \${yields.<engine_id>.<property>} reference with optional ! prefix`;
+      }
       const refEngineId = withoutPrefix.slice(0, dotIndex);
       const yieldProp = withoutPrefix.slice(dotIndex + 1);
 
       if (!engineIds.has(refEngineId)) {
-        return `${prefix}: engine "${engine.id}" when references $yields.${refEngineId} but "${refEngineId}" is not an engine in this template`;
+        return `${prefix}: engine "${engine.id}" when references \${yields.${refEngineId}} but "${refEngineId}" is not an engine in this template`;
       }
       const reachable = computeUpstreamReachable(engine.id, template.engines);
       if (!reachable.has(refEngineId)) {
-        return `${prefix}: engine "${engine.id}" when references $yields.${refEngineId}.${yieldProp} but "${refEngineId}" is not upstream of "${engine.id}"`;
+        return `${prefix}: engine "${engine.id}" when references \${yields.${refEngineId}.${yieldProp}} but "${refEngineId}" is not upstream of "${engine.id}"`;
       }
     }
 
@@ -1245,7 +1256,7 @@ export function createSpider(): Plugin {
         let collectGraft: RigTemplateEngine[] | undefined;
         if (design?.collect) {
           const upstream = buildUpstreamMap(rig);
-          const givens = resolveYieldRefs({ ...engine.givensSpec }, upstream);
+          const givens = resolveYieldRefs(engine.givensSpec, upstream);
           const context = { rigId: rig.id, engineId: engine.id, upstream };
           const collectResult = await design.collect(engine.sessionId!, givens, context);
           // Check for SpiderCollectResult shape (duck-typing)
@@ -1500,7 +1511,7 @@ export function createSpider(): Plugin {
         return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
       }
 
-      const givens = resolveYieldRefs({ ...pending.givensSpec }, upstream);
+      const givens = resolveYieldRefs(pending.givensSpec, upstream);
 
       // Check for a prior block record (engine was previously blocked and unblocked)
       const priorBlockKey = `${rig.id}:${pending.id}`;

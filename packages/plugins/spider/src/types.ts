@@ -41,7 +41,7 @@ export interface BlockRecord {
  * For the static pipeline it matches `designId`.
  *
  * `givensSpec` holds values set at spawn time (writ, role, commands) and
- * may contain unresolved yield reference strings ('$yields.<id>.<prop>')
+ * may contain unresolved yield expression strings (`${yields.<id>.<path>}`)
  * that the Spider resolves at run time from upstream engine yields.
  */
 export interface EngineInstance {
@@ -54,9 +54,10 @@ export interface EngineInstance {
   /** Engine IDs that must be completed before this engine can run. */
   upstream: string[];
   /**
-   * Givens values. Spawn-time references ($writ, $vars.*) are resolved to
-   * their values. Yield references ($yields.*.*) remain as strings and are
-   * resolved at run time when the engine is executed.
+   * Givens values. Spawn-time expressions (`${writ}`, `${writ.*}`, `${vars.*}`)
+   * are resolved to their values. Yield expressions (`${yields.*}`) remain as
+   * literal `${yields.*}` strings and are resolved at run time when the engine
+   * is executed.
    */
   givensSpec: Record<string, unknown>;
   /**
@@ -134,27 +135,34 @@ export interface RigTemplateEngine {
   upstream?: string[];
   /**
    * Givens to pass to the engine.
-   * String values starting with '$' (either $name or ${name}) are variable
-   * references:
-   *   '$writ' or '${writ}' — the WritDoc for this rig's writ
-   *   '$vars.<key>' or '${vars.<key>}' — value from spider.variables config
-   *   '$yields.<engine_id>.<property>' or '${yields.<engine_id>.<property>}'
-   *       — a property from an upstream engine's yields (resolved at run time)
+   *
+   * String values may contain `${...}` template expressions:
+   *   `${writ}` — the full WritDoc for this rig's writ
+   *   `${writ.<path>}` — a field of the WritDoc (dot-path traversal)
+   *   `${vars.<path>}` — value from spider.variables config (dot-path traversal)
+   *   `${yields.<engine_id>.<path>}` — a property from an upstream engine's
+   *       yields (resolved at run time, dot-path traversal)
+   *
+   * When a string is exactly one expression (e.g. `${writ}`), the resolved
+   * value preserves its original type. When expressions are embedded in a
+   * larger string, the result is always a string.
+   *
    * Non-string values are passed through literally.
-   * Variables that resolve to undefined cause the key to be omitted.
+   * Whole-value expressions that resolve to undefined cause the key to be omitted.
+   * Inline expressions that resolve to undefined are replaced with empty string.
+   *
+   * Use `\${` to produce a literal `${` in the output without interpolation.
    */
   givens?: Record<string, unknown>;
   /**
-   * Conditional activation expression. A `$yields.<engine_id>.<property>` reference
+   * Conditional activation expression. A `${yields.<engine_id>.<property>}` reference
    * (with optional `!` negation prefix) evaluated at runtime when the engine's upstream
    * is all done. When the condition is falsy, the engine is set to `skipped` status.
    * When absent, the engine is unconditional (always runs).
    *
    * Examples:
-   *   '$yields.review.passed'    — run this engine when review.passed is truthy
-   *   '!$yields.review.passed'   — run this engine when review.passed is falsy
-   *   '${yields.review.passed}'  — equivalent (curly-brace syntax)
-   *   '!${yields.review.passed}' — equivalent negated
+   *   '${yields.review.passed}'  — run this engine when review.passed is truthy
+   *   '!${yields.review.passed}' — run this engine when review.passed is falsy
    */
   when?: string;
 }
@@ -350,8 +358,8 @@ export interface SpiderConfig {
    */
   rigTemplateMappings?: Record<string, string>;
   /**
-   * User-defined variables available in rig template givens via '$vars.<key>'.
-   * Values are passed through literally (string, number, boolean).
+   * User-defined variables available in rig template givens via `${vars.<path>}`.
+   * Values are passed through literally (string, number, boolean, object).
    * Variables resolving to undefined (key absent) cause the givens key to be omitted.
    */
   variables?: Record<string, unknown>;
