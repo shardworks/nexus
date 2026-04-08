@@ -42,6 +42,7 @@ import type {
 } from './types.ts';
 
 import {
+  animaSessionEngine,
   draftEngine,
   implementEngine,
   reviewEngine,
@@ -291,6 +292,7 @@ function validateTemplates(
   fabricator: FabricatorApi,
 ): void {
   const builtinEngineIds = new Set([
+    animaSessionEngine.id,
     draftEngine.id,
     implementEngine.id,
     reviewEngine.id,
@@ -494,6 +496,7 @@ class RigTemplateRegistry {
   buildDesignSourceMap(engineEntries: KitEntry[]): void {
     // Spider's built-in engines always map to 'spider'
     const builtinIds = [
+      animaSessionEngine.id,
       draftEngine.id,
       implementEngine.id,
       reviewEngine.id,
@@ -988,6 +991,7 @@ export function createSpider(): Plugin {
             sessionId: session.id,
             sessionStatus: session.status,
             ...(session.output !== undefined ? { output: session.output } : {}),
+            ...(session.conversationId !== undefined ? { conversationId: session.conversationId } : {}),
           };
         }
 
@@ -1422,6 +1426,7 @@ export function createSpider(): Plugin {
           },
         },
         engines: {
+          'anima-session': animaSessionEngine,
           draft:     draftEngine,
           implement: implementEngine,
           review:    reviewEngine,

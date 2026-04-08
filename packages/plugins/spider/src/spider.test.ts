@@ -30,6 +30,8 @@ import { z } from 'zod';
 import { createSpider } from './spider.ts';
 import type { SpiderApi, RigDoc, EngineInstance, ReviewYields, MechanicalCheck, RigTemplate, BlockRecord, BlockType, CheckResult } from './types.ts';
 
+import animaSessionEngine from './engines/anima-session.ts';
+
 import rigShowTool from './tools/rig-show.ts';
 import rigListTool from './tools/rig-list.ts';
 import rigForWritTool from './tools/rig-for-writ.ts';
@@ -5927,6 +5929,304 @@ describe('$yields.* reference support', () => {
 
       assert.ok(capturedGivens !== null, 'c engine should have been called');
       assert.equal((capturedGivens as Record<string, unknown>).val, 'from-a');
+    });
+  });
+
+  // ── anima-session engine ───────────────────────────────────────────
+
+  describe('anima-session engine', () => {
+    let fix: ReturnType<typeof buildFixture>;
+    beforeEach(() => { fix = buildFixture(); });
+    afterEach(() => { clearGuild(); });
+
+    // Build a minimal EngineRunContext for direct engine tests
+    function makeContext(overrides: Partial<EngineRunContext> = {}): EngineRunContext {
+      return {
+        rigId: 'rig-test',
+        engineId: 'anima-session',
+        upstream: {},
+        ...overrides,
+      };
+    }
+
+    // ── Registration ────────────────────────────────────────────────
+
+    describe('registration', () => {
+      it('registers anima-session engine in the Fabricator', () => {
+        const { fabricator } = fix;
+        assert.ok(fabricator.getEngineDesign('anima-session'), 'anima-session engine should be registered');
+      });
+
+      it('has no collect method (uses generic default collect)', () => {
+        assert.equal(animaSessionEngine.collect, undefined);
+      });
+
+      it('config rig template referencing designId anima-session passes validateTemplates', () => {
+        // Build a fixture with anima-session as a template designId.
+        // If spider.start() does not throw, validation passed.
+        const animaTemplate: RigTemplate = {
+          engines: [
+            { id: 'anima', designId: 'anima-session', givens: { role: 'scribe', prompt: 'Do work', cwd: '/tmp' } },
+          ],
+          resolutionEngine: 'anima',
+        };
+        assert.doesNotThrow(() => {
+          buildFixture({
+            spider: {
+              rigTemplates: { default: animaTemplate },
+              variables: {},
+            },
+          });
+        });
+      });
+    });
+
+    // ── Givens validation ────────────────────────────────────────────
+
+    describe('givens validation', () => {
+      it('throws when role is missing', async () => {
+        await assert.rejects(
+          () => animaSessionEngine.run({ prompt: 'x', cwd: '/tmp' }, makeContext()),
+          (err: Error) => {
+            assert.ok(err.message.includes('role'), `expected "role" in error: ${err.message}`);
+            return true;
+          },
+        );
+      });
+
+      it('throws when role is an empty string', async () => {
+        await assert.rejects(
+          () => animaSessionEngine.run({ role: '', prompt: 'x', cwd: '/tmp' }, makeContext()),
+          (err: Error) => {
+            assert.ok(err.message.includes('role'), `expected "role" in error: ${err.message}`);
+            return true;
+          },
+        );
+      });
+
+      it('throws when role is a non-string value', async () => {
+        await assert.rejects(
+          () => animaSessionEngine.run({ role: 123, prompt: 'x', cwd: '/tmp' }, makeContext()),
+          (err: Error) => {
+            assert.ok(err.message.includes('role'), `expected "role" in error: ${err.message}`);
+            return true;
+          },
+        );
+      });
+
+      it('throws when prompt is missing', async () => {
+        await assert.rejects(
+          () => animaSessionEngine.run({ role: 'scribe', cwd: '/tmp' }, makeContext()),
+          (err: Error) => {
+            assert.ok(err.message.includes('prompt'), `expected "prompt" in error: ${err.message}`);
+            return true;
+          },
+        );
+      });
+
+      it('throws when prompt is an empty string', async () => {
+        await assert.rejects(
+          () => animaSessionEngine.run({ role: 'scribe', prompt: '', cwd: '/tmp' }, makeContext()),
+          (err: Error) => {
+            assert.ok(err.message.includes('prompt'), `expected "prompt" in error: ${err.message}`);
+            return true;
+          },
+        );
+      });
+
+      it('throws when cwd is missing', async () => {
+        await assert.rejects(
+          () => animaSessionEngine.run({ role: 'scribe', prompt: 'x' }, makeContext()),
+          (err: Error) => {
+            assert.ok(err.message.includes('cwd'), `expected "cwd" in error: ${err.message}`);
+            return true;
+          },
+        );
+      });
+
+      it('throws when cwd is missing even when context.upstream has draft path', async () => {
+        // Patron directive: no fallback to draft path — cwd must come from givens
+        await assert.rejects(
+          () => animaSessionEngine.run(
+            { role: 'scribe', prompt: 'x' },
+            makeContext({ upstream: { draft: { path: '/tmp/draft' } } }),
+          ),
+          (err: Error) => {
+            assert.ok(err.message.includes('cwd'), `expected "cwd" in error: ${err.message}`);
+            return true;
+          },
+        );
+      });
+    });
+
+    // ── Summon integration ───────────────────────────────────────────
+
+    describe('summon integration', () => {
+      it('summons with correct fields when writ is provided', async () => {
+        const { summonCalls } = fix;
+        const mockWrit: WritDoc = {
+          id: 'writ-abc',
+          title: 'Test writ',
+          body: 'Test body',
+          status: 'active',
+          createdAt: new Date().toISOString(),
+        };
+
+        const result = await animaSessionEngine.run(
+          { role: 'artificer', prompt: 'Do the work', cwd: '/tmp/work', writ: mockWrit },
+          makeContext({ engineId: 'my-engine' }),
+        );
+
+        assert.equal((result as { status: string }).status, 'launched');
+        assert.ok(typeof (result as { sessionId: string }).sessionId === 'string', 'should have sessionId');
+
+        const req = summonCalls[summonCalls.length - 1];
+        assert.equal(req.role, 'artificer');
+        assert.equal(req.prompt, 'Do the work');
+        assert.equal(req.cwd, '/tmp/work');
+        assert.deepEqual(req.environment, { GIT_AUTHOR_EMAIL: 'writ-abc@nexus.local' });
+        assert.deepEqual(req.metadata, { engineId: 'my-engine', writId: 'writ-abc' });
+      });
+
+      it('summons with empty environment and no writId in metadata when writ is absent', async () => {
+        const { summonCalls } = fix;
+
+        await animaSessionEngine.run(
+          { role: 'scribe', prompt: 'Plan something', cwd: '/tmp' },
+          makeContext({ engineId: 'plain-engine' }),
+        );
+
+        const req = summonCalls[summonCalls.length - 1];
+        assert.deepEqual(req.environment, {});
+        assert.deepEqual(req.metadata, { engineId: 'plain-engine' });
+        assert.ok(!Object.prototype.hasOwnProperty.call(req.metadata, 'writId'), 'metadata should not have writId');
+      });
+
+      it('passes conversationId to summon when provided', async () => {
+        const { summonCalls } = fix;
+
+        await animaSessionEngine.run(
+          { role: 'scribe', prompt: 'Continue', cwd: '/tmp', conversationId: 'conv-123' },
+          makeContext(),
+        );
+
+        const req = summonCalls[summonCalls.length - 1];
+        assert.equal(req.conversationId, 'conv-123');
+      });
+
+      it('omits conversationId from summon when not provided', async () => {
+        const { summonCalls } = fix;
+
+        await animaSessionEngine.run(
+          { role: 'scribe', prompt: 'Fresh start', cwd: '/tmp' },
+          makeContext(),
+        );
+
+        const req = summonCalls[summonCalls.length - 1];
+        assert.ok(!Object.prototype.hasOwnProperty.call(req, 'conversationId'), 'conversationId should be absent');
+      });
+
+      it('omits conversationId from summon when falsy (empty string)', async () => {
+        const { summonCalls } = fix;
+
+        await animaSessionEngine.run(
+          { role: 'scribe', prompt: 'Fresh start', cwd: '/tmp', conversationId: '' },
+          makeContext(),
+        );
+
+        const req = summonCalls[summonCalls.length - 1];
+        assert.ok(!Object.prototype.hasOwnProperty.call(req, 'conversationId'), 'empty conversationId should be omitted');
+      });
+    });
+
+    // ── Generic default collect — conversationId in yields ───────────
+
+    describe('generic default collect — conversationId in yields', () => {
+      it('includes conversationId in yields when session document has it', async () => {
+        const { clerk, spider, stacks } = fix;
+        await postWrit(clerk, 'ConvId test');
+        await spider.crawl(); // spawn
+
+        const book = rigsBook(stacks);
+        const [rig] = await book.list();
+        const fakeSessionId = generateId('ses', 4);
+
+        // Simulate: draft completed, implement launched a session
+        const enginesWithSession = rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') {
+            return { ...e, status: 'completed' as const, yields: { draftId: 'x', codexName: 'c', branch: 'b', path: '/p' } };
+          }
+          if (e.id === 'implement') {
+            return { ...e, status: 'running' as const, sessionId: fakeSessionId };
+          }
+          return e;
+        });
+        await book.patch(rig.id, { engines: enginesWithSession });
+
+        // Insert terminal session record with conversationId
+        const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+        await sessBook.put({
+          id: fakeSessionId,
+          status: 'completed',
+          startedAt: new Date().toISOString(),
+          endedAt: new Date().toISOString(),
+          durationMs: 0,
+          provider: 'test',
+          exitCode: 0,
+          conversationId: 'conv-abc',
+        });
+
+        const result = await spider.crawl(); // collect
+        assert.equal(result?.action, 'engine-completed');
+
+        const [updated] = await book.list();
+        const impl = updated.engines.find((e: EngineInstance) => e.id === 'implement');
+        const yields = impl?.yields as Record<string, unknown>;
+        assert.equal(yields.conversationId, 'conv-abc', 'yields should include conversationId from session');
+      });
+
+      it('excludes conversationId from yields when session document does not have it', async () => {
+        const { clerk, spider, stacks } = fix;
+        await postWrit(clerk, 'No ConvId test');
+        await spider.crawl(); // spawn
+
+        const book = rigsBook(stacks);
+        const [rig] = await book.list();
+        const fakeSessionId = generateId('ses', 4);
+
+        const enginesWithSession = rig.engines.map((e: EngineInstance) => {
+          if (e.id === 'draft') {
+            return { ...e, status: 'completed' as const, yields: { draftId: 'x', codexName: 'c', branch: 'b', path: '/p' } };
+          }
+          if (e.id === 'implement') {
+            return { ...e, status: 'running' as const, sessionId: fakeSessionId };
+          }
+          return e;
+        });
+        await book.patch(rig.id, { engines: enginesWithSession });
+
+        // Insert terminal session record WITHOUT conversationId
+        const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+        await sessBook.put({
+          id: fakeSessionId,
+          status: 'completed',
+          startedAt: new Date().toISOString(),
+          endedAt: new Date().toISOString(),
+          durationMs: 0,
+          provider: 'test',
+          exitCode: 0,
+        });
+
+        await spider.crawl(); // collect
+
+        const [updated] = await book.list();
+        const impl = updated.engines.find((e: EngineInstance) => e.id === 'implement');
+        const yields = impl?.yields as Record<string, unknown>;
+        assert.ok(
+          !Object.prototype.hasOwnProperty.call(yields, 'conversationId'),
+          'yields should NOT contain conversationId key when session has none',
+        );
+      });
     });
   });
 });
