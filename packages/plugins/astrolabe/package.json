@@ -1,0 +1,45 @@
+{
+  "name": "@shardworks/astrolabe-apparatus",
+  "version": "0.0.0",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shardworks/nexus",
+    "directory": "packages/plugins/astrolabe"
+  },
+  "description": "The Astrolabe — brief-to-specification planning apparatus",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@shardworks/nexus-core": "workspace:*",
+    "@shardworks/stacks-apparatus": "workspace:*",
+    "@shardworks/tools-apparatus": "workspace:*",
+    "@shardworks/clerk-apparatus": "workspace:*",
+    "@shardworks/spider-apparatus": "workspace:*",
+    "@shardworks/fabricator-apparatus": "workspace:*",
+    "@shardworks/loom-apparatus": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "25.5.0"
+  },
+  "files": [
+    "dist",
+    "sage.md"
+  ],
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  }
+}

@@ -75,6 +75,37 @@ importers:
         specifier: 25.5.0
         version: 25.5.0
 
+  packages/plugins/astrolabe:
+    dependencies:
+      '@shardworks/clerk-apparatus':
+        specifier: workspace:*
+        version: link:../clerk
+      '@shardworks/fabricator-apparatus':
+        specifier: workspace:*
+        version: link:../fabricator
+      '@shardworks/loom-apparatus':
+        specifier: workspace:*
+        version: link:../loom
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
+      '@shardworks/spider-apparatus':
+        specifier: workspace:*
+        version: link:../spider
+      '@shardworks/stacks-apparatus':
+        specifier: workspace:*
+        version: link:../stacks
+      '@shardworks/tools-apparatus':
+        specifier: workspace:*
+        version: link:../tools
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
   packages/plugins/claude-code:
     dependencies:
       '@modelcontextprotocol/sdk':
