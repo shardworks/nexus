@@ -40,6 +40,9 @@ const animaSessionEngine: EngineDesign = {
       ...(givens.conversationId ? { conversationId: givens.conversationId as string } : {}),
       environment: writ ? { GIT_AUTHOR_EMAIL: `${writ.id}@nexus.local` } : {},
       metadata: { engineId: context.engineId, ...(writ ? { writId: writ.id } : {}) },
+      // Enable streaming so the provider generates real-time chunks that the
+      // Animator's broadcaster captures for subscribeToSession() consumers.
+      streaming: true,
     });
 
     return { status: 'launched', sessionId: handle.sessionId };

@@ -16,6 +16,7 @@
   var currentStatusFilter = '';
   var writLookup = {};
   var sessionPollTimer = null;
+  var sessionEventSource = null;
   var selectedTemplateName = null;
 
   // ── Badge mapping ──────────────────────────────────────────────────────
@@ -118,6 +119,14 @@
       clearInterval(sessionPollTimer);
       sessionPollTimer = null;
     }
+  }
+
+  function stopSessionStream() {
+    if (sessionEventSource !== null) {
+      sessionEventSource.close();
+      sessionEventSource = null;
+    }
+    stopSessionPoll();
   }
 
   // ── Fetch rigs ─────────────────────────────────────────────────────────
@@ -226,7 +235,7 @@
     currentRig = rig;
     selectedEngineId = null;
 
-    stopSessionPoll();
+    stopSessionStream();
 
     document.getElementById('rig-list-view').style.display = 'none';
     document.getElementById('rig-detail-view').style.display = '';
@@ -450,7 +459,7 @@
     }
 
     // Session log / transcript
-    stopSessionPoll();
+    stopSessionStream();
     var sessionLogSection = document.getElementById('session-log-section');
     var sessionLogSpinner = document.getElementById('session-log-spinner');
     var sessionLogTextarea = document.getElementById('session-log');
@@ -458,50 +467,101 @@
     if (sessionLogSection) sessionLogSection.style.display = 'none';
 
     if (engine.sessionId) {
-      if (engine.status === 'running') {
-        // Show log section with spinner, start polling
-        if (sessionLogSection) sessionLogSection.style.display = '';
-        if (sessionLogSpinner) sessionLogSpinner.style.display = '';
-        if (sessionLogTextarea) sessionLogTextarea.value = '';
+      if (sessionLogSection) sessionLogSection.style.display = '';
+      if (sessionLogTextarea) sessionLogTextarea.value = '';
 
-        sessionPollTimer = setInterval(function () {
+      // Open a Server-Sent Events stream for real-time session output.
+      // The endpoint handles both running sessions (streaming chunks) and
+      // already-completed sessions (immediately emits transcript + done).
+      if (sessionLogSpinner) {
+        sessionLogSpinner.className = 'badge badge--active';
+        sessionLogSpinner.textContent = 'connecting\u2026';
+        sessionLogSpinner.style.display = '';
+      }
+
+      sessionEventSource = new EventSource(
+        '/api/spider/session-stream?sessionId=' + encodeURIComponent(engine.sessionId)
+      );
+
+      sessionEventSource.addEventListener('chunk', function (e) {
+        var chunk;
+        try { chunk = JSON.parse(e.data); } catch (err) { return; }
+        if (!sessionLogTextarea) return;
+        if (chunk.type === 'text') {
+          sessionLogTextarea.value += chunk.text;
+        } else if (chunk.type === 'tool_use') {
+          sessionLogTextarea.value += '\n[tool: ' + chunk.tool + ']\n';
+        } else if (chunk.type === 'tool_result') {
+          sessionLogTextarea.value += '[result: ' + chunk.tool + ']\n';
+        }
+        sessionLogTextarea.scrollTop = sessionLogTextarea.scrollHeight;
+        // Update pill to show we are actively receiving data
+        if (sessionLogSpinner) {
+          sessionLogSpinner.className = 'badge badge--active';
+          sessionLogSpinner.textContent = 'connected';
+        }
+      });
+
+      sessionEventSource.addEventListener('transcript', function (e) {
+        var data;
+        try { data = JSON.parse(e.data); } catch (err) { return; }
+        if (sessionLogTextarea) {
+          sessionLogTextarea.value = renderTranscript(data.messages || []);
+          sessionLogTextarea.scrollTop = sessionLogTextarea.scrollHeight;
+        }
+      });
+
+      sessionEventSource.addEventListener('done', function (e) {
+        var data;
+        try { data = JSON.parse(e.data); } catch (err) { data = {}; }
+        stopSessionStream();
+        if (sessionLogSpinner) {
+          sessionLogSpinner.style.display = 'none';
+        }
+        // If the server has no live stream (e.g. server restart), fall back to
+        // fetching the transcript via the regular endpoint.
+        if (data.noStream) {
           fetch('/api/spider/session-transcript?sessionId=' + encodeURIComponent(engine.sessionId))
             .then(function (r) { return r.json(); })
-            .then(function (data) {
-              if (data.sessionStatus !== 'running') {
-                stopSessionPoll();
-                if (sessionLogSpinner) sessionLogSpinner.style.display = 'none';
-                if (sessionLogTextarea) {
-                  sessionLogTextarea.value = renderTranscript(data.messages || []);
-                  sessionLogTextarea.scrollTop = sessionLogTextarea.scrollHeight;
-                }
+            .then(function (res) {
+              if (sessionLogTextarea) {
+                sessionLogTextarea.value = renderTranscript(res.messages || []);
+                sessionLogTextarea.scrollTop = sessionLogTextarea.scrollHeight;
               }
-              // While running, textarea stays empty, spinner shows
             })
             .catch(function () { /* ignore */ });
-        }, 3000);
+        }
+      });
 
-      } else if (engine.status === 'completed' || engine.status === 'failed') {
-        // Fetch transcript once
-        if (sessionLogSection) sessionLogSection.style.display = '';
-        if (sessionLogSpinner) sessionLogSpinner.style.display = 'none';
+      sessionEventSource.addEventListener('error', function (e) {
+        var data;
+        try { data = JSON.parse(/** @type {MessageEvent} */(e).data || '{}'); } catch (err) { data = {}; }
+        if (sessionLogSpinner) {
+          sessionLogSpinner.className = 'badge badge--error';
+          sessionLogSpinner.textContent = data.error ? 'error: ' + data.error : 'error';
+          sessionLogSpinner.style.display = '';
+        }
+        stopSessionStream();
+      });
 
-        fetch('/api/spider/session-transcript?sessionId=' + encodeURIComponent(engine.sessionId))
-          .then(function (r) { return r.json(); })
-          .then(function (data) {
-            if (sessionLogTextarea) {
-              sessionLogTextarea.value = renderTranscript(data.messages || []);
-            }
-          })
-          .catch(function () { /* ignore */ });
-      }
+      sessionEventSource.onerror = function () {
+        // Network-level error (browser fires this on connection failure / premature close).
+        if (sessionEventSource) {
+          stopSessionStream();
+          if (sessionLogSpinner && sessionLogSpinner.style.display !== 'none') {
+            sessionLogSpinner.className = 'badge badge--error';
+            sessionLogSpinner.textContent = 'disconnected';
+            sessionLogSpinner.style.display = '';
+          }
+        }
+      };
     }
   }
 
   // ── Back to list ───────────────────────────────────────────────────────
 
   function backToList() {
-    stopSessionPoll();
+    stopSessionStream();
     currentRig = null;
     selectedEngineId = null;
     document.getElementById('rig-detail-view').style.display = 'none';

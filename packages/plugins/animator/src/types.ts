@@ -208,6 +208,19 @@ export interface AnimatorApi {
    * Returns synchronously — the async work lives inside `result` and `chunks`.
    */
   animate(request: AnimateRequest): AnimateHandle;
+
+  /**
+   * Subscribe to a running session's output stream.
+   *
+   * Returns an AsyncIterable that replays all chunks already produced
+   * (from session start) and then yields new chunks as they arrive.
+   * Returns null if there is no active in-memory session with the given id
+   * (i.e. the session is unknown, already completed, or started before this
+   * process started).
+   *
+   * When the session ends, the iterable completes automatically.
+   */
+  subscribeToSession(sessionId: string): AsyncIterable<SessionChunk> | null;
 }
 
 // ── Session provider interface ───────────────────────────────────────

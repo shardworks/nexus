@@ -675,6 +675,121 @@ describe('Animator', () => {
     });
   });
 
+  describe('subscribeToSession()', () => {
+    it('returns null for an unknown session id', () => {
+      setup();
+      const result = animator.subscribeToSession('ses-unknown-0000');
+      assert.equal(result, null);
+    });
+
+    it('returns an async iterable for a running session', async () => {
+      const testChunks: SessionChunk[] = [
+        { type: 'text', text: 'Hello' },
+        { type: 'tool_use', tool: 'read' },
+      ];
+      setup(createStreamingFakeProvider(testChunks));
+
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+        streaming: true,
+      });
+
+      // subscribeToSession should return an iterable while session is active
+      const sub = animator.subscribeToSession(handle.sessionId);
+      assert.ok(sub !== null, 'should return an iterable for an active session');
+      assert.equal(typeof sub[Symbol.asyncIterator], 'function');
+
+      // Drain the subscription; let the session finish
+      const collected: SessionChunk[] = [];
+      for await (const chunk of sub) {
+        collected.push(chunk);
+      }
+      assert.equal(collected.length, 2);
+      assert.deepEqual(collected[0], { type: 'text', text: 'Hello' });
+      assert.deepEqual(collected[1], { type: 'tool_use', tool: 'read' });
+
+      await handle.result;
+    });
+
+    it('replays history to late subscribers', async () => {
+      // Use a provider that yields chunks after a small async tick
+      const testChunks: SessionChunk[] = [
+        { type: 'text', text: 'chunk1' },
+        { type: 'text', text: 'chunk2' },
+      ];
+      setup(createStreamingFakeProvider(testChunks));
+
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+        streaming: true,
+      });
+
+      // Consume handle.chunks first to ensure broadcaster has received all chunks
+      const firstCollected: SessionChunk[] = [];
+      for await (const chunk of handle.chunks) {
+        firstCollected.push(chunk);
+      }
+      assert.equal(firstCollected.length, 2);
+
+      // Subscribe AFTER all chunks were pushed — should still replay history
+      const lateSub = animator.subscribeToSession(handle.sessionId);
+      // Session may still be in activeSessions (30s cleanup delay)
+      if (lateSub !== null) {
+        const lateCollected: SessionChunk[] = [];
+        for await (const chunk of lateSub) {
+          lateCollected.push(chunk);
+        }
+        assert.equal(lateCollected.length, 2);
+        assert.deepEqual(lateCollected[0], { type: 'text', text: 'chunk1' });
+        assert.deepEqual(lateCollected[1], { type: 'text', text: 'chunk2' });
+      }
+      // (null is also acceptable if the 30s cleanup already ran, but in tests it won't)
+
+      await handle.result;
+    });
+
+    it('multiple simultaneous subscribers each receive all chunks', async () => {
+      const testChunks: SessionChunk[] = [
+        { type: 'text', text: 'A' },
+        { type: 'text', text: 'B' },
+        { type: 'text', text: 'C' },
+      ];
+      setup(createStreamingFakeProvider(testChunks));
+
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+        streaming: true,
+      });
+
+      // Subscribe a second consumer immediately
+      const sub2 = animator.subscribeToSession(handle.sessionId);
+      assert.ok(sub2 !== null);
+
+      // Consume both in parallel
+      const [first, second] = await Promise.all([
+        (async () => {
+          const out: SessionChunk[] = [];
+          for await (const c of handle.chunks) out.push(c);
+          return out;
+        })(),
+        (async () => {
+          const out: SessionChunk[] = [];
+          for await (const c of sub2!) out.push(c);
+          return out;
+        })(),
+      ]);
+
+      assert.equal(first.length, 3);
+      assert.equal(second.length, 3);
+      assert.deepEqual(first, second);
+
+      await handle.result;
+    });
+  });
+
   describe('session id generation', () => {
     beforeEach(() => {
       setup();

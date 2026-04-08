@@ -32,6 +32,94 @@ import type {
 
 import { sessionList, sessionShow, summon as summonTool } from './tools/index.ts';
 
+// ── Session broadcast infrastructure ─────────────────────────────────
+
+/**
+ * A single subscriber within a session broadcaster.
+ * Chunks are queued here until the consumer iterates them.
+ */
+interface BroadcastSubscriber {
+  queue: SessionChunk[];
+  notify: (() => void) | null;
+  done: boolean;
+}
+
+/**
+ * An in-process broadcast channel for a single running session.
+ *
+ * Multiple consumers can subscribe and each receives all chunks from the
+ * beginning of the session (history replay) plus any future chunks.
+ * When the session ends, all subscriptions complete.
+ */
+interface SessionBroadcaster {
+  push(chunk: SessionChunk): void;
+  close(): void;
+  subscribe(): AsyncIterable<SessionChunk>;
+}
+
+function createSessionBroadcaster(): SessionBroadcaster {
+  const history: SessionChunk[] = [];
+  const subscribers: BroadcastSubscriber[] = [];
+  let closed = false;
+
+  function push(chunk: SessionChunk): void {
+    history.push(chunk);
+    for (const sub of subscribers) {
+      if (!sub.done) {
+        sub.queue.push(chunk);
+        if (sub.notify) {
+          const notify = sub.notify;
+          sub.notify = null;
+          notify();
+        }
+      }
+    }
+  }
+
+  function close(): void {
+    closed = true;
+    for (const sub of subscribers) {
+      sub.done = true;
+      if (sub.notify) {
+        const notify = sub.notify;
+        sub.notify = null;
+        notify();
+      }
+    }
+  }
+
+  function subscribe(): AsyncIterable<SessionChunk> {
+    // New subscriber starts with full history replay, then receives future chunks.
+    const sub: BroadcastSubscriber = {
+      queue: [...history],
+      notify: null,
+      done: closed,
+    };
+    if (!closed) {
+      subscribers.push(sub);
+    }
+    return {
+      [Symbol.asyncIterator]() {
+        return {
+          async next() {
+            while (sub.queue.length === 0 && !sub.done) {
+              await new Promise<void>((resolve) => {
+                sub.notify = resolve;
+              });
+            }
+            if (sub.queue.length > 0) {
+              return { value: sub.queue.shift()!, done: false as const };
+            }
+            return { value: undefined as unknown as SessionChunk, done: true as const };
+          },
+        };
+      },
+    };
+  }
+
+  return { push, close, subscribe };
+}
+
 // ── Core logic ───────────────────────────────────────────────────────
 
 /**
@@ -231,7 +319,20 @@ export function createAnimator(): Plugin {
   let sessions: Book<SessionDoc>;
   let transcripts: Book<TranscriptDoc>;
 
+  /**
+   * In-memory registry of active session broadcasters.
+   * Keyed by session id. Entries are removed ~30 s after the session ends,
+   * which gives late SSE subscribers time to drain any buffered chunks.
+   */
+  const activeSessions = new Map<string, SessionBroadcaster>();
+
   const api: AnimatorApi = {
+    subscribeToSession(sessionId: string): AsyncIterable<SessionChunk> | null {
+      const broadcaster = activeSessions.get(sessionId);
+      if (!broadcaster) return null;
+      return broadcaster.subscribe();
+    },
+
     summon(request: SummonRequest): AnimateHandle {
       // Resolve The Loom at call time — not a startup dependency.
       // This allows the Animator to start without the Loom installed;
@@ -314,7 +415,30 @@ export function createAnimator(): Plugin {
       // Single path — the provider returns { chunks, result } regardless
       // of whether streaming is enabled. Providers that don't support
       // streaming return empty chunks; the Animator doesn't branch.
-      const { chunks, result: providerResultPromise } = provider.launch(providerConfig);
+      const { chunks: providerChunks, result: providerResultPromise } = provider.launch(providerConfig);
+
+      // Set up an in-process broadcaster for this session.
+      // All chunks are fanned out through the broadcaster so that both the
+      // returned handle.chunks and any subscribeToSession() callers receive
+      // the full stream with history replay for late subscribers.
+      const broadcaster = createSessionBroadcaster();
+      activeSessions.set(id, broadcaster);
+
+      // Consume provider chunks in the background and push to the broadcaster.
+      // This drives the fan-out to all subscribers (including handle.chunks).
+      (async () => {
+        try {
+          for await (const chunk of providerChunks) {
+            broadcaster.push(chunk);
+          }
+        } catch (err) {
+          console.warn(
+            `[animator] Error consuming chunks for session ${id}: ${err instanceof Error ? err.message : err}`,
+          );
+        } finally {
+          broadcaster.close();
+        }
+      })();
 
       // Write initial record (fire and forget — don't block streaming)
       const initPromise = recordRunning(sessions, id, startedAt, provider.name, request);
@@ -331,11 +455,17 @@ export function createAnimator(): Plugin {
           sessionResult = buildFailedResult(id, startedAt, provider.name, err, request);
           await recordSession(sessions, transcripts, sessionResult, undefined);
           throw err;
+        } finally {
+          // Remove the broadcaster after a short delay so that any late-connecting
+          // SSE subscribers can still drain buffered chunks before the entry disappears.
+          setTimeout(() => activeSessions.delete(id), 30_000);
         }
         return sessionResult;
       })();
 
-      return { sessionId: id, chunks, result };
+      // The handle's chunks is a broadcaster subscription, providing history
+      // replay and real-time delivery for this session's caller.
+      return { sessionId: id, chunks: broadcaster.subscribe(), result };
     },
   };
 
