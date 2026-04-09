@@ -156,6 +156,13 @@ interface ScopeItem {
   included: boolean;
 }
 
+interface DecisionAnalysis {
+  confidence: 'high' | 'medium' | 'low';
+  stakes: 'high' | 'low';
+  category: 'product' | 'api' | 'implementation';
+  observable: boolean;
+}
+
 interface Decision {
   id: string;
   scope: string[];              // scope item IDs this decision relates to
@@ -166,6 +173,7 @@ interface Decision {
   rationale?: string;           // analyst's reasoning for the recommendation
   selected?: string;            // patron's chosen option key (set by decision-review engine)
   patronOverride?: string;      // patron's freeform override (set by decision-review engine)
+  analysis?: DecisionAnalysis;  // analyst classification metadata for patron review UX
 }
 ```
 

@@ -14,6 +14,7 @@ export type {
   PlanDoc,
   ScopeItem,
   Decision,
+  DecisionAnalysis,
   PlanStatus,
   PlanFilters,
   AstrolabeConfig,

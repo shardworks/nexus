@@ -49,6 +49,17 @@ export interface ScopeItem {
   included: boolean;
 }
 
+export interface DecisionAnalysis {
+  /** How clearly the codebase + brief dictate the answer. */
+  confidence: 'high' | 'medium' | 'low';
+  /** How much a consumer would notice or care if a different option were picked. */
+  stakes: 'high' | 'low';
+  /** What the decision is about. */
+  category: 'product' | 'api' | 'implementation';
+  /** Would someone in this category's audience notice which option was picked? */
+  observable: boolean;
+}
+
 export interface Decision {
   id: string;
   scope: string[];
@@ -59,6 +70,8 @@ export interface Decision {
   rationale?: string;
   selected?: string;
   patronOverride?: string;
+  /** Analyst classification metadata — used for patron review UX (filtering, prioritization). */
+  analysis?: DecisionAnalysis;
 }
 
 // ── Filters ──────────────────────────────────────────────────────────
