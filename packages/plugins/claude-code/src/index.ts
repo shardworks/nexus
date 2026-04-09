@@ -143,9 +143,24 @@ function buildResult(raw: StreamJsonResult): SessionProviderResult {
 const provider: AnimatorSessionProvider = {
   name: 'claude-code',
 
+  async cancel(cancelMetadata: Record<string, unknown>): Promise<void> {
+    const pid = cancelMetadata.pid as number | undefined;
+    if (pid === undefined) return;
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
+        // Process already dead — expected for race conditions. Silent no-op.
+        return;
+      }
+      throw err;
+    }
+  },
+
   launch(config: SessionProviderConfig): {
     chunks: AsyncIterable<SessionChunk>;
     result: Promise<SessionProviderResult>;
+    processInfo?: Promise<Record<string, unknown>>;
   } {
     // prepareSession is async (MCP server start), so we wrap the launch
     // in a promise. The chunks iterable bridges the async gap — it waits
@@ -157,6 +172,14 @@ const provider: AnimatorSessionProvider = {
     let prepDone = false;
     let prepError: Error | null = null;
     let done = false;
+
+    // processInfo promise — resolved with { pid } once the process spawns.
+    let resolveProcessInfo: ((info: Record<string, unknown>) => void) | null = null;
+    let rejectProcessInfo: ((err: Error) => void) | null = null;
+    const processInfo = new Promise<Record<string, unknown>>((resolve, reject) => {
+      resolveProcessInfo = resolve;
+      rejectProcessInfo = reject;
+    });
 
     const result = prepareSession(config).then(async ({ tmpDir, args, mcpHandle }) => {
       // Autonomous mode: prompt piped via stdin (--print - reads from stdin).
@@ -177,6 +200,7 @@ const provider: AnimatorSessionProvider = {
       try {
         if (config.streaming) {
           const spawned = spawnClaudeStreamingJson(args, config.cwd, config.environment, prompt);
+          resolveProcessInfo!({ pid: spawned.pid });
           innerChunks = spawned.chunks;
           prepDone = true;
           if (chunkResolve) { chunkResolve(); chunkResolve = null; }
@@ -187,11 +211,13 @@ const provider: AnimatorSessionProvider = {
         }
 
         // Non-streaming
+        const { result: spawnResult, pid } = spawnClaudeStreamJson(args, config.cwd, config.environment, prompt);
+        resolveProcessInfo!({ pid });
         prepDone = true;
         done = true;
         if (chunkResolve) { chunkResolve(); chunkResolve = null; }
 
-        const raw = await spawnClaudeStreamJson(args, config.cwd, config.environment, prompt);
+        const raw = await spawnResult;
         await cleanup();
         return buildResult(raw);
       } catch (err) {
@@ -199,11 +225,12 @@ const provider: AnimatorSessionProvider = {
         throw err;
       }
     }).catch((err) => {
-      // If prep itself failed, unblock the chunk iterator
+      // If prep itself failed, unblock the chunk iterator and processInfo
       prepError = err instanceof Error ? err : new Error(String(err));
       prepDone = true;
       done = true;
       if (chunkResolve) { chunkResolve(); chunkResolve = null; }
+      rejectProcessInfo!(prepError);
       throw err;
     });
 
@@ -237,7 +264,7 @@ const provider: AnimatorSessionProvider = {
       },
     };
 
-    return { chunks, result };
+    return { chunks, result, processInfo };
   },
 };
 
@@ -392,36 +419,36 @@ export function processNdjsonBuffer(
  *
  * Forwards assistant text content to stderr so it's visible during execution.
  */
-function spawnClaudeStreamJson(args: string[], cwd: string, env?: Record<string, string>, stdinData?: string): Promise<StreamJsonResult> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn('claude', args, {
-      cwd,
-      stdio: ['pipe', 'pipe', 'inherit'],
-      env: { ...process.env, ...env },
+function spawnClaudeStreamJson(args: string[], cwd: string, env?: Record<string, string>, stdinData?: string): { result: Promise<StreamJsonResult>; pid: number } {
+  const proc = spawn('claude', args, {
+    cwd,
+    stdio: ['pipe', 'pipe', 'inherit'],
+    env: { ...process.env, ...env },
+  });
+
+  // Pipe prompt via stdin (--print - reads from stdin)
+  if (stdinData !== undefined) {
+    proc.stdin!.write(stdinData);
+    proc.stdin!.end();
+  }
+
+  const acc: {
+    transcript: Record<string, unknown>[];
+    costUsd?: number;
+    tokenUsage?: StreamJsonResult['tokenUsage'];
+    providerSessionId?: string;
+  } = { transcript: [] };
+
+  let buffer = '';
+
+  proc.stdout!.on('data', (chunk: Buffer) => {
+    buffer += chunk.toString();
+    buffer = processNdjsonBuffer(buffer, (msg) => {
+      parseStreamJsonMessage(msg, acc);
     });
+  });
 
-    // Pipe prompt via stdin (--print - reads from stdin)
-    if (stdinData !== undefined) {
-      proc.stdin!.write(stdinData);
-      proc.stdin!.end();
-    }
-
-    const acc: {
-      transcript: Record<string, unknown>[];
-      costUsd?: number;
-      tokenUsage?: StreamJsonResult['tokenUsage'];
-      providerSessionId?: string;
-    } = { transcript: [] };
-
-    let buffer = '';
-
-    proc.stdout!.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString();
-      buffer = processNdjsonBuffer(buffer, (msg) => {
-        parseStreamJsonMessage(msg, acc);
-      });
-    });
-
+  const result = new Promise<StreamJsonResult>((resolve, reject) => {
     proc.on('error', (err) => {
       reject(new Error(`Failed to spawn claude: ${err.message}`));
     });
@@ -440,6 +467,8 @@ function spawnClaudeStreamJson(args: string[], cwd: string, env?: Record<string,
       });
     });
   });
+
+  return { result, pid: proc.pid! };
 }
 
 /**
@@ -452,6 +481,7 @@ function spawnClaudeStreamJson(args: string[], cwd: string, env?: Record<string,
 function spawnClaudeStreamingJson(args: string[], cwd: string, env?: Record<string, string>, stdinData?: string): {
   chunks: AsyncIterable<SessionChunk>;
   result: Promise<StreamJsonResult>;
+  pid: number;
 } {
   const chunkQueue: SessionChunk[] = [];
   let chunkResolve: (() => void) | null = null;
@@ -533,5 +563,5 @@ function spawnClaudeStreamingJson(args: string[], cwd: string, env?: Record<stri
     },
   };
 
-  return { chunks, result };
+  return { chunks, result, pid: proc.pid! };
 }

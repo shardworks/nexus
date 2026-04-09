@@ -30,7 +30,7 @@ import type {
   SessionProviderResult,
 } from './types.ts';
 
-import { sessionList, sessionShow, summon as summonTool } from './tools/index.ts';
+import { sessionList, sessionShow, summon as summonTool, sessionCancel } from './tools/index.ts';
 
 // ── Session broadcast infrastructure ─────────────────────────────────
 
@@ -312,6 +312,7 @@ async function recordRunning(
   startedAt: string,
   providerName: string,
   request: AnimateRequest,
+  cancelMetadata?: Record<string, unknown>,
 ): Promise<void> {
   try {
     await sessions.put({
@@ -321,6 +322,7 @@ async function recordRunning(
       provider: providerName,
       conversationId: request.conversationId,
       metadata: request.metadata,
+      ...(cancelMetadata ? { cancelMetadata } : {}),
     });
   } catch (err) {
     console.warn(
@@ -328,6 +330,9 @@ async function recordRunning(
     );
   }
 }
+
+/** Terminal status values — any of these means the session is done. */
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timeout', 'cancelled']);
 
 // ── Apparatus factory ────────────────────────────────────────────────
 
@@ -356,6 +361,55 @@ export function createAnimator(): Plugin {
       const broadcaster = activeSessions.get(sessionId);
       if (!broadcaster) return null;
       return broadcaster.subscribe();
+    },
+
+    async cancel(sessionId: string, options?: { reason?: string }): Promise<SessionDoc> {
+      // Step 1: Read current SessionDoc
+      const doc = await sessions.get(sessionId);
+      if (!doc) {
+        throw new Error(`Session "${sessionId}" not found.`);
+      }
+
+      // Idempotent: if already terminal, return as-is
+      if (TERMINAL_STATUSES.has(doc.status)) {
+        return doc;
+      }
+
+      // Step 2: Patch to cancelled
+      const endedAt = new Date().toISOString();
+      const durationMs = new Date(endedAt).getTime() - new Date(doc.startedAt).getTime();
+
+      const updated: SessionDoc = {
+        ...doc,
+        status: 'cancelled',
+        endedAt,
+        durationMs,
+        ...(options?.reason ? { error: options.reason } : {}),
+      };
+
+      try {
+        await sessions.put(updated);
+      } catch (err) {
+        console.warn(
+          `[animator] Failed to patch session ${sessionId} to cancelled: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+
+      // Step 3: If cancelMetadata available, delegate to provider
+      if (doc.cancelMetadata) {
+        try {
+          const prov = resolveProvider(config);
+          if (prov.cancel) {
+            await prov.cancel(doc.cancelMetadata);
+          }
+        } catch (err) {
+          console.warn(
+            `[animator] Failed to cancel provider process for ${sessionId}: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      }
+
+      return updated;
     },
 
     summon(request: SummonRequest): AnimateHandle {
@@ -440,7 +494,7 @@ export function createAnimator(): Plugin {
       // Single path — the provider returns { chunks, result } regardless
       // of whether streaming is enabled. Providers that don't support
       // streaming return empty chunks; the Animator doesn't branch.
-      const { chunks: providerChunks, result: providerResultPromise } = provider.launch(providerConfig);
+      const { chunks: providerChunks, result: providerResultPromise, processInfo: processInfoPromise } = provider.launch(providerConfig);
 
       // Set up an in-process broadcaster for this session.
       // All chunks are fanned out through the broadcaster so that both the
@@ -465,8 +519,19 @@ export function createAnimator(): Plugin {
         }
       })();
 
-      // Write initial record (fire and forget — don't block streaming)
-      const initPromise = recordRunning(sessions, id, startedAt, provider.name, request);
+      // Write initial record (fire and forget — don't block streaming).
+      // Await processInfo so cancelMetadata is persisted with the running record.
+      const initPromise = (async () => {
+        let cancelMetadata: Record<string, unknown> | undefined;
+        if (processInfoPromise) {
+          try {
+            cancelMetadata = await processInfoPromise;
+          } catch (err) {
+            console.warn(`[animator] Failed to get processInfo for ${id}: ${err instanceof Error ? err.message : err}`);
+          }
+        }
+        await recordRunning(sessions, id, startedAt, provider.name, request, cancelMetadata);
+      })();
 
       const result = (async () => {
         await initPromise;
@@ -474,9 +539,63 @@ export function createAnimator(): Plugin {
         let sessionResult: SessionResult;
         try {
           const providerResult = await providerResultPromise;
+
+          // Check if the session was cancelled (by this process or another)
+          // before overwriting the SessionDoc.
+          const currentDoc = await sessions.get(id);
+          if (currentDoc?.status === 'cancelled') {
+            // Session was cancelled — don't overwrite the doc.
+            // Write partial transcript if available.
+            if (providerResult.transcript && providerResult.transcript.length > 0) {
+              try {
+                await transcripts.put({ id, messages: providerResult.transcript });
+              } catch (err) {
+                console.warn(
+                  `[animator] Failed to record transcript for cancelled session ${id}: ${err instanceof Error ? err.message : err}`,
+                );
+              }
+            }
+            // Resolve with cancelled status, preserving endedAt/durationMs from the doc.
+            sessionResult = {
+              id,
+              status: 'cancelled',
+              startedAt,
+              endedAt: currentDoc.endedAt ?? new Date().toISOString(),
+              durationMs: currentDoc.durationMs ?? (Date.now() - new Date(startedAt).getTime()),
+              provider: provider.name,
+              exitCode: providerResult.exitCode,
+              error: currentDoc.error,
+              conversationId: request.conversationId,
+              providerSessionId: providerResult.providerSessionId,
+              tokenUsage: providerResult.tokenUsage,
+              costUsd: providerResult.costUsd,
+              metadata: request.metadata,
+              output: providerResult.output,
+            };
+            return sessionResult;
+          }
+
           sessionResult = buildSessionResult(id, startedAt, provider.name, providerResult, request);
           await recordSession(sessions, transcripts, sessionResult, providerResult.transcript);
         } catch (err) {
+          // Check if session was cancelled — if so, resolve instead of rejecting.
+          const currentDoc = await sessions.get(id);
+          if (currentDoc?.status === 'cancelled') {
+            sessionResult = {
+              id,
+              status: 'cancelled',
+              startedAt,
+              endedAt: currentDoc.endedAt ?? new Date().toISOString(),
+              durationMs: currentDoc.durationMs ?? (Date.now() - new Date(startedAt).getTime()),
+              provider: provider.name,
+              exitCode: 1,
+              error: currentDoc.error,
+              conversationId: request.conversationId,
+              metadata: request.metadata,
+            };
+            return sessionResult;
+          }
+
           sessionResult = buildFailedResult(id, startedAt, provider.name, err, request);
           await recordSession(sessions, transcripts, sessionResult, undefined);
           throw err;
@@ -508,7 +627,7 @@ export function createAnimator(): Plugin {
             indexes: ['sessionId'],
           },
         },
-        tools: [sessionList, sessionShow, summonTool],
+        tools: [sessionList, sessionShow, summonTool, sessionCancel],
       },
 
       provides: api,

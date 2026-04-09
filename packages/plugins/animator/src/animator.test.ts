@@ -1070,4 +1070,319 @@ describe('Animator', () => {
       assert.equal(captured!.environment?.GIT_AUTHOR_EMAIL, 'override@nexus.local');
     });
   });
+
+  describe('cancel()', () => {
+    it('cancels a running session and returns updated SessionDoc', async () => {
+      // Use a provider that takes a while so we can cancel mid-flight
+      let resolveResult!: (v: SessionProviderResult) => void;
+      const slowProvider: AnimatorSessionProvider = {
+        name: 'fake-slow',
+        launch() {
+          return {
+            chunks: emptyChunks,
+            result: new Promise<SessionProviderResult>((resolve) => {
+              resolveResult = resolve;
+            }),
+          };
+        },
+      };
+      setup(slowProvider);
+
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      });
+
+      // Wait a tick for the running record to be written
+      await new Promise((r) => setTimeout(r, 50));
+
+      const doc = await animator.cancel(handle.sessionId, { reason: 'Cost overrun' });
+      assert.equal(doc.status, 'cancelled');
+      assert.equal(doc.error, 'Cost overrun');
+      assert.ok(doc.endedAt);
+      assert.equal(typeof doc.durationMs, 'number');
+      assert.ok(doc.durationMs! >= 0);
+
+      // Let the provider resolve so the result handler runs
+      resolveResult({ status: 'completed', exitCode: 0 });
+      const result = await handle.result;
+      assert.equal(result.status, 'cancelled');
+    });
+
+    it('is idempotent on terminal session (completed)', async () => {
+      setup();
+
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      });
+
+      await handle.result;
+
+      const doc = await animator.cancel(handle.sessionId);
+      assert.equal(doc.status, 'completed');
+    });
+
+    it('is idempotent on already-cancelled session', async () => {
+      let resolveResult!: (v: SessionProviderResult) => void;
+      const slowProvider: AnimatorSessionProvider = {
+        name: 'fake-slow',
+        launch() {
+          return {
+            chunks: emptyChunks,
+            result: new Promise<SessionProviderResult>((resolve) => {
+              resolveResult = resolve;
+            }),
+          };
+        },
+      };
+      setup(slowProvider);
+
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const doc1 = await animator.cancel(handle.sessionId, { reason: 'First cancel' });
+      assert.equal(doc1.status, 'cancelled');
+
+      const doc2 = await animator.cancel(handle.sessionId);
+      assert.equal(doc2.status, 'cancelled');
+      assert.equal(doc2.error, 'First cancel');
+
+      resolveResult({ status: 'completed', exitCode: 0 });
+      await handle.result;
+    });
+
+    it('throws for missing session', async () => {
+      setup();
+
+      await assert.rejects(
+        () => animator.cancel('ses-nonexistent'),
+        { message: 'Session "ses-nonexistent" not found.' },
+      );
+    });
+
+    it('cancels session without cancelMetadata (no kill attempted)', async () => {
+      // Provider with no processInfo — cancelMetadata will be undefined
+      let resolveResult!: (v: SessionProviderResult) => void;
+      const noProcessInfoProvider: AnimatorSessionProvider = {
+        name: 'fake-no-info',
+        launch() {
+          return {
+            chunks: emptyChunks,
+            result: new Promise<SessionProviderResult>((resolve) => {
+              resolveResult = resolve;
+            }),
+          };
+        },
+      };
+      setup(noProcessInfoProvider);
+
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Should succeed without error even though no cancelMetadata
+      const doc = await animator.cancel(handle.sessionId);
+      assert.equal(doc.status, 'cancelled');
+
+      resolveResult({ status: 'completed', exitCode: 0 });
+      await handle.result;
+    });
+
+    it('result handler detects external cancellation and resolves (not rejects)', async () => {
+      let resolveResult!: (v: SessionProviderResult) => void;
+      const slowProvider: AnimatorSessionProvider = {
+        name: 'fake-slow',
+        launch() {
+          return {
+            chunks: emptyChunks,
+            result: new Promise<SessionProviderResult>((resolve) => {
+              resolveResult = resolve;
+            }),
+          };
+        },
+      };
+      setup(slowProvider);
+
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Simulate external cancel — patch the doc directly
+      const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+      const existingDoc = await sessBook.get(handle.sessionId);
+      assert.ok(existingDoc);
+      await sessBook.put({
+        ...existingDoc!,
+        status: 'cancelled',
+        endedAt: new Date().toISOString(),
+        durationMs: 100,
+        error: 'External cancel',
+      });
+
+      // Let the provider resolve
+      resolveResult({ status: 'completed', exitCode: 0 });
+
+      const result = await handle.result;
+      assert.equal(result.status, 'cancelled');
+
+      // SessionDoc should not be overwritten
+      const finalDoc = await sessBook.get(handle.sessionId);
+      assert.equal(finalDoc?.status, 'cancelled');
+      assert.equal(finalDoc?.error, 'External cancel');
+    });
+
+    it('result handler detects cancellation on error path and resolves', async () => {
+      let rejectResult!: (err: Error) => void;
+      const throwingSlowProvider: AnimatorSessionProvider = {
+        name: 'fake-throw-slow',
+        launch() {
+          return {
+            chunks: emptyChunks,
+            result: new Promise<SessionProviderResult>((_resolve, reject) => {
+              rejectResult = reject;
+            }),
+          };
+        },
+      };
+      setup(throwingSlowProvider);
+
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Cancel via API
+      await animator.cancel(handle.sessionId, { reason: 'Stopped by user' });
+
+      // Provider rejects (process killed)
+      rejectResult(new Error('Process killed'));
+
+      // Should RESOLVE (not reject) with cancelled status
+      const result = await handle.result;
+      assert.equal(result.status, 'cancelled');
+      assert.equal(result.error, 'Stopped by user');
+    });
+
+    it('writes partial transcript on cancel', async () => {
+      let resolveResult!: (v: SessionProviderResult) => void;
+      const transcriptProvider: AnimatorSessionProvider = {
+        name: 'fake-transcript',
+        launch() {
+          return {
+            chunks: emptyChunks,
+            result: new Promise<SessionProviderResult>((resolve) => {
+              resolveResult = resolve;
+            }),
+          };
+        },
+      };
+      setup(transcriptProvider);
+
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      await animator.cancel(handle.sessionId);
+
+      const partialTranscript = [
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Partial work...' }] } },
+      ];
+
+      // Provider resolves with transcript
+      resolveResult({ status: 'completed', exitCode: 0, transcript: partialTranscript, output: 'Partial work...' });
+
+      const result = await handle.result;
+      assert.equal(result.status, 'cancelled');
+
+      // Transcript should be written
+      const transcriptsBook = stacks.readBook<TranscriptDoc>('animator', 'transcripts');
+      const tDoc = await transcriptsBook.get(handle.sessionId);
+      assert.ok(tDoc, 'partial transcript should be written');
+      assert.deepEqual(tDoc!.messages, partialTranscript);
+    });
+
+    it('persists cancelMetadata from processInfo', async () => {
+      let resolveResult!: (v: SessionProviderResult) => void;
+      const providerWithProcessInfo: AnimatorSessionProvider = {
+        name: 'fake-with-info',
+        launch() {
+          return {
+            chunks: emptyChunks,
+            result: new Promise<SessionProviderResult>((resolve) => {
+              resolveResult = resolve;
+            }),
+            processInfo: Promise.resolve({ pid: 42 }),
+          };
+        },
+      };
+      setup(providerWithProcessInfo);
+
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      });
+
+      // Wait for init to write running record with cancelMetadata
+      await new Promise((r) => setTimeout(r, 50));
+
+      const sessBook = stacks.readBook<SessionDoc>('animator', 'sessions');
+      const doc = await sessBook.get(handle.sessionId);
+      assert.ok(doc);
+      assert.deepEqual(doc!.cancelMetadata, { pid: 42 });
+
+      resolveResult({ status: 'completed', exitCode: 0 });
+      await handle.result;
+    });
+
+    it('calls provider.cancel() when cancelMetadata is available', async () => {
+      let resolveResult!: (v: SessionProviderResult) => void;
+      let cancelCalledWith: Record<string, unknown> | null = null;
+
+      const cancellableProvider: AnimatorSessionProvider = {
+        name: 'fake-cancellable',
+        launch() {
+          return {
+            chunks: emptyChunks,
+            result: new Promise<SessionProviderResult>((resolve) => {
+              resolveResult = resolve;
+            }),
+            processInfo: Promise.resolve({ pid: 99 }),
+          };
+        },
+        async cancel(metadata: Record<string, unknown>) {
+          cancelCalledWith = metadata;
+        },
+      };
+      setup(cancellableProvider);
+
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      await animator.cancel(handle.sessionId, { reason: 'test cancel' });
+      assert.deepEqual(cancelCalledWith, { pid: 99 });
+
+      resolveResult({ status: 'completed', exitCode: 0 });
+      await handle.result;
+    });
+  });
 });

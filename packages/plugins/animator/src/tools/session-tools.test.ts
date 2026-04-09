@@ -15,20 +15,23 @@ import { createStacksApparatus } from '@shardworks/stacks-apparatus';
 import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi, Book } from '@shardworks/stacks-apparatus';
 
-import type { SessionDoc } from '../types.ts';
+import type { SessionDoc, AnimatorApi } from '../types.ts';
 import sessionList from './session-list.ts';
 import sessionShow from './session-show.ts';
+import sessionCancel from './session-cancel.ts';
 
 // ── Test harness ────────────────────────────────────────────────────
 
 let stacks: StacksApi;
 let sessions: Book<SessionDoc>;
 
+let apparatusMap: Map<string, unknown>;
+
 function setup() {
   const memBackend = new MemoryBackend();
   const stacksPlugin = createStacksApparatus(memBackend);
 
-  const apparatusMap = new Map<string, unknown>();
+  apparatusMap = new Map<string, unknown>();
 
   const fakeGuild: Guild = {
     home: '/tmp/fake-guild',
@@ -122,6 +125,15 @@ const seedSessions: SessionDoc[] = [
     startedAt: '2026-04-01T14:00:00Z',
     provider: 'claude-code',
   },
+  {
+    id: 'ses-00000006',
+    status: 'cancelled',
+    startedAt: '2026-04-01T15:00:00Z',
+    endedAt: '2026-04-01T15:02:00Z',
+    durationMs: 120000,
+    provider: 'claude-code',
+    error: 'Cancelled by user',
+  },
 ];
 
 async function seedAll() {
@@ -144,7 +156,7 @@ describe('session-list tool', () => {
 
   it('returns all sessions with no filters', async () => {
     const results = await sessionList.handler({ limit: 20 });
-    assert.equal(results.length, 5);
+    assert.equal(results.length, 6);
   });
 
   it('filters by status', async () => {
@@ -236,5 +248,100 @@ describe('session-show tool', () => {
       () => sessionShow.handler({ id: 'ses-nonexistent' }),
       { message: 'Session "ses-nonexistent" not found.' },
     );
+  });
+});
+
+describe('session-list — cancelled filter', () => {
+  beforeEach(async () => {
+    setup();
+    await seedAll();
+  });
+
+  afterEach(() => {
+    clearGuild();
+  });
+
+  it('filters by cancelled status', async () => {
+    const results = await sessionList.handler({ status: 'cancelled', limit: 20 });
+    assert.equal(results.length, 1);
+    assert.equal(results[0]!.id, 'ses-00000006');
+    assert.equal(results[0]!.status, 'cancelled');
+  });
+
+  it('includes cancelled sessions without filter', async () => {
+    const results = await sessionList.handler({ limit: 20 });
+    const cancelledResults = results.filter((r) => r.status === 'cancelled');
+    assert.equal(cancelledResults.length, 1);
+  });
+});
+
+describe('session-cancel tool', () => {
+  beforeEach(async () => {
+    setup();
+    await seedAll();
+  });
+
+  afterEach(() => {
+    clearGuild();
+  });
+
+  it('cancels a running session', async () => {
+    // Register a fake animator that implements cancel()
+    let cancelledId: string | null = null;
+    let cancelledReason: string | undefined;
+
+    const fakeAnimator: AnimatorApi = {
+      summon() { throw new Error('not implemented'); },
+      animate() { throw new Error('not implemented'); },
+      subscribeToSession() { return null; },
+      async cancel(sessionId: string, options?: { reason?: string }) {
+        cancelledId = sessionId;
+        cancelledReason = options?.reason;
+        const doc = await sessions.get(sessionId);
+        if (!doc) throw new Error(`Session "${sessionId}" not found.`);
+        const updated: SessionDoc = {
+          ...doc,
+          status: 'cancelled',
+          endedAt: new Date().toISOString(),
+          durationMs: 100,
+          error: options?.reason,
+        };
+        await sessions.put(updated);
+        return updated;
+      },
+    };
+    apparatusMap.set('animator', fakeAnimator);
+
+    const result = await sessionCancel.handler({ id: 'ses-00000005', reason: 'manual stop' });
+    assert.equal(result.status, 'cancelled');
+    assert.equal(result.error, 'manual stop');
+    assert.equal(cancelledId, 'ses-00000005');
+    assert.equal(cancelledReason, 'manual stop');
+  });
+
+  it('throws for missing session', async () => {
+    const fakeAnimator: AnimatorApi = {
+      summon() { throw new Error('not implemented'); },
+      animate() { throw new Error('not implemented'); },
+      subscribeToSession() { return null; },
+      async cancel(sessionId: string) {
+        throw new Error(`Session "${sessionId}" not found.`);
+      },
+    };
+    apparatusMap.set('animator', fakeAnimator);
+
+    await assert.rejects(
+      () => sessionCancel.handler({ id: 'ses-nonexistent' }),
+      { message: 'Session "ses-nonexistent" not found.' },
+    );
+  });
+
+  it('has callableBy patron and permission animate', () => {
+    // callableBy may be normalized to an array by the tool() helper
+    const callableBy = Array.isArray(sessionCancel.callableBy)
+      ? sessionCancel.callableBy
+      : [sessionCancel.callableBy];
+    assert.ok(callableBy.includes('patron'));
+    assert.equal(sessionCancel.permission, 'animate');
   });
 });
