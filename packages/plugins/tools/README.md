@@ -60,6 +60,14 @@ interface InstrumentariumApi {
    * List all installed tools, regardless of permissions.
    */
   list(): ResolvedTool[];
+
+  /**
+   * Start the Tool HTTP server.
+   *
+   * Serves all registered tools over HTTP with session-scoped authorization.
+   * Binds to 127.0.0.1. Port defaults to guild.json tools.serverPort or 7471.
+   */
+  startToolServer(opts?: ToolServerOptions): Promise<ToolServerHandle>;
 }
 ```
 
@@ -161,6 +169,77 @@ Tools without a `permission` field are **permissionless**. In default mode, they
 
 ---
 
+## Tool HTTP Server
+
+The Instrumentarium can serve all registered tools over HTTP, enabling out-of-process clients (such as detached session babysitters) to proxy tool calls back to the guild.
+
+### Starting the server
+
+```typescript
+const instrumentarium = guild().apparatus<InstrumentariumApi>('tools');
+const handle = await instrumentarium.startToolServer({ port: 7471 });
+// → { port: 7471, url: 'http://127.0.0.1:7471', close() }
+```
+
+The port defaults to `guild.json` → `tools.serverPort`, or `7471` if not configured:
+
+```json
+{
+  "tools": {
+    "serverPort": 7471
+  }
+}
+```
+
+### Route mapping
+
+Tool names map to REST routes. The first hyphen splits the name into resource and action:
+
+| Tool name | Route | Method |
+|---|---|---|
+| `writ-list` | `GET /api/writ/list` | GET (permission: read) |
+| `writ-create` | `POST /api/writ/create` | POST (permission: write) |
+| `writ-remove` | `DELETE /api/writ/remove` | DELETE (permission: delete) |
+| `signal` | `GET /api/signal` | GET (no permission) |
+
+### Session-scoped authorization
+
+Tools restricted to non-patron callers (e.g. `callableBy: ['anima']`) require a session ID header. Session babysitters register authorized tool sets before proxying calls:
+
+```
+POST /sessions
+{ "sessionId": "s-abc123", "tools": ["writ-list", "writ-create"] }
+
+GET /api/writ/list
+X-Session-Id: s-abc123
+→ 200 OK
+
+DELETE /sessions/s-abc123
+→ 200 OK
+```
+
+Patron-callable and unrestricted tools are accessible without a session header.
+
+### `ToolServerHandle`
+
+```typescript
+interface ToolServerHandle {
+  port: number;
+  url: string;
+  close(): Promise<void>;
+}
+```
+
+### Utility exports
+
+The route mapping functions are exported for use by other packages (e.g. the Oculus):
+
+```typescript
+import { toolNameToRoute, permissionToMethod, coerceParams } from '@shardworks/tools-apparatus';
+```
+
+---
+
 ## Kit Interface
 
 Kits contribute tools via a `tools` field in their kit export:
@@ -207,6 +286,17 @@ import {
   type ResolvedTool,
   type ResolveOptions,
   createInstrumentarium,
+} from '@shardworks/tools-apparatus';
+
+// Tool server utilities
+import {
+  type ToolServerHandle,
+  type ToolServerOptions,
+  type ToolsConfig,
+  toolNameToRoute,
+  permissionToMethod,
+  coerceParams,
+  SessionRegistry,
 } from '@shardworks/tools-apparatus';
 ```
 

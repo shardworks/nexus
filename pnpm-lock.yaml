@@ -319,9 +319,15 @@ importers:
 
   packages/plugins/tools:
     dependencies:
+      '@hono/node-server':
+        specifier: ^1.13.7
+        version: 1.19.11(hono@4.12.9)
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../../framework/core
+      hono:
+        specifier: ^4.7.11
+        version: 4.12.9
       zod:
         specifier: 4.3.6
         version: 4.3.6

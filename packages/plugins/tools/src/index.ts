@@ -28,6 +28,18 @@ export {
   type ResolveOptions,
 } from './instrumentarium.ts';
 
+// ── Tool server API ──────────────────────────────────────────────────
+
+export {
+  type ToolServerHandle,
+  type ToolServerOptions,
+  type ToolsConfig,
+  toolNameToRoute,
+  permissionToMethod,
+  coerceParams,
+  SessionRegistry,
+} from './tool-server.ts';
+
 // ── Default export: the apparatus plugin ──────────────────────────────
 
 export default createInstrumentarium();

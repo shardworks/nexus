@@ -18,7 +18,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@hono/node-server": "^1.13.7",
     "@shardworks/nexus-core": "workspace:*",
+    "hono": "^4.7.11",
     "zod": "4.3.6"
   },
   "devDependencies": {

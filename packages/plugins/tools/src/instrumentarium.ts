@@ -30,6 +30,8 @@ import type { ToolDefinition, ToolCaller } from './tool.ts';
 import { isToolDefinition } from './tool.ts';
 import { createToolsList } from './tools/tools-list.ts';
 import { createToolsShow } from './tools/tools-show.ts';
+import type { ToolServerHandle, ToolServerOptions, ToolsConfig } from './tool-server.ts';
+import { SessionRegistry, startToolServer } from './tool-server.ts';
 
 // ── Public types ──────────────────────────────────────────────────────
 
@@ -79,6 +81,17 @@ export interface InstrumentariumApi {
    * List all installed tools, regardless of permissions.
    */
   list(): ResolvedTool[];
+
+  /**
+   * Start the Tool HTTP server.
+   *
+   * Serves all registered tools over HTTP with session-scoped authorization.
+   * Binds to 127.0.0.1 on the configured port (guild.json tools.serverPort
+   * or opts.port, defaulting to 7471).
+   *
+   * Returns a handle for lifecycle management.
+   */
+  startToolServer(opts?: ToolServerOptions): Promise<ToolServerHandle>;
 }
 
 // ── Permission matching ──────────────────────────────────────────────
@@ -298,6 +311,7 @@ class ToolRegistry {
  */
 export function createInstrumentarium(): Plugin {
   const registry = new ToolRegistry();
+  const sessionRegistry = new SessionRegistry();
 
   const api: InstrumentariumApi = {
     resolve(options: ResolveOptions): ResolvedTool[] {
@@ -310,6 +324,13 @@ export function createInstrumentarium(): Plugin {
 
     list(): ResolvedTool[] {
       return registry.list();
+    },
+
+    async startToolServer(opts?: ToolServerOptions): Promise<ToolServerHandle> {
+      const g = guild();
+      const toolsConfig = g.config<ToolsConfig>('tools');
+      const port = opts?.port ?? toolsConfig?.serverPort ?? 7471;
+      return startToolServer(api, sessionRegistry, port);
     },
   };
 
