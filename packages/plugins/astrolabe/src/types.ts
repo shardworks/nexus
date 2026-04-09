@@ -50,14 +50,14 @@ export interface ScopeItem {
 }
 
 export interface DecisionAnalysis {
-  /** How clearly the codebase + brief dictate the answer. */
-  confidence: 'high' | 'medium' | 'low';
-  /** How much a consumer would notice or care if a different option were picked. */
-  stakes: 'high' | 'low';
-  /** What the decision is about. */
-  category: 'product' | 'api' | 'implementation';
-  /** Would someone in this category's audience notice which option was picked? */
-  observable: boolean;
+  /** Decision domain: product-level, API contract, or internal implementation. */
+  category?: 'product' | 'api' | 'implementation';
+  /** Whether the choice is externally visible to consumers of the feature/API. */
+  observable?: boolean;
+  /** How clearly the codebase and brief dictate the answer. */
+  confidence?: 'low' | 'medium' | 'high';
+  /** How much a consumer would notice if a different option were picked. */
+  stakes?: 'low' | 'high';
 }
 
 export interface Decision {

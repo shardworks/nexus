@@ -25,10 +25,10 @@ import type {
 
 // DecisionAnalysis Zod schema — mirrors the DecisionAnalysis interface in types.ts.
 const decisionAnalysisSchema = z.object({
-  confidence: z.enum(['high', 'medium', 'low']),
-  stakes: z.enum(['high', 'low']),
-  category: z.enum(['product', 'api', 'implementation']),
-  observable: z.boolean(),
+  category: z.enum(['product', 'api', 'implementation']).optional(),
+  observable: z.boolean().optional(),
+  confidence: z.enum(['low', 'medium', 'high']).optional(),
+  stakes: z.enum(['low', 'high']).optional(),
 });
 
 import {
