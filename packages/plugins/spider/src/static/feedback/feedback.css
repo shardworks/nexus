@@ -1,0 +1,361 @@
+/* ── Toolbar ─────────────────────────────────────────────────────────── */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+/* ── Request cards (list view) ───────────────────────────────────────── */
+
+.request-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.request-card:hover {
+  border-color: var(--cyan);
+}
+
+.request-card .request-id {
+  font-weight: 500;
+  color: var(--text-bright);
+  min-width: 80px;
+}
+.request-card .request-meta {
+  flex: 1;
+  min-width: 0;
+}
+.request-card .request-message {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+.request-card .request-ids {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.request-card .request-time {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.request-card .request-progress {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* ── Question cards (detail view) ────────────────────────────────────── */
+
+.question-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.question-header {
+  padding: 12px 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.question-label {
+  flex: 1;
+  font-weight: 500;
+  color: var(--text-bright);
+}
+
+/* ── Choice option rows ──────────────────────────────────────────────── */
+
+.option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+  margin-bottom: 2px;
+}
+.option:hover { background: var(--surface2); }
+.option-radio {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  flex-shrink: 0;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+.option.selected .option-radio {
+  border-color: var(--green);
+}
+.option.selected .option-radio::after {
+  content: "";
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.option.selected .option-text {
+  color: var(--text-bright);
+  font-weight: 500;
+}
+
+/* ── Custom override input ───────────────────────────────────────────── */
+
+.custom-row {
+  padding: 8px 16px 12px;
+}
+.custom-row input {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+}
+.custom-row input:focus { border-color: var(--cyan); }
+
+/* ── Boolean toggle rows ─────────────────────────────────────────────── */
+
+.boolean-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.boolean-item:hover { background: var(--surface); }
+.boolean-toggle {
+  width: 20px; height: 20px;
+  border-radius: 4px;
+  border: 2px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+  font-size: 12px;
+  transition: all 0.15s;
+}
+/* True state — green check */
+.boolean-item.checked .boolean-toggle {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--bg);
+}
+/* False state — red X */
+.boolean-item.unchecked .boolean-toggle {
+  background: transparent;
+  border-color: var(--red);
+  color: var(--red);
+}
+.boolean-item.unchecked .boolean-label {
+  color: var(--text-dim);
+  text-decoration: line-through;
+}
+
+/* ── Text questions ──────────────────────────────────────────────────── */
+
+.text-question {
+  margin-bottom: 16px;
+}
+.text-question label {
+  display: block;
+  font-weight: 500;
+  color: var(--text-bright);
+  margin-bottom: 8px;
+}
+.text-question textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+.text-question textarea:focus { border-color: var(--cyan); }
+
+/* ── Question details (native <details>/<summary>) ───────────────────── */
+
+.question-card details {
+  padding: 4px 16px 12px;
+}
+.question-card details summary {
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.question-card details summary:hover { color: var(--cyan); }
+.question-card details .details-body {
+  padding: 12px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+}
+
+/* ── Action buttons ──────────────────────────────────────────────────── */
+
+.btn-complete {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--green);
+  color: var(--bg);
+}
+.btn-complete:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-reject {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--surface2);
+  color: var(--red);
+}
+.back-link {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-bottom: 8px;
+  display: inline-block;
+}
+
+/* ── Detail message ──────────────────────────────────────────────────── */
+
+#detail-message {
+  font-size: 15px;
+  color: var(--text-bright);
+  margin-bottom: 16px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+/* ── Action bar ──────────────────────────────────────────────────────── */
+
+#action-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+.answer-count {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ── Reject inline prompt ────────────────────────────────────────────── */
+
+.reject-prompt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.reject-prompt input {
+  flex: 1;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.reject-prompt input:focus { border-color: var(--cyan); }
+.reject-confirm {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  background: var(--red);
+  color: var(--bg);
+  cursor: pointer;
+}
+
+/* ── Status banner for non-pending detail view ───────────────────────── */
+
+.status-banner {
+  padding: 10px 16px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.status-banner.completed {
+  background: rgba(158, 206, 106, 0.1);
+  color: var(--green);
+}
+.status-banner.rejected {
+  background: rgba(247, 118, 142, 0.1);
+  color: var(--red);
+}
+
+/* ── Auto-save error inline ──────────────────────────────────────────── */
+
+.save-error {
+  font-size: 11px;
+  color: var(--red);
+  padding: 4px 16px;
+}
+
+/* ── Success toast ───────────────────────────────────────────────────── */
+
+.success-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  padding: 10px 20px;
+  background: var(--green);
+  color: var(--bg);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  z-index: 1000;
+}
+
+/* ── Disabled state for non-pending detail view ──────────────────────── */
+
+.question-card.readonly {
+  opacity: 0.7;
+  pointer-events: none;
+}

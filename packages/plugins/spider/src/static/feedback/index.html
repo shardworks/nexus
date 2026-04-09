@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Feedback</title>
+  <link rel="stylesheet" href="feedback.css">
+</head>
+<body>
+<main style="padding: 24px;">
+  <h1>Feedback</h1>
+
+  <!-- List view -->
+  <div id="list-view">
+    <div class="toolbar">
+      <select id="status-filter">
+        <option value="pending">pending</option>
+        <option value="completed">completed</option>
+        <option value="rejected">rejected</option>
+      </select>
+    </div>
+    <div id="request-list"></div>
+    <div id="list-empty" class="empty-state" style="display:none">No pending requests.</div>
+  </div>
+
+  <!-- Detail view -->
+  <div id="detail-view" style="display:none">
+    <a href="#" class="back-link" id="back-btn">&larr; Back to list</a>
+    <div id="detail-banner"></div>
+    <div id="detail-message"></div>
+    <div id="questions-container"></div>
+    <div id="action-bar"></div>
+  </div>
+
+  <!-- Success toast -->
+  <div id="success-toast" class="success-toast" style="display:none"></div>
+</main>
+<script src="feedback.js"></script>
+</body>
+</html>

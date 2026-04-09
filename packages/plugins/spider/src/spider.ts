@@ -1836,11 +1836,10 @@ export function createSpider(): Plugin {
           'book-updated':   bookUpdatedBlockType,
           'patron-input':   patronInputBlockType,
         },
-        pages: [{
-          id: 'spider',
-          title: 'Spider',
-          dir: 'src/static',
-        }],
+        pages: [
+          { id: 'spider', title: 'Spider', dir: 'src/static' },
+          { id: 'feedback', title: 'Feedback', dir: 'src/static/feedback' },
+        ],
         routes: spiderRoutes,
         tools: [
           crawlOneTool,
