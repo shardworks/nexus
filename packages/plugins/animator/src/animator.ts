@@ -213,7 +213,11 @@ function buildSessionResult(
     provider: providerName,
     exitCode: providerResult.exitCode,
     error: providerResult.error,
-    conversationId: request.conversationId,
+    // For the first session in a conversation chain, promote the
+    // provider's session id to conversationId so downstream sessions
+    // can resume via --resume. When the request already carries a
+    // conversationId (resumed session), preserve it as-is.
+    conversationId: request.conversationId ?? providerResult.providerSessionId,
     providerSessionId: providerResult.providerSessionId,
     tokenUsage: providerResult.tokenUsage,
     costUsd: providerResult.costUsd,

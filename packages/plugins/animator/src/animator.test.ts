@@ -325,6 +325,22 @@ describe('Animator', () => {
       assert.equal(doc?.conversationId, 'conv-xyz');
     });
 
+    it('promotes providerSessionId to conversationId when request has none', async () => {
+      const result = await animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+        // No conversationId — first session in a chain
+      }).result;
+
+      // providerSessionId from the stub provider should be promoted
+      assert.equal(result.conversationId, 'fake-sess-123');
+      assert.equal(result.providerSessionId, 'fake-sess-123');
+
+      const sessions = stacks.readBook<SessionDoc>('animator', 'sessions');
+      const doc = await sessions.get(result.id);
+      assert.equal(doc?.conversationId, 'fake-sess-123');
+    });
+
     it('passes prompt and systemPrompt to provider', async () => {
       const { provider, getCapturedConfig } = createSpyProvider();
       setup(provider);
