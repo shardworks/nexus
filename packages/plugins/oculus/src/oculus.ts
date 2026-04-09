@@ -248,7 +248,7 @@ export function createOculus(): Plugin {
 
         // Track registered pages and custom route paths
         const pages: PageContribution[] = [];
-        const customRoutePaths = new Set<string>();
+        const customRouteKeys = new Set<string>();
         const mappedToolRoutes = new Set<string>();
 
         // ── Custom route registration helper ─────────────────────────
@@ -262,7 +262,7 @@ export function createOculus(): Plugin {
             route.path,
             route.handler as (c: unknown) => unknown,
           );
-          customRoutePaths.add(route.path);
+          customRouteKeys.add(`${route.method.toUpperCase()} ${route.path}`);
         }
 
         // ── Page serving helper ───────────────────────────────────────
@@ -323,7 +323,7 @@ export function createOculus(): Plugin {
 
           if (mappedToolRoutes.has(routePath)) return;
 
-          if (customRoutePaths.has(routePath)) {
+          if (customRouteKeys.has(`${method} ${routePath}`)) {
             console.warn(
               `[oculus] Tool route ${method} ${routePath} conflicts with custom route from plugin — skipped`,
             );
