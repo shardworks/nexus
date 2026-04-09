@@ -205,7 +205,7 @@
       var writTitle = (writLookup[rig.writId] && writLookup[rig.writId].title) || '\u2014';
       return '<tr>' +
         '<td>' + badgeHtml(rig.status) + '</td>' +
-        '<td>' + esc(writTitle) + '</td>' +
+        '<td><a class="rig-link" href="#" data-rig-id="' + esc(rig.id) + '">' + esc(writTitle) + '</a></td>' +
         '<td>' + esc(engineSummary(rig.engines)) + '</td>' +
         '<td><a class="rig-link" href="#" data-rig-id="' + esc(rig.id) + '">' + esc(rig.id) + '</a></td>' +
         '<td><a href="/pages/clerk/?writ=' + esc(rig.writId) + '">' + esc(rig.writId) + '</a></td>' +
