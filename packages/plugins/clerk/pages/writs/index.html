@@ -959,7 +959,32 @@
     // ── Init ────────────────────────────────────────────────────────────
     loadWritTypes();
     loadCodexes();
-    loadWrits(true);
+
+    // Deep-link: ?writ=ID
+    (async function () {
+      var params = new URLSearchParams(window.location.search);
+      var writId = params.get('writ');
+
+      await loadWrits(true);
+
+      if (!writId) return;
+
+      // If writ is in loaded list, scroll to it
+      if (writs.find(function (w) { return w.id === writId; })) {
+        scrollAndExpand(writId);
+        return;
+      }
+
+      // Otherwise, fetch it and prepend to list
+      try {
+        var writ = await api('GET', '/api/writ/show?id=' + encodeURIComponent(writId));
+        writs.unshift(writ);
+        renderTable();
+        scrollAndExpand(writId);
+      } catch (e) {
+        console.error('Deep-link writ not found:', writId);
+      }
+    })();
   })();
   </script>
 </body>

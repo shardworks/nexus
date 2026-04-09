@@ -32,7 +32,8 @@
   },
   "files": [
     "dist",
-    "sage.md"
+    "sage.md",
+    "pages"
   ],
   "publishConfig": {
     "exports": {

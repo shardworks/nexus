@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Astrolabe</title>
+  <link rel="stylesheet" href="astrolabe.css">
+</head>
+<body>
+<main style="padding: 24px;">
+
+  <!-- ── List View ──────────────────────────────────────────────────── -->
+  <div id="plan-list-view">
+    <h2>Plans</h2>
+
+    <div id="status-filters" style="margin-bottom: 12px;">
+      <button class="btn filter-btn active-filter" data-status="">All</button>
+      <button class="btn filter-btn" data-status="reading">Reading</button>
+      <button class="btn filter-btn" data-status="analyzing">Analyzing</button>
+      <button class="btn filter-btn" data-status="reviewing">Reviewing</button>
+      <button class="btn filter-btn" data-status="writing">Writing</button>
+      <button class="btn filter-btn" data-status="completed">Completed</button>
+      <button class="btn filter-btn" data-status="failed">Failed</button>
+    </div>
+
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Codex</th>
+          <th>Title</th>
+          <th>Plan ID</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody id="plan-tbody"></tbody>
+    </table>
+
+    <div id="empty-state" class="empty-state" style="display:none;">No plans found.</div>
+
+    <div style="text-align:center; margin-top:12px;">
+      <button id="load-more-btn" class="btn" style="display:none;">Load More</button>
+    </div>
+  </div>
+
+  <!-- ── Detail View ────────────────────────────────────────────────── -->
+  <div id="plan-detail-view" style="display:none;">
+    <button id="back-btn" class="btn" style="margin-bottom:12px;">&larr; Back to list</button>
+    <h2 id="detail-title"></h2>
+
+    <div id="meta-card" class="card" style="margin-bottom:16px;"></div>
+
+    <div class="tab-bar" id="plan-tabs">
+      <button class="tab active" data-tab="inventory">Inventory</button>
+      <button class="tab" data-tab="scope">Scope</button>
+      <button class="tab" data-tab="decisions">Decisions</button>
+      <button class="tab" data-tab="observations">Observations</button>
+      <button class="tab" data-tab="spec">Spec</button>
+    </div>
+    <div id="tab-content"></div>
+  </div>
+
+</main>
+<script src="astrolabe.js"></script>
+</body>
+</html>

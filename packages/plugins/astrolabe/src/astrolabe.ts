@@ -382,6 +382,10 @@ export function createAstrolabe(): Plugin {
           observationsWriteTool,
           specWriteTool,
         ],
+
+        pages: [
+          { id: 'astrolabe', title: 'Astrolabe', dir: 'pages/astrolabe' },
+        ],
       },
 
       provides: api,

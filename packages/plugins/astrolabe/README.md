@@ -148,3 +148,17 @@ The `resolutionEngine` is `spec-writer` — the rig's completion summary comes f
 | `spec-write` | `astrolabe:write` | Write or replace the generated specification |
 
 Write tools only update their artifact field plus `updatedAt`. Status transitions are the exclusive responsibility of the clockwork engines.
+
+### Pages (contributed to Oculus)
+
+| Page ID | Title | Directory |
+|---|---|---|
+| `astrolabe` | Astrolabe | `pages/astrolabe` |
+
+The Astrolabe page provides a list/detail dashboard for PlanDoc records:
+
+- **List view** — filterable by status, paginated (20 per page), showing status badge, codex, brief writ title, plan ID, and creation date.
+- **Detail view** — metadata card with plan ID, status, codex, cross-links to brief and mandate writs (linking to the Clerk writs page via `?writ=ID`), per-step AI cost breakdowns (input/output tokens and USD cost for each anima-session engine), and tabbed content sections for Inventory, Scope, Decisions, Observations, and Spec.
+- **Deep linking** — supports `?plan=ID` query parameter to open directly to a plan's detail view.
+
+Markdown fields (inventory, observations, spec) are rendered client-side with a minimal renderer supporting headings, bold, italic, inline code, fenced code blocks, and lists. All content is HTML-escaped before rendering to prevent XSS.

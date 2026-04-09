@@ -1,0 +1,90 @@
+/* Tab bar (duplicated from spider pattern — not yet in shared stylesheet) */
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border, #333);
+  padding-bottom: 0;
+}
+
+.tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim, #888);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: -1px;
+  padding: 8px 16px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.tab:hover { color: var(--text, #eee); }
+.tab.active {
+  border-bottom-color: var(--cyan, #0ff);
+  color: var(--cyan, #0ff);
+}
+
+/* Plan list table */
+#plan-tbody tr { cursor: pointer; }
+#plan-tbody tr:hover { opacity: 0.85; }
+
+/* Filter buttons */
+.filter-btn { margin-right: 4px; }
+.filter-btn.active-filter {
+  background: var(--blue, #7aa2f7);
+  color: var(--bg, #1a1b26);
+}
+
+/* Decision expandable rows */
+.decision-row { cursor: pointer; }
+.decision-row:hover { opacity: 0.85; }
+.decision-detail td {
+  background: var(--bg2, #1a1b26);
+  padding: 1rem;
+}
+.decision-detail dl {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 4px 12px;
+  margin: 0;
+}
+.decision-detail dt {
+  color: var(--text-dim, #888);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.decision-detail dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Cost table */
+.cost-table { margin-top: 12px; }
+.cost-table th { font-size: 11px; text-transform: uppercase; color: var(--text-dim, #888); }
+.cost-total { font-weight: 600; border-top: 2px solid var(--border, #333); }
+
+/* Metadata grid */
+.meta-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  font-size: 0.875rem;
+}
+.meta-grid dt { color: var(--text-dim, #888); font-weight: 600; text-transform: uppercase; font-size: 12px; }
+.meta-grid dd { margin: 0; }
+
+/* Rendered markdown */
+.md-content h1, .md-content h2, .md-content h3,
+.md-content h4, .md-content h5, .md-content h6 {
+  margin: 1em 0 0.5em;
+}
+.md-content h1 { font-size: 1.4em; }
+.md-content h2 { font-size: 1.2em; }
+.md-content h3 { font-size: 1.1em; }
+.md-content p { margin: 0.5em 0; }
+.md-content ul, .md-content ol { padding-left: 1.5em; margin: 0.5em 0; }
+.md-content pre { max-height: 400px; overflow: auto; }
+.md-content code { font-size: 12px; }
