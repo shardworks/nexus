@@ -467,6 +467,8 @@ export interface ChoiceQuestionSpec {
   label: string;
   /** Optional long-form context, explanation, or instructions for this question. */
   details?: string;
+  /** Optional classification tags for filtering and grouping in the UI. */
+  tags?: string[];
   /** Key → display label options map. */
   options: Record<string, string>;
   /** When true, the patron can supply a freeform answer instead of selecting. */
@@ -479,6 +481,8 @@ export interface BooleanQuestionSpec {
   label: string;
   /** Optional long-form context, explanation, or instructions for this question. */
   details?: string;
+  /** Optional classification tags for filtering and grouping in the UI. */
+  tags?: string[];
 }
 
 export interface TextQuestionSpec {
@@ -487,6 +491,8 @@ export interface TextQuestionSpec {
   label: string;
   /** Optional long-form context, explanation, or instructions for this question. */
   details?: string;
+  /** Optional classification tags for filtering and grouping in the UI. */
+  tags?: string[];
 }
 
 export type QuestionSpec = ChoiceQuestionSpec | BooleanQuestionSpec | TextQuestionSpec;

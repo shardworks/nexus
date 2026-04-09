@@ -8,6 +8,7 @@
   var localAnswers = {};
   var pollTimer = null;
   var debounceTimers = {};
+  var activeTagFilters = {};
 
   // ── API endpoints ──────────────────────────────────────────────────────
 
@@ -186,6 +187,70 @@
     }
     questionsContainer.innerHTML = html;
 
+    // Tag filter toolbar
+    var oldToolbar = document.getElementById('tag-filter-toolbar');
+    if (oldToolbar) oldToolbar.remove();
+
+    var tagSet = {};
+    for (var t = 0; t < qKeys.length; t++) {
+      var qSpec = req.questions[qKeys[t]];
+      if (qSpec.tags && qSpec.tags.length > 0) {
+        for (var tt = 0; tt < qSpec.tags.length; tt++) {
+          tagSet[qSpec.tags[tt]] = true;
+        }
+      }
+    }
+    var allTags = Object.keys(tagSet).sort();
+
+    if (allTags.length > 0) {
+      var toolbar = document.createElement('div');
+      toolbar.id = 'tag-filter-toolbar';
+      toolbar.className = 'toolbar';
+
+      for (var b = 0; b < allTags.length; b++) {
+        var btn = document.createElement('button');
+        btn.className = 'tag-filter-btn' + (activeTagFilters[allTags[b]] ? ' active' : '');
+        btn.setAttribute('data-tag', allTags[b]);
+        btn.textContent = allTags[b];
+        toolbar.appendChild(btn);
+      }
+
+      var countSpan = document.createElement('span');
+      countSpan.className = 'tag-filter-count';
+      countSpan.style.display = 'none';
+      toolbar.appendChild(countSpan);
+
+      var clearBtn = document.createElement('button');
+      clearBtn.className = 'tag-filter-clear';
+      clearBtn.textContent = 'Clear filters';
+      clearBtn.style.display = 'none';
+      toolbar.appendChild(clearBtn);
+
+      toolbar.addEventListener('click', function (e) {
+        if (e.target.matches('.tag-filter-btn')) {
+          var tag = e.target.getAttribute('data-tag');
+          if (activeTagFilters[tag]) {
+            delete activeTagFilters[tag];
+            e.target.classList.remove('active');
+          } else {
+            activeTagFilters[tag] = true;
+            e.target.classList.add('active');
+          }
+          applyTagFilters();
+        } else if (e.target.matches('.tag-filter-clear')) {
+          activeTagFilters = {};
+          var btns = toolbar.querySelectorAll('.tag-filter-btn');
+          for (var j = 0; j < btns.length; j++) {
+            btns[j].classList.remove('active');
+          }
+          applyTagFilters();
+        }
+      });
+
+      questionsContainer.parentNode.insertBefore(toolbar, questionsContainer);
+      applyTagFilters();
+    }
+
     // Action bar
     if (isPending) {
       var total = qKeys.length;
@@ -212,7 +277,7 @@
     var isCustomSelected = answer != null && 'custom' in answer;
 
     var html = '<div class="question-card' + readonlyClass + '" data-question-key="' + esc(qKey) + '">'
-      + '<div class="question-header"><span class="question-label">' + esc(spec.label) + '</span></div>'
+      + '<div class="question-header"><span class="question-label">' + esc(spec.label) + '</span>' + renderTags(spec) + '</div>'
       + '<div class="options-list">';
 
     var optKeys = Object.keys(spec.options);
@@ -264,7 +329,7 @@
     var html = '<div class="question-card' + readonlyClass + '" data-question-key="' + esc(qKey) + '">'
       + '<div class="boolean-item' + stateClass + '" data-question-key="' + esc(qKey) + '">'
       + '<div class="boolean-toggle">' + icon + '</div>'
-      + '<span class="boolean-label">' + esc(spec.label) + '</span>'
+      + '<span class="boolean-label">' + esc(spec.label) + '</span>' + renderTags(spec)
       + '</div>';
 
     html += renderDetails(spec);
@@ -279,12 +344,24 @@
     var html = '<div class="question-card' + readonlyClass + '" data-question-key="' + esc(qKey) + '">'
       + '<div class="text-question">'
       + '<label>' + esc(spec.label) + '</label>'
+      + renderTags(spec)
       + '<textarea data-question-key="' + esc(qKey) + '" data-text-input="true">'
       + esc(answer) + '</textarea>'
       + '</div>';
 
     html += renderDetails(spec);
     html += '</div>';
+    return html;
+  }
+
+  // ── Shared tag badge renderer ───────────────────────────────────────────
+
+  function renderTags(spec) {
+    if (!spec.tags || spec.tags.length === 0) return '';
+    var html = '';
+    for (var i = 0; i < spec.tags.length; i++) {
+      html += '<span class="tag">' + esc(spec.tags[i]) + '</span>';
+    }
     return html;
   }
 
@@ -296,6 +373,59 @@
       + '<summary>Details</summary>'
       + '<div class="details-body">' + esc(spec.details) + '</div>'
       + '</details>';
+  }
+
+  // ── Tag filter application ─────────────────────────────────────────────
+
+  function applyTagFilters() {
+    var cards = questionsContainer.querySelectorAll('.question-card');
+    var filterKeys = Object.keys(activeTagFilters);
+    var toolbar = document.getElementById('tag-filter-toolbar');
+
+    if (filterKeys.length === 0) {
+      for (var i = 0; i < cards.length; i++) {
+        cards[i].style.display = '';
+      }
+      if (toolbar) {
+        var countEl = toolbar.querySelector('.tag-filter-count');
+        var clearEl = toolbar.querySelector('.tag-filter-clear');
+        if (countEl) countEl.style.display = 'none';
+        if (clearEl) clearEl.style.display = 'none';
+      }
+      return;
+    }
+
+    var visibleCount = 0;
+    var totalCount = cards.length;
+    for (var i = 0; i < cards.length; i++) {
+      var qKey = cards[i].getAttribute('data-question-key');
+      var spec = currentRequest.questions[qKey];
+      var match = false;
+      if (spec && spec.tags) {
+        for (var j = 0; j < spec.tags.length; j++) {
+          if (activeTagFilters[spec.tags[j]]) {
+            match = true;
+            break;
+          }
+        }
+      }
+      if (match) {
+        cards[i].style.display = '';
+        visibleCount++;
+      } else {
+        cards[i].style.display = 'none';
+      }
+    }
+
+    if (toolbar) {
+      var countEl = toolbar.querySelector('.tag-filter-count');
+      var clearEl = toolbar.querySelector('.tag-filter-clear');
+      if (countEl) {
+        countEl.textContent = 'Showing ' + visibleCount + ' of ' + totalCount;
+        countEl.style.display = '';
+      }
+      if (clearEl) clearEl.style.display = '';
+    }
   }
 
   // ── Auto-save ──────────────────────────────────────────────────────────
@@ -371,6 +501,7 @@
       clearTimeout(debounceTimers[dKeys[i]]);
     }
     debounceTimers = {};
+    activeTagFilters = {};
 
     detailView.style.display = 'none';
     listView.style.display = '';

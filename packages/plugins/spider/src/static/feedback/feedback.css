@@ -7,6 +7,50 @@
   margin-bottom: 12px;
 }
 
+/* ── Tag filter toolbar ─────────────────────────────────────────────── */
+
+.tag-filter-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.tag-filter-btn:hover {
+  border-color: var(--cyan);
+  color: var(--text);
+}
+.tag-filter-btn.active {
+  background: var(--cyan);
+  border-color: var(--cyan);
+  color: var(--bg);
+}
+
+.tag-filter-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-left: auto;
+}
+
+.tag-filter-clear {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.tag-filter-clear:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
 /* ── Request cards (list view) ───────────────────────────────────────── */
 
 .request-card {
@@ -74,6 +118,20 @@
   flex: 1;
   font-weight: 500;
   color: var(--text-bright);
+}
+
+/* ── Tag badges ─────────────────────────────────────────────────────── */
+
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: var(--surface2);
+  border-radius: 4px;
+  margin-left: 6px;
+  vertical-align: middle;
 }
 
 /* ── Choice option rows ──────────────────────────────────────────────── */

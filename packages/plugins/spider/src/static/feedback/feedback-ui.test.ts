@@ -184,3 +184,131 @@ describe('feedback.js custom choice option', () => {
     );
   });
 });
+
+// ── Tag badge rendering ──────────────────────────────────────────────
+
+describe('feedback.js tag badge rendering', () => {
+  it('defines a renderTags helper function', () => {
+    assert.match(
+      feedbackJs,
+      /function renderTags\(spec\)/,
+      'must define a renderTags helper function',
+    );
+  });
+
+  it('renders tag badges with the .tag CSS class', () => {
+    assert.match(
+      feedbackJs,
+      /class="tag"/,
+      'must render tags with class="tag"',
+    );
+  });
+
+  it('returns empty string when spec.tags is falsy or empty', () => {
+    assert.match(
+      feedbackJs,
+      /!spec\.tags\s*\|\|\s*spec\.tags\.length\s*===\s*0.*return\s*''/,
+      'renderTags must return empty string for falsy or empty tags',
+    );
+  });
+
+  it('calls renderTags in choice question renderer after question-label', () => {
+    assert.match(
+      feedbackJs,
+      /question-label.*?<\/span>'\s*\+\s*renderTags\(spec\)\s*\+\s*'<\/div>/,
+      'choice renderer must call renderTags after question-label span',
+    );
+  });
+
+  it('calls renderTags in boolean question renderer after boolean-label', () => {
+    assert.match(
+      feedbackJs,
+      /boolean-label.*?<\/span>'\s*\+\s*renderTags\(spec\)/,
+      'boolean renderer must call renderTags after boolean-label span',
+    );
+  });
+
+  it('calls renderTags in text question renderer after label', () => {
+    assert.match(
+      feedbackJs,
+      /<\/label>'\s*\n\s*\+\s*renderTags\(spec\)\s*\n\s*\+\s*'<textarea/,
+      'text renderer must call renderTags between label and textarea',
+    );
+  });
+});
+
+// ── Tag filter toolbar ───────────────────────────────────────────────
+
+describe('feedback.js tag filter toolbar', () => {
+  it('creates toolbar element with tag-filter-toolbar ID', () => {
+    assert.match(
+      feedbackJs,
+      /id\s*=\s*'tag-filter-toolbar'/,
+      'must create a toolbar element with id tag-filter-toolbar',
+    );
+  });
+
+  it('creates tag filter buttons with tag-filter-btn class', () => {
+    assert.match(
+      feedbackJs,
+      /tag-filter-btn/,
+      'must create buttons with tag-filter-btn class',
+    );
+  });
+
+  it('stores active tag filter state in activeTagFilters variable', () => {
+    assert.match(
+      feedbackJs,
+      /var activeTagFilters\s*=\s*\{\}/,
+      'must declare activeTagFilters state variable',
+    );
+  });
+
+  it('defines an applyTagFilters function', () => {
+    assert.match(
+      feedbackJs,
+      /function applyTagFilters\(\)/,
+      'must define an applyTagFilters function',
+    );
+  });
+
+  it('sorts tags alphabetically for toolbar display', () => {
+    assert.match(
+      feedbackJs,
+      /Object\.keys\(tagSet\)\.sort\(\)/,
+      'must sort tags alphabetically using .sort()',
+    );
+  });
+
+  it('includes a clear filters button with tag-filter-clear class', () => {
+    assert.match(
+      feedbackJs,
+      /tag-filter-clear/,
+      'must include a clear filters element with tag-filter-clear class',
+    );
+  });
+
+  it('displays showing count with tag-filter-count class', () => {
+    assert.match(
+      feedbackJs,
+      /tag-filter-count/,
+      'must include a count display with tag-filter-count class',
+    );
+  });
+
+  it('clears activeTagFilters in navigateToList', () => {
+    assert.match(
+      feedbackJs,
+      /activeTagFilters\s*=\s*\{\};\s*\n\s*detailView/,
+      'navigateToList must reset activeTagFilters before hiding detail view',
+    );
+  });
+
+  it('removes existing toolbar before re-rendering', () => {
+    assert.match(
+      feedbackJs,
+      /getElementById\('tag-filter-toolbar'\);\s*\n\s*if\s*\(oldToolbar\)\s*oldToolbar\.remove\(\)/,
+      'renderDetail must remove existing tag-filter-toolbar on re-render',
+    );
+  });
+});
