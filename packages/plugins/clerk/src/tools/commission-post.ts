@@ -11,7 +11,9 @@ export default tool({
     'immediately. Pass draft: true to create the writ in new (draft) status instead — draft ' +
     'writs are held out of the queue until explicitly published with writ-publish. ' +
     'The writ type must be a type declared in the guild config, or the built-in type "mandate". ' +
-    'If type is omitted, the guild\'s configured default type is used (defaults to "mandate").',
+    'If type is omitted, the guild\'s configured default type is used (defaults to "mandate"). ' +
+    'Use parentId to create this writ as a child of an existing writ. The parent must be in ' +
+    'new, ready, or waiting status. Parents in new or ready will be transitioned to waiting.',
   params: {
     title: z.string().describe('Short human-readable title describing the work'),
     body: z.string().describe('Detail text or description'),
@@ -24,6 +26,14 @@ export default tool({
         'When true, create the writ in new (draft) status instead of ready. ' +
         'Draft writs must be published before they enter the execution queue.',
       ),
+    parentId: z
+      .string()
+      .optional()
+      .describe(
+        'Create this writ as a child of the specified parent writ. ' +
+        'The parent must be in new, ready, or waiting status. ' +
+        'If the parent is in new or ready, it will be transitioned to waiting.',
+      ),
   },
   permission: 'clerk:write',
   handler: async (params) => {
@@ -34,6 +44,7 @@ export default tool({
       type: params.type,
       codex: params.codex,
       draft: params.draft,
+      parentId: params.parentId,
     });
   },
 });

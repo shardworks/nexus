@@ -4,8 +4,6 @@ Status: **Draft**
 
 Package: `@shardworks/clerk-apparatus` · Plugin id: `clerk`
 
-> **⚠️ MVP scope.** The first implementation covers flat mandate writs with patron-triggered dispatch. No writ hierarchy, no Clockworks integration. Future sections describe where this apparatus is headed once the Clockworks and rigging system exist.
-
 ---
 
 ## Purpose
@@ -16,23 +14,29 @@ The Clerk owns the boundary between "what is asked for" and "how it gets done." 
 
 The Clerk does **not** execute work. It does not launch sessions, manage rigs, or orchestrate engines. It tracks obligations: what has been commissioned, what state each obligation is in, and whether the guild has fulfilled its commitments. When the Clockworks and rigging system exist, the Clerk will integrate with them via lifecycle events and signals.
 
+Writs can be organized into parent/child hierarchies for decomposing complex work. A parent writ enters `waiting` status while its children are being processed, and returns to `ready` when all children resolve successfully. Failure cascades upward (child failure fails the parent) and cancellation cascades downward (parent termination cancels non-terminal children).
+
 ---
 
 ## Dependencies
 
 ```
 requires: ['stacks']
+recommends: ['oculus']
 ```
 
-- **The Stacks** (required) — persists writs in the `writs` book. All writ state lives here.
+- **The Stacks** (required) — persists writs in the `writs` book and links in the `links` book. All writ state lives here.
+- **Oculus** (recommended) — provides observability dashboard.
 
 ---
 
 ## Kit Interface
 
-The Clerk does not consume kit contributions. No `consumes` declaration.
+The Clerk consumes `writTypes` kit contributions. Kits may declare writ types that are merged into the guild's type vocabulary at startup.
 
-Kits that need to create or manage writs do so through the Clerk's tools or programmatic API, not through kit contribution fields. Writ creation is an operational act (with validation and lifecycle rules), not a declarative registration.
+```typescript
+consumes: ['writTypes']
+```
 
 ---
 
@@ -42,7 +46,13 @@ Kits that need to create or manage writs do so through the Clerk's tools or prog
 supportKit: {
   books: {
     writs: {
-      indexes: ['status', 'type', 'createdAt', ['status', 'type'], ['status', 'createdAt']],
+      indexes: [
+        'status', 'type', 'createdAt', 'parentId',
+        ['status', 'type'], ['status', 'createdAt'], ['parentId', 'status'],
+      ],
+    },
+    links: {
+      indexes: ['sourceId', 'targetId', 'type', ['sourceId', 'type'], ['targetId', 'type']],
     },
   },
   tools: [
@@ -54,21 +64,25 @@ supportKit: {
     writFail,
     writCancel,
     writPublish,
+    writLink,
+    writUnlink,
+    writTypesTool,
   ],
 },
 ```
 
 ### `commission-post` tool
 
-Post a new commission. Creates a writ in `ready` status by default, or in `new` (draft) status when `draft: true` is passed.
+Post a new commission. Creates a writ in `ready` status by default, or in `new` (draft) status when `draft: true` is passed. Supports creating child writs via `parentId`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `title` | `string` | yes | Short description of the work |
 | `body` | `string` | yes | Full spec — what to do, acceptance criteria, context |
-| `codex` | `string` | no | Target codex name |
+| `codex` | `string` | no | Target codex name (inherited from parent if omitted) |
 | `type` | `string` | no | Writ type (default: `"mandate"`) |
 | `draft` | `boolean` | no | When `true`, create in `new` status — held out of the queue until published (default: `false`) |
+| `parentId` | `string` | no | Create as child of this parent writ. Parent must be in `new`, `ready`, or `waiting` status. |
 
 Returns the created `WritDoc`.
 
@@ -76,11 +90,13 @@ Permission: `clerk:write`
 
 ### `writ-show` tool
 
-Read a writ by id. Returns the full `WritDoc` including status history.
+Read a writ by id. Returns the full `WritDoc` including status history, parent context, and children summary.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | `string` | yes | Writ id |
+
+Returns: `WritDoc` enriched with `links`, `parent` (`{ id, title, status }` or `null`), and `children` (`{ summary: Record<WritStatus, number>, items: Array<{ id, title, status }> }`).
 
 Permission: `clerk:read`
 
@@ -90,8 +106,9 @@ List writs with optional filters. Returns writs ordered by `createdAt` descendin
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `status` | `WritStatus` | no | Filter by status |
+| `status` | `WritStatus` | no | Filter by status (all seven values supported) |
 | `type` | `string` | no | Filter by writ type |
+| `parentId` | `string` | no | Filter to children of this parent writ |
 | `limit` | `number` | no | Max results (default: 20) |
 
 Permission: `clerk:read`
@@ -119,7 +136,7 @@ Permission: `clerk:write`
 
 ### `writ-fail` tool
 
-Mark a writ as failed. Transitions `active → failed`.
+Mark a writ as failed. Transitions `active|waiting → failed`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -130,7 +147,7 @@ Permission: `clerk:write`
 
 ### `writ-cancel` tool
 
-Cancel a writ. Transitions `new|ready|active → cancelled`.
+Cancel a writ. Transitions `new|ready|active|waiting → cancelled`. If the writ has non-terminal children, they are automatically cancelled.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -165,6 +182,12 @@ interface ClerkApi {
    * This is the primary entry point for patron-originated work.
    * Creates a WritDoc and persists it to the writs book.
    * Draft writs (new status) are invisible to the Spider until published.
+   *
+   * When parentId is provided:
+   * - The parent must be in new, ready, or waiting status.
+   * - The parent is transitioned to waiting if in new or ready.
+   * - The child inherits the parent's codex if none is specified.
+   * - The entire operation is atomic (single transaction).
    */
   post(request: PostCommissionRequest): Promise<WritDoc>
 
@@ -188,17 +211,39 @@ interface ClerkApi {
    * Updates the writ document and sets timestamp fields.
    *
    * Valid transitions:
-   *   new   → ready      (publish — enter the queue)
-   *   new   → cancelled
-   *   ready → active
-   *   active → completed
-   *   active → failed
-   *   ready|active → cancelled
+   *   new     → ready      (publish — enter the queue)
+   *   new     → waiting    (children added)
+   *   new     → cancelled
+   *   ready   → active
+   *   ready   → waiting    (children added)
+   *   ready   → cancelled
+   *   active  → completed
+   *   active  → failed
+   *   active  → cancelled
+   *   waiting → ready      (all children terminal, none failed)
+   *   waiting → failed     (child failed)
+   *   waiting → cancelled
    *
    * The `fields` parameter allows setting additional fields
    * atomically with the transition (e.g. `resolution`).
+   * Managed fields (id, status, timestamps, parentId) are stripped.
+   *
+   * CDC cascade behavior:
+   * - Child terminal → parent: failure propagates up, completion rolls up
+   * - Parent terminal → children: non-terminal children are cancelled
    */
   transition(id: string, to: WritStatus, fields?: Partial<WritDoc>): Promise<WritDoc>
+
+  // ── Links ─────────────────────────────────────────────────────
+
+  /** Create a typed directional link from one writ to another. Idempotent. */
+  link(sourceId: string, targetId: string, type: string): Promise<WritLinkDoc>
+
+  /** Query all links for a writ — both outbound and inbound. */
+  links(writId: string): Promise<WritLinks>
+
+  /** Remove a link. Idempotent. */
+  unlink(sourceId: string, targetId: string, type: string): Promise<void>
 }
 ```
 
@@ -218,6 +263,8 @@ interface WritDoc {
   body: string
   /** Target codex name, if applicable. */
   codex?: string
+  /** Parent writ id. Absent on root writs. Immutable after creation. */
+  parentId?: string
 
   // ── Timestamps ──────────────────────────────────────────────
 
@@ -242,6 +289,7 @@ type WritStatus =
   | "new"         // Draft — held out of the queue, not yet published
   | "ready"       // In the queue, awaiting acceptance or dispatch
   | "active"      // Claimed by an anima, work in progress
+  | "waiting"     // Parent waiting for children to resolve (non-terminal)
   | "completed"   // Work done successfully
   | "failed"      // Work failed
   | "cancelled"   // Cancelled by patron or system
@@ -249,14 +297,16 @@ type WritStatus =
 interface PostCommissionRequest {
   title: string
   body: string
-  codex?: string
-  type?: string       // default: "mandate"
-  draft?: boolean     // When true, create in 'new' status (default: false → 'ready')
+  codex?: string          // inherited from parent if omitted
+  type?: string           // default: "mandate"
+  draft?: boolean         // When true, create in 'new' status (default: false → 'ready')
+  parentId?: string       // Create as child of this writ
 }
 
 interface WritFilters {
   status?: WritStatus
   type?: string
+  parentId?: string       // Filter to children of this parent writ
   limit?: number
   offset?: number
 }
@@ -318,54 +368,91 @@ The writ status machine governs all transitions. The Clerk enforces this — inv
 ```
             ┌──────────────┐
             │     new      │──────────────────┐
-            └──────┬───────┘                  │
-                   │                          │
-               publish                     cancel
-                   │                          │
-                   ▼                          │
-            ┌──────────────┐                  │
-            │    ready     │──────────┐       │
-            └──────┬───────┘          │       │
-                   │                  │       │
-              accept               cancel     │
-                   │                  │       │
-                   ▼                  │       │
-            ┌──────────────┐          │       │
-            │    active    │──────┐   │       │
-            └──┬───────┬───┘      │   │       │
-               │       │          │   │       │
-          complete    fail     cancel  │       │
-               │       │          │   │       │
-               ▼       ▼          │   │       │
-        ┌───────────┐ ┌────────┐  │   │       │
-        │ completed │ │ failed │  │   │       │
-        └───────────┘ └────────┘  │   │       │
-                                  │   │       │
-              ┌───────────┐       │   │       │
-              │ cancelled │◀──────┘   │       │
-              │           │◀──────────┘       │
-              │           │◀──────────────────┘
-              └───────────┘
+            └──────┬───┬───┘                  │
+                   │   │                      │
+               publish │                   cancel
+                   │   └──────┐               │
+                   ▼          │               │
+            ┌──────────────┐  │               │
+     ┌─────►│    ready     │──┼───────┐       │
+     │      └──────┬───────┘  │       │       │
+     │             │          │       │       │
+     │        accept        wait   cancel     │
+     │             │          │       │       │
+     │             ▼          ▼       │       │
+     │      ┌──────────────┐ ┌──────────────┐ │
+     │      │    active    │ │   waiting    │ │
+     │      └──┬───────┬───┘ └──┬───────┬───┘ │
+     │         │       │        │       │     │
+     │    complete    fail    ready    fail    │
+     │         │       │    (rollup) (child   │
+     │         │       │        │    failed)  │
+     │         ▼       ▼        │       │     │
+     │  ┌───────────┐ ┌────────┤       │     │
+     │  │ completed │ │ failed │◀──────┘     │
+     │  └───────────┘ └────────┘             │
+     │                                       │
+     │      ┌───────────────────────────────┐│
+     └──────│         waiting → ready       ││
+            │      (all children terminal,  ││
+            │          none failed)         ││
+            └───────────────────────────────┘│
+                                             │
+            ┌───────────┐                    │
+            │ cancelled │◀───────────────────┘
+            │           │ (from new, ready,
+            │           │  active, or waiting)
+            └───────────┘
 ```
 
 Terminal statuses: `completed`, `failed`, `cancelled`. No transitions out of terminal states.
+
+The `waiting` status is **non-terminal**. A parent in `waiting`:
+- Has non-terminal children that are being processed
+- Returns to `ready` when all children reach terminal status and none failed
+- Transitions to `failed` when a child fails (with cascading cancellation of remaining children)
+- Can be cancelled or failed directly
 
 The `new` status is a pre-queue holding state. A writ in `new` status:
 - Is **not** visible to the Spider's spawn phase (which queries exclusively for `ready` writs)
 - Can be reviewed, linked to other writs, and edited before entering the queue
 - Must be explicitly published (`new → ready`) via the `writ-publish` tool before it will be picked up
 - Can be cancelled directly from `new` without ever entering the queue
+- Can transition to `waiting` when children are added
 
-### [Future] The `pending` status
+---
 
-When writ hierarchy is implemented, a parent writ transitions to `pending` when it has active children and is not directly actionable itself. `pending` is not a terminal state — when all children complete, the parent can transition to `completed`. If any child fails, the parent can transition to `failed`.
+## Parent/Child Hierarchies
 
-```
-ready → pending    (when children are created via decompose())
-pending → completed  (when all children complete — may be automatic)
-pending → failed     (when a child fails — patron decides)
-pending → cancelled
-```
+Writs form a tree. A writ may be decomposed into child writs (tasks, steps, etc.) by creating children with `parentId`. The hierarchy enables:
+
+- **Decomposition** — a broad commission broken into concrete tasks
+- **Completion rollup** — parent returns to `ready` when all children complete
+- **Failure propagation** — child failure cascades upward, failing the parent
+- **Cancellation cascade** — parent termination cancels all non-terminal children
+- **Scope tracking** — the patron sees one mandate; the guild sees the tree
+
+### Hierarchy Rules
+
+- A writ may have zero or one parent (`parentId` is optional, immutable after creation).
+- A writ may have zero or many children.
+- Depth is not limited (but deep hierarchies are a design smell).
+- Children inherit the parent's `codex` unless explicitly overridden.
+- Parents must be in `new`, `ready`, or `waiting` status to accept new children.
+
+### CDC Cascade Behavior
+
+The Clerk registers a Phase 1 CDC watcher on the `clerk/writs` book. When a writ's status changes:
+
+**Upward cascade (child → parent):** When a child reaches a terminal status:
+- If the child **failed**: the parent transitions to `failed` with resolution `'Child "<childId>" failed: <childResolution>'`. The parent's failure triggers downward cascade, cancelling remaining siblings.
+- If the child **completed** or **cancelled**: the Clerk checks all siblings. If all are terminal and none failed, the parent transitions from `waiting` to `ready`.
+
+**Downward cascade (parent → children):** When a writ reaches a terminal status, all non-terminal children are cancelled with resolution `'Automatically cancelled due to sibling failure'`.
+
+### Cascade Depth
+
+A failure at leaf level cascades as: child fails (depth 1) → parent fails (depth 2) → siblings cancelled (depth 3 each) → each sibling's upward check returns early (depth 4). Well within the Stacks CDC cascade depth limit for reasonable hierarchies.
 
 ---
 
@@ -378,11 +465,11 @@ Commission intake is a single synchronous step:
 ├─ 2. Clerk validates input, generates ULID, creates WritDoc
 ├─ 3a. draft: false (default) → Clerk writes WritDoc with status: ready
 │       └─ Spider will pick up on next crawl tick
-└─ 3b. draft: true → Clerk writes WritDoc with status: new
-        └─ Held out of queue; patron calls writ-publish to enter queue
+├─ 3b. draft: true → Clerk writes WritDoc with status: new
+│       └─ Held out of queue; patron calls writ-publish to enter queue
+└─ 3c. parentId provided → Clerk validates parent, creates child atomically
+        └─ Parent transitions to waiting if in new or ready
 ```
-
-One commission = one mandate writ. No planning, no decomposition. Execution is handled by the Spider, which spawns a rig for each **ready** writ and drives it through the engine pipeline. Writs in `new` status are invisible to the Spider until published.
 
 ---
 
@@ -457,55 +544,15 @@ When Sage animas and the Clockworks are available, the intake pipeline gains a p
 ├─ 2. Clerk creates mandate writ (status: ready)
 ├─ 3. Clerk emits commission.posted
 ├─ 4. Standing order on commission.posted summons a Sage
-├─ 5. Sage reads the mandate, decomposes into child writs via decompose()
-├─ 6. Clerk creates child writs (status: ready), sets parent to pending
+├─ 5. Sage reads the mandate, creates child writs via post(parentId)
+├─ 6. Parent transitions to waiting, children in ready status
 ├─ 7. Clerk emits {childType}.ready for each child
 ├─ 8. Standing orders on {childType}.ready dispatch workers
 ├─ 9. As children complete, Clerk rolls up status to parent
-└─ 10. When all children complete, parent mandate → completed
+└─ 10. When all children complete, parent → ready → active → completed
 ```
 
 The patron's experience doesn't change — they still call `commission-post`. The planning step is internal to the guild.
-
----
-
-## Future: Writ Hierarchy
-
-Writs form a tree. A mandate writ may be decomposed into child writs (tasks, steps, etc.) by a planning anima. The hierarchy enables:
-
-- **Decomposition** — a broad commission broken into concrete tasks
-- **Completion rollup** — parent completes when all children complete
-- **Failure propagation** — parent awareness of child failures
-- **Scope tracking** — the patron sees one mandate; the guild sees the tree
-
-### Hierarchy Rules
-
-- A writ may have zero or one parent.
-- A writ may have zero or many children.
-- Depth is not limited (but deep hierarchies are a design smell).
-- Children inherit the parent's `codex` unless explicitly overridden.
-- The parent's `childCount` is denormalized and maintained by the Clerk.
-
-### Completion Rollup
-
-When a child writ reaches a terminal status, the Clerk checks siblings:
-- All children `completed` → parent auto-transitions to `completed`
-- Any child `failed` → the Clerk emits `{parentType}.child-failed` but does NOT auto-fail the parent. The patron (or a standing order) decides whether to fail, retry, or cancel.
-- Child `cancelled` → no automatic parent transition.
-
-### `decompose()` Method
-
-```typescript
-/**
- * Create child writs under a parent.
- *
- * Used by planning animas (Sages) to decompose a mandate into
- * concrete tasks. Children inherit the parent's codex unless
- * overridden. The parent transitions to `pending` when it has
- * active children and is not directly actionable.
- */
-decompose(parentId: string, children: CreateWritRequest[]): Promise<WritDoc[]>
-```
 
 ---
 
@@ -522,5 +569,7 @@ decompose(parentId: string, children: CreateWritRequest[]): Promise<WritDoc[]>
 - Standalone apparatus package at `packages/plugins/clerk/`. Requires only the Stacks.
 - `WritDoc.type` uses a guild-defined vocabulary, not a framework enum. The Clerk validates against `clerk.writTypes` in the apparatus config section but the framework imposes no meaning on the type name.
 - Writ ids use the format `w-{base36_timestamp}{hex_random}` — sortable by creation time, unique without coordination. Not a formal ULID, but provides the same useful properties (temporal ordering, no coordination).
-- The `transition()` method is the single choke point for all status changes. All tools and future integrations go through it. This is where validation, timestamp setting, and (future) event emission and hierarchy rollup happen.
+- The `transition()` method is the single choke point for all status changes. All tools and future integrations go through it. This is where validation, timestamp setting, event emission, and hierarchy cascade happen.
 - When the Clockworks is eventually added as a recommended dependency, resolve it at emit time via `guild().apparatus()`, not at startup — so the Clerk functions with or without it.
+- Parent/child cascade uses a Phase 1 CDC watcher (`failOnError: true`) so cascade operations are transactional — if a cascade step fails, the triggering transition rolls back.
+- `parentId` is immutable: stripped from managed fields in `transition()`, preventing mutation through the API.

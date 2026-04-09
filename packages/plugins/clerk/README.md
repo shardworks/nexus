@@ -1,6 +1,6 @@
 # `@shardworks/clerk-apparatus`
 
-The Clerk manages the lifecycle of **writs** — lightweight work orders that flow through a fixed status machine. Writs are created as commissions and ultimately completed, failed, or cancelled.
+The Clerk manages the lifecycle of **writs** — lightweight work orders that flow through a fixed status machine. Writs are created as commissions and ultimately completed, failed, or cancelled. Writs can be organized into parent/child hierarchies for decomposing complex work.
 
 The Clerk sits downstream of The Stacks: `stacks ← clerk`.
 
@@ -40,6 +40,7 @@ const writ = await clerk.post({
   body: 'Move all session logic into a dedicated module',
   type: 'mandate',      // optional, defaults to guild defaultType or "mandate"
   codex: 'artificer',  // optional target codex
+  parentId: parent.id, // optional parent writ for hierarchical decomposition
 });
 ```
 
@@ -48,7 +49,14 @@ const writ = await clerk.post({
 | `title` | `string` | Short human-readable title |
 | `body` | `string` | Detail text (required) |
 | `type` | `string` | Writ type — must be declared or built-in (optional) |
-| `codex` | `string` | Target codex name (optional) |
+| `codex` | `string` | Target codex name (optional, inherited from parent if omitted) |
+| `parentId` | `string` | Parent writ id for hierarchical decomposition (optional) |
+
+When `parentId` is provided:
+- The parent must exist and be in `new`, `ready`, or `waiting` status.
+- The parent is transitioned to `waiting` if it is in `new` or `ready`.
+- The child inherits the parent's `codex` if no explicit codex is provided.
+- The entire operation (child creation + parent transition) is atomic.
 
 Throws if the writ type is not declared in the guild config and is not a built-in type (`mandate`, `summon`).
 
@@ -62,12 +70,14 @@ List writs with optional filters, ordered by `createdAt` descending (newest firs
 
 ```typescript
 const activeWrits = await clerk.list({ status: 'active', limit: 10 });
+const children = await clerk.list({ parentId: parent.id });
 ```
 
 | Filter | Type | Description |
 |---|---|---|
 | `status` | `WritStatus` | Filter by status |
 | `type` | `string` | Filter by writ type |
+| `parentId` | `string` | Filter to children of this parent writ |
 | `limit` | `number` | Maximum results (default: 20) |
 | `offset` | `number` | Number of results to skip |
 
@@ -99,20 +109,50 @@ await clerk.transition(id, 'cancelled', { resolution: 'No longer needed' });
 
 Throws if the transition is not legal for the writ's current status.
 
+**Cascade behavior:** When a writ with children transitions to a terminal status, all non-terminal children are automatically cancelled. When a child fails, its parent is failed and remaining siblings are cancelled.
+
 ---
 
 ## Status Machine
 
 ```
-ready ──────► active ──────► completed
-  │              │
-  │              └──────────► failed
-  │
-  └──────────────────────────► cancelled
-         (from ready or active)
+                    ┌────────────► waiting ──────────► ready
+                    │              (children          (all children
+                    │               added)             resolved)
+                    │                 │
+new ──► ready ──────┤──► active ──────┤──► completed
+  │       │         │      │          │
+  │       │         │      └──────────┤──► failed
+  │       │         │                 │
+  └───────┴─────────┴─────────────────┴──► cancelled
 ```
 
-`completed`, `failed`, and `cancelled` are **terminal** — no transitions out.
+- `completed`, `failed`, and `cancelled` are **terminal** — no transitions out.
+- `waiting` is **non-terminal** — parents wait for children to resolve, then return to `ready`.
+
+### Allowed transitions
+
+| To | From |
+|---|---|
+| `ready` | `new`, `waiting` |
+| `active` | `ready` |
+| `completed` | `active` |
+| `failed` | `active`, `waiting` |
+| `cancelled` | `new`, `ready`, `active`, `waiting` |
+| `waiting` | `new`, `ready` |
+
+---
+
+## Parent/Child Hierarchies
+
+Writs can be organized into parent/child relationships for decomposing complex work:
+
+- **Creating children:** Pass `parentId` to `post()`. The parent transitions to `waiting`.
+- **Completion rollup:** When all children reach terminal status (none failed), the parent returns to `ready`.
+- **Failure cascade:** When a child fails, the parent is failed and remaining non-terminal siblings are cancelled.
+- **Cancellation cascade:** When a parent reaches terminal status, all non-terminal children are cancelled.
+- **Codex inheritance:** Children inherit the parent's codex if none is specified.
+- **Immutability:** `parentId` cannot be changed after creation.
 
 ---
 
@@ -145,40 +185,46 @@ The built-in types `mandate` and `summon` are always available without declarati
 
 ## Support Kit
 
-The Clerk contributes one book and seven tools to the guild:
+The Clerk contributes books, tools, and pages to the guild:
 
 ### Books
 
 | Book | Indexes | Contents |
 |---|---|---|
-| `writs` | `status`, `type`, `createdAt`, `[status, type]`, `[status, createdAt]` | Writ documents |
+| `writs` | `status`, `type`, `createdAt`, `parentId`, `[status, type]`, `[status, createdAt]`, `[parentId, status]` | Writ documents |
+| `links` | `sourceId`, `targetId`, `type`, `[sourceId, type]`, `[targetId, type]` | Writ relationship links |
 
 ### Tools
 
 | Tool | Permission | Description |
 |---|---|---|
-| `commission-post` | `clerk:write` | Post a new commission (create a writ) |
-| `writ-show` | `clerk:read` | Show full detail for a writ |
-| `writ-list` | `clerk:read` | List writs with optional filters |
+| `commission-post` | `clerk:write` | Post a new commission (create a writ, optionally as child) |
+| `writ-show` | `clerk:read` | Show full detail for a writ (includes parent/children context) |
+| `writ-list` | `clerk:read` | List writs with optional filters (status, type, parentId) |
 | `writ-accept` | `clerk:write` | Accept a writ (ready → active) |
 | `writ-complete` | `clerk:write` | Complete a writ (active → completed) |
-| `writ-fail` | `clerk:write` | Fail a writ (active → failed) |
-| `writ-cancel` | `clerk:write` | Cancel a writ (ready\|active → cancelled) |
+| `writ-fail` | `clerk:write` | Fail a writ (active/waiting → failed) |
+| `writ-cancel` | `clerk:write` | Cancel a writ (new/ready/active/waiting → cancelled) |
+| `writ-publish` | `clerk:write` | Publish a draft writ (new → ready) |
+| `writ-link` | `clerk:write` | Create a typed link between writs |
+| `writ-unlink` | `clerk:write` | Remove a typed link between writs |
+| `writ-types` | `clerk:read` | List available writ types |
 
 ---
 
 ## Key Types
 
 ```typescript
-type WritStatus = 'ready' | 'active' | 'completed' | 'failed' | 'cancelled';
+type WritStatus = 'new' | 'ready' | 'active' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 
 interface WritDoc {
-  id: string;           // ULID-like, prefixed "writ-"
+  id: string;           // ULID-like, prefixed "w-"
   type: string;         // declared or built-in type
   status: WritStatus;
   title: string;
   body: string;
   codex?: string;       // target codex name
+  parentId?: string;    // parent writ id (absent on root writs, immutable)
   createdAt: string;    // ISO timestamp
   updatedAt: string;    // ISO timestamp, updated on every mutation
   acceptedAt?: string;  // ISO timestamp, set when transitioning to active
@@ -190,7 +236,16 @@ interface PostCommissionRequest {
   title: string;
   body: string;         // required
   type?: string;        // defaults to guild defaultType or "mandate"
-  codex?: string;
+  codex?: string;       // inherited from parent if omitted
+  parentId?: string;    // create as child of this writ
+}
+
+interface WritFilters {
+  status?: WritStatus;
+  type?: string;
+  parentId?: string;    // filter to children of this parent
+  limit?: number;
+  offset?: number;
 }
 ```
 

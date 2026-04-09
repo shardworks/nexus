@@ -5,10 +5,11 @@ import type { ClerkApi } from '../types.ts';
 
 export default tool({
   name: 'writ-fail',
-  description: 'Fail a writ, transitioning it from active to failed',
+  description: 'Fail a writ, transitioning it from active or waiting to failed',
   instructions:
     'Marks the writ as failed. Record a resolution explaining why it failed. ' +
-    'Only writs in active status can be failed. ' +
+    'Writs in active or waiting status can be failed. ' +
+    'If the writ has non-terminal children, they will be automatically cancelled. ' +
     'Returns the updated writ.',
   params: {
     id: z.string().describe('Writ id'),

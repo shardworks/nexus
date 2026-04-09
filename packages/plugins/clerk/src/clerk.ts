@@ -58,11 +58,12 @@ const BUILTIN_TYPES = new Set(['mandate']);
 // ── Status machine ───────────────────────────────────────────────────
 
 const ALLOWED_FROM: Record<WritStatus, WritStatus[]> = {
-  ready: ['new'],
+  ready: ['new', 'waiting'],
   active: ['ready'],
   completed: ['active'],
-  failed: ['active'],
-  cancelled: ['new', 'ready', 'active'],
+  failed: ['active', 'waiting'],
+  cancelled: ['new', 'ready', 'active', 'waiting'],
+  waiting: ['new', 'ready'],
   new: [],
 };
 
@@ -70,7 +71,11 @@ const TERMINAL_STATUSES = new Set<WritStatus>(['completed', 'failed', 'cancelled
 
 // ── Factory ──────────────────────────────────────────────────────────
 
+/** Parent statuses that allow adding children. */
+const CHILD_ALLOWED_PARENT_STATUSES = new Set<WritStatus>(['new', 'ready', 'waiting']);
+
 export function createClerk(): Plugin {
+  let stacks: StacksApi;
   let writs: Book<WritDoc>;
   let links: Book<WritLinkDoc>;
 
@@ -102,6 +107,9 @@ export function createClerk(): Plugin {
     }
     if (filters?.type) {
       conditions.push(['type', '=', filters.type]);
+    }
+    if (filters?.parentId) {
+      conditions.push(['parentId', '=', filters.parentId]);
     }
     return conditions.length > 0 ? conditions : undefined;
   }
@@ -153,13 +161,70 @@ export function createClerk(): Plugin {
       }
 
       const now = new Date().toISOString();
+      const childId = generateId('w', 6);
+
+      // Determine codex: explicit request > parent inheritance > undefined
+      let codex = request.codex;
+
+      if (request.parentId) {
+        // Wrap in a transaction for atomicity
+        return stacks.transaction(async (tx) => {
+          const txWrits = tx.book<WritDoc>('clerk', 'writs');
+
+          // Validate parent exists and is in an allowed status
+          const parent = await txWrits.get(request.parentId!);
+          if (!parent) {
+            throw new Error(`Parent writ "${request.parentId}" not found.`);
+          }
+          if (!CHILD_ALLOWED_PARENT_STATUSES.has(parent.status)) {
+            throw new Error(
+              `Cannot add children to writ "${request.parentId}": status is "${parent.status}", expected one of: ${[...CHILD_ALLOWED_PARENT_STATUSES].join(', ')}.`,
+            );
+          }
+
+          // Defensive self-parenting check
+          if (request.parentId === childId) {
+            throw new Error(`Cannot create a writ as its own parent.`);
+          }
+
+          // Inherit codex from parent if not specified
+          if (codex === undefined && parent.codex !== undefined) {
+            codex = parent.codex;
+          }
+
+          const writ: WritDoc = {
+            id: childId,
+            type,
+            status: request.draft === true ? 'new' : 'ready',
+            title: request.title,
+            body: request.body,
+            ...(codex !== undefined ? { codex } : {}),
+            parentId: request.parentId,
+            createdAt: now,
+            updatedAt: now,
+          };
+
+          await txWrits.put(writ);
+
+          // Transition parent to waiting if it's in new or ready
+          if (parent.status === 'new' || parent.status === 'ready') {
+            await txWrits.patch(parent.id, {
+              status: 'waiting' as WritStatus,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+
+          return writ;
+        });
+      }
+
       const writ: WritDoc = {
-        id: generateId('w', 6),
+        id: childId,
         type,
         status: request.draft === true ? 'new' : 'ready',
         title: request.title,
         body: request.body,
-        ...(request.codex !== undefined ? { codex: request.codex } : {}),
+        ...(codex !== undefined ? { codex } : {}),
         createdAt: now,
         updatedAt: now,
       };
@@ -260,7 +325,7 @@ export function createClerk(): Plugin {
       // Strip managed fields — callers cannot override id, status, or timestamps
       // controlled by the status machine.
       const { id: _id, status: _status, createdAt: _c, updatedAt: _u,
-        acceptedAt: _a, resolvedAt: _r, ...safeFields } = (fields ?? {}) as WritDoc;
+        acceptedAt: _a, resolvedAt: _r, parentId: _p, ...safeFields } = (fields ?? {}) as WritDoc;
 
       const patch: Partial<Omit<WritDoc, 'id'>> = {
         status: to,
@@ -273,6 +338,45 @@ export function createClerk(): Plugin {
       return writs.patch(id, patch);
     },
   };
+
+  // ── CDC cascade handlers ─────────────────────────────────────────
+
+  async function handleChildTerminal(child: WritDoc): Promise<void> {
+    if (!child.parentId) return;
+
+    const parent = await writs.get(child.parentId);
+    if (!parent || parent.status !== 'waiting') return;
+
+    if (child.status === 'failed') {
+      const childResolution = child.resolution ?? 'unknown';
+      await api.transition(parent.id, 'failed', {
+        resolution: `Child "${child.id}" failed: ${childResolution}`,
+      });
+      return;
+    }
+
+    // completed or cancelled — check if all siblings are terminal
+    const children = await writs.find({ where: [['parentId', '=', parent.id]] });
+    const allTerminal = children.every((c) => TERMINAL_STATUSES.has(c.status));
+    const noneFailed = !children.some((c) => c.status === 'failed');
+
+    if (allTerminal && noneFailed) {
+      await api.transition(parent.id, 'ready');
+    }
+  }
+
+  async function handleParentTerminal(parent: WritDoc): Promise<void> {
+    const children = await writs.find({ where: [['parentId', '=', parent.id]] });
+    if (children.length === 0) return;
+
+    for (const child of children) {
+      if (!TERMINAL_STATUSES.has(child.status)) {
+        await api.transition(child.id, 'cancelled', {
+          resolution: 'Automatically cancelled due to sibling failure',
+        });
+      }
+    }
+  }
 
   // ── writ-types tool ──────────────────────────────────────────────
 
@@ -312,7 +416,7 @@ export function createClerk(): Plugin {
       supportKit: {
         books: {
           writs: {
-            indexes: ['status', 'type', 'createdAt', ['status', 'type'], ['status', 'createdAt']],
+            indexes: ['status', 'type', 'createdAt', 'parentId', ['status', 'type'], ['status', 'createdAt'], ['parentId', 'status']],
           },
           links: {
             indexes: ['sourceId', 'targetId', 'type', ['sourceId', 'type'], ['targetId', 'type']],
@@ -340,7 +444,7 @@ export function createClerk(): Plugin {
 
       start(ctx: StartupContext): void {
         const g = guild();
-        const stacks = g.apparatus<StacksApi>('stacks');
+        stacks = g.apparatus<StacksApi>('stacks');
         writs = stacks.book<WritDoc>('clerk', 'writs');
         links = stacks.book<WritLinkDoc>('clerk', 'links');
 
@@ -353,6 +457,27 @@ export function createClerk(): Plugin {
         for (const entry of ctx.kits('writTypes')) {
           registerKitWritTypes(entry);
         }
+
+        // ── CDC: parent/child cascade ───────────────────────────────
+        stacks.watch<WritDoc>('clerk', 'writs', async (event) => {
+          if (event.type !== 'update') return;
+
+          const writ = event.entry as WritDoc;
+          const prev = event.prev as WritDoc;
+
+          // Only act on status changes
+          if (writ.status === prev.status) return;
+
+          // ── Upward cascade: child → parent ──
+          if (writ.parentId && TERMINAL_STATUSES.has(writ.status)) {
+            await handleChildTerminal(writ);
+          }
+
+          // ── Downward cascade: parent → children ──
+          if (TERMINAL_STATUSES.has(writ.status)) {
+            await handleParentTerminal(writ);
+          }
+        }, { failOnError: true });
       },
     },
   };

@@ -121,7 +121,7 @@ function setupCore(options: SetupOptions = {}, clerkCtx?: StartupContext): Clerk
 
   // Ensure books exist
   memBackend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
-    indexes: ['status', 'type', 'createdAt', ['status', 'type'], ['status', 'createdAt']],
+    indexes: ['status', 'type', 'createdAt', 'parentId', ['status', 'type'], ['status', 'createdAt'], ['parentId', 'status']],
   });
   memBackend.ensureBook({ ownerId: 'clerk', book: 'links' }, {
     indexes: ['sourceId', 'targetId', 'type', ['sourceId', 'type'], ['targetId', 'type']],
@@ -1485,6 +1485,587 @@ describe('Apparatus wiring', () => {
     assert.ok(writPage, 'pages should include a writs entry');
     assert.equal(writPage.title, 'Writs');
     assert.equal(writPage.dir, 'pages/writs');
+  });
+});
+
+// ── Parent/child relationship tests ──────────────────────────────────
+
+describe('Parent/child relationships', () => {
+  afterEach(() => { clearGuild(); });
+
+  // ── Child creation ────────────────────────────────────────────────
+
+  describe('child creation', () => {
+    beforeEach(() => { setup(); });
+
+    it('creates a child writ with parentId set', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Parent body' });
+      const child = await clerk.post({ title: 'Child', body: 'Child body', parentId: parent.id });
+
+      assert.equal(child.parentId, parent.id);
+      assert.ok(child.id.startsWith('w-'));
+      assert.equal(child.status, 'ready');
+    });
+
+    it('transitions parent from ready to waiting when child is added', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      assert.equal(parent.status, 'ready');
+
+      await clerk.post({ title: 'Child', body: 'Body', parentId: parent.id });
+
+      const updated = await clerk.show(parent.id);
+      assert.equal(updated.status, 'waiting');
+    });
+
+    it('transitions parent from new (draft) to waiting when child is added', async () => {
+      const parent = await clerk.post({ title: 'Draft parent', body: 'Body', draft: true });
+      assert.equal(parent.status, 'new');
+
+      await clerk.post({ title: 'Child', body: 'Body', parentId: parent.id });
+
+      const updated = await clerk.show(parent.id);
+      assert.equal(updated.status, 'waiting');
+    });
+
+    it('keeps parent in waiting when a second child is added', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      await clerk.post({ title: 'Child 1', body: 'Body', parentId: parent.id });
+
+      const midState = await clerk.show(parent.id);
+      assert.equal(midState.status, 'waiting');
+
+      await clerk.post({ title: 'Child 2', body: 'Body', parentId: parent.id });
+
+      const endState = await clerk.show(parent.id);
+      assert.equal(endState.status, 'waiting');
+    });
+
+    it('creates root writ without parentId', async () => {
+      const writ = await clerk.post({ title: 'Root', body: 'Body' });
+      assert.equal(writ.parentId, undefined);
+    });
+
+    it('inherits codex from parent when child codex is not specified', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body', codex: 'parent-codex' });
+      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: parent.id });
+
+      assert.equal(child.codex, 'parent-codex');
+    });
+
+    it('uses child explicit codex over parent codex', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body', codex: 'parent-codex' });
+      const child = await clerk.post({ title: 'Child', body: 'Body', codex: 'child-codex', parentId: parent.id });
+
+      assert.equal(child.codex, 'child-codex');
+    });
+
+    it('child has no codex when neither parent nor child specify one', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: parent.id });
+
+      assert.equal(child.codex, undefined);
+    });
+  });
+
+  // ── Child creation validation ─────────────────────────────────────
+
+  describe('child creation validation', () => {
+    beforeEach(() => { setup(); });
+
+    it('rejects child creation with non-existent parentId', async () => {
+      await assert.rejects(
+        () => clerk.post({ title: 'Child', body: 'Body', parentId: 'w-nonexistent' }),
+        { message: 'Parent writ "w-nonexistent" not found.' },
+      );
+    });
+
+    it('rejects child creation when parent is active', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      await clerk.transition(parent.id, 'active');
+
+      await assert.rejects(
+        () => clerk.post({ title: 'Child', body: 'Body', parentId: parent.id }),
+        (err: Error) => {
+          assert.ok(err.message.includes('Cannot add children to writ'));
+          assert.ok(err.message.includes('"active"'));
+          return true;
+        },
+      );
+    });
+
+    it('rejects child creation when parent is completed', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      await clerk.transition(parent.id, 'active');
+      await clerk.transition(parent.id, 'completed', { resolution: 'Done' });
+
+      await assert.rejects(
+        () => clerk.post({ title: 'Child', body: 'Body', parentId: parent.id }),
+        (err: Error) => {
+          assert.ok(err.message.includes('Cannot add children to writ'));
+          assert.ok(err.message.includes('"completed"'));
+          return true;
+        },
+      );
+    });
+
+    it('rejects child creation when parent is failed', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      await clerk.transition(parent.id, 'active');
+      await clerk.transition(parent.id, 'failed', { resolution: 'Broke' });
+
+      await assert.rejects(
+        () => clerk.post({ title: 'Child', body: 'Body', parentId: parent.id }),
+        (err: Error) => {
+          assert.ok(err.message.includes('Cannot add children to writ'));
+          assert.ok(err.message.includes('"failed"'));
+          return true;
+        },
+      );
+    });
+
+    it('rejects child creation when parent is cancelled', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      await clerk.transition(parent.id, 'cancelled');
+
+      await assert.rejects(
+        () => clerk.post({ title: 'Child', body: 'Body', parentId: parent.id }),
+        (err: Error) => {
+          assert.ok(err.message.includes('Cannot add children to writ'));
+          assert.ok(err.message.includes('"cancelled"'));
+          return true;
+        },
+      );
+    });
+  });
+
+  // ── Waiting status transitions ────────────────────────────────────
+
+  describe('waiting status', () => {
+    beforeEach(() => { setup(); });
+
+    it('allows explicit transition from new to waiting', async () => {
+      const writ = await clerk.post({ title: 'Draft', body: 'Body', draft: true });
+      const updated = await clerk.transition(writ.id, 'waiting');
+      assert.equal(updated.status, 'waiting');
+    });
+
+    it('allows explicit transition from ready to waiting', async () => {
+      const writ = await clerk.post({ title: 'Ready', body: 'Body' });
+      const updated = await clerk.transition(writ.id, 'waiting');
+      assert.equal(updated.status, 'waiting');
+    });
+
+    it('rejects transition from active to waiting', async () => {
+      const writ = await clerk.post({ title: 'Active', body: 'Body' });
+      await clerk.transition(writ.id, 'active');
+
+      await assert.rejects(
+        () => clerk.transition(writ.id, 'waiting'),
+        (err: Error) => {
+          assert.ok(err.message.includes('Cannot transition'));
+          return true;
+        },
+      );
+    });
+
+    it('does not set resolvedAt when transitioning to waiting', async () => {
+      const writ = await clerk.post({ title: 'W', body: 'Body' });
+      const updated = await clerk.transition(writ.id, 'waiting');
+      assert.equal(updated.resolvedAt, undefined);
+      assert.equal(updated.acceptedAt, undefined);
+    });
+
+    it('waiting is not terminal', async () => {
+      const writ = await clerk.post({ title: 'W', body: 'Body' });
+      const updated = await clerk.transition(writ.id, 'waiting');
+      // Can transition out of waiting
+      const ready = await clerk.transition(updated.id, 'ready');
+      assert.equal(ready.status, 'ready');
+    });
+
+    it('allows cancellation of waiting writ', async () => {
+      const writ = await clerk.post({ title: 'W', body: 'Body' });
+      await clerk.transition(writ.id, 'waiting');
+      const cancelled = await clerk.transition(writ.id, 'cancelled');
+      assert.equal(cancelled.status, 'cancelled');
+    });
+
+    it('allows failing a waiting writ', async () => {
+      const writ = await clerk.post({ title: 'W', body: 'Body' });
+      await clerk.transition(writ.id, 'waiting');
+      const failed = await clerk.transition(writ.id, 'failed', { resolution: 'Broke' });
+      assert.equal(failed.status, 'failed');
+    });
+  });
+
+  // ── Completion rollup (child → parent) ────────────────────────────
+
+  describe('completion rollup', () => {
+    beforeEach(() => { setup(); });
+
+    it('transitions parent to ready when single child completes', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: parent.id });
+
+      await clerk.transition(child.id, 'active');
+      await clerk.transition(child.id, 'completed', { resolution: 'Done' });
+
+      const updated = await clerk.show(parent.id);
+      assert.equal(updated.status, 'ready');
+    });
+
+    it('transitions parent to ready when all 3 children complete', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
+      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
+      const c3 = await clerk.post({ title: 'C3', body: 'B', parentId: parent.id });
+
+      for (const c of [c1, c2, c3]) {
+        await clerk.transition(c.id, 'active');
+        await clerk.transition(c.id, 'completed', { resolution: 'Done' });
+      }
+
+      const updated = await clerk.show(parent.id);
+      assert.equal(updated.status, 'ready');
+    });
+
+    it('transitions parent to ready when children complete and cancel (none failed)', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
+      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
+
+      await clerk.transition(c1.id, 'active');
+      await clerk.transition(c1.id, 'completed', { resolution: 'Done' });
+      await clerk.transition(c2.id, 'cancelled');
+
+      const updated = await clerk.show(parent.id);
+      assert.equal(updated.status, 'ready');
+    });
+
+    it('keeps parent waiting when not all children are terminal', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
+      await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
+
+      await clerk.transition(c1.id, 'active');
+      await clerk.transition(c1.id, 'completed', { resolution: 'Done' });
+
+      const updated = await clerk.show(parent.id);
+      assert.equal(updated.status, 'waiting');
+    });
+
+    it('transitions parent to ready when both children are cancelled (none failed)', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
+      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
+
+      await clerk.transition(c1.id, 'cancelled');
+      await clerk.transition(c2.id, 'cancelled');
+
+      const updated = await clerk.show(parent.id);
+      assert.equal(updated.status, 'ready');
+    });
+  });
+
+  // ── Failure cascade ───────────────────────────────────────────────
+
+  describe('failure cascade', () => {
+    beforeEach(() => { setup(); });
+
+    it('fails parent when child fails, cancels remaining siblings', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
+      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
+      const c3 = await clerk.post({ title: 'C3', body: 'B', parentId: parent.id });
+
+      await clerk.transition(c1.id, 'active');
+      await clerk.transition(c1.id, 'failed', { resolution: 'Broke' });
+
+      const updatedParent = await clerk.show(parent.id);
+      assert.equal(updatedParent.status, 'failed');
+      assert.ok(updatedParent.resolution?.includes(`Child "${c1.id}" failed: Broke`));
+
+      const updatedC2 = await clerk.show(c2.id);
+      assert.equal(updatedC2.status, 'cancelled');
+      assert.equal(updatedC2.resolution, 'Automatically cancelled due to sibling failure');
+
+      const updatedC3 = await clerk.show(c3.id);
+      assert.equal(updatedC3.status, 'cancelled');
+      assert.equal(updatedC3.resolution, 'Automatically cancelled due to sibling failure');
+    });
+
+    it('fails parent when single child fails', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const child = await clerk.post({ title: 'Child', body: 'B', parentId: parent.id });
+
+      await clerk.transition(child.id, 'active');
+      await clerk.transition(child.id, 'failed', { resolution: 'Error occurred' });
+
+      const updated = await clerk.show(parent.id);
+      assert.equal(updated.status, 'failed');
+      assert.ok(updated.resolution?.includes('Error occurred'));
+    });
+
+    it('cascades failure through 3-level hierarchy', async () => {
+      const grandparent = await clerk.post({ title: 'GP', body: 'B' });
+      const parent = await clerk.post({ title: 'P', body: 'B', parentId: grandparent.id });
+      const child = await clerk.post({ title: 'C', body: 'B', parentId: parent.id });
+
+      await clerk.transition(child.id, 'active');
+      await clerk.transition(child.id, 'failed', { resolution: 'Leaf failed' });
+
+      const updatedChild = await clerk.show(child.id);
+      assert.equal(updatedChild.status, 'failed');
+
+      const updatedParent = await clerk.show(parent.id);
+      assert.equal(updatedParent.status, 'failed');
+
+      const updatedGP = await clerk.show(grandparent.id);
+      assert.equal(updatedGP.status, 'failed');
+    });
+
+    it('uses "unknown" when child has no resolution', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const child = await clerk.post({ title: 'Child', body: 'B', parentId: parent.id });
+
+      // Transition child to active, then fail without resolution
+      await clerk.transition(child.id, 'active');
+      await clerk.transition(child.id, 'failed');
+
+      const updated = await clerk.show(parent.id);
+      assert.ok(updated.resolution?.includes('unknown'));
+    });
+  });
+
+  // ── Downward cancellation cascade ─────────────────────────────────
+
+  describe('cancellation cascade (downward)', () => {
+    beforeEach(() => { setup(); });
+
+    it('cancels non-terminal children when parent is cancelled', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
+      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
+
+      await clerk.transition(parent.id, 'cancelled');
+
+      const updatedC1 = await clerk.show(c1.id);
+      assert.equal(updatedC1.status, 'cancelled');
+      assert.equal(updatedC1.resolution, 'Automatically cancelled due to sibling failure');
+
+      const updatedC2 = await clerk.show(c2.id);
+      assert.equal(updatedC2.status, 'cancelled');
+    });
+
+    it('does not cancel already-terminal children', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
+      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
+
+      // Complete c1 first
+      await clerk.transition(c1.id, 'active');
+      await clerk.transition(c1.id, 'completed', { resolution: 'Done' });
+      // Parent goes back to waiting since c2 is still non-terminal... wait, c1 completion checks all children.
+      // Actually c2 is still ready (non-terminal), so parent stays waiting.
+
+      // Now cancel parent
+      await clerk.transition(parent.id, 'cancelled');
+
+      const updatedC1 = await clerk.show(c1.id);
+      assert.equal(updatedC1.status, 'completed'); // already terminal, unchanged
+
+      const updatedC2 = await clerk.show(c2.id);
+      assert.equal(updatedC2.status, 'cancelled');
+    });
+  });
+
+  // ── Full lifecycle with children ──────────────────────────────────
+
+  describe('full lifecycle with children', () => {
+    beforeEach(() => { setup(); });
+
+    it('parent flows: ready → waiting → ready → active → completed', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      assert.equal(parent.status, 'ready');
+
+      const child = await clerk.post({ title: 'Child', body: 'B', parentId: parent.id });
+      const p1 = await clerk.show(parent.id);
+      assert.equal(p1.status, 'waiting');
+
+      await clerk.transition(child.id, 'active');
+      await clerk.transition(child.id, 'completed', { resolution: 'Done' });
+
+      const p2 = await clerk.show(parent.id);
+      assert.equal(p2.status, 'ready');
+
+      await clerk.transition(parent.id, 'active');
+      const p3 = await clerk.show(parent.id);
+      assert.equal(p3.status, 'active');
+
+      await clerk.transition(parent.id, 'completed', { resolution: 'All done' });
+      const p4 = await clerk.show(parent.id);
+      assert.equal(p4.status, 'completed');
+    });
+
+    it('children already terminal are not cancelled when parent completes normally', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const child = await clerk.post({ title: 'Child', body: 'B', parentId: parent.id });
+
+      // Complete child → parent ready
+      await clerk.transition(child.id, 'active');
+      await clerk.transition(child.id, 'completed', { resolution: 'Done' });
+
+      // Parent now ready → active → completed
+      await clerk.transition(parent.id, 'active');
+      await clerk.transition(parent.id, 'completed', { resolution: 'All done' });
+
+      // Child should still be completed
+      const updatedChild = await clerk.show(child.id);
+      assert.equal(updatedChild.status, 'completed');
+    });
+  });
+
+  // ── parentId immutability ─────────────────────────────────────────
+
+  describe('parentId immutability', () => {
+    beforeEach(() => { setup(); });
+
+    it('transition does not change parentId even if passed in fields', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const child = await clerk.post({ title: 'Child', body: 'B', parentId: parent.id });
+
+      const updated = await clerk.transition(child.id, 'active', { parentId: 'w-other' } as Partial<import('./types.ts').WritDoc>);
+      assert.equal(updated.parentId, parent.id);
+    });
+  });
+
+  // ── WritFilters with parentId ─────────────────────────────────────
+
+  describe('list with parentId filter', () => {
+    beforeEach(() => { setup(); });
+
+    it('returns only children of the specified parent', async () => {
+      const parent1 = await clerk.post({ title: 'P1', body: 'B' });
+      const parent2 = await clerk.post({ title: 'P2', body: 'B' });
+      await clerk.post({ title: 'C1', body: 'B', parentId: parent1.id });
+      await clerk.post({ title: 'C2', body: 'B', parentId: parent1.id });
+      await clerk.post({ title: 'C3', body: 'B', parentId: parent2.id });
+
+      const children1 = await clerk.list({ parentId: parent1.id });
+      assert.equal(children1.length, 2);
+      assert.ok(children1.every((c) => c.parentId === parent1.id));
+
+      const children2 = await clerk.list({ parentId: parent2.id });
+      assert.equal(children2.length, 1);
+      assert.equal(children2[0].parentId, parent2.id);
+    });
+  });
+
+  // ── writ-show with parent/children context ────────────────────────
+
+  describe('writ-show with parent/children context', () => {
+    beforeEach(() => { setup(); });
+
+    it('includes parent context for a child writ', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const child = await clerk.post({ title: 'Child', body: 'B', parentId: parent.id });
+
+      const result = await writShow.handler({ id: child.id });
+      assert.deepEqual(result.parent, { id: parent.id, title: 'Parent', status: 'waiting' });
+      assert.deepEqual(result.children, { summary: {}, items: [] });
+    });
+
+    it('includes children context for a parent writ', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
+      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
+
+      const result = await writShow.handler({ id: parent.id });
+      assert.equal(result.parent, null);
+      assert.equal(result.children.items.length, 2);
+      assert.ok(result.children.items.some((i: { id: string }) => i.id === c1.id));
+      assert.ok(result.children.items.some((i: { id: string }) => i.id === c2.id));
+      assert.equal(result.children.summary['ready'], 2);
+    });
+
+    it('returns null parent and empty children for root writ without children', async () => {
+      const writ = await clerk.post({ title: 'Root', body: 'Body' });
+
+      const result = await writShow.handler({ id: writ.id });
+      assert.equal(result.parent, null);
+      assert.deepEqual(result.children, { summary: {}, items: [] });
+    });
+  });
+
+  // ── State machine validation ──────────────────────────────────────
+
+  describe('state machine with waiting', () => {
+    beforeEach(() => { setup(); });
+
+    it('TERMINAL_STATUSES does not include waiting', async () => {
+      // Verify by transitioning waiting → ready (only possible if waiting is non-terminal)
+      const writ = await clerk.post({ title: 'W', body: 'B' });
+      await clerk.transition(writ.id, 'waiting');
+      const updated = await clerk.transition(writ.id, 'ready');
+      assert.equal(updated.status, 'ready');
+    });
+
+    it('allows transition from waiting to failed', async () => {
+      const writ = await clerk.post({ title: 'W', body: 'B' });
+      await clerk.transition(writ.id, 'waiting');
+      const failed = await clerk.transition(writ.id, 'failed', { resolution: 'Failed' });
+      assert.equal(failed.status, 'failed');
+      assert.ok(failed.resolvedAt);
+    });
+
+    it('allows transition from waiting to cancelled', async () => {
+      const writ = await clerk.post({ title: 'W', body: 'B' });
+      await clerk.transition(writ.id, 'waiting');
+      const cancelled = await clerk.transition(writ.id, 'cancelled');
+      assert.equal(cancelled.status, 'cancelled');
+      assert.ok(cancelled.resolvedAt);
+    });
+
+    it('rejects transition from waiting to active', async () => {
+      const writ = await clerk.post({ title: 'W', body: 'B' });
+      await clerk.transition(writ.id, 'waiting');
+
+      await assert.rejects(
+        () => clerk.transition(writ.id, 'active'),
+        (err: Error) => {
+          assert.ok(err.message.includes('Cannot transition'));
+          return true;
+        },
+      );
+    });
+
+    it('rejects transition from waiting to completed', async () => {
+      const writ = await clerk.post({ title: 'W', body: 'B' });
+      await clerk.transition(writ.id, 'waiting');
+
+      await assert.rejects(
+        () => clerk.transition(writ.id, 'completed', { resolution: 'Done' }),
+        (err: Error) => {
+          assert.ok(err.message.includes('Cannot transition'));
+          return true;
+        },
+      );
+    });
+  });
+
+  // ── Book indexes ──────────────────────────────────────────────────
+
+  describe('book indexes', () => {
+    it('writs book indexes include parentId and [parentId, status]', () => {
+      const plugin = setupCore();
+      const apparatus = (plugin as { apparatus: { supportKit: { books: Record<string, { indexes: unknown[] }> } } }).apparatus;
+      const indexes = apparatus.supportKit.books.writs.indexes;
+      assert.ok(indexes.includes('parentId'), 'indexes should include parentId');
+      assert.ok(
+        indexes.some((i: unknown) => Array.isArray(i) && i[0] === 'parentId' && i[1] === 'status'),
+        'indexes should include [parentId, status]',
+      );
+    });
   });
 });
 

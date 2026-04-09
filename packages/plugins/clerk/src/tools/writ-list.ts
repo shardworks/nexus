@@ -11,10 +11,11 @@ export default tool({
     'Filter by status or type to narrow results.',
   params: {
     status: z
-      .enum(['ready', 'active', 'completed', 'failed', 'cancelled'])
+      .enum(['new', 'ready', 'active', 'waiting', 'completed', 'failed', 'cancelled'])
       .optional()
       .describe('Filter by writ status'),
     type: z.string().optional().describe('Filter by writ type'),
+    parentId: z.string().optional().describe('Filter to children of this parent writ'),
     limit: z.number().optional().default(20).describe('Maximum results (default: 20)'),
     offset: z.number().optional().describe('Number of results to skip'),
   },
@@ -24,6 +25,7 @@ export default tool({
     return clerk.list({
       status: params.status,
       type: params.type,
+      parentId: params.parentId,
       limit: params.limit,
       offset: params.offset,
     });

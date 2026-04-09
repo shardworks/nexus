@@ -12,14 +12,19 @@
  * Transitions:
  *   new   → ready     (publish)   — draft held for review before entering the queue
  *   new   → cancelled (cancel)
+ *   new   → waiting   (child added)
  *   ready → active    (accept)
+ *   ready → waiting   (child added)
+ *   waiting → ready   (all children terminal, none failed)
+ *   waiting → failed  (child failed)
  *   active → completed (complete)
  *   active → failed    (fail)
- *   ready | active → cancelled (cancel)
+ *   ready | active | waiting → cancelled (cancel)
  *
  * completed, failed, cancelled are terminal — no further transitions.
+ * waiting is non-terminal — parents wait for children to resolve.
  */
-export type WritStatus = 'new' | 'ready' | 'active' | 'completed' | 'failed' | 'cancelled';
+export type WritStatus = 'new' | 'ready' | 'active' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 
 // ── Documents ────────────────────────────────────────────────────────
 
@@ -41,6 +46,8 @@ export interface WritDoc {
   body: string;
   /** Target codex name. */
   codex?: string;
+  /** Parent writ id. Absent on root writs. Immutable after creation. */
+  parentId?: string;
   /** ISO timestamp when the writ was created. */
   createdAt: string;
   /** ISO timestamp of the last mutation. */
@@ -77,6 +84,12 @@ export interface PostCommissionRequest {
    * Defaults to false (writ enters the queue immediately).
    */
   draft?: boolean;
+  /**
+   * Create this writ as a child of the specified parent writ.
+   * The parent must be in new, ready, or waiting status.
+   * If the parent is in new or ready, it will be transitioned to waiting.
+   */
+  parentId?: string;
 }
 
 // ── Filters ──────────────────────────────────────────────────────────
@@ -89,6 +102,8 @@ export interface WritFilters {
   status?: WritStatus;
   /** Filter by writ type. */
   type?: string;
+  /** Filter to children of this parent writ. */
+  parentId?: string;
   /** Maximum number of results (default: 20). */
   limit?: number;
   /** Number of results to skip. */
