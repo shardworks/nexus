@@ -527,6 +527,11 @@
         sessionLogSpinner.style.display = '';
       }
 
+      // Track whether the stream completed normally so the onerror handler
+      // (which fires when EventSource auto-reconnects after connection close)
+      // does not show a spurious "disconnected" badge.
+      var streamDone = false;
+
       sessionEventSource = new EventSource(
         '/api/spider/session-stream?sessionId=' + encodeURIComponent(engine.sessionId)
       );
@@ -562,6 +567,9 @@
       sessionEventSource.addEventListener('done', function (e) {
         var data;
         try { data = JSON.parse(e.data); } catch (err) { data = {}; }
+        // Mark stream as intentionally done before closing to prevent the
+        // onerror handler from showing a spurious "disconnected" badge.
+        streamDone = true;
         stopSessionStream();
         if (sessionLogSpinner) {
           sessionLogSpinner.style.display = 'none';
@@ -582,6 +590,7 @@
       });
 
       sessionEventSource.addEventListener('error', function (e) {
+        if (streamDone) return;
         var data;
         try { data = JSON.parse(/** @type {MessageEvent} */(e).data || '{}'); } catch (err) { data = {}; }
         if (sessionLogSpinner) {
@@ -594,6 +603,8 @@
 
       sessionEventSource.onerror = function () {
         // Network-level error (browser fires this on connection failure / premature close).
+        // Skip if the stream completed normally — the connection close is expected.
+        if (streamDone) return;
         if (sessionEventSource) {
           stopSessionStream();
           if (sessionLogSpinner && sessionLogSpinner.style.display !== 'none') {

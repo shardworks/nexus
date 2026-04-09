@@ -31,6 +31,7 @@ import type {
 } from './types.ts';
 
 import { sessionList, sessionShow, summon as summonTool, sessionCancel } from './tools/index.ts';
+import { animatorRoutes } from './oculus-routes.ts';
 
 // ── Session broadcast infrastructure ─────────────────────────────────
 
@@ -620,7 +621,7 @@ export function createAnimator(): Plugin {
   return {
     apparatus: {
       requires: ['stacks'],
-      recommends: ['loom'],
+      recommends: ['loom', 'oculus'],
 
       supportKit: {
         books: {
@@ -632,6 +633,10 @@ export function createAnimator(): Plugin {
           },
         },
         tools: [sessionList, sessionShow, summonTool, sessionCancel],
+        pages: [
+          { id: 'animator', title: 'Animator', dir: 'src/static' },
+        ],
+        routes: animatorRoutes,
       },
 
       provides: api,

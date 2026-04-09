@@ -232,9 +232,34 @@ interface SessionProviderResult {
 
 The Animator imports these types; provider packages import them from `@shardworks/animator-apparatus` and implement them.
 
+## Oculus Page
+
+The Animator contributes an **Animator** page to the Oculus dashboard (`id: 'animator'`) for viewing and managing sessions.
+
+### Session List
+
+- Displays sessions with status badge, role, writ title, cost (with token breakdown tooltip on hover), duration, and start time.
+- Filters: status dropdown, date range (from/to).
+- Auto-refreshes every 12 seconds.
+- Running sessions show a **Cancel** button.
+
+### Session Detail
+
+Click a session row to view full metadata, a real-time session log (SSE streaming for running sessions), and the full transcript.
+
+### Custom Routes
+
+Three API routes under `/api/animator/`:
+
+| Route | Description |
+|---|---|
+| `GET /api/animator/sessions` | Enriched session list with `role`, `writTitle` (resolved from Clerk), and `tokenUsage`. Supports `status`, `from`, `to`, `limit` query params. |
+| `GET /api/animator/session-transcript` | Returns `{ messages, sessionStatus }` for a session. |
+| `GET /api/animator/session-stream` | SSE stream — emits `chunk`, `transcript`, and `done` events. Handles completed sessions, running sessions with/without broadcaster. |
+
 ## Support Kit
 
-The Animator contributes two books and inspection/dispatch tools:
+The Animator contributes two books, inspection/dispatch tools, an Oculus page, and custom routes:
 
 ### Books
 

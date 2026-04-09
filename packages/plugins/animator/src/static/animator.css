@@ -1,0 +1,128 @@
+/* Animator page — page-specific styles */
+/* Uses CSS custom properties from the shared Oculus stylesheet */
+
+/* ── Toolbar ─────────────────────────────────────────────────────────── */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.toolbar select,
+.toolbar input[type="text"],
+.toolbar input[type="date"] {
+  background: var(--surface, #1a1a1a);
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  color: var(--text, #eee);
+  font-size: 13px;
+  padding: 5px 8px;
+}
+
+.toolbar label {
+  align-items: center;
+  color: var(--text-dim, #888);
+  display: flex;
+  font-size: 13px;
+  gap: 6px;
+}
+
+/* ── Empty state ─────────────────────────────────────────────────────── */
+
+.empty-state {
+  color: var(--text-dim, #888);
+  font-size: 14px;
+  padding: 24px 0;
+  text-align: center;
+}
+
+/* ── Session log textarea ────────────────────────────────────────────── */
+
+.session-log-textarea {
+  background: var(--bg, #0d0d0d);
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  color: var(--text, #eee);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  height: 300px;
+  margin-top: 8px;
+  padding: 10px;
+  resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* ── Cost cell with tooltip ──────────────────────────────────────────── */
+
+.cost-cell {
+  position: relative;
+  cursor: default;
+}
+
+.cost-tooltip {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface, #1a1a2e);
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  color: var(--text, #eee);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 6px 10px;
+  white-space: nowrap;
+  z-index: 10;
+  margin-bottom: 4px;
+  pointer-events: none;
+}
+
+.cost-cell:hover .cost-tooltip {
+  display: block;
+}
+
+/* ── Cancelled badge ─────────────────────────────────────────────────── */
+
+.badge--cancelled {
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
+/* ── Cancel button inline ────────────────────────────────────────────── */
+
+.cancel-btn {
+  background: none;
+  border: 1px solid var(--red, #f7768e);
+  border-radius: 4px;
+  color: var(--red, #f7768e);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 8px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.cancel-btn:hover {
+  background: var(--red, #f7768e);
+  color: var(--bg, #0d0d0d);
+}
+
+.cancel-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Session rows clickable ──────────────────────────────────────────── */
+
+#sessions-tbody tr {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+#sessions-tbody tr:hover {
+  background: var(--surface2, #2f3549);
+}

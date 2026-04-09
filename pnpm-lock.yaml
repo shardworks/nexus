@@ -55,6 +55,9 @@ importers:
 
   packages/plugins/animator:
     dependencies:
+      '@shardworks/clerk-apparatus':
+        specifier: workspace:*
+        version: link:../clerk
       '@shardworks/loom-apparatus':
         specifier: workspace:*
         version: link:../loom
@@ -67,6 +70,9 @@ importers:
       '@shardworks/tools-apparatus':
         specifier: workspace:*
         version: link:../tools
+      hono:
+        specifier: ^4.7.11
+        version: 4.12.9
       zod:
         specifier: 4.3.6
         version: 4.3.6

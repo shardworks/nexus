@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Animator</title>
+  <link rel="stylesheet" href="animator.css">
+</head>
+<body>
+<main style="padding: 24px;">
+  <h1>Animator</h1>
+
+  <!-- Session list view -->
+  <div id="list-view">
+    <div class="toolbar">
+      <select id="status-filter">
+        <option value="">All statuses</option>
+        <option value="running">running</option>
+        <option value="completed">completed</option>
+        <option value="failed">failed</option>
+        <option value="timeout">timeout</option>
+        <option value="cancelled">cancelled</option>
+      </select>
+      <label>From <input id="date-from" type="date"></label>
+      <label>To <input id="date-to" type="date"></label>
+      <button id="refresh-btn" class="btn btn--primary">Refresh</button>
+    </div>
+    <table class="data-table" id="sessions-table">
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Role</th>
+          <th>Writ</th>
+          <th>Cost</th>
+          <th>Duration</th>
+          <th>Started</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="sessions-tbody"></tbody>
+    </table>
+    <div id="sessions-empty" class="empty-state" style="display:none">No sessions found.</div>
+  </div>
+
+  <!-- Session detail view -->
+  <div id="detail-view" style="display:none">
+    <button id="back-btn" class="btn">&larr; Back to list</button>
+    <h2 id="detail-title"></h2>
+    <div class="card" style="margin-bottom:16px">
+      <table class="data-table" id="detail-meta"></table>
+    </div>
+    <div id="session-log-section">
+      <h3>Session Log <span id="session-log-spinner" class="badge badge--active" style="display:none">loading...</span></h3>
+      <textarea id="session-log" readonly class="session-log-textarea"></textarea>
+    </div>
+    <div id="transcript-section" style="margin-top:16px">
+      <h3>Transcript</h3>
+      <textarea id="transcript-area" readonly class="session-log-textarea"></textarea>
+    </div>
+  </div>
+</main>
+<script src="animator.js"></script>
+</body>
+</html>
