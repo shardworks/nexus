@@ -265,7 +265,7 @@ export function createToolServerApp(
           const body = await c.req.json();
           params = definition.params.parse(body);
         }
-        const result = await definition.handler(params);
+        const result = await definition.handler(params as Record<string, unknown>);
         return c.json(result as object);
       } catch (err) {
         if (err instanceof z.ZodError) {
