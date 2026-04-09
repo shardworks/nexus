@@ -116,6 +116,7 @@ function buildFixture(
   fire: (event: string, ...args: unknown[]) => Promise<void>;
   spiderFire: (event: string, ...args: unknown[]) => Promise<void>;
   summonCalls: SummonRequest[];
+  cancelCalls: Array<{ sessionId: string; options?: { reason?: string } }>;
   setSessionOutcome: (outcome: { status: 'completed' | 'failed'; error?: string; output?: string }) => void;
 } {
   const memBackend = new MemoryBackend();
@@ -210,6 +211,9 @@ function buildFixture(
   memBackend.ensureBook({ ownerId: 'spider', book: 'rigs' }, {
     indexes: ['status', 'writId', ['status', 'writId'], 'createdAt'],
   });
+  memBackend.ensureBook({ ownerId: 'spider', book: 'input-requests' }, {
+    indexes: ['status', 'rigId', 'engineId', 'createdAt', ['rigId', 'engineId', 'status']],
+  });
   memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, {
     indexes: ['startedAt', 'status'],
   });
@@ -220,6 +224,7 @@ function buildFixture(
   // no longer await handle.result — they return immediately with handle.sessionId.
   let currentSessionOutcome = initialSessionOutcome;
   const summonCalls: SummonRequest[] = [];
+  const cancelCalls: Array<{ sessionId: string; options?: { reason?: string } }> = [];
   const mockAnimatorApi: AnimatorApi = {
     summon(request: SummonRequest): AnimateHandle {
       summonCalls.push(request);
@@ -263,6 +268,24 @@ function buildFixture(
     animate(): AnimateHandle {
       throw new Error('animate() not used in Spider tests');
     },
+    subscribeToSession(): AsyncIterable<SessionChunk> | null {
+      return null;
+    },
+    async cancel(sessionId: string, options?: { reason?: string }): Promise<SessionDoc> {
+      cancelCalls.push({ sessionId, options });
+      const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+      const session = await sessBook.get(sessionId);
+      if (session) {
+        const now = new Date().toISOString();
+        await sessBook.patch(sessionId, {
+          status: 'cancelled',
+          endedAt: now,
+          ...(options?.reason ? { error: options.reason } : {}),
+        });
+        return { ...session, status: 'cancelled', endedAt: now };
+      }
+      return { id: sessionId, status: 'cancelled', startedAt: '', endedAt: '', durationMs: 0, provider: 'mock', exitCode: 1 } as SessionDoc;
+    },
   };
   apparatusMap.set('animator', mockAnimatorApi);
 
@@ -286,6 +309,7 @@ function buildFixture(
   return {
     stacks, clerk, fabricator, spider, memBackend, fire, spiderFire,
     summonCalls,
+    cancelCalls,
     setSessionOutcome(outcome: { status: 'completed' | 'failed'; error?: string; output?: string }) {
       currentSessionOutcome = outcome;
     },
@@ -3250,6 +3274,7 @@ describe('Spider — engine blocking on external conditions', () => {
 
     let currentSessionOutcome: { status: 'completed' | 'failed'; error?: string; output?: string } = { status: 'completed' };
     const summonCalls: SummonRequest[] = [];
+    const cancelCalls: Array<{ sessionId: string; options?: { reason?: string } }> = [];
     const mockAnimatorApi: AnimatorApi = {
       summon(request: SummonRequest): AnimateHandle {
         summonCalls.push(request);
@@ -3288,6 +3313,24 @@ describe('Spider — engine blocking on external conditions', () => {
       },
       animate(): AnimateHandle {
         throw new Error('animate() not used in Spider tests');
+      },
+      subscribeToSession(): AsyncIterable<SessionChunk> | null {
+        return null;
+      },
+      async cancel(sessionId: string, options?: { reason?: string }): Promise<SessionDoc> {
+        cancelCalls.push({ sessionId, options });
+        const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+        const session = await sessBook.get(sessionId);
+        if (session) {
+          const now = new Date().toISOString();
+          await sessBook.patch(sessionId, {
+            status: 'cancelled',
+            endedAt: now,
+            ...(options?.reason ? { error: options.reason } : {}),
+          });
+          return { ...session, status: 'cancelled', endedAt: now };
+        }
+        return { id: sessionId, status: 'cancelled', startedAt: '', endedAt: '', durationMs: 0, provider: 'mock', exitCode: 1 } as SessionDoc;
       },
     };
     apparatusMap.set('animator', mockAnimatorApi);
@@ -7947,5 +7990,404 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const engineB = rig.engines.find((e: EngineInstance) => e.id === 'B');
       assert.equal(engineB?.when, '${yields.A.go}', 'when field should be copied to engine instance');
     });
+  });
+});
+
+// ── Rig cancellation tests ──────────────────────────────────────────────
+
+describe('Spider — rig cancellation', () => {
+  let fix: ReturnType<typeof buildFixture>;
+
+  beforeEach(() => {
+    fix = buildFixture();
+  });
+
+  afterEach(() => {
+    clearGuild();
+  });
+
+  // Test 1: Cancel running rig — happy path
+  it('cancel running rig — happy path', async () => {
+    const { clerk, spider, stacks, cancelCalls } = fix;
+    await postWrit(clerk);
+    await spider.crawl(); // spawn
+
+    const book = rigsBook(stacks);
+    const [rig] = await book.list();
+
+    // Mark draft as completed so implement can launch
+    const updatedEngines = rig.engines.map((e: EngineInstance) =>
+      e.id === 'draft'
+        ? { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p' } }
+        : e,
+    );
+    await book.patch(rig.id, { engines: updatedEngines });
+
+    // Launch implement (creates session)
+    const startResult = await spider.crawl();
+    assert.equal(startResult?.action, 'engine-started');
+
+    const [rigAfterStart] = await book.list();
+    const implEngine = rigAfterStart.engines.find((e: EngineInstance) => e.id === 'implement');
+    assert.ok(implEngine?.sessionId, 'implement should have a sessionId');
+
+    // Insert a running session (override the auto-completed one)
+    const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+    await sessBook.patch(implEngine!.sessionId!, { status: 'running', endedAt: undefined });
+
+    // Cancel the rig
+    const cancelledRig = await spider.cancel(rig.id);
+
+    assert.equal(cancelledRig.status, 'cancelled', 'rig should be cancelled');
+
+    // Animator.cancel should have been called
+    assert.equal(cancelCalls.length, 1, 'should have called animator.cancel once');
+    assert.equal(cancelCalls[0].sessionId, implEngine!.sessionId);
+
+    // Check engine statuses
+    const impl = cancelledRig.engines.find((e: EngineInstance) => e.id === 'implement');
+    assert.equal(impl?.status, 'cancelled', 'implement should be cancelled');
+    assert.ok(impl?.completedAt, 'implement should have completedAt');
+
+    // Pending engines should be cancelled
+    for (const id of ['review', 'revise', 'seal']) {
+      const eng = cancelledRig.engines.find((e: EngineInstance) => e.id === id);
+      assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
+    }
+
+    // Completed engine should be unchanged
+    const draft = cancelledRig.engines.find((e: EngineInstance) => e.id === 'draft');
+    assert.equal(draft?.status, 'completed', 'draft should remain completed');
+  });
+
+  // Test 2: Cancel running rig with reason
+  it('cancel running rig with reason stores reason in error field', async () => {
+    const { clerk, spider, stacks } = fix;
+    await postWrit(clerk);
+    await spider.crawl(); // spawn
+
+    const book = rigsBook(stacks);
+    const [rig] = await book.list();
+
+    // Pre-complete draft, launch implement
+    const updatedEngines = rig.engines.map((e: EngineInstance) =>
+      e.id === 'draft'
+        ? { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p' } }
+        : e,
+    );
+    await book.patch(rig.id, { engines: updatedEngines });
+    await spider.crawl(); // engine-started
+
+    const [rigAfterStart] = await book.list();
+    const implEngine = rigAfterStart.engines.find((e: EngineInstance) => e.id === 'implement');
+    const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+    await sessBook.patch(implEngine!.sessionId!, { status: 'running', endedAt: undefined });
+
+    const cancelledRig = await spider.cancel(rig.id, { reason: 'No longer needed' });
+
+    const impl = cancelledRig.engines.find((e: EngineInstance) => e.id === 'implement');
+    assert.equal(impl?.error, 'No longer needed', 'reason should be in error field');
+  });
+
+  // Test 3: Cancel blocked rig
+  it('cancel blocked rig — blocked engine gets cancelled with block cleared', async () => {
+    const { stacks, spider, clerk } = fix;
+    const writ = await postWrit(clerk);
+    await clerk.transition(writ.id, 'active');
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const now = new Date().toISOString();
+    const blockRecord: BlockRecord = {
+      type: 'patron-input',
+      condition: { requestId: 'ir-123' },
+      blockedAt: now,
+    };
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'blocked',
+      engines: [
+        { id: 'eng-blocked', designId: 'dummy', status: 'blocked', upstream: [], givensSpec: {}, block: blockRecord },
+        { id: 'eng-pending', designId: 'dummy', status: 'pending', upstream: ['eng-blocked'], givensSpec: {} },
+      ],
+      createdAt: now,
+    });
+
+    const cancelledRig = await spider.cancel(rigId);
+
+    assert.equal(cancelledRig.status, 'cancelled');
+    const engBlocked = cancelledRig.engines.find((e: EngineInstance) => e.id === 'eng-blocked');
+    assert.equal(engBlocked?.status, 'cancelled', 'blocked engine should be cancelled');
+    assert.equal(engBlocked?.block, undefined, 'block should be cleared');
+    assert.ok(engBlocked?.completedAt, 'blocked engine should have completedAt');
+
+    const engPending = cancelledRig.engines.find((e: EngineInstance) => e.id === 'eng-pending');
+    assert.equal(engPending?.status, 'cancelled', 'pending engine should be cancelled');
+  });
+
+  // Test 4: Cancel blocked rig with pending input request
+  it('cancel rig rejects pending input requests', async () => {
+    const { stacks, spider, clerk } = fix;
+    const writ = await postWrit(clerk);
+    await clerk.transition(writ.id, 'active');
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const now = new Date().toISOString();
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'blocked',
+      engines: [
+        {
+          id: 'eng-blocked',
+          designId: 'dummy',
+          status: 'blocked',
+          upstream: [],
+          givensSpec: {},
+          block: { type: 'patron-input', condition: { requestId: 'ir-test' }, blockedAt: now },
+        },
+      ],
+      createdAt: now,
+    });
+
+    // Create pending input request
+    const irBook = stacks.book<InputRequestDoc>('spider', 'input-requests');
+    await irBook.put({
+      id: 'ir-test',
+      rigId,
+      engineId: 'eng-blocked',
+      status: 'pending',
+      questions: { q1: { type: 'boolean', label: 'Continue?' } },
+      answers: {},
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await spider.cancel(rigId);
+
+    const updatedIr = await irBook.get('ir-test');
+    assert.equal(updatedIr?.status, 'rejected', 'input request should be rejected');
+    assert.equal(updatedIr?.rejectionReason, 'Rig cancelled', 'rejection reason should be set');
+  });
+
+  // Test 5: Cancel idempotent on terminal rig (completed)
+  it('cancel is idempotent on completed rig', async () => {
+    const { stacks, spider, clerk } = fix;
+    const writ = await postWrit(clerk);
+    await clerk.transition(writ.id, 'active');
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const now = new Date().toISOString();
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'completed',
+      engines: [
+        { id: 'eng1', designId: 'dummy', status: 'completed', upstream: [], givensSpec: {}, yields: {}, completedAt: now },
+      ],
+      createdAt: now,
+    });
+
+    const result = await spider.cancel(rigId);
+    assert.equal(result.status, 'completed', 'should return rig unchanged');
+  });
+
+  // Test 6: Cancel idempotent on already-cancelled rig
+  it('cancel is idempotent on already-cancelled rig', async () => {
+    const { stacks, spider, clerk } = fix;
+    const writ = await postWrit(clerk);
+    await clerk.transition(writ.id, 'active');
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const now = new Date().toISOString();
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'cancelled',
+      engines: [
+        { id: 'eng1', designId: 'dummy', status: 'cancelled', upstream: [], givensSpec: {} },
+      ],
+      createdAt: now,
+    });
+
+    const result = await spider.cancel(rigId);
+    assert.equal(result.status, 'cancelled', 'should return rig unchanged');
+  });
+
+  // Test 7: Cancel non-existent rig throws
+  it('cancel non-existent rig throws', async () => {
+    const { spider } = fix;
+    await assert.rejects(
+      () => spider.cancel('rig-nonexistent'),
+      /not found/i,
+    );
+  });
+
+  // Test 8: tryCollect detects cancelled session
+  it('tryCollect detects cancelled session → rig-completed cancelled', async () => {
+    const { stacks, spider, clerk } = fix;
+    const writ = await postWrit(clerk);
+    await clerk.transition(writ.id, 'active');
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const now = new Date().toISOString();
+    const fakeSessionId = generateId('ses', 4);
+
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'running',
+      engines: [
+        { id: 'eng-running', designId: 'dummy', status: 'running', upstream: [], givensSpec: {}, sessionId: fakeSessionId, startedAt: now },
+        { id: 'eng-pending', designId: 'dummy', status: 'pending', upstream: ['eng-running'], givensSpec: {} },
+      ],
+      createdAt: now,
+    });
+
+    // Insert a cancelled session
+    const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+    await sessBook.put({
+      id: fakeSessionId,
+      status: 'cancelled',
+      startedAt: now,
+      endedAt: now,
+      durationMs: 0,
+      provider: 'test',
+      exitCode: 1,
+      error: 'User cancelled',
+      metadata: {},
+    });
+
+    const result = await spider.crawl();
+
+    assert.ok(result !== null, 'crawl should return a result');
+    assert.equal(result!.action, 'rig-completed');
+    assert.equal((result as { outcome: string }).outcome, 'cancelled');
+
+    const updatedRig = await book.get(rigId);
+    assert.equal(updatedRig?.status, 'cancelled');
+    const engRunning = updatedRig?.engines.find((e: EngineInstance) => e.id === 'eng-running');
+    assert.equal(engRunning?.status, 'cancelled', 'running engine should be cancelled');
+    assert.equal(engRunning?.error, 'User cancelled', 'error from session should be preserved');
+    const engPending = updatedRig?.engines.find((e: EngineInstance) => e.id === 'eng-pending');
+    assert.equal(engPending?.status, 'cancelled', 'pending engine should be cancelled');
+  });
+
+  // Test 9: tryCollect cancelled session rejects input requests
+  it('tryCollect cancelled session rejects pending input requests', async () => {
+    const { stacks, spider, clerk } = fix;
+    const writ = await postWrit(clerk);
+    await clerk.transition(writ.id, 'active');
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const now = new Date().toISOString();
+    const fakeSessionId = generateId('ses', 4);
+
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'running',
+      engines: [
+        { id: 'eng-running', designId: 'dummy', status: 'running', upstream: [], givensSpec: {}, sessionId: fakeSessionId, startedAt: now },
+        {
+          id: 'eng-blocked',
+          designId: 'dummy',
+          status: 'blocked',
+          upstream: [],
+          givensSpec: {},
+          block: { type: 'patron-input', condition: { requestId: 'ir-x' }, blockedAt: now },
+        },
+      ],
+      createdAt: now,
+    });
+
+    // Create pending input request
+    const irBook = stacks.book<InputRequestDoc>('spider', 'input-requests');
+    await irBook.put({
+      id: 'ir-x',
+      rigId,
+      engineId: 'eng-blocked',
+      status: 'pending',
+      questions: { q1: { type: 'text', label: 'Describe' } },
+      answers: {},
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Insert a cancelled session
+    const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+    await sessBook.put({
+      id: fakeSessionId,
+      status: 'cancelled',
+      startedAt: now,
+      endedAt: now,
+      durationMs: 0,
+      provider: 'test',
+      exitCode: 1,
+      metadata: {},
+    });
+
+    await spider.crawl();
+
+    const updatedIr = await irBook.get('ir-x');
+    assert.equal(updatedIr?.status, 'rejected', 'input request should be rejected');
+    assert.equal(updatedIr?.rejectionReason, 'Rig cancelled');
+  });
+
+  // Test 10: CDC handler transitions writ to cancelled
+  it('CDC handler transitions writ to cancelled with error reason', async () => {
+    const { stacks, spider, clerk } = fix;
+    const writ = await postWrit(clerk);
+    await clerk.transition(writ.id, 'active');
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const now = new Date().toISOString();
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'running',
+      engines: [
+        { id: 'eng1', designId: 'dummy', status: 'cancelled', upstream: [], givensSpec: {}, error: 'User requested stop', completedAt: now },
+      ],
+      createdAt: now,
+    });
+
+    // Patch to cancelled triggers CDC
+    await book.patch(rigId, { status: 'cancelled' });
+
+    const updatedWrit = await clerk.show(writ.id);
+    assert.equal(updatedWrit.status, 'cancelled', 'writ should transition to cancelled');
+  });
+
+  // Test 11: CDC handler cancelled without error message uses fallback
+  it('CDC handler cancelled without engine error uses "Rig cancelled" fallback', async () => {
+    const { stacks, spider, clerk } = fix;
+    const writ = await postWrit(clerk);
+    await clerk.transition(writ.id, 'active');
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const now = new Date().toISOString();
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'running',
+      engines: [
+        { id: 'eng1', designId: 'dummy', status: 'cancelled', upstream: [], givensSpec: {}, completedAt: now },
+      ],
+      createdAt: now,
+    });
+
+    await book.patch(rigId, { status: 'cancelled' });
+
+    const updatedWrit = await clerk.show(writ.id);
+    assert.equal(updatedWrit.status, 'cancelled', 'writ should transition to cancelled');
   });
 });

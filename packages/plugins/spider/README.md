@@ -49,7 +49,7 @@ CrawlResult variants:
 | `'engine-unblocked'` | A blocked engine's condition cleared |
 | `'engine-skipped'` | Engine (and any downstream-only dependents) was skipped due to `when` condition |
 | `'engine-grafted'` | Engine injected additional engines into the pipeline |
-| `'rig-completed'` | Rig reached terminal state (completed or failed) |
+| `'rig-completed'` | Rig reached terminal state (completed, failed, or cancelled) |
 | `'rig-blocked'` | All forward progress stalled; rig entered blocked status |
 
 ### `show(id): Promise<RigDoc>`
@@ -71,6 +71,22 @@ Find the rig for a given writ. Returns `null` if no rig exists.
 ### `resume(rigId, engineId): Promise<void>`
 
 Manually clear a block on a specific engine, bypassing the block type's checker. Throws if the engine is not currently blocked.
+
+### `cancel(rigId, options?): Promise<RigDoc>`
+
+Cancel a running or blocked rig. The cancellation cascade:
+
+1. If the active engine has a session, calls `AnimatorApi.cancel()` to kill it.
+2. Marks the active engine (running or blocked) as `'cancelled'`.
+3. Marks all pending/blocked downstream engines as `'cancelled'`.
+4. Rejects any pending `InputRequestDoc` entries for the rig.
+5. Transitions the rig to `'cancelled'` status, which triggers the CDC handler to transition the writ to `'cancelled'`.
+
+Idempotent: returns the rig unchanged if already in a terminal state (`'completed'`, `'failed'`, or `'cancelled'`). Throws if the rig is not found.
+
+```typescript
+const rig = await spider.cancel('rig-abc', { reason: 'No longer needed' });
+```
 
 ### `getBlockType(id): BlockType | undefined`
 
@@ -248,6 +264,7 @@ The Spider contributes books and tools for rig inspection and control.
 | `rig-list` | `read` | List rigs with optional status/limit filters |
 | `rig-show` | `read` | Show full detail for a rig by id |
 | `rig-resume` | `write` | Manually clear a block on a specific engine |
+| `rig-cancel` | `write` | Cancel a running or blocked rig |
 | `crawl` | `write` | Execute a single crawl step |
 | `crawl-continual` | `write` | Poll `crawl()` in a loop until no work remains |
 

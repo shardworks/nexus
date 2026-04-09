@@ -23,7 +23,7 @@ import { guild, generateId } from '@shardworks/nexus-core';
 import type { StacksApi, Book, ReadOnlyBook, WhereClause } from '@shardworks/stacks-apparatus';
 import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import type { FabricatorApi } from '@shardworks/fabricator-apparatus';
-import type { SessionDoc } from '@shardworks/animator-apparatus';
+import type { SessionDoc, AnimatorApi } from '@shardworks/animator-apparatus';
 
 import type {
   RigDoc,
@@ -40,6 +40,7 @@ import type {
   RigTemplateEngine,
   RigTemplateInfo,
   SpiderCollectResult,
+  InputRequestDoc,
 } from './types.ts';
 
 import {
@@ -74,6 +75,7 @@ import {
   inputRequestImportTool,
   engineDesignsTool,
   blockTypesTool,
+  rigCancelTool,
 } from './tools/index.ts';
 
 import { spiderRoutes } from './oculus-routes.ts';
@@ -1171,10 +1173,12 @@ class RigTemplateRegistry {
 
 export function createSpider(): Plugin {
   let rigsBook: Book<RigDoc>;
+  let inputRequestsBook: Book<InputRequestDoc>;
   let sessionsBook: ReadOnlyBook<SessionDoc>;
   let writsBook: ReadOnlyBook<WritDoc>;
   let clerk: ClerkApi;
   let fabricator: FabricatorApi;
+  let animator: AnimatorApi;
   let spiderConfig: SpiderConfig = {};
 
   const blockTypeRegistry = new BlockTypeRegistry();
@@ -1223,6 +1227,49 @@ export function createSpider(): Plugin {
   }
 
   /**
+   * Mark an engine cancelled and propagate cancellation to the rig (same update).
+   * Cancels all pending and blocked engines. Does NOT call Animator.cancel() —
+   * that is the caller's responsibility.
+   */
+  async function cancelEngine(
+    rig: RigDoc,
+    engineId: string,
+    reason?: string,
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    const updatedEngines = rig.engines.map((e) => {
+      if (e.id === engineId) {
+        return { ...e, status: 'cancelled' as const, error: reason ?? undefined, completedAt: now, block: undefined };
+      }
+      if (e.status === 'pending' || e.status === 'blocked') {
+        return { ...e, status: 'cancelled' as const, block: undefined };
+      }
+      return e;
+    });
+    await rigsBook.patch(rig.id, {
+      engines: updatedEngines,
+      status: 'cancelled',
+    });
+  }
+
+  /**
+   * Reject all pending input requests for a rig.
+   */
+  async function rejectPendingInputRequests(rigId: string): Promise<void> {
+    const pendingRequests = await inputRequestsBook.find({
+      where: [['rigId', '=', rigId], ['status', '=', 'pending']],
+    });
+    const now = new Date().toISOString();
+    for (const req of pendingRequests) {
+      await inputRequestsBook.patch(req.id, {
+        status: 'rejected',
+        rejectionReason: 'Rig cancelled',
+        updatedAt: now,
+      });
+    }
+  }
+
+  /**
    * Phase 1 — collect.
    *
    * Find the first running engine with a sessionId whose session has
@@ -1247,6 +1294,12 @@ export function createSpider(): Plugin {
         if (session.status === 'failed' || session.status === 'timeout') {
           await failEngine(rig, engine.id, session.error ?? `Session ${session.status}`);
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+        }
+
+        if (session.status === 'cancelled') {
+          await cancelEngine(rig, engine.id, session.error ?? 'Session cancelled');
+          await rejectPendingInputRequests(rig.id);
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'cancelled' };
         }
 
         // Completed session — assemble yields via engine's collect() or generic default.
@@ -1788,6 +1841,65 @@ export function createSpider(): Plugin {
       });
     },
 
+    async cancel(rigId: string, options?: { reason?: string }): Promise<RigDoc> {
+      const rig = await api.show(rigId); // Throws if not found
+
+      // Idempotent for terminal rigs
+      if (rig.status === 'completed' || rig.status === 'failed' || rig.status === 'cancelled') {
+        return rig;
+      }
+
+      // Find the active engine to cancel
+      let targetEngineId: string | undefined;
+
+      // 1. Running engine with sessionId — cancel the session first
+      const runningWithSession = rig.engines.find(
+        (e) => e.status === 'running' && e.sessionId,
+      );
+      if (runningWithSession) {
+        targetEngineId = runningWithSession.id;
+        try {
+          await animator.cancel(runningWithSession.sessionId!, { reason: options?.reason });
+        } catch (err) {
+          // Best-effort — log but don't propagate
+          console.error('[spider] Failed to cancel animator session:', err);
+        }
+      }
+
+      // 2. Running engine without sessionId
+      if (!targetEngineId) {
+        const runningNoSession = rig.engines.find((e) => e.status === 'running');
+        if (runningNoSession) targetEngineId = runningNoSession.id;
+      }
+
+      // 3. Blocked engine
+      if (!targetEngineId) {
+        const blockedEngine = rig.engines.find((e) => e.status === 'blocked');
+        if (blockedEngine) targetEngineId = blockedEngine.id;
+      }
+
+      // Fallback: use first non-terminal engine
+      if (!targetEngineId) {
+        const pending = rig.engines.find(
+          (e) => e.status === 'pending',
+        );
+        if (pending) targetEngineId = pending.id;
+      }
+
+      if (targetEngineId) {
+        await cancelEngine(rig, targetEngineId, options?.reason);
+      } else {
+        // No active engines — just mark rig cancelled
+        await rigsBook.patch(rig.id, { status: 'cancelled' });
+      }
+
+      // Reject pending input requests
+      await rejectPendingInputRequests(rig.id);
+
+      // Re-fetch and return the updated rig
+      return api.show(rigId);
+    },
+
     getBlockType(id: string): BlockType | undefined {
       return blockTypeRegistry.get(id);
     },
@@ -1857,6 +1969,7 @@ export function createSpider(): Plugin {
           inputRequestImportTool,
           engineDesignsTool,
           blockTypesTool,
+          rigCancelTool,
         ],
       },
 
@@ -1869,6 +1982,7 @@ export function createSpider(): Plugin {
         const stacks = g.apparatus<StacksApi>('stacks');
         clerk = g.apparatus<ClerkApi>('clerk');
         fabricator = g.apparatus<FabricatorApi>('fabricator');
+        animator = g.apparatus<AnimatorApi>('animator');
 
         // 1. Build designId → pluginId map from all engine contributions
         rigTemplateRegistry.buildDesignSourceMap(ctx.kits('engines'));
@@ -1903,6 +2017,7 @@ export function createSpider(): Plugin {
         rigTemplateRegistry.validateDeferredMappings();
 
         rigsBook = stacks.book<RigDoc>('spider', 'rigs');
+        inputRequestsBook = stacks.book<InputRequestDoc>('spider', 'input-requests');
         sessionsBook = stacks.readBook<SessionDoc>('animator', 'sessions');
         writsBook = stacks.readBook<WritDoc>('clerk', 'writs');
 
@@ -1958,8 +2073,12 @@ export function createSpider(): Plugin {
               const failedEngine = rig.engines.find((e) => e.status === 'failed');
               const resolution = failedEngine?.error ?? 'Engine failure';
               await clerk.transition(rig.writId, 'failed', { resolution });
+            } else if (rig.status === 'cancelled') {
+              const cancelledEngine = rig.engines.find((e) => e.status === 'cancelled' && e.error);
+              const resolution = cancelledEngine?.error ?? 'Rig cancelled';
+              await clerk.transition(rig.writId, 'cancelled', { resolution });
             }
-            // 'blocked' status — no CDC action, writ stays in current state
+            // 'blocked' and 'cancelled' (handled above) — no further CDC action
           },
           { failOnError: true },
         );

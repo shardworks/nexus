@@ -27,8 +27,8 @@
       case 'running':   return 'badge--active';
       case 'failed':    return 'badge--error';
       case 'blocked':   return 'badge--warning';
+      case 'cancelled': return 'badge--cancelled';
       case 'pending':
-      case 'cancelled':
       default:          return '';
     }
   }
@@ -381,7 +381,25 @@
     title.textContent = 'Engine: ' + engine.id;
     panel.style.display = '';
 
-    var html = '<dl class="engine-detail-field">';
+    // Cancel button — shown when rig is running/blocked OR engine is running with sessionId
+    var showCancel = false;
+    if (currentRig && (currentRig.status === 'running' || currentRig.status === 'blocked')) {
+      showCancel = true;
+    }
+    if (engine.status === 'running' && engine.sessionId) {
+      showCancel = true;
+    }
+    // Hide if rig is already terminal
+    if (currentRig && (currentRig.status === 'completed' || currentRig.status === 'failed' || currentRig.status === 'cancelled')) {
+      showCancel = false;
+    }
+
+    var html = '';
+    if (showCancel) {
+      html += '<button class="btn btn--danger" id="cancel-engine-btn">Cancel Rig</button>';
+    }
+
+    html += '<dl class="engine-detail-field">';
 
     html += '<dt>Status</dt><dd>' + badgeHtml(engine.status) + '</dd>';
     html += '<dt>Design ID</dt><dd>' + esc(engine.designId) + '</dd>';
@@ -431,6 +449,36 @@
     }
 
     body.innerHTML = html;
+
+    // Wire cancel button handler
+    var cancelBtn = document.getElementById('cancel-engine-btn');
+    if (cancelBtn && currentRig) {
+      cancelBtn.addEventListener('click', function () {
+        cancelBtn.disabled = true;
+        cancelBtn.textContent = 'Cancelling\u2026';
+        fetch('/api/rig/cancel', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rigId: currentRig.id }),
+        })
+          .then(function (r) {
+            if (!r.ok) throw new Error('Cancel failed: ' + r.status);
+            return fetch('/api/rig/show?id=' + encodeURIComponent(currentRig.id));
+          })
+          .then(function (r) { return r.json(); })
+          .then(function (rig) {
+            currentRig = rig;
+            renderPipeline(currentRig);
+            var updatedEngine = currentRig.engines.find(function (e) { return e.id === engine.id; });
+            if (updatedEngine) showEngineDetail(updatedEngine);
+          })
+          .catch(function (err) {
+            cancelBtn.disabled = false;
+            cancelBtn.textContent = 'Cancel Rig';
+            console.error('[spider] cancel error:', err);
+          });
+      });
+    }
 
     // Session costs (completed engines with sessionId)
     if (engine.sessionId && engine.status === 'completed') {

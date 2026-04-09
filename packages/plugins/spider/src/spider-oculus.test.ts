@@ -56,6 +56,7 @@ function makeGuild(opts: {
     list: async () => [],
     forWrit: async () => null,
     resume: async () => {},
+    cancel: async () => { throw new Error('not implemented'); },
     getBlockType: () => undefined,
     listBlockTypes: () => blockTypes,
     listTemplates: () => templates,
@@ -228,9 +229,9 @@ describe('block-types tool', () => {
 describe('GET /api/spider/config route', () => {
   afterEach(() => clearGuild());
 
-  it('spiderRoutes exports an array with three routes', () => {
+  it('spiderRoutes exports an array with four routes', () => {
     assert.ok(Array.isArray(spiderRoutes));
-    assert.equal(spiderRoutes.length, 3);
+    assert.equal(spiderRoutes.length, 4);
   });
 
   it('first route has method GET and path /api/spider/config', () => {

@@ -161,4 +161,24 @@ export const spiderRoutes = [
       });
     },
   },
+  {
+    method: 'DELETE',
+    path: '/api/rig/cancel',
+    handler: async (c: Context) => {
+      const body = await c.req.json();
+      const rigId = body?.rigId;
+      if (!rigId || typeof rigId !== 'string') {
+        return c.json({ error: 'rigId is required' }, 400);
+      }
+      const g = guild();
+      const spider = g.apparatus<SpiderApi>('spider');
+      try {
+        const rig = await spider.cancel(rigId, body.reason ? { reason: body.reason } : undefined);
+        return c.json(rig);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return c.json({ error: message }, 404);
+      }
+    },
+  },
 ];

@@ -258,3 +258,10 @@ details.collapsible pre {
   animation: pulse 2s infinite;
   font-style: italic;
 }
+
+/* ── Cancelled badge ───────────────────────────────────────────────── */
+
+.badge--cancelled {
+  opacity: 0.6;
+  text-decoration: line-through;
+}

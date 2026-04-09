@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const spiderJs = readFileSync(resolve(__dirname, 'spider.js'), 'utf-8');
+const spiderCss = readFileSync(resolve(__dirname, 'spider.css'), 'utf-8');
+const indexHtml = readFileSync(resolve(__dirname, 'index.html'), 'utf-8');
 
 // ── Rig list row structure ──────────────────────────────────────────────
 
@@ -66,5 +68,110 @@ describe('spider.js rig list row HTML', () => {
       plainTitlePattern,
       'writ-title cell must not be rendered as plain (non-linked) text',
     );
+  });
+});
+
+// ── Cancellation UI ──────────────────────────────────────────────────────
+
+describe('spider.js cancel button', () => {
+  it('renders a cancel button with id "cancel-engine-btn"', () => {
+    assert.match(
+      spiderJs,
+      /id="cancel-engine-btn"/,
+      'should contain a cancel button element',
+    );
+  });
+
+  it('cancel button has btn--danger class', () => {
+    assert.match(
+      spiderJs,
+      /class="btn btn--danger" id="cancel-engine-btn"/,
+      'cancel button should have btn--danger class',
+    );
+  });
+
+  it('cancel button sends DELETE to /api/rig/cancel', () => {
+    assert.match(
+      spiderJs,
+      /\/api\/rig\/cancel/,
+      'should call the cancel API endpoint',
+    );
+  });
+
+  it('cancel button is conditional on rig status running or blocked', () => {
+    assert.match(
+      spiderJs,
+      /currentRig\.status === 'running' \|\| currentRig\.status === 'blocked'/,
+      'showCancel should check for running or blocked rig status',
+    );
+  });
+
+  it('cancel button is hidden for terminal rig statuses', () => {
+    assert.match(
+      spiderJs,
+      /currentRig\.status === 'cancelled'/,
+      'should check for cancelled status to hide button',
+    );
+  });
+});
+
+describe('spider.js badgeClass for cancelled', () => {
+  it('badgeClass returns "badge--cancelled" for cancelled status', () => {
+    assert.match(
+      spiderJs,
+      /case 'cancelled':\s*return 'badge--cancelled'/,
+      'badgeClass should return badge--cancelled for cancelled status',
+    );
+  });
+
+  it('cancelled is not grouped with pending in badgeClass', () => {
+    // Ensure cancelled has its own case, not falling through with pending
+    assert.doesNotMatch(
+      spiderJs,
+      /case 'pending':\s*case 'cancelled'/,
+      'cancelled should not fall through with pending',
+    );
+  });
+});
+
+describe('spider.css cancelled badge styling', () => {
+  it('contains .badge--cancelled rule', () => {
+    assert.match(
+      spiderCss,
+      /\.badge--cancelled/,
+      'spider.css should contain .badge--cancelled rule',
+    );
+  });
+
+  it('.badge--cancelled has text-decoration: line-through', () => {
+    assert.match(
+      spiderCss,
+      /\.badge--cancelled[\s\S]*?text-decoration:\s*line-through/,
+      'badge--cancelled should have line-through text decoration',
+    );
+  });
+
+  it('.badge--cancelled has opacity', () => {
+    assert.match(
+      spiderCss,
+      /\.badge--cancelled[\s\S]*?opacity:\s*0\.6/,
+      'badge--cancelled should have reduced opacity',
+    );
+  });
+});
+
+describe('index.html status filter includes cancelled', () => {
+  it('status filter has cancelled option', () => {
+    assert.match(
+      indexHtml,
+      /<option value="cancelled">cancelled<\/option>/,
+      'status filter should include cancelled option',
+    );
+  });
+
+  it('cancelled option appears after blocked', () => {
+    const blockedIdx = indexHtml.indexOf('<option value="blocked">');
+    const cancelledIdx = indexHtml.indexOf('<option value="cancelled">');
+    assert.ok(cancelledIdx > blockedIdx, 'cancelled option should appear after blocked');
   });
 });

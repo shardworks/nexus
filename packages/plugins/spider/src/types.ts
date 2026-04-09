@@ -81,7 +81,7 @@ export interface EngineInstance {
 
 // ── Rig ──────────────────────────────────────────────────────────────
 
-export type RigStatus = 'running' | 'completed' | 'failed' | 'blocked';
+export type RigStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked';
 
 /**
  * A rig — the execution context for a single writ.
@@ -204,7 +204,7 @@ export type CrawlResult =
   | { action: 'engine-skipped'; rigId: string; engineId: string; cascadeSkipped?: string[] }
   | { action: 'engine-grafted'; rigId: string; engineId: string; graftedEngineIds: string[] }
   | { action: 'rig-spawned'; rigId: string; writId: string }
-  | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'failed' }
+  | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'failed' | 'cancelled' }
   | { action: 'rig-blocked'; rigId: string; writId: string };
 
 // ── Block type ────────────────────────────────────────────────────────
@@ -303,6 +303,16 @@ export interface SpiderApi {
    * Throws if the engine is not blocked.
    */
   resume(rigId: string, engineId: string): Promise<void>;
+
+  /**
+   * Cancel a running or blocked rig. Cancels the active session (if any),
+   * marks all non-terminal engines as cancelled, rejects pending input
+   * requests, and transitions the rig to cancelled status.
+   *
+   * Idempotent: returns the rig unchanged if it is already in a terminal state.
+   * Throws if the rig is not found.
+   */
+  cancel(rigId: string, options?: { reason?: string }): Promise<RigDoc>;
 
   /**
    * Look up a registered block type by ID.

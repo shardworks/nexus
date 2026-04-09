@@ -13,3 +13,4 @@ export { default as inputRequestExportTool } from './input-request-export.ts';
 export { default as inputRequestImportTool } from './input-request-import.ts';
 export { default as engineDesignsTool } from './engine-designs.ts';
 export { default as blockTypesTool } from './block-types.ts';
+export { default as rigCancelTool } from './rig-cancel.ts';

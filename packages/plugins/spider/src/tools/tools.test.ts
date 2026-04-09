@@ -16,6 +16,8 @@ import type { SpiderApi, SpiderConfig, CrawlResult } from '../types.ts';
 
 import crawlOneTool from './crawl-one.ts';
 import crawlContinualTool from './crawl-continual.ts';
+import rigCancelTool from './rig-cancel.ts';
+import type { RigDoc } from '../types.ts';
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -30,6 +32,7 @@ function makeGuild(
     list: async () => [],
     forWrit: async () => null,
     resume: async () => {},
+    cancel: async () => ({ id: 'rig-1', writId: 'writ-1', status: 'cancelled', engines: [], createdAt: '' } as RigDoc),
     getBlockType: () => undefined,
     listBlockTypes: () => [],
     listTemplates: () => [],
@@ -435,5 +438,113 @@ describe('crawl-continual — poll interval configuration', () => {
     const elapsed = Date.now() - start;
 
     assert.ok(elapsed < 500, `expected fast completion with config pollIntervalMs:0, took ${elapsed}ms`);
+  });
+});
+
+// ── rig-cancel ────────────────────────────────────────────────────────────
+
+describe('rig-cancel tool', () => {
+  afterEach(() => clearGuild());
+
+  it('has name "rig-cancel"', () => {
+    assert.equal(rigCancelTool.name, 'rig-cancel');
+  });
+
+  it('requires spider:write permission', () => {
+    assert.equal(rigCancelTool.permission, 'spider:write');
+  });
+
+  it('params schema has required rigId and optional reason', () => {
+    const parsed = rigCancelTool.params.parse({ rigId: 'rig-123' });
+    assert.equal(parsed.rigId, 'rig-123');
+    assert.equal(parsed.reason, undefined);
+
+    const parsedWithReason = rigCancelTool.params.parse({ rigId: 'rig-456', reason: 'No longer needed' });
+    assert.equal(parsedWithReason.rigId, 'rig-456');
+    assert.equal(parsedWithReason.reason, 'No longer needed');
+  });
+
+  it('handler delegates to SpiderApi.cancel()', async () => {
+    let cancelCalledWith: { rigId: string; options?: { reason?: string } } | null = null;
+    const cancelledRig = { id: 'rig-1', writId: 'writ-1', status: 'cancelled', engines: [], createdAt: '' } as RigDoc;
+
+    const mockSpider: SpiderApi = {
+      crawl: async () => null,
+      show: async () => { throw new Error('not implemented'); },
+      list: async () => [],
+      forWrit: async () => null,
+      resume: async () => {},
+      cancel: async (rigId, options) => {
+        cancelCalledWith = { rigId, options };
+        return cancelledRig;
+      },
+      getBlockType: () => undefined,
+      listBlockTypes: () => [],
+      listTemplates: () => [],
+      listTemplateMappings: () => ({}),
+    };
+
+    const fakeGuild = {
+      home: '/tmp/test-guild',
+      apparatus<T>(name: string): T {
+        if (name === 'spider') return mockSpider as unknown as T;
+        throw new Error(`Apparatus "${name}" not found`);
+      },
+      config<T>(): T { return {} as T; },
+      writeConfig() {},
+      guildConfig() { return { name: 'test-guild', nexus: '0.0.0', plugins: [] }; },
+      kits() { return []; },
+      apparatuses() { return []; },
+      startupWarnings() { return []; },
+    };
+
+    setGuild(fakeGuild as any);
+
+    const result = await rigCancelTool.handler({ rigId: 'rig-1', reason: 'Test reason' });
+    assert.deepEqual(result, cancelledRig);
+    assert.ok(cancelCalledWith !== null, 'cancel should have been called');
+    assert.equal(cancelCalledWith!.rigId, 'rig-1');
+    assert.deepEqual(cancelCalledWith!.options, { reason: 'Test reason' });
+  });
+
+  it('handler omits options when reason is not provided', async () => {
+    let cancelCalledWith: { rigId: string; options?: { reason?: string } } | null = null;
+    const cancelledRig = { id: 'rig-2', writId: 'writ-2', status: 'cancelled', engines: [], createdAt: '' } as RigDoc;
+
+    const mockSpider: SpiderApi = {
+      crawl: async () => null,
+      show: async () => { throw new Error('not implemented'); },
+      list: async () => [],
+      forWrit: async () => null,
+      resume: async () => {},
+      cancel: async (rigId, options) => {
+        cancelCalledWith = { rigId, options };
+        return cancelledRig;
+      },
+      getBlockType: () => undefined,
+      listBlockTypes: () => [],
+      listTemplates: () => [],
+      listTemplateMappings: () => ({}),
+    };
+
+    const fakeGuild = {
+      home: '/tmp/test-guild',
+      apparatus<T>(name: string): T {
+        if (name === 'spider') return mockSpider as unknown as T;
+        throw new Error(`Apparatus "${name}" not found`);
+      },
+      config<T>(): T { return {} as T; },
+      writeConfig() {},
+      guildConfig() { return { name: 'test-guild', nexus: '0.0.0', plugins: [] }; },
+      kits() { return []; },
+      apparatuses() { return []; },
+      startupWarnings() { return []; },
+    };
+
+    setGuild(fakeGuild as any);
+
+    await rigCancelTool.handler({ rigId: 'rig-2' });
+    assert.ok(cancelCalledWith !== null);
+    assert.equal(cancelCalledWith!.options, undefined);
   });
 });
