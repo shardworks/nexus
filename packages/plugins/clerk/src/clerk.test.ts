@@ -1595,21 +1595,23 @@ describe('writ-types tool', () => {
   it('returns builtin type with default config', async () => {
     const plugin = setupCore();
     const writTypesTool = getWritTypesTool(plugin);
-    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; default: boolean }>;
+    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; source: string; isDefault: boolean }>;
     const mandate = result.find(t => t.name === 'mandate');
     assert.ok(mandate, 'mandate should be in result');
     assert.equal(mandate.description, null);
-    assert.equal(mandate.default, true);
+    assert.equal(mandate.isDefault, true);
+    assert.equal(mandate.source, 'builtin');
   });
 
   it('returns config-declared types with description', async () => {
     const plugin = setupCore({ clerkConfig: { writTypes: [{ name: 'task', description: 'A task' }] } });
     const writTypesTool = getWritTypesTool(plugin);
-    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; default: boolean }>;
+    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; source: string; isDefault: boolean }>;
     const task = result.find(t => t.name === 'task');
     assert.ok(task, 'task should be in result');
     assert.equal(task.description, 'A task');
-    assert.equal(task.default, false);
+    assert.equal(task.isDefault, false);
+    assert.equal(task.source, 'guild');
     // mandate should still be there
     assert.ok(result.find(t => t.name === 'mandate'), 'mandate should still appear');
   });
@@ -1617,13 +1619,13 @@ describe('writ-types tool', () => {
   it('marks configured defaultType as default', async () => {
     const plugin = setupCore({ clerkConfig: { writTypes: [{ name: 'task' }], defaultType: 'task' } });
     const writTypesTool = getWritTypesTool(plugin);
-    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; default: boolean }>;
+    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; source: string; isDefault: boolean }>;
     const task = result.find(t => t.name === 'task');
     const mandate = result.find(t => t.name === 'mandate');
     assert.ok(task, 'task should be in result');
-    assert.equal(task.default, true);
+    assert.equal(task.isDefault, true);
     assert.ok(mandate, 'mandate should be in result');
-    assert.equal(mandate.default, false);
+    assert.equal(mandate.isDefault, false);
   });
 
   it('includes kit-contributed types', async () => {
@@ -1635,11 +1637,12 @@ describe('writ-types tool', () => {
     };
     const plugin = setupCore({ extraKits: [kit] });
     const writTypesTool = getWritTypesTool(plugin);
-    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; default: boolean }>;
+    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; source: string; isDefault: boolean }>;
     const qa = result.find(t => t.name === 'quality-audit');
     assert.ok(qa, 'quality-audit should be in result');
     assert.equal(qa.description, null);
-    assert.equal(qa.default, false);
+    assert.equal(qa.isDefault, false);
+    assert.equal(qa.source, 'kit-a');
   });
 
   it('tool is registered in supportKit.tools', () => {
@@ -1658,6 +1661,163 @@ describe('writ-types tool', () => {
     const plugin = createClerk();
     const t = getWritTypesTool(plugin);
     assert.equal(t.callableBy, undefined);
+  });
+
+  it('preserves kit-contributed description', async () => {
+    const kit: LoadedKit = {
+      packageName: '@test/kit-desc',
+      id: 'kit-desc',
+      version: '0.0.0',
+      kit: { writTypes: [{ name: 'quality-audit', description: 'Code quality audit' }] },
+    };
+    const plugin = setupCore({ extraKits: [kit] });
+    const writTypesTool = getWritTypesTool(plugin);
+    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; source: string; isDefault: boolean }>;
+    const qa = result.find(t => t.name === 'quality-audit');
+    assert.ok(qa, 'quality-audit should be in result');
+    assert.equal(qa.description, 'Code quality audit');
+    assert.equal(qa.source, 'kit-desc');
+    assert.equal(qa.isDefault, false);
+  });
+
+  it('guild config shadows kit description', async () => {
+    const kit: LoadedKit = {
+      packageName: '@test/kit-shadow',
+      id: 'kit-shadow',
+      version: '0.0.0',
+      kit: { writTypes: [{ name: 'quality-audit', description: 'Kit version' }] },
+    };
+    const plugin = setupCore({
+      clerkConfig: { writTypes: [{ name: 'quality-audit', description: 'Guild version' }] },
+      extraKits: [kit],
+    });
+    const writTypesTool = getWritTypesTool(plugin);
+    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; source: string; isDefault: boolean }>;
+    const qa = result.find(t => t.name === 'quality-audit');
+    assert.ok(qa, 'quality-audit should be in result');
+    assert.equal(qa.description, 'Guild version');
+    assert.equal(qa.source, 'guild');
+  });
+
+  it('guild config shadows kit with no description', async () => {
+    const kit: LoadedKit = {
+      packageName: '@test/kit-shadow2',
+      id: 'kit-shadow2',
+      version: '0.0.0',
+      kit: { writTypes: [{ name: 'quality-audit', description: 'Kit version' }] },
+    };
+    const plugin = setupCore({
+      clerkConfig: { writTypes: [{ name: 'quality-audit' }] },
+      extraKits: [kit],
+    });
+    const writTypesTool = getWritTypesTool(plugin);
+    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; source: string; isDefault: boolean }>;
+    const qa = result.find(t => t.name === 'quality-audit');
+    assert.ok(qa, 'quality-audit should be in result');
+    assert.equal(qa.description, null);
+    assert.equal(qa.source, 'guild');
+  });
+
+  it('tool delegates to api.listWritTypes()', async () => {
+    const kit: LoadedKit = {
+      packageName: '@test/kit-delegate',
+      id: 'kit-delegate',
+      version: '0.0.0',
+      kit: { writTypes: [{ name: 'quality-audit', description: 'QA' }] },
+    };
+    const plugin = setupCore({
+      clerkConfig: { writTypes: [{ name: 'task', description: 'A task' }] },
+      extraKits: [kit],
+    });
+    const writTypesTool = getWritTypesTool(plugin);
+    const toolResult = await writTypesTool.handler({});
+    const apiResult = clerk.listWritTypes();
+    assert.deepEqual(toolResult, apiResult);
+  });
+
+  it('uses isDefault field name (not default)', async () => {
+    const plugin = setupCore();
+    const writTypesTool = getWritTypesTool(plugin);
+    const result = await writTypesTool.handler({}) as Array<Record<string, unknown>>;
+    for (const entry of result) {
+      assert.ok('isDefault' in entry, `entry "${entry.name}" should have isDefault field`);
+      assert.ok(!('default' in entry), `entry "${entry.name}" should not have default field`);
+    }
+  });
+});
+
+// ── listWritTypes() API method tests ─────────────────────────────────
+
+describe('listWritTypes()', () => {
+  afterEach(() => { clearGuild(); });
+
+  it('returns builtin type with source and isDefault', () => {
+    setupCore();
+    const result = clerk.listWritTypes();
+    const mandate = result.find(t => t.name === 'mandate');
+    assert.ok(mandate, 'mandate should be in result');
+    assert.equal(mandate.source, 'builtin');
+    assert.equal(mandate.isDefault, true);
+    assert.equal(mandate.description, null);
+  });
+
+  it('returns guild config types with source guild', () => {
+    setupCore({ clerkConfig: { writTypes: [{ name: 'task', description: 'A task' }] } });
+    const result = clerk.listWritTypes();
+    const task = result.find(t => t.name === 'task');
+    assert.ok(task);
+    assert.equal(task.source, 'guild');
+    assert.equal(task.description, 'A task');
+  });
+
+  it('returns kit types with pluginId as source', () => {
+    const kit: LoadedKit = {
+      packageName: '@test/kit-src',
+      id: 'kit-src',
+      version: '0.0.0',
+      kit: { writTypes: [{ name: 'quality-audit', description: 'Code quality audit' }] },
+    };
+    setupCore({ extraKits: [kit] });
+    const result = clerk.listWritTypes();
+    const qa = result.find(t => t.name === 'quality-audit');
+    assert.ok(qa);
+    assert.equal(qa.source, 'kit-src');
+    assert.equal(qa.description, 'Code quality audit');
+    assert.equal(qa.isDefault, false);
+  });
+
+  it('guild config default override changes isDefault', () => {
+    setupCore({ clerkConfig: { writTypes: [{ name: 'task' }], defaultType: 'task' } });
+    const result = clerk.listWritTypes();
+    const task = result.find(t => t.name === 'task');
+    const mandate = result.find(t => t.name === 'mandate');
+    assert.ok(task);
+    assert.equal(task.isDefault, true);
+    assert.ok(mandate);
+    assert.equal(mandate.isDefault, false);
+  });
+
+  it('apparatus supportKit writ type has pluginId source', () => {
+    const apparatusPlugin = createClerk();
+    const fakeApparatus: LoadedApparatus = {
+      packageName: '@test/apparatus-contrib',
+      id: 'apparatus-contrib',
+      version: '0.0.0',
+      apparatus: {
+        ...((apparatusPlugin as { apparatus: Record<string, unknown> }).apparatus),
+        supportKit: {
+          writTypes: [{ name: 'late-type', description: 'Late' }],
+        },
+        provides: {},
+        start() {},
+      },
+    };
+    setupCore({ extraApparatuses: [fakeApparatus] });
+    const result = clerk.listWritTypes();
+    const late = result.find(t => t.name === 'late-type');
+    assert.ok(late, 'late-type should be in result');
+    assert.equal(late.description, 'Late');
+    assert.equal(late.source, 'apparatus-contrib');
   });
 });
 

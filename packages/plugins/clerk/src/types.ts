@@ -189,6 +189,22 @@ export interface WritLinks {
   inbound: WritLinkDoc[];
 }
 
+// ── Writ type metadata ──────────────────────────────────────────────
+
+/**
+ * Metadata for a registered writ type, returned by listWritTypes().
+ */
+export interface WritTypeInfo {
+  /** The writ type name. */
+  name: string;
+  /** Human-readable description, or null if none was provided. */
+  description: string | null;
+  /** Origin of this type: "builtin", "guild", or the contributing plugin id. */
+  source: string;
+  /** Whether this is the guild's default writ type. */
+  isDefault: boolean;
+}
+
 // ── API ──────────────────────────────────────────────────────────────
 
 /**
@@ -249,4 +265,12 @@ export interface ClerkApi {
    * declared writ types if provided.
    */
   edit(request: EditWritRequest): Promise<WritDoc>;
+
+  /**
+   * List all registered writ types with metadata.
+   * Returns builtin types, guild-configured types, and kit-contributed types.
+   * Each entry includes the type name, optional description, source, and
+   * whether it is the default type.
+   */
+  listWritTypes(): WritTypeInfo[];
 }

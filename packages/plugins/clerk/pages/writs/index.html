@@ -936,7 +936,7 @@
         opt.value = t.name;
         opt.textContent = t.name;
         if (t.description) opt.title = t.description;
-        if (t.default) opt.selected = true;
+        if (t.isDefault) { opt.selected = true; opt.dataset.isDefault = 'true'; }
         sel.appendChild(opt);
       }
 
@@ -1055,7 +1055,7 @@
       // Reset type to default
       const typeSel = document.getElementById('post-type-select');
       for (const opt of typeSel.options) {
-        if (opt.dataset.default === 'true') opt.selected = true;
+        if (opt.dataset.isDefault === 'true') opt.selected = true;
       }
       // Reset codex to first item (pre-selected if single, placeholder if multiple)
       const codexSel = document.getElementById('post-codex-select');

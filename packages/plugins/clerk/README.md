@@ -89,6 +89,30 @@ Count writs matching optional filters. Accepts the same filters as `list()` (exc
 const total = await clerk.count({ status: 'ready' });
 ```
 
+### `listWritTypes(): WritTypeInfo[]`
+
+List all registered writ types with full metadata — descriptions, source tracking, and default status.
+
+```typescript
+const types = clerk.listWritTypes();
+// [
+//   { name: 'mandate', description: null, source: 'builtin', isDefault: true },
+//   { name: 'task', description: 'A task', source: 'guild', isDefault: false },
+//   { name: 'quality-audit', description: 'Code quality audit', source: 'my-kit', isDefault: false },
+// ]
+```
+
+Each entry includes:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `string` | The writ type name |
+| `description` | `string \| null` | Human-readable description, or `null` if none was provided |
+| `source` | `string` | Origin: `"builtin"`, `"guild"`, or the contributing plugin's id |
+| `isDefault` | `boolean` | Whether this is the guild's default writ type |
+
+Source precedence: guild config entries fully shadow kit contributions with the same name (including description).
+
 ### `edit(request): Promise<WritDoc>`
 
 Edit a writ, updating one or more fields. Only the provided fields are updated.
@@ -280,6 +304,13 @@ interface WritFilters {
   limit?: number;
   offset?: number;
 }
+
+interface WritTypeInfo {
+  name: string;              // writ type name
+  description: string | null; // human-readable description
+  source: string;            // "builtin", "guild", or plugin id
+  isDefault: boolean;        // whether this is the default type
+}
 ```
 
 See `src/types.ts` for the complete type definitions.
@@ -291,7 +322,7 @@ See `src/types.ts` for the complete type definitions.
 The package exports all public types and the `createClerk()` factory:
 
 ```typescript
-import clerkPlugin, { createClerk, type ClerkApi } from '@shardworks/clerk-apparatus';
+import clerkPlugin, { createClerk, type ClerkApi, type WritTypeInfo } from '@shardworks/clerk-apparatus';
 ```
 
 The default export is a pre-built plugin instance, ready for guild installation.

@@ -23,6 +23,7 @@ export {
   type PostCommissionRequest,
   type EditWritRequest,
   type WritFilters,
+  type WritTypeInfo,
 } from './types.ts';
 
 export { createClerk } from './clerk.ts';

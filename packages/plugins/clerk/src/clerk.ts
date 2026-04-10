@@ -25,6 +25,7 @@ import type {
   WritLinkDoc,
   WritLinks,
   WritStatus,
+  WritTypeInfo,
   PostCommissionRequest,
   EditWritRequest,
   WritFilters,
@@ -81,8 +82,16 @@ export function createClerk(): Plugin {
   let writs: Book<WritDoc>;
   let links: Book<WritLinkDoc>;
 
-  /** Merged set of valid writ type names: builtins + config + kit contributions. */
-  let mergedWritTypes: Set<string> = new Set(BUILTIN_TYPES);
+  /** Internal metadata stored per writ type. */
+  interface WritTypeMeta {
+    description?: string;
+    source: string;
+  }
+
+  /** Merged map of valid writ type names to metadata: builtins + config + kit contributions. */
+  let mergedWritTypes: Map<string, WritTypeMeta> = new Map(
+    [...BUILTIN_TYPES].map((name) => [name, { source: 'builtin' }]),
+  );
 
   /** Config-declared writ type names, for override checking during kit registration. */
   let configWritTypeNames: Set<string> = new Set();
@@ -93,7 +102,7 @@ export function createClerk(): Plugin {
     return guild().guildConfig().clerk ?? {};
   }
 
-  function resolveWritTypes(): Set<string> {
+  function resolveWritTypes(): Map<string, WritTypeMeta> {
     return mergedWritTypes;
   }
 
@@ -145,7 +154,10 @@ export function createClerk(): Plugin {
         continue;
       }
 
-      mergedWritTypes.add(name);
+      mergedWritTypes.set(name, {
+        description: (entry as WritTypeEntry).description,
+        source: pluginId,
+      });
     }
   }
 
@@ -158,7 +170,7 @@ export function createClerk(): Plugin {
 
       if (!validTypes.has(type)) {
         throw new Error(
-          `Unknown writ type "${type}". Declared types: ${[...validTypes].join(', ')}.`,
+          `Unknown writ type "${type}". Declared types: ${[...validTypes.keys()].join(', ')}.`,
         );
       }
 
@@ -308,6 +320,16 @@ export function createClerk(): Plugin {
       await links.delete(id);
     },
 
+    listWritTypes(): WritTypeInfo[] {
+      const defaultType = resolveDefaultType();
+      return [...mergedWritTypes.entries()].map(([name, meta]) => ({
+        name,
+        description: meta.description ?? null,
+        source: meta.source,
+        isDefault: name === defaultType,
+      }));
+    },
+
     async edit(request: EditWritRequest): Promise<WritDoc> {
       const writ = await writs.get(request.id);
       if (!writ) {
@@ -332,7 +354,7 @@ export function createClerk(): Plugin {
         const validTypes = resolveWritTypes();
         if (!validTypes.has(request.type)) {
           throw new Error(
-            `Unknown writ type "${request.type}". Declared types: ${[...validTypes].join(', ')}.`,
+            `Unknown writ type "${request.type}". Declared types: ${[...validTypes.keys()].join(', ')}.`,
           );
         }
       }
@@ -438,20 +460,7 @@ export function createClerk(): Plugin {
       'type name, optional description, and whether it is the default type.',
     params: {},
     permission: 'clerk:read',
-    handler: async () => {
-      const config = resolveClerkConfig();
-      const defaultType = resolveDefaultType();
-      const configEntries = config.writTypes ?? [];
-
-      return [...mergedWritTypes].map((name) => {
-        const entry = configEntries.find((e) => e.name === name);
-        return {
-          name,
-          description: entry?.description ?? null,
-          default: name === defaultType,
-        };
-      });
-    },
+    handler: async () => api.listWritTypes(),
   });
 
   // ── Apparatus ────────────────────────────────────────────────────
@@ -500,8 +509,12 @@ export function createClerk(): Plugin {
 
         // Initialize merged writ types from builtins + config
         const config = resolveClerkConfig();
-        configWritTypeNames = new Set((config.writTypes ?? []).map((e) => e.name));
-        mergedWritTypes = new Set([...BUILTIN_TYPES, ...configWritTypeNames]);
+        const configEntries = config.writTypes ?? [];
+        configWritTypeNames = new Set(configEntries.map((e) => e.name));
+        mergedWritTypes = new Map([
+          ...[...BUILTIN_TYPES].map((name) => [name, { source: 'builtin' }] as [string, WritTypeMeta]),
+          ...configEntries.map((e) => [e.name, { description: e.description, source: 'guild' }] as [string, WritTypeMeta]),
+        ]);
 
         // Scan all kit-contributed writ types via the Wire-phase snapshot.
         for (const entry of ctx.kits('writTypes')) {
