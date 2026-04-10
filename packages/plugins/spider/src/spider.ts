@@ -2074,6 +2074,14 @@ export function createSpider(): Plugin {
             // Only act when status changes to a terminal state
             if (rig.status === prev.status) return;
 
+            // Skip writ transition when the writ is already in a terminal state.
+            // This happens when a writ is cancelled/completed/failed out-of-band
+            // (e.g. via the clerk directly) and the rig is cancelled afterwards.
+            const writ = await writsBook.get(rig.writId);
+            const writAlreadyTerminal = writ && (
+              writ.status === 'completed' || writ.status === 'failed' || writ.status === 'cancelled'
+            );
+
             if (rig.status === 'completed') {
               let resolutionYields: unknown;
 
@@ -2106,15 +2114,21 @@ export function createSpider(): Plugin {
               const resolution = resolutionYields !== undefined
                 ? JSON.stringify(resolutionYields)
                 : 'Rig completed';
-              await clerk.transition(rig.writId, 'completed', { resolution });
+              if (!writAlreadyTerminal) {
+                await clerk.transition(rig.writId, 'completed', { resolution });
+              }
             } else if (rig.status === 'failed') {
               const failedEngine = rig.engines.find((e) => e.status === 'failed');
               const resolution = failedEngine?.error ?? 'Engine failure';
-              await clerk.transition(rig.writId, 'failed', { resolution });
+              if (!writAlreadyTerminal) {
+                await clerk.transition(rig.writId, 'failed', { resolution });
+              }
             } else if (rig.status === 'cancelled') {
               const cancelledEngine = rig.engines.find((e) => e.status === 'cancelled' && e.error);
               const resolution = cancelledEngine?.error ?? 'Rig cancelled';
-              await clerk.transition(rig.writId, 'cancelled', { resolution });
+              if (!writAlreadyTerminal) {
+                await clerk.transition(rig.writId, 'cancelled', { resolution });
+              }
             }
             // 'blocked' and 'cancelled' (handled above) — no further CDC action
           },

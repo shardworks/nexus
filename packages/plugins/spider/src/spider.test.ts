@@ -8490,6 +8490,167 @@ describe('Spider — rig cancellation', () => {
     assert.equal(updatedWrit.status, 'cancelled', 'writ should transition to cancelled');
   });
 
+  // ── Rig cancel with already-terminal writ ─────────────────────────────
+
+  // Test 12: Cancel rig whose writ is already cancelled
+  it('cancel rig whose writ is already cancelled — rig transitions, writ untouched', async () => {
+    const { stacks, spider, clerk } = fix;
+    const writ = await postWrit(clerk);
+    await clerk.transition(writ.id, 'cancelled');
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const now = new Date().toISOString();
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'running',
+      engines: [
+        { id: 'eng-running', designId: 'dummy', status: 'running', upstream: [], givensSpec: {}, startedAt: now },
+        { id: 'eng-pending', designId: 'dummy', status: 'pending', upstream: ['eng-running'], givensSpec: {} },
+      ],
+      createdAt: now,
+    });
+
+    const cancelledRig = await spider.cancel(rigId);
+
+    assert.equal(cancelledRig.status, 'cancelled', 'rig should be cancelled');
+    const engRunning = cancelledRig.engines.find((e: EngineInstance) => e.id === 'eng-running');
+    assert.equal(engRunning?.status, 'cancelled', 'running engine should be cancelled');
+    const engPending = cancelledRig.engines.find((e: EngineInstance) => e.id === 'eng-pending');
+    assert.equal(engPending?.status, 'cancelled', 'pending engine should be cancelled');
+
+    // Writ should remain cancelled (not re-transitioned)
+    const updatedWrit = await clerk.show(writ.id);
+    assert.equal(updatedWrit.status, 'cancelled', 'writ should still be cancelled');
+  });
+
+  // Test 13: Cancel rig whose writ is already completed
+  it('cancel rig whose writ is already completed — rig transitions, writ untouched', async () => {
+    const { stacks, spider, clerk } = fix;
+    const writ = await postWrit(clerk);
+    await clerk.transition(writ.id, 'active');
+    await clerk.transition(writ.id, 'completed');
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const now = new Date().toISOString();
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'running',
+      engines: [
+        { id: 'eng-running', designId: 'dummy', status: 'running', upstream: [], givensSpec: {}, startedAt: now },
+        { id: 'eng-pending', designId: 'dummy', status: 'pending', upstream: ['eng-running'], givensSpec: {} },
+      ],
+      createdAt: now,
+    });
+
+    const cancelledRig = await spider.cancel(rigId);
+
+    assert.equal(cancelledRig.status, 'cancelled', 'rig should be cancelled');
+
+    // Writ should remain completed (not re-transitioned)
+    const updatedWrit = await clerk.show(writ.id);
+    assert.equal(updatedWrit.status, 'completed', 'writ should still be completed');
+  });
+
+  // Test 14: Cancel rig whose writ is already failed
+  it('cancel rig whose writ is already failed — rig transitions, writ untouched', async () => {
+    const { stacks, spider, clerk } = fix;
+    const writ = await postWrit(clerk);
+    await clerk.transition(writ.id, 'active');
+    await clerk.transition(writ.id, 'failed');
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const now = new Date().toISOString();
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'running',
+      engines: [
+        { id: 'eng-running', designId: 'dummy', status: 'running', upstream: [], givensSpec: {}, startedAt: now },
+        { id: 'eng-pending', designId: 'dummy', status: 'pending', upstream: ['eng-running'], givensSpec: {} },
+      ],
+      createdAt: now,
+    });
+
+    const cancelledRig = await spider.cancel(rigId);
+
+    assert.equal(cancelledRig.status, 'cancelled', 'rig should be cancelled');
+
+    // Writ should remain failed (not re-transitioned)
+    const updatedWrit = await clerk.show(writ.id);
+    assert.equal(updatedWrit.status, 'failed', 'writ should still be failed');
+  });
+
+  // Test 15: Cancel rig with active writ — both transition (regression guard)
+  it('cancel rig with active writ — both rig and writ transition to cancelled', async () => {
+    const { stacks, spider, clerk } = fix;
+    const writ = await postWrit(clerk);
+    await clerk.transition(writ.id, 'active');
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const now = new Date().toISOString();
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'running',
+      engines: [
+        { id: 'eng-running', designId: 'dummy', status: 'running', upstream: [], givensSpec: {}, startedAt: now },
+      ],
+      createdAt: now,
+    });
+
+    const cancelledRig = await spider.cancel(rigId);
+
+    assert.equal(cancelledRig.status, 'cancelled', 'rig should be cancelled');
+
+    const updatedWrit = await clerk.show(writ.id);
+    assert.equal(updatedWrit.status, 'cancelled', 'writ should also be cancelled');
+  });
+
+  // Test 16: Cancel rig with mixed engine statuses — preserves completed engines
+  it('cancel rig with mixed engine statuses — running/pending cancelled, completed preserved', async () => {
+    const { stacks, spider, clerk } = fix;
+    const writ = await postWrit(clerk);
+    await clerk.transition(writ.id, 'cancelled');
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const now = new Date().toISOString();
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'running',
+      engines: [
+        { id: 'eng-completed', designId: 'dummy', status: 'completed', upstream: [], givensSpec: {}, yields: { x: 1 }, completedAt: now },
+        { id: 'eng-running', designId: 'dummy', status: 'running', upstream: ['eng-completed'], givensSpec: {}, startedAt: now },
+        { id: 'eng-pending1', designId: 'dummy', status: 'pending', upstream: ['eng-running'], givensSpec: {} },
+        { id: 'eng-pending2', designId: 'dummy', status: 'pending', upstream: ['eng-running'], givensSpec: {} },
+        { id: 'eng-pending3', designId: 'dummy', status: 'pending', upstream: ['eng-pending1', 'eng-pending2'], givensSpec: {} },
+      ],
+      createdAt: now,
+    });
+
+    const cancelledRig = await spider.cancel(rigId);
+
+    assert.equal(cancelledRig.status, 'cancelled', 'rig should be cancelled');
+
+    const engCompleted = cancelledRig.engines.find((e: EngineInstance) => e.id === 'eng-completed');
+    assert.equal(engCompleted?.status, 'completed', 'completed engine should be preserved');
+
+    const engRunning = cancelledRig.engines.find((e: EngineInstance) => e.id === 'eng-running');
+    assert.equal(engRunning?.status, 'cancelled', 'running engine should be cancelled');
+
+    for (const id of ['eng-pending1', 'eng-pending2', 'eng-pending3']) {
+      const eng = cancelledRig.engines.find((e: EngineInstance) => e.id === id);
+      assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
+    }
+  });
+
   // ── Concurrent engine throttle ────────────────────────────────────────
 
   describe('countRunningEngines / countRunningEnginesInRig', () => {
