@@ -31,8 +31,13 @@ import createClaudeCodeProvider from '@shardworks/claude-code-apparatus';
 
 The provider implements `launch()` and `cancel()`:
 
-- **`launch(config)`** — spawns `claude` in autonomous mode (`--print -`, `--output-format stream-json`). When `config.streaming` is true, yields `SessionChunk` objects in real-time. Returns `{ chunks, result, processInfo }`.
-- **`cancel(cancelMetadata)`** — sends SIGTERM to the claude process using the PID from `cancelMetadata`.
+- **`launch(config)`** — spawns a **detached babysitter process** that hosts the session independently of the guild. The babysitter spawns `claude` in autonomous mode, streams transcripts to SQLite, and reports lifecycle events via HTTP. Returns `{ chunks, result, processInfo }` where:
+  - `chunks` completes immediately (empty) — real-time output is available via the transcripts book
+  - `result` polls the sessions book for terminal status (resolves when the babysitter calls `session-record`)
+  - `processInfo` polls the SessionDoc for `cancelMetadata.pid` (set by the babysitter via `session-running`)
+- **`cancel(cancelMetadata)`** — sends SIGTERM to the claude process using the PID from `cancelMetadata`. Works cross-process regardless of parent-child relationships.
+
+An **attached mode** (`launchAttached()`) is preserved as an internal export for debugging — it spawns claude as a direct child process with in-process MCP server and streaming.
 
 ### MCP Server
 
@@ -130,8 +135,14 @@ interface SerializedTool {
 
 | Entry point | Description |
 |---|---|
-| `.` (`src/index.ts`) | Session provider plugin, MCP server, stream parsing utilities |
+| `.` (`src/index.ts`) | Session provider plugin, MCP server, stream parsing utilities, `launchAttached()` |
 | `./babysitter` (`src/babysitter.ts`) | Babysitter module — `runBabysitter()`, config parsing, proxy server, transcript DB |
+
+### Internal Modules
+
+| Module | Description |
+|---|---|
+| `src/detached.ts` | Detached launch — `launchDetached()`, tool serialization (`serializeTools()`), polling helpers |
 
 ## Configuration
 

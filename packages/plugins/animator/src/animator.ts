@@ -173,6 +173,7 @@ function cwdPreamble(cwd: string): string {
 function buildProviderConfig(
   request: AnimateRequest,
   model: string,
+  sessionId: string,
 ): SessionProviderConfig {
   // Prepend cwd preamble to the initial prompt so the agent knows where
   // it is. Skip for resumed conversations — the preamble was already
@@ -182,6 +183,7 @@ function buildProviderConfig(
     : cwdPreamble(request.cwd) + (request.prompt ?? '');
 
   return {
+    sessionId,
     systemPrompt: request.context.systemPrompt,
     initialPrompt: prompt,
     model,
@@ -490,12 +492,13 @@ export function createAnimator(): Plugin {
     animate(request: AnimateRequest): AnimateHandle {
       const provider = resolveProvider(config);
       const model = resolveModel();
-      const providerConfig = buildProviderConfig(request, model);
 
       // Step 1: use pre-generated session id if provided (from summon()),
       // otherwise generate one. Capture startedAt.
       const id = request.sessionId ?? generateId('ses', 4);
       const startedAt = new Date().toISOString();
+
+      const providerConfig = buildProviderConfig(request, model, id);
 
       // Single path — the provider returns { chunks, result } regardless
       // of whether streaming is enabled. Providers that don't support

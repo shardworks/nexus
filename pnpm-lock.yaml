@@ -123,6 +123,9 @@ importers:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../../framework/core
+      '@shardworks/stacks-apparatus':
+        specifier: workspace:*
+        version: link:../stacks
       '@shardworks/tools-apparatus':
         specifier: workspace:*
         version: link:../tools

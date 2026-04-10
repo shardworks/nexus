@@ -138,10 +138,10 @@ The claude-code provider's `launch()` method changes from spawning claude direct
 
 The AnimatorSessionProvider interface is preserved:
 - **chunks** — completes immediately (empty). Real-time output is available via the transcripts book.
-- **result** — polls sessions book for terminal status, or resolves immediately and lets Spider collect.
-- **processInfo** — polls SessionDoc for cancelMetadata.pid (set by babysitter via session-running).
+- **result** — polls sessions book for terminal status (5s interval, 24h timeout). Resolves when the babysitter calls `session-record` and the SessionDoc reaches a terminal status.
+- **processInfo** — polls SessionDoc for `cancelMetadata.pid` (set by babysitter via `session-running`). Falls back to the babysitter's own PID.
 
-Tool definitions are serialized from Zod to JSON Schema for the babysitter config.
+Tool definitions are serialized from Zod to JSON Schema using `z.toJSONSchema()` (Zod 4). The `SessionProviderConfig` now includes `sessionId` so the provider can correlate the babysitter's lifecycle events back to the Animator's session record.
 
 ---
 

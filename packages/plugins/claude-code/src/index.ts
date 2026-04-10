@@ -29,6 +29,7 @@ import type {
 
 import { startMcpHttpServer } from './mcp-server.ts';
 import type { McpHttpHandle } from './mcp-server.ts';
+import { launchDetached, type DetachedLaunchOptions } from './detached.ts';
 
 // ── Session File Preparation ────────────────────────────────────────────
 
@@ -162,6 +163,28 @@ const provider: AnimatorSessionProvider = {
     result: Promise<SessionProviderResult>;
     processInfo?: Promise<Record<string, unknown>>;
   } {
+    // Detached mode: spawn a babysitter process that survives guild restarts.
+    // The babysitter hosts the MCP server, spawns claude, streams transcripts
+    // to SQLite, and reports lifecycle events to the guild via HTTP.
+    return launchDetached(config);
+  },
+};
+
+// ── Attached launch (preserved for debugging / non-detached mode) ──────
+
+/**
+ * Launch a session in attached mode — claude as a direct child process.
+ *
+ * Preserved for debugging and potential future "attached mode" escape hatch.
+ * Not currently wired into the provider, but all supporting code is kept.
+ *
+ * @internal
+ */
+export function launchAttached(config: SessionProviderConfig): {
+  chunks: AsyncIterable<SessionChunk>;
+  result: Promise<SessionProviderResult>;
+  processInfo?: Promise<Record<string, unknown>>;
+} {
     // prepareSession is async (MCP server start), so we wrap the launch
     // in a promise. The chunks iterable bridges the async gap — it waits
     // for prep to complete before yielding.
@@ -265,8 +288,7 @@ const provider: AnimatorSessionProvider = {
     };
 
     return { chunks, result, processInfo };
-  },
-};
+}
 
 // ── Apparatus export ─────────────────────────────────────────────────
 

@@ -296,6 +296,13 @@ export interface AnimatorSessionProvider {
 }
 
 export interface SessionProviderConfig {
+  /**
+   * Pre-generated session id. The Animator generates this before calling
+   * launch() so both sides share the same id. Providers that spawn detached
+   * processes need this to correlate lifecycle events (session-running,
+   * session-record) back to the Animator's session record.
+   */
+  sessionId: string;
   /** System prompt for the AI process. May be undefined if composition is not yet implemented. */
   systemPrompt?: string;
   /** Initial user message (e.g. writ description). */
