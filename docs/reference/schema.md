@@ -153,7 +153,7 @@ UNIQUE constraint on `(commission_id, anima_id)`.
 
 ### `writs`
 
-Tracked work items — the Ledger's core table. Writs are typed, tree-structured obligations that replace the earlier four-level hierarchy (works, pieces, jobs, strokes).
+Tracked items — the Ledger's core table. Writs are typed, tree-structured records that replace the earlier four-level hierarchy (works, pieces, jobs, strokes). The *type* names what kind of record it is — `mandate` for an obligation the guild owes, `quest` for an area of inquiry, or any other type the guild defines. Dispatch to a rig is opt-in per writ type.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
