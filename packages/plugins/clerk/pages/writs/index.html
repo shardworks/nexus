@@ -61,6 +61,10 @@
       <button class="btn filter-btn" data-status="failed">failed</button>
       <button class="btn filter-btn" data-status="cancelled">cancelled</button>
     </span>
+    <span id="type-filter-bar" style="display:inline-flex;gap:0.4rem;flex-wrap:wrap;align-items:center">
+      <span style="font-size:0.875rem;opacity:0.6">Type:</span>
+      <button class="btn type-filter-btn active-filter" data-type="">All</button>
+    </span>
     <input type="text" id="search-input" placeholder="Search title...">
   </div>
   </div>
@@ -130,6 +134,7 @@
     let writs = [];          // currently loaded writs array
     let offset = 0;
     let currentStatus = '';  // '' = all
+    let currentType = '';    // '' = all
     let searchText = '';
     let sortCol = 'createdAt';
     let sortDir = 'desc';
@@ -813,6 +818,7 @@
 
       const params = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) });
       if (currentStatus) params.set('status', currentStatus);
+      if (currentType) params.set('type', currentType);
 
       let result;
       try {
@@ -858,6 +864,45 @@
         if (t.default) opt.selected = true;
         sel.appendChild(opt);
       }
+
+      // Build type-filter buttons
+      buildTypeFilterBar(types);
+    }
+
+    function buildTypeFilterBar(types) {
+      const bar = document.getElementById('type-filter-bar');
+      // Clear existing buttons (keep the label span)
+      bar.innerHTML = '<span style="font-size:0.875rem;opacity:0.6">Type:</span>';
+
+      // "All" button
+      const allBtn = document.createElement('button');
+      allBtn.className = 'btn type-filter-btn';
+      allBtn.dataset.type = '';
+      allBtn.textContent = 'All';
+      bar.appendChild(allBtn);
+
+      // One button per known type
+      for (const t of types) {
+        const btn = document.createElement('button');
+        btn.className = 'btn type-filter-btn';
+        btn.dataset.type = t.name;
+        btn.textContent = t.name;
+        if (t.description) btn.title = t.description;
+        bar.appendChild(btn);
+      }
+
+      // Wire click handlers
+      bar.querySelectorAll('.type-filter-btn').forEach(btn => {
+        btn.addEventListener('click', () => setTypeFilter(btn.dataset.type));
+      });
+
+      // Default: select 'mandate' if present, otherwise 'All'
+      const hasMandateType = types.some(t => t.name === 'mandate');
+      const defaultType = hasMandateType ? 'mandate' : '';
+      currentType = defaultType;
+      bar.querySelectorAll('.type-filter-btn').forEach(btn => {
+        btn.classList.toggle('active-filter', btn.dataset.type === defaultType);
+      });
     }
 
     async function loadCodexes() {
@@ -1035,6 +1080,14 @@
       loadWrits(true);
     }
 
+    function setTypeFilter(type) {
+      currentType = type;
+      document.querySelectorAll('.type-filter-btn').forEach(btn => {
+        btn.classList.toggle('active-filter', btn.dataset.type === type);
+      });
+      loadWrits(true);
+    }
+
     // ── Event wiring ────────────────────────────────────────────────────
 
     document.getElementById('btn-new-writ').addEventListener('click', () => {
@@ -1075,11 +1128,13 @@
     });
 
     // ── Init ────────────────────────────────────────────────────────────
-    loadWritTypes();
     loadCodexes();
 
     // Deep-link: ?writ=ID
     (async function () {
+      // Load writ types first so currentType default is set before fetching writs
+      await loadWritTypes();
+
       var params = new URLSearchParams(window.location.search);
       var writId = params.get('writ');
 
