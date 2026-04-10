@@ -65,6 +65,23 @@ export interface WritDoc {
 /**
  * Request to post a new commission (create a writ).
  */
+/**
+ * Request to edit a draft writ (status: 'new').
+ * All fields are optional — only provided fields are updated.
+ */
+export interface EditWritRequest {
+  /** Writ id. */
+  id: string;
+  /** New title. */
+  title?: string;
+  /** New body text. */
+  body?: string;
+  /** New writ type. Must be a valid declared type. */
+  type?: string;
+  /** New target codex name. Pass empty string to clear. */
+  codex?: string;
+}
+
 export interface PostCommissionRequest {
   /**
    * Writ type. Defaults to the guild's configured defaultType, or "mandate"
@@ -222,4 +239,11 @@ export interface ClerkApi {
    * Remove a link. Idempotent — no error if the link does not exist.
    */
   unlink(sourceId: string, targetId: string, type: string): Promise<void>;
+
+  /**
+   * Edit a draft writ (status: 'new'). Only the provided fields are updated.
+   * Throws if the writ is not in 'new' status. Validates type against
+   * declared writ types if provided.
+   */
+  edit(request: EditWritRequest): Promise<WritDoc>;
 }

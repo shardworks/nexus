@@ -22,6 +22,7 @@ import type { ClerkKit } from './clerk.ts';
 import type { ClerkApi, ClerkConfig, WritLinkDoc } from './types.ts';
 import type { WritLinks } from './index.ts';
 import writShow from './tools/writ-show.ts';
+import writEdit from './tools/writ-edit.ts';
 import writLink from './tools/writ-link.ts';
 import writUnlink from './tools/writ-unlink.ts';
 
@@ -390,6 +391,124 @@ describe('Clerk', () => {
 
       assert.equal(await clerk.count({ type: 'mandate' }), 1);
       assert.equal(await clerk.count({ type: 'errand' }), 1);
+    });
+  });
+
+  // ── edit() ───────────────────────────────────────────────────────
+
+  describe('edit()', () => {
+    beforeEach(() => {
+      setup({ clerkConfig: { writTypes: [{ name: 'errand', description: 'A small errand' }] } });
+    });
+
+    it('updates the title of a draft writ', async () => {
+      const writ = await clerk.post({ title: 'Old title', body: 'Body', draft: true });
+      const edited = await clerk.edit({ id: writ.id, title: 'New title' });
+      assert.equal(edited.title, 'New title');
+      assert.equal(edited.body, 'Body'); // unchanged
+    });
+
+    it('updates the body of a draft writ', async () => {
+      const writ = await clerk.post({ title: 'Title', body: 'Old body', draft: true });
+      const edited = await clerk.edit({ id: writ.id, body: 'New body' });
+      assert.equal(edited.body, 'New body');
+      assert.equal(edited.title, 'Title'); // unchanged
+    });
+
+    it('updates the type of a draft writ', async () => {
+      const writ = await clerk.post({ title: 'Title', body: 'Body', draft: true });
+      assert.equal(writ.type, 'mandate');
+      const edited = await clerk.edit({ id: writ.id, type: 'errand' });
+      assert.equal(edited.type, 'errand');
+    });
+
+    it('updates the codex of a draft writ', async () => {
+      const writ = await clerk.post({ title: 'Title', body: 'Body', codex: 'alpha', draft: true });
+      const edited = await clerk.edit({ id: writ.id, codex: 'beta' });
+      assert.equal(edited.codex, 'beta');
+    });
+
+    it('clears codex when empty string is passed', async () => {
+      const writ = await clerk.post({ title: 'Title', body: 'Body', codex: 'alpha', draft: true });
+      const edited = await clerk.edit({ id: writ.id, codex: '' });
+      assert.equal(edited.codex, undefined);
+    });
+
+    it('updates multiple fields at once', async () => {
+      const writ = await clerk.post({ title: 'Old', body: 'Old body', draft: true });
+      const edited = await clerk.edit({
+        id: writ.id,
+        title: 'New',
+        body: 'New body',
+        type: 'errand',
+        codex: 'gamma',
+      });
+      assert.equal(edited.title, 'New');
+      assert.equal(edited.body, 'New body');
+      assert.equal(edited.type, 'errand');
+      assert.equal(edited.codex, 'gamma');
+    });
+
+    it('updates updatedAt timestamp', async () => {
+      const writ = await clerk.post({ title: 'Title', body: 'Body', draft: true });
+      const edited = await clerk.edit({ id: writ.id, title: 'Updated' });
+      assert.ok(edited.updatedAt >= writ.updatedAt);
+    });
+
+    it('preserves status as new', async () => {
+      const writ = await clerk.post({ title: 'Title', body: 'Body', draft: true });
+      const edited = await clerk.edit({ id: writ.id, title: 'Updated' });
+      assert.equal(edited.status, 'new');
+    });
+
+    it('rejects editing a writ in ready status', async () => {
+      const writ = await clerk.post({ title: 'Title', body: 'Body' }); // ready
+      await assert.rejects(
+        () => clerk.edit({ id: writ.id, title: 'Changed' }),
+        /status is "ready".*Only draft writs/,
+      );
+    });
+
+    it('rejects editing an active writ', async () => {
+      const writ = await clerk.post({ title: 'Title', body: 'Body' });
+      await clerk.transition(writ.id, 'active');
+      await assert.rejects(
+        () => clerk.edit({ id: writ.id, title: 'Changed' }),
+        /status is "active".*Only draft writs/,
+      );
+    });
+
+    it('rejects editing a completed writ', async () => {
+      const writ = await clerk.post({ title: 'Title', body: 'Body' });
+      await clerk.transition(writ.id, 'active');
+      await clerk.transition(writ.id, 'completed', { resolution: 'Done' });
+      await assert.rejects(
+        () => clerk.edit({ id: writ.id, title: 'Changed' }),
+        /status is "completed".*Only draft writs/,
+      );
+    });
+
+    it('rejects editing a non-existent writ', async () => {
+      await assert.rejects(
+        () => clerk.edit({ id: 'w-doesnotexist', title: 'Nope' }),
+        /not found/,
+      );
+    });
+
+    it('rejects an invalid writ type', async () => {
+      const writ = await clerk.post({ title: 'Title', body: 'Body', draft: true });
+      await assert.rejects(
+        () => clerk.edit({ id: writ.id, type: 'nonexistent' }),
+        /Unknown writ type/,
+      );
+    });
+
+    it('persists edits so show() returns updated values', async () => {
+      const writ = await clerk.post({ title: 'Original', body: 'Original body', draft: true });
+      await clerk.edit({ id: writ.id, title: 'Edited', body: 'Edited body' });
+      const fetched = await clerk.show(writ.id);
+      assert.equal(fetched.title, 'Edited');
+      assert.equal(fetched.body, 'Edited body');
     });
   });
 
@@ -1140,6 +1259,52 @@ describe('Clerk', () => {
       const linksResult = await clerk.links(w1.id);
       assert.equal(linksResult.outbound.length, 1);
       assert.equal(linksResult.outbound[0]!.type, 'retries');
+    });
+  });
+
+  // ── writ-edit tool handler ────────────────────────────────────────
+
+  describe('writ-edit tool handler (via guild apparatus)', () => {
+    beforeEach(() => {
+      setup({ clerkConfig: { writTypes: [{ name: 'errand', description: 'A small errand' }] } });
+    });
+
+    it('edits title of a draft writ via the tool handler', async () => {
+      const writ = await clerk.post({ title: 'Old', body: 'Body', draft: true });
+      const result = await writEdit.handler({ id: writ.id, title: 'New' }) as { title: string };
+      assert.equal(result.title, 'New');
+    });
+
+    it('edits multiple fields via the tool handler', async () => {
+      const writ = await clerk.post({ title: 'Old', body: 'Old body', draft: true });
+      const result = await writEdit.handler({
+        id: writ.id,
+        title: 'New',
+        body: 'New body',
+        type: 'errand',
+        codex: 'gamma',
+      }) as { title: string; body: string; type: string; codex: string };
+
+      assert.equal(result.title, 'New');
+      assert.equal(result.body, 'New body');
+      assert.equal(result.type, 'errand');
+      assert.equal(result.codex, 'gamma');
+    });
+
+    it('rejects when no editable fields are provided', async () => {
+      const writ = await clerk.post({ title: 'Title', body: 'Body', draft: true });
+      await assert.rejects(
+        () => writEdit.handler({ id: writ.id }),
+        /At least one field/,
+      );
+    });
+
+    it('rejects editing a non-draft writ via the tool handler', async () => {
+      const writ = await clerk.post({ title: 'Title', body: 'Body' }); // ready
+      await assert.rejects(
+        () => writEdit.handler({ id: writ.id, title: 'Changed' }),
+        /Only draft writs/,
+      );
     });
   });
 

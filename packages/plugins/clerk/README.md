@@ -89,6 +89,30 @@ Count writs matching optional filters. Accepts the same filters as `list()` (exc
 const total = await clerk.count({ status: 'ready' });
 ```
 
+### `edit(request): Promise<WritDoc>`
+
+Edit a draft writ (status: `new`). Only the provided fields are updated. Throws if the writ is not in `new` status.
+
+```typescript
+const edited = await clerk.edit({
+  id: writ.id,
+  title: 'Updated title',
+  body: 'Updated body text',
+  type: 'errand',           // must be a valid declared type
+  codex: 'new-codex',       // pass empty string to clear
+});
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `id` | `string` | Writ id (required) |
+| `title` | `string` | New title (optional) |
+| `body` | `string` | New body text (optional) |
+| `type` | `string` | New writ type — must be declared or built-in (optional) |
+| `codex` | `string` | New target codex name; empty string clears it (optional) |
+
+At least one field besides `id` must be provided. The writ must be in `new` (draft) status — once published or transitioned, it cannot be edited.
+
 ### `transition(id, to, fields?): Promise<WritDoc>`
 
 Transition a writ to a new status, optionally setting additional fields atomically.
@@ -201,6 +225,7 @@ The Clerk contributes books, tools, and pages to the guild:
 | `commission-post` | `clerk:write` | Post a new commission (create a writ, optionally as child) |
 | `writ-show` | `clerk:read` | Show full detail for a writ (includes parent/children context) |
 | `writ-list` | `clerk:read` | List writs with optional filters (status, type, parentId) |
+| `writ-edit` | `clerk:write` | Edit a draft writ (title, body, type, codex) |
 | `writ-accept` | `clerk:write` | Accept a writ (ready → active) |
 | `writ-complete` | `clerk:write` | Complete a writ (active → completed) |
 | `writ-fail` | `clerk:write` | Fail a writ (active/waiting → failed) |
@@ -238,6 +263,14 @@ interface PostCommissionRequest {
   type?: string;        // defaults to guild defaultType or "mandate"
   codex?: string;       // inherited from parent if omitted
   parentId?: string;    // create as child of this writ
+}
+
+interface EditWritRequest {
+  id: string;           // writ to edit (must be in 'new' status)
+  title?: string;       // new title
+  body?: string;        // new body text
+  type?: string;        // new type (must be valid)
+  codex?: string;       // new codex (empty string to clear)
 }
 
 interface WritFilters {

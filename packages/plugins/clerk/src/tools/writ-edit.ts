@@ -1,0 +1,43 @@
+import { z } from 'zod';
+import { guild } from '@shardworks/nexus-core';
+import { tool } from '@shardworks/tools-apparatus';
+import type { ClerkApi } from '../types.ts';
+
+export default tool({
+  name: 'writ-edit',
+  description: 'Edit a draft writ, updating its title, body, type, or codex',
+  instructions:
+    'Updates one or more fields of a draft writ (status: new). Only writs in new (draft) ' +
+    'status can be edited — once a writ is published or transitions to any other status, ' +
+    'it becomes immutable. At least one field (title, body, type, or codex) must be provided. ' +
+    'The type field, if provided, must be a valid declared writ type. ' +
+    'Pass an empty string for codex to clear it. Returns the updated writ.',
+  params: {
+    id: z.string().describe('Writ id'),
+    title: z.string().optional().describe('New title for the writ'),
+    body: z.string().optional().describe('New body text for the writ'),
+    type: z.string().optional().describe('New writ type (must be a valid declared type)'),
+    codex: z.string().optional().describe('New target codex name (empty string to clear)'),
+  },
+  permission: 'clerk:write',
+  handler: async (params) => {
+    // Ensure at least one editable field is provided
+    if (
+      params.title === undefined &&
+      params.body === undefined &&
+      params.type === undefined &&
+      params.codex === undefined
+    ) {
+      throw new Error('At least one field (title, body, type, or codex) must be provided.');
+    }
+
+    const clerk = guild().apparatus<ClerkApi>('clerk');
+    return clerk.edit({
+      id: params.id,
+      title: params.title,
+      body: params.body,
+      type: params.type,
+      codex: params.codex,
+    });
+  },
+});

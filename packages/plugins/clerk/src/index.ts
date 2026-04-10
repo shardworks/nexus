@@ -21,6 +21,7 @@ export {
   type WritLinks,
   type WritStatus,
   type PostCommissionRequest,
+  type EditWritRequest,
   type WritFilters,
 } from './types.ts';
 

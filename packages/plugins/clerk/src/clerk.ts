@@ -26,6 +26,7 @@ import type {
   WritLinks,
   WritStatus,
   PostCommissionRequest,
+  EditWritRequest,
   WritFilters,
   WritTypeEntry,
 } from './types.ts';
@@ -34,6 +35,7 @@ import {
   commissionPost,
   writShow,
   writList,
+  writEdit,
   writAccept,
   writComplete,
   writFail,
@@ -306,6 +308,45 @@ export function createClerk(): Plugin {
       await links.delete(id);
     },
 
+    async edit(request: EditWritRequest): Promise<WritDoc> {
+      const writ = await writs.get(request.id);
+      if (!writ) {
+        throw new Error(`Writ "${request.id}" not found.`);
+      }
+      if (writ.status !== 'new') {
+        throw new Error(
+          `Cannot edit writ "${request.id}": status is "${writ.status}", expected "new". Only draft writs can be edited.`,
+        );
+      }
+
+      // Validate type if provided
+      if (request.type !== undefined) {
+        const validTypes = resolveWritTypes();
+        if (!validTypes.has(request.type)) {
+          throw new Error(
+            `Unknown writ type "${request.type}". Declared types: ${[...validTypes].join(', ')}.`,
+          );
+        }
+      }
+
+      const patch: Partial<Omit<WritDoc, 'id'>> = {
+        updatedAt: new Date().toISOString(),
+      };
+      if (request.title !== undefined) patch.title = request.title;
+      if (request.body !== undefined) patch.body = request.body;
+      if (request.type !== undefined) patch.type = request.type;
+      if (request.codex !== undefined) {
+        // Empty string clears the codex
+        if (request.codex === '') {
+          patch.codex = undefined;
+        } else {
+          patch.codex = request.codex;
+        }
+      }
+
+      return writs.patch(request.id, patch);
+    },
+
     async transition(id: string, to: WritStatus, fields?: Partial<WritDoc>): Promise<WritDoc> {
       const writ = await writs.get(id);
       if (!writ) {
@@ -426,6 +467,7 @@ export function createClerk(): Plugin {
           commissionPost,
           writShow,
           writList,
+          writEdit,
           writAccept,
           writComplete,
           writFail,

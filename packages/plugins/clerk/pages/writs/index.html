@@ -306,6 +306,10 @@
       return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
+    function escAttr(s) {
+      return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
     function updateSortIndicators() {
       document.querySelectorAll('.sort-ind').forEach(el => {
         const col = el.dataset.col;
@@ -332,10 +336,30 @@
 
     function renderDetail(writ) {
       const isTerminal = ['completed', 'failed', 'cancelled'].includes(writ.status);
+      const isDraft = writ.status === 'new';
       let html = '';
 
-      // Body
-      html += `<div class="detail-section"><h4>Body</h4><pre>${escHtml(writ.body ?? '')}</pre></div>`;
+      // Draft edit form or read-only body
+      if (isDraft) {
+        html += `<div class="detail-section" id="edit-section-${writ.id}">`;
+        html += `<h4>Edit Draft</h4>`;
+        html += `<div class="form-row"><label>Title</label>`;
+        html += `<input type="text" id="edit-title-${writ.id}" value="${escAttr(writ.title ?? '')}" style="padding:0.4rem 0.6rem;background:var(--bg3,#24283b);border:1px solid var(--border,#414868);border-radius:4px;color:inherit;font-size:0.9rem"></div>`;
+        html += `<div class="form-row"><label>Body</label>`;
+        html += `<textarea id="edit-body-${writ.id}" rows="8" style="padding:0.4rem 0.6rem;background:var(--bg3,#24283b);border:1px solid var(--border,#414868);border-radius:4px;color:inherit;font-size:0.9rem;resize:vertical;font-family:monospace">${escHtml(writ.body ?? '')}</textarea></div>`;
+        html += `<div class="form-row"><label>Type</label>`;
+        html += `<select id="edit-type-${writ.id}" style="padding:0.4rem 0.6rem;background:var(--bg3,#24283b);border:1px solid var(--border,#414868);border-radius:4px;color:inherit;font-size:0.9rem"></select></div>`;
+        html += `<div class="form-row"><label>Codex</label>`;
+        html += `<select id="edit-codex-${writ.id}" style="padding:0.4rem 0.6rem;background:var(--bg3,#24283b);border:1px solid var(--border,#414868);border-radius:4px;color:inherit;font-size:0.9rem"></select></div>`;
+        html += `<div class="action-buttons">`;
+        html += `<button class="btn btn--primary" data-action="save-edit" data-id="${writ.id}">Save</button>`;
+        html += `<div class="error-msg" id="edit-error-${writ.id}" style="display:none"></div>`;
+        html += `<div class="warn-msg" id="edit-success-${writ.id}" style="display:none;color:var(--green,#9ece6a)"></div>`;
+        html += `</div></div>`;
+      } else {
+        // Read-only body
+        html += `<div class="detail-section"><h4>Body</h4><pre>${escHtml(writ.body ?? '')}</pre></div>`;
+      }
 
       // Timestamps + metadata
       html += `<div class="detail-section"><h4>Details</h4><dl class="detail-grid">`;
@@ -422,6 +446,11 @@
       const td = tr.querySelector('td');
       if (!td) return;
 
+      // Populate edit dropdowns for draft writs
+      if (writ.status === 'new') {
+        populateEditDropdowns(writ);
+      }
+
       // Transition action buttons
       td.querySelectorAll('[data-action]').forEach(btn => {
         btn.addEventListener('click', e => {
@@ -442,8 +471,52 @@
       });
     }
 
+    async function populateEditDropdowns(writ) {
+      // Populate type dropdown
+      const typeSel = document.getElementById(`edit-type-${writ.id}`);
+      if (typeSel) {
+        try {
+          const types = await api('GET', '/api/writ/types');
+          typeSel.innerHTML = '';
+          for (const t of types) {
+            const opt = document.createElement('option');
+            opt.value = t.name;
+            opt.textContent = t.name;
+            if (t.description) opt.title = t.description;
+            if (t.name === writ.type) opt.selected = true;
+            typeSel.appendChild(opt);
+          }
+        } catch (e) {
+          typeSel.innerHTML = `<option value="${escAttr(writ.type ?? '')}">${escHtml(writ.type ?? '')}</option>`;
+        }
+      }
+
+      // Populate codex dropdown
+      const codexSel = document.getElementById(`edit-codex-${writ.id}`);
+      if (codexSel) {
+        try {
+          const codexes = await api('GET', '/api/codex/list');
+          codexSel.innerHTML = '<option value="">(none)</option>';
+          for (const c of codexes) {
+            const opt = document.createElement('option');
+            opt.value = c.name;
+            opt.textContent = c.name;
+            if (c.name === writ.codex) opt.selected = true;
+            codexSel.appendChild(opt);
+          }
+        } catch (e) {
+          codexSel.innerHTML = `<option value="">(none)</option>`;
+          if (writ.codex) {
+            codexSel.innerHTML += `<option value="${escAttr(writ.codex)}" selected>${escHtml(writ.codex)}</option>`;
+          }
+        }
+      }
+    }
+
     function handleDetailAction(action, id, btn, td, writ) {
-      if (action === 'publish') {
+      if (action === 'save-edit') {
+        doSaveEdit(id, btn, td);
+      } else if (action === 'publish') {
         doPublish(id, btn, td);
       } else if (action === 'accept') {
         doAccept(id, btn, td);
@@ -462,6 +535,49 @@
         const typeInput = document.getElementById(`link-type-${id}`);
         const errEl = document.getElementById(`link-error-${id}`);
         doAddLink(id, targetInput.value.trim(), typeInput.value.trim(), btn, errEl, targetInput, typeInput);
+      }
+    }
+
+    async function doSaveEdit(id, btn, td) {
+      const errEl = document.getElementById(`edit-error-${id}`);
+      const successEl = document.getElementById(`edit-success-${id}`);
+      clearError(errEl);
+      clearError(successEl);
+      btn.disabled = true;
+      const orig = btn.textContent;
+      btn.textContent = 'Saving...';
+      try {
+        const title = document.getElementById(`edit-title-${id}`).value.trim();
+        const body = document.getElementById(`edit-body-${id}`).value;
+        const type = document.getElementById(`edit-type-${id}`).value;
+        const codex = document.getElementById(`edit-codex-${id}`).value;
+
+        if (!title) { showError(errEl, 'Title is required.'); return; }
+
+        const payload = { id, title, body, type, codex };
+        await api('POST', '/api/writ/edit', payload);
+
+        // Update the writ in the local array
+        const writ = await api('GET', `/api/writ/show?id=${encodeURIComponent(id)}`);
+        const idx = writs.findIndex(w => w.id === id);
+        if (idx >= 0) writs[idx] = writ;
+
+        // Update row title and type in table
+        const row = document.querySelector(`tr.writ-row[data-id="${id}"]`);
+        if (row) {
+          const cells = row.querySelectorAll('td');
+          if (cells[1]) cells[1].textContent = writ.title ?? '';
+          if (cells[2]) cells[2].textContent = writ.type ?? '';
+        }
+
+        successEl.textContent = 'Saved.';
+        successEl.style.display = 'block';
+        setTimeout(() => { successEl.style.display = 'none'; }, 2000);
+      } catch (e) {
+        showError(errEl, e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
       }
     }
 
