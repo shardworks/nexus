@@ -5,6 +5,7 @@
  * without pulling in heavy runtime dependencies (Arbor, Instrumentarium).
  */
 
+import path from 'node:path';
 import { z } from 'zod';
 import type { ToolDefinition } from '@shardworks/tools-apparatus';
 
@@ -76,6 +77,29 @@ export function coerceCliOpts(
   }
 
   return result;
+}
+
+/**
+ * Resolve the guild root directory from available sources.
+ *
+ * Resolution order (highest priority first):
+ *   1. `cliFlag` — the `--guild-root` CLI option
+ *   2. `envVar` — the `GUILD_ROOT` environment variable
+ *   3. `autoDetect` — a callback that walks up from cwd (e.g. `findGuildRoot()`)
+ *
+ * Returns `undefined` when no source yields a guild root.
+ */
+export function resolveGuildRoot(
+  cliFlag: string | undefined,
+  envVar: string | undefined,
+  autoDetect: () => string,
+): string | undefined {
+  const explicit = cliFlag ?? envVar;
+  try {
+    return explicit ? path.resolve(explicit) : autoDetect();
+  } catch {
+    return undefined;
+  }
 }
 
 /**

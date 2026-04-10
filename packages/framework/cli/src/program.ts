@@ -24,7 +24,7 @@ import { findGuildRoot, guild } from '@shardworks/nexus-core';
 import type { ToolDefinition, InstrumentariumApi } from '@shardworks/tools-apparatus';
 import { createGuild } from '@shardworks/nexus-arbor';
 import { frameworkCommands } from './commands/index.ts';
-import { toFlag, isBooleanSchema, findGroupPrefixes, coerceCliOpts } from './helpers.ts';
+import { toFlag, isBooleanSchema, findGroupPrefixes, coerceCliOpts, resolveGuildRoot } from './helpers.ts';
 
 type ZodShape = Record<string, z.ZodTypeAny>;
 
@@ -139,18 +139,19 @@ export async function main(): Promise<void> {
 
   const program = new Command('nsg')
     .description('Nexus Mk 2.1 — guild CLI')
-    .option('--guild-root <path>', 'Guild root directory (default: auto-detect from cwd)');
+    .option('--guild-root <path>', 'Guild root directory (default: $GUILD_ROOT or auto-detect from cwd)');
 
-  // Discover guild root. Framework commands work without a guild;
+  // Discover guild root. Resolution order:
+  //   1. --guild-root CLI flag (highest priority)
+  //   2. GUILD_ROOT environment variable
+  //   3. Auto-detect by walking up from cwd looking for guild.json
+  // Framework commands work without a guild;
   // plugin tools only load when a guild with The Instrumentarium is found.
-  let home: string | undefined;
-  try {
-    home = preOpts.guildRoot
-      ? path.resolve(preOpts.guildRoot)
-      : findGuildRoot();
-  } catch {
-    // Not in a guild
-  }
+  const home = resolveGuildRoot(
+    preOpts.guildRoot,
+    process.env.GUILD_ROOT,
+    findGuildRoot,
+  );
 
   // Always register framework commands (init, status, version, upgrade,
   // plugin management). These work with or without a guild.

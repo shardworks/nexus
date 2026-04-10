@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
-import { toFlag, isBooleanSchema, findGroupPrefixes, coerceCliOpts } from './helpers.ts';
+import path from 'node:path';
+import { toFlag, isBooleanSchema, findGroupPrefixes, coerceCliOpts, resolveGuildRoot } from './helpers.ts';
 import type { ToolDefinition } from '@shardworks/tools-apparatus';
 
 // Helper to create a minimal ToolDefinition for testing
@@ -192,5 +193,52 @@ describe('coerceCliOpts', () => {
   it('empty shape leaves extra keys unchanged', () => {
     const shape = {};
     assert.deepEqual(coerceCliOpts(shape, { anything: 'value' }), { anything: 'value' });
+  });
+});
+
+// ── resolveGuildRoot ──────────────────────────────────────────────────
+
+describe('resolveGuildRoot', () => {
+  const autoDetect = () => '/auto/detected';
+  const autoDetectThrows = () => { throw new Error('no guild found'); };
+
+  it('prefers --guild-root CLI flag over everything else', () => {
+    const result = resolveGuildRoot('/cli/path', '/env/path', autoDetect);
+    assert.equal(result, path.resolve('/cli/path'));
+  });
+
+  it('falls back to GUILD_ROOT env var when CLI flag is undefined', () => {
+    const result = resolveGuildRoot(undefined, '/env/path', autoDetect);
+    assert.equal(result, path.resolve('/env/path'));
+  });
+
+  it('falls back to auto-detect when both CLI flag and env var are undefined', () => {
+    const result = resolveGuildRoot(undefined, undefined, autoDetect);
+    assert.equal(result, '/auto/detected');
+  });
+
+  it('resolves relative CLI flag path to absolute', () => {
+    const result = resolveGuildRoot('relative/guild', undefined, autoDetect);
+    assert.equal(result, path.resolve('relative/guild'));
+  });
+
+  it('resolves relative GUILD_ROOT env var path to absolute', () => {
+    const result = resolveGuildRoot(undefined, 'relative/guild', autoDetect);
+    assert.equal(result, path.resolve('relative/guild'));
+  });
+
+  it('returns undefined when auto-detect throws and no explicit root given', () => {
+    const result = resolveGuildRoot(undefined, undefined, autoDetectThrows);
+    assert.equal(result, undefined);
+  });
+
+  it('CLI flag takes precedence even when env var is set', () => {
+    const result = resolveGuildRoot('/cli', '/env', autoDetectThrows);
+    assert.equal(result, path.resolve('/cli'));
+  });
+
+  it('env var is used even when auto-detect would throw', () => {
+    const result = resolveGuildRoot(undefined, '/env', autoDetectThrows);
+    assert.equal(result, path.resolve('/env'));
   });
 });

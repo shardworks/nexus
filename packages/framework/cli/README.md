@@ -61,7 +61,24 @@ Zod param schemas are converted to Commander flags:
 
 ### Guild Root Resolution
 
-The CLI finds the guild root the same way git finds `.git/` — walking up from cwd until it finds `guild.json`. Override with `--guild-root <path>`.
+The CLI resolves the guild root in priority order:
+
+1. **`--guild-root <path>`** — CLI flag (highest priority)
+2. **`GUILD_ROOT` environment variable** — useful for CI, containers, and scripted workflows
+3. **Auto-detect** — walks up from cwd until it finds `guild.json` (same as how git finds `.git/`)
+
+```sh
+# Explicit flag
+nsg --guild-root /opt/guilds/my-guild status
+
+# Environment variable
+export GUILD_ROOT=/opt/guilds/my-guild
+nsg status
+
+# Auto-detect (default) — run from inside the guild tree
+cd /opt/guilds/my-guild/some/subdir
+nsg status
+```
 
 Plugin-contributed tools require a guild. Framework commands work without one.
 
