@@ -143,6 +143,7 @@ The Astrolabe declares one book in Stacks:
 |---|---|
 | `brief` | A patron brief triggering the planning pipeline |
 | `brief-ssr` | A patron brief triggering the single-shot reader planning pipeline (experimental) |
+| `brief-mra` | Experimental brief using merged reader/analyst pipeline |
 
 ### Roles (contributed to Loom)
 
@@ -164,8 +165,9 @@ The Astrolabe declares one book in Stacks:
 |---|---|---|
 | `astrolabe.planning` | `brief` | plan-init → draft → reader → inventory-check → analyst → decision-review → spec-writer → spec-publish → seal |
 | `astrolabe.planning-ssr` | `brief-ssr` | Same pipeline as `planning`; reader engine uses a single-shot prompt (experimental) |
+| `astrolabe.planning-mra` | `brief-mra` | plan-init → draft → reader-analyst → inventory-check → decision-review → spec-writer → spec-publish → seal |
 
-The `resolutionEngine` is `spec-writer` for both templates — the rig's completion summary comes from the specification writer session.
+The `resolutionEngine` is `spec-writer` for all three templates — the rig's completion summary comes from the specification writer session.
 
 #### `planning-ssr` (experimental)
 
@@ -176,6 +178,12 @@ Post a `brief-ssr` writ to route through this template:
 ```
 nsg commission-post --type brief-ssr --title "..." --body "..."
 ```
+
+#### `planning-mra` (experimental)
+
+The `planning-mra` template collapses the separate `reader` and `analyst` anima-session stages into a single `reader-analyst` stage. This stage produces inventory, scope, decisions, and observations in one session, avoiding the redundant codebase navigation observed in profiling. The downstream `inventory-check`, `decision-review`, `spec-writer`, and `spec-publish` engines are unchanged.
+
+The `reader-analyst` stage emits `metadata.engineId = 'reader-analyst'` on its session record so profiling can distinguish it from the separate reader and analyst sessions in the control template. Post a commission with `--type brief-mra` to route through this template.
 
 ### Tools
 

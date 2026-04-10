@@ -39,6 +39,7 @@ import {
 } from './engines/index.ts';
 
 import { planningSsrTemplate } from './planning-ssr.ts';
+import { planningMraTemplate } from './planning-mra.ts';
 
 // ── Config resolver ──────────────────────────────────────────────────
 
@@ -351,6 +352,7 @@ export function createAstrolabe(): Plugin {
         writTypes: [
           { name: 'brief', description: 'A patron brief triggering the planning pipeline' },
           { name: 'brief-ssr', description: 'A patron brief triggering the single-shot reader planning pipeline (experimental)' },
+          { name: 'brief-mra', description: 'Experimental brief using merged reader/analyst pipeline' },
         ],
 
         roles: {
@@ -371,11 +373,13 @@ export function createAstrolabe(): Plugin {
         rigTemplates: {
           planning: planningTemplate,
           'planning-ssr': planningSsrTemplate,
+          'planning-mra': planningMraTemplate,
         },
 
         rigTemplateMappings: {
           brief: 'astrolabe.planning',
           'brief-ssr': 'astrolabe.planning-ssr',
+          'brief-mra': 'astrolabe.planning-mra',
         },
 
         tools: [
