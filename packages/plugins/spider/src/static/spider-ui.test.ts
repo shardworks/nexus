@@ -90,7 +90,12 @@ describe('spider.js cancel button', () => {
     );
   });
 
-  it('cancel button sends DELETE to /api/rig/cancel', () => {
+  it('cancel button sends POST to /api/rig/cancel', () => {
+    assert.match(
+      spiderJs,
+      /method:\s*'POST'/,
+      'should use POST method for cancel request',
+    );
     assert.match(
       spiderJs,
       /\/api\/rig\/cancel/,
@@ -111,6 +116,46 @@ describe('spider.js cancel button', () => {
       spiderJs,
       /currentRig\.status === 'cancelled'/,
       'should check for cancelled status to hide button',
+    );
+  });
+
+  it('cancel button does NOT use DELETE method', () => {
+    // DELETE with JSON body is unreliable across HTTP stacks.
+    // The cancel fetch must use POST to match the auto-generated tool route.
+    const cancelFetchBlock = spiderJs.match(
+      /fetch\('\/api\/rig\/cancel'[\s\S]*?\)/,
+    );
+    assert.ok(cancelFetchBlock, 'should find the cancel fetch call');
+    assert.doesNotMatch(
+      cancelFetchBlock[0],
+      /method:\s*'DELETE'/,
+      'cancel fetch must not use DELETE method',
+    );
+  });
+
+  it('cancel handler uses the cancel API response directly (no redundant rig-show fetch)', () => {
+    // After the cancel fetch, the handler should call r.json() on the cancel
+    // response itself, not make a second fetch to /api/rig/show.
+    const cancelBlock = spiderJs.match(
+      /fetch\('\/api\/rig\/cancel'[\s\S]*?\.catch/,
+    );
+    assert.ok(cancelBlock, 'should find the cancel fetch chain');
+    assert.doesNotMatch(
+      cancelBlock[0],
+      /fetch\('\/api\/rig\/show/,
+      'cancel handler should not make a redundant rig-show fetch',
+    );
+  });
+
+  it('cancel handler calls preventDefault on click event', () => {
+    // The cancel click handler should call e.preventDefault() to guard
+    // against any default button behaviour.
+    const cancelHandler = spiderJs.match(
+      /addEventListener\('click', function \(e\)[\s\S]*?e\.preventDefault\(\)/,
+    );
+    assert.ok(
+      cancelHandler,
+      'cancel click handler should accept the event and call preventDefault',
     );
   });
 });

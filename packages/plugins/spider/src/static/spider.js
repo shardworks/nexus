@@ -453,19 +453,19 @@
     // Wire cancel button handler
     var cancelBtn = document.getElementById('cancel-engine-btn');
     if (cancelBtn && currentRig) {
-      cancelBtn.addEventListener('click', function () {
+      cancelBtn.addEventListener('click', function (e) {
+        e.preventDefault();
         cancelBtn.disabled = true;
         cancelBtn.textContent = 'Cancelling\u2026';
         fetch('/api/rig/cancel', {
-          method: 'DELETE',
+          method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ rigId: currentRig.id }),
         })
           .then(function (r) {
             if (!r.ok) throw new Error('Cancel failed: ' + r.status);
-            return fetch('/api/rig/show?id=' + encodeURIComponent(currentRig.id));
+            return r.json();
           })
-          .then(function (r) { return r.json(); })
           .then(function (rig) {
             currentRig = rig;
             renderPipeline(currentRig);

@@ -229,9 +229,9 @@ describe('block-types tool', () => {
 describe('GET /api/spider/config route', () => {
   afterEach(() => clearGuild());
 
-  it('spiderRoutes exports an array with four routes', () => {
+  it('spiderRoutes exports an array with three routes', () => {
     assert.ok(Array.isArray(spiderRoutes));
-    assert.equal(spiderRoutes.length, 4);
+    assert.equal(spiderRoutes.length, 3);
   });
 
   it('first route has method GET and path /api/spider/config', () => {
