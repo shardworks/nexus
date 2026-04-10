@@ -26,7 +26,7 @@
     tr.writ-row { cursor: pointer; }
     tr.writ-row:hover { opacity: 0.85; }
     tr.writ-row.expanded { background: var(--bg2, #1f2335); }
-    #post-section { margin-bottom: 1rem; padding: 1rem; background: var(--bg2, #1f2335); border-radius: 6px; display: none; }
+    #post-section { margin-bottom: 16px; display: none; }
     #post-section.open { display: block; }
     #post-section h3 { margin: 0 0 0.75rem; }
     .form-row { margin-bottom: 0.75rem; display: flex; flex-direction: column; gap: 0.3rem; }
@@ -45,6 +45,9 @@
   </style>
 </head>
 <body>
+<main style="padding: 24px;">
+  <h1>Writs</h1>
+  <div class="card" style="margin-bottom: 16px;">
   <div class="toolbar" id="toolbar">
     <button class="btn btn--primary" id="btn-new-writ">New Writ</button>
     <button class="btn" id="btn-refresh">Refresh</button>
@@ -60,8 +63,9 @@
     </span>
     <input type="text" id="search-input" placeholder="Search title...">
   </div>
+  </div>
 
-  <div id="post-section">
+  <div id="post-section" class="card">
     <h3 id="post-title">New Writ</h3>
     <div class="form-row">
       <label for="post-title-input">Title</label>
@@ -91,6 +95,7 @@
     <div id="post-warn" class="warn-msg" style="display:none"></div>
   </div>
 
+  <div class="card" style="margin-bottom: 16px;">
   <table class="data-table" id="writ-table">
     <thead>
       <tr>
@@ -104,7 +109,8 @@
     </thead>
     <tbody id="writ-tbody"></tbody>
   </table>
-  <div id="load-more-row" style="display:none">
+  </div>
+  <div id="load-more-row" style="display:none; text-align: center; margin-top: 8px;">
     <button class="btn" id="load-more-btn">Load more</button>
   </div>
 
@@ -115,6 +121,8 @@
     <option value="duplicates"></option>
     <option value="blocks"></option>
   </datalist>
+
+</main>
 
   <script>
   (() => {

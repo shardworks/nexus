@@ -2086,4 +2086,40 @@ describe('Page file structure', () => {
     assert.ok(content.includes('<head'), 'index.html must contain <head tag');
     assert.ok(content.includes('<body'), 'index.html must contain <body tag');
   });
+
+  it('wraps page content in a <main> element with 24px padding', () => {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const htmlPath = join(__dirname, '..', 'pages', 'writs', 'index.html');
+    const content = readFileSync(htmlPath, 'utf-8');
+    assert.ok(content.includes('<main'), 'index.html must contain a <main> element');
+    assert.ok(content.includes('padding: 24px'), 'main element must have 24px padding');
+    assert.ok(content.includes('</main>'), 'main element must be closed');
+  });
+
+  it('has a page heading', () => {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const htmlPath = join(__dirname, '..', 'pages', 'writs', 'index.html');
+    const content = readFileSync(htmlPath, 'utf-8');
+    assert.ok(content.includes('<h1>Writs</h1>'), 'page must have an h1 heading');
+  });
+
+  it('uses card class for toolbar and data table sections', () => {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const htmlPath = join(__dirname, '..', 'pages', 'writs', 'index.html');
+    const content = readFileSync(htmlPath, 'utf-8');
+    // The toolbar and data table should each be inside a .card container
+    const cardCount = (content.match(/class="card"/g) || []).length;
+    assert.ok(cardCount >= 2, `expected at least 2 card containers, found ${cardCount}`);
+  });
+
+  it('post-section form uses card class', () => {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const htmlPath = join(__dirname, '..', 'pages', 'writs', 'index.html');
+    const content = readFileSync(htmlPath, 'utf-8');
+    assert.ok(content.includes('id="post-section" class="card"'), 'post-section must use card class');
+  });
 });
