@@ -17,6 +17,10 @@
  * when a rig reaches a terminal state (completed or failed).
  * The blocked status does NOT trigger the CDC handler.
  *
+ * CDC on the writs book (Phase 1 cascade) cancels the associated rig
+ * when a writ reaches a terminal state (completed, failed, or cancelled).
+ * Guards in both handlers break the circular cascade path.
+ *
  * See: docs/architecture/apparatus/spider.md
  */
 
@@ -2132,6 +2136,33 @@ export function createSpider(): Plugin {
         inputRequestsBook = stacks.book<InputRequestDoc>('spider', 'input-requests');
         sessionsBook = stacks.readBook<SessionDoc>('animator', 'sessions');
         writsBook = stacks.readBook<WritDoc>('clerk', 'writs');
+
+        // CDC — Phase 1 cascade on writs book.
+        // When a writ reaches a terminal state, cancel the associated rig.
+        // Silent no-op when no rig exists or the rig is already terminal.
+        stacks.watch<WritDoc>(
+          'clerk',
+          'writs',
+          async (event) => {
+            if (event.type !== 'update') return;
+
+            const writ = event.entry;
+            const prev = event.prev;
+
+            // Only act when status changes to a terminal state
+            if (writ.status === prev.status) return;
+            if (writ.status !== 'completed' && writ.status !== 'failed' && writ.status !== 'cancelled') return;
+
+            const rig = await api.forWrit(writ.id);
+            if (!rig) return; // No rig for this writ — silent no-op
+
+            // Already terminal — silent no-op (avoids redundant cancel cycle)
+            if (rig.status === 'completed' || rig.status === 'failed' || rig.status === 'cancelled') return;
+
+            await api.cancel(rig.id);
+          },
+          { failOnError: true },
+        );
 
         // CDC — Phase 1 cascade on rigs book.
         // When a rig reaches a terminal state, transition the associated writ.

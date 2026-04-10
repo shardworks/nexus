@@ -23,8 +23,8 @@ requires: ['fabricator', 'clerk', 'stacks']
 ```
 
 - **The Fabricator** — resolves engine designs by `designId`.
-- **The Clerk** — queries ready writs; receives writ transitions via CDC.
-- **The Stacks** — persists rigs book, reads sessions book, hosts CDC handler on rigs book.
+- **The Clerk** — queries ready writs; receives writ transitions via CDC; triggers rig cancellation via CDC on writs book.
+- **The Stacks** — persists rigs book, reads sessions and writs books, hosts CDC handlers on both rigs and writs books.
 
 Engines pull their own apparatus dependencies (Scriptorium, Animator, Loom) via the `guild()` singleton — these are not Spider dependencies.
 
@@ -616,41 +616,29 @@ The seal engine does **not** transition the writ — that's handled by the CDC h
 
 ---
 
-## CDC Handler
+## CDC Handlers
 
-The Spider registers one CDC handler at startup:
+The Spider registers two CDC handlers at startup. Both are Phase 1 (cascade) — their effects join the same transaction as the triggering update.
+
+### Writ terminal state → rig cancellation
+
+**Book:** `clerk/writs`
+**Phase:** Phase 1 (cascade)
+**Trigger:** writ status transitions to `completed`, `failed`, or `cancelled`
+
+When a writ reaches any terminal status, the Spider looks up the associated rig via `forWrit()` and cancels it. This ensures rigs don't keep running after their writ is resolved — for example, when a writ is cancelled directly via the Clerk, or when a parent writ's cancellation cascades to its children.
+
+Silent no-ops: if no rig exists for the writ (writ was never dispatched), or the rig is already terminal, the handler returns without action.
 
 ### Rig terminal state → writ transition
 
-**Book:** `rigs`
-**Phase:** Phase 1 (cascade) — the writ transition joins the same transaction as the rig update
-**Trigger:** rig status transitions to `completed` or `failed`
+**Book:** `spider/rigs`
+**Phase:** Phase 1 (cascade)
+**Trigger:** rig status transitions to `completed`, `failed`, or `cancelled`
 
-```typescript
-stacks.watch('rigs', async (event) => {
-  if (event.type !== 'update') return
-  const rig = event.doc
-  const prev = event.prev
+When a rig reaches a terminal state, the handler transitions the associated writ to match. A guard reads the writ's current status first — if the writ is already terminal (e.g., it was cancelled before the rig), the handler skips the `clerk.transition()` call. This breaks the circular cascade path: writ cancelled → rig cancelled → rig CDC fires → writ already terminal → skip.
 
-  // Only fire on terminal transitions
-  if (prev.status === rig.status) return
-  if (rig.status !== 'completed' && rig.status !== 'failed') return
-
-  if (rig.status === 'completed') {
-    const sealYields = rig.engines.find(e => e.id === 'seal')?.yields as SealYields
-    await clerk.transition(rig.writId, 'completed', {
-      resolution: `Sealed at ${sealYields.sealedCommit} (${sealYields.strategy}, ${sealYields.inscriptionsSealed} inscriptions).`,
-    })
-  } else {
-    const failedEngine = rig.engines.find(e => e.status === 'failed')
-    await clerk.transition(rig.writId, 'failed', {
-      resolution: `Engine '${failedEngine?.id}' failed: ${failedEngine?.error ?? 'unknown error'}`,
-    })
-  }
-})
-```
-
-Because this is Phase 1 (cascade), the writ transition joins the same transaction as the rig status update. If the Clerk call throws, the rig update rolls back too.
+Because both handlers are Phase 1, their effects are atomic with the triggering update. If either handler fails, the triggering status change rolls back.
 
 ---
 
@@ -675,8 +663,8 @@ Quick engine "failure" definition: if the Animator session completes with `statu
 ```
 Spider
   ├── Fabricator  (resolve engine designs by designId)
-  ├── Clerk       (query ready writs, transition writ state via CDC)
-  ├── Stacks      (persist rigs book, read sessions book, CDC handler on rigs book)
+  ├── Clerk       (query ready writs, transition writ state via CDC, writ→rig cascade via CDC)
+  ├── Stacks      (persist rigs book, read sessions/writs books, CDC handlers on rigs and writs books)
   │
   Engines (via guild() singleton, not Spider dependencies)
   ├── Scriptorium (draft, seal engines — open drafts, seal)
