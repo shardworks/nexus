@@ -1,0 +1,651 @@
+/**
+ * Session Babysitter — detached process that hosts a claude session.
+ *
+ * A standalone Node.js script that:
+ * 1. Reads config from stdin (spawned by the claude-code provider)
+ * 2. Opens the guild's SQLite database for transcript streaming
+ * 3. Starts an MCP/SSE server that proxies tool calls to the guild
+ * 4. Spawns claude with prepared session files
+ * 5. Reports session lifecycle events via the guild's HTTP API
+ * 6. Streams transcript data to SQLite in real-time
+ * 7. Reports the final result and cleans up
+ *
+ * The babysitter is a detached process: it survives guild restarts.
+ * All guild communication is via HTTP (tool server) and SQLite (transcripts).
+ *
+ * See: docs/architecture/detached-sessions.md
+ */
+
+import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { fileURLToPath } from 'node:url';
+
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+
+import { toolNameToRoute } from '@shardworks/tools-apparatus';
+
+import {
+  processNdjsonBuffer,
+  parseStreamJsonMessage,
+  extractFinalAssistantText,
+  type StreamJsonResult,
+} from './index.ts';
+
+// ── Config types ────────────────────────────────────────────────────────
+
+/** A serialized tool definition as received in the babysitter config. */
+export interface SerializedTool {
+  /** Tool name (e.g. 'writ-list'). */
+  name: string;
+  /** Tool description. */
+  description: string;
+  /** JSON Schema for the tool's input parameters. */
+  params: Record<string, unknown>;
+}
+
+/** Config written to the babysitter's stdin by the spawning process. */
+export interface BabysitterConfig {
+  sessionId: string;
+  guildToolUrl: string;
+  dbPath: string;
+  claudeArgs: string[];
+  cwd: string;
+  env: Record<string, string>;
+  prompt: string;
+  tools: SerializedTool[];
+  startedAt: string;
+  provider: string;
+  metadata?: Record<string, unknown>;
+}
+
+// ── Retry constants ─────────────────────────────────────────────────────
+
+const RETRY_INITIAL_DELAY_MS = 1_000;
+const RETRY_MAX_DELAY_MS = 8_000;
+const RETRY_TIMEOUT_MS = 60_000;
+const RETRYABLE_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT']);
+
+// ── Public types ────────────────────────────────────────────────────────
+
+export interface McpProxyHandle {
+  /** URL for --mcp-config (e.g. "http://127.0.0.1:PORT/sse"). */
+  url: string;
+  /** Shut down the HTTP server and MCP transport. */
+  close(): Promise<void>;
+}
+
+// ── stdin config reader ─────────────────────────────────────────────────
+
+/**
+ * Read the babysitter config from stdin.
+ *
+ * Reads stdin to completion, parses the JSON, and validates required fields.
+ * The spawning process writes config and closes the write end.
+ */
+export async function readConfigFromStdin(
+  stream: NodeJS.ReadableStream = process.stdin,
+): Promise<BabysitterConfig> {
+  const chunks: Buffer[] = [];
+
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+  }
+
+  const raw = Buffer.concat(chunks).toString('utf-8');
+  if (!raw.trim()) {
+    throw new Error('Empty config received on stdin');
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`Invalid JSON config on stdin: ${raw.slice(0, 200)}`);
+  }
+
+  const config = parsed as BabysitterConfig;
+
+  // Validate required fields
+  const required: (keyof BabysitterConfig)[] = [
+    'sessionId', 'guildToolUrl', 'dbPath', 'claudeArgs',
+    'cwd', 'env', 'prompt', 'tools', 'startedAt', 'provider',
+  ];
+  for (const field of required) {
+    if (config[field] === undefined || config[field] === null) {
+      throw new Error(`Missing required config field: ${field}`);
+    }
+  }
+
+  return config;
+}
+
+// ── HTTP retry helper ───────────────────────────────────────────────────
+
+/**
+ * Call a guild HTTP API endpoint with exponential backoff retry.
+ *
+ * Retries on connection errors (ECONNREFUSED, ECONNRESET, ETIMEDOUT).
+ * Returns the parsed JSON response on success.
+ * Throws after RETRY_TIMEOUT_MS of retrying.
+ */
+export async function callGuildHttpApi(
+  url: string,
+  sessionId: string,
+  body: unknown,
+  timeoutMs: number = RETRY_TIMEOUT_MS,
+): Promise<unknown> {
+  const startTime = Date.now();
+  let delay = RETRY_INITIAL_DELAY_MS;
+  let lastError: Error | undefined;
+
+  while (Date.now() - startTime < timeoutMs) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': sessionId,
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(`HTTP ${response.status}: ${text.slice(0, 500)}`);
+      }
+
+      return await response.json();
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      // Check if the error is retryable (connection-level error)
+      const code = (err as NodeJS.ErrnoException).code;
+      const cause = (err as Error).cause as NodeJS.ErrnoException | undefined;
+      const causeCode = cause?.code;
+      const isRetryable = (code && RETRYABLE_CODES.has(code)) ||
+        (causeCode && RETRYABLE_CODES.has(causeCode)) ||
+        (lastError.message.includes('fetch failed'));
+
+      if (!isRetryable) {
+        throw lastError;
+      }
+
+      // Wait before retrying
+      const remaining = timeoutMs - (Date.now() - startTime);
+      if (remaining <= 0) break;
+
+      await new Promise((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
+      delay = Math.min(delay * 2, RETRY_MAX_DELAY_MS);
+    }
+  }
+
+  throw new Error(
+    `Guild HTTP API unreachable after ${timeoutMs}ms: ${lastError?.message ?? 'unknown error'}`,
+  );
+}
+
+// ── DLQ writer ──────────────────────────────────────────────────────────
+
+/**
+ * Write a payload to the Dead Letter Queue.
+ *
+ * Creates the DLQ directory if it doesn't exist. Writes the payload as
+ * pretty-printed JSON. Used as a fallback when the guild HTTP API is
+ * unreachable for lifecycle calls.
+ */
+export function writeToDlq(cwd: string, filename: string, payload: unknown): void {
+  const dlqDir = path.join(cwd, '.nexus', 'dlq');
+  fs.mkdirSync(dlqDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dlqDir, filename),
+    JSON.stringify(payload, null, 2),
+  );
+}
+
+// ── MCP proxy server ────────────────────────────────────────────────────
+
+/**
+ * Create an MCP/SSE HTTP server that proxies tool calls to the guild.
+ *
+ * For each tool in the config, registers an MCP tool whose handler
+ * forwards the call to the guild's Tool HTTP API via HTTP POST.
+ *
+ * Uses the low-level MCP Server class to register tools with raw
+ * JSON Schema (the serialized params from the config).
+ */
+export async function createProxyMcpHttpServer(
+  tools: SerializedTool[],
+  guildToolUrl: string,
+  sessionId: string,
+): Promise<McpProxyHandle> {
+  const server = new Server(
+    { name: 'nexus-guild-proxy', version: '0.0.0' },
+    { capabilities: { tools: {} } },
+  );
+
+  // Register tools/list handler — advertises all tools with their JSON Schema.
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: {
+        type: 'object' as const,
+        ...t.params,
+      },
+    })),
+  }));
+
+  // Register tools/call handler — proxies each call to the guild HTTP API.
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const toolName = request.params.name;
+    const params = request.params.arguments ?? {};
+
+    const route = toolNameToRoute(toolName);
+    const url = `${guildToolUrl}${route}`;
+
+    try {
+      const result = await callGuildHttpApi(url, sessionId, params);
+      const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+      return {
+        content: [{ type: 'text' as const, text }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: 'text' as const, text: `Error: ${message}` }],
+        isError: true,
+      };
+    }
+  });
+
+  // Wrap in HTTP server with SSE transport (same pattern as mcp-server.ts).
+  let transport: SSEServerTransport | null = null;
+
+  const httpServer = http.createServer(async (req, res) => {
+    try {
+      if (req.method === 'GET' && req.url === '/sse') {
+        transport = new SSEServerTransport('/message', res);
+        await server.connect(transport);
+      } else if (req.method === 'POST' && req.url?.startsWith('/message')) {
+        if (!transport) {
+          res.writeHead(400).end('No active SSE connection');
+          return;
+        }
+        await transport.handlePostMessage(req, res);
+      } else {
+        res.writeHead(404).end('Not found');
+      }
+    } catch {
+      if (!res.headersSent) {
+        res.writeHead(500).end('Internal Server Error');
+      }
+    }
+  });
+
+  await new Promise<void>((resolve) => {
+    httpServer.listen(0, '127.0.0.1', resolve);
+  });
+
+  const addr = httpServer.address();
+  if (!addr || typeof addr === 'string') {
+    throw new Error('Failed to get MCP proxy server address');
+  }
+
+  const url = `http://127.0.0.1:${addr.port}/sse`;
+
+  return {
+    url,
+    async close() {
+      if (transport) {
+        await transport.close();
+      }
+      await new Promise<void>((resolve, reject) => {
+        httpServer.close((err) => (err ? reject(err) : resolve()));
+      });
+    },
+  };
+}
+
+// ── SQLite transcript writer ────────────────────────────────────────────
+
+/** Minimal interface for the SQLite database used by the babysitter. */
+export interface TranscriptDb {
+  /** Write a transcript entry (id, content JSON). */
+  writeTranscript(sessionId: string, content: string): void;
+  /** Close the database connection. */
+  close(): void;
+}
+
+/**
+ * Open the guild's SQLite database for transcript streaming.
+ *
+ * Creates the database file and table if they don't exist.
+ * Enables WAL mode for concurrent read access by other processes
+ * (Oculus, CLI queries, other agents).
+ *
+ * Uses dynamic import() to load better-sqlite3 at runtime. This avoids
+ * requiring the native module at import time (beneficial for type-checking
+ * and testing).
+ */
+export async function openTranscriptDb(dbPath: string): Promise<TranscriptDb> {
+  const { default: Database } = await import('better-sqlite3');
+  return initTranscriptDb(Database, dbPath);
+}
+
+/**
+ * Initialize a TranscriptDb from a Database constructor.
+ *
+ * Shared logic between openTranscriptDb() and test injection.
+ * Exported for testing — allows injecting a mock Database constructor.
+ */
+export function initTranscriptDb(
+  DatabaseConstructor: new (path: string) => {
+    pragma(stmt: string): unknown;
+    prepare(sql: string): { run(...params: unknown[]): void };
+    exec(sql: string): void;
+    close(): void;
+  },
+  dbPath: string,
+): TranscriptDb {
+  const raw = new DatabaseConstructor(dbPath);
+  raw.pragma('journal_mode = WAL');
+  raw.exec(`
+    CREATE TABLE IF NOT EXISTS books_animator_transcripts (
+      id      TEXT PRIMARY KEY,
+      content TEXT NOT NULL
+    )
+  `);
+  const stmt = raw.prepare(
+    'INSERT OR REPLACE INTO books_animator_transcripts (id, content) VALUES (?, ?)',
+  );
+
+  return {
+    writeTranscript(sessionId: string, content: string) {
+      stmt.run(sessionId, content);
+    },
+    close() {
+      raw.close();
+    },
+  };
+}
+
+/**
+ * Write the current transcript to SQLite.
+ */
+export function writeTranscript(
+  db: TranscriptDb,
+  sessionId: string,
+  messages: Record<string, unknown>[],
+): void {
+  const content = JSON.stringify({ id: sessionId, messages });
+  db.writeTranscript(sessionId, content);
+}
+
+// ── Session lifecycle reporting ─────────────────────────────────────────
+
+/**
+ * Report "running" status to the guild via the session-running tool.
+ *
+ * If the guild is unreachable, writes the payload to the DLQ.
+ */
+export async function reportRunning(
+  config: BabysitterConfig,
+  claudePid: number,
+  timeoutMs?: number,
+): Promise<void> {
+  const route = toolNameToRoute('session-running');
+  const url = `${config.guildToolUrl}${route}`;
+  const payload = {
+    sessionId: config.sessionId,
+    startedAt: config.startedAt,
+    provider: config.provider,
+    metadata: config.metadata,
+    cancelMetadata: { pid: claudePid },
+  };
+
+  try {
+    await callGuildHttpApi(url, config.sessionId, payload, timeoutMs);
+  } catch {
+    writeToDlq(config.cwd, `${config.sessionId}-running.json`, payload);
+  }
+}
+
+/**
+ * Report the final session result to the guild via the session-record tool.
+ *
+ * If the guild is unreachable, writes the payload to the DLQ.
+ */
+export async function reportResult(
+  config: BabysitterConfig,
+  result: StreamJsonResult,
+  transcript: Record<string, unknown>[],
+  timeoutMs?: number,
+): Promise<void> {
+  const route = toolNameToRoute('session-record');
+  const url = `${config.guildToolUrl}${route}`;
+  const status = result.exitCode === 0 ? 'completed' : 'failed';
+  const output = extractFinalAssistantText(transcript);
+
+  const payload = {
+    sessionId: config.sessionId,
+    status,
+    exitCode: result.exitCode,
+    error: status === 'failed' ? `claude exited with code ${result.exitCode}` : undefined,
+    costUsd: result.costUsd,
+    tokenUsage: result.tokenUsage,
+    output,
+    providerSessionId: result.providerSessionId,
+    transcript,
+  };
+
+  try {
+    await callGuildHttpApi(url, config.sessionId, payload, timeoutMs);
+  } catch {
+    writeToDlq(config.cwd, `${config.sessionId}.json`, payload);
+  }
+}
+
+// ── Main babysitter function ────────────────────────────────────────────
+
+/**
+ * Run the session babysitter.
+ *
+ * This is the main orchestration function. It:
+ * 1. Opens SQLite for transcript streaming
+ * 2. Starts the MCP proxy server
+ * 3. Prepares session files (tmpDir, system prompt, mcp-config)
+ * 4. Spawns claude
+ * 5. Reports "running" status
+ * 6. Streams transcript to SQLite
+ * 7. Reports result on exit
+ * 8. Cleans up
+ */
+export async function runBabysitter(
+  config: BabysitterConfig,
+  deps?: {
+    /** Injected TranscriptDb for testing (avoids loading better-sqlite3). */
+    db?: TranscriptDb;
+    /** Override spawn for testing. */
+    spawnFn?: typeof spawn;
+    /** Override retry timeout for testing (default: 60_000ms). */
+    retryTimeoutMs?: number;
+  },
+): Promise<void> {
+  const spawnFn = deps?.spawnFn ?? spawn;
+  const retryTimeoutMs = deps?.retryTimeoutMs;
+  let db: TranscriptDb | null = null;
+  let mcpHandle: McpProxyHandle | null = null;
+  let tmpDir: string | null = null;
+  let claudeProc: ChildProcess | null = null;
+
+  try {
+    // 1. Open SQLite
+    db = deps?.db ?? await openTranscriptDb(config.dbPath);
+
+    // 2. Start MCP proxy server
+    mcpHandle = await createProxyMcpHttpServer(
+      config.tools,
+      config.guildToolUrl,
+      config.sessionId,
+    );
+
+    // 3. Prepare session files
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nsg-babysitter-'));
+
+    const args = [...config.claudeArgs];
+
+    // Write system prompt if present in args (already handled by claudeArgs)
+    // Write mcp-config pointing to the babysitter's MCP proxy server
+    const mcpConfig = {
+      mcpServers: {
+        'nexus-guild': {
+          type: 'sse',
+          url: mcpHandle.url,
+        },
+      },
+    };
+    const mcpConfigPath = path.join(tmpDir, 'mcp-config.json');
+    fs.writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig));
+    args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');
+
+    // Add autonomous mode flags
+    args.push(
+      '--print', '-',
+      '--output-format', 'stream-json',
+      '--verbose',
+    );
+
+    // 4. Spawn claude
+    claudeProc = spawnFn('claude', args, {
+      cwd: config.cwd,
+      stdio: ['pipe', 'pipe', 'inherit'],
+      env: { ...process.env, ...config.env },
+    });
+
+    // Pipe prompt to claude's stdin, then close
+    if (config.prompt) {
+      claudeProc.stdin!.write(config.prompt);
+    }
+    claudeProc.stdin!.end();
+
+    // 5. Report "running" status (don't await — fire and forget with retry)
+    const runningPromise = reportRunning(config, claudeProc.pid!, retryTimeoutMs).catch((err) => {
+      process.stderr.write(`[babysitter] Failed to report running: ${err}\n`);
+    });
+
+    // 6. Consume stdout, stream transcript
+    const acc: {
+      transcript: Record<string, unknown>[];
+      costUsd?: number;
+      tokenUsage?: StreamJsonResult['tokenUsage'];
+      providerSessionId?: string;
+    } = { transcript: [] };
+
+    let buffer = '';
+
+    claudeProc.stdout!.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString();
+      const prevLength = acc.transcript.length;
+      buffer = processNdjsonBuffer(buffer, (msg) => {
+        parseStreamJsonMessage(msg, acc);
+      });
+
+      // Write transcript to SQLite if new messages were added
+      if (acc.transcript.length > prevLength && db) {
+        writeTranscript(db, config.sessionId, acc.transcript);
+      }
+    });
+
+    // 7. Wait for claude to exit
+    const exitCode = await new Promise<number>((resolve, reject) => {
+      claudeProc!.on('error', (err) => {
+        reject(new Error(`Failed to spawn claude: ${err.message}`));
+      });
+      claudeProc!.on('close', (code) => {
+        resolve(code ?? 1);
+      });
+    });
+
+    // Ensure running report completed before recording result
+    await runningPromise;
+
+    // Build result
+    const result: StreamJsonResult = {
+      exitCode,
+      transcript: acc.transcript,
+      costUsd: acc.costUsd,
+      tokenUsage: acc.tokenUsage,
+      providerSessionId: acc.providerSessionId,
+    };
+
+    // 8. Report result
+    await reportResult(config, result, acc.transcript, retryTimeoutMs);
+  } catch (err) {
+    // Top-level error: attempt to report failure
+    const message = err instanceof Error ? err.message : String(err);
+
+    try {
+      const route = toolNameToRoute('session-record');
+      const url = `${config.guildToolUrl}${route}`;
+      await callGuildHttpApi(url, config.sessionId, {
+        sessionId: config.sessionId,
+        status: 'failed',
+        exitCode: 1,
+        error: message,
+      }, retryTimeoutMs);
+    } catch {
+      writeToDlq(config.cwd, `${config.sessionId}.json`, {
+        sessionId: config.sessionId,
+        status: 'failed',
+        exitCode: 1,
+        error: message,
+      });
+    }
+
+    throw err;
+  } finally {
+    // 9. Cleanup
+    await mcpHandle?.close().catch(() => {});
+    db?.close();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
+}
+
+// ── Entry point ─────────────────────────────────────────────────────────
+
+/**
+ * Script entry point — reads config from stdin and runs the babysitter.
+ *
+ * Only executes when this file is run directly (not when imported).
+ */
+async function main(): Promise<void> {
+  try {
+    const config = await readConfigFromStdin();
+    await runBabysitter(config);
+    process.exit(0);
+  } catch (err) {
+    process.stderr.write(
+      `[babysitter] Fatal error: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    process.exit(1);
+  }
+}
+
+// Check if this module is the entry point
+const isEntryPoint = process.argv[1] &&
+  (process.argv[1] === fileURLToPath(import.meta.url) ||
+   process.argv[1].endsWith('/babysitter.js'));
+
+if (isEntryPoint) {
+  main();
+}
