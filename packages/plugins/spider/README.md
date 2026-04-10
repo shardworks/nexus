@@ -1,6 +1,6 @@
 # `@shardworks/spider-apparatus`
 
-The Spider is the guild's rig execution engine. It spawns rigs for ready writs, drives engine pipelines to completion, and transitions writs via the Clerk when rigs finish. Each rig is an ordered pipeline of engine instances; the Spider's `crawl()` loop advances that pipeline one step at a time.
+The Spider is the guild's rig execution engine. It spawns rigs for open writs, drives engine pipelines to completion, and transitions writs via the Clerk when rigs finish. Each rig is an ordered pipeline of engine instances; the Spider's `crawl()` loop advances that pipeline one step at a time.
 
 The Spider maintains bidirectional CDC cascades between writs and rigs: when a rig reaches a terminal state, the associated writ is transitioned to match; when a writ reaches a terminal state (`completed`, `failed`, or `cancelled`), the associated rig is cancelled. Guards in both handlers break the circular cascade path so that a writ cancellation that triggers a rig cancellation does not attempt to re-transition the already-terminal writ.
 
@@ -44,7 +44,7 @@ CrawlResult variants:
 
 | Action | Description |
 |---|---|
-| `'rig-spawned'` | Created a new rig for a ready writ |
+| `'rig-spawned'` | Created a new rig for an open writ |
 | `'engine-started'` | Launched a quick engine's session |
 | `'engine-completed'` | An engine finished; rig still running |
 | `'engine-blocked'` | Engine entered blocked status |

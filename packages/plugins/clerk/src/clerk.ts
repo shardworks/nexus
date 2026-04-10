@@ -2,9 +2,9 @@
  * The Clerk — writ lifecycle management apparatus.
  *
  * The Clerk manages the lifecycle of writs: lightweight work orders that flow
- * through a fixed status machine (ready → active → completed/failed, or
- * ready/active → cancelled). Each writ has a type, a title, a body, and
- * optional codex and resolution fields.
+ * through a fixed status machine (new → open → completed/failed/cancelled).
+ * Each writ has a type, a title, a body, and optional codex and resolution
+ * fields.
  *
  * Writ types are validated against the guild config's writTypes field plus the
  * built-in type ('mandate'). An unknown type is rejected at post time.
@@ -37,7 +37,6 @@ import {
   writShow,
   writList,
   writEdit,
-  writAccept,
   writComplete,
   writFail,
   writCancel,
@@ -61,12 +60,10 @@ const BUILTIN_TYPES = new Set(['mandate']);
 // ── Status machine ───────────────────────────────────────────────────
 
 const ALLOWED_FROM: Record<WritStatus, WritStatus[]> = {
-  ready: ['new', 'waiting'],
-  active: ['ready'],
-  completed: ['ready', 'active'],
-  failed: ['active', 'waiting'],
-  cancelled: ['new', 'ready', 'active', 'waiting'],
-  waiting: ['new', 'ready'],
+  open: ['new'],
+  completed: ['open'],
+  failed: ['open'],
+  cancelled: ['new', 'open'],
   new: [],
 };
 
@@ -75,7 +72,7 @@ const TERMINAL_STATUSES = new Set<WritStatus>(['completed', 'failed', 'cancelled
 // ── Factory ──────────────────────────────────────────────────────────
 
 /** Parent statuses that allow adding children. */
-const CHILD_ALLOWED_PARENT_STATUSES = new Set<WritStatus>(['new', 'ready', 'waiting']);
+const CHILD_ALLOWED_PARENT_STATUSES = new Set<WritStatus>(['new', 'open']);
 
 export function createClerk(): Plugin {
   let stacks: StacksApi;
@@ -214,7 +211,7 @@ export function createClerk(): Plugin {
           const writ: WritDoc = {
             id: childId,
             type,
-            status: request.draft === true ? 'new' : 'ready',
+            status: request.draft === true ? 'new' : 'open',
             title: request.title,
             body: request.body,
             ...(codex !== undefined ? { codex } : {}),
@@ -225,14 +222,6 @@ export function createClerk(): Plugin {
 
           await txWrits.put(writ);
 
-          // Transition parent to waiting if it's in new or ready
-          if (parent.status === 'new' || parent.status === 'ready') {
-            await txWrits.patch(parent.id, {
-              status: 'waiting' as WritStatus,
-              updatedAt: new Date().toISOString(),
-            });
-          }
-
           return writ;
         });
       }
@@ -240,7 +229,7 @@ export function createClerk(): Plugin {
       const writ: WritDoc = {
         id: childId,
         type,
-        status: request.draft === true ? 'new' : 'ready',
+        status: request.draft === true ? 'new' : 'open',
         title: request.title,
         body: request.body,
         ...(codex !== undefined ? { codex } : {}),
@@ -401,12 +390,11 @@ export function createClerk(): Plugin {
       // Strip managed fields — callers cannot override id, status, or timestamps
       // controlled by the status machine.
       const { id: _id, status: _status, createdAt: _c, updatedAt: _u,
-        acceptedAt: _a, resolvedAt: _r, parentId: _p, ...safeFields } = (fields ?? {}) as WritDoc;
+        resolvedAt: _r, parentId: _p, ...safeFields } = (fields ?? {}) as WritDoc;
 
       const patch: Partial<Omit<WritDoc, 'id'>> = {
         status: to,
         updatedAt: now,
-        ...(to === 'active' ? { acceptedAt: now } : {}),
         ...(isTerminal ? { resolvedAt: now } : {}),
         ...safeFields,
       };
@@ -421,23 +409,13 @@ export function createClerk(): Plugin {
     if (!child.parentId) return;
 
     const parent = await writs.get(child.parentId);
-    if (!parent || parent.status !== 'waiting') return;
+    if (!parent || parent.status !== 'open') return;
 
     if (child.status === 'failed') {
       const childResolution = child.resolution ?? 'unknown';
       await api.transition(parent.id, 'failed', {
         resolution: `Child "${child.id}" failed: ${childResolution}`,
       });
-      return;
-    }
-
-    // completed or cancelled — check if all siblings are terminal
-    const children = await writs.find({ where: [['parentId', '=', parent.id]] });
-    const allTerminal = children.every((c) => TERMINAL_STATUSES.has(c.status));
-    const noneFailed = !children.some((c) => c.status === 'failed');
-
-    if (allTerminal && noneFailed) {
-      await api.transition(parent.id, 'ready');
     }
   }
 
@@ -490,7 +468,6 @@ export function createClerk(): Plugin {
           writShow,
           writList,
           writEdit,
-          writAccept,
           writComplete,
           writFail,
           writCancel,
@@ -506,7 +483,7 @@ export function createClerk(): Plugin {
 
       provides: api,
 
-      start(ctx: StartupContext): void {
+      async start(ctx: StartupContext): Promise<void> {
         const g = guild();
         stacks = g.apparatus<StacksApi>('stacks');
         writs = stacks.book<WritDoc>('clerk', 'writs');
@@ -546,6 +523,19 @@ export function createClerk(): Plugin {
             await handleParentTerminal(writ);
           }
         }, { failOnError: true });
+
+        // ── One-shot migration: collapse legacy statuses to 'open' ──
+        // Runs after CDC watcher registration so Stacks allows writes.
+        const legacyStatuses = ['ready', 'active', 'waiting'];
+        for (const oldStatus of legacyStatuses) {
+          const found = await writs.find({ where: [['status', '=', oldStatus]] });
+          for (const writ of found) {
+            await writs.patch(writ.id, {
+              status: 'open' as WritStatus,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+        }
       },
     },
   };

@@ -5,12 +5,10 @@ import type { ClerkApi } from '../types.ts';
 
 export default tool({
   name: 'writ-complete',
-  description: 'Complete a writ, transitioning it from ready or active to completed',
+  description: 'Complete a writ, transitioning it from open to completed',
   instructions:
     'Marks the writ as successfully completed. ' +
-    'Writs in ready or active status can be completed. ' +
-    'Undispatched writ types (e.g. quest) typically transition ready → completed directly; ' +
-    'dispatch-bound writs (e.g. mandate) usually flow ready → active → completed. ' +
+    'Writs in open status can be completed. ' +
     'Returns the updated writ.',
   params: {
     id: z.string().describe('Writ id'),

@@ -41,7 +41,7 @@ const mockClerkApi = {
   show: async (id: string) => ({
     id,
     type: 'brief',
-    status: 'ready' as const,
+    status: 'open' as const,
     title: `Brief for ${id}`,
     body: 'Body',
     codex: 'test-codex',
@@ -148,7 +148,7 @@ describe('plan-init engine', () => {
 
   it('creates a PlanDoc with status reading and yields planId', async () => {
     const engine = createPlanInitEngine(() => plansBook);
-    const writ = { id: 'w-abc', codex: 'my-codex', type: 'brief', status: 'ready', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
+    const writ = { id: 'w-abc', codex: 'my-codex', type: 'brief', status: 'open', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
 
     const result = await engine.run({ writ }, buildCtx());
 
@@ -165,7 +165,7 @@ describe('plan-init engine', () => {
 
   it('throws when writ has no codex', async () => {
     const engine = createPlanInitEngine(() => plansBook);
-    const writ = { id: 'w-abc', codex: undefined, type: 'brief', status: 'ready', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
+    const writ = { id: 'w-abc', codex: undefined, type: 'brief', status: 'open', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
 
     await assert.rejects(
       () => engine.run({ writ }, buildCtx()),
@@ -178,7 +178,7 @@ describe('plan-init engine', () => {
 
   it('throws when writ codex is empty string', async () => {
     const engine = createPlanInitEngine(() => plansBook);
-    const writ = { id: 'w-abc', codex: '   ', type: 'brief', status: 'ready', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
+    const writ = { id: 'w-abc', codex: '   ', type: 'brief', status: 'open', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
 
     await assert.rejects(
       () => engine.run({ writ }, buildCtx()),
@@ -191,7 +191,7 @@ describe('plan-init engine', () => {
 
   it('throws when a plan already exists for the writ', async () => {
     const engine = createPlanInitEngine(() => plansBook);
-    const writ = { id: 'w-dup', codex: 'codex-a', type: 'brief', status: 'ready', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
+    const writ = { id: 'w-dup', codex: 'codex-a', type: 'brief', status: 'open', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
 
     await engine.run({ writ }, buildCtx());
 

@@ -80,9 +80,7 @@ function createElement(tag) {
 function statusBadge(status) {
   const map = {
     new: 'badge badge--draft',
-    ready: 'badge',
-    active: 'badge badge--active',
-    waiting: 'badge badge--warning',
+    open: 'badge badge--active',
     completed: 'badge badge--success',
     failed: 'badge badge--error',
     cancelled: 'badge badge--warning',
@@ -236,11 +234,11 @@ function renderDetail(writ) {
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe('sortedFilteredWrits — hierarchy ordering', () => {
-  const rootA = { id: 'a', title: 'Alpha Root', type: 'mandate', status: 'active', createdAt: '2025-01-01' };
-  const rootB = { id: 'b', title: 'Beta Root', type: 'mandate', status: 'active', createdAt: '2025-01-02' };
-  const childA1 = { id: 'a1', title: 'Alpha Child 1', type: 'task', status: 'active', parentId: 'a', createdAt: '2025-01-03' };
-  const childA2 = { id: 'a2', title: 'Alpha Child 2', type: 'task', status: 'active', parentId: 'a', createdAt: '2025-01-04' };
-  const childB1 = { id: 'b1', title: 'Beta Child 1', type: 'task', status: 'active', parentId: 'b', createdAt: '2025-01-05' };
+  const rootA = { id: 'a', title: 'Alpha Root', type: 'mandate', status: 'open', createdAt: '2025-01-01' };
+  const rootB = { id: 'b', title: 'Beta Root', type: 'mandate', status: 'open', createdAt: '2025-01-02' };
+  const childA1 = { id: 'a1', title: 'Alpha Child 1', type: 'task', status: 'open', parentId: 'a', createdAt: '2025-01-03' };
+  const childA2 = { id: 'a2', title: 'Alpha Child 2', type: 'task', status: 'open', parentId: 'a', createdAt: '2025-01-04' };
+  const childB1 = { id: 'b1', title: 'Beta Child 1', type: 'task', status: 'open', parentId: 'b', createdAt: '2025-01-05' };
 
   it('happy path — children interleaved beneath parents', () => {
     const writs = [rootA, rootB];
@@ -342,20 +340,15 @@ describe('sortedFilteredWrits — hierarchy ordering', () => {
   });
 });
 
-describe('statusBadge — waiting status', () => {
-  it('maps waiting to badge badge--warning', () => {
-    const result = statusBadge('waiting');
-    assert.equal(result, '<span class="badge badge--warning">waiting</span>');
+describe('statusBadge — open status', () => {
+  it('maps open to badge badge--active', () => {
+    const result = statusBadge('open');
+    assert.equal(result, '<span class="badge badge--active">open</span>');
   });
 
   it('maps cancelled to badge badge--warning', () => {
     const result = statusBadge('cancelled');
     assert.equal(result, '<span class="badge badge--warning">cancelled</span>');
-  });
-
-  it('maps active to badge badge--active', () => {
-    const result = statusBadge('active');
-    assert.equal(result, '<span class="badge badge--active">active</span>');
   });
 
   it('maps unknown status to plain badge', () => {
@@ -409,10 +402,10 @@ describe('Children table rendering in detail view', () => {
     const writ = {
       id: 'parent-1',
       title: 'Parent Writ',
-      status: 'active',
+      status: 'open',
       body: 'body text',
       _fullChildren: [
-        { id: 'c1', title: 'Child 1', type: 'task', status: 'active', createdAt: '2025-01-01' },
+        { id: 'c1', title: 'Child 1', type: 'task', status: 'open', createdAt: '2025-01-01' },
         { id: 'c2', title: 'Child 2', type: 'task', status: 'completed', createdAt: '2025-01-02' },
         { id: 'c3', title: 'Child 3', type: 'bug', status: 'new', createdAt: '2025-01-03' },
       ],
@@ -447,7 +440,7 @@ describe('Children table rendering in detail view', () => {
     const writ = {
       id: 'parent-2',
       title: 'No Children',
-      status: 'active',
+      status: 'open',
       body: '',
       children: { summary: {}, items: [] },
     };
@@ -461,12 +454,12 @@ describe('Children table rendering in detail view', () => {
     const writ = {
       id: 'parent-3',
       title: 'Parent',
-      status: 'active',
+      status: 'open',
       body: '',
       _fullChildren: [
-        { id: 'c-early', title: 'Early', type: 'task', status: 'active', createdAt: '2025-01-01' },
-        { id: 'c-late', title: 'Late', type: 'task', status: 'active', createdAt: '2025-01-10' },
-        { id: 'c-mid', title: 'Mid', type: 'task', status: 'active', createdAt: '2025-01-05' },
+        { id: 'c-early', title: 'Early', type: 'task', status: 'open', createdAt: '2025-01-01' },
+        { id: 'c-late', title: 'Late', type: 'task', status: 'open', createdAt: '2025-01-10' },
+        { id: 'c-mid', title: 'Mid', type: 'task', status: 'open', createdAt: '2025-01-05' },
       ],
       children: { summary: {}, items: [] },
     };
@@ -488,9 +481,9 @@ describe('Parent link in detail view', () => {
     const writ = {
       id: 'child-w',
       title: 'Child Writ',
-      status: 'active',
+      status: 'open',
       body: '',
-      parent: { id: 'w-parent', title: 'Parent Writ', status: 'active' },
+      parent: { id: 'w-parent', title: 'Parent Writ', status: 'open' },
     };
 
     const html = renderDetail(writ);
@@ -508,7 +501,7 @@ describe('Parent link in detail view', () => {
     const writ = {
       id: 'root-w',
       title: 'Root Writ',
-      status: 'active',
+      status: 'open',
       body: '',
       parent: null,
     };
@@ -521,7 +514,7 @@ describe('Parent link in detail view', () => {
     const writ = {
       id: 'root-w2',
       title: 'Root Writ 2',
-      status: 'active',
+      status: 'open',
       body: '',
     };
 
@@ -533,9 +526,9 @@ describe('Parent link in detail view', () => {
     const writ = {
       id: 'child-w2',
       title: 'Child',
-      status: 'active',
+      status: 'open',
       body: '',
-      parent: { id: 'w-parent with spaces', title: 'Parent', status: 'ready' },
+      parent: { id: 'w-parent with spaces', title: 'Parent', status: 'open' },
     };
 
     const html = renderDetail(writ);

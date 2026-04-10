@@ -14,7 +14,7 @@ export default tool({
   description: "Execute one step of the Spider's crawl loop",
   instructions:
     'Runs a single crawl() step: collect a pending session result, run the next ' +
-    'ready engine, or spawn a rig for a ready writ — in that priority order. ' +
+    'ready engine, or spawn a rig for an open writ — in that priority order. ' +
     'Returns the action taken, or null if there is nothing to do.',
   params: {},
   permission: 'spider:write',

@@ -11,7 +11,7 @@
  * processGrafts— process pending graft requests queued by collect/run
  * checkBlocked — poll registered block type checkers; unblock engines when cleared
  * run          — execute the next pending engine (clockwork inline, quick → launch)
- * spawn        — create a new rig for a ready writ with no existing rig
+ * spawn        — create a new rig for an open writ with no existing rig
  *
  * CDC on the rigs book (Phase 1 cascade) transitions the associated writ
  * when a rig reaches a terminal state (completed or failed).
@@ -1805,8 +1805,7 @@ export function createSpider(): Plugin {
   /**
    * Phase 4 — spawn.
    *
-   * Find the oldest ready writ with no existing rig. Create a rig and
-   * transition the writ to active so the Clerk tracks it as in-progress.
+   * Find the oldest open writ with no existing rig. Create a rig for it.
    */
   async function trySpawn(): Promise<CrawlResult | null> {
     // Throttle: do not spawn new rigs if system-wide engine limit is reached.
@@ -1815,14 +1814,14 @@ export function createSpider(): Plugin {
     const allRunningRigs = await rigsBook.find({ where: [['status', '=', 'running']] });
     if (countRunningEngines(allRunningRigs) >= maxGlobal) return null;
 
-    // Find ready writs ordered by creation time (oldest first)
-    const readyWrits = await writsBook.find({
-      where: [['status', '=', 'ready']],
+    // Find open writs ordered by creation time (oldest first)
+    const openWrits = await writsBook.find({
+      where: [['status', '=', 'open']],
       orderBy: ['createdAt', 'asc'],
       limit: 10,
     });
 
-    for (const writ of readyWrits) {
+    for (const writ of openWrits) {
       // Check for existing rig
       const existing = await rigsBook.find({
         where: [['writId', '=', writ.id]],
@@ -1834,7 +1833,7 @@ export function createSpider(): Plugin {
       if (!template) {
         // Writ type has no rig template mapping — dispatch is opt-in. Skip
         // this writ and let it be handled by non-dispatch means (e.g. quest
-        // writs remain in `ready` for inquiry rather than execution).
+        // writs remain in `open` for inquiry rather than execution).
         continue;
       }
 
@@ -1854,19 +1853,6 @@ export function createSpider(): Plugin {
       };
 
       await rigsBook.put(rig);
-
-      // Transition writ to active so Clerk tracks it
-      try {
-        await clerk.transition(writ.id, 'active');
-      } catch (err) {
-        // Only swallow state-transition conflicts (writ already moved past 'ready')
-        if (err instanceof Error && err.message.includes('transition')) {
-          // Race condition — another spider got here first. The rig is already created,
-          // so we continue. The writ is already active or beyond.
-        } else {
-          throw err;
-        }
-      }
 
       return { action: 'rig-spawned', rigId, writId: writ.id };
     }

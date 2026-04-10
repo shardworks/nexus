@@ -403,10 +403,10 @@ describe('Spider', () => {
   // ── Spawn ──────────────────────────────────────────────────────────
 
   describe('walk() — spawn', () => {
-    it('spawns a rig for a ready writ and transitions writ to active', async () => {
+    it('spawns a rig for an open writ', async () => {
       const { clerk, spider, stacks } = fix;
       const writ = await postWrit(clerk);
-      assert.equal(writ.status, 'ready');
+      assert.equal(writ.status, 'open');
 
       const result = await spider.crawl();
       assert.ok(result !== null, 'expected a walk result');
@@ -419,9 +419,9 @@ describe('Spider', () => {
       assert.equal(rigs[0].status, 'running');
       assert.equal(rigs[0].engines.length, 5);
 
-      // Writ should now be active
+      // Writ should still be open
       const updatedWrit = await clerk.show(writ.id);
-      assert.equal(updatedWrit.status, 'active');
+      assert.equal(updatedWrit.status, 'open');
     });
 
     it('does not spawn a second rig for a writ that already has one', async () => {
@@ -434,7 +434,7 @@ describe('Spider', () => {
       assert.equal(rigs.length, 1, 'only one rig should exist');
     });
 
-    it('spawns rigs for the oldest ready writ first (FIFO)', async () => {
+    it('spawns rigs for the oldest open writ first (FIFO)', async () => {
       const { clerk, spider } = fix;
 
       // Small delay to ensure different createdAt timestamps
@@ -984,9 +984,9 @@ describe('Spider', () => {
       const { clerk, spider, stacks } = fix;
       const writ = await postWrit(clerk);
 
-      await spider.crawl(); // spawn (writ → active)
+      await spider.crawl(); // spawn
       const activeWrit = await clerk.show(writ.id);
-      assert.equal(activeWrit.status, 'active');
+      assert.equal(activeWrit.status, 'open');
 
       // Inject bad design to trigger failure
       const book = rigsBook(stacks);
@@ -1127,7 +1127,7 @@ describe('Spider', () => {
       const { clerk, spider, stacks } = fix;
       const writ = await postWrit(clerk, 'Full pipeline test');
 
-      await spider.crawl(); // spawn (writ → active)
+      await spider.crawl(); // spawn
 
       const book = rigsBook(stacks);
       const [rig0] = await book.list();
@@ -1204,7 +1204,7 @@ describe('Spider', () => {
       });
 
       const writ = await postWrit(clerk, 'Full pipeline stub seal');
-      await spider.crawl(); // spawn (writ → active)
+      await spider.crawl(); // spawn
 
       const book = rigsBook(stacks);
       const [rig0] = await book.list();
@@ -1951,7 +1951,7 @@ describe('Spider', () => {
   // ── Walk returns null ──────────────────────────────────────────────
 
   describe('walk() returns null', () => {
-    it('returns null when no rigs exist and no ready writs', async () => {
+    it('returns null when no rigs exist and no open writs', async () => {
       const result = await fix.spider.crawl();
       assert.equal(result, null);
     });
@@ -2071,10 +2071,10 @@ describe('Spider — template dispatch', () => {
     assert.equal(rigs[0].engines[0].id, 'only');
   });
 
-  it('leaves a writ in ready when its type has no rigTemplateMappings entry', async () => {
+  it('leaves a writ in open when its type has no rigTemplateMappings entry', async () => {
     // Dispatch is strictly opt-in. A writ type with no mapping is inert by
     // configuration — the Spider's crawl loop skips it and the writ remains
-    // in `ready` status. This is the substrate for quest writs and any other
+    // in `open` status. This is the substrate for quest writs and any other
     // type that should be tracked in the books without being executed.
     const fix = buildFixture({
       spider: {
@@ -2093,9 +2093,9 @@ describe('Spider — template dispatch', () => {
     const rigs = await rigsBook(stacks).list();
     assert.equal(rigs.length, 0, 'no rig should be created for unmapped writ type');
 
-    // Writ should still be in 'ready' — dispatch was skipped, not failed.
+    // Writ should still be in 'open' — dispatch was skipped, not failed.
     const writ = await clerk.show(posted.id);
-    assert.equal(writ.status, 'ready');
+    assert.equal(writ.status, 'open');
   });
 
   it('dispatches a mandate writ via the fixture auto-mapping convenience', async () => {
@@ -2112,7 +2112,7 @@ describe('Spider — template dispatch', () => {
     assert.equal(rigs[0].engines.length, 5, 'STANDARD_TEMPLATE produces 5 engines');
   });
 
-  it('leaves a writ in ready when no rigTemplates are configured at all', async () => {
+  it('leaves a writ in open when no rigTemplates are configured at all', async () => {
     // Override the fixture's default rigTemplates injection by setting rigTemplates to undefined.
     // With no templates and no mappings, an un-mapped writ type is inert — dispatch is skipped.
     const fix = buildFixture({ spider: { rigTemplates: undefined } });
@@ -2126,7 +2126,7 @@ describe('Spider — template dispatch', () => {
     assert.equal(rigs.length, 0);
 
     const writ = await clerk.show(posted.id);
-    assert.equal(writ.status, 'ready');
+    assert.equal(writ.status, 'open');
   });
 });
 
@@ -4271,8 +4271,7 @@ describe('Spider — engine blocking on external conditions', () => {
 
       // Create a real writ so the CDC handler can transition it when the rig fails.
       const writ = await fix.clerk.post({ title: 'Fail test writ', body: 'Body' });
-      // Transition to active so it can transition to failed (ready → active → failed)
-      await fix.clerk.transition(writ.id, 'active');
+      // Writ starts in 'open' — it can transition to failed directly.
 
       // Directly insert a rig with one blocked engine and one pending engine.
       // A third engine (running) will fail via its session, triggering failEngine.
@@ -4352,7 +4351,7 @@ describe('Spider — engine blocking on external conditions', () => {
   // ── CDC handler ignores blocked status (V22, R29) ──────────────────────
 
   describe('CDC handler does not fire for blocked rig status (V22, R29)', () => {
-    it('writ remains active when rig transitions to blocked — no CDC writ transition', async () => {
+    it('writ remains open when rig transitions to blocked — no CDC writ transition', async () => {
       const cdcBlockEngine: EngineDesign = {
         id: 'cdc-blk-engine',
         async run(_g: Record<string, unknown>, ctx: EngineRunContext) {
@@ -4373,18 +4372,18 @@ describe('Spider — engine blocking on external conditions', () => {
       );
 
       const writ = await fix.clerk.post({ title: 'CDC Writ', body: 'Body' });
-      await fix.spider.crawl(); // spawn (writ → active)
+      await fix.spider.crawl(); // spawn
       await fix.spider.crawl(); // run → rig-blocked
 
       const [rig] = await fix.spider.list();
       assert.equal(rig.status, 'blocked');
 
-      // Writ should remain 'active' — CDC ignores 'blocked' status
+      // Writ should remain 'open' — CDC ignores 'blocked' status
       const currentWrit = await fix.clerk.show(writ.id);
       assert.equal(
         currentWrit.status,
-        'active',
-        'writ should remain active when rig is blocked; CDC must not fire for blocked status',
+        'open',
+        'writ should remain open when rig is blocked; CDC must not fire for blocked status',
       );
     });
   });
@@ -4742,7 +4741,6 @@ describe('Spider — engine blocking on external conditions', () => {
     it('returns failed with terminal-mismatch reason when writ is failed but target is completed', async () => {
       const fix = buildBlockingFixture();
       const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
-      await fix.clerk.transition(writ.id, 'active');
       await fix.clerk.transition(writ.id, 'failed');
 
       const blockType = fix.spider.getBlockType('writ-status');
@@ -4758,7 +4756,6 @@ describe('Spider — engine blocking on external conditions', () => {
     it('returns cleared when writ is at failed status and target is failed (target match wins)', async () => {
       const fix = buildBlockingFixture();
       const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
-      await fix.clerk.transition(writ.id, 'active');
       await fix.clerk.transition(writ.id, 'failed');
 
       const blockType = fix.spider.getBlockType('writ-status');
@@ -4786,7 +4783,7 @@ describe('Spider — engine blocking on external conditions', () => {
     it('returns pending when writ is at non-terminal, non-target status', async () => {
       const fix = buildBlockingFixture();
       const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
-      // writ starts at 'ready' status, which is neither completed nor a terminal mismatch for 'completed' target
+      // writ starts at 'open' status, which is neither completed nor a terminal mismatch for 'completed' target
 
       const blockType = fix.spider.getBlockType('writ-status');
       assert.ok(blockType !== undefined);
@@ -4817,7 +4814,6 @@ describe('Spider — engine blocking on external conditions', () => {
       it('checker returns cleared when writ reaches target status', async () => {
         const fix = buildBlockingFixture();
         const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
-        await fix.clerk.transition(writ.id, 'active');
         await fix.clerk.transition(writ.id, 'completed', { resolution: 'done' });
 
         const blockType = fix.spider.getBlockType('writ-status');
@@ -5178,10 +5174,10 @@ describe('Kit contributions — rig templates and mappings', () => {
       assert.equal(rig!.engines[0].id, 'standard-engine');
     });
 
-    it('unmapped writ types are inert — crawl skips them and they stay in ready', async () => {
+    it('unmapped writ types are inert — crawl skips them and they stay in open', async () => {
       // Dispatch is strictly opt-in per writ type. A custom writ type with
       // no explicit mapping in rigTemplateMappings is not dispatched; the
-      // writ remains in 'ready' status for non-dispatch handling.
+      // writ remains in 'open' status for non-dispatch handling.
       const fix = buildFixture({
         spider: {
           rigTemplates: { standard: { engines: [{ id: 'std', designId: 'draft', givens: {} }] } },
@@ -5197,7 +5193,7 @@ describe('Kit contributions — rig templates and mappings', () => {
       const rig = await fix.spider.forWrit(writ.id);
       assert.equal(rig, null);
       const shown = await fix.clerk.show(writ.id);
-      assert.equal(shown.status, 'ready');
+      assert.equal(shown.status, 'open');
     });
   });
 
@@ -5347,7 +5343,7 @@ describe('Kit contributions — rig templates and mappings', () => {
   });
 
   describe('No template and no mapping (test 17)', () => {
-    it('leaves a writ in ready when no template, mapping, or default exists', async () => {
+    it('leaves a writ in open when no template, mapping, or default exists', async () => {
       // Config has no templates, no mappings, no default
       // Set rigTemplates to undefined to override the buildFixture default
       const fix = buildFixture({
@@ -5360,7 +5356,7 @@ describe('Kit contributions — rig templates and mappings', () => {
       // Opt-in dispatch: unmapped writ types are inert — crawl skips them.
       assert.equal(result, null);
       const writ = await fix.clerk.show(posted.id);
-      assert.equal(writ.status, 'ready');
+      assert.equal(writ.status, 'open');
     });
   });
 });
@@ -6565,7 +6561,7 @@ describe('${yields.*} reference support', () => {
           id: 'writ-abc',
           title: 'Test writ',
           body: 'Test body',
-          status: 'active',
+          status: 'open',
           createdAt: new Date().toISOString(),
         };
 
@@ -8192,7 +8188,6 @@ describe('Spider — rig cancellation', () => {
   it('cancel blocked rig — blocked engine gets cancelled with block cleared', async () => {
     const { stacks, spider, clerk } = fix;
     const writ = await postWrit(clerk);
-    await clerk.transition(writ.id, 'active');
 
     const book = rigsBook(stacks);
     const rigId = generateId('rig', 4);
@@ -8229,7 +8224,6 @@ describe('Spider — rig cancellation', () => {
   it('cancel rig rejects pending input requests', async () => {
     const { stacks, spider, clerk } = fix;
     const writ = await postWrit(clerk);
-    await clerk.transition(writ.id, 'active');
 
     const book = rigsBook(stacks);
     const rigId = generateId('rig', 4);
@@ -8275,7 +8269,6 @@ describe('Spider — rig cancellation', () => {
   it('cancel is idempotent on completed rig', async () => {
     const { stacks, spider, clerk } = fix;
     const writ = await postWrit(clerk);
-    await clerk.transition(writ.id, 'active');
 
     const book = rigsBook(stacks);
     const rigId = generateId('rig', 4);
@@ -8298,7 +8291,6 @@ describe('Spider — rig cancellation', () => {
   it('cancel is idempotent on already-cancelled rig', async () => {
     const { stacks, spider, clerk } = fix;
     const writ = await postWrit(clerk);
-    await clerk.transition(writ.id, 'active');
 
     const book = rigsBook(stacks);
     const rigId = generateId('rig', 4);
@@ -8330,7 +8322,6 @@ describe('Spider — rig cancellation', () => {
   it('tryCollect detects cancelled session → rig-completed cancelled', async () => {
     const { stacks, spider, clerk } = fix;
     const writ = await postWrit(clerk);
-    await clerk.transition(writ.id, 'active');
 
     const book = rigsBook(stacks);
     const rigId = generateId('rig', 4);
@@ -8381,7 +8372,6 @@ describe('Spider — rig cancellation', () => {
   it('tryCollect cancelled session rejects pending input requests', async () => {
     const { stacks, spider, clerk } = fix;
     const writ = await postWrit(clerk);
-    await clerk.transition(writ.id, 'active');
 
     const book = rigsBook(stacks);
     const rigId = generateId('rig', 4);
@@ -8443,7 +8433,6 @@ describe('Spider — rig cancellation', () => {
   it('CDC handler transitions writ to cancelled with error reason', async () => {
     const { stacks, spider, clerk } = fix;
     const writ = await postWrit(clerk);
-    await clerk.transition(writ.id, 'active');
 
     const book = rigsBook(stacks);
     const rigId = generateId('rig', 4);
@@ -8469,7 +8458,6 @@ describe('Spider — rig cancellation', () => {
   it('CDC handler cancelled without engine error uses "Rig cancelled" fallback', async () => {
     const { stacks, spider, clerk } = fix;
     const writ = await postWrit(clerk);
-    await clerk.transition(writ.id, 'active');
 
     const book = rigsBook(stacks);
     const rigId = generateId('rig', 4);
@@ -8529,7 +8517,6 @@ describe('Spider — rig cancellation', () => {
   it('cancel rig whose writ is already completed — rig transitions, writ untouched', async () => {
     const { stacks, spider, clerk } = fix;
     const writ = await postWrit(clerk);
-    await clerk.transition(writ.id, 'active');
     await clerk.transition(writ.id, 'completed');
 
     const book = rigsBook(stacks);
@@ -8559,7 +8546,6 @@ describe('Spider — rig cancellation', () => {
   it('cancel rig whose writ is already failed — rig transitions, writ untouched', async () => {
     const { stacks, spider, clerk } = fix;
     const writ = await postWrit(clerk);
-    await clerk.transition(writ.id, 'active');
     await clerk.transition(writ.id, 'failed');
 
     const book = rigsBook(stacks);
@@ -8585,11 +8571,10 @@ describe('Spider — rig cancellation', () => {
     assert.equal(updatedWrit.status, 'failed', 'writ should still be failed');
   });
 
-  // Test 15: Cancel rig with active writ — both transition (regression guard)
-  it('cancel rig with active writ — both rig and writ transition to cancelled', async () => {
+  // Test 15: Cancel rig with open writ — both transition (regression guard)
+  it('cancel rig with open writ — both rig and writ transition to cancelled', async () => {
     const { stacks, spider, clerk } = fix;
     const writ = await postWrit(clerk);
-    await clerk.transition(writ.id, 'active');
 
     const book = rigsBook(stacks);
     const rigId = generateId('rig', 4);
@@ -8850,7 +8835,7 @@ describe('Spider — rig cancellation', () => {
       await spider.crawl(); // spawn rig for writ1
       await spider.crawl(); // run engine 'only' in rig1 → launched (1 running)
 
-      // Now writ2 is ready, but system limit = 1 and we have 1 running engine
+      // Now writ2 is open, but system limit = 1 and we have 1 running engine
       const result = await spider.crawl();
       assert.equal(result, null, 'should not spawn second rig when at system limit');
 
@@ -8937,7 +8922,7 @@ describe('Spider — rig cancellation', () => {
       }
 
       assert.equal(totalRunning, 2, 'exactly 2 engines should be running');
-      // Remaining writs should either have no rig yet (still ready) or rig with pending engine
+      // Remaining writs should either have no rig yet (still open) or rig with pending engine
       // Since trySpawn is also throttled, we should have exactly 2 rigs
       assert.equal(allRigs.length, 2, 'only 2 rigs should be spawned (trySpawn throttled)');
     });
@@ -9106,12 +9091,11 @@ describe('Spider — rig cancellation', () => {
       tx.put({ ownerId: 'clerk', book: 'writs' }, {
         id: writId,
         type: 'mandate',
-        status: 'active',
+        status: 'open',
         title: 'zombie writ',
         body: 'b',
         createdAt: now,
         updatedAt: now,
-        acceptedAt: now,
       });
       tx.put({ ownerId: 'animator', book: 'sessions' }, {
         id: sessionId,
@@ -9389,7 +9373,6 @@ describe('Spider — rig cancellation', () => {
       },
     ): Promise<{ rigId: string; writId: string; sessionId: string }> {
       const writ = await clerk.post({ title: 'zombie writ', body: 'b' });
-      await clerk.transition(writ.id, 'active');
 
       const sessionId = generateId('ses', 4);
       const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
@@ -9603,7 +9586,6 @@ describe('Spider — rig cancellation', () => {
 
       // Also create a completed session on a different rig
       const writ2 = await clerk.post({ title: 'normal writ', body: 'b' });
-      await clerk.transition(writ2.id, 'active');
       const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
       const normalSessionId = generateId('ses', 4);
       await sessBook.put({
@@ -9677,7 +9659,6 @@ describe('Spider — rig cancellation', () => {
 
       // Plant the rig manually with a sessionId that has no matching session doc
       const writ = await clerk.post({ title: 'orphan writ', body: 'b' });
-      await clerk.transition(writ.id, 'active');
 
       const rigId = generateId('rig', 4);
       const rBook = stacks.book<RigDoc>('spider', 'rigs');
@@ -9807,10 +9788,9 @@ describe('Spider — writ→rig cascade', () => {
       ? await clerk.post({ title: 'Child writ', body: 'child', parentId: opts.parentId })
       : await postWrit(clerk);
 
-    // If the writ is in 'waiting' state (parent added a child), we need to
-    // transition it through to ready first — but the clerk handles that via
-    // post() which transitions parent to waiting and sets child to ready.
-    // For a standalone writ, status is 'ready'.
+    // Writs start in 'open' status (either standalone or child). The parent
+    // does not auto-transition when a child is added; children are created
+    // directly in 'open'. The spider's trySpawn picks up the 'open' writ.
 
     await spider.crawl(); // spawn rig
 
@@ -9992,7 +9972,8 @@ describe('Spider — writ→rig cascade', () => {
   it('blocked rig is cancelled when writ is cancelled', async () => {
     const { clerk, stacks } = fix;
     const writ = await postWrit(clerk);
-    await clerk.transition(writ.id, 'active');
+    // Writ is already 'open' — spider.trySpawn would normally pick it up,
+    // but we skip that path by constructing a blocked rig directly below.
 
     const book = rigsBook(stacks);
     const rigId = generateId('rig', 4);
@@ -10029,17 +10010,21 @@ describe('Spider — writ→rig cascade', () => {
   it('parent writ cancellation cascades to child rig via clerk parent→child cascade', async () => {
     const { clerk, spider, stacks } = fix;
 
-    // Create parent writ
-    const parentWrit = await postWrit(clerk, 'Parent writ');
+    // Create parent writ as a draft ('new') so the spider won't pick it up
+    // for dispatch. Under the new vocabulary the spider only dispatches
+    // writs in 'open' status; a draft parent keeps its own rig out of the
+    // picture so this test exercises only the parent→child cascade path.
+    const parentWrit = await clerk.post({ title: 'Parent writ', body: 'parent', draft: true });
+    assert.equal(parentWrit.status, 'new', 'parent should be a draft');
 
-    // Create child writ (clerk transitions parent to 'waiting')
+    // Create child writ — parent does not auto-transition (R5); child is 'open'
     const childWrit = await clerk.post({ title: 'Child writ', body: 'child', parentId: parentWrit.id });
-    assert.equal(childWrit.status, 'ready', 'child should be ready');
+    assert.equal(childWrit.status, 'open', 'child should be open');
 
     const parentAfterChild = await clerk.show(parentWrit.id);
-    assert.equal(parentAfterChild.status, 'waiting', 'parent should be waiting');
+    assert.equal(parentAfterChild.status, 'new', 'parent should remain new after child added');
 
-    // Spawn rig for child (parent is waiting, not ready, so no rig for parent)
+    // Spawn rig for child (parent is new, so spider skips it)
     await spider.crawl(); // spawns child rig
 
     const book = rigsBook(stacks);

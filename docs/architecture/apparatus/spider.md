@@ -23,7 +23,7 @@ requires: ['fabricator', 'clerk', 'stacks']
 ```
 
 - **The Fabricator** — resolves engine designs by `designId`.
-- **The Clerk** — queries ready writs; receives writ transitions via CDC; triggers rig cancellation via CDC on writs book.
+- **The Clerk** — queries open writs; receives writ transitions via CDC; triggers rig cancellation via CDC on writs book.
 - **The Stacks** — persists rigs book, reads sessions and writs books, hosts CDC handlers on both rigs and writs books.
 
 Engines pull their own apparatus dependencies (Scriptorium, Animator, Loom) via the `guild()` singleton — these are not Spider dependencies.
@@ -93,7 +93,7 @@ Each `crawl()` call does exactly one thing. The priority ordering:
 0. **Reap zombie engines.** Scan running rigs for engines with `status === 'running'` that are older than `zombieThresholdMs` (default 5 minutes). For each, look up the session and check `cancelMetadata.pid` liveness via `process.kill(pid, 0)`. If the process is dead, or no PID was registered, fail the engine with a `'zombie reaped'` error. This reclaims `maxConcurrentEngines` throttle slots silently consumed by dead processes. At startup, the same logic runs (without the age threshold) as fire-and-forget async to recover engines orphaned by a prior daemon crash.
 1. **Collect a completed engine.** Scan all running rigs for an engine with `status === 'running'`. Read the session record from the sessions book by `engine.sessionId`. If the session has reached a terminal status (`completed` or `failed`), update the engine: set its status and populate its yields (or error). **Yield assembly:** look up the `EngineDesign` by `designId` from the Fabricator. If the design defines a `collect(sessionId, givens, context)` method, call it to assemble the yields — passing the same givens and context that were passed to `run()`. Otherwise, use the generic default: `{ sessionId, sessionStatus, output? }`. This keeps engine-specific yield logic (e.g. parsing review findings) in the engine, not the Spider. If the engine failed, mark the rig `failed` (same transaction). If the completed engine is the terminal engine (`seal`), mark the rig `completed` (same transaction). Rig status changes trigger the CDC handler (see below). Returns `rig-completed` if the rig transitioned, otherwise `engine-completed`. This is the first priority because it unblocks downstream engines.
 2. **Run a ready engine.** An engine is ready when `status === 'pending'` and all engines in its `upstream` array have `status === 'completed'`. Look up the `EngineDesign` by `designId` from the Fabricator. Assemble givens (from givensSpec) and context (with upstream yields), then call `design.run(givens, context)`. For clockwork engines (`status: 'completed'` result): store the yields on the engine instance, mark it completed, and check for rig completion (same as step 1). Returns `engine-completed` (or `rig-completed` if this was the terminal engine). For quick engines (`status: 'launched'` result): store the `sessionId`, mark the engine `running`. Returns `engine-started`. Completion is collected on subsequent crawl calls via step 1.
-3. **Spawn a rig.** If there's a ready writ with no rig, look up its rig template via `rigTemplateMappings` (config or kit) for the writ's type. If a mapping exists, spawn the rig from the mapped template and return `rig-spawned`. If no mapping exists, skip the writ — dispatch is strictly opt-in per writ type, and unmapped types (e.g. `quest`) remain in `ready` for non-dispatch handling.
+3. **Spawn a rig.** If there's an open writ with no rig, look up its rig template via `rigTemplateMappings` (config or kit) for the writ's type. If a mapping exists, spawn the rig from the mapped template and return `rig-spawned`. If no mapping exists, skip the writ — dispatch is strictly opt-in per writ type, and unmapped types (e.g. `quest`) remain in `open` for non-dispatch handling.
 
 If nothing qualifies at any level, return null (the guild is idle or all work is blocked on running quick engines).
 
@@ -663,7 +663,7 @@ Quick engine "failure" definition: if the Animator session completes with `statu
 ```
 Spider
   ├── Fabricator  (resolve engine designs by designId)
-  ├── Clerk       (query ready writs, transition writ state via CDC, writ→rig cascade via CDC)
+  ├── Clerk       (query open writs, transition writ state via CDC, writ→rig cascade via CDC)
   ├── Stacks      (persist rigs book, read sessions/writs books, CDC handlers on rigs and writs books)
   │
   Engines (via guild() singleton, not Spider dependencies)

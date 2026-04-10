@@ -32,7 +32,7 @@ const clerk = guild().apparatus<ClerkApi>('clerk');
 
 ### `post(request): Promise<WritDoc>`
 
-Post a new commission, creating a writ in `ready` status.
+Post a new commission, creating a writ in `open` status.
 
 ```typescript
 const writ = await clerk.post({
@@ -53,10 +53,9 @@ const writ = await clerk.post({
 | `parentId` | `string` | Parent writ id for hierarchical decomposition (optional) |
 
 When `parentId` is provided:
-- The parent must exist and be in `new`, `ready`, or `waiting` status.
-- The parent is transitioned to `waiting` if it is in `new` or `ready`.
+- The parent must exist and be in `new` or `open` status.
 - The child inherits the parent's `codex` if no explicit codex is provided.
-- The entire operation (child creation + parent transition) is atomic.
+- The entire operation is atomic.
 
 Throws if the writ type is not declared in the guild config and is not a built-in type (`mandate`, `summon`).
 
@@ -69,8 +68,7 @@ Show a writ by id. Throws if not found.
 List writs with optional filters, ordered by `createdAt` descending (newest first).
 
 ```typescript
-const activeWrits = await clerk.list({ status: 'active', limit: 10 });
-const openWrits = await clerk.list({ status: ['ready', 'active', 'waiting'] });
+const openWrits = await clerk.list({ status: 'open', limit: 10 });
 const children = await clerk.list({ parentId: parent.id });
 ```
 
@@ -87,7 +85,7 @@ const children = await clerk.list({ parentId: parent.id });
 Count writs matching optional filters. Accepts the same filters as `list()` (except `limit` and `offset`).
 
 ```typescript
-const total = await clerk.count({ status: 'ready' });
+const total = await clerk.count({ status: 'open' });
 ```
 
 ### `listWritTypes(): WritTypeInfo[]`
@@ -143,9 +141,6 @@ At least one field besides `id` must be provided. Title and body can be edited i
 Transition a writ to a new status, optionally setting additional fields atomically.
 
 ```typescript
-// Accept
-await clerk.transition(id, 'active');
-
 // Complete with resolution
 await clerk.transition(id, 'completed', { resolution: 'Shipped to production' });
 
@@ -165,30 +160,23 @@ Throws if the transition is not legal for the writ's current status.
 ## Status Machine
 
 ```
-                    ┌────────────► waiting ──────────► ready
-                    │              (children          (all children
-                    │               added)             resolved)
-                    │                 │
-new ──► ready ──────┤──► active ──────┤──► completed
-  │       │         │      │          │
-  │       │         │      └──────────┤──► failed
-  │       │         │                 │
-  └───────┴─────────┴─────────────────┴──► cancelled
+new ──► open ──┬──► completed
+  │       │    │
+  │       │    ├──► failed
+  │       │    │
+  └───────┴────┴──► cancelled
 ```
 
 - `completed`, `failed`, and `cancelled` are **terminal** — no transitions out.
-- `waiting` is **non-terminal** — parents wait for children to resolve, then return to `ready`.
 
 ### Allowed transitions
 
 | To | From |
 |---|---|
-| `ready` | `new`, `waiting` |
-| `active` | `ready` |
-| `completed` | `ready`, `active` |
-| `failed` | `active`, `waiting` |
-| `cancelled` | `new`, `ready`, `active`, `waiting` |
-| `waiting` | `new`, `ready` |
+| `open` | `new` |
+| `completed` | `open` |
+| `failed` | `open` |
+| `cancelled` | `new`, `open` |
 
 ---
 
@@ -196,9 +184,8 @@ new ──► ready ──────┤──► active ──────┤�
 
 Writs can be organized into parent/child relationships for decomposing complex work:
 
-- **Creating children:** Pass `parentId` to `post()`. The parent transitions to `waiting`.
-- **Completion rollup:** When all children reach terminal status (none failed), the parent returns to `ready`.
-- **Failure cascade:** When a child fails, the parent is failed and remaining non-terminal siblings are cancelled.
+- **Creating children:** Pass `parentId` to `post()`. The parent stays in its current status.
+- **Failure cascade:** When a child fails and the parent is `open`, the parent is failed and remaining non-terminal siblings are cancelled.
 - **Cancellation cascade:** When a parent reaches terminal status, all non-terminal children are cancelled.
 - **Codex inheritance:** Children inherit the parent's codex if none is specified.
 - **Immutability:** `parentId` cannot be changed after creation.
@@ -251,11 +238,10 @@ The Clerk contributes books, tools, and pages to the guild:
 | `writ-show` | `clerk:read` | Show full detail for a writ (includes parent/children context) |
 | `writ-list` | `clerk:read` | List writs with optional filters (status, type, parentId) |
 | `writ-edit` | `clerk:write` | Edit a writ (title/body any status; type/codex draft only) |
-| `writ-accept` | `clerk:write` | Accept a writ (ready → active) |
-| `writ-complete` | `clerk:write` | Complete a writ (ready|active → completed) |
-| `writ-fail` | `clerk:write` | Fail a writ (active/waiting → failed) |
-| `writ-cancel` | `clerk:write` | Cancel a writ (new/ready/active/waiting → cancelled) |
-| `writ-publish` | `clerk:write` | Publish a draft writ (new → ready) |
+| `writ-complete` | `clerk:write` | Complete a writ (open → completed) |
+| `writ-fail` | `clerk:write` | Fail a writ (open → failed) |
+| `writ-cancel` | `clerk:write` | Cancel a writ (new/open → cancelled) |
+| `writ-publish` | `clerk:write` | Publish a draft writ (new → open) |
 | `writ-link` | `clerk:write` | Create a typed link between writs |
 | `writ-unlink` | `clerk:write` | Remove a typed link between writs |
 | `writ-types` | `clerk:read` | List available writ types |
@@ -265,7 +251,7 @@ The Clerk contributes books, tools, and pages to the guild:
 ## Key Types
 
 ```typescript
-type WritStatus = 'new' | 'ready' | 'active' | 'waiting' | 'completed' | 'failed' | 'cancelled';
+type WritStatus = 'new' | 'open' | 'completed' | 'failed' | 'cancelled';
 
 interface WritDoc {
   id: string;           // ULID-like, prefixed "w-"
@@ -277,7 +263,6 @@ interface WritDoc {
   parentId?: string;    // parent writ id (absent on root writs, immutable)
   createdAt: string;    // ISO timestamp
   updatedAt: string;    // ISO timestamp, updated on every mutation
-  acceptedAt?: string;  // ISO timestamp, set when transitioning to active
   resolvedAt?: string;  // ISO timestamp, set on any terminal transition
   resolution?: string;  // summary of how the writ resolved
 }

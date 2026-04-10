@@ -161,7 +161,7 @@ Tracked items — the Ledger's core table. Writs are typed, tree-structured reco
 | `type` | TEXT | NOT NULL | Writ type — guild-defined (e.g. `task`, `feature`) or built-in (`mandate`, `summon`) |
 | `title` | TEXT | NOT NULL | Human-readable summary |
 | `description` | TEXT | | Full description, acceptance criteria, etc. |
-| `status` | TEXT | NOT NULL, DEFAULT 'ready', CHECK | One of: `ready`, `active`, `pending`, `completed`, `failed`, `cancelled` |
+| `status` | TEXT | NOT NULL, DEFAULT 'open', CHECK | One of: `new`, `open`, `completed`, `failed`, `cancelled` |
 | `parent_id` | TEXT | FK → writs | Parent writ (null for root writs) |
 | `session_id` | TEXT | | Currently bound session (cleared on completion/interruption) |
 | `created_at` | TEXT | NOT NULL, DEFAULT now | |
@@ -329,20 +329,17 @@ posted → assigned → in_progress → completed
 ### Writ
 
 ```
-ready → active → completed
-               → failed → cancelled (cascade)
-               → pending → ready (when children complete)
-                         → completed (auto, if no standing order)
-ready → completed    (undispatched writ types, e.g. quest)
-ready → cancelled
+new  → open → completed
+            → failed
+            → cancelled
+new  → cancelled
 ```
 
-- **ready** — available for dispatch. Signals `{type}.ready` (e.g. `mandate.ready`, `task.ready`)
-- **active** — an anima is working on it (session bound)
-- **pending** — the anima called `complete-session` but child writs are still incomplete. Automatically transitions back to `ready` (or auto-completes) when all children finish.
-- **completed** — obligation fulfilled. Signals `{type}.completed`. Triggers completion rollup on parent.
-- **failed** — unrecoverable failure. Signals `{type}.failed`. Cascades cancellation to incomplete children.
-- **cancelled** — withdrawn, either directly or by cascade from a failed parent.
+- **new** — draft, held out of the queue until published.
+- **open** — available for dispatch. The Spider queries for open writs.
+- **completed** — obligation fulfilled. Signals `{type}.completed`.
+- **failed** — unrecoverable failure. Signals `{type}.failed`. Cascades cancellation to non-terminal children.
+- **cancelled** — withdrawn, either directly or by cascade from a failed/cancelled parent.
 
 ### Conversation
 

@@ -12,9 +12,9 @@ export default tool({
   params: {
     status: z
       .union([
-        z.enum(['new', 'ready', 'active', 'waiting', 'completed', 'failed', 'cancelled']),
+        z.enum(['new', 'open', 'completed', 'failed', 'cancelled']),
         z
-          .array(z.enum(['new', 'ready', 'active', 'waiting', 'completed', 'failed', 'cancelled']))
+          .array(z.enum(['new', 'open', 'completed', 'failed', 'cancelled']))
           .min(1),
       ])
       .optional()

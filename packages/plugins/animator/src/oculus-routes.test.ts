@@ -176,7 +176,7 @@ describe('Animator Oculus Routes', () => {
         id: 'w-abc123',
         title: 'Fix the bug',
         type: 'task',
-        status: 'active',
+        status: 'open',
       });
 
       // Create a session with metadata

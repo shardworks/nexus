@@ -10,22 +10,15 @@
  * A writ's position in its lifecycle.
  *
  * Transitions:
- *   new   → ready     (publish)   — draft held for review before entering the queue
- *   new   → cancelled (cancel)
- *   new   → waiting   (child added)
- *   ready → active    (accept)
- *   ready → waiting   (child added)
- *   waiting → ready   (all children terminal, none failed)
- *   waiting → failed  (child failed)
- *   ready → completed  (complete) — undispatched writ types, e.g. quest
- *   active → completed (complete)
- *   active → failed    (fail)
- *   ready | active | waiting → cancelled (cancel)
+ *   new  → open       (publish)   — draft enters the queue
+ *   new  → cancelled  (cancel)
+ *   open → completed  (complete)
+ *   open → failed     (fail)
+ *   open → cancelled  (cancel)
  *
  * completed, failed, cancelled are terminal — no further transitions.
- * waiting is non-terminal — parents wait for children to resolve.
  */
-export type WritStatus = 'new' | 'ready' | 'active' | 'waiting' | 'completed' | 'failed' | 'cancelled';
+export type WritStatus = 'new' | 'open' | 'completed' | 'failed' | 'cancelled';
 
 // ── Documents ────────────────────────────────────────────────────────
 
@@ -53,8 +46,6 @@ export interface WritDoc {
   createdAt: string;
   /** ISO timestamp of the last mutation. */
   updatedAt: string;
-  /** ISO timestamp when the writ was accepted (transitioned to active). */
-  acceptedAt?: string;
   /** ISO timestamp when the writ reached a terminal state. */
   resolvedAt?: string;
   /** Summary of how the writ resolved (set on any terminal transition). */
@@ -97,16 +88,15 @@ export interface PostCommissionRequest {
   /** Optional target codex name. */
   codex?: string;
   /**
-   * When true, the writ is created in 'new' (draft) status instead of 'ready'.
+   * When true, the writ is created in 'new' (draft) status instead of 'open'.
    * Draft writs are invisible to the Spider and must be explicitly published
-   * (new → ready) before they can be picked up for execution.
+   * (new → open) before they can be picked up for execution.
    * Defaults to false (writ enters the queue immediately).
    */
   draft?: boolean;
   /**
    * Create this writ as a child of the specified parent writ.
-   * The parent must be in new, ready, or waiting status.
-   * If the parent is in new or ready, it will be transitioned to waiting.
+   * The parent must be in new or open status.
    */
   parentId?: string;
 }
@@ -212,7 +202,7 @@ export interface WritTypeInfo {
  */
 export interface ClerkApi {
   /**
-   * Post a new commission, creating a writ in 'ready' status by default.
+   * Post a new commission, creating a writ in 'open' status by default.
    * If `request.draft` is true, the writ is created in 'new' status instead
    * and will not be picked up by the Spider until explicitly published.
    * Validates the writ type against declared types in guild config.
