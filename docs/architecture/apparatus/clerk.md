@@ -125,7 +125,7 @@ Permission: `clerk:write`
 
 ### `writ-complete` tool
 
-Mark a writ as successfully completed. Transitions `active → completed`.
+Mark a writ as successfully completed. Transitions `ready|active → completed`. Undispatched writ types (e.g. `quest`) typically transition `ready → completed` directly; dispatch-bound writs usually flow `ready → active → completed`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -215,6 +215,7 @@ interface ClerkApi {
    *   new     → waiting    (children added)
    *   new     → cancelled
    *   ready   → active
+   *   ready   → completed  (undispatched writ types, e.g. quest)
    *   ready   → waiting    (children added)
    *   ready   → cancelled
    *   active  → completed
@@ -495,7 +496,7 @@ The Clerk emits events into the Clockworks event stream at each status transitio
 | Commission posted | `commission.posted` | `{ writId, title, type, codex }` |
 | Writ signaled ready | `{type}.ready` | `{ writId, title, type, codex }` |
 | `ready → active` | `{type}.active` | `{ writId }` |
-| `active → completed` | `{type}.completed` | `{ writId, resolution }` |
+| `ready|active → completed` | `{type}.completed` | `{ writId, resolution }` |
 | `active → failed` | `{type}.failed` | `{ writId, resolution }` |
 | `* → cancelled` | `{type}.cancelled` | `{ writId, resolution }` |
 

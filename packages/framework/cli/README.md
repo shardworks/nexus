@@ -147,7 +147,7 @@ All commission and writ commands come from the `clerk` plugin.
 | `nsg writ list` | clerk | List writs with optional filters |
 | `nsg writ show` | clerk | Show full detail for a writ |
 | `nsg writ accept` | clerk | Accept a writ, transitioning it from ready to active |
-| `nsg writ complete` | clerk | Complete a writ, transitioning it from active to completed |
+| `nsg writ complete` | clerk | Complete a writ, transitioning it from ready or active to completed |
 | `nsg writ fail` | clerk | Fail a writ, transitioning it from active to failed |
 | `nsg writ cancel` | clerk | Cancel a writ, transitioning it from ready or active to cancelled |
 | `nsg writ link` | clerk | Link two writs with a typed relationship |

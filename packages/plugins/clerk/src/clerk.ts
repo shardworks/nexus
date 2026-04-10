@@ -62,7 +62,7 @@ const BUILTIN_TYPES = new Set(['mandate']);
 const ALLOWED_FROM: Record<WritStatus, WritStatus[]> = {
   ready: ['new', 'waiting'],
   active: ['ready'],
-  completed: ['active'],
+  completed: ['ready', 'active'],
   failed: ['active', 'waiting'],
   cancelled: ['new', 'ready', 'active', 'waiting'],
   waiting: ['new', 'ready'],

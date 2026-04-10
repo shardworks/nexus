@@ -17,6 +17,7 @@
  *   ready → waiting   (child added)
  *   waiting → ready   (all children terminal, none failed)
  *   waiting → failed  (child failed)
+ *   ready → completed  (complete) — undispatched writ types, e.g. quest
  *   active → completed (complete)
  *   active → failed    (fail)
  *   ready | active | waiting → cancelled (cancel)

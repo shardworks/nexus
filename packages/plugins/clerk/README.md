@@ -160,7 +160,7 @@ new ──► ready ──────┤──► active ──────┤�
 |---|---|
 | `ready` | `new`, `waiting` |
 | `active` | `ready` |
-| `completed` | `active` |
+| `completed` | `ready`, `active` |
 | `failed` | `active`, `waiting` |
 | `cancelled` | `new`, `ready`, `active`, `waiting` |
 | `waiting` | `new`, `ready` |
@@ -227,7 +227,7 @@ The Clerk contributes books, tools, and pages to the guild:
 | `writ-list` | `clerk:read` | List writs with optional filters (status, type, parentId) |
 | `writ-edit` | `clerk:write` | Edit a writ (title/body any status; type/codex draft only) |
 | `writ-accept` | `clerk:write` | Accept a writ (ready → active) |
-| `writ-complete` | `clerk:write` | Complete a writ (active → completed) |
+| `writ-complete` | `clerk:write` | Complete a writ (ready|active → completed) |
 | `writ-fail` | `clerk:write` | Fail a writ (active/waiting → failed) |
 | `writ-cancel` | `clerk:write` | Cancel a writ (new/ready/active/waiting → cancelled) |
 | `writ-publish` | `clerk:write` | Publish a draft writ (new → ready) |

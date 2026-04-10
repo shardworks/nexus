@@ -654,13 +654,15 @@ describe('Clerk', () => {
       assert.equal(completed.resolution, 'Task fulfilled');
     });
 
-    it('throws when completing a ready writ (must accept first)', async () => {
-      const writ = await clerk.post({ title: 'Not yet accepted', body: 'Body' });
+    it('transitions a ready writ directly to completed', async () => {
+      // Undispatched writ types (e.g. quest) never reach `active`, so
+      // ready → completed is a supported terminal transition. Dispatch-bound
+      // writs still typically flow ready → active → completed.
+      const writ = await clerk.post({ title: 'Ready then done', body: 'Body' });
 
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'completed'),
-        /Cannot transition/,
-      );
+      const completed = await clerk.transition(writ.id, 'completed');
+      assert.equal(completed.status, 'completed');
+      assert.ok(completed.resolvedAt);
     });
 
     it('throws when completing a cancelled writ', async () => {

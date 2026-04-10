@@ -333,6 +333,7 @@ ready → active → completed
                → failed → cancelled (cascade)
                → pending → ready (when children complete)
                          → completed (auto, if no standing order)
+ready → completed    (undispatched writ types, e.g. quest)
 ready → cancelled
 ```
 
