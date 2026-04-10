@@ -891,6 +891,55 @@ describe('Spider', () => {
       const result = await spider.crawl();
       assert.equal(result, null);
     });
+
+    it('does not collect a still-pending session (regression: pre-write SessionDoc)', async () => {
+      // Regression for the bug where launchDetached pre-wrote a 'pending'
+      // SessionDoc before spawning the babysitter, and tryCollect treated
+      // 'pending' as a terminal status. The result was that engines marked
+      // themselves complete with sessionStatus: 'pending' as their yields,
+      // and rigs finished with no actual work performed.
+      const { clerk, spider, stacks } = fix;
+      await postWrit(clerk);
+      await spider.crawl(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      const fakeSessionId = generateId('ses', 4);
+
+      const enginesWithSession = rig.engines.map((e: EngineInstance) => {
+        if (e.id === 'draft') {
+          return { ...e, status: 'completed' as const, yields: { draftId: 'x' } };
+        }
+        if (e.id === 'implement') {
+          return { ...e, status: 'running' as const, sessionId: fakeSessionId };
+        }
+        return e;
+      });
+      await book.patch(rig.id, { engines: enginesWithSession });
+
+      // Session is freshly pre-written but the babysitter hasn't yet
+      // transitioned it to 'running' or anything else.
+      const sessBook = stacks.book<{
+        id: string; status: string; startedAt: string; provider: string; [key: string]: unknown;
+      }>('animator', 'sessions');
+      await sessBook.put({
+        id: fakeSessionId,
+        status: 'pending',
+        startedAt: new Date().toISOString(),
+        provider: 'test',
+      });
+
+      // tryCollect must skip pending → no action this crawl.
+      const result = await spider.crawl();
+      assert.equal(result, null);
+
+      // Engine must still be running, not completed with bogus yields.
+      const [updated] = await book.list();
+      const impl = updated.engines.find((e: EngineInstance) => e.id === 'implement');
+      assert.equal(impl?.status, 'running');
+      assert.equal(impl?.yields, undefined);
+      assert.equal(impl?.completedAt, undefined);
+    });
   });
 
   // ── Failure propagation ────────────────────────────────────────────

@@ -1286,7 +1286,12 @@ export function createSpider(): Plugin {
         if (engine.status !== 'running' || !engine.sessionId) continue;
 
         const session = await sessionsBook.get(engine.sessionId);
-        if (!session || session.status === 'running') continue;
+        // Both 'pending' and 'running' are non-terminal — keep waiting.
+        // 'pending' was added when launchDetached started pre-writing the
+        // SessionDoc before spawning the babysitter; without this check we
+        // would treat freshly-pre-written sessions as already-completed and
+        // mark engines done with no actual work performed.
+        if (!session || session.status === 'running' || session.status === 'pending') continue;
 
         // Terminal session found — collect.
         const now = new Date().toISOString();

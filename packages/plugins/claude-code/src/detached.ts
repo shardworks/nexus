@@ -86,13 +86,23 @@ export function resolveDbPath(): string {
   return path.join(g.home, '.nexus', 'nexus.db');
 }
 
-/** Resolve the babysitter script path (compiled output). */
+/**
+ * Resolve the babysitter script path, picking the .ts source or .js compiled
+ * output to match how this module itself was loaded.
+ *
+ * - In compiled output (`dist/detached.js`) → returns `dist/babysitter.js`.
+ * - In source mode (`src/detached.ts` via --experimental-transform-types) →
+ *   returns `src/babysitter.ts`.
+ *
+ * The detection is by extension of the current module's URL. Without this,
+ * source-mode runs (e.g. `nsg start --foreground` in dev) try to spawn a
+ * non-existent `babysitter.js` and the babysitter dies with MODULE_NOT_FOUND
+ * before it can call session-running.
+ */
 export function resolveBabysitterPath(): string {
-  // import.meta.dirname is the directory of the current module.
-  // In compiled output: dist/detached.js → babysitter.js is a sibling.
-  // In source (ts): src/detached.ts → babysitter.ts is a sibling.
   const dir = import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname);
-  return path.join(dir, 'babysitter.js');
+  const isSource = import.meta.url.endsWith('.ts');
+  return path.join(dir, isSource ? 'babysitter.ts' : 'babysitter.js');
 }
 
 // ── BabysitterConfig builder ───────────────────────────────────────────
@@ -334,7 +344,15 @@ export function launchDetached(
 
   // Spawn the babysitter as a detached process.
   // stdio: ['pipe', 'ignore', 'inherit'] — config via stdin, no stdout, stderr to parent
-  const proc = spawnFn('node', [babysitterPath], {
+  //
+  // In source mode (.ts babysitter), forward the parent's execArgv so that
+  // --experimental-transform-types (and friends) reach the child. Without
+  // this, node would try to load a .ts file as plain CommonJS and crash.
+  const isSource = babysitterPath.endsWith('.ts');
+  const nodeArgs = isSource
+    ? [...process.execArgv, babysitterPath]
+    : [babysitterPath];
+  const proc = spawnFn(process.execPath, nodeArgs, {
     cwd: config.cwd,
     stdio: ['pipe', 'ignore', 'inherit'],
     detached: true,
