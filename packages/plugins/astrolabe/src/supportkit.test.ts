@@ -63,9 +63,9 @@ describe('Astrolabe supportKit shape', () => {
     const kit = getKit(plugin);
     const writTypes = kit.writTypes as Array<{ name: string; description?: string }>;
     assert.ok(Array.isArray(writTypes), 'writTypes must be an array');
-    assert.equal(writTypes.length, 1);
-    assert.equal(writTypes[0].name, 'brief');
-    assert.ok(writTypes[0].description);
+    const brief = writTypes.find(w => w.name === 'brief');
+    assert.ok(brief, 'brief writType must exist');
+    assert.ok(brief.description);
   });
 
   // ── R6: roles ──────────────────────────────────────────────────────

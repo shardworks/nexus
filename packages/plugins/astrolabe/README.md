@@ -142,6 +142,7 @@ The Astrolabe declares one book in Stacks:
 | Name | Description |
 |---|---|
 | `brief` | A patron brief triggering the planning pipeline |
+| `brief-ssr` | A patron brief triggering the single-shot reader planning pipeline (experimental) |
 
 ### Roles (contributed to Loom)
 
@@ -161,9 +162,20 @@ The Astrolabe declares one book in Stacks:
 
 | Template | Mapped Writ Type | Engines |
 |---|---|---|
-| `astrolabe.planning` | `brief` | plan-init → draft → reader → inventory-check → analyst → decision-review → spec-writer → seal |
+| `astrolabe.planning` | `brief` | plan-init → draft → reader → inventory-check → analyst → decision-review → spec-writer → spec-publish → seal |
+| `astrolabe.planning-ssr` | `brief-ssr` | Same pipeline as `planning`; reader engine uses a single-shot prompt (experimental) |
 
-The `resolutionEngine` is `spec-writer` — the rig's completion summary comes from the specification writer session.
+The `resolutionEngine` is `spec-writer` for both templates — the rig's completion summary comes from the specification writer session.
+
+#### `planning-ssr` (experimental)
+
+The `planning-ssr` template is an A/B experiment testing whether the reader stage can produce its inventory in 1–2 turns instead of ~25. The only difference from `planning` is the reader engine's prompt, which instructs the agent to batch all filesystem exploration into parallel tool calls and produce the inventory immediately. All other engines, wiring, and givens are identical. The reader engine retains `engineId: 'reader'` so session profiling is directly comparable between control and experiment.
+
+Post a `brief-ssr` writ to route through this template:
+
+```
+nsg commission-post --type brief-ssr --title "..." --body "..."
+```
 
 ### Tools
 
