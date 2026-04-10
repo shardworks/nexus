@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import path from 'node:path';
 import { toFlag, isBooleanSchema, findGroupPrefixes, coerceCliOpts, resolveGuildRoot } from './helpers.ts';
+import { buildToolCommand } from './program.ts';
 import type { ToolDefinition } from '@shardworks/tools-apparatus';
 
 // Helper to create a minimal ToolDefinition for testing
@@ -240,5 +241,193 @@ describe('resolveGuildRoot', () => {
   it('env var is used even when auto-detect would throw', () => {
     const result = resolveGuildRoot(undefined, '/env', autoDetectThrows);
     assert.equal(result, path.resolve('/env'));
+  });
+});
+
+// ── buildToolCommand ────────────────────────────────────────────────
+
+describe('buildToolCommand', () => {
+  it('generates mandatory option for non-optional string param', () => {
+    const tool: ToolDefinition = {
+      name: 'test-tool',
+      description: 'A test tool',
+      params: z.object({ id: z.string().describe('The id') }),
+      handler: async () => null,
+    };
+
+    const cmd = buildToolCommand('test', tool);
+    const option = cmd.options.find((o) => o.long === '--id');
+    assert.ok(option, '--id option should exist');
+    assert.ok(option.mandatory, '--id should be mandatory');
+  });
+
+  it('generates non-mandatory flags for optional string params', () => {
+    const tool: ToolDefinition = {
+      name: 'test-tool',
+      description: 'A test tool',
+      params: z.object({
+        id: z.string().describe('Writ id'),
+        title: z.string().optional().describe('New title'),
+        body: z.string().optional().describe('New body'),
+      }),
+      handler: async () => null,
+    };
+
+    const cmd = buildToolCommand('test', tool);
+    const titleOpt = cmd.options.find((o) => o.long === '--title');
+    const bodyOpt = cmd.options.find((o) => o.long === '--body');
+
+    assert.ok(titleOpt, '--title option should exist');
+    assert.ok(bodyOpt, '--body option should exist');
+    assert.ok(!titleOpt.mandatory, '--title should not be mandatory');
+    assert.ok(!bodyOpt.mandatory, '--body should not be mandatory');
+  });
+
+  it('generates all flags for a writ-edit-shaped tool (id, title, body, type, codex)', () => {
+    const tool: ToolDefinition = {
+      name: 'writ-edit',
+      description: 'Edit a writ',
+      params: z.object({
+        id: z.string().describe('Writ id'),
+        title: z.string().optional().describe('New title for the writ'),
+        body: z.string().optional().describe('New body text for the writ'),
+        type: z.string().optional().describe('New writ type'),
+        codex: z.string().optional().describe('New target codex name'),
+      }),
+      handler: async () => null,
+    };
+
+    const cmd = buildToolCommand('edit', tool);
+    const optionNames = cmd.options.map((o) => o.long);
+
+    assert.ok(optionNames.includes('--id'), 'should have --id');
+    assert.ok(optionNames.includes('--title'), 'should have --title');
+    assert.ok(optionNames.includes('--body'), 'should have --body');
+    assert.ok(optionNames.includes('--type'), 'should have --type');
+    assert.ok(optionNames.includes('--codex'), 'should have --codex');
+    assert.equal(cmd.options.length, 5, 'should have exactly 5 options');
+  });
+
+  it('generates boolean flags without <value> placeholder', () => {
+    const tool: ToolDefinition = {
+      name: 'test-tool',
+      description: 'A test tool',
+      params: z.object({
+        verbose: z.boolean().optional().describe('Verbose output'),
+      }),
+      handler: async () => null,
+    };
+
+    const cmd = buildToolCommand('test', tool);
+    const opt = cmd.options.find((o) => o.long === '--verbose');
+    assert.ok(opt, '--verbose option should exist');
+    // Boolean flags don't have a mandatory argument
+    assert.ok(!opt.required, '--verbose should not be required');
+  });
+
+  it('converts camelCase params to kebab-case flags', () => {
+    const tool: ToolDefinition = {
+      name: 'test-tool',
+      description: 'A test tool',
+      params: z.object({
+        writId: z.string().describe('The writ id'),
+        guildRoot: z.string().optional().describe('Guild root directory'),
+      }),
+      handler: async () => null,
+    };
+
+    const cmd = buildToolCommand('test', tool);
+    const optionNames = cmd.options.map((o) => o.long);
+
+    assert.ok(optionNames.includes('--writ-id'), 'writId should become --writ-id');
+    assert.ok(optionNames.includes('--guild-root'), 'guildRoot should become --guild-root');
+  });
+
+  it('uses Zod description as option description', () => {
+    const tool: ToolDefinition = {
+      name: 'test-tool',
+      description: 'A test tool',
+      params: z.object({
+        title: z.string().optional().describe('New title for the writ'),
+      }),
+      handler: async () => null,
+    };
+
+    const cmd = buildToolCommand('test', tool);
+    const opt = cmd.options.find((o) => o.long === '--title');
+    assert.ok(opt, '--title option should exist');
+    assert.equal(opt.description, 'New title for the writ');
+  });
+
+  it('parses --title from argv and passes it to the handler', async () => {
+    let captured: Record<string, unknown> | undefined;
+
+    const tool: ToolDefinition = {
+      name: 'writ-edit',
+      description: 'Edit a writ',
+      params: z.object({
+        id: z.string().describe('Writ id'),
+        title: z.string().optional().describe('New title'),
+        body: z.string().optional().describe('New body'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('edit', tool);
+    cmd.exitOverride(); // prevent process.exit
+    await cmd.parseAsync(['--id', 'w-123', '--title', 'Hello world'], { from: 'user' });
+
+    assert.ok(captured, 'handler should have been called');
+    assert.equal(captured['id'], 'w-123');
+    assert.equal(captured['title'], 'Hello world');
+    assert.equal(captured['body'], undefined);
+  });
+
+  it('parses --body without --title', async () => {
+    let captured: Record<string, unknown> | undefined;
+
+    const tool: ToolDefinition = {
+      name: 'writ-edit',
+      description: 'Edit a writ',
+      params: z.object({
+        id: z.string().describe('Writ id'),
+        title: z.string().optional().describe('New title'),
+        body: z.string().optional().describe('New body'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('edit', tool);
+    cmd.exitOverride();
+    await cmd.parseAsync(['--id', 'w-456', '--body', 'Some body text'], { from: 'user' });
+
+    assert.ok(captured, 'handler should have been called');
+    assert.equal(captured['id'], 'w-456');
+    assert.equal(captured['title'], undefined);
+    assert.equal(captured['body'], 'Some body text');
+  });
+
+  it('parses both --title and --body together', async () => {
+    let captured: Record<string, unknown> | undefined;
+
+    const tool: ToolDefinition = {
+      name: 'writ-edit',
+      description: 'Edit a writ',
+      params: z.object({
+        id: z.string().describe('Writ id'),
+        title: z.string().optional().describe('New title'),
+        body: z.string().optional().describe('New body'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('edit', tool);
+    cmd.exitOverride();
+    await cmd.parseAsync(['--id', 'w-789', '--title', 'My Title', '--body', 'My Body'], { from: 'user' });
+
+    assert.ok(captured, 'handler should have been called');
+    assert.equal(captured['id'], 'w-789');
+    assert.equal(captured['title'], 'My Title');
+    assert.equal(captured['body'], 'My Body');
   });
 });

@@ -91,7 +91,7 @@ const total = await clerk.count({ status: 'ready' });
 
 ### `edit(request): Promise<WritDoc>`
 
-Edit a draft writ (status: `new`). Only the provided fields are updated. Throws if the writ is not in `new` status.
+Edit a writ, updating one or more fields. Only the provided fields are updated.
 
 ```typescript
 const edited = await clerk.edit({
@@ -266,7 +266,7 @@ interface PostCommissionRequest {
 }
 
 interface EditWritRequest {
-  id: string;           // writ to edit (must be in 'new' status)
+  id: string;           // writ to edit
   title?: string;       // new title
   body?: string;        // new body text
   type?: string;        // new type (must be valid)

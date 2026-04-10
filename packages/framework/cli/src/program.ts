@@ -37,7 +37,7 @@ type ZodShape = Record<string, z.ZodTypeAny>;
  * The action handler validates params through the tool's Zod schema before
  * calling the handler — Zod error messages are surfaced cleanly.
  */
-function buildToolCommand(
+export function buildToolCommand(
   commandName: string,
   toolDef: ToolDefinition,
 ): Command {
