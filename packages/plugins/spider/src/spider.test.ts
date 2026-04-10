@@ -137,16 +137,51 @@ function buildFixture(
 
   const apparatusMap = new Map<string, unknown>();
 
+  const mergedSpider = {
+    rigTemplates: { default: STANDARD_TEMPLATE } as Record<string, RigTemplate>,
+    variables: { role: 'artificer' } as Record<string, unknown>,
+    ...(guildConfig.spider ?? {}),
+  };
+
+  // Convenience: if the merged rigTemplates contains a 'default' template
+  // and neither the test config nor any extra kit has provided an explicit
+  // mapping for 'mandate', auto-add { mandate: 'default' }. Preserves
+  // pre-refactor test behavior where an un-mapped 'mandate' writ would fall
+  // through to the 'default' template via the old catch-all lookup. Dispatch
+  // is now strictly opt-in; tests that need to exercise the "no mapping =
+  // skip" path should either omit the 'default' template or pass an explicit
+  // empty rigTemplateMappings.
+  const configHasMandateMapping = !!(
+    mergedSpider as { rigTemplateMappings?: Record<string, string> }
+  ).rigTemplateMappings?.mandate;
+  const kitHasMandateMapping = (extra.kits ?? []).some((k) => {
+    const kitBody = (k as { kit?: Record<string, unknown> }).kit;
+    const mappings = kitBody?.rigTemplateMappings as Record<string, string> | undefined;
+    return !!mappings?.mandate;
+  });
+  const apparatusHasMandateMapping = (extra.apparatuses ?? []).some((a) => {
+    const sk = (a as { apparatus?: { supportKit?: Record<string, unknown> } }).apparatus?.supportKit;
+    const mappings = sk?.rigTemplateMappings as Record<string, string> | undefined;
+    return !!mappings?.mandate;
+  });
+  if (
+    mergedSpider.rigTemplates?.default &&
+    !configHasMandateMapping &&
+    !kitHasMandateMapping &&
+    !apparatusHasMandateMapping
+  ) {
+    (mergedSpider as { rigTemplateMappings?: Record<string, string> }).rigTemplateMappings = {
+      ...((mergedSpider as { rigTemplateMappings?: Record<string, string> }).rigTemplateMappings ?? {}),
+      mandate: 'default',
+    };
+  }
+
   const fakeGuildConfig: GuildConfig = {
     name: 'test-guild',
     nexus: '0.0.0',
     plugins: [],
     ...guildConfig,
-    spider: {
-      rigTemplates: { default: STANDARD_TEMPLATE },
-      variables: { role: 'artificer' },
-      ...(guildConfig.spider ?? {}),
-    },
+    spider: mergedSpider,
   };
 
   const fakeGuild: Guild = {
@@ -1984,7 +2019,10 @@ describe('Spider — template dispatch', () => {
     assert.equal(rigs[0].engines[1].id, 'step2');
   });
 
-  it('falls back to default template when no type-specific match exists', async () => {
+  it('dispatches a writ via an explicit rigTemplateMappings entry', async () => {
+    // Dispatch is strictly opt-in. A writ type must have an explicit mapping
+    // in `rigTemplateMappings` (config or kit) to be dispatched; there is no
+    // "default template catches all" fallback.
     const defaultTemplate: RigTemplate = {
       engines: [
         { id: 'a', designId: 'draft', givens: { writ: '${writ}' } },
@@ -1993,7 +2031,10 @@ describe('Spider — template dispatch', () => {
       ],
     };
     const fix = buildFixture({
-      spider: { rigTemplates: { default: defaultTemplate } },
+      spider: {
+        rigTemplates: { default: defaultTemplate },
+        rigTemplateMappings: { mandate: 'default' },
+      },
     });
     const { clerk, spider, stacks } = fix;
 
@@ -2002,7 +2043,7 @@ describe('Spider — template dispatch', () => {
     assert.equal(result?.action, 'rig-spawned');
 
     const rigs = await rigsBook(stacks).list();
-    assert.equal(rigs[0].engines.length, 3, 'rig should use default template (3 engines)');
+    assert.equal(rigs[0].engines.length, 3, 'rig should use mapped template (3 engines)');
   });
 
   it('uses type-specific template over default when both exist', async () => {
@@ -2030,28 +2071,37 @@ describe('Spider — template dispatch', () => {
     assert.equal(rigs[0].engines[0].id, 'only');
   });
 
-  it('throws with "No rig template found" when writ type has no match and no default', async () => {
-    // Configure only a 'hotfix' template (not 'mandate' or 'default')
-    // Post a mandate writ (the default clerk type) — it has no matching template
+  it('leaves a writ in ready when its type has no rigTemplateMappings entry', async () => {
+    // Dispatch is strictly opt-in. A writ type with no mapping is inert by
+    // configuration — the Spider's crawl loop skips it and the writ remains
+    // in `ready` status. This is the substrate for quest writs and any other
+    // type that should be tracked in the books without being executed.
     const fix = buildFixture({
-      spider: { rigTemplates: { hotfix: { engines: [{ id: 'x', designId: 'seal', givens: {} }] } } },
-    });
-    const { clerk, spider } = fix;
-
-    await clerk.post({ title: 'Mandate writ', body: 'test' }); // defaults to 'mandate' type
-    await assert.rejects(
-      () => spider.crawl(),
-      (err: unknown) => {
-        assert.ok(err instanceof Error);
-        assert.ok(err.message.includes('No rig template found'), err.message);
-        return true;
+      spider: {
+        rigTemplates: { hotfix: { engines: [{ id: 'x', designId: 'seal', givens: {} }] } },
+        // Note: no rigTemplateMappings. The buildFixture auto-mapping helper
+        // only injects mandate→default when a 'default' template exists,
+        // which it does not here, so 'mandate' is genuinely unmapped.
       },
-    );
+    });
+    const { clerk, spider, stacks } = fix;
+
+    const posted = await clerk.post({ title: 'Mandate writ', body: 'test' }); // defaults to 'mandate'
+    const result = await spider.crawl();
+    assert.equal(result, null, 'crawl should return null — no writ was dispatched');
+
+    const rigs = await rigsBook(stacks).list();
+    assert.equal(rigs.length, 0, 'no rig should be created for unmapped writ type');
+
+    // Writ should still be in 'ready' — dispatch was skipped, not failed.
+    const writ = await clerk.show(posted.id);
+    assert.equal(writ.status, 'ready');
   });
 
-  it('uses default template when writ type does not match a specific key', async () => {
-    // buildFixture always provides rigTemplates.default = STANDARD_TEMPLATE via merge,
-    // so a mandate writ (the clerk default) uses the default template.
+  it('dispatches a mandate writ via the fixture auto-mapping convenience', async () => {
+    // buildFixture auto-adds { mandate: 'default' } when a 'default' template
+    // exists and no explicit mapping is provided. This mirrors the default
+    // test fixture which provides STANDARD_TEMPLATE as 'default'.
     const fix = buildFixture();
     const { clerk, spider, stacks } = fix;
 
@@ -2059,25 +2109,24 @@ describe('Spider — template dispatch', () => {
     const result = await spider.crawl();
     assert.equal(result?.action, 'rig-spawned');
     const rigs = await rigsBook(stacks).list();
-    assert.equal(rigs[0].engines.length, 5, 'default template produces 5 engines');
+    assert.equal(rigs[0].engines.length, 5, 'STANDARD_TEMPLATE produces 5 engines');
   });
 
-  it('throws with "No rig template found" when rigTemplates is not configured at all', async () => {
+  it('leaves a writ in ready when no rigTemplates are configured at all', async () => {
     // Override the fixture's default rigTemplates injection by setting rigTemplates to undefined.
-    // The spread in buildFixture resolves to: { rigTemplates: { default: STANDARD_TEMPLATE }, ...{ rigTemplates: undefined } }
-    // which gives { rigTemplates: undefined }, exercising the absent-rigTemplates code path.
+    // With no templates and no mappings, an un-mapped writ type is inert — dispatch is skipped.
     const fix = buildFixture({ spider: { rigTemplates: undefined } });
-    const { clerk, spider } = fix;
+    const { clerk, spider, stacks } = fix;
 
-    await clerk.post({ title: 'Test writ', body: 'test' });
-    await assert.rejects(
-      () => spider.crawl(),
-      (err: unknown) => {
-        assert.ok(err instanceof Error);
-        assert.ok(err.message.includes('No rig template found'), err.message);
-        return true;
-      },
-    );
+    const posted = await clerk.post({ title: 'Test writ', body: 'test' });
+    const result = await spider.crawl();
+    assert.equal(result, null);
+
+    const rigs = await rigsBook(stacks).list();
+    assert.equal(rigs.length, 0);
+
+    const writ = await clerk.show(posted.id);
+    assert.equal(writ.status, 'ready');
   });
 });
 
@@ -3235,7 +3284,10 @@ describe('Spider — engine blocking on external conditions', () => {
       name: 'test-guild',
       nexus: '0.0.0',
       plugins: [],
-      spider: { rigTemplates: { default: template } },
+      spider: {
+        rigTemplates: { default: template },
+        rigTemplateMappings: { mandate: 'default' },
+      },
     };
 
     const fakeGuild: Guild = {
@@ -5107,7 +5159,7 @@ describe('Kit contributions — rig templates and mappings', () => {
     });
   });
 
-  describe('V5, V6 — lookup chain (mappings and default template)', () => {
+  describe('V5, V6 — lookup chain (explicit mappings only)', () => {
     it('config rigTemplateMappings routes writ type (R10)', async () => {
       const configTemplate: RigTemplate = {
         engines: [{ id: 'standard-engine', designId: 'draft', givens: {} }],
@@ -5126,11 +5178,14 @@ describe('Kit contributions — rig templates and mappings', () => {
       assert.equal(rig!.engines[0].id, 'standard-engine');
     });
 
-    it('default mapping serves as fallback for unmatched writ type (R11)', async () => {
+    it('unmapped writ types are inert — crawl skips them and they stay in ready', async () => {
+      // Dispatch is strictly opt-in per writ type. A custom writ type with
+      // no explicit mapping in rigTemplateMappings is not dispatched; the
+      // writ remains in 'ready' status for non-dispatch handling.
       const fix = buildFixture({
         spider: {
           rigTemplates: { standard: { engines: [{ id: 'std', designId: 'draft', givens: {} }] } },
-          rigTemplateMappings: { default: 'standard' },
+          rigTemplateMappings: { mandate: 'standard' },
           variables: {},
         },
         clerk: { writTypes: [{ name: 'custom-type' }] },
@@ -5138,26 +5193,11 @@ describe('Kit contributions — rig templates and mappings', () => {
 
       const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'custom-type' });
       const result = await fix.spider.crawl();
-      assert.equal(result?.action, 'rig-spawned');
+      assert.equal(result, null, 'crawl should return null — custom-type is unmapped');
       const rig = await fix.spider.forWrit(writ.id);
-      assert.ok(rig);
-      assert.equal(rig!.engines[0].id, 'std');
-    });
-
-    it('uses default template when no mappings defined (R9 step 3)', async () => {
-      const fix = buildFixture({
-        spider: {
-          rigTemplates: { default: { engines: [{ id: 'fallback', designId: 'draft', givens: {} }] } },
-          variables: {},
-        },
-        clerk: { writTypes: [{ name: 'any-type' }] },
-      });
-
-      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'any-type' });
-      await fix.spider.crawl();
-      const rig = await fix.spider.forWrit(writ.id);
-      assert.ok(rig);
-      assert.equal(rig!.engines[0].id, 'fallback');
+      assert.equal(rig, null);
+      const shown = await fix.clerk.show(writ.id);
+      assert.equal(shown.status, 'ready');
     });
   });
 
@@ -5307,7 +5347,7 @@ describe('Kit contributions — rig templates and mappings', () => {
   });
 
   describe('No template and no mapping (test 17)', () => {
-    it('throws with descriptive error when no template found', async () => {
+    it('leaves a writ in ready when no template, mapping, or default exists', async () => {
       // Config has no templates, no mappings, no default
       // Set rigTemplates to undefined to override the buildFixture default
       const fix = buildFixture({
@@ -5315,11 +5355,12 @@ describe('Kit contributions — rig templates and mappings', () => {
         clerk: { writTypes: [{ name: 'orphan-type' }] },
       });
 
-      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'orphan-type' });
-      await assert.rejects(
-        () => fix.spider.crawl(),
-        /orphan-type/,
-      );
+      const posted = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'orphan-type' });
+      const result = await fix.spider.crawl();
+      // Opt-in dispatch: unmapped writ types are inert — crawl skips them.
+      assert.equal(result, null);
+      const writ = await fix.clerk.show(posted.id);
+      assert.equal(writ.status, 'ready');
     });
   });
 });
@@ -5693,7 +5734,11 @@ describe('${yields.*} reference support', () => {
         name: 'test-guild',
         nexus: '0.0.0',
         plugins: [],
-        spider: { rigTemplates: { default: template }, variables: {} },
+        spider: {
+          rigTemplates: { default: template },
+          variables: {},
+          rigTemplateMappings: { mandate: 'default' },
+        },
       };
 
       const fakeGuild: Guild = {
@@ -7788,7 +7833,10 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
         name: 'test-guild',
         nexus: '0.0.0',
         plugins: [],
-        spider: { rigTemplates: { default: template } },
+        spider: {
+          rigTemplates: { default: template },
+          rigTemplateMappings: { mandate: 'default' },
+        },
       };
 
       let sessionId: string | null = null;

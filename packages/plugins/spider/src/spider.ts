@@ -1112,10 +1112,17 @@ class RigTemplateRegistry {
   }
 
   /**
-   * Look up the rig template for a given writ type using the full precedence chain.
-   * R9 precedence: config mapping → kit mapping → config 'default' mapping → kit 'default' mapping → 'default' template → throw
+   * Look up the rig template for a given writ type.
+   *
+   * Dispatch is strictly opt-in: a writ type must have an explicit mapping
+   * in `rigTemplateMappings` (config or kit) to be dispatched. Writ types
+   * with no mapping return `undefined` and the caller should skip dispatch,
+   * leaving the writ for non-dispatch handling (e.g. quest writs tracked
+   * for inquiry rather than execution).
+   *
+   * Precedence: config mapping → kit mapping → undefined.
    */
-  lookup(writType: string): RigTemplate {
+  lookup(writType: string): RigTemplate | undefined {
     // Step 1: Config mapping for this specific writ type
     const configMapped = this.configMappings.get(writType);
     if (configMapped !== undefined) {
@@ -1131,31 +1138,8 @@ class RigTemplateRegistry {
       if (t) return t;
     }
 
-    // Steps 1-2 for 'default' fallback (only when writType is not 'default')
-    if (writType !== 'default') {
-      // Config mapping for 'default'
-      const configDefault = this.configMappings.get('default');
-      if (configDefault !== undefined) {
-        const t = this.templates.get(configDefault);
-        if (t) return t;
-      }
-
-      // Kit mapping for 'default'
-      const kitDefault = this.kitMappings.get('default');
-      if (kitDefault !== undefined) {
-        const t = this.templates.get(kitDefault);
-        if (t) return t;
-      }
-    }
-
-    // Step 3: Template named 'default' in merged registry
-    const defaultTemplate = this.templates.get('default');
-    if (defaultTemplate) return defaultTemplate;
-
-    // Step 4: Throw
-    throw new Error(
-      `[spider] No rig template found for writ type "${writType}" and no "default" template or mapping configured.`
-    );
+    // No explicit mapping — writ type is inert by configuration, skip dispatch.
+    return undefined;
   }
 
   /**
@@ -1771,8 +1755,15 @@ export function createSpider(): Plugin {
       });
       if (existing.length > 0) continue;
 
-      const rigId = generateId('rig', 4);
       const template = rigTemplateRegistry.lookup(writ.type);
+      if (!template) {
+        // Writ type has no rig template mapping — dispatch is opt-in. Skip
+        // this writ and let it be handled by non-dispatch means (e.g. quest
+        // writs remain in `ready` for inquiry rather than execution).
+        continue;
+      }
+
+      const rigId = generateId('rig', 4);
       const { engines, resolutionEngineId } = buildFromTemplate(template, {
         writ,
         spiderConfig,
