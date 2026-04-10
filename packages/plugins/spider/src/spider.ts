@@ -1814,9 +1814,20 @@ export function createSpider(): Plugin {
     const allRunningRigs = await rigsBook.find({ where: [['status', '=', 'running']] });
     if (countRunningEngines(allRunningRigs) >= maxGlobal) return null;
 
-    // Find open writs ordered by creation time (oldest first)
+    // Only consider writ types that have a rig template mapping. Rig dispatch
+    // is opt-in per writ type; filtering at the query level (rather than
+    // inside the loop) prevents head-of-line blocking when non-dispatchable
+    // writs (e.g. quests) accumulate in `open` older than dispatchable ones
+    // and fill the page of 10.
+    const dispatchableTypes = Object.keys(rigTemplateRegistry.listTemplateMappings());
+    if (dispatchableTypes.length === 0) return null;
+
+    // Find open writs of dispatchable types, ordered by creation time (oldest first)
     const openWrits = await writsBook.find({
-      where: [['status', '=', 'open']],
+      where: [
+        ['status', '=', 'open'],
+        ['type', 'IN', dispatchableTypes],
+      ],
       orderBy: ['createdAt', 'asc'],
       limit: 10,
     });
@@ -1829,12 +1840,15 @@ export function createSpider(): Plugin {
       });
       if (existing.length > 0) continue;
 
+      // The query-level type filter above guarantees this lookup succeeds.
+      // A null here would mean the registry's mappings diverged from what
+      // listTemplateMappings() returned mid-crawl — an invariant violation.
       const template = rigTemplateRegistry.lookup(writ.type);
       if (!template) {
-        // Writ type has no rig template mapping — dispatch is opt-in. Skip
-        // this writ and let it be handled by non-dispatch means (e.g. quest
-        // writs remain in `open` for inquiry rather than execution).
-        continue;
+        throw new Error(
+          `[spider] trySpawn: writ type "${writ.type}" passed the dispatchable-types filter but has no rig template mapping. ` +
+          `This is an invariant violation in rigTemplateRegistry.`,
+        );
       }
 
       const rigId = generateId('rig', 4);
