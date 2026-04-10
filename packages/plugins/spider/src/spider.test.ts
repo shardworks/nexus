@@ -9076,4 +9076,710 @@ describe('Spider — rig cancellation', () => {
       assert.equal(allRigs.length, 3, 'default limit should cap at 3 spawned rigs');
     });
   });
+
+  // ── Zombie engine detection and reaping ──────────────────────────────
+
+  describe('zombie engine detection — startup recovery', () => {
+    afterEach(() => {
+      clearGuild();
+    });
+
+    /**
+     * Helper: seed a zombie rig + session + writ directly into the memory
+     * backend via a backend transaction. This bypasses the stacks CDC lock,
+     * allowing data to exist BEFORE spider starts (so startup recovery finds it).
+     */
+    function seedZombieViaBackend(
+      memBackend: InstanceType<typeof MemoryBackend>,
+      opts: {
+        sessionStatus: 'pending' | 'running' | 'completed' | 'failed';
+        cancelMetadata?: Record<string, unknown>;
+      },
+    ): { rigId: string; writId: string; sessionId: string } {
+      const writId = generateId('w', 4);
+      const sessionId = generateId('ses', 4);
+      const rigId = generateId('rig', 4);
+      const now = new Date().toISOString();
+      const oldTime = new Date(Date.now() - 600_000).toISOString();
+
+      const tx = memBackend.beginTransaction();
+      tx.put({ ownerId: 'clerk', book: 'writs' }, {
+        id: writId,
+        type: 'mandate',
+        status: 'active',
+        title: 'zombie writ',
+        body: 'b',
+        createdAt: now,
+        updatedAt: now,
+        acceptedAt: now,
+      });
+      tx.put({ ownerId: 'animator', book: 'sessions' }, {
+        id: sessionId,
+        status: opts.sessionStatus,
+        startedAt: oldTime,
+        provider: 'mock',
+        ...(opts.cancelMetadata ? { cancelMetadata: opts.cancelMetadata } : {}),
+      });
+      tx.put({ ownerId: 'spider', book: 'rigs' }, {
+        id: rigId,
+        writId,
+        status: 'running',
+        createdAt: now,
+        engines: [
+          {
+            id: 'draft',
+            designId: 'draft',
+            status: 'running',
+            upstream: [],
+            givensSpec: {},
+            sessionId,
+            startedAt: oldTime,
+          },
+          {
+            id: 'implement',
+            designId: 'implement',
+            status: 'pending',
+            upstream: ['draft'],
+            givensSpec: {},
+          },
+        ],
+      });
+      tx.commit();
+      return { rigId, writId, sessionId };
+    }
+
+    /**
+     * Helper: build a fixture manually so we can seed zombie data into the
+     * backend BEFORE starting spider (so the startup recovery finds it).
+     */
+    function buildStartupFixture(
+      seedFn: (memBackend: InstanceType<typeof MemoryBackend>) => void,
+    ): { stacks: StacksApi; memBackend: InstanceType<typeof MemoryBackend> } {
+      const memBackend = new MemoryBackend();
+      const stacksPlugin = createStacksApparatus(memBackend);
+      const clerkPlugin = createClerk();
+      const fabricatorPlugin = createFabricator();
+      const spiderPlugin = createSpider();
+
+      if (!('apparatus' in stacksPlugin)) throw new Error('stacks must be apparatus');
+      if (!('apparatus' in clerkPlugin)) throw new Error('clerk must be apparatus');
+      if (!('apparatus' in fabricatorPlugin)) throw new Error('fabricator must be apparatus');
+      if (!('apparatus' in spiderPlugin)) throw new Error('spider must be apparatus');
+
+      const stacksApparatus = stacksPlugin.apparatus;
+      const clerkApparatus = clerkPlugin.apparatus;
+      const fabricatorApparatus = fabricatorPlugin.apparatus;
+      const spiderApparatus = spiderPlugin.apparatus;
+
+      const apparatusMap = new Map<string, unknown>();
+      const fakeGuildConfig: GuildConfig = {
+        name: 'test-guild',
+        nexus: '0.0.0',
+        plugins: [],
+        spider: {
+          rigTemplates: { default: STANDARD_TEMPLATE },
+          rigTemplateMappings: { mandate: 'default' },
+          variables: { role: 'artificer' },
+        },
+      };
+
+      const fakeGuild: Guild = {
+        home: '/tmp/test-guild',
+        apparatus<T>(name: string): T {
+          const api = apparatusMap.get(name);
+          if (!api) throw new Error(`Apparatus "${name}" not found`);
+          return api as T;
+        },
+        config<T>(): T { return {} as T; },
+        writeConfig() {},
+        guildConfig() { return fakeGuildConfig; },
+        kits(): LoadedKit[] { return []; },
+        apparatuses(): LoadedApparatus[] { return []; },
+        startupWarnings() { return []; },
+      };
+
+      setGuild(fakeGuild);
+
+      const noopCtx = { on: () => {}, kits: () => [] as KitEntry[] };
+      stacksApparatus.start(noopCtx);
+      const stacks = stacksApparatus.provides as StacksApi;
+      apparatusMap.set('stacks', stacks);
+
+      memBackend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
+        indexes: ['status', 'type', 'createdAt', ['status', 'type'], ['status', 'createdAt']],
+      });
+      memBackend.ensureBook({ ownerId: 'spider', book: 'rigs' }, {
+        indexes: ['status', 'writId', ['status', 'writId'], 'createdAt'],
+      });
+      memBackend.ensureBook({ ownerId: 'spider', book: 'input-requests' }, {
+        indexes: ['status', 'rigId', 'engineId', 'createdAt', ['rigId', 'engineId', 'status']],
+      });
+      memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, {
+        indexes: ['startedAt', 'status'],
+      });
+
+      // Seed zombie data BEFORE spider starts (bypasses CDC lock)
+      seedFn(memBackend);
+
+      const mockAnimatorApi: AnimatorApi = {
+        summon(): AnimateHandle {
+          async function* emptyChunks(): AsyncIterable<SessionChunk> {}
+          return { sessionId: 'x', chunks: emptyChunks(), result: Promise.resolve({} as SessionResult) };
+        },
+        animate(): AnimateHandle { throw new Error('not used'); },
+        subscribeToSession() { return null; },
+        async cancel(sessionId: string): Promise<SessionDoc> {
+          return { id: sessionId, status: 'cancelled' } as SessionDoc;
+        },
+      };
+      apparatusMap.set('animator', mockAnimatorApi);
+
+      clerkApparatus.start(noopCtx);
+      apparatusMap.set('clerk', clerkApparatus.provides);
+
+      const spiderAsLoaded: LoadedApparatus = {
+        packageName: '@shardworks/spider-apparatus',
+        id: 'spider',
+        version: '0.0.0',
+        apparatus: spiderApparatus,
+      };
+      const fabricatorKitEntries = buildKitEntries([], [spiderAsLoaded]);
+      const { ctx: fabricatorCtx } = buildCtx(fabricatorKitEntries);
+      fabricatorApparatus.start(fabricatorCtx);
+      apparatusMap.set('fabricator', fabricatorApparatus.provides);
+
+      // Start spider — startup recovery fires as fire-and-forget async
+      const spiderKitEntries = buildKitEntries([], [spiderAsLoaded]);
+      const { ctx: spiderCtx } = buildCtx(spiderKitEntries);
+      spiderApparatus.start(spiderCtx);
+
+      return { stacks, memBackend };
+    }
+
+    it('reaps engine with pending session at startup (R1)', async () => {
+      let zombie: { rigId: string; writId: string; sessionId: string };
+      const { stacks } = buildStartupFixture((mb) => {
+        zombie = seedZombieViaBackend(mb, { sessionStatus: 'pending' });
+      });
+
+      // Wait for fire-and-forget async to complete
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      const rig = await rBook.get(zombie!.rigId);
+      assert.ok(rig, 'rig should still exist');
+      assert.equal(rig.status, 'failed', 'rig should be failed');
+      const draftEngine = rig.engines.find((e: EngineInstance) => e.id === 'draft');
+      assert.equal(draftEngine?.status, 'failed');
+      assert.ok(draftEngine?.error?.includes('zombie reaped'), `error should mention zombie reaped, got: ${draftEngine?.error}`);
+      assert.ok(draftEngine?.error?.includes('pending'), 'error should mention pending');
+      // Sibling engine should be cancelled
+      const implEngine = rig.engines.find((e: EngineInstance) => e.id === 'implement');
+      assert.equal(implEngine?.status, 'cancelled');
+    });
+
+    it('reaps engine with running session and dead PID at startup (R2)', async () => {
+      let zombie: { rigId: string; writId: string; sessionId: string };
+      const { stacks } = buildStartupFixture((mb) => {
+        zombie = seedZombieViaBackend(mb, {
+          sessionStatus: 'running',
+          cancelMetadata: { pid: 999999999 },
+        });
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      const rig = await rBook.get(zombie!.rigId);
+      assert.ok(rig);
+      assert.equal(rig.status, 'failed');
+      const draftEngine = rig.engines.find((e: EngineInstance) => e.id === 'draft');
+      assert.equal(draftEngine?.status, 'failed');
+      assert.ok(draftEngine?.error?.includes('zombie reaped'));
+      assert.ok(draftEngine?.error?.includes('process died'));
+    });
+
+    it('does NOT reap engine with running session and live PID at startup', async () => {
+      let zombie: { rigId: string; writId: string; sessionId: string };
+      const { stacks } = buildStartupFixture((mb) => {
+        zombie = seedZombieViaBackend(mb, {
+          sessionStatus: 'running',
+          cancelMetadata: { pid: process.pid }, // current process — alive
+        });
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      const rig = await rBook.get(zombie!.rigId);
+      assert.ok(rig);
+      assert.equal(rig.status, 'running', 'rig should still be running — live PID');
+    });
+
+    it('reaps engine with running session and no PID at startup', async () => {
+      let zombie: { rigId: string; writId: string; sessionId: string };
+      const { stacks } = buildStartupFixture((mb) => {
+        zombie = seedZombieViaBackend(mb, { sessionStatus: 'running' }); // no cancelMetadata
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      const rig = await rBook.get(zombie!.rigId);
+      assert.ok(rig);
+      assert.equal(rig.status, 'failed');
+      const draftEngine = rig.engines.find((e: EngineInstance) => e.id === 'draft');
+      assert.ok(draftEngine?.error?.includes('no process ID'));
+      assert.ok(draftEngine?.error?.includes('zombie reaped'));
+    });
+
+    it('reaps multiple zombie rigs at startup and logs count (R5, R12)', async () => {
+      const logs: string[] = [];
+      const origLog = console.log;
+      console.log = (...args: unknown[]) => { logs.push(args.map(String).join(' ')); };
+
+      const { stacks } = buildStartupFixture((mb) => {
+        seedZombieViaBackend(mb, { sessionStatus: 'pending' });
+        seedZombieViaBackend(mb, { sessionStatus: 'pending' });
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      console.log = origLog;
+
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      const allRigs = await rBook.list();
+      const failedRigs = allRigs.filter((r: RigDoc) => r.status === 'failed');
+      assert.equal(failedRigs.length, 2, 'both zombie rigs should be failed');
+
+      const recoveryLog = logs.find(l => l.includes('[spider] Zombie recovery:'));
+      assert.ok(recoveryLog, 'should log zombie recovery');
+      assert.ok(recoveryLog!.includes('reaped 2'), `should report 2 reaped, got: ${recoveryLog}`);
+    });
+
+    it('no log message when no zombies at startup (R12 negative)', async () => {
+      const logs: string[] = [];
+      const origLog = console.log;
+      console.log = (...args: unknown[]) => { logs.push(args.map(String).join(' ')); };
+
+      buildStartupFixture(() => {}); // no zombie data seeded
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      console.log = origLog;
+
+      const recoveryLog = logs.find(l => l.includes('[spider] Zombie recovery:'));
+      assert.equal(recoveryLog, undefined, 'should not log when no zombies found');
+    });
+  });
+
+  describe('zombie engine detection — periodic tryReapZombies', () => {
+    /**
+     * Helper: plant a zombie rig directly in the books (spider already started).
+     * Uses the stacks API (safe because CDC watch is already registered).
+     */
+    async function plantZombieRig(
+      stacks: StacksApi,
+      clerk: ClerkApi,
+      opts: {
+        sessionStatus: 'pending' | 'running' | 'completed' | 'failed';
+        cancelMetadata?: Record<string, unknown>;
+        startedAt?: string;
+        engineSessionId?: boolean; // false = no sessionId on engine
+        engineStartedAt?: boolean; // false = no startedAt on engine
+        extraEngines?: EngineInstance[];
+      },
+    ): Promise<{ rigId: string; writId: string; sessionId: string }> {
+      const writ = await clerk.post({ title: 'zombie writ', body: 'b' });
+      await clerk.transition(writ.id, 'active');
+
+      const sessionId = generateId('ses', 4);
+      const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+      await sessBook.put({
+        id: sessionId,
+        status: opts.sessionStatus,
+        startedAt: opts.startedAt ?? new Date(Date.now() - 600_000).toISOString(),
+        provider: 'mock',
+        ...(opts.cancelMetadata ? { cancelMetadata: opts.cancelMetadata } : {}),
+      } as SessionDoc);
+
+      const rigId = generateId('rig', 4);
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+
+      const draftEngine: EngineInstance = {
+        id: 'draft',
+        designId: 'draft',
+        status: 'running',
+        upstream: [],
+        givensSpec: {},
+        ...(opts.engineSessionId !== false ? { sessionId } : {}),
+        ...(opts.engineStartedAt !== false
+          ? { startedAt: opts.startedAt ?? new Date(Date.now() - 600_000).toISOString() }
+          : {}),
+      };
+
+      const engines: EngineInstance[] = [
+        draftEngine,
+        ...(opts.extraEngines ?? [
+          {
+            id: 'implement',
+            designId: 'implement',
+            status: 'pending',
+            upstream: ['draft'],
+            givensSpec: {},
+          },
+        ]),
+      ];
+
+      await rBook.put({
+        id: rigId,
+        writId: writ.id,
+        status: 'running',
+        createdAt: new Date().toISOString(),
+        engines,
+      } as RigDoc);
+
+      return { rigId, writId: writ.id, sessionId };
+    }
+
+    it('reaps engine older than threshold with dead PID (R5, V4)', async () => {
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      const zombie = await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'running',
+        cancelMetadata: { pid: 999999999 },
+        startedAt: new Date(Date.now() - 600_000).toISOString(), // 10 min ago
+      });
+
+      const result = await spider.crawl();
+      assert.ok(result);
+      assert.equal(result.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
+      assert.equal((result as { rigId: string }).rigId, zombie.rigId);
+
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      const rig = await rBook.get(zombie.rigId);
+      const draft = rig!.engines.find((e: EngineInstance) => e.id === 'draft');
+      assert.equal(draft?.status, 'failed');
+      assert.ok(draft?.error?.includes('process died unexpectedly'));
+      assert.ok(draft?.error?.includes('zombie reaped'));
+    });
+
+    it('does NOT reap engine younger than threshold (V7)', async () => {
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'running',
+        cancelMetadata: { pid: 999999999 },
+        startedAt: new Date(Date.now() - 60_000).toISOString(), // 1 min ago (< 5 min threshold)
+      });
+
+      const result = await spider.crawl();
+      // Should not reap — too young. May return null or spawn something.
+      if (result && result.action === 'rig-completed') {
+        assert.fail('should not reap a young engine');
+      }
+    });
+
+    it('does NOT reap engine with live PID (R7, V6)', async () => {
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      const zombie = await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'running',
+        cancelMetadata: { pid: process.pid }, // current process — alive
+        startedAt: new Date(Date.now() - 600_000).toISOString(),
+      });
+
+      const result = await spider.crawl();
+      if (result && result.action === 'rig-completed') {
+        assert.notEqual((result as { rigId: string }).rigId, zombie.rigId);
+      }
+
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      const rig = await rBook.get(zombie.rigId);
+      assert.equal(rig!.status, 'running');
+    });
+
+    it('reaps engine with no PID after threshold (R6, V5)', async () => {
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      const zombie = await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'running',
+        // no cancelMetadata → no pid
+        startedAt: new Date(Date.now() - 600_000).toISOString(),
+      });
+
+      const result = await spider.crawl();
+      assert.ok(result);
+      assert.equal(result.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
+
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      const rig = await rBook.get(zombie.rigId);
+      const draft = rig!.engines.find((e: EngineInstance) => e.id === 'draft');
+      assert.equal(draft?.status, 'failed');
+      assert.ok(draft?.error?.includes('no process ID'));
+    });
+
+    it('reaps engine with pending session and no PID after threshold (R6)', async () => {
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'pending',
+        startedAt: new Date(Date.now() - 600_000).toISOString(),
+      });
+
+      const result = await spider.crawl();
+      assert.ok(result);
+      assert.equal(result.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
+    });
+
+    it('skips engine with no sessionId (R14, V12)', async () => {
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'running',
+        cancelMetadata: { pid: 999999999 },
+        startedAt: new Date(Date.now() - 600_000).toISOString(),
+        engineSessionId: false, // no sessionId on engine
+      });
+
+      // Should not crash, should not reap
+      const result = await spider.crawl();
+      // Result should be null or non-reap result (the rig stays running)
+      if (result && result.action === 'rig-completed') {
+        assert.fail('should not reap engine without sessionId');
+      }
+    });
+
+    it('skips engine with no startedAt (V18)', async () => {
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'running',
+        cancelMetadata: { pid: 999999999 },
+        engineStartedAt: false,
+      });
+
+      const result = await spider.crawl();
+      if (result && result.action === 'rig-completed') {
+        assert.fail('should not reap engine without startedAt');
+      }
+    });
+
+    it('respects custom zombieThresholdMs config (V8)', async () => {
+      const fix2 = buildFixture({ spider: { zombieThresholdMs: 1000 } });
+      const { stacks, clerk, spider } = fix2;
+
+      // Plant a zombie that's 2 seconds old — older than 1s threshold
+      await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'running',
+        cancelMetadata: { pid: 999999999 },
+        startedAt: new Date(Date.now() - 2000).toISOString(),
+      });
+
+      const result = await spider.crawl();
+      assert.ok(result);
+      assert.equal(result.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
+    });
+
+    it('tryReapZombies runs before tryCollect (V13)', async () => {
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      // Plant a zombie (old, dead PID)
+      const zombie = await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'running',
+        cancelMetadata: { pid: 999999999 },
+        startedAt: new Date(Date.now() - 600_000).toISOString(),
+      });
+
+      // Also create a completed session on a different rig
+      const writ2 = await clerk.post({ title: 'normal writ', body: 'b' });
+      await clerk.transition(writ2.id, 'active');
+      const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+      const normalSessionId = generateId('ses', 4);
+      await sessBook.put({
+        id: normalSessionId,
+        status: 'completed',
+        startedAt: new Date().toISOString(),
+        endedAt: new Date().toISOString(),
+        durationMs: 100,
+        provider: 'mock',
+        exitCode: 0,
+      } as SessionDoc);
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      const normalRigId = generateId('rig', 4);
+      await rBook.put({
+        id: normalRigId,
+        writId: writ2.id,
+        status: 'running',
+        createdAt: new Date().toISOString(),
+        engines: [{
+          id: 'draft',
+          designId: 'draft',
+          status: 'running',
+          upstream: [],
+          givensSpec: {},
+          sessionId: normalSessionId,
+          startedAt: new Date().toISOString(),
+        }],
+      } as RigDoc);
+
+      // First crawl should reap the zombie (tryReapZombies fires first)
+      const result1 = await spider.crawl();
+      assert.ok(result1);
+      assert.equal(result1.action, 'rig-completed');
+      assert.equal((result1 as { rigId: string }).rigId, zombie.rigId);
+
+      // Second crawl should collect the completed session
+      const result2 = await spider.crawl();
+      assert.ok(result2);
+      assert.equal(result2.action, 'rig-completed');
+      assert.equal((result2 as { rigId: string }).rigId, normalRigId);
+    });
+
+    it('skips engine whose session is in terminal state (V15)', async () => {
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'failed', // terminal — tryCollect should handle
+        cancelMetadata: { pid: 999999999 },
+        startedAt: new Date(Date.now() - 600_000).toISOString(),
+      });
+
+      // tryReapZombies should skip it, but tryCollect should pick it up
+      const result = await spider.crawl();
+      assert.ok(result);
+      assert.equal(result.action, 'rig-completed');
+      // tryCollect handled it — the error should NOT mention zombie reaped
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      const allRigs = await rBook.list();
+      const failedRig = allRigs.find((r: RigDoc) => r.status === 'failed');
+      assert.ok(failedRig);
+      const failedEngine = failedRig!.engines.find((e: EngineInstance) => e.status === 'failed');
+      assert.ok(failedEngine);
+      assert.ok(!failedEngine!.error?.includes('zombie reaped'),
+        'terminal session should be handled by tryCollect, not zombie reaper');
+    });
+
+    it('skips engine whose session doc is missing (V16)', async () => {
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      // Plant the rig manually with a sessionId that has no matching session doc
+      const writ = await clerk.post({ title: 'orphan writ', body: 'b' });
+      await clerk.transition(writ.id, 'active');
+
+      const rigId = generateId('rig', 4);
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      await rBook.put({
+        id: rigId,
+        writId: writ.id,
+        status: 'running',
+        createdAt: new Date().toISOString(),
+        engines: [{
+          id: 'draft',
+          designId: 'draft',
+          status: 'running',
+          upstream: [],
+          givensSpec: {},
+          sessionId: 'ses-nonexistent',
+          startedAt: new Date(Date.now() - 600_000).toISOString(),
+        }],
+      } as RigDoc);
+
+      // Should not crash, should skip the engine
+      const result = await spider.crawl();
+      // Should not be a zombie reap
+      if (result && result.action === 'rig-completed') {
+        const failedRig = await rBook.get(rigId);
+        if (failedRig?.status === 'failed') {
+          const failedEngine = failedRig.engines.find((e: EngineInstance) => e.status === 'failed');
+          assert.ok(!failedEngine?.error?.includes('zombie reaped'),
+            'missing session should not trigger zombie reap');
+        }
+      }
+    });
+
+    it('failEngine cascades correctly on reap — pending/blocked siblings cancelled (V13, V9)', async () => {
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      const zombie = await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'running',
+        cancelMetadata: { pid: 999999999 },
+        startedAt: new Date(Date.now() - 600_000).toISOString(),
+        extraEngines: [
+          {
+            id: 'completed-engine',
+            designId: 'implement',
+            status: 'completed',
+            upstream: [],
+            givensSpec: {},
+            yields: { result: 'done' },
+          },
+          {
+            id: 'pending-engine',
+            designId: 'review',
+            status: 'pending',
+            upstream: ['draft'],
+            givensSpec: {},
+          },
+        ],
+      });
+
+      const result = await spider.crawl();
+      assert.ok(result);
+      assert.equal(result.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
+
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      const rig = await rBook.get(zombie.rigId);
+      assert.equal(rig!.status, 'failed');
+
+      const draft = rig!.engines.find((e: EngineInstance) => e.id === 'draft');
+      assert.equal(draft?.status, 'failed');
+      assert.ok(draft?.error?.includes('zombie reaped'));
+
+      // Already-completed engine should remain completed
+      const completed = rig!.engines.find((e: EngineInstance) => e.id === 'completed-engine');
+      assert.equal(completed?.status, 'completed');
+
+      // Pending sibling should be cancelled
+      const pending = rig!.engines.find((e: EngineInstance) => e.id === 'pending-engine');
+      assert.equal(pending?.status, 'cancelled');
+    });
+
+    it('logs reap message during crawl (R13, V11)', async () => {
+      const logs: string[] = [];
+      const origLog = console.log;
+      console.log = (...args: unknown[]) => { logs.push(args.map(String).join(' ')); };
+
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      const zombie = await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'running',
+        cancelMetadata: { pid: 999999999 },
+        startedAt: new Date(Date.now() - 600_000).toISOString(),
+      });
+
+      await spider.crawl();
+
+      console.log = origLog;
+
+      const reapLog = logs.find(l => l.includes('[spider] Reaped zombie engine'));
+      assert.ok(reapLog, 'should log zombie reap message');
+      assert.ok(reapLog!.includes(zombie.rigId), 'log should include rigId');
+    });
+  });
 });

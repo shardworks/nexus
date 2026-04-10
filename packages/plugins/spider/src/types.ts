@@ -391,6 +391,13 @@ export interface SpiderConfig {
    * Default: 1.
    */
   maxConcurrentEnginesPerRig?: number;
+  /**
+   * Minimum age (in milliseconds) of a running engine before it is eligible
+   * for zombie detection during the crawl loop. Engines younger than this
+   * threshold are skipped — their sessions may still be starting.
+   * Default: 300000 (5 minutes).
+   */
+  zombieThresholdMs?: number;
 }
 
 // ── Engine yield shapes ───────────────────────────────────────────────
