@@ -38,6 +38,7 @@ import { guild } from '@shardworks/nexus-core';
 interface OculusApiLike {
   port(): number;
   startServer(): Promise<void>;
+  stopServer(): Promise<void>;
 }
 
 interface SpiderApiLike {
@@ -290,8 +291,10 @@ async function startForeground(home: string): Promise<never> {
     } catch (err) {
       console.warn(`[daemon] tool server close failed: ${err instanceof Error ? err.message : err}`);
     }
-    // Oculus has no documented stop hook today — best effort: leave the
-    // process exit to tear it down. (TODO: when oculus exposes stop(), call it.)
+    try {
+      const oculus = g.apparatus<OculusApiLike>('oculus');
+      await oculus.stopServer();
+    } catch { /* not installed or already stopped */ }
 
     tryUnlink(p.pidFile);
     console.log('[daemon] stopped');

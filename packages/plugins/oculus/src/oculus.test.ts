@@ -6,6 +6,7 @@
  */
 
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it, before, after, afterEach } from 'node:test';
@@ -1273,5 +1274,164 @@ describe('Oculus invalid custom routes', () => {
       clearGuild();
       cleanupTmpDir();
     }
+  });
+});
+
+// ── stopServer tests ─────────────────────────────────────────────────
+
+/** Try to bind a TCP server on the given port. Resolves true if successful. */
+function isPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once('error', () => resolve(false));
+    srv.listen(port, '127.0.0.1', () => {
+      srv.close(() => resolve(true));
+    });
+  });
+}
+
+describe('OculusApi.stopServer()', () => {
+  afterEach(() => {
+    clearGuild();
+    cleanupTmpDir();
+  });
+
+  it('closes the listening socket and is idempotent', async () => {
+    const home = makeTmpDir();
+    const instrumentarium = createMockInstrumentarium([]);
+    const port = 18300 + Math.floor(Math.random() * 100);
+
+    wireGuild({ home, kits: [], instrumentarium, oculusPort: port });
+
+    const plugin = createOculus();
+    const { ctx } = buildTestContext([]);
+    await plugin.apparatus.start(ctx);
+
+    const api = plugin.apparatus.provides as {
+      port(): number;
+      startServer(): Promise<void>;
+      stopServer(): Promise<void>;
+    };
+    await api.startServer();
+
+    // Verify server is reachable
+    const res = await fetch(`http://localhost:${port}/`);
+    assert.ok(res.status > 0);
+
+    // First stop — should succeed
+    await api.stopServer();
+
+    // Server should no longer be reachable
+    let fetchSucceeded = false;
+    try {
+      await fetch(`http://localhost:${port}/`);
+      fetchSucceeded = true;
+    } catch {
+      // Expected — connection refused
+    }
+    assert.ok(!fetchSucceeded, 'Server should not be reachable after stopServer()');
+
+    // Second stop — idempotent, should not throw
+    await api.stopServer();
+  });
+
+  it('releases the port so it can be rebound', async () => {
+    const home = makeTmpDir();
+    const instrumentarium = createMockInstrumentarium([]);
+    const port = 18400 + Math.floor(Math.random() * 100);
+
+    wireGuild({ home, kits: [], instrumentarium, oculusPort: port });
+
+    const plugin = createOculus();
+    const { ctx } = buildTestContext([]);
+    await plugin.apparatus.start(ctx);
+
+    const api = plugin.apparatus.provides as {
+      port(): number;
+      startServer(): Promise<void>;
+      stopServer(): Promise<void>;
+    };
+    await api.startServer();
+
+    // Port should be in use
+    const busyBefore = await isPortFree(port);
+    assert.ok(!busyBefore, 'Port should be in use while server is running');
+
+    await api.stopServer();
+
+    // Port should now be free
+    const freeAfter = await isPortFree(port);
+    assert.ok(freeAfter, 'Port should be free after stopServer()');
+  });
+
+  it('is a no-op when server was never started', async () => {
+    const home = makeTmpDir();
+    const instrumentarium = createMockInstrumentarium([]);
+    const port = 18500 + Math.floor(Math.random() * 100);
+
+    wireGuild({ home, kits: [], instrumentarium, oculusPort: port });
+
+    const plugin = createOculus();
+    const { ctx } = buildTestContext([]);
+    await plugin.apparatus.start(ctx);
+
+    const api = plugin.apparatus.provides as {
+      stopServer(): Promise<void>;
+    };
+
+    // Should not throw
+    await api.stopServer();
+  });
+});
+
+describe('nsg oculus tool signal handler wiring', () => {
+  afterEach(() => {
+    clearGuild();
+    cleanupTmpDir();
+  });
+
+  it('stopServer is called when the oculus tool resolves via signal', async () => {
+    const home = makeTmpDir();
+    const instrumentarium = createMockInstrumentarium([]);
+    const port = 18600 + Math.floor(Math.random() * 100);
+
+    wireGuild({ home, kits: [], instrumentarium, oculusPort: port });
+
+    const plugin = createOculus();
+    const { ctx } = buildTestContext([]);
+    await plugin.apparatus.start(ctx);
+
+    // Extract the oculus tool from supportKit
+    const supportTools = plugin.apparatus.supportKit?.tools as Array<{
+      handler: (params: Record<string, never>) => Promise<string>;
+    }>;
+    assert.ok(supportTools && supportTools.length > 0, 'supportKit should have tools');
+    const oculusTool = supportTools[0];
+
+    // Run the handler — it will block on signal. Send SIGINT shortly after.
+    const handlerPromise = oculusTool.handler({});
+
+    // Give the server a moment to start, then signal
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Verify server is running before signal
+    const res = await fetch(`http://localhost:${port}/`);
+    assert.ok(res.status > 0);
+
+    // Emit SIGINT to trigger the handler's cleanup
+    process.emit('SIGINT', 'SIGINT');
+
+    const result = await handlerPromise;
+    assert.equal(result, 'Oculus stopped.');
+
+    // After the handler resolves, the server should be stopped
+    let fetchSucceeded = false;
+    try {
+      await fetch(`http://localhost:${port}/`);
+      fetchSucceeded = true;
+    } catch {
+      // Expected
+    }
+    assert.ok(!fetchSucceeded, 'Server should be stopped after signal handler ran');
   });
 });

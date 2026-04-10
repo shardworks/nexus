@@ -214,6 +214,9 @@ export function createOculus(): Plugin {
     startServer(): Promise<void> {
       return startServer();
     },
+    stopServer(): Promise<void> {
+      return stopServer();
+    },
   };
 
   /** Start the HTTP server (called explicitly via the oculus tool). */
@@ -229,6 +232,19 @@ export function createOculus(): Plugin {
         resolve();
       }) as Server;
       server.on('error', reject);
+    });
+  }
+
+  /** Stop the HTTP server gracefully. Idempotent. */
+  async function stopServer(): Promise<void> {
+    if (!server) return;
+    const s = server;
+    server = null;
+    await new Promise<void>((resolve, reject) => {
+      s.close((err) => {
+        if (err) reject(err);
+        else resolve();
+      });
     });
   }
 
@@ -587,15 +603,7 @@ ${navHtml}
       },
 
       async stop(): Promise<void> {
-        if (server) {
-          await new Promise<void>((resolve, reject) => {
-            server!.close((err) => {
-              if (err) reject(err);
-              else resolve();
-            });
-          });
-          server = null;
-        }
+        await stopServer();
       },
 
       supportKit: {
@@ -614,7 +622,9 @@ ${navHtml}
 
               // Block until the process is interrupted.
               await new Promise<void>((resolve) => {
-                const onSignal = () => { resolve(); };
+                const onSignal = () => {
+                  void api.stopServer().then(() => resolve(), () => resolve());
+                };
                 process.once('SIGINT', onSignal);
                 process.once('SIGTERM', onSignal);
               });

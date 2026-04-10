@@ -42,4 +42,6 @@ export interface OculusApi {
   port(): number;
   /** Start the HTTP server. No-op if already running. */
   startServer(): Promise<void>;
+  /** Stop the HTTP server gracefully. Idempotent — no-op if not running. */
+  stopServer(): Promise<void>;
 }
