@@ -63,10 +63,10 @@ export const spiderRoutes = [
         return c.json({ error: 'Session not found' }, 404);
       }
 
-      if (session.status === 'running') {
-        return c.json({ messages: [], sessionStatus: 'running' });
-      }
-
+      // Read transcript regardless of status. Detached sessions (babysitter)
+      // write transcript chunks to SQLite incrementally while the session is
+      // still 'running' or 'pending'; the client polls this endpoint to
+      // refresh the engine view's session log in flight.
       const transcriptsBook = stacks.readBook<TranscriptEntry>('animator', 'transcripts');
       const transcript = await transcriptsBook.get(sessionId);
 

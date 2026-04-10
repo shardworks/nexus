@@ -574,18 +574,43 @@
         if (sessionLogSpinner) {
           sessionLogSpinner.style.display = 'none';
         }
-        // If the server has no live stream (e.g. server restart), fall back to
-        // fetching the transcript via the regular endpoint.
+        // If the server has no live in-process stream (e.g. detached sessions
+        // where the babysitter is in another process, or after a guild
+        // restart), fall back to polling the transcript endpoint until the
+        // session reaches a terminal status.
         if (data.noStream) {
-          fetch('/api/spider/session-transcript?sessionId=' + encodeURIComponent(engine.sessionId))
-            .then(function (r) { return r.json(); })
-            .then(function (res) {
-              if (sessionLogTextarea) {
-                sessionLogTextarea.value = renderTranscript(res.messages || []);
-                sessionLogTextarea.scrollTop = sessionLogTextarea.scrollHeight;
-              }
-            })
-            .catch(function () { /* ignore */ });
+          var pollSessionId = engine.sessionId;
+          var fetchTranscript = function () {
+            fetch('/api/spider/session-transcript?sessionId=' + encodeURIComponent(pollSessionId))
+              .then(function (r) { return r.json(); })
+              .then(function (res) {
+                if (sessionLogTextarea) {
+                  // Preserve scroll position if the user has scrolled away
+                  // from the bottom; otherwise stick to the tail.
+                  var atBottom =
+                    sessionLogTextarea.scrollTop + sessionLogTextarea.clientHeight >=
+                    sessionLogTextarea.scrollHeight - 4;
+                  sessionLogTextarea.value = renderTranscript(res.messages || []);
+                  if (atBottom) {
+                    sessionLogTextarea.scrollTop = sessionLogTextarea.scrollHeight;
+                  }
+                }
+                var status = res && res.sessionStatus;
+                var terminal = status && status !== 'running' && status !== 'pending';
+                if (terminal) {
+                  stopSessionPoll();
+                  if (sessionLogSpinner) sessionLogSpinner.style.display = 'none';
+                } else if (sessionLogSpinner) {
+                  sessionLogSpinner.className = 'badge badge--active';
+                  sessionLogSpinner.textContent = 'polling\u2026';
+                  sessionLogSpinner.style.display = '';
+                }
+              })
+              .catch(function () { /* ignore transient errors, keep polling */ });
+          };
+          fetchTranscript();
+          stopSessionPoll();
+          sessionPollTimer = setInterval(fetchTranscript, 2000);
         }
       });
 
