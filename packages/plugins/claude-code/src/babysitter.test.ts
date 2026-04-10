@@ -21,6 +21,9 @@ import { EventEmitter } from 'node:events';
 
 import Database from 'better-sqlite3';
 
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+
 import {
   readConfigFromStdin,
   callGuildHttpApi,
@@ -348,6 +351,55 @@ describe('createProxyMcpHttpServer()', () => {
       assert.fail('should not be reachable after close');
     } catch (err) {
       assert.ok(err, 'fetch should throw after server is closed');
+    }
+  });
+
+  it('MCP client can connect and list tools immediately after SSE connection', async () => {
+    const tools: SerializedTool[] = [
+      {
+        name: 'writ-list',
+        description: 'List writs',
+        params: {
+          properties: {
+            status: { type: 'string', description: 'Filter by status' },
+          },
+        },
+      },
+      {
+        name: 'signal',
+        description: 'Send a signal',
+        params: {
+          properties: {
+            message: { type: 'string' },
+          },
+          required: ['message'],
+        },
+      },
+    ];
+
+    const mockServer = await startMockServer(() => ({
+      status: 200,
+      body: { ok: true },
+    }));
+
+    try {
+      handle = await createProxyMcpHttpServer(tools, mockServer.url, 'sess-mcp-1');
+
+      const client = new Client({ name: 'test-client', version: '0.0.1' });
+      const clientTransport = new SSEClientTransport(new URL(handle.url));
+
+      try {
+        await client.connect(clientTransport);
+        const result = await client.listTools();
+
+        assert.equal(result.tools.length, 2, 'should list 2 tools');
+        const names = result.tools.map((t) => t.name).sort();
+        assert.deepEqual(names, ['signal', 'writ-list']);
+      } finally {
+        await clientTransport.close();
+      }
+    } finally {
+      await mockServer.close();
     }
   });
 });

@@ -116,20 +116,39 @@ export async function startMcpHttpServer(tools: ToolDefinition[]): Promise<McpHt
 
   // SSE transport: the client GETs /sse, the transport tells it to POST
   // messages to /message. One transport per connection (single-session).
+  // Promise-gate: POST /message waits for the SSE transport to be fully connected,
+  // eliminating the race where a POST arrives before GET /sse completes.
+  let resolveTransport!: (t: SSEServerTransport) => void;
+  let rejectTransport!: (err: Error) => void;
+  const transportReady = new Promise<SSEServerTransport>((resolve, reject) => {
+    resolveTransport = resolve;
+    rejectTransport = reject;
+  });
+
+  // Direct reference for close() — null until connected.
   let transport: SSEServerTransport | null = null;
 
   const httpServer = http.createServer(async (req, res) => {
     try {
       if (req.method === 'GET' && req.url === '/sse') {
-        // New SSE connection — create transport bound to this response.
-        transport = new SSEServerTransport('/message', res);
-        await mcpServer.connect(transport);
+        const t = new SSEServerTransport('/message', res);
+        try {
+          await mcpServer.connect(t);
+          transport = t;
+          resolveTransport(t);
+        } catch (err) {
+          rejectTransport(err instanceof Error ? err : new Error(String(err)));
+          throw err;
+        }
       } else if (req.method === 'POST' && req.url?.startsWith('/message')) {
-        if (!transport) {
-          res.writeHead(400).end('No active SSE connection');
+        let t: SSEServerTransport;
+        try {
+          t = await transportReady;
+        } catch {
+          res.writeHead(503).end('SSE transport failed to initialize');
           return;
         }
-        await transport.handlePostMessage(req, res);
+        await t.handlePostMessage(req, res);
       } else {
         res.writeHead(404).end('Not found');
       }

@@ -10,6 +10,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { tool } from '@shardworks/tools-apparatus';
 
 import { createMcpServer, startMcpHttpServer } from './mcp-server.ts';
@@ -152,6 +154,32 @@ describe('startMcpHttpServer()', () => {
     const handle = await startMcpHttpServer([]);
     try {
       assert.ok(handle.url, 'should start even with no tools');
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('MCP client can connect and list tools via SSE handshake', async () => {
+    const tools = [
+      makeTool({ name: 'alpha-tool', description: 'Alpha tool' }),
+      makeTool({ name: 'beta-tool', description: 'Beta tool' }),
+    ];
+    const handle = await startMcpHttpServer(tools);
+
+    try {
+      const client = new Client({ name: 'test-client', version: '0.0.1' });
+      const clientTransport = new SSEClientTransport(new URL(handle.url));
+
+      try {
+        await client.connect(clientTransport);
+        const result = await client.listTools();
+
+        assert.equal(result.tools.length, 2, 'should list 2 tools');
+        const names = result.tools.map((t) => t.name).sort();
+        assert.deepEqual(names, ['alpha-tool', 'beta-tool']);
+      } finally {
+        await clientTransport.close();
+      }
     } finally {
       await handle.close();
     }
