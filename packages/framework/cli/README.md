@@ -57,6 +57,7 @@ Zod param schemas are converted to Commander flags:
 | `z.string()` (required) | `--param <value>` (required) |
 | `z.string().optional()` | `--param <value>` (optional) |
 | `z.boolean()` | `--param` (flag, no value) |
+| `z.union([z.enum([…]), z.array(…)])` | `--param <value>` (repeatable, collects into array) |
 | camelCase key | `--kebab-case` flag |
 
 ### Guild Root Resolution

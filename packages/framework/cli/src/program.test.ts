@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import path from 'node:path';
-import { toFlag, isBooleanSchema, findGroupPrefixes, coerceCliOpts, resolveGuildRoot } from './helpers.ts';
+import { toFlag, isBooleanSchema, isRepeatableSchema, findGroupPrefixes, coerceCliOpts, resolveGuildRoot } from './helpers.ts';
 import { buildToolCommand } from './program.ts';
 import type { ToolDefinition } from '@shardworks/tools-apparatus';
 
@@ -29,6 +29,50 @@ describe('toFlag', () => {
 
   it('handles multiple capital letters', () => {
     assert.equal(toFlag('myLongOptionName'), '--my-long-option-name');
+  });
+});
+
+describe('isRepeatableSchema', () => {
+  it('detects z.array(z.string())', () => {
+    assert.ok(isRepeatableSchema(z.array(z.string())));
+  });
+
+  it('detects z.array().optional()', () => {
+    assert.ok(isRepeatableSchema(z.array(z.string()).optional()));
+  });
+
+  it('detects union with array branch', () => {
+    const schema = z.union([z.string(), z.array(z.string())]);
+    assert.ok(isRepeatableSchema(schema));
+  });
+
+  it('detects optional union with array branch (writ-list status shape)', () => {
+    const schema = z.union([
+      z.enum(['ready', 'active', 'waiting']),
+      z.array(z.enum(['ready', 'active', 'waiting'])).min(1),
+    ]).optional();
+    assert.ok(isRepeatableSchema(schema));
+  });
+
+  it('rejects plain z.string()', () => {
+    assert.ok(!isRepeatableSchema(z.string()));
+  });
+
+  it('rejects z.enum()', () => {
+    assert.ok(!isRepeatableSchema(z.enum(['a', 'b'])));
+  });
+
+  it('rejects z.number().optional()', () => {
+    assert.ok(!isRepeatableSchema(z.number().optional()));
+  });
+
+  it('rejects z.boolean()', () => {
+    assert.ok(!isRepeatableSchema(z.boolean()));
+  });
+
+  it('rejects union without array branch', () => {
+    const schema = z.union([z.string(), z.number()]);
+    assert.ok(!isRepeatableSchema(schema));
   });
 });
 
@@ -194,6 +238,28 @@ describe('coerceCliOpts', () => {
   it('empty shape leaves extra keys unchanged', () => {
     const shape = {};
     assert.deepEqual(coerceCliOpts(shape, { anything: 'value' }), { anything: 'value' });
+  });
+
+  // Repeatable schema coercion
+  it('converts empty array to undefined for repeatable schema', () => {
+    const shape = {
+      status: z.union([z.enum(['a', 'b']), z.array(z.enum(['a', 'b']))]).optional(),
+    };
+    assert.deepEqual(coerceCliOpts(shape, { status: [] }), { status: undefined });
+  });
+
+  it('passes non-empty array through unchanged for repeatable schema', () => {
+    const shape = {
+      status: z.union([z.enum(['a', 'b']), z.array(z.enum(['a', 'b']))]).optional(),
+    };
+    assert.deepEqual(coerceCliOpts(shape, { status: ['a', 'b'] }), { status: ['a', 'b'] });
+  });
+
+  it('passes single-element array through unchanged for repeatable schema', () => {
+    const shape = {
+      status: z.union([z.enum(['a', 'b']), z.array(z.enum(['a', 'b']))]).optional(),
+    };
+    assert.deepEqual(coerceCliOpts(shape, { status: ['a'] }), { status: ['a'] });
   });
 });
 
@@ -429,5 +495,96 @@ describe('buildToolCommand', () => {
     assert.equal(captured['id'], 'w-789');
     assert.equal(captured['title'], 'My Title');
     assert.equal(captured['body'], 'My Body');
+  });
+
+  it('collects repeated --status flags into an array', async () => {
+    let captured: Record<string, unknown> | undefined;
+
+    const statuses = z.enum(['ready', 'active', 'waiting', 'completed']);
+    const tool: ToolDefinition = {
+      name: 'writ-list',
+      description: 'List writs',
+      params: z.object({
+        status: z.union([statuses, z.array(statuses).min(1)])
+          .optional()
+          .describe('Filter by status (repeatable)'),
+        type: z.string().optional().describe('Filter by type'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('list', tool);
+    cmd.exitOverride();
+    await cmd.parseAsync(['--status', 'ready', '--status', 'active', '--status', 'waiting'], { from: 'user' });
+
+    assert.ok(captured, 'handler should have been called');
+    assert.deepEqual(captured['status'], ['ready', 'active', 'waiting']);
+  });
+
+  it('passes single --status as single-element array', async () => {
+    let captured: Record<string, unknown> | undefined;
+
+    const statuses = z.enum(['ready', 'active', 'waiting', 'completed']);
+    const tool: ToolDefinition = {
+      name: 'writ-list',
+      description: 'List writs',
+      params: z.object({
+        status: z.union([statuses, z.array(statuses).min(1)])
+          .optional()
+          .describe('Filter by status (repeatable)'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('list', tool);
+    cmd.exitOverride();
+    await cmd.parseAsync(['--status', 'ready'], { from: 'user' });
+
+    assert.ok(captured, 'handler should have been called');
+    assert.deepEqual(captured['status'], ['ready']);
+  });
+
+  it('omitting repeatable --status passes undefined to handler', async () => {
+    let captured: Record<string, unknown> | undefined;
+
+    const statuses = z.enum(['ready', 'active', 'waiting', 'completed']);
+    const tool: ToolDefinition = {
+      name: 'writ-list',
+      description: 'List writs',
+      params: z.object({
+        status: z.union([statuses, z.array(statuses).min(1)])
+          .optional()
+          .describe('Filter by status (repeatable)'),
+        type: z.string().optional().describe('Filter by type'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('list', tool);
+    cmd.exitOverride();
+    await cmd.parseAsync(['--type', 'quest'], { from: 'user' });
+
+    assert.ok(captured, 'handler should have been called');
+    assert.equal(captured['status'], undefined);
+    assert.equal(captured['type'], 'quest');
+  });
+
+  it('shows repeatable --status in help text', () => {
+    const statuses = z.enum(['ready', 'active', 'waiting']);
+    const tool: ToolDefinition = {
+      name: 'writ-list',
+      description: 'List writs',
+      params: z.object({
+        status: z.union([statuses, z.array(statuses).min(1)])
+          .optional()
+          .describe('Filter by status (repeatable)'),
+      }),
+      handler: async () => null,
+    };
+
+    const cmd = buildToolCommand('list', tool);
+    const helpText = cmd.helpInformation();
+    assert.ok(helpText.includes('--status'), 'help should mention --status');
+    assert.ok(helpText.includes('repeatable'), 'help should indicate repeatable');
   });
 });

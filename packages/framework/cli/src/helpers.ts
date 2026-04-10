@@ -31,6 +31,44 @@ export function isBooleanSchema(schema: z.ZodTypeAny): boolean {
 }
 
 /**
+ * Detect whether a Zod schema accepts an array value, possibly wrapped
+ * in ZodOptional and/or ZodDefault.
+ *
+ * Returns true for:
+ * - z.array(...)
+ * - z.union([z.string(), z.array(...)]) (union with an array branch)
+ * - Either of the above wrapped in .optional() / .default()
+ *
+ * Used to register Commander options with a collector function so that
+ * repeating `--flag val1 --flag val2` collects values into an array.
+ */
+export function isRepeatableSchema(schema: z.ZodTypeAny): boolean {
+  let inner: z.ZodTypeAny = schema;
+
+  // Unwrap Optional / Default in any nesting order
+  for (let i = 0; i < 3; i++) {
+    if (inner instanceof z.ZodOptional) {
+      inner = inner.unwrap() as z.ZodTypeAny;
+    } else if (inner instanceof z.ZodDefault) {
+      inner = inner.unwrap() as z.ZodTypeAny;
+    } else {
+      break;
+    }
+  }
+
+  // Direct array
+  if (inner instanceof z.ZodArray) return true;
+
+  // Union with at least one array branch
+  if (inner instanceof z.ZodUnion) {
+    const options = (inner as z.ZodUnion<[z.ZodTypeAny, ...z.ZodTypeAny[]]>).options as z.ZodTypeAny[];
+    return options.some((opt) => opt instanceof z.ZodArray);
+  }
+
+  return false;
+}
+
+/**
  * Check whether a Zod schema is a number type, possibly wrapped
  * in ZodOptional and/or ZodDefault.
  */
@@ -69,6 +107,19 @@ export function coerceCliOpts(
 
   for (const [key, schema] of Object.entries(shape)) {
     const value = result[key];
+
+    // Repeatable options: Commander's collector starts with [] as default.
+    // An empty array means the flag was never passed — convert to undefined
+    // so Zod's .optional() handles it. A single-element array is kept as-is
+    // since the Zod union accepts both scalar and array forms.
+    if (Array.isArray(value) && isRepeatableSchema(schema)) {
+      if (value.length === 0) {
+        result[key] = undefined;
+      }
+      // Non-empty arrays pass through unchanged — Zod validates the values.
+      continue;
+    }
+
     if (typeof value !== 'string') continue;
 
     if (isNumberSchema(schema)) {

@@ -24,7 +24,7 @@ import { findGuildRoot, guild } from '@shardworks/nexus-core';
 import type { ToolDefinition, InstrumentariumApi } from '@shardworks/tools-apparatus';
 import { createGuild } from '@shardworks/nexus-arbor';
 import { frameworkCommands } from './commands/index.ts';
-import { toFlag, isBooleanSchema, findGroupPrefixes, coerceCliOpts, resolveGuildRoot } from './helpers.ts';
+import { toFlag, isBooleanSchema, isRepeatableSchema, findGroupPrefixes, coerceCliOpts, resolveGuildRoot } from './helpers.ts';
 
 type ZodShape = Record<string, z.ZodTypeAny>;
 
@@ -51,6 +51,15 @@ export function buildToolCommand(
     if (isBooleanSchema(schema)) {
       // Boolean flags: --flag (no <value>), sets to true when present
       cmd.option(flag, description);
+    } else if (isRepeatableSchema(schema)) {
+      // Repeatable flags: --flag val1 --flag val2 → collects into an array.
+      // Always optional — a required array param doesn't make sense for CLI.
+      cmd.option(
+        `${flag} <value>`,
+        description,
+        (value: string, prev: string[]) => [...prev, value],
+        [] as string[],
+      );
     } else if (schema.isOptional()) {
       cmd.option(`${flag} <value>`, description);
     } else {
