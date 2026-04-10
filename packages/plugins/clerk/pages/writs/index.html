@@ -25,7 +25,7 @@
     .confirm-section input { padding: 0.3rem 0.5rem; background: var(--bg, #1a1b26); border: 1px solid var(--border, #414868); border-radius: 4px; color: inherit; min-width: 220px; }
     tr.writ-row { cursor: pointer; }
     tr.writ-row:hover { opacity: 0.85; }
-    tr.writ-row.expanded { background: var(--bg2, #1f2335); }
+    tr.child-row { opacity: 0.85; }
     #post-section { margin-bottom: 16px; display: none; }
     #post-section.open { display: block; }
     #post-section h3 { margin: 0 0 0.75rem; }
@@ -47,6 +47,8 @@
 <body>
 <main style="padding: 24px;">
   <h1>Writs</h1>
+
+  <div id="writ-list-view">
   <div class="card" style="margin-bottom: 16px;">
   <div class="toolbar" id="toolbar">
     <button class="btn btn--primary" id="btn-new-writ">New Writ</button>
@@ -57,6 +59,7 @@
       <button class="btn filter-btn" data-status="new">new</button>
       <button class="btn filter-btn" data-status="ready">ready</button>
       <button class="btn filter-btn" data-status="active">active</button>
+      <button class="btn filter-btn" data-status="waiting">waiting</button>
       <button class="btn filter-btn" data-status="completed">completed</button>
       <button class="btn filter-btn" data-status="failed">failed</button>
       <button class="btn filter-btn" data-status="cancelled">cancelled</button>
@@ -66,6 +69,7 @@
       <button class="btn type-filter-btn active-filter" data-type="">All</button>
     </span>
     <input type="text" id="search-input" placeholder="Search title...">
+    <button class="btn active-filter" id="btn-toggle-children">Children</button>
   </div>
   </div>
 
@@ -117,6 +121,13 @@
   <div id="load-more-row" style="display:none; text-align: center; margin-top: 8px;">
     <button class="btn" id="load-more-btn">Load more</button>
   </div>
+  </div>
+
+  <div id="writ-detail-view" style="display:none">
+    <button id="back-btn" class="btn">&#8592; Back to list</button>
+    <h2 id="detail-title"></h2>
+    <div id="detail-content"></div>
+  </div>
 
   <datalist id="link-types">
     <option value="retries"></option>
@@ -131,14 +142,15 @@
   <script>
   (() => {
     // ── State ──────────────────────────────────────────────────────────
-    let writs = [];          // currently loaded writs array
+    let writs = [];          // root writs only (no parentId)
     let offset = 0;
     let currentStatus = '';  // '' = all
     let currentType = '';    // '' = all
     let searchText = '';
     let sortCol = 'createdAt';
     let sortDir = 'desc';
-    let expandedId = null;   // currently expanded writ id
+    let showChildren = true; // toggle state — children shown by default
+    let childrenMap = {};    // { parentId: WritDoc[] } — fetched children keyed by parent id
     let repostSourceId = null;
 
     const LIMIT = 20;
@@ -159,6 +171,7 @@
         new: 'badge badge--draft',
         ready: 'badge',
         active: 'badge badge--active',
+        waiting: 'badge badge--warning',
         completed: 'badge badge--success',
         failed: 'badge badge--error',
         cancelled: 'badge badge--warning',
@@ -181,18 +194,37 @@
     }
 
     function sortedFilteredWrits() {
-      let arr = writs.slice();
-      // Text filter
+      let roots = writs.slice();
+
+      // Text filter on roots
       if (searchText) {
         const q = searchText.toLowerCase();
-        arr = arr.filter(w => (w.title ?? '').toLowerCase().includes(q));
+        roots = roots.filter(w => (w.title ?? '').toLowerCase().includes(q));
       }
-      // Sort
-      arr.sort((a, b) => {
+
+      // Sort roots by current sort column
+      roots.sort((a, b) => {
         const cmp = compareVal(a, b, sortCol);
         return sortDir === 'asc' ? cmp : -cmp;
       });
-      return arr;
+
+      // Interleave children beneath each root
+      const result = [];
+      for (const root of roots) {
+        result.push({ writ: root, isChild: false });
+        if (showChildren) {
+          let children = childrenMap[root.id] ?? [];
+          // Text filter on children too
+          if (searchText) {
+            const q = searchText.toLowerCase();
+            children = children.filter(w => (w.title ?? '').toLowerCase().includes(q));
+          }
+          for (const child of children) {
+            result.push({ writ: child, isChild: true });
+          }
+        }
+      }
+      return result;
     }
 
     function showError(el, msg) {
@@ -236,8 +268,10 @@
         if (idx >= 0) writs[idx] = writ;
         updateRowStatus(id);
         updateRowActions(id);
-        // Refresh expanded detail if open
-        if (expandedId === id) await refreshDetail(id);
+        // Refresh detail view if open
+        if (document.getElementById('writ-detail-view').style.display !== 'none') {
+          await refreshDetail(id);
+        }
       } catch (e) {
         alert(`Action failed: ${e.message}`);
         btn.disabled = false;
@@ -273,21 +307,19 @@
         return;
       }
 
-      // Preserve expanded state if row still visible
       tbody.innerHTML = '';
-      for (const w of visible) {
+      for (const { writ: w, isChild } of visible) {
         const tr = document.createElement('tr');
-        tr.className = 'writ-row' + (expandedId === w.id ? ' expanded' : '');
+        tr.className = 'writ-row' + (isChild ? ' child-row' : '');
         tr.dataset.id = w.id;
-        tr.style.display = '';
-        tr.innerHTML = `
-          <td>${statusBadge(w.status)}</td>
-          <td>${escHtml(w.title ?? '')}</td>
-          <td>${w.type ?? ''}</td>
-          <td><code>${w.id}</code></td>
-          <td>${fmtDate(w.createdAt)}</td>
-          <td class="row-actions" style="white-space:nowrap">${rowActions(w)}</td>
-        `;
+        tr.innerHTML =
+          '<td>' + statusBadge(w.status) + '</td>' +
+          '<td' + (isChild ? ' style="padding-left:2rem"' : '') + '>' + escHtml(w.title ?? '') + '</td>' +
+          '<td>' + (w.type ?? '') + '</td>' +
+          '<td><code>' + w.id + '</code></td>' +
+          '<td>' + (isChild ? '' : fmtDate(w.createdAt)) + '</td>' +
+          '<td class="row-actions" style="white-space:nowrap">' + rowActions(w) + '</td>';
+
         // Wire row-action buttons (stop row-click propagation)
         tr.querySelectorAll('.row-action-btn').forEach(btn => {
           btn.addEventListener('click', e => {
@@ -295,13 +327,9 @@
             handleRowAction(btn.dataset.action, btn.dataset.id, btn);
           });
         });
-        tr.addEventListener('click', () => toggleExpand(w.id, tr));
+        // Click row -> show detail view
+        tr.addEventListener('click', () => showWritDetail(w.id));
         tbody.appendChild(tr);
-
-        if (expandedId === w.id) {
-          const detailTr = buildDetailRow(w);
-          tbody.appendChild(detailTr);
-        }
       }
 
       updateSortIndicators();
@@ -323,21 +351,6 @@
     }
 
     // ── Detail row ─────────────────────────────────────────────────────
-
-    function buildDetailRow(writ) {
-      const tr = document.createElement('tr');
-      tr.className = 'detail-row';
-      tr.dataset.detailFor = writ.id;
-
-      const td = document.createElement('td');
-      td.colSpan = 6;
-      td.innerHTML = renderDetail(writ);
-
-      // Wire up events after inserting
-      tr.appendChild(td);
-      requestAnimationFrame(() => wireDetailEvents(tr, writ));
-      return tr;
-    }
 
     function renderDetail(writ) {
       const isTerminal = ['completed', 'failed', 'cancelled'].includes(writ.status);
@@ -366,6 +379,9 @@
       // Timestamps + metadata
       html += `<div class="detail-section"><h4>Details</h4><dl class="detail-grid">`;
       if (writ.codex) html += `<dt>Codex</dt><dd>${escHtml(writ.codex)}</dd>`;
+      if (writ.parent) {
+        html += `<dt>Parent</dt><dd><a href="?writ=${encodeURIComponent(writ.parent.id)}" style="color:var(--blue,#7aa2f7);text-decoration:underline;cursor:pointer">${escHtml(writ.parent.title)}</a> ${statusBadge(writ.parent.status)}</dd>`;
+      }
       html += `<dt>Created</dt><dd>${fmtDate(writ.createdAt)}</dd>`;
       html += `<dt>Updated</dt><dd>${fmtDate(writ.updatedAt)}</dd>`;
       if (writ.acceptedAt) html += `<dt>Accepted</dt><dd>${fmtDate(writ.acceptedAt)}</dd>`;
@@ -401,6 +417,37 @@
       html += `<div class="detail-section" id="links-section-${writ.id}">`;
       html += renderLinksSection(writ);
       html += `</div>`;
+
+      // Children
+      const childItems = writ._fullChildren ?? writ.children?.items ?? [];
+      if (childItems.length > 0) {
+        html += `<div class="detail-section">`;
+        html += `<h4>Children</h4>`;
+
+        // Summary badges
+        if (writ.children?.summary) {
+          html += `<div style="margin-bottom:0.5rem">`;
+          for (const [status, count] of Object.entries(writ.children.summary)) {
+            html += statusBadge(status) + ` <span style="margin-right:0.75rem">${count}</span>`;
+          }
+          html += `</div>`;
+        }
+
+        // Children table: Status, Title, Type, ID, Actions
+        html += `<table class="data-table"><thead><tr>`;
+        html += `<th>Status</th><th>Title</th><th>Type</th><th>ID</th><th>Actions</th>`;
+        html += `</tr></thead><tbody>`;
+        for (const child of childItems) {
+          html += `<tr class="writ-row child-detail-row" data-child-id="${child.id}" style="cursor:pointer">`;
+          html += `<td>${statusBadge(child.status)}</td>`;
+          html += `<td>${escHtml(child.title ?? '')}</td>`;
+          html += `<td>${escHtml(child.type ?? '')}</td>`;
+          html += `<td><code>${child.id}</code></td>`;
+          html += `<td class="row-actions" style="white-space:nowrap">${rowActions(child)}</td>`;
+          html += `</tr>`;
+        }
+        html += `</tbody></table></div>`;
+      }
 
       return html;
     }
@@ -444,31 +491,44 @@
       return html;
     }
 
-    function wireDetailEvents(tr, writ) {
-      const td = tr.querySelector('td');
-      if (!td) return;
-
+    function wireDetailEvents(container, writ) {
       // Populate edit dropdowns for draft writs
       if (writ.status === 'new') {
         populateEditDropdowns(writ);
       }
 
-      // Transition action buttons
-      td.querySelectorAll('[data-action]').forEach(btn => {
+      // Transition action buttons + other data-action buttons
+      container.querySelectorAll('[data-action]').forEach(btn => {
         btn.addEventListener('click', e => {
           e.stopPropagation();
           const action = btn.dataset.action;
           const id = btn.dataset.id;
-          handleDetailAction(action, id, btn, td, writ);
+          handleDetailAction(action, id, btn, container, writ);
         });
       });
 
-      // Link-id clicks
-      td.querySelectorAll('.link-id').forEach(a => {
+      // Link-id clicks (links section)
+      container.querySelectorAll('.link-id[data-writ-id]').forEach(a => {
         a.addEventListener('click', e => {
           e.stopPropagation();
-          const targetId = a.dataset.writId;
-          scrollAndExpand(targetId);
+          e.preventDefault();
+          showWritDetail(a.dataset.writId);
+        });
+      });
+
+      // Child row clicks — navigate to child detail
+      container.querySelectorAll('.child-detail-row').forEach(row => {
+        row.addEventListener('click', (e) => {
+          if (e.target.closest('.row-action-btn')) return;
+          showWritDetail(row.dataset.childId);
+        });
+      });
+
+      // Wire row-action buttons inside children table
+      container.querySelectorAll('.child-detail-row .row-action-btn').forEach(btn => {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          handleRowAction(btn.dataset.action, btn.dataset.id, btn);
         });
       });
     }
@@ -729,13 +789,26 @@
       const idx = writs.findIndex(w => w.id === id);
       if (idx >= 0) writs[idx] = writ;
 
-      // Re-render detail row
-      const detailTr = document.querySelector(`tr[data-detail-for="${id}"]`);
-      if (detailTr) {
-        const td = detailTr.querySelector('td');
-        td.innerHTML = renderDetail(writ);
-        wireDetailEvents(detailTr, writ);
+      // Fetch full children if needed
+      if (writ.children && writ.children.items.length > 0) {
+        try {
+          const fullChildren = await api('GET',
+            '/api/writ/list?parentId=' + encodeURIComponent(id) + '&limit=1000');
+          fullChildren.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
+          writ._fullChildren = fullChildren;
+        } catch (e) { writ._fullChildren = null; }
       }
+
+      // Re-render detail content
+      const content = document.getElementById('detail-content');
+      if (content) {
+        content.innerHTML = renderDetail(writ);
+        wireDetailEvents(content, writ);
+      }
+
+      // Also refresh the list view row
+      updateRowStatus(id);
+      updateRowActions(id);
     }
 
     function updateRowStatus(id) {
@@ -748,63 +821,41 @@
       if (cells[0]) cells[0].innerHTML = statusBadge(writ.status);
     }
 
-    // ── Expand/Collapse ────────────────────────────────────────────────
+    // ── Detail view ──────────────────────────────────────────────────
 
-    async function toggleExpand(id, tr) {
-      const tbody = document.getElementById('writ-tbody');
-      const existing = document.querySelector(`tr[data-detail-for="${id}"]`);
-
-      if (existing) {
-        // Collapse
-        existing.remove();
-        tr.classList.remove('expanded');
-        expandedId = null;
-        return;
-      }
-
-      // Collapse any other expanded row
-      if (expandedId) {
-        const prevDetail = document.querySelector(`tr[data-detail-for="${expandedId}"]`);
-        if (prevDetail) prevDetail.remove();
-        const prevRow = document.querySelector(`tr.writ-row[data-id="${expandedId}"]`);
-        if (prevRow) prevRow.classList.remove('expanded');
-      }
-
-      expandedId = id;
-      tr.classList.add('expanded');
-
-      // Fetch fresh writ data
+    async function showWritDetail(id) {
       let writ;
       try {
-        writ = await api('GET', `/api/writ/show?id=${encodeURIComponent(id)}`);
+        writ = await api('GET', '/api/writ/show?id=' + encodeURIComponent(id));
       } catch (e) {
-        expandedId = null;
-        tr.classList.remove('expanded');
+        console.error('Failed to load writ detail:', e);
         return;
       }
 
-      // Update in writs array
+      // Update local data if this writ is already in our arrays
       const idx = writs.findIndex(w => w.id === id);
       if (idx >= 0) writs[idx] = writ;
 
-      const detailTr = buildDetailRow(writ);
-      tr.insertAdjacentElement('afterend', detailTr);
-    }
-
-    function scrollAndExpand(id) {
-      // Check if writ is in loaded list
-      const writ = writs.find(w => w.id === id);
-      if (!writ) return; // not loaded — no-op
-
-      const row = document.querySelector(`tr.writ-row[data-id="${id}"]`);
-      if (!row) return;
-
-      row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-      // Only expand if not already expanded
-      if (expandedId !== id) {
-        toggleExpand(id, row);
+      // Fetch full children data for the detail children table
+      if (writ.children && writ.children.items.length > 0) {
+        try {
+          const fullChildren = await api('GET',
+            '/api/writ/list?parentId=' + encodeURIComponent(id) + '&limit=1000');
+          fullChildren.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
+          writ._fullChildren = fullChildren;
+        } catch (e) {
+          writ._fullChildren = null;
+        }
       }
+
+      // Toggle views
+      document.getElementById('writ-list-view').style.display = 'none';
+      document.getElementById('writ-detail-view').style.display = '';
+      document.getElementById('detail-title').textContent = writ.title ?? writ.id;
+
+      const content = document.getElementById('detail-content');
+      content.innerHTML = renderDetail(writ);
+      wireDetailEvents(content, writ);
     }
 
     // ── Data loading ────────────────────────────────────────────────────
@@ -813,7 +864,7 @@
       if (replace) {
         offset = 0;
         writs = [];
-        expandedId = null;
+        childrenMap = {};
       }
 
       const params = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) });
@@ -828,13 +879,20 @@
         return;
       }
 
+      // Partition: roots (no parentId) vs children (discarded)
+      const roots = result.filter(w => !w.parentId);
+
       if (replace) {
-        writs = result;
+        writs = roots;
       } else {
-        writs = writs.concat(result);
+        writs = writs.concat(roots);
       }
 
-      offset = writs.length;
+      offset += result.length;
+
+      // Fetch all children for each newly loaded root
+      await fetchChildrenForRoots(roots);
+
       renderTable();
 
       const loadMoreRow = document.getElementById('load-more-row');
@@ -843,6 +901,23 @@
       } else {
         loadMoreRow.style.display = 'block';
       }
+    }
+
+    async function fetchChildrenForRoots(roots) {
+      const fetches = roots.map(async (root) => {
+        try {
+          const children = await api('GET',
+            '/api/writ/list?parentId=' + encodeURIComponent(root.id) + '&limit=1000');
+          if (children.length > 0) {
+            // Sort children by createdAt ascending — oldest first
+            children.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
+            childrenMap[root.id] = children;
+          }
+        } catch (e) {
+          console.error('Failed to fetch children for ' + root.id, e);
+        }
+      });
+      await Promise.all(fetches);
     }
 
     async function loadWritTypes() {
@@ -990,6 +1065,9 @@
     }
 
     function openRepost(writ) {
+      // If in detail view, switch back to list view first
+      document.getElementById('writ-detail-view').style.display = 'none';
+      document.getElementById('writ-list-view').style.display = '';
       openPostForm();
       document.getElementById('post-title').textContent = 'Repost Writ';
       document.getElementById('post-title-input').value = `[Repost] ${writ.title ?? ''}`;
@@ -1101,6 +1179,17 @@
 
     document.getElementById('btn-refresh').addEventListener('click', () => loadWrits(true));
 
+    document.getElementById('back-btn').addEventListener('click', () => {
+      document.getElementById('writ-detail-view').style.display = 'none';
+      document.getElementById('writ-list-view').style.display = '';
+    });
+
+    document.getElementById('btn-toggle-children').addEventListener('click', () => {
+      showChildren = !showChildren;
+      document.getElementById('btn-toggle-children').classList.toggle('active-filter', showChildren);
+      renderTable();
+    });
+
     document.getElementById('post-submit-btn').addEventListener('click', submitPostForm);
 
     document.getElementById('load-more-btn').addEventListener('click', () => loadWrits(false));
@@ -1140,22 +1229,8 @@
 
       await loadWrits(true);
 
-      if (!writId) return;
-
-      // If writ is in loaded list, scroll to it
-      if (writs.find(function (w) { return w.id === writId; })) {
-        scrollAndExpand(writId);
-        return;
-      }
-
-      // Otherwise, fetch it and prepend to list
-      try {
-        var writ = await api('GET', '/api/writ/show?id=' + encodeURIComponent(writId));
-        writs.unshift(writ);
-        renderTable();
-        scrollAndExpand(writId);
-      } catch (e) {
-        console.error('Deep-link writ not found:', writId);
+      if (writId) {
+        showWritDetail(writId);
       }
     })();
   })();
