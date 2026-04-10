@@ -379,6 +379,18 @@ export interface SpiderConfig {
    * Default: 50.
    */
   maxEnginesPerRig?: number;
+  /**
+   * Maximum number of engines that may be running concurrently across all rigs.
+   * Engines beyond this limit stay in `pending` until a slot frees.
+   * Default: 3.
+   */
+  maxConcurrentEngines?: number;
+  /**
+   * Maximum number of engines that may be running concurrently within a single rig.
+   * Engines beyond this limit stay in `pending` until a slot frees.
+   * Default: 1.
+   */
+  maxConcurrentEnginesPerRig?: number;
 }
 
 // ── Engine yield shapes ───────────────────────────────────────────────

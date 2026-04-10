@@ -143,6 +143,30 @@ function findRunnableEngine(rig: RigDoc): EngineInstance | null {
 }
 
 /**
+ * Count the total number of running engines across all rigs.
+ */
+export function countRunningEngines(rigs: RigDoc[]): number {
+  let count = 0;
+  for (const rig of rigs) {
+    for (const engine of rig.engines) {
+      if (engine.status === 'running') count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Count the number of running engines within a single rig.
+ */
+export function countRunningEnginesInRig(rig: RigDoc): number {
+  let count = 0;
+  for (const engine of rig.engines) {
+    if (engine.status === 'running') count++;
+  }
+  return count;
+}
+
+/**
  * Determine whether a rig should enter the blocked state.
  *
  * A rig is blocked when:
@@ -1525,9 +1549,21 @@ export function createSpider(): Plugin {
    */
   async function tryRun(): Promise<CrawlResult | null> {
     const runningRigs = await rigsBook.find({ where: [['status', '=', 'running']] });
+
+    // Throttle: compute system-wide running engine count
+    const maxGlobal = spiderConfig.maxConcurrentEngines ?? 3;
+    const maxPerRig = spiderConfig.maxConcurrentEnginesPerRig ?? 1;
+    const systemRunning = countRunningEngines(runningRigs);
+
     for (const rig of runningRigs) {
       const pending = findRunnableEngine(rig);
       if (!pending) continue;
+
+      // Throttle: check system-wide and per-rig limits.
+      // Deferred engines stay in pending; the next crawl tick will re-evaluate.
+      if (systemRunning >= maxGlobal || countRunningEnginesInRig(rig) >= maxPerRig) {
+        continue;
+      }
 
       const now = new Date().toISOString();
       const upstream = buildUpstreamMap(rig);
@@ -1714,6 +1750,12 @@ export function createSpider(): Plugin {
    * transition the writ to active so the Clerk tracks it as in-progress.
    */
   async function trySpawn(): Promise<CrawlResult | null> {
+    // Throttle: do not spawn new rigs if system-wide engine limit is reached.
+    // Spawned rigs would just sit with their first engine in pending, cluttering the rig list.
+    const maxGlobal = spiderConfig.maxConcurrentEngines ?? 3;
+    const allRunningRigs = await rigsBook.find({ where: [['status', '=', 'running']] });
+    if (countRunningEngines(allRunningRigs) >= maxGlobal) return null;
+
     // Find ready writs ordered by creation time (oldest first)
     const readyWrits = await writsBook.find({
       where: [['status', '=', 'ready']],

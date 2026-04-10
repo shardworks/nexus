@@ -27,7 +27,7 @@ import type { AnimatorApi, SummonRequest, AnimateHandle, SessionChunk, SessionRe
 
 import { z } from 'zod';
 
-import { createSpider } from './spider.ts';
+import { createSpider, countRunningEngines, countRunningEnginesInRig } from './spider.ts';
 import type { SpiderApi, RigDoc, EngineInstance, ReviewYields, MechanicalCheck, RigTemplate, BlockRecord, BlockType, CheckResult, SpiderEngineRunResult, SpiderCollectResult } from './types.ts';
 
 import animaSessionEngine from './engines/anima-session.ts';
@@ -1819,7 +1819,9 @@ describe('Spider', () => {
     });
 
     it('(c) a running engine is not cancelled when another engine fails', async () => {
-      const { clerk, spider, stacks } = fix;
+      // This test manually places two engines in a runnable state within one rig,
+      // so raise per-rig limit to allow the second engine to run.
+      const { clerk, spider, stacks } = buildFixture({ spider: { maxConcurrentEnginesPerRig: 5 } });
       await postWrit(clerk);
       await spider.crawl(); // spawn
 
@@ -8438,5 +8440,431 @@ describe('Spider — rig cancellation', () => {
 
     const updatedWrit = await clerk.show(writ.id);
     assert.equal(updatedWrit.status, 'cancelled', 'writ should transition to cancelled');
+  });
+
+  // ── Concurrent engine throttle ────────────────────────────────────────
+
+  describe('countRunningEngines / countRunningEnginesInRig', () => {
+    const now = new Date().toISOString();
+
+    function makeRig(id: string, engines: Array<{ id: string; status: string }>): RigDoc {
+      return {
+        id,
+        writId: `writ-${id}`,
+        status: 'running',
+        engines: engines.map((e) => ({
+          id: e.id,
+          designId: 'stub',
+          status: e.status as EngineInstance['status'],
+          upstream: [],
+          givensSpec: {},
+        })),
+        createdAt: now,
+      };
+    }
+
+    it('counts only running engines across rigs', () => {
+      const rigs = [
+        makeRig('r1', [
+          { id: 'e1', status: 'running' },
+          { id: 'e2', status: 'pending' },
+          { id: 'e3', status: 'completed' },
+        ]),
+        makeRig('r2', [
+          { id: 'e4', status: 'running' },
+          { id: 'e5', status: 'running' },
+        ]),
+        makeRig('r3', [
+          { id: 'e6', status: 'blocked' },
+          { id: 'e7', status: 'failed' },
+          { id: 'e8', status: 'cancelled' },
+          { id: 'e9', status: 'skipped' },
+        ]),
+      ];
+      assert.equal(countRunningEngines(rigs), 3, 'should count 3 running engines');
+    });
+
+    it('returns 0 when no engines are running', () => {
+      const rigs = [
+        makeRig('r1', [
+          { id: 'e1', status: 'pending' },
+          { id: 'e2', status: 'completed' },
+        ]),
+      ];
+      assert.equal(countRunningEngines(rigs), 0);
+    });
+
+    it('returns 0 for empty rigs array', () => {
+      assert.equal(countRunningEngines([]), 0);
+    });
+
+    it('counts running engines in a single rig', () => {
+      const rig = makeRig('r1', [
+        { id: 'e1', status: 'running' },
+        { id: 'e2', status: 'running' },
+        { id: 'e3', status: 'pending' },
+        { id: 'e4', status: 'completed' },
+      ]);
+      assert.equal(countRunningEnginesInRig(rig), 2);
+    });
+
+    it('returns 0 when rig has no running engines', () => {
+      const rig = makeRig('r1', [
+        { id: 'e1', status: 'pending' },
+        { id: 'e2', status: 'blocked' },
+      ]);
+      assert.equal(countRunningEnginesInRig(rig), 0);
+    });
+  });
+
+  describe('Concurrent engine throttle — tryRun', () => {
+    // Template with two parallel engines so we can test per-rig limit
+    const PARALLEL_TEMPLATE: RigTemplate = {
+      engines: [
+        { id: 'a', designId: 'quick-stub', givens: {} },
+        { id: 'b', designId: 'quick-stub', givens: {} },
+        { id: 'c', designId: 'quick-stub', givens: {} },
+      ],
+    };
+
+    it('defers an engine when it would breach the system-wide limit', async () => {
+      // maxConcurrentEngines=1: after one engine launches, the next should be deferred
+      const fix = buildFixture(
+        { spider: { rigTemplates: { default: PARALLEL_TEMPLATE }, maxConcurrentEngines: 1, maxConcurrentEnginesPerRig: 3 } },
+        { status: 'completed' },
+        {
+          customEngines: {
+            'quick-stub': {
+              id: 'quick-stub',
+              run: async () => ({ status: 'launched' as const, sessionId: generateId('ses', 4) }),
+              collect: async () => ({ yields: {} }),
+            },
+          },
+        },
+      );
+      const { clerk, spider, stacks } = fix;
+      await clerk.post({ title: 'throttle-test', body: 'b' });
+      await spider.crawl(); // spawn rig
+      await spider.crawl(); // run engine 'a' → launched (1 running)
+
+      // Now engine 'b' is runnable but system limit is 1
+      const result = await spider.crawl();
+      // tryRun should defer all runnable engines and return null, falling through to trySpawn
+      // But trySpawn also checks and returns null → overall null
+      assert.equal(result, null, 'should idle when system-wide limit reached');
+
+      // Verify engine 'b' is still pending
+      const [rig] = await rigsBook(stacks).list();
+      const engineB = rig.engines.find((e: EngineInstance) => e.id === 'b');
+      assert.equal(engineB?.status, 'pending', 'engine b should remain pending');
+    });
+
+    it('defers an engine when it would breach the per-rig limit', async () => {
+      // maxConcurrentEnginesPerRig=1, maxConcurrentEngines=10
+      const fix = buildFixture(
+        { spider: { rigTemplates: { default: PARALLEL_TEMPLATE }, maxConcurrentEngines: 10, maxConcurrentEnginesPerRig: 1 } },
+        { status: 'completed' },
+        {
+          customEngines: {
+            'quick-stub': {
+              id: 'quick-stub',
+              run: async () => ({ status: 'launched' as const, sessionId: generateId('ses', 4) }),
+              collect: async () => ({ yields: {} }),
+            },
+          },
+        },
+      );
+      const { clerk, spider, stacks } = fix;
+      await clerk.post({ title: 'per-rig-test', body: 'b' });
+      await spider.crawl(); // spawn rig
+      await spider.crawl(); // run engine 'a' → launched (1 running in rig)
+
+      // Engine 'b' is runnable but per-rig limit is 1
+      const result = await spider.crawl();
+      assert.equal(result, null, 'should idle when per-rig limit reached');
+
+      const [rig] = await rigsBook(stacks).list();
+      const engineB = rig.engines.find((e: EngineInstance) => e.id === 'b');
+      assert.equal(engineB?.status, 'pending', 'engine b should remain pending');
+    });
+
+    it('starts engine when both limits have room', async () => {
+      // maxConcurrentEngines=5, maxConcurrentEnginesPerRig=3
+      const fix = buildFixture(
+        { spider: { rigTemplates: { default: PARALLEL_TEMPLATE }, maxConcurrentEngines: 5, maxConcurrentEnginesPerRig: 3 } },
+        { status: 'completed' },
+        {
+          customEngines: {
+            'quick-stub': {
+              id: 'quick-stub',
+              run: async () => ({ status: 'launched' as const, sessionId: generateId('ses', 4) }),
+              collect: async () => ({ yields: {} }),
+            },
+          },
+        },
+      );
+      const { clerk, spider } = fix;
+      await clerk.post({ title: 'start-test', body: 'b' });
+      await spider.crawl(); // spawn rig
+      const result = await spider.crawl(); // run engine 'a' → should succeed
+      assert.ok(result !== null, 'should start engine');
+      assert.equal(result!.action, 'engine-started');
+    });
+  });
+
+  describe('Concurrent engine throttle — trySpawn', () => {
+    it('does not spawn a new rig when system-wide engine limit is reached', async () => {
+      const SINGLE_QUICK_TEMPLATE: RigTemplate = {
+        engines: [
+          { id: 'only', designId: 'quick-stub', givens: {} },
+        ],
+      };
+      const fix = buildFixture(
+        { spider: { rigTemplates: { default: SINGLE_QUICK_TEMPLATE }, maxConcurrentEngines: 1, maxConcurrentEnginesPerRig: 1 } },
+        { status: 'completed' },
+        {
+          customEngines: {
+            'quick-stub': {
+              id: 'quick-stub',
+              run: async () => ({ status: 'launched' as const, sessionId: generateId('ses', 4) }),
+              collect: async () => ({ yields: {} }),
+            },
+          },
+        },
+      );
+      const { clerk, spider, stacks } = fix;
+
+      // Post two writs
+      await clerk.post({ title: 'writ1', body: 'b' });
+      await clerk.post({ title: 'writ2', body: 'b' });
+
+      await spider.crawl(); // spawn rig for writ1
+      await spider.crawl(); // run engine 'only' in rig1 → launched (1 running)
+
+      // Now writ2 is ready, but system limit = 1 and we have 1 running engine
+      const result = await spider.crawl();
+      assert.equal(result, null, 'should not spawn second rig when at system limit');
+
+      // Only 1 rig should exist
+      const rigs = await rigsBook(stacks).list();
+      assert.equal(rigs.length, 1, 'only one rig should exist');
+    });
+
+    it('spawns a new rig when system-wide limit has room', async () => {
+      const SINGLE_CLOCKWORK: RigTemplate = {
+        engines: [
+          { id: 'only', designId: 'stub-clockwork', givens: {} },
+        ],
+      };
+      const fix = buildFixture(
+        { spider: { rigTemplates: { default: SINGLE_CLOCKWORK }, maxConcurrentEngines: 5 } },
+        { status: 'completed' },
+        {
+          customEngines: {
+            'stub-clockwork': {
+              id: 'stub-clockwork',
+              run: async () => ({ status: 'completed' as const, yields: { done: true } }),
+            },
+          },
+        },
+      );
+      const { clerk, spider, stacks } = fix;
+      await clerk.post({ title: 'writ1', body: 'b' });
+      await clerk.post({ title: 'writ2', body: 'b' });
+
+      await spider.crawl(); // spawn rig for writ1
+      await spider.crawl(); // run clockwork engine in rig1 → completed (0 running now)
+      const result = await spider.crawl(); // should spawn rig for writ2
+      assert.ok(result !== null, 'should have work');
+      assert.equal(result!.action, 'rig-spawned', 'should spawn when limit has room');
+
+      const rigs = await rigsBook(stacks).list();
+      assert.equal(rigs.length, 2, 'both rigs should exist');
+    });
+  });
+
+  describe('Concurrent engine throttle — behavioral', () => {
+    it('with maxConcurrentEngines=2, exactly 2 engines reach running status across rigs', async () => {
+      const SINGLE_QUICK: RigTemplate = {
+        engines: [
+          { id: 'only', designId: 'quick-stub', givens: {} },
+        ],
+      };
+      const fix = buildFixture(
+        { spider: { rigTemplates: { default: SINGLE_QUICK }, maxConcurrentEngines: 2, maxConcurrentEnginesPerRig: 1 } },
+        { status: 'completed' },
+        {
+          customEngines: {
+            'quick-stub': {
+              id: 'quick-stub',
+              run: async () => ({ status: 'launched' as const, sessionId: generateId('ses', 4) }),
+              collect: async () => ({ yields: {} }),
+            },
+          },
+        },
+      );
+      const { clerk, spider, stacks } = fix;
+
+      // Post 4 writs
+      await clerk.post({ title: 'writ1', body: 'b' });
+      await clerk.post({ title: 'writ2', body: 'b' });
+      await clerk.post({ title: 'writ3', body: 'b' });
+      await clerk.post({ title: 'writ4', body: 'b' });
+
+      // Spawn and run repeatedly
+      // Spawn rig1, spawn rig2, run rig1 engine, run rig2 engine, then no more
+      for (let i = 0; i < 20; i++) {
+        await spider.crawl();
+      }
+
+      const allRigs = await rigsBook(stacks).list();
+      let totalRunning = 0;
+      let totalPending = 0;
+      for (const rig of allRigs) {
+        for (const e of rig.engines) {
+          if (e.status === 'running') totalRunning++;
+          if (e.status === 'pending') totalPending++;
+        }
+      }
+
+      assert.equal(totalRunning, 2, 'exactly 2 engines should be running');
+      // Remaining writs should either have no rig yet (still ready) or rig with pending engine
+      // Since trySpawn is also throttled, we should have exactly 2 rigs
+      assert.equal(allRigs.length, 2, 'only 2 rigs should be spawned (trySpawn throttled)');
+    });
+
+    it('deferred engines start once a slot frees after completion', async () => {
+      // Two-engine sequential template: first clockwork, then quick.
+      // After the clockwork engine completes, the quick engine should start.
+      // With maxConcurrentEngines=1, the clockwork engine occupies the slot
+      // transiently (completes in same tick), freeing it for the quick engine
+      // on the next tick.
+      const TWO_ENGINE: RigTemplate = {
+        engines: [
+          { id: 'step1', designId: 'stub-clockwork', givens: {} },
+          { id: 'step2', designId: 'quick-stub', givens: {}, upstream: ['step1'] },
+        ],
+      };
+      const fix = buildFixture(
+        { spider: { rigTemplates: { default: TWO_ENGINE }, maxConcurrentEngines: 1, maxConcurrentEnginesPerRig: 1 } },
+        { status: 'completed' },
+        {
+          customEngines: {
+            'stub-clockwork': {
+              id: 'stub-clockwork',
+              run: async () => ({ status: 'completed' as const, yields: { done: true } }),
+            },
+            'quick-stub': {
+              id: 'quick-stub',
+              run: async () => ({ status: 'launched' as const, sessionId: generateId('ses', 4) }),
+              collect: async () => ({ yields: {} }),
+            },
+          },
+        },
+      );
+      const { clerk, spider, stacks } = fix;
+
+      await clerk.post({ title: 'writ1', body: 'b' });
+      await clerk.post({ title: 'writ2', body: 'b' });
+
+      await spider.crawl(); // spawn rig1
+      await spider.crawl(); // run step1 (clockwork) → engine-completed (slot freed immediately)
+      await spider.crawl(); // run step2 (quick) → engine-started (1 running slot used)
+
+      // Now system limit reached (step2 is running). Writ2 should not spawn.
+      const r = await spider.crawl();
+      // trySpawn should be blocked by system limit
+      assert.equal(r, null, 'should idle when quick engine is running and system limit reached');
+
+      const rigs = await rigsBook(stacks).list();
+      assert.equal(rigs.length, 1, 'only one rig should exist while slot is occupied');
+
+      // Verify step2 is running
+      const [rig] = rigs;
+      const step2 = rig.engines.find((e: EngineInstance) => e.id === 'step2');
+      assert.equal(step2?.status, 'running', 'step2 should be running');
+    });
+  });
+
+  describe('Concurrent engine throttle — regression', () => {
+    it('tryCollect is never throttled', async () => {
+      // With maxConcurrentEngines=1, collect should still work even if 1 engine is running
+      const SINGLE_QUICK: RigTemplate = {
+        engines: [
+          { id: 'only', designId: 'animator-quick', givens: {} },
+        ],
+      };
+      const fix = buildFixture(
+        { spider: { rigTemplates: { default: SINGLE_QUICK }, maxConcurrentEngines: 1, maxConcurrentEnginesPerRig: 1 } },
+        { status: 'completed' },
+        {
+          customEngines: {
+            'animator-quick': {
+              id: 'animator-quick',
+              async run() {
+                const animator = (await import('@shardworks/nexus-core')).guild().apparatus<AnimatorApi>('animator');
+                const handle = animator.summon({ role: 'test', prompt: 'test', cwd: '/tmp' });
+                return { status: 'launched' as const, sessionId: handle.sessionId };
+              },
+            },
+          },
+        },
+      );
+      const { clerk, spider, stacks } = fix;
+
+      await clerk.post({ title: 'collect-test', body: 'b' });
+      await spider.crawl(); // spawn
+      await spider.crawl(); // run → launched (1 running)
+
+      // The mock animator eagerly writes terminal session, so collect should pick it up
+      const result = await spider.crawl();
+      assert.ok(result !== null, 'collect should not be blocked by throttle');
+      // The action should be rig-completed (single engine rig with completed session)
+      assert.equal(result!.action, 'rig-completed', 'should collect and complete rig');
+    });
+
+    it('uses defaults of maxConcurrentEngines=3, maxConcurrentEnginesPerRig=1 when not configured', async () => {
+      // Don't configure any throttle settings — use the standard fixture
+      const SINGLE_QUICK: RigTemplate = {
+        engines: [
+          { id: 'only', designId: 'quick-stub', givens: {} },
+        ],
+      };
+      const fix = buildFixture(
+        { spider: { rigTemplates: { default: SINGLE_QUICK } } },
+        { status: 'completed' },
+        {
+          customEngines: {
+            'quick-stub': {
+              id: 'quick-stub',
+              run: async () => ({ status: 'launched' as const, sessionId: generateId('ses', 4) }),
+              collect: async () => ({ yields: {} }),
+            },
+          },
+        },
+      );
+      const { clerk, spider, stacks } = fix;
+
+      // Post 5 writs
+      for (let i = 0; i < 5; i++) {
+        await clerk.post({ title: `writ${i}`, body: 'b' });
+      }
+
+      // Run many crawl ticks
+      for (let i = 0; i < 30; i++) {
+        await spider.crawl();
+      }
+
+      const allRigs = await rigsBook(stacks).list();
+      let totalRunning = 0;
+      for (const rig of allRigs) {
+        for (const e of rig.engines) {
+          if (e.status === 'running') totalRunning++;
+        }
+      }
+
+      assert.equal(totalRunning, 3, 'default maxConcurrentEngines should be 3');
+      assert.equal(allRigs.length, 3, 'default limit should cap at 3 spawned rigs');
+    });
   });
 });

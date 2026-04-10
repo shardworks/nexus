@@ -155,6 +155,8 @@ The Spider reads its config from `guild.json["spider"]`:
 | `variables` | `Record<string, unknown>` | — | Named values available in rig template givens via `${vars.<path>}`. |
 | `rigTemplates` | `Record<string, RigTemplate>` | — | Named rig template definitions. |
 | `rigTemplateMappings` | `Record<string, string>` | — | Writ type → template name. `'default'` is the fallback. |
+| `maxConcurrentEngines` | `number` | `3` | Maximum number of engines running concurrently across all rigs. When the limit is reached, runnable engines stay in `pending` and new rigs are not spawned until a slot frees. |
+| `maxConcurrentEnginesPerRig` | `number` | `1` | Maximum number of engines running concurrently within a single rig. Prevents race conditions with rig-local resources. |
 
 ## Rig Templates
 
