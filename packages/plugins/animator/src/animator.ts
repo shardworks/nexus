@@ -30,8 +30,9 @@ import type {
   SessionProviderResult,
 } from './types.ts';
 
-import { sessionList, sessionShow, summon as summonTool, sessionCancel } from './tools/index.ts';
+import { sessionList, sessionShow, summon as summonTool, sessionCancel, sessionRunning, sessionRecord } from './tools/index.ts';
 import { animatorRoutes } from './oculus-routes.ts';
+import { drainDlq, recoverOrphans } from './startup.ts';
 
 // ── Session broadcast infrastructure ─────────────────────────────────
 
@@ -632,7 +633,7 @@ export function createAnimator(): Plugin {
             indexes: ['sessionId'],
           },
         },
-        tools: [sessionList, sessionShow, summonTool, sessionCancel],
+        tools: [sessionList, sessionShow, summonTool, sessionCancel, sessionRunning, sessionRecord],
         pages: [
           { id: 'animator', title: 'Animator', dir: 'src/static' },
         ],
@@ -648,6 +649,24 @@ export function createAnimator(): Plugin {
         const stacks = g.apparatus<StacksApi>('stacks');
         sessions = stacks.book<SessionDoc>('animator', 'sessions');
         transcripts = stacks.book<TranscriptDoc>('animator', 'transcripts');
+
+        // Run DLQ drain then orphan recovery in background (don't block startup).
+        (async () => {
+          try {
+            await drainDlq(g.home);
+          } catch (err) {
+            console.warn(
+              `[animator] DLQ drain failed: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+          try {
+            await recoverOrphans(sessions);
+          } catch (err) {
+            console.warn(
+              `[animator] Orphan recovery failed: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+        })();
       },
     },
   };

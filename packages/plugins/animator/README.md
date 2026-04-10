@@ -276,8 +276,18 @@ The Animator contributes two books, inspection/dispatch tools, an Oculus page, a
 | `session-show` | `read` | Show full detail for a single session by id |
 | `summon` | `animate` | Summon an anima from the CLI — compose context and launch a session |
 | `session-cancel` | `animate` | Cancel a running session by id, with optional reason |
+| `session-running` | `write` | Record initial "running" state for a detached session |
+| `session-record` | `write` | Record a terminal session result for a detached session |
 
-The `summon` and `session-cancel` tools are patron-only (`callableBy: 'patron'`).
+The `summon` and `session-cancel` tools are patron-only (`callableBy: 'patron'`). The `session-running` and `session-record` tools are infrastructure-facing (`callableBy: 'anima'`) — called by session babysitters over the Tool HTTP API to report detached session lifecycle events. See `docs/architecture/detached-sessions.md`.
+
+### Startup Routines
+
+On startup the Animator runs two recovery routines (non-blocking, in background):
+
+1. **DLQ Drain** — Scans `.nexus/dlq/` for JSON files containing session-record payloads that babysitters couldn't deliver (guild was down). Each file is processed through the session-record handler and deleted on success. The directory is created if it doesn't exist.
+
+2. **Orphan Recovery** — After DLQ drain, queries sessions with `status: 'running'` and checks if their `cancelMetadata.pid` process is still alive. Dead-PID sessions are marked as `failed` with error `'Session process died unexpectedly (orphaned)'`. Sessions without a PID or with a live process are skipped.
 
 ## Exports
 
