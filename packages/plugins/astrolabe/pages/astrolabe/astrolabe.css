@@ -30,12 +30,8 @@
 #plan-tbody tr { cursor: pointer; }
 #plan-tbody tr:hover { opacity: 0.85; }
 
-/* Filter buttons */
+/* Filter buttons — base styles now in shared stylesheet (oculus/style.css) */
 .filter-btn { margin-right: 4px; }
-.filter-btn.active-filter {
-  background: var(--blue, #7aa2f7);
-  color: var(--bg, #1a1b26);
-}
 
 /* Decision expandable rows */
 .decision-row { cursor: pointer; }

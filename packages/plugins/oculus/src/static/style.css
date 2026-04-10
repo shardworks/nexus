@@ -191,6 +191,30 @@ pre code {
   font-size: 13px;
 }
 
+/* Filter button group — pill-style toggle buttons */
+.filter-btn {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.filter-btn:hover:not(.active-filter) {
+  background: var(--surface2);
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.filter-btn.active-filter {
+  background: var(--blue, #7aa2f7);
+  color: var(--bg, #1a1b26);
+  border-color: var(--blue, #7aa2f7);
+  cursor: default;
+}
+
 .btn--primary {
   background: var(--blue);
   color: var(--bg);

@@ -508,6 +508,11 @@ describe('Oculus static assets', () => {
     assert.ok(text.includes('.badge--success'));
     assert.ok(text.includes('#oculus-nav'));
     assert.ok(text.includes('monospace'));
+
+    // Filter button styles: inactive state, hover state, and active state
+    assert.ok(text.includes('.filter-btn'), 'shared stylesheet defines .filter-btn base styles');
+    assert.ok(text.includes('.filter-btn:hover:not(.active-filter)'), 'shared stylesheet defines .filter-btn hover state');
+    assert.ok(text.includes('.filter-btn.active-filter'), 'shared stylesheet defines .filter-btn.active-filter');
   });
 });
 
