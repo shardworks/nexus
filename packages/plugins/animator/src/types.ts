@@ -378,7 +378,7 @@ export interface SessionDoc {
    * The `'running'` state is transient.
    * `SessionResult.status` only includes terminal states.
    */
-  status: 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled';
   startedAt: string;
   endedAt?: string;
   durationMs?: number;
@@ -404,6 +404,14 @@ export interface SessionDoc {
    * - future remote: { jobId: string, host: string }
    */
   cancelMetadata?: Record<string, unknown>;
+  /**
+   * Tool names this session is authorized to call over the Tool HTTP API.
+   *
+   * Source of truth for the daemon's Stacks-backed authorize callback.
+   * Pre-written by `launchDetached()` (or animate()) before the babysitter
+   * is spawned, then preserved through subsequent updates.
+   */
+  authorizedTools?: string[];
   /** Index signature required by BookEntry. */
   [key: string]: unknown;
 }
@@ -431,6 +439,13 @@ export interface AnimatorConfig {
    * Defaults to 'claude-code' if not specified.
    */
   sessionProvider?: string;
+  /**
+   * Run sessions in detached mode (babysitter survives guild restarts).
+   * Defaults to true. Set to false to fall back to attached/inline sessions —
+   * the escape hatch for debugging or if detached mode misbehaves.
+   * Currently consulted by the claude-code provider.
+   */
+  detached?: boolean;
 }
 
 // Augment GuildConfig so `guild().guildConfig().animator` is typed without

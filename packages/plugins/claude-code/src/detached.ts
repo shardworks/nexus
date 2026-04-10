@@ -22,7 +22,7 @@ import type {
   SessionChunk,
   SessionDoc,
 } from '@shardworks/animator-apparatus';
-import type { StacksApi, ReadOnlyBook } from '@shardworks/stacks-apparatus';
+import type { StacksApi, ReadOnlyBook, Book } from '@shardworks/stacks-apparatus';
 import type { ResolvedTool } from '@shardworks/tools-apparatus';
 
 import type { BabysitterConfig, SerializedTool } from './babysitter.ts';
@@ -183,7 +183,7 @@ export async function pollForTerminalStatus(
   while (Date.now() < deadline) {
     const doc = await sessionsBook.get(sessionId);
 
-    if (doc && doc.status !== 'running') {
+    if (doc && doc.status !== 'running' && doc.status !== 'pending') {
       return doc;
     }
 
@@ -220,7 +220,7 @@ export async function pollForProcessInfo(
     }
 
     // If the session already terminated, return empty (no process to cancel)
-    if (doc && doc.status !== 'running') {
+    if (doc && doc.status !== 'running' && doc.status !== 'pending') {
       return {};
     }
 
@@ -241,8 +241,12 @@ export async function pollForProcessInfo(
  * Build a SessionProviderResult from a terminal SessionDoc.
  */
 function docToProviderResult(doc: SessionDoc): SessionProviderResult {
+  const status: SessionProviderResult['status'] =
+    doc.status === 'running' || doc.status === 'pending'
+      ? 'failed'
+      : doc.status;
   return {
-    status: doc.status === 'running' ? 'failed' : doc.status,
+    status,
     exitCode: doc.exitCode ?? 1,
     error: doc.error,
     providerSessionId: doc.providerSessionId,
@@ -282,9 +286,51 @@ export function launchDetached(
     const stacks = guild().apparatus<StacksApi>('stacks');
     return stacks.readBook<SessionDoc>('animator', 'sessions');
   };
+  const getWritableSessionsBook = (): Book<SessionDoc> => {
+    const stacks = guild().apparatus<StacksApi>('stacks');
+    return stacks.book<SessionDoc>('animator', 'sessions');
+  };
 
   // Build babysitter config
   const babysitterConfig = buildBabysitterConfig(config, opts);
+
+  // Compute the full authorized tool set for this session: every tool the
+  // session was composed with, plus the two infrastructure tools it needs
+  // to report its own lifecycle back to the guild.
+  const authorizedTools = [
+    ...(config.tools?.map((rt) => rt.definition.name) ?? []),
+    'session-running',
+    'session-record',
+  ];
+
+  // Pre-write a `pending` SessionDoc BEFORE spawning the babysitter. This
+  // is the source of truth for the tool server's authorize callback: by
+  // the time the babysitter's first HTTP call lands, the sessions book
+  // already records the session and the tools it's allowed to call.
+  //
+  // The babysitter's `session-running` call will merge this doc into a
+  // `running` one, preserving authorizedTools.
+  //
+  // Fire-and-forget — spawn must not block on this. In the worst case
+  // the babysitter will retry its first HTTP call for up to 60s, which
+  // is plenty of time for the SQLite write to land.
+  (async () => {
+    try {
+      const sessions = getWritableSessionsBook();
+      await sessions.put({
+        id: config.sessionId,
+        status: 'pending',
+        startedAt: new Date().toISOString(),
+        provider: 'claude-code',
+        authorizedTools,
+        ...(opts?.metadata ? { metadata: opts.metadata } : {}),
+      });
+    } catch (err) {
+      console.warn(
+        `[claude-code] Failed to pre-write pending session ${config.sessionId}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  })();
 
   // Spawn the babysitter as a detached process.
   // stdio: ['pipe', 'ignore', 'inherit'] — config via stdin, no stdout, stderr to parent

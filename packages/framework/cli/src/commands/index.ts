@@ -14,6 +14,8 @@ import init from './init.ts';
 import version from './version.ts';
 import status from './status.ts';
 import upgrade from './upgrade.ts';
+import start from './start.ts';
+import stop from './stop.ts';
 import { pluginList, pluginInstall, pluginRemove, pluginUpgrade } from './plugin.ts';
 
 /** All framework commands, typed as the base ToolDefinition for uniform handling. */
@@ -22,6 +24,8 @@ export const frameworkCommands = [
   version,
   status,
   upgrade,
+  start,
+  stop,
   pluginList,
   pluginInstall,
   pluginRemove,

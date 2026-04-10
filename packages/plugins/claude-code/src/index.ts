@@ -20,6 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { Plugin } from '@shardworks/nexus-core';
+import { guild } from '@shardworks/nexus-core';
 import type {
   AnimatorSessionProvider,
   SessionProviderConfig,
@@ -163,10 +164,22 @@ const provider: AnimatorSessionProvider = {
     result: Promise<SessionProviderResult>;
     processInfo?: Promise<Record<string, unknown>>;
   } {
-    // Detached mode: spawn a babysitter process that survives guild restarts.
-    // The babysitter hosts the MCP server, spawns claude, streams transcripts
-    // to SQLite, and reports lifecycle events to the guild via HTTP.
-    return launchDetached(config);
+    // Detached mode is the default: spawn a babysitter process that survives
+    // guild restarts, hosts the MCP server, spawns claude, streams transcripts
+    // to SQLite, and reports lifecycle events via HTTP.
+    //
+    // Escape hatch: guild.json["animator"]["detached"] = false opts out and
+    // runs claude in-process (attached mode) for debugging.
+    let detached = true;
+    try {
+      const animatorConfig = guild().guildConfig().animator as
+        | { detached?: boolean }
+        | undefined;
+      if (animatorConfig?.detached === false) detached = false;
+    } catch {
+      // No guild bound (e.g. unit tests) — fall back to detached default.
+    }
+    return detached ? launchDetached(config) : launchAttached(config);
   },
 };
 

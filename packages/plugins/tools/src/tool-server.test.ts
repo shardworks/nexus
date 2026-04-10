@@ -30,11 +30,40 @@ import {
   toolNameToRoute,
   permissionToMethod,
   coerceParams,
-  SessionRegistry,
   createToolServerApp,
   startToolServer,
+  type ToolAuthorizer,
   type ToolServerHandle,
 } from './tool-server.ts';
+
+// ── Authorization helpers (replacing the old in-memory SessionRegistry) ──
+
+/**
+ * Build a ToolAuthorizer backed by a simple in-memory map. Used in tests
+ * to simulate the Stacks-backed authorize callback the daemon installs in
+ * production. Equivalent in spirit to the old SessionRegistry, but here
+ * the registry lives in the test, not in the production code.
+ */
+function makeAuthorizer(initial?: Record<string, string[]>): {
+  authorize: ToolAuthorizer;
+  register(sessionId: string, tools: string[]): void;
+} {
+  const sessions = new Map<string, Set<string>>();
+  if (initial) {
+    for (const [id, tools] of Object.entries(initial)) {
+      sessions.set(id, new Set(tools));
+    }
+  }
+  return {
+    authorize: (sessionId, toolName) => {
+      const allowed = sessions.get(sessionId);
+      return allowed ? allowed.has(toolName) : false;
+    },
+    register(sessionId, tools) {
+      sessions.set(sessionId, new Set(tools));
+    },
+  };
+}
 
 // ── Test helpers ──────────────────────────────────────────────────────
 
@@ -245,70 +274,21 @@ describe('coerceParams', () => {
   });
 });
 
-// ── Unit tests: SessionRegistry ──────────────────────────────────────
+// ── Unit tests: ToolAuthorizer ───────────────────────────────────────
 
-describe('SessionRegistry', () => {
-  it('registers a session and checks authorization', () => {
-    const registry = new SessionRegistry();
-    registry.register('s1', ['tool-a', 'tool-b']);
+describe('makeAuthorizer test helper', () => {
+  it('authorizes registered (session, tool) pairs', async () => {
+    const { authorize, register } = makeAuthorizer();
+    register('s1', ['tool-a', 'tool-b']);
 
-    assert.ok(registry.isAuthorized('s1', 'tool-a'));
-    assert.ok(registry.isAuthorized('s1', 'tool-b'));
-    assert.ok(!registry.isAuthorized('s1', 'tool-c'));
+    assert.equal(await authorize('s1', 'tool-a'), true);
+    assert.equal(await authorize('s1', 'tool-b'), true);
+    assert.equal(await authorize('s1', 'tool-c'), false);
   });
 
-  it('returns false for unregistered sessions', () => {
-    const registry = new SessionRegistry();
-    assert.ok(!registry.isAuthorized('unknown', 'tool-a'));
-  });
-
-  it('deregisters a session', () => {
-    const registry = new SessionRegistry();
-    registry.register('s1', ['tool-a']);
-
-    assert.ok(registry.deregister('s1'));
-    assert.ok(!registry.isAuthorized('s1', 'tool-a'));
-    assert.ok(!registry.has('s1'));
-  });
-
-  it('deregister returns false for unknown session', () => {
-    const registry = new SessionRegistry();
-    assert.ok(!registry.deregister('unknown'));
-  });
-
-  it('getTools returns tool list for registered session', () => {
-    const registry = new SessionRegistry();
-    registry.register('s1', ['tool-a', 'tool-b']);
-    const tools = registry.getTools('s1');
-    assert.ok(tools);
-    assert.deepStrictEqual(tools.sort(), ['tool-a', 'tool-b']);
-  });
-
-  it('getTools returns undefined for unregistered session', () => {
-    const registry = new SessionRegistry();
-    assert.equal(registry.getTools('unknown'), undefined);
-  });
-
-  it('has returns true for registered session', () => {
-    const registry = new SessionRegistry();
-    registry.register('s1', []);
-    assert.ok(registry.has('s1'));
-  });
-
-  it('listSessions returns all session IDs', () => {
-    const registry = new SessionRegistry();
-    registry.register('s1', []);
-    registry.register('s2', []);
-    assert.deepStrictEqual(registry.listSessions().sort(), ['s1', 's2']);
-  });
-
-  it('overwriting a session replaces its tool set', () => {
-    const registry = new SessionRegistry();
-    registry.register('s1', ['tool-a']);
-    registry.register('s1', ['tool-b']);
-
-    assert.ok(!registry.isAuthorized('s1', 'tool-a'));
-    assert.ok(registry.isAuthorized('s1', 'tool-b'));
+  it('rejects unknown sessions', async () => {
+    const { authorize } = makeAuthorizer();
+    assert.equal(await authorize('unknown', 'tool-a'), false);
   });
 });
 
@@ -328,9 +308,8 @@ describe('Tool HTTP server', () => {
     it('starts and returns a handle with port and url', async () => {
       const kit = mockKit('stdlib', [testTool('ping')]);
       const { api } = startInstrumentarium({ kits: [kit] });
-      const registry = new SessionRegistry();
 
-      handle = await startToolServer(api, registry, 0);
+      handle = await startToolServer(api, 0);
       assert.ok(handle.port > 0);
       assert.ok(handle.url.includes('127.0.0.1'));
     });
@@ -338,9 +317,8 @@ describe('Tool HTTP server', () => {
     it('serves requests after start', async () => {
       const kit = mockKit('stdlib', [testTool('ping')]);
       const { api } = startInstrumentarium({ kits: [kit] });
-      const registry = new SessionRegistry();
 
-      handle = await startToolServer(api, registry, 0);
+      handle = await startToolServer(api, 0);
       const res = await fetch(`${handle.url}/api/ping`);
       assert.equal(res.status, 200);
       const body = await res.json();
@@ -350,9 +328,8 @@ describe('Tool HTTP server', () => {
     it('closes cleanly', async () => {
       const kit = mockKit('stdlib', [testTool('ping')]);
       const { api } = startInstrumentarium({ kits: [kit] });
-      const registry = new SessionRegistry();
 
-      handle = await startToolServer(api, registry, 0);
+      handle = await startToolServer(api, 0);
       const port = handle.port;
       await handle.close();
       handle = undefined as unknown as ToolServerHandle;
@@ -377,7 +354,7 @@ describe('Tool HTTP server', () => {
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, new SessionRegistry(), 0);
+      handle = await startToolServer(api, 0);
       const res = await fetch(`${handle.url}/api/writ/list`);
       assert.equal(res.status, 200);
       const body = await res.json();
@@ -394,7 +371,7 @@ describe('Tool HTTP server', () => {
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, new SessionRegistry(), 0);
+      handle = await startToolServer(api, 0);
       const res = await fetch(`${handle.url}/api/writ/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -415,7 +392,7 @@ describe('Tool HTTP server', () => {
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, new SessionRegistry(), 0);
+      handle = await startToolServer(api, 0);
       const res = await fetch(`${handle.url}/api/writ/remove`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
@@ -439,7 +416,7 @@ describe('Tool HTTP server', () => {
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, new SessionRegistry(), 0);
+      handle = await startToolServer(api, 0);
       const res = await fetch(`${handle.url}/api/writ/search?limit=10&active=true`);
       assert.equal(res.status, 200);
       const body = await res.json();
@@ -455,7 +432,7 @@ describe('Tool HTTP server', () => {
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, new SessionRegistry(), 0);
+      handle = await startToolServer(api, 0);
       const res = await fetch(`${handle.url}/api/fail/tool`);
       assert.equal(res.status, 500);
       const body = await res.json();
@@ -474,7 +451,7 @@ describe('Tool HTTP server', () => {
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, new SessionRegistry(), 0);
+      handle = await startToolServer(api, 0);
       const res = await fetch(`${handle.url}/api/writ/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -497,7 +474,7 @@ describe('Tool HTTP server', () => {
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, new SessionRegistry(), 0);
+      handle = await startToolServer(api, 0);
       const res = await fetch(`${handle.url}/api/writ/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -514,21 +491,20 @@ describe('Tool HTTP server', () => {
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, new SessionRegistry(), 0);
+      handle = await startToolServer(api, 0);
       const res = await fetch(`${handle.url}/api/patron/tool`);
       assert.equal(res.status, 200);
     });
 
     it('registers anima-only tools', async () => {
-      const registry = new SessionRegistry();
-      registry.register('s1', ['anima-tool']);
+      const { authorize } = makeAuthorizer({ s1: ['anima-tool'] });
 
       const kit = mockKit('stdlib', [
         testTool('anima-tool', { callableBy: ['anima'] }),
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, registry, 0);
+      handle = await startToolServer(api, 0, authorize);
       const res = await fetch(`${handle.url}/api/anima/tool`, {
         headers: { 'X-Session-Id': 's1' },
       });
@@ -541,7 +517,7 @@ describe('Tool HTTP server', () => {
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, new SessionRegistry(), 0);
+      handle = await startToolServer(api, 0);
       const res = await fetch(`${handle.url}/api/universal/tool`);
       assert.equal(res.status, 200);
     });
@@ -554,7 +530,7 @@ describe('Tool HTTP server', () => {
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, new SessionRegistry(), 0);
+      handle = await startToolServer(api, 0);
       const res = await fetch(`${handle.url}/api/public/tool`);
       assert.equal(res.status, 200);
     });
@@ -563,7 +539,7 @@ describe('Tool HTTP server', () => {
       const kit = mockKit('stdlib', [testTool('open-tool')]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, new SessionRegistry(), 0);
+      handle = await startToolServer(api, 0);
       const res = await fetch(`${handle.url}/api/open/tool`);
       assert.equal(res.status, 200);
     });
@@ -574,7 +550,7 @@ describe('Tool HTTP server', () => {
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, new SessionRegistry(), 0);
+      handle = await startToolServer(api, 0);
       const res = await fetch(`${handle.url}/api/anima/tool`);
       assert.equal(res.status, 401);
       const body = await res.json();
@@ -582,15 +558,14 @@ describe('Tool HTTP server', () => {
     });
 
     it('anima-only tool returns 403 for unauthorized session', async () => {
-      const registry = new SessionRegistry();
-      registry.register('s1', ['other-tool']); // not authorized for anima-tool
+      const { authorize } = makeAuthorizer({ s1: ['other-tool'] });
 
       const kit = mockKit('stdlib', [
         testTool('anima-tool', { callableBy: ['anima'] }),
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, registry, 0);
+      handle = await startToolServer(api, 0, authorize);
       const res = await fetch(`${handle.url}/api/anima/tool`, {
         headers: { 'X-Session-Id': 's1' },
       });
@@ -598,15 +573,14 @@ describe('Tool HTTP server', () => {
     });
 
     it('anima-only tool returns 200 for authorized session', async () => {
-      const registry = new SessionRegistry();
-      registry.register('s1', ['anima-tool']);
+      const { authorize } = makeAuthorizer({ s1: ['anima-tool'] });
 
       const kit = mockKit('stdlib', [
         testTool('anima-tool', { callableBy: ['anima'] }),
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, registry, 0);
+      handle = await startToolServer(api, 0, authorize);
       const res = await fetch(`${handle.url}/api/anima/tool`, {
         headers: { 'X-Session-Id': 's1' },
       });
@@ -614,114 +588,51 @@ describe('Tool HTTP server', () => {
     });
 
     it('returns 403 for unregistered session on anima tool', async () => {
+      const { authorize } = makeAuthorizer();
       const kit = mockKit('stdlib', [
         testTool('anima-tool', { callableBy: ['anima'] }),
       ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, new SessionRegistry(), 0);
+      handle = await startToolServer(api, 0, authorize);
       const res = await fetch(`${handle.url}/api/anima/tool`, {
         headers: { 'X-Session-Id': 'nonexistent' },
       });
       assert.equal(res.status, 403);
     });
-  });
 
-  describe('session registration API', () => {
-    it('POST /sessions registers a session', async () => {
-      const kit = mockKit('stdlib', [testTool('ping')]);
+    it('returns 500 when authorize callback throws', async () => {
+      const failingAuthorize: ToolAuthorizer = async () => {
+        throw new Error('Stacks unavailable');
+      };
+      const kit = mockKit('stdlib', [
+        testTool('anima-tool', { callableBy: ['anima'] }),
+      ]);
       const { api } = startInstrumentarium({ kits: [kit] });
-      const registry = new SessionRegistry();
 
-      handle = await startToolServer(api, registry, 0);
-      const res = await fetch(`${handle.url}/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: 's1', tools: ['ping', 'pong'] }),
+      handle = await startToolServer(api, 0, failingAuthorize);
+      const res = await fetch(`${handle.url}/api/anima/tool`, {
+        headers: { 'X-Session-Id': 's1' },
       });
-      assert.equal(res.status, 201);
+      assert.equal(res.status, 500);
       const body = await res.json();
-      assert.equal(body.ok, true);
-      assert.equal(body.sessionId, 's1');
-
-      // Verify registration took effect
-      assert.ok(registry.isAuthorized('s1', 'ping'));
-      assert.ok(registry.isAuthorized('s1', 'pong'));
+      assert.ok(body.error.includes('Stacks unavailable'));
     });
 
-    it('POST /sessions returns 400 for missing sessionId', async () => {
-      const kit = mockKit('stdlib', [testTool('ping')]);
+    it('without an authorize callback, allows any session id', async () => {
+      // The bare-minimum default: server only checks for the presence of
+      // an X-Session-Id header. Useful for tests; production wires up a
+      // real authorize function.
+      const kit = mockKit('stdlib', [
+        testTool('anima-tool', { callableBy: ['anima'] }),
+      ]);
       const { api } = startInstrumentarium({ kits: [kit] });
 
-      handle = await startToolServer(api, new SessionRegistry(), 0);
-      const res = await fetch(`${handle.url}/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tools: ['ping'] }),
+      handle = await startToolServer(api, 0);
+      const res = await fetch(`${handle.url}/api/anima/tool`, {
+        headers: { 'X-Session-Id': 'anything' },
       });
-      assert.equal(res.status, 400);
-    });
-
-    it('POST /sessions returns 400 for missing tools', async () => {
-      const kit = mockKit('stdlib', [testTool('ping')]);
-      const { api } = startInstrumentarium({ kits: [kit] });
-
-      handle = await startToolServer(api, new SessionRegistry(), 0);
-      const res = await fetch(`${handle.url}/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: 's1' }),
-      });
-      assert.equal(res.status, 400);
-    });
-
-    it('DELETE /sessions/:id deregisters a session', async () => {
-      const kit = mockKit('stdlib', [testTool('ping')]);
-      const { api } = startInstrumentarium({ kits: [kit] });
-      const registry = new SessionRegistry();
-      registry.register('s1', ['ping']);
-
-      handle = await startToolServer(api, registry, 0);
-      const res = await fetch(`${handle.url}/sessions/s1`, { method: 'DELETE' });
       assert.equal(res.status, 200);
-      const body = await res.json();
-      assert.equal(body.ok, true);
-
-      // Verify deregistration took effect
-      assert.ok(!registry.has('s1'));
-    });
-
-    it('DELETE /sessions/:id returns 404 for unknown session', async () => {
-      const kit = mockKit('stdlib', [testTool('ping')]);
-      const { api } = startInstrumentarium({ kits: [kit] });
-
-      handle = await startToolServer(api, new SessionRegistry(), 0);
-      const res = await fetch(`${handle.url}/sessions/unknown`, { method: 'DELETE' });
-      assert.equal(res.status, 404);
-    });
-
-    it('GET /sessions/:id returns session info', async () => {
-      const kit = mockKit('stdlib', [testTool('ping')]);
-      const { api } = startInstrumentarium({ kits: [kit] });
-      const registry = new SessionRegistry();
-      registry.register('s1', ['tool-a', 'tool-b']);
-
-      handle = await startToolServer(api, registry, 0);
-      const res = await fetch(`${handle.url}/sessions/s1`);
-      assert.equal(res.status, 200);
-      const body = await res.json();
-      assert.equal(body.sessionId, 's1');
-      assert.ok(Array.isArray(body.tools));
-      assert.equal(body.tools.length, 2);
-    });
-
-    it('GET /sessions/:id returns 404 for unknown session', async () => {
-      const kit = mockKit('stdlib', [testTool('ping')]);
-      const { api } = startInstrumentarium({ kits: [kit] });
-
-      handle = await startToolServer(api, new SessionRegistry(), 0);
-      const res = await fetch(`${handle.url}/sessions/unknown`);
-      assert.equal(res.status, 404);
     });
   });
 

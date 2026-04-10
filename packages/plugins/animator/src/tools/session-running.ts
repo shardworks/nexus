@@ -38,14 +38,23 @@ export default tool({
     const stacks = guild().apparatus<StacksApi>('stacks');
     const sessions = stacks.book<SessionDoc>('animator', 'sessions');
 
+    // Merge with any pre-existing doc (e.g. the `pending` record written by
+    // launchDetached before the babysitter was spawned). Preserve
+    // authorizedTools, existing metadata, and any other fields the caller
+    // may not have passed.
+    const existing = await sessions.get(params.sessionId);
+
     const doc: SessionDoc = {
+      ...(existing ?? {}),
       id: params.sessionId,
       status: 'running',
-      startedAt: params.startedAt,
-      provider: params.provider,
+      startedAt: existing?.startedAt ?? params.startedAt,
+      provider: existing?.provider ?? params.provider,
       ...(params.conversationId ? { conversationId: params.conversationId } : {}),
-      ...(params.metadata ? { metadata: params.metadata } : {}),
-      ...(params.cancelMetadata ? { cancelMetadata: params.cancelMetadata } : {}),
+      ...(params.metadata ? { metadata: { ...(existing?.metadata ?? {}), ...params.metadata } } : {}),
+      ...(params.cancelMetadata
+        ? { cancelMetadata: { ...(existing?.cancelMetadata ?? {}), ...params.cancelMetadata } }
+        : {}),
     };
 
     await sessions.put(doc);

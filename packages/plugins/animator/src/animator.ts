@@ -323,15 +323,30 @@ async function recordRunning(
   cancelMetadata?: Record<string, unknown>,
 ): Promise<void> {
   try {
-    await sessions.put({
+    // Merge with any pre-existing doc (e.g. `pending` pre-written by
+    // launchDetached, or `running` already written by the babysitter via
+    // the session-running tool). Preserve authorizedTools and other
+    // fields the caller may not have passed.
+    const existing = await sessions.get(id);
+    const merged: SessionDoc = {
+      ...(existing ?? {}),
       id,
       status: 'running',
-      startedAt,
-      provider: providerName,
-      conversationId: request.conversationId,
-      metadata: request.metadata,
-      ...(cancelMetadata ? { cancelMetadata } : {}),
-    });
+      startedAt: existing?.startedAt ?? startedAt,
+      provider: existing?.provider ?? providerName,
+    };
+    if (request.conversationId !== undefined) {
+      merged.conversationId = request.conversationId;
+    } else if (existing?.conversationId !== undefined) {
+      merged.conversationId = existing.conversationId;
+    }
+    if (request.metadata !== undefined || existing?.metadata !== undefined) {
+      merged.metadata = { ...(existing?.metadata ?? {}), ...(request.metadata ?? {}) };
+    }
+    if (cancelMetadata !== undefined) {
+      merged.cancelMetadata = { ...(existing?.cancelMetadata ?? {}), ...cancelMetadata };
+    }
+    await sessions.put(merged);
   } catch (err) {
     console.warn(
       `[animator] Failed to write initial session record ${id}: ${err instanceof Error ? err.message : err}`,

@@ -7,9 +7,14 @@
  * Features:
  * - Maps tool names to REST routes (toolNameToRoute)
  * - Maps permission levels to HTTP methods (permissionToMethod)
- * - Session-scoped authorization for anima-callable tools
- * - Session registration/deregistration API
+ * - Session-scoped authorization for anima-callable tools, via an injected
+ *   `authorize(sessionId, toolName)` resolver. The daemon wires this up
+ *   to read the sessions book in The Stacks; tests can pass a mock.
  * - Zod param validation with error details
+ *
+ * There is no in-memory session registry. Authorization is delegated to
+ * the caller-supplied `authorize` function — typically backed by the
+ * Animator's sessions book in The Stacks.
  */
 
 import { Hono } from 'hono';
@@ -32,10 +37,21 @@ export interface ToolServerHandle {
   close(): Promise<void>;
 }
 
+/**
+ * Authorize a tool call from a session-authenticated caller.
+ *
+ * Returns true if the session is allowed to call the given tool.
+ * If not provided, the tool server allows any request that presents
+ * a non-empty session id (useful for tests).
+ */
+export type ToolAuthorizer = (sessionId: string, toolName: string) => Promise<boolean> | boolean;
+
 /** Options for startToolServer(). */
 export interface ToolServerOptions {
   /** Port to listen on. Defaults to guild.json tools.serverPort or 7471. */
   port?: number;
+  /** Authorization resolver for session-scoped tool calls. */
+  authorize?: ToolAuthorizer;
 }
 
 /** Configuration block in guild.json under 'tools'. */
@@ -112,47 +128,6 @@ export function coerceParams(
   return result;
 }
 
-// ── Session registry ─────────────────────────────────────────────────
-
-/** In-memory session authorization registry. */
-export class SessionRegistry {
-  /** Map from session ID → set of allowed tool names. */
-  private readonly sessions = new Map<string, Set<string>>();
-
-  /** Register a session with its authorized tool set. */
-  register(sessionId: string, toolNames: string[]): void {
-    this.sessions.set(sessionId, new Set(toolNames));
-  }
-
-  /** Deregister a session. */
-  deregister(sessionId: string): boolean {
-    return this.sessions.delete(sessionId);
-  }
-
-  /** Check if a session is authorized to call a tool. */
-  isAuthorized(sessionId: string, toolName: string): boolean {
-    const allowed = this.sessions.get(sessionId);
-    if (!allowed) return false;
-    return allowed.has(toolName);
-  }
-
-  /** Check if a session exists. */
-  has(sessionId: string): boolean {
-    return this.sessions.has(sessionId);
-  }
-
-  /** Get the tool set for a session. Returns undefined if not registered. */
-  getTools(sessionId: string): string[] | undefined {
-    const allowed = this.sessions.get(sessionId);
-    return allowed ? [...allowed] : undefined;
-  }
-
-  /** List all registered session IDs. */
-  listSessions(): string[] {
-    return [...this.sessions.keys()];
-  }
-}
-
 // ── Session authorization header ─────────────────────────────────────
 
 const SESSION_ID_HEADER = 'x-session-id';
@@ -176,54 +151,17 @@ function requiresSessionAuth(definition: ToolDefinition): boolean {
  * Create a Hono app that serves all registered tools over HTTP.
  *
  * Exported for testing — the public API is startToolServer() on InstrumentariumApi.
+ *
+ * Session authorization is delegated to the optional `authorize` callback.
+ * When no `authorize` is provided, any request that presents an `X-Session-Id`
+ * header is allowed (useful for tests). Requests to session-scoped tools
+ * without an `X-Session-Id` header are always rejected with 401.
  */
 export function createToolServerApp(
   api: InstrumentariumApi,
-  sessionRegistry: SessionRegistry,
+  authorize?: ToolAuthorizer,
 ): Hono {
   const app = new Hono();
-
-  // ── Session management endpoints ──────────────────────────────────
-
-  // POST /sessions — register a session's authorized tool set
-  app.post('/sessions', async (c) => {
-    try {
-      const body = await c.req.json();
-      const { sessionId, tools: toolNames } = body as { sessionId?: string; tools?: string[] };
-
-      if (!sessionId || typeof sessionId !== 'string') {
-        return c.json({ error: 'sessionId is required and must be a string' }, 400);
-      }
-      if (!Array.isArray(toolNames) || !toolNames.every((t: unknown) => typeof t === 'string')) {
-        return c.json({ error: 'tools is required and must be an array of strings' }, 400);
-      }
-
-      sessionRegistry.register(sessionId, toolNames);
-      return c.json({ ok: true, sessionId, tools: toolNames }, 201);
-    } catch {
-      return c.json({ error: 'Invalid JSON body' }, 400);
-    }
-  });
-
-  // DELETE /sessions/:id — deregister a session
-  app.delete('/sessions/:id', (c) => {
-    const sessionId = c.req.param('id');
-    const removed = sessionRegistry.deregister(sessionId);
-    if (!removed) {
-      return c.json({ error: 'Session not found' }, 404);
-    }
-    return c.json({ ok: true, sessionId });
-  });
-
-  // GET /sessions/:id — get session info
-  app.get('/sessions/:id', (c) => {
-    const sessionId = c.req.param('id');
-    const tools = sessionRegistry.getTools(sessionId);
-    if (!tools) {
-      return c.json({ error: 'Session not found' }, 404);
-    }
-    return c.json({ sessionId, tools });
-  });
 
   // ── Tool routes ───────────────────────────────────────────────────
 
@@ -250,8 +188,17 @@ export function createToolServerApp(
         if (!sessionId) {
           return c.json({ error: 'X-Session-Id header required for this tool' }, 401);
         }
-        if (!sessionRegistry.isAuthorized(sessionId, definition.name)) {
-          return c.json({ error: 'Session not authorized to call this tool' }, 403);
+        if (authorize) {
+          let allowed: boolean;
+          try {
+            allowed = await authorize(sessionId, definition.name);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return c.json({ error: `Authorization check failed: ${message}` }, 500);
+          }
+          if (!allowed) {
+            return c.json({ error: 'Session not authorized to call this tool' }, 403);
+          }
         }
       }
 
@@ -296,10 +243,10 @@ export function createToolServerApp(
  */
 export async function startToolServer(
   api: InstrumentariumApi,
-  sessionRegistry: SessionRegistry,
   port: number,
+  authorize?: ToolAuthorizer,
 ): Promise<ToolServerHandle> {
-  const app = createToolServerApp(api, sessionRegistry);
+  const app = createToolServerApp(api, authorize);
 
   const server = await new Promise<Server>((resolve, reject) => {
     const s = serve(

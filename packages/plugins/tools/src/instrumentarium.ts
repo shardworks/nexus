@@ -31,7 +31,7 @@ import { isToolDefinition } from './tool.ts';
 import { createToolsList } from './tools/tools-list.ts';
 import { createToolsShow } from './tools/tools-show.ts';
 import type { ToolServerHandle, ToolServerOptions, ToolsConfig } from './tool-server.ts';
-import { SessionRegistry, startToolServer } from './tool-server.ts';
+import { startToolServer } from './tool-server.ts';
 
 // ── Public types ──────────────────────────────────────────────────────
 
@@ -311,7 +311,6 @@ class ToolRegistry {
  */
 export function createInstrumentarium(): Plugin {
   const registry = new ToolRegistry();
-  const sessionRegistry = new SessionRegistry();
 
   const api: InstrumentariumApi = {
     resolve(options: ResolveOptions): ResolvedTool[] {
@@ -330,7 +329,7 @@ export function createInstrumentarium(): Plugin {
       const g = guild();
       const toolsConfig = g.config<ToolsConfig>('tools');
       const port = opts?.port ?? toolsConfig?.serverPort ?? 7471;
-      return startToolServer(api, sessionRegistry, port);
+      return startToolServer(api, port, opts?.authorize);
     },
   };
 

@@ -88,8 +88,6 @@ export async function recoverOrphans(sessions: Book<SessionDoc>): Promise<number
     where: [['status', '=', 'running']],
   });
 
-  if (runningSessions.length === 0) return 0;
-
   let recovered = 0;
   for (const doc of runningSessions) {
     const pid = doc.cancelMetadata?.pid;

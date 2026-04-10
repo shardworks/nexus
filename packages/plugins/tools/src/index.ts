@@ -33,11 +33,11 @@ export {
 export {
   type ToolServerHandle,
   type ToolServerOptions,
+  type ToolAuthorizer,
   type ToolsConfig,
   toolNameToRoute,
   permissionToMethod,
   coerceParams,
-  SessionRegistry,
 } from './tool-server.ts';
 
 // ── Default export: the apparatus plugin ──────────────────────────────
