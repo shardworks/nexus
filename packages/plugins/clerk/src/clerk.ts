@@ -313,10 +313,18 @@ export function createClerk(): Plugin {
       if (!writ) {
         throw new Error(`Writ "${request.id}" not found.`);
       }
+      // Type and codex can only be changed while the writ is still a draft
       if (writ.status !== 'new') {
-        throw new Error(
-          `Cannot edit writ "${request.id}": status is "${writ.status}", expected "new". Only draft writs can be edited.`,
-        );
+        if (request.type !== undefined) {
+          throw new Error(
+            `Cannot change type on writ "${request.id}": status is "${writ.status}". Type can only be changed while the writ is in "new" status.`,
+          );
+        }
+        if (request.codex !== undefined) {
+          throw new Error(
+            `Cannot change codex on writ "${request.id}": status is "${writ.status}". Codex can only be changed while the writ is in "new" status.`,
+          );
+        }
       }
 
       // Validate type if provided

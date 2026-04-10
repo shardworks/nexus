@@ -339,27 +339,24 @@
       const isDraft = writ.status === 'new';
       let html = '';
 
-      // Draft edit form or read-only body
+      // Edit form — title and body are always editable; type and codex only for drafts
+      html += `<div class="detail-section" id="edit-section-${writ.id}">`;
+      html += `<h4>${isDraft ? 'Edit Draft' : 'Edit'}</h4>`;
+      html += `<div class="form-row"><label>Title</label>`;
+      html += `<input type="text" id="edit-title-${writ.id}" value="${escAttr(writ.title ?? '')}" style="padding:0.4rem 0.6rem;background:var(--bg3,#24283b);border:1px solid var(--border,#414868);border-radius:4px;color:inherit;font-size:0.9rem"></div>`;
+      html += `<div class="form-row"><label>Body</label>`;
+      html += `<textarea id="edit-body-${writ.id}" rows="8" style="padding:0.4rem 0.6rem;background:var(--bg3,#24283b);border:1px solid var(--border,#414868);border-radius:4px;color:inherit;font-size:0.9rem;resize:vertical;font-family:monospace">${escHtml(writ.body ?? '')}</textarea></div>`;
       if (isDraft) {
-        html += `<div class="detail-section" id="edit-section-${writ.id}">`;
-        html += `<h4>Edit Draft</h4>`;
-        html += `<div class="form-row"><label>Title</label>`;
-        html += `<input type="text" id="edit-title-${writ.id}" value="${escAttr(writ.title ?? '')}" style="padding:0.4rem 0.6rem;background:var(--bg3,#24283b);border:1px solid var(--border,#414868);border-radius:4px;color:inherit;font-size:0.9rem"></div>`;
-        html += `<div class="form-row"><label>Body</label>`;
-        html += `<textarea id="edit-body-${writ.id}" rows="8" style="padding:0.4rem 0.6rem;background:var(--bg3,#24283b);border:1px solid var(--border,#414868);border-radius:4px;color:inherit;font-size:0.9rem;resize:vertical;font-family:monospace">${escHtml(writ.body ?? '')}</textarea></div>`;
         html += `<div class="form-row"><label>Type</label>`;
         html += `<select id="edit-type-${writ.id}" style="padding:0.4rem 0.6rem;background:var(--bg3,#24283b);border:1px solid var(--border,#414868);border-radius:4px;color:inherit;font-size:0.9rem"></select></div>`;
         html += `<div class="form-row"><label>Codex</label>`;
         html += `<select id="edit-codex-${writ.id}" style="padding:0.4rem 0.6rem;background:var(--bg3,#24283b);border:1px solid var(--border,#414868);border-radius:4px;color:inherit;font-size:0.9rem"></select></div>`;
-        html += `<div class="action-buttons">`;
-        html += `<button class="btn btn--primary" data-action="save-edit" data-id="${writ.id}">Save</button>`;
-        html += `<div class="error-msg" id="edit-error-${writ.id}" style="display:none"></div>`;
-        html += `<div class="warn-msg" id="edit-success-${writ.id}" style="display:none;color:var(--green,#9ece6a)"></div>`;
-        html += `</div></div>`;
-      } else {
-        // Read-only body
-        html += `<div class="detail-section"><h4>Body</h4><pre>${escHtml(writ.body ?? '')}</pre></div>`;
       }
+      html += `<div class="action-buttons">`;
+      html += `<button class="btn btn--primary" data-action="save-edit" data-id="${writ.id}">Save</button>`;
+      html += `<div class="error-msg" id="edit-error-${writ.id}" style="display:none"></div>`;
+      html += `<div class="warn-msg" id="edit-success-${writ.id}" style="display:none;color:var(--green,#9ece6a)"></div>`;
+      html += `</div></div>`;
 
       // Timestamps + metadata
       html += `<div class="detail-section"><h4>Details</h4><dl class="detail-grid">`;
@@ -549,12 +546,14 @@
       try {
         const title = document.getElementById(`edit-title-${id}`).value.trim();
         const body = document.getElementById(`edit-body-${id}`).value;
-        const type = document.getElementById(`edit-type-${id}`).value;
-        const codex = document.getElementById(`edit-codex-${id}`).value;
+        const typeEl = document.getElementById(`edit-type-${id}`);
+        const codexEl = document.getElementById(`edit-codex-${id}`);
 
         if (!title) { showError(errEl, 'Title is required.'); return; }
 
-        const payload = { id, title, body, type, codex };
+        const payload = { id, title, body };
+        if (typeEl) payload.type = typeEl.value;
+        if (codexEl) payload.codex = codexEl.value;
         await api('POST', '/api/writ/edit', payload);
 
         // Update the writ in the local array

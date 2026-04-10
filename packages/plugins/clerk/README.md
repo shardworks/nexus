@@ -111,7 +111,7 @@ const edited = await clerk.edit({
 | `type` | `string` | New writ type — must be declared or built-in (optional) |
 | `codex` | `string` | New target codex name; empty string clears it (optional) |
 
-At least one field besides `id` must be provided. The writ must be in `new` (draft) status — once published or transitioned, it cannot be edited.
+At least one field besides `id` must be provided. Title and body can be edited in any status. Type and codex can only be changed while the writ is in `new` (draft) status.
 
 ### `transition(id, to, fields?): Promise<WritDoc>`
 
@@ -225,7 +225,7 @@ The Clerk contributes books, tools, and pages to the guild:
 | `commission-post` | `clerk:write` | Post a new commission (create a writ, optionally as child) |
 | `writ-show` | `clerk:read` | Show full detail for a writ (includes parent/children context) |
 | `writ-list` | `clerk:read` | List writs with optional filters (status, type, parentId) |
-| `writ-edit` | `clerk:write` | Edit a draft writ (title, body, type, codex) |
+| `writ-edit` | `clerk:write` | Edit a writ (title/body any status; type/codex draft only) |
 | `writ-accept` | `clerk:write` | Accept a writ (ready → active) |
 | `writ-complete` | `clerk:write` | Complete a writ (active → completed) |
 | `writ-fail` | `clerk:write` | Fail a writ (active/waiting → failed) |

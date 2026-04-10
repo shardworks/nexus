@@ -66,7 +66,8 @@ export interface WritDoc {
  * Request to post a new commission (create a writ).
  */
 /**
- * Request to edit a draft writ (status: 'new').
+ * Request to edit a writ. Title and body can be edited in any status.
+ * Type and codex can only be changed while the writ is in 'new' status.
  * All fields are optional — only provided fields are updated.
  */
 export interface EditWritRequest {
@@ -241,8 +242,9 @@ export interface ClerkApi {
   unlink(sourceId: string, targetId: string, type: string): Promise<void>;
 
   /**
-   * Edit a draft writ (status: 'new'). Only the provided fields are updated.
-   * Throws if the writ is not in 'new' status. Validates type against
+   * Edit a writ. Title and body can be edited in any status.
+   * Type and codex can only be changed while the writ is in 'new' status.
+   * Only the provided fields are updated. Validates type against
    * declared writ types if provided.
    */
   edit(request: EditWritRequest): Promise<WritDoc>;
