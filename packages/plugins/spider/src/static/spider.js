@@ -18,6 +18,10 @@
   var sessionPollTimer = null;
   var sessionEventSource = null;
   var selectedTemplateName = null;
+  var rigListPollTimer = null;
+  var currentRigPollTimer = null;
+
+  var RIG_POLL_INTERVAL = 2000;
 
   // ── Badge mapping ──────────────────────────────────────────────────────
 
@@ -129,6 +133,112 @@
     stopSessionPoll();
   }
 
+  // ── Rig polling helpers ────────────────────────────────────────────────
+
+  function isRigInFlight(rig) {
+    return rig.status === 'running' || rig.status === 'blocked';
+  }
+
+  function stopRigListPoll() {
+    if (rigListPollTimer !== null) {
+      clearInterval(rigListPollTimer);
+      rigListPollTimer = null;
+    }
+  }
+
+  function stopCurrentRigPoll() {
+    if (currentRigPollTimer !== null) {
+      clearInterval(currentRigPollTimer);
+      currentRigPollTimer = null;
+    }
+  }
+
+  function startRigListPollIfNeeded() {
+    stopRigListPoll();
+    var hasInFlight = rigs.some(isRigInFlight);
+    if (!hasInFlight) return;
+    rigListPollTimer = setInterval(function () {
+      fetchRigListQuiet();
+    }, RIG_POLL_INTERVAL);
+  }
+
+  /** Refetch rig list without resetting filters — silent background refresh. */
+  function fetchRigListQuiet() {
+    var rigUrl = '/api/rig/list?limit=100';
+    if (currentStatusFilter) {
+      rigUrl += '&status=' + encodeURIComponent(currentStatusFilter);
+    }
+
+    var rigPromise = fetch(rigUrl).then(function (r) { return r.json(); });
+    var writPromise = fetch('/api/writ/list?limit=100').then(function (r) { return r.json(); });
+
+    Promise.all([rigPromise, writPromise]).then(function (results) {
+      rigs = Array.isArray(results[0]) ? results[0] : [];
+      buildWritLookup(Array.isArray(results[1]) ? results[1] : []);
+      renderRigList();
+
+      // Re-evaluate whether polling should continue
+      var hasInFlight = rigs.some(isRigInFlight);
+      if (!hasInFlight) {
+        stopRigListPoll();
+      }
+    }).catch(function (err) {
+      console.error('[spider] rig list poll error:', err);
+    });
+  }
+
+  function startCurrentRigPoll() {
+    stopCurrentRigPoll();
+    if (!currentRig || !isRigInFlight(currentRig)) return;
+    currentRigPollTimer = setInterval(function () {
+      fetchCurrentRigQuiet();
+    }, RIG_POLL_INTERVAL);
+  }
+
+  /** Refetch the currently-viewed rig and update detail + pipeline in place. */
+  function fetchCurrentRigQuiet() {
+    if (!currentRig) { stopCurrentRigPoll(); return; }
+    fetch('/api/rig/show?id=' + encodeURIComponent(currentRig.id))
+      .then(function (r) { return r.json(); })
+      .then(function (rig) {
+        if (!currentRig || currentRig.id !== rig.id) return; // navigated away
+        currentRig = rig;
+
+        // Update the meta table
+        var metaTable = document.getElementById('detail-meta');
+        if (metaTable) {
+          metaTable.innerHTML =
+            '<tbody>' +
+            '<tr><th>ID</th><td>' + esc(rig.id) + '</td></tr>' +
+            '<tr><th>Writ</th><td><a href="/pages/clerk/?writ=' + esc(rig.writId) + '">' + esc(rig.writId) + '</a></td></tr>' +
+            '<tr><th>Status</th><td>' + badgeHtml(rig.status) + '</td></tr>' +
+            '<tr><th>Created</th><td>' + esc(formatDate(rig.createdAt)) + '</td></tr>' +
+            '</tbody>';
+        }
+
+        // Re-render pipeline, preserving selection
+        renderPipeline(rig);
+
+        // If an engine was selected, update engine detail with fresh data
+        if (selectedEngineId) {
+          var updatedEngine = (rig.engines || []).find(function (e) {
+            return e.id === selectedEngineId;
+          });
+          if (updatedEngine) {
+            showEngineDetail(updatedEngine);
+          }
+        }
+
+        // Stop polling once terminal
+        if (!isRigInFlight(rig)) {
+          stopCurrentRigPoll();
+        }
+      })
+      .catch(function (err) {
+        console.error('[spider] current rig poll error:', err);
+      });
+  }
+
   // ── Fetch rigs ─────────────────────────────────────────────────────────
 
   function fetchRigs(statusFilter) {
@@ -145,6 +255,7 @@
       rigs = Array.isArray(results[0]) ? results[0] : [];
       buildWritLookup(Array.isArray(results[1]) ? results[1] : []);
       renderRigList();
+      startRigListPollIfNeeded();
     }).catch(function (err) {
       console.error('Failed to fetch rigs/writs:', err);
       rigs = [];
@@ -236,6 +347,7 @@
     selectedEngineId = null;
 
     stopSessionStream();
+    stopCurrentRigPoll();
 
     document.getElementById('rig-list-view').style.display = 'none';
     document.getElementById('rig-detail-view').style.display = '';
@@ -279,6 +391,8 @@
 
     var engineDetail = document.getElementById('engine-detail');
     if (engineDetail) engineDetail.style.display = 'none';
+
+    startCurrentRigPoll();
   }
 
   // ── Render pipeline (generic) ──────────────────────────────────────────
@@ -646,6 +760,7 @@
 
   function backToList() {
     stopSessionStream();
+    stopCurrentRigPoll();
     currentRig = null;
     selectedEngineId = null;
     document.getElementById('rig-detail-view').style.display = 'none';
@@ -877,6 +992,7 @@
     var refreshBtn = document.getElementById('refresh-btn');
     if (refreshBtn) {
       refreshBtn.addEventListener('click', function () {
+        stopRigListPoll();
         fetchRigs(currentStatusFilter);
       });
     }

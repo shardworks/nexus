@@ -220,3 +220,177 @@ describe('index.html status filter includes cancelled', () => {
     assert.ok(cancelledIdx > blockedIdx, 'cancelled option should appear after blocked');
   });
 });
+
+// ── Rig auto-polling ────────────────────────────────────────────────────
+
+describe('spider.js rig list polling', () => {
+  it('declares rigListPollTimer state variable', () => {
+    assert.match(
+      spiderJs,
+      /var rigListPollTimer\s*=\s*null/,
+      'should declare rigListPollTimer state variable',
+    );
+  });
+
+  it('declares currentRigPollTimer state variable', () => {
+    assert.match(
+      spiderJs,
+      /var currentRigPollTimer\s*=\s*null/,
+      'should declare currentRigPollTimer state variable',
+    );
+  });
+
+  it('declares RIG_POLL_INTERVAL constant', () => {
+    assert.match(
+      spiderJs,
+      /var RIG_POLL_INTERVAL\s*=\s*2000/,
+      'should declare RIG_POLL_INTERVAL at 2000ms',
+    );
+  });
+
+  it('defines isRigInFlight helper checking running and blocked', () => {
+    assert.match(
+      spiderJs,
+      /function isRigInFlight\(rig\)/,
+      'should define isRigInFlight helper',
+    );
+    assert.match(
+      spiderJs,
+      /rig\.status === 'running' \|\| rig\.status === 'blocked'/,
+      'isRigInFlight should check running or blocked',
+    );
+  });
+
+  it('defines stopRigListPoll that clears the interval', () => {
+    assert.match(
+      spiderJs,
+      /function stopRigListPoll\(\)/,
+      'should define stopRigListPoll',
+    );
+    assert.match(
+      spiderJs,
+      /clearInterval\(rigListPollTimer\)/,
+      'stopRigListPoll should clear rigListPollTimer',
+    );
+  });
+
+  it('defines stopCurrentRigPoll that clears the interval', () => {
+    assert.match(
+      spiderJs,
+      /function stopCurrentRigPoll\(\)/,
+      'should define stopCurrentRigPoll',
+    );
+    assert.match(
+      spiderJs,
+      /clearInterval\(currentRigPollTimer\)/,
+      'stopCurrentRigPoll should clear currentRigPollTimer',
+    );
+  });
+
+  it('starts rig list polling after fetchRigs succeeds', () => {
+    // The fetchRigs promise chain should call startRigListPollIfNeeded
+    const fetchRigsBlock = spiderJs.match(
+      /function fetchRigs\([\s\S]*?\.catch/,
+    );
+    assert.ok(fetchRigsBlock, 'should find fetchRigs function');
+    assert.match(
+      fetchRigsBlock[0],
+      /startRigListPollIfNeeded\(\)/,
+      'fetchRigs should call startRigListPollIfNeeded after rendering',
+    );
+  });
+
+  it('starts current rig polling in showRigDetail', () => {
+    const showRigBlock = spiderJs.match(
+      /function showRigDetail\(rig\)[\s\S]*?startCurrentRigPoll\(\)/,
+    );
+    assert.ok(
+      showRigBlock,
+      'showRigDetail should call startCurrentRigPoll',
+    );
+  });
+
+  it('stops current rig poll when navigating back to list', () => {
+    const backBlock = spiderJs.match(
+      /function backToList\(\)[\s\S]*?stopCurrentRigPoll\(\)/,
+    );
+    assert.ok(
+      backBlock,
+      'backToList should call stopCurrentRigPoll',
+    );
+  });
+
+  it('stops current rig poll when selecting a new rig', () => {
+    const showRigBlock = spiderJs.match(
+      /function showRigDetail\(rig\)[\s\S]*?stopCurrentRigPoll\(\)/,
+    );
+    assert.ok(
+      showRigBlock,
+      'showRigDetail should call stopCurrentRigPoll before starting new poll',
+    );
+  });
+
+  it('fetchCurrentRigQuiet fetches /api/rig/show with rig id', () => {
+    assert.match(
+      spiderJs,
+      /function fetchCurrentRigQuiet\(\)/,
+      'should define fetchCurrentRigQuiet',
+    );
+    assert.match(
+      spiderJs,
+      /\/api\/rig\/show\?id=/,
+      'fetchCurrentRigQuiet should fetch /api/rig/show',
+    );
+  });
+
+  it('fetchCurrentRigQuiet preserves selectedEngineId across polls', () => {
+    // The poll handler should find the updated engine by selectedEngineId.
+    // Use a greedy match to capture the whole function body up to the next
+    // top-level function declaration.
+    const pollBlock = spiderJs.match(
+      /function fetchCurrentRigQuiet[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(pollBlock, 'should find fetchCurrentRigQuiet');
+    assert.match(
+      pollBlock[0],
+      /selectedEngineId/,
+      'should reference selectedEngineId to preserve selection',
+    );
+  });
+
+  it('fetchCurrentRigQuiet stops polling on terminal status', () => {
+    const pollBlock = spiderJs.match(
+      /function fetchCurrentRigQuiet[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(pollBlock, 'should find fetchCurrentRigQuiet');
+    assert.match(
+      pollBlock[0],
+      /isRigInFlight/,
+      'should check isRigInFlight and stop when terminal',
+    );
+  });
+
+  it('refresh button resets rig list poll cycle', () => {
+    const refreshBlock = spiderJs.match(
+      /refresh-btn[\s\S]*?fetchRigs/,
+    );
+    assert.ok(refreshBlock, 'should find refresh button handler');
+    assert.match(
+      refreshBlock[0],
+      /stopRigListPoll\(\)/,
+      'refresh button should stop existing poll before fetching',
+    );
+  });
+
+  it('rig list quiet poll stops itself when no in-flight rigs remain', () => {
+    const quietBlock = spiderJs.match(
+      /function fetchRigListQuiet[\s\S]*?stopRigListPoll/,
+    );
+    assert.ok(quietBlock, 'should find fetchRigListQuiet');
+    assert.match(
+      quietBlock[0],
+      /hasInFlight/,
+      'should check for in-flight rigs and stop poll if none',
+    );
+  });
+});
