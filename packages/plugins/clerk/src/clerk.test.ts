@@ -359,6 +359,34 @@ describe('Clerk', () => {
       assert.equal(readyWrits.length, 1);
       assert.equal(readyWrits[0]!.status, 'ready');
     });
+
+    it('filters by multiple statuses (OR)', async () => {
+      const w1 = await clerk.post({ title: 'Ready writ', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Active writ', body: 'Body' });
+      await clerk.transition(w2.id, 'active');
+      const w3 = await clerk.post({ title: 'Waiting writ', body: 'Body' });
+      await clerk.transition(w3.id, 'waiting');
+      const w4 = await clerk.post({ title: 'Completed writ', body: 'Body' });
+      await clerk.transition(w4.id, 'completed');
+
+      const result = await clerk.list({ status: ['ready', 'active', 'waiting'] });
+      assert.equal(result.length, 3);
+      const statuses = new Set(result.map((w) => w.status));
+      assert.ok(statuses.has('ready'));
+      assert.ok(statuses.has('active'));
+      assert.ok(statuses.has('waiting'));
+      assert.ok(!statuses.has('completed'));
+    });
+
+    it('single-element status array behaves like a scalar filter', async () => {
+      await clerk.post({ title: 'Ready writ', body: 'Body' });
+      const w2 = await clerk.post({ title: 'Active writ', body: 'Body' });
+      await clerk.transition(w2.id, 'active');
+
+      const result = await clerk.list({ status: ['ready'] });
+      assert.equal(result.length, 1);
+      assert.equal(result[0]!.status, 'ready');
+    });
   });
 
   // ── count() ──────────────────────────────────────────────────────

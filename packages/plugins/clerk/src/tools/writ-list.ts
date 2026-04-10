@@ -11,9 +11,14 @@ export default tool({
     'Filter by status or type to narrow results.',
   params: {
     status: z
-      .enum(['new', 'ready', 'active', 'waiting', 'completed', 'failed', 'cancelled'])
+      .union([
+        z.enum(['new', 'ready', 'active', 'waiting', 'completed', 'failed', 'cancelled']),
+        z
+          .array(z.enum(['new', 'ready', 'active', 'waiting', 'completed', 'failed', 'cancelled']))
+          .min(1),
+      ])
       .optional()
-      .describe('Filter by writ status'),
+      .describe('Filter by writ status (repeatable — pass multiple to match any)'),
     type: z.string().optional().describe('Filter by writ type'),
     parentId: z.string().optional().describe('Filter to children of this parent writ'),
     limit: z.number().optional().default(20).describe('Maximum results (default: 20)'),

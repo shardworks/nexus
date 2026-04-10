@@ -117,8 +117,8 @@ export interface PostCommissionRequest {
  * Filters for listing writs.
  */
 export interface WritFilters {
-  /** Filter by status. */
-  status?: WritStatus;
+  /** Filter by status. Accepts a single status or an array of statuses (OR). */
+  status?: WritStatus | WritStatus[];
   /** Filter by writ type. */
   type?: string;
   /** Filter to children of this parent writ. */

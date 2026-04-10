@@ -70,12 +70,13 @@ List writs with optional filters, ordered by `createdAt` descending (newest firs
 
 ```typescript
 const activeWrits = await clerk.list({ status: 'active', limit: 10 });
+const openWrits = await clerk.list({ status: ['ready', 'active', 'waiting'] });
 const children = await clerk.list({ parentId: parent.id });
 ```
 
 | Filter | Type | Description |
 |---|---|---|
-| `status` | `WritStatus` | Filter by status |
+| `status` | `WritStatus \| WritStatus[]` | Filter by status (single or array — multiple values OR together) |
 | `type` | `string` | Filter by writ type |
 | `parentId` | `string` | Filter to children of this parent writ |
 | `limit` | `number` | Maximum results (default: 20) |
@@ -298,7 +299,7 @@ interface EditWritRequest {
 }
 
 interface WritFilters {
-  status?: WritStatus;
+  status?: WritStatus | WritStatus[];
   type?: string;
   parentId?: string;    // filter to children of this parent
   limit?: number;

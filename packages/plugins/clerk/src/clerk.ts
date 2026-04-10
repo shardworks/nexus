@@ -114,7 +114,12 @@ export function createClerk(): Plugin {
   function buildWhereClause(filters?: WritFilters): WhereClause | undefined {
     const conditions: WhereClause = [];
     if (filters?.status) {
-      conditions.push(['status', '=', filters.status]);
+      const statuses = Array.isArray(filters.status) ? filters.status : [filters.status];
+      if (statuses.length === 1) {
+        conditions.push(['status', '=', statuses[0]!]);
+      } else if (statuses.length > 1) {
+        conditions.push(['status', 'IN', statuses]);
+      }
     }
     if (filters?.type) {
       conditions.push(['type', '=', filters.type]);
