@@ -18,6 +18,7 @@
  * This file handles I/O and orchestration.
  */
 
+import { pathToFileURL } from "node:url";
 import {
   readGuildConfig,
   writeGuildConfig,
@@ -28,13 +29,13 @@ import {
   resolveGuildPackageEntry,
   resolvePackageNameForPluginId,
   readGuildPackageJson,
-} from '@shardworks/nexus-core';
+} from "@shardworks/nexus-core";
 import type {
   Guild,
   LoadedKit,
   LoadedApparatus,
   FailedPlugin,
-} from '@shardworks/nexus-core';
+} from "@shardworks/nexus-core";
 
 import {
   validateRequires,
@@ -44,8 +45,8 @@ import {
   buildStartupContext,
   fireEvent,
   wireKitEntries,
-} from './guild-lifecycle.ts';
-import type { EventHandlerMap } from './guild-lifecycle.ts';
+} from "./guild-lifecycle.ts";
+import type { EventHandlerMap } from "./guild-lifecycle.ts";
 
 // ── Public API ────────────────────────────────────────────────────────
 
@@ -64,8 +65,8 @@ export async function createGuild(root?: string): Promise<Guild> {
   const guildRoot = root ?? findGuildRoot();
   const config = readGuildConfig(guildRoot);
 
-  const kits:        LoadedKit[]        = [];
-  const apparatuses: LoadedApparatus[]  = [];
+  const kits: LoadedKit[] = [];
+  const apparatuses: LoadedApparatus[] = [];
   const eventHandlers: EventHandlerMap = new Map();
 
   // ── Load phase ─────────────────────────────────────────────────────
@@ -73,7 +74,9 @@ export async function createGuild(root?: string): Promise<Guild> {
   for (const pluginId of config.plugins) {
     const packageName = resolvePackageNameForPluginId(guildRoot, pluginId);
     if (!packageName) {
-      console.warn(`[arbor] No package found in package.json for plugin "${pluginId}" — skipping`);
+      console.warn(
+        `[arbor] No package found in package.json for plugin "${pluginId}" — skipping`,
+      );
       continue;
     }
 
@@ -81,22 +84,30 @@ export async function createGuild(root?: string): Promise<Guild> {
 
     try {
       const entryPath = resolveGuildPackageEntry(guildRoot, packageName);
-      const mod = await import(entryPath) as { default: unknown };
+      const entryUrl = pathToFileURL(entryPath).href;
+      const mod = (await import(entryUrl)) as { default: unknown };
       const raw = mod.default;
 
       if (isApparatus(raw)) {
-        apparatuses.push({ packageName, id: pluginId, version, apparatus: raw.apparatus });
+        apparatuses.push({
+          packageName,
+          id: pluginId,
+          version,
+          apparatus: raw.apparatus,
+        });
       } else if (isKit(raw)) {
         kits.push({ packageName, id: pluginId, version, kit: raw.kit });
       } else {
         console.warn(
           `[arbor] Plugin "${packageName}" does not export a kit or apparatus — skipping. ` +
-          `Plugins must export { kit: ... } or { apparatus: ... }.`,
+            `Plugins must export { kit: ... } or { apparatus: ... }.`,
         );
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[arbor] Failed to load plugin "${packageName}": ${message}`);
+      console.warn(
+        `[arbor] Failed to load plugin "${packageName}": ${message}`,
+      );
     }
   }
 
@@ -151,7 +162,7 @@ export async function createGuild(root?: string): Promise<Guild> {
       if (p === undefined) {
         throw new Error(
           `[guild] apparatus("${name}") is not available. ` +
-          `No loaded apparatus provides this id. Check guild.json plugins list.`,
+            `No loaded apparatus provides this id. Check guild.json plugins list.`,
         );
       }
       return p as T;
@@ -180,10 +191,18 @@ export async function createGuild(root?: string): Promise<Guild> {
       return config;
     },
 
-    kits()             { return [...kits]; },
-    apparatuses()      { return [...startedApparatuses]; },
-    failedPlugins()    { return [...allFailures]; },
-    startupWarnings()  { return [...allWarnings]; },
+    kits() {
+      return [...kits];
+    },
+    apparatuses() {
+      return [...startedApparatuses];
+    },
+    failedPlugins() {
+      return [...allFailures];
+    },
+    startupWarnings() {
+      return [...allWarnings];
+    },
   };
   setGuild(guildInstance);
 
@@ -208,11 +227,11 @@ export async function createGuild(root?: string): Promise<Guild> {
     startedApparatuses.push(app);
 
     // Fire apparatus:started (replaces plugin:initialized — no deprecation period)
-    await fireEvent(eventHandlers, 'apparatus:started', app);
+    await fireEvent(eventHandlers, "apparatus:started", app);
   }
 
   // Fire phase:started after all apparatus start + events complete
-  await fireEvent(eventHandlers, 'phase:started');
+  await fireEvent(eventHandlers, "phase:started");
 
   return guildInstance;
 }
