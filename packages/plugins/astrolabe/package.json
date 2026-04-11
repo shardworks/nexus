@@ -18,7 +18,7 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@shardworks/nexus-core": "0.0.0"
+    "@shardworks/nexus-core": "0.x"
   },
   "dependencies": {
     "@shardworks/stacks-apparatus": "workspace:*",
