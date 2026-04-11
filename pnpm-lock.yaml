@@ -61,9 +61,6 @@ importers:
       '@shardworks/loom-apparatus':
         specifier: workspace:*
         version: link:../loom
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../../framework/core
       '@shardworks/stacks-apparatus':
         specifier: workspace:*
         version: link:../stacks
@@ -77,6 +74,9 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
@@ -92,9 +92,6 @@ importers:
       '@shardworks/loom-apparatus':
         specifier: workspace:*
         version: link:../loom
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../../framework/core
       '@shardworks/spider-apparatus':
         specifier: workspace:*
         version: link:../spider
@@ -108,6 +105,9 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
@@ -120,9 +120,6 @@ importers:
       '@shardworks/animator-apparatus':
         specifier: workspace:*
         version: link:../animator
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../../framework/core
       '@shardworks/stacks-apparatus':
         specifier: workspace:*
         version: link:../stacks
@@ -136,6 +133,9 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       '@types/better-sqlite3':
         specifier: 7.6.13
         version: 7.6.13
@@ -145,9 +145,6 @@ importers:
 
   packages/plugins/clerk:
     dependencies:
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../../framework/core
       '@shardworks/stacks-apparatus':
         specifier: workspace:*
         version: link:../stacks
@@ -158,15 +155,15 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
 
   packages/plugins/codexes:
     dependencies:
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../../framework/core
       '@shardworks/tools-apparatus':
         specifier: workspace:*
         version: link:../tools
@@ -174,6 +171,9 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
@@ -183,9 +183,6 @@ importers:
       '@shardworks/animator-apparatus':
         specifier: workspace:*
         version: link:../animator
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../../framework/core
       '@shardworks/tools-apparatus':
         specifier: workspace:*
         version: link:../tools
@@ -193,25 +190,24 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
 
   packages/plugins/fabricator:
-    dependencies:
+    devDependencies:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../../framework/core
-    devDependencies:
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
 
   packages/plugins/loom:
     dependencies:
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../../framework/core
       '@shardworks/tools-apparatus':
         specifier: workspace:*
         version: link:../tools
@@ -219,6 +215,9 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
@@ -228,9 +227,6 @@ importers:
       '@hono/node-server':
         specifier: ^1.13.7
         version: 1.19.11(hono@4.12.9)
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../../framework/core
       '@shardworks/tools-apparatus':
         specifier: workspace:*
         version: link:../tools
@@ -241,6 +237,9 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
@@ -253,9 +252,6 @@ importers:
       '@shardworks/loom-apparatus':
         specifier: workspace:*
         version: link:../loom
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../../framework/core
       '@shardworks/stacks-apparatus':
         specifier: workspace:*
         version: link:../stacks
@@ -269,6 +265,9 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
@@ -287,9 +286,6 @@ importers:
       '@shardworks/fabricator-apparatus':
         specifier: workspace:*
         version: link:../fabricator
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../../framework/core
       '@shardworks/stacks-apparatus':
         specifier: workspace:*
         version: link:../stacks
@@ -306,19 +302,22 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
 
   packages/plugins/stacks:
     dependencies:
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../../framework/core
       better-sqlite3:
         specifier: 12.8.0
         version: 12.8.0
     devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       '@types/better-sqlite3':
         specifier: 7.6.13
         version: 7.6.13
@@ -331,9 +330,6 @@ importers:
       '@hono/node-server':
         specifier: ^1.13.7
         version: 1.19.11(hono@4.12.9)
-      '@shardworks/nexus-core':
-        specifier: workspace:*
-        version: link:../../framework/core
       hono:
         specifier: ^4.7.11
         version: 4.12.9
@@ -341,6 +337,9 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0

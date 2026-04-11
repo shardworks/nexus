@@ -18,11 +18,14 @@
     "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },
+  "peerDependencies": {
+    "@shardworks/nexus-core": "0.0.0"
+  },
   "dependencies": {
-    "@shardworks/nexus-core": "workspace:*",
     "better-sqlite3": "12.8.0"
   },
   "devDependencies": {
+    "@shardworks/nexus-core": "workspace:*",
     "@types/better-sqlite3": "7.6.13",
     "@types/node": "25.5.0"
   },

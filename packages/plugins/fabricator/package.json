@@ -17,10 +17,12 @@
     "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "@shardworks/nexus-core": "workspace:*"
+  "peerDependencies": {
+    "@shardworks/nexus-core": "0.0.0"
   },
+  "dependencies": {},
   "devDependencies": {
+    "@shardworks/nexus-core": "workspace:*",
     "@types/node": "25.5.0"
   },
   "files": [

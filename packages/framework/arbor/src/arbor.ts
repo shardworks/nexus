@@ -8,7 +8,7 @@
  * The full plugin lifecycle:
  *   1. Load    — imports all declared plugin packages, discriminates kit vs apparatus
  *   2. Validate — checks `requires` declarations, detects circular dependencies
- *   3. Warn    — advisory warnings for mismatched kit contributions / recommends
+ *   3. Warn    — advisory warnings foyou r mismatched kit contributions / recommends
  *   4. Wire    — collects all kit contributions (kits + supportKits) into KitEntry[]
  *   5. Start   — calls start(ctx) on each apparatus in dependency-resolved order;
  *                ctx.kits(type) returns Wire-phase entries; fires `apparatus:started`
@@ -154,10 +154,13 @@ export async function createGuild(root?: string): Promise<Guild> {
   // apparatus starts; dependency ordering guarantees declared deps are
   // available.
 
+  const startupCtx = buildStartupContext(eventHandlers, kitEntries);
+
   const guildInstance: Guild = {
     home: guildRoot,
 
     apparatus<T>(name: string): T {
+      console.log(`[arbor] - defining apparatus method...`);
       const p = provides.get(name);
       if (p === undefined) {
         throw new Error(
@@ -207,7 +210,6 @@ export async function createGuild(root?: string): Promise<Guild> {
   setGuild(guildInstance);
 
   // Start each apparatus in dependency order
-  const startupCtx = buildStartupContext(eventHandlers, kitEntries);
   for (const app of orderedApparatuses) {
     // Register provides before start() so apparatuses with eager provides are
     // visible to later startups that run during this loop.
