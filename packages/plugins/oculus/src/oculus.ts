@@ -6,62 +6,70 @@
  * automatically exposed as REST endpoints.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { Hono } from 'hono';
-import { serve } from '@hono/node-server';
-import type { Server } from 'node:http';
-import { z } from 'zod';
+import fs from "node:fs";
+import path from "node:path";
+import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import type { Server } from "node:http";
+import { z } from "zod";
 
-import type { Plugin, StartupContext } from '@shardworks/nexus-core';
-import { guild, VERSION } from '@shardworks/nexus-core';
-import type { InstrumentariumApi } from '@shardworks/tools-apparatus';
-import { tool, isToolDefinition } from '@shardworks/tools-apparatus';
+import type { Plugin, StartupContext } from "@shardworks/nexus-core";
+import { guild, VERSION } from "@shardworks/nexus-core";
+import type { InstrumentariumApi } from "@shardworks/tools-apparatus";
+import { tool, isToolDefinition } from "@shardworks/tools-apparatus";
 
-import type { OculusApi, OculusConfig, OculusKit, PageContribution, RouteContribution } from './types.ts';
+import type {
+  OculusApi,
+  OculusConfig,
+  OculusKit,
+  PageContribution,
+  RouteContribution,
+} from "./types.ts";
 
 // ── MIME types ────────────────────────────────────────────────────────
 
 const MIME_TYPES: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
-  '.mjs': 'application/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
-  '.ttf': 'font/ttf',
-  '.map': 'application/json',
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".map": "application/json",
 };
 
 function getMimeType(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
-  return MIME_TYPES[ext] ?? 'application/octet-stream';
+  return MIME_TYPES[ext] ?? "application/octet-stream";
 }
 
 // ── Tool→REST mapping helpers ─────────────────────────────────────────
 
 export function toolNameToRoute(name: string): string {
-  const idx = name.indexOf('-');
+  const idx = name.indexOf("-");
   if (idx === -1) return `/api/${name}`;
   return `/api/${name.slice(0, idx)}/${name.slice(idx + 1)}`;
 }
 
-export function permissionToMethod(permission: string | undefined): 'GET' | 'POST' | 'DELETE' {
-  if (permission === undefined) return 'GET';
-  const level = permission.includes(':')
-    ? permission.slice(permission.lastIndexOf(':') + 1)
+export function permissionToMethod(
+  permission: string | undefined,
+): "GET" | "POST" | "DELETE" {
+  if (permission === undefined) return "GET";
+  const level = permission.includes(":")
+    ? permission.slice(permission.lastIndexOf(":") + 1)
     : permission;
-  if (level === 'read') return 'GET';
-  if (level === 'write' || level === 'admin') return 'POST';
-  if (level === 'delete') return 'DELETE';
-  return 'POST';
+  if (level === "read") return "GET";
+  if (level === "write" || level === "admin") return "POST";
+  if (level === "delete") return "DELETE";
+  return "POST";
 }
 
 // ── Query param coercion ──────────────────────────────────────────────
@@ -89,11 +97,11 @@ export function coerceParams(
   const result: Record<string, unknown> = { ...params };
   for (const [key, schema] of Object.entries(shape)) {
     const value = result[key];
-    if (typeof value !== 'string') continue;
+    if (typeof value !== "string") continue;
     if (isNumberSchema(schema)) {
       result[key] = Number(value);
     } else if (isBooleanSchema(schema)) {
-      result[key] = value === 'true';
+      result[key] = value === "true";
     }
   }
   return result;
@@ -101,7 +109,11 @@ export function coerceParams(
 
 // ── Chrome injection ─────────────────────────────────────────────────
 
-export function injectChrome(html: string, stylesheetPath: string, navHtml: string): string {
+export function injectChrome(
+  html: string,
+  stylesheetPath: string,
+  navHtml: string,
+): string {
   // Check for </head> case-insensitively
   const headCloseMatch = html.match(/<\/head>/i);
   const bodyOpenMatch = html.match(/<body[^>]*>/i);
@@ -134,7 +146,7 @@ export function injectChrome(html: string, stylesheetPath: string, navHtml: stri
 function buildNavHtml(pages: PageContribution[]): string {
   const pageLinks = pages
     .map((p) => `<a href="/pages/${p.id}/">${p.title}</a>`)
-    .join('\n  ');
+    .join("\n  ");
   return `<nav id="oculus-nav">
   <a href="/">Guild</a>
   ${pageLinks}
@@ -145,9 +157,9 @@ function buildNavHtml(pages: PageContribution[]): string {
 
 function escapeHtml(text: string): string {
   return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 // ── Tool param extraction (reimplemented from tools-show) ────────────
@@ -159,16 +171,17 @@ interface ParamInfo {
 }
 
 function zodTypeToJsonType(zodType: z.ZodType): string {
-  if (zodType instanceof z.ZodString) return 'string';
-  if (zodType instanceof z.ZodNumber) return 'number';
-  if (zodType instanceof z.ZodBoolean) return 'boolean';
-  if (zodType instanceof z.ZodArray) return 'array';
-  if (zodType instanceof z.ZodObject) return 'object';
-  if (zodType instanceof z.ZodEnum) return 'string';
+  if (zodType instanceof z.ZodString) return "string";
+  if (zodType instanceof z.ZodNumber) return "number";
+  if (zodType instanceof z.ZodBoolean) return "boolean";
+  if (zodType instanceof z.ZodArray) return "array";
+  if (zodType instanceof z.ZodObject) return "object";
+  if (zodType instanceof z.ZodEnum) return "string";
   if (zodType instanceof z.ZodLiteral) return typeof zodType._def.values[0];
-  if (zodType instanceof z.ZodUnion) return 'union';
-  if (zodType instanceof z.ZodNullable) return zodTypeToJsonType(zodType.unwrap() as z.ZodType);
-  return 'unknown';
+  if (zodType instanceof z.ZodUnion) return "union";
+  if (zodType instanceof z.ZodNullable)
+    return zodTypeToJsonType(zodType.unwrap() as z.ZodType);
+  return "unknown";
 }
 
 function extractSingleParam(zodType: z.ZodType): ParamInfo {
@@ -191,7 +204,9 @@ function extractSingleParam(zodType: z.ZodType): ParamInfo {
   };
 }
 
-function extractParams(schema: z.ZodObject<z.ZodRawShape>): Record<string, ParamInfo> {
+function extractParams(
+  schema: z.ZodObject<z.ZodRawShape>,
+): Record<string, ParamInfo> {
   const shape = schema.shape;
   const result: Record<string, ParamInfo> = {};
   for (const [key, zodType] of Object.entries(shape)) {
@@ -222,7 +237,10 @@ export function createOculus(): Plugin {
   /** Start the HTTP server (called explicitly via the oculus tool). */
   async function startServer(): Promise<void> {
     if (server) return; // already running
-    if (!honoApp) throw new Error('[oculus] Cannot start server — apparatus not initialized');
+    if (!honoApp)
+      throw new Error(
+        "[oculus] Cannot start server — apparatus not initialized",
+      );
 
     const app = honoApp;
     const port = serverPort;
@@ -231,7 +249,7 @@ export function createOculus(): Plugin {
         console.log(`[oculus] Listening on http://localhost:${port}`);
         resolve();
       }) as Server;
-      server.on('error', reject);
+      server.on("error", reject);
     });
   }
 
@@ -250,8 +268,8 @@ export function createOculus(): Plugin {
 
   return {
     apparatus: {
-      requires: ['tools'],
-      consumes: ['pages', 'routes'],
+      requires: ["tools"],
+      consumes: ["pages", "routes"],
       provides: api,
 
       async start(ctx: StartupContext): Promise<void> {
@@ -268,42 +286,55 @@ export function createOculus(): Plugin {
         const mappedToolRoutes = new Set<string>();
 
         // ── Custom route registration helper ─────────────────────────
-        function registerCustomRoute(route: RouteContribution, pluginId: string): void {
-          if (!route.path.startsWith('/api/')) {
-            console.warn(`[oculus] Custom route "${route.path}" from "${pluginId}" must start with /api/ — skipped`);
+        function registerCustomRoute(
+          route: RouteContribution,
+          pluginId: string,
+        ): void {
+          if (!route.path.startsWith("/api/")) {
+            console.warn(
+              `[oculus] Custom route "${route.path}" from "${pluginId}" must start with /api/ — skipped`,
+            );
             return;
           }
           const method = route.method.toLowerCase() as keyof typeof app;
-          (app[method] as (path: string, handler: (c: unknown) => unknown) => void)(
-            route.path,
-            route.handler as (c: unknown) => unknown,
-          );
+          (
+            app[method] as (
+              path: string,
+              handler: (c: unknown) => unknown,
+            ) => void
+          )(route.path, route.handler as (c: unknown) => unknown);
           customRouteKeys.add(`${route.method.toUpperCase()} ${route.path}`);
         }
 
         // ── Page serving helper ───────────────────────────────────────
-        function resolveDirForPackage(packageName: string, dir: string): string {
-          return path.join(g.home, 'node_modules', packageName, dir);
+        function resolveDirForPackage(
+          packageName: string,
+          dir: string,
+        ): string {
+          return path.join(g.home, "node_modules", packageName, dir);
         }
 
-        function registerPage(page: PageContribution, resolvedDir: string): void {
+        function registerPage(
+          page: PageContribution,
+          resolvedDir: string,
+        ): void {
           pages.push({ ...page });
 
           app.get(`/pages/${page.id}/*`, async (c) => {
             const requestPath = c.req.path;
             const prefix = `/pages/${page.id}/`;
-            const filePath = requestPath.slice(prefix.length) || 'index.html';
+            const filePath = requestPath.slice(prefix.length) || "index.html";
 
             // Prevent directory traversal
-            if (filePath.includes('..')) {
-              return c.text('Not found', 404);
+            if (filePath.includes("..")) {
+              return c.text("Not found", 404);
             }
 
             const absolutePath = path.join(resolvedDir, filePath);
 
             // Ensure file is within resolved dir
             if (!absolutePath.startsWith(resolvedDir)) {
-              return c.text('Not found', 404);
+              return c.text("Not found", 404);
             }
 
             try {
@@ -311,28 +342,32 @@ export function createOculus(): Plugin {
               const mimeType = getMimeType(absolutePath);
 
               // Only inject chrome for the root index.html
-              const isIndexHtml = filePath === 'index.html' || filePath === '';
-              if (isIndexHtml && mimeType.startsWith('text/html')) {
-                const html = content.toString('utf-8');
+              const isIndexHtml = filePath === "index.html" || filePath === "";
+              if (isIndexHtml && mimeType.startsWith("text/html")) {
+                const html = content.toString("utf-8");
                 const navHtml = buildNavHtml(pages);
-                const injected = injectChrome(html, '/static/style.css', navHtml);
+                const injected = injectChrome(
+                  html,
+                  "/static/style.css",
+                  navHtml,
+                );
                 return new Response(injected, {
-                  headers: { 'Content-Type': 'text/html; charset=utf-8' },
+                  headers: { "Content-Type": "text/html; charset=utf-8" },
                 });
               }
 
               return new Response(content, {
-                headers: { 'Content-Type': mimeType },
+                headers: { "Content-Type": mimeType },
               });
             } catch {
-              return c.text('Not found', 404);
+              return c.text("Not found", 404);
             }
           });
         }
 
         // ── Tool route registration helper ───────────────────────────
         function registerToolRoute(
-          toolDef: import('@shardworks/tools-apparatus').ToolDefinition,
+          toolDef: import("@shardworks/tools-apparatus").ToolDefinition,
         ): void {
           const routePath = toolNameToRoute(toolDef.name);
           const method = permissionToMethod(toolDef.permission);
@@ -348,7 +383,7 @@ export function createOculus(): Plugin {
 
           const shape = toolDef.params.shape as Record<string, z.ZodTypeAny>;
 
-          if (method === 'GET') {
+          if (method === "GET") {
             app.get(routePath, async (c) => {
               try {
                 const rawQuery = c.req.query();
@@ -358,13 +393,17 @@ export function createOculus(): Plugin {
                 return c.json(result);
               } catch (err) {
                 if (err instanceof z.ZodError) {
-                  return c.json({ error: err.message, details: err.issues }, 400);
+                  return c.json(
+                    { error: err.message, details: err.issues },
+                    400,
+                  );
                 }
-                const message = err instanceof Error ? err.message : String(err);
+                const message =
+                  err instanceof Error ? err.message : String(err);
                 return c.json({ error: message }, 500);
               }
             });
-          } else if (method === 'DELETE') {
+          } else if (method === "DELETE") {
             app.delete(routePath, async (c) => {
               try {
                 const body = await c.req.json();
@@ -373,9 +412,13 @@ export function createOculus(): Plugin {
                 return c.json(result);
               } catch (err) {
                 if (err instanceof z.ZodError) {
-                  return c.json({ error: err.message, details: err.issues }, 400);
+                  return c.json(
+                    { error: err.message, details: err.issues },
+                    400,
+                  );
                 }
-                const message = err instanceof Error ? err.message : String(err);
+                const message =
+                  err instanceof Error ? err.message : String(err);
                 return c.json({ error: message }, 500);
               }
             });
@@ -388,9 +431,13 @@ export function createOculus(): Plugin {
                 return c.json(result);
               } catch (err) {
                 if (err instanceof z.ZodError) {
-                  return c.json({ error: err.message, details: err.issues }, 400);
+                  return c.json(
+                    { error: err.message, details: err.issues },
+                    400,
+                  );
                 }
-                const message = err instanceof Error ? err.message : String(err);
+                const message =
+                  err instanceof Error ? err.message : String(err);
                 return c.json({ error: message }, 500);
               }
             });
@@ -400,54 +447,68 @@ export function createOculus(): Plugin {
         }
 
         // ── Register pages from all kit contributions ────────────────────
-        for (const entry of ctx.kits('pages')) {
+        for (const entry of ctx.kits("pages")) {
           for (const page of entry.value as PageContribution[]) {
-            const resolvedDir = resolveDirForPackage(entry.packageName, page.dir);
+            const resolvedDir = resolveDirForPackage(
+              entry.packageName,
+              page.dir,
+            );
             registerPage(page, resolvedDir);
           }
         }
 
         // ── Register custom routes from all kit contributions ────────────
-        for (const entry of ctx.kits('routes')) {
+        for (const entry of ctx.kits("routes")) {
           for (const route of entry.value as RouteContribution[]) {
             registerCustomRoute(route, entry.pluginId);
           }
         }
 
         // ── Register tool routes from all kit contributions ──────────
-        for (const entry of ctx.kits('tools')) {
+        for (const entry of ctx.kits("tools")) {
           const rawTools = entry.value;
           if (!Array.isArray(rawTools)) continue;
           for (const t of rawTools) {
-            if (isToolDefinition(t) && (!t.callableBy || t.callableBy.includes('patron'))) {
+            if (
+              isToolDefinition(t) &&
+              (!t.callableBy || t.callableBy.includes("patron"))
+            ) {
               registerToolRoute(t);
             }
           }
         }
 
         // ── GET /api/_status ─────────────────────────────────────────
-        app.get('/api/_status', (c) => {
+        app.get("/api/_status", (c) => {
           const config = g.guildConfig();
           return c.json({
             guild: config.name,
             nexus: VERSION,
             home: g.home,
-            model: config.settings?.model ?? '(not set)',
+            model: config.settings?.model ?? "(not set)",
             port: serverPort,
-            apparatuses: g.apparatuses().map((a) => ({ id: a.id, version: a.version })),
+            apparatuses: g
+              .apparatuses()
+              .map((a) => ({ id: a.id, version: a.version })),
             kits: g.kits().map((k) => ({ id: k.id, version: k.version })),
-            failedPlugins: g.failedPlugins().map((f) => ({ id: f.id, reason: f.reason })),
+            failedPlugins: g
+              .failedPlugins()
+              .map((f) => ({ id: f.id, reason: f.reason })),
             warnings: g.startupWarnings(),
             config: config,
           });
         });
 
         // ── GET /api/_tools ──────────────────────────────────────────
-        app.get('/api/_tools', (c) => {
-          const instrumentarium = g.apparatus<InstrumentariumApi>('tools');
-          const tools = instrumentarium.list().filter(
-            (r) => !r.definition.callableBy || r.definition.callableBy.includes('patron'),
-          );
+        app.get("/api/_tools", (c) => {
+          const instrumentarium = g.apparatus<InstrumentariumApi>("tools");
+          const tools = instrumentarium
+            .list()
+            .filter(
+              (r) =>
+                !r.definition.callableBy ||
+                r.definition.callableBy.includes("patron"),
+            );
 
           const entries = tools.map((r) => ({
             name: r.definition.name,
@@ -461,13 +522,17 @@ export function createOculus(): Plugin {
         });
 
         // ── Static assets ────────────────────────────────────────────
-        const staticDir = path.join(import.meta.dirname, 'static');
-        app.get('/static/*', (c) => {
-          const requestPath = c.req.path;
-          const filePath = requestPath.slice('/static/'.length);
+        // In dev: import.meta.dirname = /packages/plugins/oculus/src
+        // In prod: import.meta.dirname = /node_modules/@pkg/dist
+        // Static files are always at src/static relative to package root
+        const staticDir = path.resolve(import.meta.dirname, "../src/static");
 
-          if (filePath.includes('..')) {
-            return c.text('Not found', 404);
+        app.get("/static/*", (c) => {
+          const requestPath = c.req.path;
+          const filePath = requestPath.slice("/static/".length);
+
+          if (filePath.includes("..")) {
+            return c.text("Not found", 404);
           }
 
           const absolutePath = path.join(staticDir, filePath);
@@ -475,19 +540,19 @@ export function createOculus(): Plugin {
             const content = fs.readFileSync(absolutePath);
             const mimeType = getMimeType(absolutePath);
             return new Response(content, {
-              headers: { 'Content-Type': mimeType },
+              headers: { "Content-Type": mimeType },
             });
           } catch {
-            return c.text('Not found', 404);
+            return c.text("Not found", 404);
           }
         });
 
         // ── Home page ────────────────────────────────────────────────
-        app.get('/', (c) => {
+        app.get("/", (c) => {
           const config = g.guildConfig();
           const guildName = config.name;
           const navHtml = buildNavHtml(pages);
-          const model = config.settings?.model ?? '(not set)';
+          const model = config.settings?.model ?? "(not set)";
 
           // ── Identity card ──────────────────────────────────────────
           const identityCard = `<div class="card" style="margin-bottom: 16px;">
@@ -505,48 +570,62 @@ export function createOculus(): Plugin {
 
           // ── Warnings card (conditional) ────────────────────────────
           const warnings = g.startupWarnings();
-          const warningsCard = warnings.length > 0
-            ? `<div class="card" style="margin-bottom: 16px;">
+          const warningsCard =
+            warnings.length > 0
+              ? `<div class="card" style="margin-bottom: 16px;">
     <h2>Warnings</h2>
     <ul>
-      ${warnings.map((w) => `<li><span class="badge badge--warning">${escapeHtml(w)}</span></li>`).join('\n      ')}
+      ${warnings.map((w) => `<li><span class="badge badge--warning">${escapeHtml(w)}</span></li>`).join("\n      ")}
     </ul>
   </div>`
-            : '';
+              : "";
 
           // ── Plugins table ──────────────────────────────────────────
           const apparatuses = g.apparatuses();
           const kits = g.kits();
           const failedPlugins = g.failedPlugins();
 
-          let pluginRows = '';
-          if (apparatuses.length === 0 && kits.length === 0 && failedPlugins.length === 0) {
+          let pluginRows = "";
+          if (
+            apparatuses.length === 0 &&
+            kits.length === 0 &&
+            failedPlugins.length === 0
+          ) {
             pluginRows = `<tr><td colspan="4" class="empty-state">No plugins loaded.</td></tr>`;
           } else {
-            pluginRows += apparatuses.map((a) =>
-              `<tr>
+            pluginRows += apparatuses
+              .map(
+                (a) =>
+                  `<tr>
           <td>${escapeHtml(a.id)}</td>
           <td>apparatus</td>
           <td>${escapeHtml(a.version)}</td>
           <td><span class="badge badge--success">apparatus</span></td>
         </tr>`,
-            ).join('\n');
-            pluginRows += kits.map((k) =>
-              `<tr>
+              )
+              .join("\n");
+            pluginRows += kits
+              .map(
+                (k) =>
+                  `<tr>
           <td>${escapeHtml(k.id)}</td>
           <td>kit</td>
           <td>${escapeHtml(k.version)}</td>
           <td><span class="badge badge--info">kit</span></td>
         </tr>`,
-            ).join('\n');
-            pluginRows += failedPlugins.map((f) =>
-              `<tr>
+              )
+              .join("\n");
+            pluginRows += failedPlugins
+              .map(
+                (f) =>
+                  `<tr>
           <td>${escapeHtml(f.id)}</td>
           <td>—</td>
           <td>—</td>
           <td><span class="badge badge--error" title="${escapeHtml(f.reason)}">failed</span> <span style="color: var(--text-dim); font-size: 11px;">${escapeHtml(f.reason)}</span></td>
         </tr>`,
-            ).join('\n');
+              )
+              .join("\n");
           }
 
           const pluginsCard = `<div class="card" style="margin-bottom: 16px;">
@@ -562,11 +641,14 @@ export function createOculus(): Plugin {
   </div>`;
 
           // ── Configuration card ─────────────────────────────────────
-          let rawConfig = '';
+          let rawConfig = "";
           try {
-            rawConfig = fs.readFileSync(path.join(g.home, 'guild.json'), 'utf-8');
+            rawConfig = fs.readFileSync(
+              path.join(g.home, "guild.json"),
+              "utf-8",
+            );
           } catch {
-            rawConfig = '(unable to read guild.json)';
+            rawConfig = "(unable to read guild.json)";
           }
 
           const configCard = `<div class="card">
@@ -609,27 +691,32 @@ ${navHtml}
       supportKit: {
         tools: [
           tool({
-            name: 'oculus',
-            description: 'Start the Oculus web dashboard and keep it running',
-            callableBy: ['patron'],
+            name: "oculus",
+            description: "Start the Oculus web dashboard and keep it running",
+            callableBy: ["patron"],
             params: {},
             handler: async () => {
               await api.startServer();
 
               const port = api.port();
-              console.log(`\n  Oculus is running at http://localhost:${port}/\n`);
-              console.log('  Press Ctrl+C to stop.\n');
+              console.log(
+                `\n  Oculus is running at http://localhost:${port}/\n`,
+              );
+              console.log("  Press Ctrl+C to stop.\n");
 
               // Block until the process is interrupted.
               await new Promise<void>((resolve) => {
                 const onSignal = () => {
-                  void api.stopServer().then(() => resolve(), () => resolve());
+                  void api.stopServer().then(
+                    () => resolve(),
+                    () => resolve(),
+                  );
                 };
-                process.once('SIGINT', onSignal);
-                process.once('SIGTERM', onSignal);
+                process.once("SIGINT", onSignal);
+                process.once("SIGTERM", onSignal);
               });
 
-              return 'Oculus stopped.';
+              return "Oculus stopped.";
             },
           }),
         ],
