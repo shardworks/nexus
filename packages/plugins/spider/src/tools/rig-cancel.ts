@@ -18,7 +18,7 @@ export default tool({
     rigId: z.string().describe('The rig id to cancel.'),
     reason: z.string().optional().describe('Optional reason for cancellation.'),
   },
-  permission: 'spider:write',
+  permission: 'write',
   handler: async (params) => {
     const spider = guild().apparatus<SpiderApi>('spider');
     return spider.cancel(params.rigId, params.reason ? { reason: params.reason } : undefined);

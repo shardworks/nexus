@@ -191,6 +191,7 @@ class ToolRegistry {
 
     for (const t of rawTools) {
       if (isToolDefinition(t)) {
+        this.validatePermission(t, pluginId);
         const definition = this.preloadInstructions(t, packageName);
         this.tools.set(definition.name, { definition, pluginId });
       }
@@ -230,8 +231,27 @@ class ToolRegistry {
     }
   }
 
+  /**
+   * Validate that a tool's permission string uses the bare-level convention.
+   *
+   * Permission strings must be bare levels like 'read', 'write', 'delete', 'admin'.
+   * The plugin id is attached automatically by the grant-matching system.
+   * A colon in the permission string indicates the non-conforming `plugin:level`
+   * form, which causes silent resolution failures.
+   */
+  private validatePermission(definition: ToolDefinition, pluginId: string): void {
+    if (definition.permission && definition.permission.includes(':')) {
+      throw new Error(
+        `Tool "${definition.name}" (plugin "${pluginId}") declares permission "${definition.permission}" ` +
+        `which contains a colon. Permission strings are bare levels (e.g. "read", "write"); ` +
+        `the plugin id is attached automatically. See packages/plugins/tools/src/tool.ts docstring.`,
+      );
+    }
+  }
+
   /** Register a single tool definition directly (for self-contributed tools). */
   registerTool(definition: ToolDefinition, pluginId: string): void {
+    this.validatePermission(definition, pluginId);
     this.tools.set(definition.name, { definition, pluginId });
   }
 

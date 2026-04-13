@@ -34,7 +34,7 @@ export default tool({
         'The parent must be in new or open status.',
       ),
   },
-  permission: 'clerk:write',
+  permission: 'write',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
     return clerk.post({

@@ -18,7 +18,7 @@ export default tool({
     rigId: z.string().describe('The rig id.'),
     engineId: z.string().describe('The engine id within the rig.'),
   },
-  permission: 'spider:write',
+  permission: 'write',
   handler: async (params) => {
     const spider = guild().apparatus<SpiderApi>('spider');
     await spider.resume(params.rigId, params.engineId);

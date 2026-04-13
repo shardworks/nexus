@@ -15,7 +15,7 @@ export default tool({
     id: z.string().describe('Writ id'),
     resolution: z.string().optional().describe('Optional summary of why the writ was cancelled'),
   },
-  permission: 'clerk:write',
+  permission: 'write',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
     return clerk.transition(

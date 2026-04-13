@@ -196,7 +196,7 @@ export function createAstrolabe(): Plugin {
     params: {
       planId: z.string().describe('Plan id (same as the brief writ id)'),
     },
-    permission: 'astrolabe:read',
+    permission: 'read',
     handler: async ({ planId }) => {
       const plan = await plansBook.get(planId);
       if (!plan) throw new Error(`Plan "${planId}" not found.`);
@@ -219,7 +219,7 @@ export function createAstrolabe(): Plugin {
       limit: z.number().optional().default(20).describe('Maximum results (default: 20)'),
       offset: z.number().optional().describe('Number of results to skip'),
     },
-    permission: 'astrolabe:read',
+    permission: 'read',
     handler: async (params) => {
       const where: WhereClause = [];
       if (params.status) where.push(['status', '=', params.status]);
@@ -243,7 +243,7 @@ export function createAstrolabe(): Plugin {
       planId: z.string().describe('Plan id'),
       inventory: z.string().describe('Inventory content (markdown)'),
     },
-    permission: 'astrolabe:write',
+    permission: 'write',
     handler: async ({ planId, inventory }) => {
       return plansBook.patch(planId, { inventory, updatedAt: new Date().toISOString() });
     },
@@ -268,7 +268,7 @@ export function createAstrolabe(): Plugin {
         )
         .describe('Scope items'),
     },
-    permission: 'astrolabe:write',
+    permission: 'write',
     handler: async ({ planId, scope }) => {
       return plansBook.patch(planId, { scope, updatedAt: new Date().toISOString() });
     },
@@ -299,7 +299,7 @@ export function createAstrolabe(): Plugin {
         )
         .describe('Decision items'),
     },
-    permission: 'astrolabe:write',
+    permission: 'write',
     handler: async ({ planId, decisions }) => {
       return plansBook.patch(planId, { decisions, updatedAt: new Date().toISOString() });
     },
@@ -315,7 +315,7 @@ export function createAstrolabe(): Plugin {
       planId: z.string().describe('Plan id'),
       observations: z.string().describe('Observations content (markdown)'),
     },
-    permission: 'astrolabe:write',
+    permission: 'write',
     handler: async ({ planId, observations }) => {
       return plansBook.patch(planId, { observations, updatedAt: new Date().toISOString() });
     },
@@ -331,7 +331,7 @@ export function createAstrolabe(): Plugin {
       planId: z.string().describe('Plan id'),
       spec: z.string().describe('Specification content (markdown)'),
     },
-    permission: 'astrolabe:write',
+    permission: 'write',
     handler: async ({ planId, spec }) => {
       return plansBook.patch(planId, { spec, updatedAt: new Date().toISOString() });
     },

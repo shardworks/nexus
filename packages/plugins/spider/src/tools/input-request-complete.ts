@@ -19,7 +19,7 @@ export default tool({
   params: {
     id: z.string().describe('The input request id to complete.'),
   },
-  permission: 'spider:write',
+  permission: 'write',
   handler: async (params) => {
     const stacks = guild().apparatus<StacksApi>('stacks');
     const book = stacks.book<InputRequestDoc>('spider', 'input-requests');

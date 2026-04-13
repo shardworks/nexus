@@ -33,7 +33,7 @@ export default tool({
       .optional()
       .describe('For boolean or text questions: the answer value.'),
   },
-  permission: 'spider:write',
+  permission: 'write',
   handler: async (params) => {
     const stacks = guild().apparatus<StacksApi>('stacks');
     const book = stacks.book<InputRequestDoc>('spider', 'input-requests');

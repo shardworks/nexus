@@ -34,7 +34,7 @@ export default tool({
         'Override the configured poll interval in milliseconds',
       ),
   },
-  permission: 'spider:write',
+  permission: 'write',
   handler: async (params) => {
     const g = guild();
     const spider = g.apparatus<SpiderApi>('spider');

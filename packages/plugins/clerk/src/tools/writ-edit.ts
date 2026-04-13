@@ -19,7 +19,7 @@ export default tool({
     type: z.string().optional().describe('New writ type (must be a valid declared type)'),
     codex: z.string().optional().describe('New target codex name (empty string to clear)'),
   },
-  permission: 'clerk:write',
+  permission: 'write',
   handler: async (params) => {
     // Ensure at least one editable field is provided
     if (

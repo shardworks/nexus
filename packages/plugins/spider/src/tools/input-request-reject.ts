@@ -22,7 +22,7 @@ export default tool({
       .optional()
       .describe('Optional reason for rejection.'),
   },
-  permission: 'spider:write',
+  permission: 'write',
   handler: async (params) => {
     const stacks = guild().apparatus<StacksApi>('stacks');
     const book = stacks.book<InputRequestDoc>('spider', 'input-requests');

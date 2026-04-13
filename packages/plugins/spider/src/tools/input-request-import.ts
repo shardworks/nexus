@@ -21,7 +21,7 @@ export default tool({
   params: {
     file: z.string().describe('File path to the YAML file containing answers.'),
   },
-  permission: 'spider:write',
+  permission: 'write',
   handler: async (params) => {
     const raw = await readFile(params.file, 'utf8');
     const parsed = parse(raw) as Record<string, unknown>;

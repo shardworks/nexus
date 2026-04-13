@@ -97,8 +97,8 @@ describe('crawl-one tool', () => {
     assert.equal(crawlOneTool.description, "Execute one step of the Spider's crawl loop");
   });
 
-  it('requires spider:write permission', () => {
-    assert.equal(crawlOneTool.permission, 'spider:write');
+  it('requires write permission', () => {
+    assert.equal(crawlOneTool.permission, 'write');
   });
 
   it('returns a CrawlResult when work is available', async () => {
@@ -136,8 +136,8 @@ describe('crawl-continual tool metadata', () => {
     );
   });
 
-  it('requires spider:write permission', () => {
-    assert.equal(crawlContinualTool.permission, 'spider:write');
+  it('requires write permission', () => {
+    assert.equal(crawlContinualTool.permission, 'write');
   });
 
   it('maxIdleCycles defaults to 0 (indefinite)', () => {
@@ -450,8 +450,8 @@ describe('rig-cancel tool', () => {
     assert.equal(rigCancelTool.name, 'rig-cancel');
   });
 
-  it('requires spider:write permission', () => {
-    assert.equal(rigCancelTool.permission, 'spider:write');
+  it('requires write permission', () => {
+    assert.equal(rigCancelTool.permission, 'write');
   });
 
   it('params schema has required rigId and optional reason', () => {

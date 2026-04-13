@@ -15,7 +15,7 @@ export default tool({
     targetId: z.string().describe('The writ that is the target of this relationship'),
     type: z.string().describe('Relationship type (e.g. "fixes", "retries", "supersedes", "duplicates")'),
   },
-  permission: 'clerk:write',
+  permission: 'write',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
     return clerk.link(params.sourceId, params.targetId, params.type);

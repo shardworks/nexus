@@ -1013,7 +1013,7 @@ describe('Oculus tool routes', () => {
       tool({
         name: 'commission-post',
         description: 'Post commission',
-        permission: 'clerk:write',
+        permission: 'write',
         params: { title: z.string() },
         handler: async (p) => ({ created: true, title: p.title }),
       }),
@@ -1066,7 +1066,7 @@ describe('Oculus tool routes', () => {
     assert.equal(res.status, 200);
   });
 
-  it('POST /api/commission/post is registered (clerk:write → POST)', async () => {
+  it('POST /api/commission/post is registered (write → POST)', async () => {
     const res = await fetch(`http://localhost:${port}/api/commission/post`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

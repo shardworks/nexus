@@ -664,6 +664,125 @@ describe('Instrumentarium', () => {
     });
   });
 
+  describe('bare-level permission convention', () => {
+    it('resolves a bare-level permission tool via exact plugin:level grant', () => {
+      const kit = mockKit('astrolabe', [
+        testTool('plan-show', { permission: 'read' }),
+        testTool('inventory-write', { permission: 'write' }),
+      ]);
+
+      const { api } = startInstrumentarium({ kits: [kit] });
+
+      const resolved = api.resolve({
+        permissions: ['astrolabe:read'],
+        strict: true,
+        caller: 'anima',
+      });
+      assert.equal(resolved.length, 1);
+      assert.equal(resolved[0]!.definition.name, 'plan-show');
+    });
+
+    it('registerTool throws when permission contains a colon', () => {
+      wireGuild({});
+      const plugin = createInstrumentarium();
+      const apparatus = 'apparatus' in plugin ? plugin.apparatus : null;
+      assert.ok(apparatus);
+
+      // Access the registry indirectly — registerTool is exposed on the api
+      // but the registry is internal, so we test via the start path.
+      const badTool = testTool('bad-tool', { permission: 'myplugin:read' });
+      const kit = mockKit('myplugin', [badTool]);
+
+      assert.throws(
+        () => {
+          startInstrumentarium({ kits: [kit] });
+        },
+        (err: Error) => {
+          assert.ok(err.message.includes('bad-tool'));
+          assert.ok(err.message.includes('myplugin:read'));
+          assert.ok(err.message.includes('bare levels'));
+          return true;
+        },
+      );
+      clearGuild();
+    });
+
+    it('plugin-qualified permission never matches — documents the convention', () => {
+      // This test proves that even if a colon-form permission somehow gets
+      // registered (bypassing the guard), matchesPermission will never match it.
+      // It serves as a living specification: the matcher expects bare levels.
+
+      // We cannot bypass the guard via the normal paths, so we verify the
+      // guard fires and captures the correct message.
+      const badTool = testTool('drift-tool', { permission: 'myplugin:read' });
+      const kit = mockKit('myplugin', [badTool]);
+
+      assert.throws(
+        () => startInstrumentarium({ kits: [kit] }),
+        (err: Error) => {
+          assert.ok(
+            err.message.includes('bare levels'),
+            'Error must reference the bare-level convention',
+          );
+          assert.ok(
+            err.message.includes('myplugin:read'),
+            'Error must include the offending permission string',
+          );
+          return true;
+        },
+      );
+    });
+
+    it('sage role grants resolve astrolabe + clerk read tools with bare-level permissions', () => {
+      // Simulates the astrolabe.sage role: permissions ['astrolabe:read', 'astrolabe:write', 'clerk:read']
+      // with strict: true. After normalization, tools use bare 'read'/'write' permissions.
+      const astrolabeKit = mockKit('astrolabe', [
+        testTool('plan-show', { permission: 'read' }),
+        testTool('plan-list', { permission: 'read' }),
+        testTool('inventory-write', { permission: 'write' }),
+        testTool('scope-write', { permission: 'write' }),
+        testTool('decisions-write', { permission: 'write' }),
+        testTool('observations-write', { permission: 'write' }),
+        testTool('spec-write', { permission: 'write' }),
+      ]);
+      const clerkKit = mockKit('clerk', [
+        testTool('writ-show', { permission: 'read' }),
+        testTool('writ-list', { permission: 'read' }),
+        testTool('writ-types', { permission: 'read' }),
+        testTool('writ-edit', { permission: 'write' }),
+      ]);
+
+      const { api } = startInstrumentarium({ kits: [astrolabeKit, clerkKit] });
+
+      const resolved = api.resolve({
+        permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read'],
+        strict: true,
+        caller: 'anima',
+      });
+
+      const names = resolved.map(t => t.definition.name).sort();
+
+      // All 7 astrolabe tools should be present
+      assert.ok(names.includes('plan-show'), 'plan-show must be resolved');
+      assert.ok(names.includes('plan-list'), 'plan-list must be resolved');
+      assert.ok(names.includes('inventory-write'), 'inventory-write must be resolved');
+      assert.ok(names.includes('scope-write'), 'scope-write must be resolved');
+      assert.ok(names.includes('decisions-write'), 'decisions-write must be resolved');
+      assert.ok(names.includes('observations-write'), 'observations-write must be resolved');
+      assert.ok(names.includes('spec-write'), 'spec-write must be resolved');
+
+      // clerk:read should match clerk's read tools
+      assert.ok(names.includes('writ-show'), 'writ-show must be resolved');
+      assert.ok(names.includes('writ-list'), 'writ-list must be resolved');
+      assert.ok(names.includes('writ-types'), 'writ-types must be resolved');
+
+      // clerk:write was NOT granted, so writ-edit should be excluded
+      assert.ok(!names.includes('writ-edit'), 'writ-edit must NOT be resolved');
+
+      assert.equal(resolved.length, 10);
+    });
+  });
+
   describe('instruction pre-loading', () => {
     let tmpDir: string;
 

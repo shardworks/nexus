@@ -12,7 +12,7 @@ export default tool({
   params: {
     id: z.string().describe('Writ id'),
   },
-  permission: 'clerk:read',
+  permission: 'read',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
     const [writ, links] = await Promise.all([

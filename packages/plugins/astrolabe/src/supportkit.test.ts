@@ -165,25 +165,25 @@ describe('Astrolabe supportKit shape', () => {
     }
   });
 
-  it('read tools use astrolabe:read permission', () => {
+  it('read tools use bare-level read permission', () => {
     const kit = getKit(plugin);
     const tools = kit.tools as Array<{ name: string; permission?: string }>;
     const readTools = ['plan-show', 'plan-list'];
     for (const name of readTools) {
       const t = tools.find(x => x.name === name);
       assert.ok(t, `Tool "${name}" must exist`);
-      assert.equal(t.permission, 'astrolabe:read', `Tool "${name}" must have astrolabe:read permission`);
+      assert.equal(t.permission, 'read', `Tool "${name}" must have bare-level 'read' permission`);
     }
   });
 
-  it('write tools use astrolabe:write permission', () => {
+  it('write tools use bare-level write permission', () => {
     const kit = getKit(plugin);
     const tools = kit.tools as Array<{ name: string; permission?: string }>;
     const writeTools = ['inventory-write', 'scope-write', 'decisions-write', 'observations-write', 'spec-write'];
     for (const name of writeTools) {
       const t = tools.find(x => x.name === name);
       assert.ok(t, `Tool "${name}" must exist`);
-      assert.equal(t.permission, 'astrolabe:write', `Tool "${name}" must have astrolabe:write permission`);
+      assert.equal(t.permission, 'write', `Tool "${name}" must have bare-level 'write' permission`);
     }
   });
 
@@ -252,5 +252,57 @@ describe('Astrolabe supportKit shape', () => {
       prompt.includes('${yields.decision-review.decisionSummary}'),
       'spec-writer prompt must include decisionSummary interpolation',
     );
+  });
+
+  // ── Bare-level permission convention ──────────────────────────────
+
+  it('all tool permissions use bare-level form (no colons)', () => {
+    const kit = getKit(plugin);
+    const tools = kit.tools as Array<{ name: string; permission?: string }>;
+    for (const t of tools) {
+      if (t.permission) {
+        assert.ok(
+          !t.permission.includes(':'),
+          `Tool "${t.name}" has permission "${t.permission}" which contains a colon. ` +
+          `Permissions must be bare levels like "read" or "write".`,
+        );
+      }
+    }
+  });
+
+  it('sage role grants resolve all expected tools after bare-level normalization', () => {
+    const kit = getKit(plugin);
+    const tools = kit.tools as Array<{ name: string; permission?: string }>;
+    const roles = kit.roles as Record<string, { permissions: string[]; strict?: boolean }>;
+    const sage = roles.sage;
+    assert.ok(sage, 'sage role must exist');
+
+    // Parse sage grants
+    const grants = sage.permissions.map(g => {
+      const idx = g.indexOf(':');
+      return idx === -1 ? null : { plugin: g.slice(0, idx), level: g.slice(idx + 1) };
+    }).filter(Boolean) as Array<{ plugin: string; level: string }>;
+
+    // Simulate permission matching for astrolabe tools
+    const matched = tools.filter(t => {
+      if (!t.permission) return false;
+      return grants.some(g =>
+        (g.plugin === 'astrolabe' && g.level === t.permission) ||
+        (g.plugin === 'astrolabe' && g.level === '*') ||
+        (g.plugin === '*' && g.level === t.permission) ||
+        (g.plugin === '*' && g.level === '*'),
+      );
+    });
+
+    const matchedNames = matched.map(t => t.name).sort();
+    assert.deepEqual(matchedNames, [
+      'decisions-write',
+      'inventory-write',
+      'observations-write',
+      'plan-list',
+      'plan-show',
+      'scope-write',
+      'spec-write',
+    ]);
   });
 });

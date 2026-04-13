@@ -1557,10 +1557,10 @@ describe('writ-types tool', () => {
     assert.ok(tools.some(t => t.name === 'writ-types'), 'writ-types tool should be in supportKit.tools');
   });
 
-  it('tool has clerk:read permission', () => {
+  it('tool has bare-level read permission', () => {
     const plugin = createClerk();
     const t = getWritTypesTool(plugin);
-    assert.equal(t.permission, 'clerk:read');
+    assert.equal(t.permission, 'read');
   });
 
   it('tool has no callableBy restriction', () => {

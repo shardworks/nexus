@@ -442,7 +442,7 @@ export function createClerk(): Plugin {
       'in guild config, and types contributed by kits. Each entry includes the ' +
       'type name, optional description, and whether it is the default type.',
     params: {},
-    permission: 'clerk:read',
+    permission: 'read',
     handler: async () => api.listWritTypes(),
   });
 

@@ -17,7 +17,7 @@ export default tool({
     'ready engine, or spawn a rig for an open writ — in that priority order. ' +
     'Returns the action taken, or null if there is nothing to do.',
   params: {},
-  permission: 'spider:write',
+  permission: 'write',
   handler: async () => {
     const spider = guild().apparatus<SpiderApi>('spider');
     return spider.crawl();

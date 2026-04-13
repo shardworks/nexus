@@ -13,7 +13,7 @@ export default tool({
   params: {
     id: z.string().describe('Writ id'),
   },
-  permission: 'clerk:write',
+  permission: 'write',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
     return clerk.transition(params.id, 'open');
