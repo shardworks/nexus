@@ -201,6 +201,24 @@ describe('ScriptoriumCore', () => {
       assert.equal(isBare, 'true');
     });
 
+    it('configures a remote.origin.fetch refspec on the bare clone', async () => {
+      // Regression: `git clone --bare` leaves the remote with no fetch
+      // refspec, so plain `git fetch origin` silently no-ops for
+      // refs/remotes/origin/*. performClone() must persist an explicit
+      // refspec so external callers (manual rebases in draft worktrees,
+      // `git fetch origin` for debugging, etc.) see up-to-date remote
+      // tracking refs without needing to know the trap.
+      const remote = createRemoteRepo();
+      const { core, guildState } = createStartedCore();
+      const api = core.createApi();
+
+      await api.add('test-codex', remote.url);
+
+      const clonePath = path.join(guildState.home, '.nexus', 'codexes', 'test-codex.git');
+      const refspec = gitSync(['config', '--get-all', 'remote.origin.fetch'], clonePath);
+      assert.equal(refspec, '+refs/heads/*:refs/remotes/origin/*');
+    });
+
     it('persists codex entry to config', async () => {
       const remote = createRemoteRepo();
       const { core, guildState } = createStartedCore();

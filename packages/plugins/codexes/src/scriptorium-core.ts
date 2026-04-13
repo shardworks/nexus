@@ -191,6 +191,27 @@ export class ScriptoriumCore {
     const clonePath = this.bareClonePath(name);
     fs.mkdirSync(path.dirname(clonePath), { recursive: true });
     await git(['clone', '--bare', remoteUrl, clonePath]);
+
+    // `git clone --bare` does not configure a fetch refspec. Without one,
+    // plain `git fetch origin` silently no-ops for remote-tracking refs —
+    // only FETCH_HEAD gets updated, and `refs/remotes/origin/*` stays stale.
+    //
+    // We deliberately fetch into `refs/remotes/origin/*` (not `refs/heads/*`)
+    // because this bare clone also hosts draft worktrees: drafts live as
+    // branches in `refs/heads/draft-*`, and a heads→heads refspec would
+    // clobber them on fetch. The remotes/origin namespace keeps the remote
+    // position isolated from local sealed bindings and draft branches, and
+    // lets seal() advance `refs/heads/<branch>` only when strictly behind.
+    //
+    // Scriptorium's own performFetch() passes this refspec explicitly for
+    // defense-in-depth, but persisting it in config is what makes external
+    // callers (manual rebases in draft worktrees, humans debugging, any
+    // plain `git fetch origin`) behave correctly without needing to know
+    // the trap.
+    await git(
+      ['config', '--add', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'],
+      clonePath,
+    );
   }
 
   /**
@@ -228,10 +249,6 @@ export class ScriptoriumCore {
 
   private async performFetch(name: string): Promise<void> {
     const clonePath = this.bareClonePath(name);
-    // Explicit refspec is required: git clone --bare does not configure a
-    // fetch refspec, so plain `git fetch origin` only updates FETCH_HEAD and
-    // leaves refs/heads/* stale.
-    //
     // We fetch into refs/remotes/origin/* rather than refs/heads/* for two
     // reasons:
     //   1. It avoids force-overwriting local draft branches (which live in
@@ -239,6 +256,12 @@ export class ScriptoriumCore {
     //   2. It separates the "remote position" (refs/remotes/origin/*) from
     //      the "local sealed binding" (refs/heads/*), letting seal() advance
     //      refs/heads/* only when the remote is strictly ahead.
+    //
+    // performClone() persists this refspec in the bare clone's git config,
+    // so `git fetch origin` with no arguments would also do the right thing
+    // — we pass the refspec explicitly here for defense-in-depth (and to
+    // keep Scriptorium's internal behavior independent of external edits
+    // to the clone's config).
     await git(['fetch', '--prune', 'origin', '+refs/heads/*:refs/remotes/origin/*'], clonePath);
 
     const state = this.codexes.get(name);
