@@ -6,7 +6,7 @@
  * SessionChunks and accumulated metrics.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
@@ -28,6 +28,55 @@ function freshAcc(): {
 }
 
 // ── parseStreamJsonMessage ──────────────────────────────────────────
+
+describe('parseStreamJsonMessage() purity', () => {
+  const originalStderrWrite = process.stderr.write;
+  let stderrCalls: string[];
+
+  afterEach(() => {
+    process.stderr.write = originalStderrWrite;
+  });
+
+  function mockStderr() {
+    stderrCalls = [];
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderrCalls.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stderr.write;
+  }
+
+  it('does not write to stderr for assistant text blocks', () => {
+    mockStderr();
+    const acc = freshAcc();
+    const chunks = parseStreamJsonMessage({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'Hello world' },
+        ],
+      },
+    }, acc);
+
+    assert.equal(chunks.length, 1);
+    assert.deepEqual(chunks[0], { type: 'text', text: 'Hello world' });
+    assert.equal(stderrCalls.length, 0, 'parseStreamJsonMessage should not write to stderr');
+  });
+
+  it('does not write to stderr for tool_use blocks', () => {
+    mockStderr();
+    const acc = freshAcc();
+    parseStreamJsonMessage({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', name: 'bash' },
+        ],
+      },
+    }, acc);
+
+    assert.equal(stderrCalls.length, 0, 'parseStreamJsonMessage should not write to stderr');
+  });
+});
 
 describe('parseStreamJsonMessage()', () => {
   it('parses assistant text content into text chunks', () => {

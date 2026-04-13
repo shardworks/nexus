@@ -30,7 +30,7 @@ import type {
 
 import { startMcpHttpServer } from './mcp-server.ts';
 import type { McpHttpHandle } from './mcp-server.ts';
-import { launchDetached, type DetachedLaunchOptions } from './detached.ts';
+import { launchDetached } from './detached.ts';
 
 // ── Session File Preparation ────────────────────────────────────────────
 
@@ -137,6 +137,7 @@ function buildResult(raw: StreamJsonResult): SessionProviderResult {
     providerSessionId: raw.providerSessionId,
     transcript: raw.transcript,
     output: extractFinalAssistantText(raw.transcript),
+    signal: raw.signal,
   };
 }
 
@@ -349,6 +350,8 @@ export interface StreamJsonResult {
     cacheWriteTokens?: number;
   };
   providerSessionId?: string;
+  /** Process signal name if killed by signal (e.g. 'SIGTERM'). */
+  signal?: string;
 }
 
 /**
@@ -379,7 +382,6 @@ export function parseStreamJsonMessage(
       if (content) {
         for (const block of content) {
           if (block.type === 'text' && typeof block.text === 'string') {
-            process.stderr.write(block.text);
             chunks.push({ type: 'text', text: block.text });
           } else if (block.type === 'tool_use' && typeof block.name === 'string') {
             chunks.push({ type: 'tool_use', tool: block.name });
@@ -479,7 +481,12 @@ function spawnClaudeStreamJson(args: string[], cwd: string, env?: Record<string,
   proc.stdout!.on('data', (chunk: Buffer) => {
     buffer += chunk.toString();
     buffer = processNdjsonBuffer(buffer, (msg) => {
-      parseStreamJsonMessage(msg, acc);
+      const chunks = parseStreamJsonMessage(msg, acc);
+      for (const c of chunks) {
+        if (c.type === 'text') {
+          process.stderr.write(c.text);
+        }
+      }
     });
   });
 
@@ -488,7 +495,7 @@ function spawnClaudeStreamJson(args: string[], cwd: string, env?: Record<string,
       reject(new Error(`Failed to spawn claude: ${err.message}`));
     });
 
-    proc.on('close', (code) => {
+    proc.on('close', (code, signal) => {
       if (acc.transcript.length > 0) {
         process.stderr.write('\n');
       }
@@ -499,6 +506,7 @@ function spawnClaudeStreamJson(args: string[], cwd: string, env?: Record<string,
         costUsd: acc.costUsd,
         tokenUsage: acc.tokenUsage,
         providerSessionId: acc.providerSessionId,
+        signal: signal ?? undefined,
       });
     });
   });
@@ -547,6 +555,11 @@ function spawnClaudeStreamingJson(args: string[], cwd: string, env?: Record<stri
     buffer += chunk.toString();
     buffer = processNdjsonBuffer(buffer, (msg) => {
       const newChunks = parseStreamJsonMessage(msg, acc);
+      for (const c of newChunks) {
+        if (c.type === 'text') {
+          process.stderr.write(c.text);
+        }
+      }
       if (newChunks.length > 0) {
         chunkQueue.push(...newChunks);
         if (chunkResolve) {
@@ -564,7 +577,7 @@ function spawnClaudeStreamingJson(args: string[], cwd: string, env?: Record<stri
       reject(new Error(`Failed to spawn claude: ${err.message}`));
     });
 
-    proc.on('close', (code) => {
+    proc.on('close', (code, signal) => {
       if (acc.transcript.length > 0) {
         process.stderr.write('\n');
       }
@@ -576,6 +589,7 @@ function spawnClaudeStreamingJson(args: string[], cwd: string, env?: Record<stri
         costUsd: acc.costUsd,
         tokenUsage: acc.tokenUsage,
         providerSessionId: acc.providerSessionId,
+        signal: signal ?? undefined,
       });
     });
   });

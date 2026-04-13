@@ -73,6 +73,23 @@ const RETRY_MAX_DELAY_MS = 8_000;
 const RETRY_TIMEOUT_MS = 60_000;
 const RETRYABLE_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT']);
 
+/**
+ * Walk an error's cause chain looking for a retryable error code.
+ * Returns the first retryable code found, or null if none.
+ * Caps traversal depth to prevent infinite loops from circular cause chains.
+ */
+export function findRetryableCode(err: unknown, maxDepth: number = 5): string | null {
+  let current: unknown = err;
+  for (let i = 0; i < maxDepth && current != null; i++) {
+    const code = (current as NodeJS.ErrnoException).code;
+    if (code && RETRYABLE_CODES.has(code)) {
+      return code;
+    }
+    current = (current as Error).cause;
+  }
+  return null;
+}
+
 // ── Public types ────────────────────────────────────────────────────────
 
 export interface McpProxyHandle {
@@ -166,13 +183,8 @@ export async function callGuildHttpApi(
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
 
-      // Check if the error is retryable (connection-level error)
-      const code = (err as NodeJS.ErrnoException).code;
-      const cause = (err as Error).cause as NodeJS.ErrnoException | undefined;
-      const causeCode = cause?.code;
-      const isRetryable = (code && RETRYABLE_CODES.has(code)) ||
-        (causeCode && RETRYABLE_CODES.has(causeCode)) ||
-        (lastError.message.includes('fetch failed'));
+      // Check if the error is retryable (connection-level error in the cause chain)
+      const isRetryable = findRetryableCode(err) !== null;
 
       if (!isRetryable) {
         throw lastError;
@@ -462,6 +474,7 @@ export async function reportResult(
     sessionId: config.sessionId,
     status,
     exitCode: result.exitCode,
+    signal: result.signal,
     error: status === 'failed' ? `claude exited with code ${result.exitCode}` : undefined,
     costUsd: result.costUsd,
     tokenUsage: result.tokenUsage,
@@ -589,12 +602,12 @@ export async function runBabysitter(
     });
 
     // 7. Wait for claude to exit
-    const exitCode = await new Promise<number>((resolve, reject) => {
+    const { code: exitCode, signal: exitSignal } = await new Promise<{ code: number; signal: string | undefined }>((resolve, reject) => {
       claudeProc!.on('error', (err) => {
         reject(new Error(`Failed to spawn claude: ${err.message}`));
       });
-      claudeProc!.on('close', (code) => {
-        resolve(code ?? 1);
+      claudeProc!.on('close', (code, signal) => {
+        resolve({ code: code ?? 1, signal: signal ?? undefined });
       });
     });
 
@@ -608,6 +621,7 @@ export async function runBabysitter(
       costUsd: acc.costUsd,
       tokenUsage: acc.tokenUsage,
       providerSessionId: acc.providerSessionId,
+      signal: exitSignal,
     };
 
     // 8. Report result
@@ -668,7 +682,8 @@ async function main(): Promise<void> {
 // Check if this module is the entry point
 const isEntryPoint = process.argv[1] &&
   (process.argv[1] === fileURLToPath(import.meta.url) ||
-   process.argv[1].endsWith('/babysitter.js'));
+   path.basename(process.argv[1]) === 'babysitter.js' ||
+   path.basename(process.argv[1]) === 'babysitter.ts');
 
 if (isEntryPoint) {
   main();

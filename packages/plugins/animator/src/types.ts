@@ -353,7 +353,14 @@ export interface SessionProviderResult {
   tokenUsage?: TokenUsage;
   /** Cost in USD, if the provider can report it. */
   costUsd?: number;
-  /** The session's full transcript — array of NDJSON message objects. */
+  /**
+   * The session's full transcript — array of NDJSON message objects.
+   *
+   * In attached mode, this is populated directly from the NDJSON stream.
+   * In detached mode, the transcript is written to SQLite by the babysitter
+   * and is available via `stacks.book('animator', 'transcripts').get(sessionId)`
+   * rather than on this result object.
+   */
   transcript?: TranscriptMessage[];
   /**
    * The final assistant text from the session.
@@ -361,6 +368,8 @@ export interface SessionProviderResult {
    * Undefined if the session produced no assistant output.
    */
   output?: string;
+  /** Process signal name if the session was killed by signal (e.g. 'SIGTERM', 'SIGKILL'). */
+  signal?: string;
 }
 
 // ── Stacks document type ─────────────────────────────────────────────

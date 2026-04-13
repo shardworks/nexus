@@ -27,6 +27,7 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import {
   readConfigFromStdin,
   callGuildHttpApi,
+  findRetryableCode,
   writeToDlq,
   createProxyMcpHttpServer,
   writeTranscript,
@@ -208,10 +209,10 @@ describe('callGuildHttpApi()', () => {
   });
 
   it('retries on connection errors and gives up after timeout', async () => {
-    // Use a port that nothing is listening on
+    // Use a port that nothing is listening on but is valid (triggers ECONNREFUSED)
     const start = Date.now();
     await assert.rejects(
-      () => callGuildHttpApi('http://127.0.0.1:1/api/test', 'sess-1', {}, 2000),
+      () => callGuildHttpApi('http://127.0.0.1:19999/api/test', 'sess-1', {}, 2000),
       /unreachable after 2000ms|fetch failed/,
     );
     const elapsed = Date.now() - start;
@@ -898,5 +899,157 @@ describe('runBabysitter()', () => {
     await runBabysitter(config, { db: freshDb, spawnFn: mockSpawn, retryTimeoutMs: 1500 });
 
     freshDb.close();
+  });
+
+  it('captures signal when claude is killed', async () => {
+    mockServer = await startMockServer(() => ({
+      status: 200,
+      body: { ok: true },
+    }));
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-signal-'));
+    const dbPath = path.join(tmpDir, 'guild.db');
+    const db = initTranscriptDb(Database, dbPath);
+
+    const config = makeConfig({
+      guildToolUrl: mockServer.url,
+      cwd: tmpDir,
+      dbPath,
+      sessionId: 'e2e-signal-1',
+    });
+
+    const mockSpawn = (() => {
+      const proc = new EventEmitter() as EventEmitter & {
+        stdin: { write: (d: string) => void; end: () => void };
+        stdout: EventEmitter;
+        pid: number;
+      };
+      proc.stdin = { write: () => {}, end: () => {} };
+      proc.stdout = new EventEmitter();
+      proc.pid = 55;
+
+      // Emit close with null code and SIGTERM signal
+      setTimeout(() => proc.emit('close', null, 'SIGTERM'), 50);
+      return proc;
+    }) as unknown as typeof import('node:child_process').spawn;
+
+    await runBabysitter(config, { db, spawnFn: mockSpawn });
+
+    // Find session-record call and verify signal is included
+    const recordReq = mockServer!.requests.find((r) => r.url === '/api/session/record');
+    assert.ok(recordReq, 'should call session-record');
+
+    const body = JSON.parse(recordReq!.body);
+    assert.equal(body.signal, 'SIGTERM');
+    assert.equal(body.exitCode, 1); // code ?? 1 fallback
+    assert.equal(body.status, 'failed');
+
+    db.close();
+  });
+
+  it('omits signal on normal exit', async () => {
+    mockServer = await startMockServer(() => ({
+      status: 200,
+      body: { ok: true },
+    }));
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-nosignal-'));
+    const dbPath = path.join(tmpDir, 'guild.db');
+    const db = initTranscriptDb(Database, dbPath);
+
+    const config = makeConfig({
+      guildToolUrl: mockServer.url,
+      cwd: tmpDir,
+      dbPath,
+      sessionId: 'e2e-nosignal-1',
+    });
+
+    const mockSpawn = (() => {
+      const proc = new EventEmitter() as EventEmitter & {
+        stdin: { write: (d: string) => void; end: () => void };
+        stdout: EventEmitter;
+        pid: number;
+      };
+      proc.stdin = { write: () => {}, end: () => {} };
+      proc.stdout = new EventEmitter();
+      proc.pid = 56;
+
+      setTimeout(() => proc.emit('close', 0, null), 50);
+      return proc;
+    }) as unknown as typeof import('node:child_process').spawn;
+
+    await runBabysitter(config, { db, spawnFn: mockSpawn });
+
+    const recordReq = mockServer!.requests.find((r) => r.url === '/api/session/record');
+    assert.ok(recordReq, 'should call session-record');
+
+    const body = JSON.parse(recordReq!.body);
+    assert.equal(body.signal, undefined);
+    assert.equal(body.exitCode, 0);
+    assert.equal(body.status, 'completed');
+
+    db.close();
+  });
+});
+
+// ── findRetryableCode ─────────────────────────────────────────────────
+
+describe('findRetryableCode()', () => {
+  it('returns retryable code from top-level error', () => {
+    const err = Object.assign(new Error('conn refused'), { code: 'ECONNREFUSED' });
+    assert.equal(findRetryableCode(err), 'ECONNREFUSED');
+  });
+
+  it('returns retryable code from cause', () => {
+    const cause = Object.assign(new Error('inner'), { code: 'ECONNRESET' });
+    const err = new Error('outer', { cause });
+    assert.equal(findRetryableCode(err), 'ECONNRESET');
+  });
+
+  it('returns retryable code from nested cause chain', () => {
+    const inner = Object.assign(new Error('deep'), { code: 'ETIMEDOUT' });
+    const mid = new Error('mid', { cause: inner });
+    const outer = new Error('outer', { cause: mid });
+    assert.equal(findRetryableCode(outer), 'ETIMEDOUT');
+  });
+
+  it('returns null when no retryable code in chain', () => {
+    const cause = Object.assign(new Error('bad url'), { code: 'ERR_INVALID_URL' });
+    const err = new Error('fetch failed', { cause });
+    assert.equal(findRetryableCode(err), null);
+  });
+
+  it('returns null for error with no code', () => {
+    const err = new TypeError('fetch failed');
+    assert.equal(findRetryableCode(err), null);
+  });
+
+  it('caps traversal depth', () => {
+    // Create a circular cause chain
+    const a = new Error('a') as Error & { cause?: Error };
+    const b = new Error('b') as Error & { cause?: Error };
+    a.cause = b;
+    b.cause = a;
+    // Should not loop forever — returns null after maxDepth
+    assert.equal(findRetryableCode(a, 10), null);
+  });
+});
+
+// ── callGuildHttpApi non-retryable errors ─────────────────────────────
+
+describe('callGuildHttpApi() non-retryable errors', () => {
+  it('throws immediately for fetch failed with non-retryable cause code', async () => {
+    // 'fetch failed' message alone should NOT trigger retry if cause code
+    // is non-retryable (e.g. ERR_INVALID_URL)
+    const start = Date.now();
+    await assert.rejects(
+      () => callGuildHttpApi('http://[invalid-url]:99999/api/test', 'sess-1', {}, 5000),
+      (err: Error) => {
+        // Should throw quickly, not after 5s
+        const elapsed = Date.now() - start;
+        assert.ok(elapsed < 3000, `Should throw immediately, took ${elapsed}ms`);
+        return true;
+      },
+    );
   });
 });
