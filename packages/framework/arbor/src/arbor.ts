@@ -160,7 +160,6 @@ export async function createGuild(root?: string): Promise<Guild> {
     home: guildRoot,
 
     apparatus<T>(name: string): T {
-      console.log(`[arbor] - defining apparatus method...`);
       const p = provides.get(name);
       if (p === undefined) {
         throw new Error(
