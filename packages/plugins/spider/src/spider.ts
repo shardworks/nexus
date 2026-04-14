@@ -2138,8 +2138,9 @@ export function createSpider(): Plugin {
         writsBook = stacks.readBook<WritDoc>('clerk', 'writs');
 
         // CDC — Phase 1 cascade on writs book.
-        // When a writ reaches a terminal state, cancel the associated rig.
+        // When a writ is cancelled, cancel the associated rig.
         // Silent no-op when no rig exists or the rig is already terminal.
+        // Only cancelled triggers cascade — completed/failed writs leave the rig alone.
         stacks.watch<WritDoc>(
           'clerk',
           'writs',
@@ -2149,9 +2150,9 @@ export function createSpider(): Plugin {
             const writ = event.entry;
             const prev = event.prev;
 
-            // Only act when status changes to a terminal state
+            // Only act when status changes to cancelled
             if (writ.status === prev.status) return;
-            if (writ.status !== 'completed' && writ.status !== 'failed' && writ.status !== 'cancelled') return;
+            if (writ.status !== 'cancelled') return;
 
             const rig = await api.forWrit(writ.id);
             if (!rig) return; // No rig for this writ — silent no-op
@@ -2159,7 +2160,7 @@ export function createSpider(): Plugin {
             // Already terminal — silent no-op (avoids redundant cancel cycle)
             if (rig.status === 'completed' || rig.status === 'failed' || rig.status === 'cancelled') return;
 
-            await api.cancel(rig.id);
+            await api.cancel(rig.id, { reason: `Writ ${writ.id} cancelled` });
           },
           { failOnError: true },
         );
@@ -2235,7 +2236,7 @@ export function createSpider(): Plugin {
                 await clerk.transition(rig.writId, 'cancelled', { resolution });
               }
             }
-            // 'blocked' and 'cancelled' (handled above) — no further CDC action
+            // 'blocked' — no CDC action (rig is waiting for unblock, not terminal)
           },
           { failOnError: true },
         );

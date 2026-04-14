@@ -9839,18 +9839,18 @@ describe('Spider — writ→rig cascade', () => {
     assert.ok(cancelCalls.length >= 1, 'animator.cancel should have been called');
   });
 
-  // V6 [R1]: Writ failed cascades to rig cancellation
-  it('writ failed cascades to rig cancellation', async () => {
+  // V6 [R5]: Writ failed does NOT cascade to rig cancellation
+  it('writ failed does not cascade to rig — rig remains running', async () => {
     const { clerk, stacks } = fix;
     const { writ, rig } = await spawnRunningRig();
 
     // Fail the writ
     await clerk.transition(writ.id, 'failed', { resolution: 'External failure' });
 
-    // Rig should be cancelled (rigs are always cancelled, not failed, when cascade-cancelled)
+    // Rig should still be running — only cancelled triggers cascade
     const book = rigsBook(stacks);
     const updatedRig = await book.get(rig.id);
-    assert.equal(updatedRig?.status, 'cancelled', 'rig should be cancelled after writ failure');
+    assert.equal(updatedRig?.status, 'running', 'rig should remain running after writ failure');
   });
 
   // V2 [R1, R3]: Cancel writ with no rig (no-op)
@@ -10006,6 +10006,84 @@ describe('Spider — writ→rig cascade', () => {
     assert.equal(engBlocked?.block, undefined, 'block should be cleared');
   });
 
+  // [R5]: Writ completed does NOT cascade to rig cancellation
+  it('writ completed does not cascade to rig — rig remains running', async () => {
+    const { clerk, stacks } = fix;
+    const { writ, rig } = await spawnRunningRig();
+
+    // Complete the writ
+    await clerk.transition(writ.id, 'completed', { resolution: 'Done' });
+
+    // Rig should still be running — only cancelled triggers cascade
+    const book = rigsBook(stacks);
+    const updatedRig = await book.get(rig.id);
+    assert.equal(updatedRig?.status, 'running', 'rig should remain running after writ completion');
+  });
+
+  // [R4]: Cancel reason format includes writ ID
+  it('cancel reason matches "Writ <writId> cancelled" format', async () => {
+    const { clerk, stacks, cancelCalls } = fix;
+    const { writ } = await spawnRunningRig();
+
+    await clerk.transition(writ.id, 'cancelled');
+
+    // The animator.cancel call should have the correct reason
+    const reasonCall = cancelCalls.find((c) => c.options?.reason?.includes(writ.id));
+    assert.ok(reasonCall, 'animator.cancel should have been called with writ ID in reason');
+    assert.equal(reasonCall!.options!.reason, `Writ ${writ.id} cancelled`, 'reason should match exact format');
+  });
+
+  // [R6]: Rig cancel with already-completed writ succeeds
+  it('rig cancellation succeeds when writ is already completed', async () => {
+    const { clerk, spider, stacks } = fix;
+    const writ = await postWrit(clerk);
+    await spider.crawl(); // spawn rig
+
+    const book = rigsBook(stacks);
+    const [rig] = await book.list();
+
+    // Directly patch the writ to completed
+    const writsBookHandle = stacks.book<WritDoc>('clerk', 'writs');
+    await writsBookHandle.patch(writ.id, { status: 'completed', resolvedAt: new Date().toISOString() });
+
+    // Cancel the rig — should succeed because the guard skips clerk.transition()
+    const cancelledRig = await spider.cancel(rig.id);
+    assert.equal(cancelledRig.status, 'cancelled', 'rig cancellation should succeed');
+
+    // Writ should remain completed
+    const updatedWrit = await clerk.show(writ.id);
+    assert.equal(updatedWrit.status, 'completed', 'writ should remain completed');
+  });
+
+  // [R1]: Cascade with already-terminal rig is idempotent
+  it('writ cancelled when rig is already cancelled is a silent no-op', async () => {
+    const { clerk, stacks } = fix;
+    const writ = await postWrit(clerk);
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const now = new Date().toISOString();
+    // Insert an already-cancelled rig
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'cancelled',
+      engines: [
+        { id: 'eng1', designId: 'dummy', status: 'cancelled', upstream: [], givensSpec: {} },
+      ],
+      createdAt: now,
+    });
+
+    // Cancel the writ — cascade should no-op for the rig
+    await clerk.transition(writ.id, 'cancelled');
+
+    // No errors, rig unchanged
+    const updatedRig = await book.get(rigId);
+    assert.equal(updatedRig?.status, 'cancelled', 'rig should remain cancelled');
+    const updatedWrit = await clerk.show(writ.id);
+    assert.equal(updatedWrit.status, 'cancelled', 'writ should be cancelled');
+  });
+
   // V7 [R7]: Parent/child cascade — parent writ cancelled cascades to child's rig
   it('parent writ cancellation cascades to child rig via clerk parent→child cascade', async () => {
     const { clerk, spider, stacks } = fix;
@@ -10042,5 +10120,65 @@ describe('Spider — writ→rig cascade', () => {
     // Child rig should be cancelled (by spider's writ→rig CDC)
     const updatedChildRig = await book.get(childRig.id);
     assert.equal(updatedChildRig?.status, 'cancelled', 'child rig should be cancelled');
+  });
+
+  // [R8, R9]: Parent cancel cascades to multiple child rigs with correct reason
+  it('parent writ cancellation cascades to two child rigs with correct cancel reasons', async () => {
+    const { clerk, stacks } = fix;
+
+    // Draft parent so spider doesn't dispatch it
+    const parentWrit = await clerk.post({ title: 'Parent', body: 'parent', draft: true });
+
+    // Two children
+    const child1 = await clerk.post({ title: 'Child 1', body: 'c1', parentId: parentWrit.id });
+    const child2 = await clerk.post({ title: 'Child 2', body: 'c2', parentId: parentWrit.id });
+
+    // Directly insert rigs for both children (avoids crawl advancing engines)
+    const book = rigsBook(stacks);
+    const now = new Date().toISOString();
+    const child1RigId = generateId('rig', 4);
+    const child2RigId = generateId('rig', 4);
+
+    await book.put({
+      id: child1RigId,
+      writId: child1.id,
+      status: 'running',
+      engines: [
+        { id: 'eng1', designId: 'draft', status: 'running', upstream: [], givensSpec: {} },
+      ],
+      createdAt: now,
+    });
+    await book.put({
+      id: child2RigId,
+      writId: child2.id,
+      status: 'running',
+      engines: [
+        { id: 'eng1', designId: 'draft', status: 'running', upstream: [], givensSpec: {} },
+      ],
+      createdAt: now,
+    });
+
+    // Cancel the parent
+    await clerk.transition(parentWrit.id, 'cancelled');
+
+    // Both children cancelled
+    const updatedChild1 = await clerk.show(child1.id);
+    const updatedChild2 = await clerk.show(child2.id);
+    assert.equal(updatedChild1.status, 'cancelled', 'child1 writ should be cancelled');
+    assert.equal(updatedChild2.status, 'cancelled', 'child2 writ should be cancelled');
+
+    // Both child rigs cancelled
+    const updatedRig1 = await book.get(child1RigId);
+    const updatedRig2 = await book.get(child2RigId);
+    assert.equal(updatedRig1?.status, 'cancelled', 'child1 rig should be cancelled');
+    assert.equal(updatedRig2?.status, 'cancelled', 'child2 rig should be cancelled');
+
+    // Verify cancel reasons contain respective child writ IDs
+    const rig1Engine = updatedRig1!.engines.find((e: EngineInstance) => e.status === 'cancelled' && e.error);
+    const rig2Engine = updatedRig2!.engines.find((e: EngineInstance) => e.status === 'cancelled' && e.error);
+    assert.ok(rig1Engine, 'child1 rig should have a cancelled engine with error');
+    assert.equal(rig1Engine!.error, `Writ ${child1.id} cancelled`, 'child1 rig engine error should reference child1 writ');
+    assert.ok(rig2Engine, 'child2 rig should have a cancelled engine with error');
+    assert.equal(rig2Engine!.error, `Writ ${child2.id} cancelled`, 'child2 rig engine error should reference child2 writ');
   });
 });

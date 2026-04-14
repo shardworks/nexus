@@ -2,7 +2,7 @@
 
 The Spider is the guild's rig execution engine. It spawns rigs for open writs, drives engine pipelines to completion, and transitions writs via the Clerk when rigs finish. Each rig is an ordered pipeline of engine instances; the Spider's `crawl()` loop advances that pipeline one step at a time.
 
-The Spider maintains bidirectional CDC cascades between writs and rigs: when a rig reaches a terminal state, the associated writ is transitioned to match; when a writ reaches a terminal state (`completed`, `failed`, or `cancelled`), the associated rig is cancelled. Guards in both handlers break the circular cascade path so that a writ cancellation that triggers a rig cancellation does not attempt to re-transition the already-terminal writ.
+The Spider maintains bidirectional CDC cascades between writs and rigs: when a rig reaches a terminal state, the associated writ is transitioned to match; when a writ is cancelled, the associated rig is cancelled (writs transitioning to `completed` or `failed` do not cancel the rig). Guards in both handlers break the circular cascade path so that a writ cancellation that triggers a rig cancellation does not attempt to re-transition the already-terminal writ.
 
 Depends on `@shardworks/stacks-apparatus` for rig persistence, `@shardworks/fabricator-apparatus` to look up engine designs, `@shardworks/clerk-apparatus` to transition writs, and `@shardworks/animator-apparatus` to launch quick-engine sessions.
 
@@ -84,7 +84,7 @@ Cancel a running or blocked rig. The cancellation cascade:
 4. Rejects any pending `InputRequestDoc` entries for the rig.
 5. Transitions the rig to `'cancelled'` status, which triggers the CDC handler to transition the writ to `'cancelled'`.
 
-Cancellation is also triggered automatically when the associated writ reaches any terminal status (`completed`, `failed`, `cancelled`) — for example, when a writ is cancelled directly via the Clerk or when a parent writ's cancellation cascades to its children.
+Cancellation is also triggered automatically when the associated writ is cancelled — for example, when a writ is cancelled directly via the Clerk or when a parent writ's cancellation cascades to its children. The cancel reason is set to `"Writ <writId> cancelled"`. Writs transitioning to `completed` or `failed` do not trigger rig cancellation.
 
 Idempotent: returns the rig unchanged if already in a terminal state (`'completed'`, `'failed'`, or `'cancelled'`). Throws if the rig is not found.
 
