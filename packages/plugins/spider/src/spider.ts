@@ -4,10 +4,12 @@
  * The Spider drives writ-to-completion by managing rigs: ordered pipelines
  * of engine instances. Each crawl() call performs one unit of work:
  *
- *   reapZombies > collect > processGrafts > checkBlocked > run > spawn   (priority order)
+ *   collect > processGrafts > checkBlocked > run > spawn   (priority order)
  *
- * reapZombies  — detect and fail engines whose underlying process has died
  * collect      — check running engines for terminal session results
+ *                (including sessions the animator heartbeat reconciler has
+ *                 failed due to host death — spider does not probe liveness
+ *                 itself; the heartbeat reconciler owns that signal)
  * processGrafts— process pending graft requests queued by collect/run
  * checkBlocked — poll registered block type checkers; unblock engines when cleared
  * run          — execute the next pending engine (clockwork inline, quick → launch)
@@ -170,63 +172,6 @@ export function countRunningEnginesInRig(rig: RigDoc): number {
     if (engine.status === 'running') count++;
   }
   return count;
-}
-
-/**
- * Check if a process with the given PID is alive.
- * Uses process.kill(pid, 0) which sends signal 0 (no-op) to check existence.
- */
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ESRCH') return false;
-    // EPERM means the process exists but we can't signal it — treat as alive.
-    return true;
-  }
-}
-
-/**
- * Extract a local OS pid from a session document for liveness checking.
- *
- * The detached-session migration moved cross-process cancellation metadata
- * from the legacy `cancelMetadata.pid` field onto a tagged `cancelHandle`
- * envelope on the SessionDoc. Handle shapes are tagged by host type:
- *
- *   - `{ kind: 'local-pgid', pgid: number }`  → local process, pgid == leader pid
- *   - `{ kind: 'container', containerId: string }` → no local pid (skip liveness)
- *   - `{ kind: 'remote', jobId, host }`        → no local pid (skip liveness)
- *
- * Returns:
- *   - a number when we can locally check liveness
- *   - `undefined` when there is simply no pid registered yet (genuine zombie
- *     candidate)
- *   - `'remote'` when the handle exists but is not locally checkable — the
- *     caller should treat this as "alive, not our job to reap"
- *
- * Falls back to the legacy `cancelMetadata.pid` path so sessions recorded
- * before the migration still work.
- */
-function extractLocalPid(
-  session: { cancelHandle?: unknown; cancelMetadata?: unknown },
-): number | undefined | 'remote' {
-  const handle = session.cancelHandle as Record<string, unknown> | undefined;
-  if (handle && typeof handle === 'object') {
-    const kind = handle.kind;
-    if (kind === 'local-pgid' && typeof handle.pgid === 'number') {
-      return handle.pgid;
-    }
-    if (typeof kind === 'string' && kind !== 'local-pgid') {
-      // Non-local handle: spider cannot check liveness here. Treat as
-      // not-our-job rather than zombie.
-      return 'remote';
-    }
-  }
-  const legacy = (session.cancelMetadata as Record<string, unknown> | undefined)?.pid;
-  if (typeof legacy === 'number') return legacy;
-  return undefined;
 }
 
 /**
@@ -1341,63 +1286,6 @@ export function createSpider(): Plugin {
   }
 
   /**
-   * Phase 0 — reapZombies.
-   *
-   * Detect engines marked 'running' whose underlying process is dead.
-   * Only examines engines older than `zombieThresholdMs` (default 5 min)
-   * to avoid false positives on engines still starting.
-   */
-  async function tryReapZombies(): Promise<CrawlResult | null> {
-    const zombieThresholdMs = spiderConfig.zombieThresholdMs ?? 300_000;
-    const runningRigs = await rigsBook.find({ where: [['status', '=', 'running']] });
-
-    for (const rig of runningRigs) {
-      for (const engine of rig.engines) {
-        if (engine.status !== 'running') continue;
-        // R14: skip engines with no sessionId
-        if (!engine.sessionId) continue;
-        // Skip engines with no startedAt — cannot evaluate age
-        if (!engine.startedAt) continue;
-
-        const age = Date.now() - new Date(engine.startedAt).getTime();
-        if (age < zombieThresholdMs) continue;
-
-        const session = await sessionsBook.get(engine.sessionId);
-        // Session missing — skip; tryCollect already handles missing sessions
-        if (!session) continue;
-        // Session in terminal state — skip; tryCollect will handle it
-        if (session.status === 'completed' || session.status === 'failed' ||
-            session.status === 'timeout' || session.status === 'cancelled') continue;
-
-        const pid = extractLocalPid(session);
-
-        // Non-local handle (container, remote) — spider cannot check liveness
-        // from here. Treat as alive; the owning host is responsible for reaping.
-        if (pid === 'remote') continue;
-
-        // R7: live PID — legitimately running
-        if (typeof pid === 'number' && isProcessAlive(pid)) continue;
-
-        // R5: dead PID — zombie
-        if (typeof pid === 'number' && !isProcessAlive(pid)) {
-          console.log(`[spider] Reaped zombie engine "${engine.id}" in rig "${rig.id}" — process dead`);
-          await failEngine(rig, engine.id, 'Engine process died unexpectedly (zombie reaped)');
-          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
-        }
-
-        // R6: no PID and session still pending/running — zombie
-        if (pid === undefined && (session.status === 'pending' || session.status === 'running')) {
-          console.log(`[spider] Reaped zombie engine "${engine.id}" in rig "${rig.id}" — process dead`);
-          await failEngine(rig, engine.id, 'Engine session has no process ID after threshold (zombie reaped)');
-          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
-        }
-      }
-    }
-
-    return null;
-  }
-
-  /**
    * Phase 1 — collect.
    *
    * Find the first running engine with a sessionId whose session has
@@ -1923,9 +1811,6 @@ export function createSpider(): Plugin {
 
   const api: SpiderApi = {
     async crawl(): Promise<CrawlResult | null> {
-      const reaped = await tryReapZombies();
-      if (reaped) return reaped;
-
       const collected = await tryCollect();
       if (collected) return collected;
 
@@ -2286,59 +2171,12 @@ export function createSpider(): Plugin {
           { failOnError: true },
         );
 
-        // Zombie recovery — reap engines left running from a previous daemon run.
-        // Fire-and-forget async, matching animator's orphan recovery pattern.
-        void (async () => {
-          try {
-            const runningRigs = await rigsBook.find({ where: [['status', '=', 'running']] });
-            let reaped = 0;
-
-            for (const rig of runningRigs) {
-              for (const engine of rig.engines) {
-                if (engine.status !== 'running' || !engine.sessionId) continue;
-
-                const session = await sessionsBook.get(engine.sessionId);
-
-                // At startup, any engine whose session is still pending is definitionally
-                // orphaned — no babysitter can still be starting from the previous run.
-                if (session && session.status === 'pending') {
-                  await failEngine(rig, engine.id, 'Engine session stuck in pending at startup (zombie reaped)');
-                  reaped++;
-                  break; // failEngine sets rig to failed; move to next rig.
-                }
-
-                // Session running with a dead PID — zombie.
-                if (session && session.status === 'running') {
-                  const pid = extractLocalPid(session);
-                  // Non-local handle (container, remote) — owning host is
-                  // responsible for reaping; leave it alone at startup.
-                  if (pid === 'remote') continue;
-                  if (typeof pid === 'number' && !isProcessAlive(pid)) {
-                    await failEngine(rig, engine.id, 'Engine process died unexpectedly (zombie reaped)');
-                    reaped++;
-                    break; // failEngine sets rig to failed; move to next rig.
-                  }
-                  // No PID at startup + session running = also orphaned (babysitter
-                  // never registered its PID with the session before the crash).
-                  if (pid === undefined) {
-                    await failEngine(rig, engine.id, 'Engine session has no process ID at startup (zombie reaped)');
-                    reaped++;
-                    break;
-                  }
-                }
-
-                // Session missing — skip; may have been cleaned up or never written.
-                // Session in terminal state — tryCollect will handle it on first crawl.
-              }
-            }
-
-            if (reaped > 0) {
-              console.log(`[spider] Zombie recovery: reaped ${reaped} zombie engines`);
-            }
-          } catch (err) {
-            console.error('[spider] Zombie recovery failed:', err instanceof Error ? err.message : String(err));
-          }
-        })();
+        // Note: spider does not reap zombie sessions. Liveness is owned by
+        // the animator heartbeat reconciler, which marks stale sessions as
+        // failed based on `lastActivityAt` silence. Spider picks up the
+        // failed session via tryCollect on the next crawl and fails the
+        // engine accordingly — a single-path, host-agnostic flow with no
+        // local-PID coupling.
       },
     },
   };

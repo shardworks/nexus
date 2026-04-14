@@ -31,7 +31,7 @@ const spider = guild().apparatus<SpiderApi>('spider');
 
 ### `crawl(): Promise<CrawlResult | null>`
 
-Execute one step of the crawl loop. The Spider evaluates pending work in priority order — reapZombies > collect > processGrafts > checkBlocked > run > spawn — and returns a description of the action taken, or `null` if no work was available.
+Execute one step of the crawl loop. The Spider evaluates pending work in priority order — collect > processGrafts > checkBlocked > run > spawn — and returns a description of the action taken, or `null` if no work was available.
 
 ```typescript
 const result = await spider.crawl();
@@ -161,7 +161,6 @@ The Spider reads its config from `guild.json["spider"]`:
 | `rigTemplateMappings` | `Record<string, string>` | — | Writ type → template name. `'default'` is the fallback. |
 | `maxConcurrentEngines` | `number` | `3` | Maximum number of engines running concurrently across all rigs. When the limit is reached, runnable engines stay in `pending` and new rigs are not spawned until a slot frees. |
 | `maxConcurrentEnginesPerRig` | `number` | `1` | Maximum number of engines running concurrently within a single rig. Prevents race conditions with rig-local resources. |
-| `zombieThresholdMs` | `number` | `300000` | Minimum age (ms) of a running engine before it is eligible for zombie detection during the crawl loop. Engines younger than this threshold are skipped. |
 
 ## Rig Templates
 
