@@ -120,7 +120,7 @@ export default {
 } satisfies Plugin
 ```
 
-Each value is an `EngineDesign`. The Fabricator scans these contributions reactively via `plugin:initialized` at startup — the same pattern the Instrumentarium uses for tools. See the [Instrumentarium spec](instrumentarium.md) for the reference implementation of kit-contribution scanning.
+Each value is an `EngineDesign`. The Fabricator scans these contributions at startup via `ctx.kits()` and reactively via the `apparatus:started` event — the same pattern the Instrumentarium uses for tools. See the [Instrumentarium spec](instrumentarium.md) for the reference implementation of kit-contribution scanning.
 
 ---
 
@@ -153,7 +153,7 @@ None. No `guild.json` entry needed.
 ## Implementation Notes
 
 - The implementation is small: a `Map<string, EngineDesign>` populated by scanning kit contributions at startup, and a single `get` method. Ship it as a standalone package (`@shardworks/fabricator-apparatus`) to establish the dependency boundary and to own the `EngineDesign` type exports.
-- The Instrumentarium's kit-scanning lifecycle is the model to follow — reactive consumption of `plugin:initialized` events, collecting contributions into an internal registry.
+- The Instrumentarium's kit-scanning lifecycle is the model to follow — eager reading of `ctx.kits()` at start time plus reactive consumption of `apparatus:started` events, collecting contributions into an internal registry.
 
 ---
 

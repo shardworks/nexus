@@ -128,7 +128,7 @@ export default {
 } satisfies Plugin
 ```
 
-Each entry is a `ToolDefinition` produced by the `tool()` factory. The Instrumentarium scans these contributions reactively via `plugin:initialized` at startup.
+Each entry is a `ToolDefinition` produced by the `tool()` factory. The Instrumentarium scans these contributions at startup via `ctx.kits()` and reactively via the `apparatus:started` event.
 
 ---
 

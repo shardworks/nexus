@@ -270,7 +270,7 @@ export default {
 } satisfies Plugin;
 ```
 
-Each entry in the `tools` array is a `ToolDefinition` produced by the `tool()` factory. The Instrumentarium scans these contributions at startup via the `plugin:initialized` lifecycle event.
+Each entry in the `tools` array is a `ToolDefinition` produced by the `tool()` factory. The Instrumentarium scans these contributions at startup via `ctx.kits()` and reactively via the `apparatus:started` lifecycle event.
 
 ---
 

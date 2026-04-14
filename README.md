@@ -195,7 +195,7 @@ export default {
     async start(ctx: GuildContext) {
       // ctx.apparatus<BooksApi>('nexus-books') is available here
       // ctx.kits() — snapshot of all loaded kits
-      // ctx.on('plugin:initialized', handler) — react to kit contributions
+      // ctx.on('apparatus:started', handler) — react to apparatus startup
     },
 
     async stop() {

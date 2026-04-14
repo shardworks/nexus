@@ -50,9 +50,12 @@ The object returned by `createGuild()` — also accessible via `guild()` from `@
 | `home` | `string` | Absolute path to the guild root |
 | `apparatus<T>(name)` | `T` | Retrieve a started apparatus's `provides` API by plugin id. Throws if the apparatus has no `provides` |
 | `config<T>(pluginId)` | `T` | Read the plugin-specific configuration section from `guild.json` |
+| `writeConfig<T>(pluginId, value)` | `void` | Write a plugin's configuration section to `guild.json` and persist to disk |
 | `guildConfig()` | `GuildConfig` | The full parsed `guild.json` |
 | `kits()` | `LoadedKit[]` | All loaded kits (snapshot copy) |
 | `apparatuses()` | `LoadedApparatus[]` | All loaded apparatus in start order (snapshot copy) |
+| `failedPlugins()` | `FailedPlugin[]` | Plugins that failed to load, validate, or start (snapshot copy) |
+| `startupWarnings()` | `string[]` | Advisory warnings collected during startup (missing recommends, unconsumed contributions) |
 
 ### `LoadedKit` and `LoadedApparatus`
 
@@ -87,8 +90,8 @@ Type guards: `isLoadedKit(p)` and `isLoadedApparatus(p)` from `@shardworks/nexus
 1. **Load** — imports all declared plugin packages from `node_modules`, discriminates kit vs. apparatus.
 2. **Validate** — checks `requires` declarations (apparatus and kit), detects circular apparatus dependencies. Fails loudly before any apparatus starts.
 3. **Warn** — advisory warnings for kit contributions that no apparatus `consumes`, and for missing `recommends`.
-4. **Wire** — sets the `guild()` singleton. The `provides` map is populated progressively as each apparatus starts; dependency ordering guarantees declared deps are available.
-5. **Start** — fires `plugin:initialized` for all kits, then calls `start(ctx)` on each apparatus in dependency-resolved order, firing `plugin:initialized` after each.
+4. **Wire** — collects all kit contributions (standalone kits and apparatus `supportKit` entries) into a flat `KitEntry[]`, then sets the `guild()` singleton. The `provides` map is populated progressively as each apparatus starts; dependency ordering guarantees declared deps are available.
+5. **Start** — calls `start(ctx)` on each apparatus in dependency-resolved order, firing `apparatus:started` after each. Once all apparatus have started, fires `phase:started` once.
 
 Apparatus start order is determined by topological sort on `apparatus.requires`. Circular dependencies throw with a descriptive error. Kit `requires` validate that the named apparatus is installed but do not affect start order (kits have no lifecycle).
 
@@ -101,9 +104,11 @@ Pure validation and ordering logic lives in `guild-lifecycle.ts`, separated from
 | Function | Description |
 |---|---|
 | `validateRequires(kits, apparatuses)` | Validates all `requires` declarations and detects circular dependencies |
+| `filterFailedPlugins(kits, apparatuses, rootFailures)` | Removes plugins that transitively depend on any failed plugin; cascades until stable |
 | `topoSort(apparatuses)` | Topological sort by `requires` — determines apparatus start order |
+| `wireKitEntries(kits, orderedApparatuses)` | Collects all kit contributions (standalone + apparatus supportKit) into a flat `KitEntry[]` |
 | `collectStartupWarnings(kits, apparatuses)` | Advisory warnings for unconsumed contributions and missing recommends |
-| `buildStartupContext(eventHandlers)` | Creates the `StartupContext` passed to `apparatus.start()` |
+| `buildStartupContext(eventHandlers, kitEntries)` | Creates the `StartupContext` passed to `apparatus.start()` |
 | `fireEvent(eventHandlers, event, ...args)` | Fires lifecycle events to registered handlers |
 
 These are exported for testing but are not part of the consumer-facing API.
