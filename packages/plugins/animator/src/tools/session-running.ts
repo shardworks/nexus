@@ -50,6 +50,9 @@ export default tool({
       status: 'running',
       startedAt: existing?.startedAt ?? params.startedAt,
       provider: existing?.provider ?? params.provider,
+      // Refresh lastActivityAt — the ready report is a lifecycle signal.
+      // Uses guild wall-clock time, not host-supplied timestamp.
+      lastActivityAt: new Date().toISOString(),
       ...(params.conversationId ? { conversationId: params.conversationId } : {}),
       ...(params.metadata ? { metadata: { ...(existing?.metadata ?? {}), ...params.metadata } } : {}),
       ...(params.cancelMetadata

@@ -118,8 +118,10 @@ export interface DetachedLaunchOptions {
   pollIntervalMs?: number;
   /** Override poll timeout in ms (for testing). */
   pollTimeoutMs?: number;
-  /** Override sessions book (for testing). */
+  /** Override sessions book for polling (for testing). */
   sessionsBook?: ReadOnlyBook<SessionDoc>;
+  /** Override writable sessions book for the pending pre-write (for testing). */
+  writableSessionsBook?: Book<SessionDoc>;
   /** Override spawn function (for testing). */
   spawnFn?: typeof spawn;
   /** Session metadata from the AnimateRequest. */
@@ -296,6 +298,7 @@ export function launchDetached(
     return stacks.readBook<SessionDoc>('animator', 'sessions');
   };
   const getWritableSessionsBook = (): Book<SessionDoc> => {
+    if (opts?.writableSessionsBook) return opts.writableSessionsBook;
     const stacks = guild().apparatus<StacksApi>('stacks');
     return stacks.book<SessionDoc>('animator', 'sessions');
   };
@@ -310,60 +313,58 @@ export function launchDetached(
     ...(config.tools?.map((rt) => rt.definition.name) ?? []),
     'session-running',
     'session-record',
+    'session-heartbeat',
   ];
 
-  // Pre-write a `pending` SessionDoc BEFORE spawning the babysitter. This
-  // is the source of truth for the tool server's authorize callback: by
-  // the time the babysitter's first HTTP call lands, the sessions book
-  // already records the session and the tools it's allowed to call.
+  // Shared initialization promise: pre-write the pending record, then
+  // spawn the babysitter. Both `result` and `processInfo` await this
+  // before proceeding — the pre-write MUST succeed before the babysitter
+  // is spawned, because the tool API's authorization reads the session
+  // record to decide whether a session host is allowed to make tool calls.
   //
-  // The babysitter's `session-running` call will merge this doc into a
-  // `running` one, preserving authorizedTools.
-  //
-  // Fire-and-forget — spawn must not block on this. In the worst case
-  // the babysitter will retry its first HTTP call for up to 60s, which
-  // is plenty of time for the SQLite write to land.
-  (async () => {
-    try {
-      const sessions = getWritableSessionsBook();
-      await sessions.put({
-        id: config.sessionId,
-        status: 'pending',
-        startedAt: new Date().toISOString(),
-        provider: 'claude-code',
-        authorizedTools,
-        ...(opts?.metadata ? { metadata: opts.metadata } : {}),
-      });
-    } catch (err) {
-      console.warn(
-        `[claude-code] Failed to pre-write pending session ${config.sessionId}: ${err instanceof Error ? err.message : err}`,
-      );
-    }
+  // See: docs/architecture/detached-sessions.md § Authorization
+  const init = (async () => {
+    // Pre-write the `pending` SessionDoc. This is the authorization anchor:
+    // the record must exist before the babysitter's first tool call arrives.
+    // Seeds `lastActivityAt` so the reconciler has a fair starting point
+    // for the staleness calculation.
+    const sessions = getWritableSessionsBook();
+    await sessions.put({
+      id: config.sessionId,
+      status: 'pending',
+      startedAt: new Date().toISOString(),
+      provider: 'claude-code',
+      authorizedTools,
+      lastActivityAt: new Date().toISOString(),
+      ...(opts?.metadata ? { metadata: opts.metadata } : {}),
+    });
+
+    // Spawn the babysitter as a detached process.
+    // stdio: ['pipe', 'ignore', 'inherit'] — config via stdin, no stdout, stderr to parent
+    //
+    // In source mode (.ts babysitter), forward the parent's execArgv so that
+    // --experimental-transform-types (and friends) reach the child. Without
+    // this, node would try to load a .ts file as plain CommonJS and crash.
+    const isSource = babysitterPath.endsWith('.ts');
+    const nodeArgs = isSource
+      ? [...process.execArgv, babysitterPath]
+      : [babysitterPath];
+    const proc = spawnFn(process.execPath, nodeArgs, {
+      cwd: config.cwd,
+      stdio: ['pipe', 'ignore', 'inherit'],
+      detached: true,
+      env: { ...process.env, ...config.environment },
+    });
+
+    // Write config to the babysitter's stdin, then close it.
+    proc.stdin!.write(JSON.stringify(babysitterConfig));
+    proc.stdin!.end();
+
+    // Detach — guild doesn't wait for the babysitter.
+    proc.unref();
+
+    return proc;
   })();
-
-  // Spawn the babysitter as a detached process.
-  // stdio: ['pipe', 'ignore', 'inherit'] — config via stdin, no stdout, stderr to parent
-  //
-  // In source mode (.ts babysitter), forward the parent's execArgv so that
-  // --experimental-transform-types (and friends) reach the child. Without
-  // this, node would try to load a .ts file as plain CommonJS and crash.
-  const isSource = babysitterPath.endsWith('.ts');
-  const nodeArgs = isSource
-    ? [...process.execArgv, babysitterPath]
-    : [babysitterPath];
-  const proc = spawnFn(process.execPath, nodeArgs, {
-    cwd: config.cwd,
-    stdio: ['pipe', 'ignore', 'inherit'],
-    detached: true,
-    env: { ...process.env, ...config.environment },
-  });
-
-  // Write config to the babysitter's stdin, then close it.
-  proc.stdin!.write(JSON.stringify(babysitterConfig));
-  proc.stdin!.end();
-
-  // Detach — guild doesn't wait for the babysitter.
-  proc.unref();
 
   // Empty chunks — real-time output is via the transcripts book, not in-memory.
   const chunks: AsyncIterable<SessionChunk> = {
@@ -376,8 +377,17 @@ export function launchDetached(
     },
   };
 
-  // Result: poll sessions book for terminal status.
+  // Result: await init (pre-write + spawn), then poll sessions book.
   const result = (async (): Promise<SessionProviderResult> => {
+    try {
+      await init;
+    } catch (err) {
+      return {
+        status: 'failed',
+        exitCode: 1,
+        error: `Failed to initialize detached session: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
     try {
       const sessionsBook = getSessionsBook();
       const doc = await pollForTerminalStatus(
@@ -396,9 +406,15 @@ export function launchDetached(
     }
   })();
 
-  // processInfo: poll for cancelMetadata (contains claude PID from babysitter).
-  // Falls back to the babysitter's own PID.
+  // processInfo: await init, then poll for cancelMetadata (contains claude PID
+  // from babysitter). Falls back to the babysitter's own PID.
   const processInfo = (async (): Promise<Record<string, unknown>> => {
+    let proc;
+    try {
+      proc = await init;
+    } catch {
+      return {};
+    }
     try {
       const sessionsBook = getSessionsBook();
       const info = await pollForProcessInfo(

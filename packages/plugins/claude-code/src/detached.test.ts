@@ -24,7 +24,7 @@ import type {
   SessionDoc,
 } from '@shardworks/animator-apparatus';
 import type { ResolvedTool } from '@shardworks/tools-apparatus';
-import type { ReadOnlyBook } from '@shardworks/stacks-apparatus';
+import type { ReadOnlyBook, Book } from '@shardworks/stacks-apparatus';
 
 import {
   serializeTool,
@@ -74,6 +74,23 @@ function createMockSessionsBook(
     async list() { return []; },
     async count() { return 0; },
   } as unknown as ReadOnlyBook<SessionDoc>;
+}
+
+/** Create a mock writable Book backed by a Map. */
+function createMockWritableBook(
+  docs: Map<string, SessionDoc>,
+): Book<SessionDoc> {
+  return {
+    async get(id: string) {
+      return docs.get(id) ?? null;
+    },
+    async put(doc: SessionDoc) {
+      docs.set(doc.id, doc);
+    },
+    async find() { return []; },
+    async list() { return []; },
+    async count() { return 0; },
+  } as unknown as Book<SessionDoc>;
 }
 
 function makeSessionDoc(overrides?: Partial<SessionDoc>): SessionDoc {
@@ -452,19 +469,19 @@ describe('launchDetached()', () => {
       process.stdin.on('end', () => { process.exit(0); });
     `);
 
-    const docs = new Map<string, SessionDoc>();
-    docs.set('ses-test-001', makeSessionDoc({
+    const readDocs = new Map<string, SessionDoc>();
+    readDocs.set('ses-test-001', makeSessionDoc({
       status: 'completed',
       exitCode: 0,
     }));
-    const book = createMockSessionsBook(docs);
 
     const config = makeProviderConfig({ cwd: tmpDir });
     const { chunks } = launchDetached(config, {
       babysitterPath: babysitterScript,
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
-      sessionsBook: book,
+      sessionsBook: createMockSessionsBook(readDocs),
+      writableSessionsBook: createMockWritableBook(new Map()),
       pollIntervalMs: 50,
       pollTimeoutMs: 2000,
     });
@@ -491,11 +508,13 @@ describe('launchDetached()', () => {
       });
     `);
 
-    const docs = new Map<string, SessionDoc>();
-    docs.set('ses-test-001', makeSessionDoc({
+    // Separate maps: read book returns completed, write book receives the pre-write
+    const readDocs = new Map<string, SessionDoc>();
+    readDocs.set('ses-test-001', makeSessionDoc({
       status: 'completed',
       exitCode: 0,
     }));
+    const writeDocs = new Map<string, SessionDoc>();
 
     const config = makeProviderConfig({
       cwd: tmpDir,
@@ -506,7 +525,8 @@ describe('launchDetached()', () => {
       babysitterPath: babysitterScript,
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
-      sessionsBook: createMockSessionsBook(docs),
+      sessionsBook: createMockSessionsBook(readDocs),
+      writableSessionsBook: createMockWritableBook(writeDocs),
       pollIntervalMs: 50,
       pollTimeoutMs: 5000,
     });
@@ -555,6 +575,7 @@ describe('launchDetached()', () => {
       async list() { return []; },
       async count() { return 0; },
     } as unknown as ReadOnlyBook<SessionDoc>;
+    const writeBook = createMockWritableBook(new Map());
 
     const config = makeProviderConfig({ cwd: tmpDir });
     const { result } = launchDetached(config, {
@@ -562,6 +583,7 @@ describe('launchDetached()', () => {
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
       sessionsBook: book,
+      writableSessionsBook: writeBook,
       pollIntervalMs: 50,
       pollTimeoutMs: 5000,
     });
@@ -609,6 +631,7 @@ describe('launchDetached()', () => {
       async list() { return []; },
       async count() { return 0; },
     } as unknown as ReadOnlyBook<SessionDoc>;
+    const writeBook = createMockWritableBook(new Map());
 
     const config = makeProviderConfig({ cwd: tmpDir });
     const { processInfo, result } = launchDetached(config, {
@@ -616,6 +639,7 @@ describe('launchDetached()', () => {
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
       sessionsBook: book,
+      writableSessionsBook: writeBook,
       pollIntervalMs: 50,
       pollTimeoutMs: 5000,
     });
@@ -635,10 +659,10 @@ describe('launchDetached()', () => {
       process.stdin.on('end', () => { process.exit(0); });
     `);
 
-    // Session stays running forever
-    const book = createMockSessionsBook(
-      new Map([['ses-test-001', makeSessionDoc({ status: 'running' })]]),
-    );
+    // Session stays running forever (read book always returns running)
+    const readDocs = new Map([['ses-test-001', makeSessionDoc({ status: 'running' })]]);
+    const book = createMockSessionsBook(readDocs);
+    const writeBook = createMockWritableBook(new Map());
 
     const config = makeProviderConfig({ cwd: tmpDir });
     const { result } = launchDetached(config, {
@@ -646,6 +670,7 @@ describe('launchDetached()', () => {
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
       sessionsBook: book,
+      writableSessionsBook: writeBook,
       pollIntervalMs: 50,
       pollTimeoutMs: 300,
     });
@@ -653,6 +678,84 @@ describe('launchDetached()', () => {
     const providerResult = await result;
     assert.equal(providerResult.status, 'failed');
     assert.match(providerResult.error!, /polling failed/);
+  });
+
+  it('pre-writes pending record with lastActivityAt before spawning', async () => {
+    const babysitterScript = path.join(tmpDir, 'babysitter.js');
+    fs.writeFileSync(babysitterScript, `
+      let data = '';
+      process.stdin.on('data', (chunk) => { data += chunk; });
+      process.stdin.on('end', () => { process.exit(0); });
+    `);
+
+    const writtenDocs = new Map<string, SessionDoc>();
+    const writeBook = createMockWritableBook(writtenDocs);
+
+    // Read book returns terminal immediately so the test doesn't hang
+    const readDocs = new Map<string, SessionDoc>();
+    readDocs.set('ses-test-001', makeSessionDoc({ status: 'completed', exitCode: 0 }));
+    const readBook = createMockSessionsBook(readDocs);
+
+    const config = makeProviderConfig({ cwd: tmpDir });
+    const { result } = launchDetached(config, {
+      babysitterPath: babysitterScript,
+      guildToolUrl: 'http://127.0.0.1:7471',
+      dbPath: path.join(tmpDir, 'nexus.db'),
+      sessionsBook: readBook,
+      writableSessionsBook: writeBook,
+      pollIntervalMs: 50,
+      pollTimeoutMs: 5000,
+    });
+
+    await result;
+
+    // Verify the pending record was written with lastActivityAt
+    const pendingDoc = writtenDocs.get('ses-test-001');
+    assert.ok(pendingDoc, 'pending doc should have been written');
+    assert.equal(pendingDoc!.status, 'pending');
+    assert.ok(pendingDoc!.lastActivityAt, 'should have lastActivityAt');
+    assert.ok(pendingDoc!.authorizedTools, 'should have authorizedTools');
+    assert.ok(
+      pendingDoc!.authorizedTools!.includes('session-heartbeat'),
+      'authorizedTools should include session-heartbeat',
+    );
+  });
+
+  it('returns failed result when pre-write fails', async () => {
+    const babysitterScript = path.join(tmpDir, 'babysitter.js');
+    fs.writeFileSync(babysitterScript, `
+      process.stdin.on('data', () => {});
+      process.stdin.on('end', () => { process.exit(0); });
+    `);
+
+    // Writable book that always throws
+    const failingWriteBook = {
+      async get() { return null; },
+      async put() { throw new Error('Database write failed'); },
+      async find() { return []; },
+      async list() { return []; },
+      async count() { return 0; },
+    } as unknown as Book<SessionDoc>;
+
+    const config = makeProviderConfig({ cwd: tmpDir });
+    const { result, processInfo } = launchDetached(config, {
+      babysitterPath: babysitterScript,
+      guildToolUrl: 'http://127.0.0.1:7471',
+      dbPath: path.join(tmpDir, 'nexus.db'),
+      sessionsBook: createMockSessionsBook(new Map()),
+      writableSessionsBook: failingWriteBook,
+      pollIntervalMs: 50,
+      pollTimeoutMs: 1000,
+    });
+
+    const providerResult = await result;
+    assert.equal(providerResult.status, 'failed');
+    assert.match(providerResult.error!, /Failed to initialize/);
+    assert.match(providerResult.error!, /Database write failed/);
+
+    // processInfo should return empty (no spawn happened)
+    const info = await processInfo!;
+    assert.deepEqual(info, {});
   });
 
   it('serializes tools in babysitter config', async () => {
@@ -668,8 +771,8 @@ describe('launchDetached()', () => {
       });
     `);
 
-    const docs = new Map<string, SessionDoc>();
-    docs.set('ses-test-001', makeSessionDoc({ status: 'completed', exitCode: 0 }));
+    const readDocs = new Map<string, SessionDoc>();
+    readDocs.set('ses-test-001', makeSessionDoc({ status: 'completed', exitCode: 0 }));
 
     const config = makeProviderConfig({
       cwd: tmpDir,
@@ -688,7 +791,8 @@ describe('launchDetached()', () => {
       babysitterPath: babysitterScript,
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
-      sessionsBook: createMockSessionsBook(docs),
+      sessionsBook: createMockSessionsBook(readDocs),
+      writableSessionsBook: createMockWritableBook(new Map()),
       pollIntervalMs: 50,
       pollTimeoutMs: 5000,
     });
@@ -743,6 +847,7 @@ describe('launchDetached()', () => {
       async list() { return []; },
       async count() { return 0; },
     } as unknown as ReadOnlyBook<SessionDoc>;
+    const writeBook = createMockWritableBook(new Map());
 
     const config = makeProviderConfig({ cwd: tmpDir });
     const { processInfo, result } = launchDetached(config, {
@@ -750,6 +855,7 @@ describe('launchDetached()', () => {
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
       sessionsBook: book,
+      writableSessionsBook: writeBook,
       pollIntervalMs: 50,
       pollTimeoutMs: 5000,
     });

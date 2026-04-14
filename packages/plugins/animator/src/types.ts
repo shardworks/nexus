@@ -414,6 +414,19 @@ export interface SessionDoc {
    */
   cancelMetadata?: Record<string, unknown>;
   /**
+   * ISO timestamp of the last lifecycle signal from the session host.
+   *
+   * Updated on: pending pre-write, ready report (session-running),
+   * heartbeat, terminal report (session-record). The guild writes its
+   * own wall-clock time — never a host-supplied timestamp.
+   *
+   * The reconciler uses this to detect dead sessions:
+   *   if (now - lastActivityAt - downtimeCredit > stalenessThreshold) → failed
+   *
+   * See: docs/architecture/detached-sessions.md § Reconciliation
+   */
+  lastActivityAt?: string;
+  /**
    * Tool names this session is authorized to call over the Tool HTTP API.
    *
    * Source of truth for the daemon's Stacks-backed authorize callback.
@@ -448,13 +461,6 @@ export interface AnimatorConfig {
    * Defaults to 'claude-code' if not specified.
    */
   sessionProvider?: string;
-  /**
-   * Run sessions in detached mode (babysitter survives guild restarts).
-   * Defaults to true. Set to false to fall back to attached/inline sessions —
-   * the escape hatch for debugging or if detached mode misbehaves.
-   * Currently consulted by the claude-code provider.
-   */
-  detached?: boolean;
 }
 
 // Augment GuildConfig so `guild().guildConfig().animator` is typed without

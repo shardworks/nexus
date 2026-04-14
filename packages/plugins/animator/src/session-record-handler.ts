@@ -63,6 +63,8 @@ export async function handleSessionRecord(
     durationMs,
     provider: currentDoc?.provider ?? 'unknown',
     exitCode: params.exitCode,
+    // Refresh lastActivityAt — the terminal report is a lifecycle signal.
+    lastActivityAt: new Date().toISOString(),
     ...(params.error ? { error: params.error } : {}),
     ...(params.costUsd !== undefined ? { costUsd: params.costUsd } : {}),
     ...(params.tokenUsage ? { tokenUsage: params.tokenUsage } : {}),
