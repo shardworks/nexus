@@ -18,22 +18,22 @@ function getProvider(): AnimatorSessionProvider {
 }
 
 describe('claude-code provider cancel()', () => {
-  it('sends SIGTERM to the given PID', async () => {
+  it('sends SIGTERM to process group for local-pgid', async () => {
     const provider = getProvider();
     assert.ok(provider.cancel, 'provider should have cancel method');
 
     const killMock = mock.method(process, 'kill', () => {});
 
     try {
-      await provider.cancel!({ pid: 12345 });
+      await provider.cancel!({ kind: 'local-pgid', pgid: 12345 });
       assert.equal(killMock.mock.calls.length, 1);
-      assert.deepEqual(killMock.mock.calls[0]!.arguments, [12345, 'SIGTERM']);
+      assert.deepEqual(killMock.mock.calls[0]!.arguments, [-12345, 'SIGTERM']);
     } finally {
       killMock.mock.restore();
     }
   });
 
-  it('swallows ESRCH errors (process already dead)', async () => {
+  it('swallows ESRCH errors (process group already dead)', async () => {
     const provider = getProvider();
     assert.ok(provider.cancel);
 
@@ -42,7 +42,7 @@ describe('claude-code provider cancel()', () => {
 
     try {
       // Should not throw
-      await provider.cancel!({ pid: 999999 });
+      await provider.cancel!({ kind: 'local-pgid', pgid: 999999 });
     } finally {
       killMock.mock.restore();
     }
@@ -57,7 +57,7 @@ describe('claude-code provider cancel()', () => {
 
     try {
       await assert.rejects(
-        () => provider.cancel!({ pid: 1 }),
+        () => provider.cancel!({ kind: 'local-pgid', pgid: 1 }),
         (err: Error & { code?: string }) => {
           assert.equal(err.code, 'EPERM');
           return true;
@@ -68,7 +68,7 @@ describe('claude-code provider cancel()', () => {
     }
   });
 
-  it('does nothing when pid is undefined', async () => {
+  it('does nothing when kind is missing', async () => {
     const provider = getProvider();
     assert.ok(provider.cancel);
 
@@ -76,6 +76,34 @@ describe('claude-code provider cancel()', () => {
 
     try {
       await provider.cancel!({});
+      assert.equal(killMock.mock.calls.length, 0);
+    } finally {
+      killMock.mock.restore();
+    }
+  });
+
+  it('does nothing for unknown kind', async () => {
+    const provider = getProvider();
+    assert.ok(provider.cancel);
+
+    const killMock = mock.method(process, 'kill', () => {});
+
+    try {
+      await provider.cancel!({ kind: 'future-thing' });
+      assert.equal(killMock.mock.calls.length, 0);
+    } finally {
+      killMock.mock.restore();
+    }
+  });
+
+  it('does nothing when pgid is undefined for local-pgid', async () => {
+    const provider = getProvider();
+    assert.ok(provider.cancel);
+
+    const killMock = mock.method(process, 'kill', () => {});
+
+    try {
+      await provider.cancel!({ kind: 'local-pgid' });
       assert.equal(killMock.mock.calls.length, 0);
     } finally {
       killMock.mock.restore();

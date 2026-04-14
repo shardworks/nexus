@@ -30,7 +30,9 @@ export default tool({
     provider: z.string().describe('Provider name (e.g. "claude-code")'),
     conversationId: z.string().optional().describe('For --resume sessions'),
     metadata: z.record(z.string(), z.unknown()).optional().describe('Session metadata (writId, engineId, etc.)'),
-    cancelMetadata: z.record(z.string(), z.unknown()).optional().describe('Includes { pid } for cross-process cancellation'),
+    cancelHandle: z.union([
+      z.object({ kind: z.literal('local-pgid'), pgid: z.number() }),
+    ]).optional().describe('Tagged cancel handle for cross-process cancellation'),
   },
   callableBy: 'anima',
   permission: 'write',
@@ -55,8 +57,8 @@ export default tool({
       lastActivityAt: new Date().toISOString(),
       ...(params.conversationId ? { conversationId: params.conversationId } : {}),
       ...(params.metadata ? { metadata: { ...(existing?.metadata ?? {}), ...params.metadata } } : {}),
-      ...(params.cancelMetadata
-        ? { cancelMetadata: { ...(existing?.cancelMetadata ?? {}), ...params.cancelMetadata } }
+      ...(params.cancelHandle
+        ? { cancelHandle: { ...(existing?.cancelHandle ?? {}), ...params.cancelHandle } }
         : {}),
     };
 

@@ -1181,8 +1181,8 @@ describe('Animator', () => {
       );
     });
 
-    it('cancels session without cancelMetadata (no kill attempted)', async () => {
-      // Provider with no processInfo — cancelMetadata will be undefined
+    it('cancels session without cancelHandle (no kill attempted)', async () => {
+      // Provider with no processInfo — cancelHandle will be undefined
       let resolveResult!: (v: SessionProviderResult) => void;
       const noProcessInfoProvider: AnimatorSessionProvider = {
         name: 'fake-no-info',
@@ -1204,7 +1204,7 @@ describe('Animator', () => {
 
       await new Promise((r) => setTimeout(r, 50));
 
-      // Should succeed without error even though no cancelMetadata
+      // Should succeed without error even though no cancelHandle
       const doc = await animator.cancel(handle.sessionId);
       assert.equal(doc.status, 'cancelled');
 
@@ -1333,7 +1333,7 @@ describe('Animator', () => {
       assert.deepEqual(tDoc!.messages, partialTranscript);
     });
 
-    it('persists cancelMetadata from processInfo', async () => {
+    it('persists cancelHandle from processInfo', async () => {
       let resolveResult!: (v: SessionProviderResult) => void;
       const providerWithProcessInfo: AnimatorSessionProvider = {
         name: 'fake-with-info',
@@ -1343,7 +1343,7 @@ describe('Animator', () => {
             result: new Promise<SessionProviderResult>((resolve) => {
               resolveResult = resolve;
             }),
-            processInfo: Promise.resolve({ pid: 42 }),
+            processInfo: Promise.resolve({ kind: 'local-pgid', pgid: 42 }),
           };
         },
       };
@@ -1354,19 +1354,19 @@ describe('Animator', () => {
         cwd: '/tmp/workdir',
       });
 
-      // Wait for init to write running record with cancelMetadata
+      // Wait for init to write running record with cancelHandle
       await new Promise((r) => setTimeout(r, 50));
 
       const sessBook = stacks.readBook<SessionDoc>('animator', 'sessions');
       const doc = await sessBook.get(handle.sessionId);
       assert.ok(doc);
-      assert.deepEqual(doc!.cancelMetadata, { pid: 42 });
+      assert.deepEqual(doc!.cancelHandle, { kind: 'local-pgid', pgid: 42 });
 
       resolveResult({ status: 'completed', exitCode: 0 });
       await handle.result;
     });
 
-    it('calls provider.cancel() when cancelMetadata is available', async () => {
+    it('calls provider.cancel() when cancelHandle is available', async () => {
       let resolveResult!: (v: SessionProviderResult) => void;
       let cancelCalledWith: Record<string, unknown> | null = null;
 
@@ -1378,7 +1378,7 @@ describe('Animator', () => {
             result: new Promise<SessionProviderResult>((resolve) => {
               resolveResult = resolve;
             }),
-            processInfo: Promise.resolve({ pid: 99 }),
+            processInfo: Promise.resolve({ kind: 'local-pgid', pgid: 99 }),
           };
         },
         async cancel(metadata: Record<string, unknown>) {
@@ -1395,7 +1395,7 @@ describe('Animator', () => {
       await new Promise((r) => setTimeout(r, 50));
 
       await animator.cancel(handle.sessionId, { reason: 'test cancel' });
-      assert.deepEqual(cancelCalledWith, { pid: 99 });
+      assert.deepEqual(cancelCalledWith, { kind: 'local-pgid', pgid: 99 });
 
       resolveResult({ status: 'completed', exitCode: 0 });
       await handle.result;

@@ -71,37 +71,59 @@ export async function drainDlq(guildHome: string): Promise<number> {
   return processed;
 }
 
-// ── Orphan recovery ─────────────────────────────────────────────────
+// ── Heartbeat-based reconciliation ──────────────────────────────────
+
+/** Staleness threshold: sessions silent for longer than this are presumed dead. */
+const STALENESS_THRESHOLD_MS = 90_000;
 
 /**
- * Find sessions stuck in 'running' and check if their process is still alive.
+ * Reconcile non-terminal sessions using heartbeat-based staleness detection.
  *
- * For each running session with a PID in cancelMetadata:
- * - If the process is dead (ESRCH): mark as failed with an orphan error.
- * - If alive or no PID: skip (legitimately running or pre-detached).
+ * Scans sessions in `pending` and `running` states. When a session's
+ * `lastActivityAt` is older than the staleness threshold (90s), accounting
+ * for any downtime credit from guild restart, the session is transitioned
+ * to `failed`.
+ *
+ * Sessions without `lastActivityAt` (legacy records) are backfilled with
+ * the current time and skipped for the current pass, giving them one
+ * staleness window to heartbeat.
  *
  * Runs after DLQ drain so DLQ'd results are processed first (a DLQ'd
- * result might resolve what would otherwise look like an orphan).
+ * result might resolve what would otherwise look like a stale session).
  */
-export async function recoverOrphans(sessions: Book<SessionDoc>): Promise<number> {
-  const runningSessions = await sessions.find({
-    where: [['status', '=', 'running']],
+export async function recoverOrphans(
+  sessions: Book<SessionDoc>,
+  downtimeCreditMs: number = 0,
+): Promise<number> {
+  const activeSessions = await sessions.find({
+    where: [['status', 'IN', ['pending', 'running']]],
   });
 
+  const now = Date.now();
   let recovered = 0;
-  for (const doc of runningSessions) {
-    const pid = doc.cancelMetadata?.pid;
-    if (typeof pid !== 'number') {
-      // No PID — pre-detached session or session without cancel metadata. Skip.
+
+  for (const doc of activeSessions) {
+    // Legacy record without lastActivityAt — backfill and skip this pass.
+    if (!doc.lastActivityAt) {
+      try {
+        await sessions.patch(doc.id, { lastActivityAt: new Date().toISOString() });
+        console.log(`[animator] Backfilled lastActivityAt for legacy session ${doc.id}`);
+      } catch (err) {
+        console.warn(
+          `[animator] Failed to backfill lastActivityAt for ${doc.id}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
       continue;
     }
 
-    if (isProcessAlive(pid)) {
-      // Process is still running — legitimate session. Skip.
+    const silence = now - new Date(doc.lastActivityAt).getTime();
+    const effectiveSilence = silence - downtimeCreditMs;
+
+    if (effectiveSilence <= STALENESS_THRESHOLD_MS) {
       continue;
     }
 
-    // Process is dead — mark as failed.
+    // Session is stale — mark as failed.
     const endedAt = new Date().toISOString();
     const durationMs = new Date(endedAt).getTime() - new Date(doc.startedAt).getTime();
 
@@ -111,7 +133,7 @@ export async function recoverOrphans(sessions: Book<SessionDoc>): Promise<number
       endedAt,
       durationMs,
       exitCode: 1,
-      error: 'Session process died unexpectedly (orphaned)',
+      error: `No heartbeat received for ${Math.round(effectiveSilence / 1000)}s — session host presumed dead (reconciled)`,
     };
 
     try {
@@ -119,36 +141,14 @@ export async function recoverOrphans(sessions: Book<SessionDoc>): Promise<number
       recovered++;
     } catch (err) {
       console.warn(
-        `[animator] Failed to recover orphaned session ${doc.id}: ${err instanceof Error ? err.message : err}`,
+        `[animator] Failed to recover stale session ${doc.id}: ${err instanceof Error ? err.message : err}`,
       );
     }
   }
 
   if (recovered > 0) {
-    console.log(`[animator] Orphan recovery: marked ${recovered} dead sessions as failed`);
+    console.log(`[animator] Reconciler: marked ${recovered} dead sessions as failed`);
   }
 
   return recovered;
-}
-
-/**
- * Check if a process with the given PID is alive.
- *
- * Uses process.kill(pid, 0) which sends signal 0 (no-op) to check
- * existence. Returns true if alive, false if dead (ESRCH).
- */
-export function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ESRCH') {
-      // No such process — it's dead.
-      return false;
-    }
-    // EPERM means the process exists but we can't signal it.
-    // Treat as alive — it's not our orphan.
-    return true;
-  }
 }

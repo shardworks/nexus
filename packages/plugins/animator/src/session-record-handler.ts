@@ -34,20 +34,24 @@ export async function handleSessionRecord(
   const sessions = stacks.book<SessionDoc>('animator', 'sessions');
   const transcripts = stacks.book<TranscriptDoc>('animator', 'transcripts');
 
-  // Step 1: Check if session was cancelled — don't overwrite.
+  // Step 1: Check if session is already in a terminal state — don't overwrite.
   const currentDoc = await sessions.get(params.sessionId);
-  if (currentDoc?.status === 'cancelled') {
-    // Write transcript if provided, even for cancelled sessions.
+  const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timeout', 'cancelled']);
+  if (currentDoc && TERMINAL_STATUSES.has(currentDoc.status)) {
+    // Session already terminal — don't overwrite. Write transcript if provided.
+    console.log(
+      `[animator] Dropping duplicate session-record for ${params.sessionId} (already ${currentDoc.status})`,
+    );
     if (params.transcript && params.transcript.length > 0) {
       try {
         await transcripts.put({ id: params.sessionId, messages: params.transcript });
       } catch (err) {
         console.warn(
-          `[animator] Failed to record transcript for cancelled session ${params.sessionId}: ${err instanceof Error ? err.message : err}`,
+          `[animator] Failed to record transcript for terminal session ${params.sessionId}: ${err instanceof Error ? err.message : err}`,
         );
       }
     }
-    return { ok: true, sessionId: params.sessionId, status: 'cancelled' };
+    return { ok: true, sessionId: params.sessionId, status: currentDoc.status };
   }
 
   // Step 2: Build and write the SessionDoc.
@@ -71,9 +75,9 @@ export async function handleSessionRecord(
     ...(params.output ? { output: params.output } : {}),
     ...(params.providerSessionId ? { providerSessionId: params.providerSessionId } : {}),
     ...(params.conversationId ? { conversationId: params.conversationId } : {}),
-    // Preserve metadata and cancelMetadata from the running doc.
+    // Preserve metadata and cancelHandle from the running doc.
     ...(currentDoc?.metadata ? { metadata: currentDoc.metadata } : {}),
-    ...(currentDoc?.cancelMetadata ? { cancelMetadata: currentDoc.cancelMetadata } : {}),
+    ...(currentDoc?.cancelHandle ? { cancelHandle: currentDoc.cancelHandle } : {}),
   };
 
   await sessions.put(doc);

@@ -509,7 +509,7 @@ describe('reportRunning()', () => {
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'report-test-'));
     const config = makeConfig({ guildToolUrl: mockServer.url, cwd: tmpDir });
-    await reportRunning(config, 12345);
+    await reportRunning(config, { kind: 'local-pgid', pgid: 12345 });
 
     assert.equal(mockServer.requests.length, 1);
     // session-running → /api/session/running
@@ -519,7 +519,7 @@ describe('reportRunning()', () => {
     assert.equal(body.sessionId, config.sessionId);
     assert.equal(body.startedAt, config.startedAt);
     assert.equal(body.provider, 'claude-code');
-    assert.deepEqual(body.cancelMetadata, { pid: 12345 });
+    assert.deepEqual(body.cancelHandle, { kind: 'local-pgid', pgid: 12345 });
   });
 
   it('writes to DLQ when guild is unreachable', async () => {
@@ -532,14 +532,14 @@ describe('reportRunning()', () => {
     });
 
     // reportRunning catches the error and writes DLQ (short timeout for tests)
-    await reportRunning(config, 99999, 1500);
+    await reportRunning(config, { kind: 'local-pgid', pgid: 99999 }, 1500);
 
     const dlqPath = path.join(tmpDir, '.nexus', 'dlq', 'sess-dlq-1-running.json');
     assert.ok(fs.existsSync(dlqPath), 'DLQ file should be written');
 
     const dlqContent = JSON.parse(fs.readFileSync(dlqPath, 'utf-8'));
     assert.equal(dlqContent.sessionId, 'sess-dlq-1');
-    assert.deepEqual(dlqContent.cancelMetadata, { pid: 99999 });
+    assert.deepEqual(dlqContent.cancelHandle, { kind: 'local-pgid', pgid: 99999 });
   });
 });
 
@@ -703,7 +703,7 @@ describe('runBabysitter()', () => {
 
     const runningBody = JSON.parse(runningReq!.body);
     assert.equal(runningBody.sessionId, 'e2e-sess-1');
-    assert.deepEqual(runningBody.cancelMetadata, { pid: 42 });
+    assert.deepEqual(runningBody.cancelHandle, { kind: 'local-pgid', pgid: process.pid });
 
     const recordBody = JSON.parse(recordReq!.body);
     assert.equal(recordBody.sessionId, 'e2e-sess-1');

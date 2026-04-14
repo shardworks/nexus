@@ -21,7 +21,8 @@ import type { StacksApi, Book } from '@shardworks/stacks-apparatus';
 import type { SessionDoc, TranscriptDoc } from '../types.ts';
 import sessionRunning from './session-running.ts';
 import sessionRecord from './session-record.ts';
-import { drainDlq, recoverOrphans, isProcessAlive } from '../startup.ts';
+import { drainDlq, recoverOrphans } from '../startup.ts';
+import sessionHeartbeat from './session-heartbeat.ts';
 
 // ── Test harness ────────────────────────────────────────────────────
 
@@ -120,14 +121,14 @@ describe('session-running tool', () => {
       provider: 'claude-code',
       conversationId: 'conv-abc',
       metadata: { writId: 'wrt-123', engineId: 'eng-456' },
-      cancelMetadata: { pid: 12345 },
+      cancelHandle: { kind: 'local-pgid', pgid: 12345 },
     });
 
     const doc = await sessions.get('ses-test-002');
     assert.ok(doc);
     assert.equal(doc.conversationId, 'conv-abc');
     assert.deepEqual(doc.metadata, { writId: 'wrt-123', engineId: 'eng-456' });
-    assert.deepEqual(doc.cancelMetadata, { pid: 12345 });
+    assert.deepEqual(doc.cancelHandle, { kind: 'local-pgid', pgid: 12345 });
   });
 
   it('handles duplicate calls gracefully (idempotent upsert)', async () => {
@@ -142,14 +143,14 @@ describe('session-running tool', () => {
       sessionId: 'ses-test-003',
       startedAt: '2026-04-01T10:00:00Z',
       provider: 'claude-code',
-      cancelMetadata: { pid: 99999 },
+      cancelHandle: { kind: 'local-pgid', pgid: 99999 },
     });
 
     assert.deepEqual(result, { ok: true, sessionId: 'ses-test-003' });
 
     const doc = await sessions.get('ses-test-003');
     assert.ok(doc);
-    assert.deepEqual(doc.cancelMetadata, { pid: 99999 });
+    assert.deepEqual(doc.cancelHandle, { kind: 'local-pgid', pgid: 99999 });
   });
 
   it('has callableBy anima and permission write', () => {
@@ -446,82 +447,127 @@ describe('DLQ drain', () => {
   });
 });
 
-// ── Orphan recovery tests ──────────────────────────────────────────
+// ── Heartbeat-based reconciler tests ──────────────────────────────
 
-describe('Orphan recovery', () => {
+describe('Heartbeat-based reconciler', () => {
   beforeEach(() => setup());
   afterEach(() => cleanup());
 
-  it('marks dead-PID sessions as failed', async () => {
-    // Use PID 999999999 which almost certainly doesn't exist.
+  it('marks stale running session as failed', async () => {
+    const staleTime = new Date(Date.now() - 120_000).toISOString();
     await sessions.put({
       id: 'ses-orphan-001',
       status: 'running',
       startedAt: '2026-04-01T10:00:00Z',
       provider: 'claude-code',
-      cancelMetadata: { pid: 999999999 },
+      lastActivityAt: staleTime,
     });
 
-    const recovered = await recoverOrphans(sessions);
+    const recovered = await recoverOrphans(sessions, 0);
     assert.equal(recovered, 1);
 
     const doc = await sessions.get('ses-orphan-001');
     assert.ok(doc);
     assert.equal(doc.status, 'failed');
-    assert.equal(doc.error, 'Session process died unexpectedly (orphaned)');
+    assert.ok(doc.error?.includes('No heartbeat received'));
+    assert.ok(doc.error?.includes('session host presumed dead'));
     assert.ok(doc.endedAt);
     assert.ok(typeof doc.durationMs === 'number');
   });
 
-  it('skips sessions without PID', async () => {
+  it('marks stale pending session as failed', async () => {
+    const staleTime = new Date(Date.now() - 120_000).toISOString();
     await sessions.put({
-      id: 'ses-orphan-002',
+      id: 'ses-orphan-pending',
+      status: 'pending',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      lastActivityAt: staleTime,
+    });
+
+    const recovered = await recoverOrphans(sessions, 0);
+    assert.equal(recovered, 1);
+
+    const doc = await sessions.get('ses-orphan-pending');
+    assert.ok(doc);
+    assert.equal(doc.status, 'failed');
+  });
+
+  it('leaves fresh sessions untouched', async () => {
+    const freshTime = new Date(Date.now() - 10_000).toISOString();
+    await sessions.put({
+      id: 'ses-fresh',
       status: 'running',
       startedAt: '2026-04-01T10:00:00Z',
       provider: 'claude-code',
+      lastActivityAt: freshTime,
     });
 
-    const recovered = await recoverOrphans(sessions);
+    const recovered = await recoverOrphans(sessions, 0);
     assert.equal(recovered, 0);
 
-    // Session should still be running.
-    const doc = await sessions.get('ses-orphan-002');
+    const doc = await sessions.get('ses-fresh');
     assert.ok(doc);
     assert.equal(doc.status, 'running');
   });
 
-  it('skips alive sessions', async () => {
-    // Use current process PID — definitely alive.
+  it('applies downtime credit — session within threshold after credit', async () => {
+    // Session silent for 100s, but 30s of downtime credit → effective 70s < 90s threshold
+    const staleTime = new Date(Date.now() - 100_000).toISOString();
     await sessions.put({
-      id: 'ses-orphan-003',
+      id: 'ses-credit',
       status: 'running',
       startedAt: '2026-04-01T10:00:00Z',
       provider: 'claude-code',
-      cancelMetadata: { pid: process.pid },
+      lastActivityAt: staleTime,
     });
 
-    const recovered = await recoverOrphans(sessions);
+    const recovered = await recoverOrphans(sessions, 30_000);
     assert.equal(recovered, 0);
 
-    const doc = await sessions.get('ses-orphan-003');
+    const doc = await sessions.get('ses-credit');
     assert.ok(doc);
     assert.equal(doc.status, 'running');
   });
 
-  it('skips sessions with non-numeric PID in cancelMetadata', async () => {
+  it('applies downtime credit — session still stale after credit', async () => {
+    // Same session, no downtime credit → 100s > 90s threshold
+    const staleTime = new Date(Date.now() - 100_000).toISOString();
     await sessions.put({
-      id: 'ses-orphan-004',
+      id: 'ses-no-credit',
       status: 'running',
       startedAt: '2026-04-01T10:00:00Z',
       provider: 'claude-code',
-      cancelMetadata: { containerId: 'docker-xyz' },
+      lastActivityAt: staleTime,
     });
 
-    const recovered = await recoverOrphans(sessions);
-    assert.equal(recovered, 0);
+    const recovered = await recoverOrphans(sessions, 0);
+    assert.equal(recovered, 1);
+
+    const doc = await sessions.get('ses-no-credit');
+    assert.ok(doc);
+    assert.equal(doc.status, 'failed');
   });
 
-  it('returns 0 when no running sessions exist', async () => {
+  it('backfills lastActivityAt for legacy sessions and skips them', async () => {
+    await sessions.put({
+      id: 'ses-legacy',
+      status: 'running',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      // No lastActivityAt
+    });
+
+    const recovered = await recoverOrphans(sessions, 0);
+    assert.equal(recovered, 0);
+
+    const doc = await sessions.get('ses-legacy');
+    assert.ok(doc);
+    assert.equal(doc.status, 'running');
+    assert.ok(doc.lastActivityAt, 'lastActivityAt should be backfilled');
+  });
+
+  it('returns 0 when no active sessions exist', async () => {
     await sessions.put({
       id: 'ses-done',
       status: 'completed',
@@ -532,27 +578,28 @@ describe('Orphan recovery', () => {
       exitCode: 0,
     });
 
-    const recovered = await recoverOrphans(sessions);
+    const recovered = await recoverOrphans(sessions, 0);
     assert.equal(recovered, 0);
   });
 
-  it('recovers multiple orphans', async () => {
+  it('recovers multiple stale sessions', async () => {
+    const staleTime = new Date(Date.now() - 120_000).toISOString();
     await sessions.put({
       id: 'ses-orphan-a',
       status: 'running',
       startedAt: '2026-04-01T10:00:00Z',
       provider: 'claude-code',
-      cancelMetadata: { pid: 999999998 },
+      lastActivityAt: staleTime,
     });
     await sessions.put({
       id: 'ses-orphan-b',
       status: 'running',
       startedAt: '2026-04-01T11:00:00Z',
       provider: 'claude-code',
-      cancelMetadata: { pid: 999999997 },
+      lastActivityAt: staleTime,
     });
 
-    const recovered = await recoverOrphans(sessions);
+    const recovered = await recoverOrphans(sessions, 0);
     assert.equal(recovered, 2);
 
     const docA = await sessions.get('ses-orphan-a');
@@ -561,16 +608,152 @@ describe('Orphan recovery', () => {
     const docB = await sessions.get('ses-orphan-b');
     assert.equal(docB?.status, 'failed');
   });
+
+  it('ignores terminal sessions', async () => {
+    const staleTime = new Date(Date.now() - 120_000).toISOString();
+    await sessions.put({
+      id: 'ses-completed',
+      status: 'completed',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      lastActivityAt: staleTime,
+    });
+
+    const recovered = await recoverOrphans(sessions, 0);
+    assert.equal(recovered, 0);
+  });
 });
 
-// ── isProcessAlive tests ───────────────────────────────────────────
+// ── session-heartbeat tool tests ──────────────────────────────────
 
-describe('isProcessAlive', () => {
-  it('returns true for current process', () => {
-    assert.equal(isProcessAlive(process.pid), true);
+describe('session-heartbeat tool', () => {
+  beforeEach(() => setup());
+  afterEach(() => cleanup());
+
+  it('updates lastActivityAt for a running session', async () => {
+    await sessions.put({
+      id: 'ses-hb-001',
+      status: 'running',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      lastActivityAt: '2026-04-01T10:00:00Z',
+    });
+
+    const result = await sessionHeartbeat.handler({ sessionId: 'ses-hb-001' });
+    assert.deepEqual(result, { ok: true, sessionId: 'ses-hb-001' });
+
+    const doc = await sessions.get('ses-hb-001');
+    assert.ok(doc);
+    assert.notEqual(doc.lastActivityAt, '2026-04-01T10:00:00Z');
   });
 
-  it('returns false for non-existent PID', () => {
-    assert.equal(isProcessAlive(999999999), false);
+  it('does not update lastActivityAt for a completed session', async () => {
+    await sessions.put({
+      id: 'ses-hb-002',
+      status: 'completed',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      lastActivityAt: '2026-04-01T10:05:00Z',
+    });
+
+    const result = await sessionHeartbeat.handler({ sessionId: 'ses-hb-002' });
+    assert.deepEqual(result, { ok: true, sessionId: 'ses-hb-002', status: 'completed' });
+
+    const doc = await sessions.get('ses-hb-002');
+    assert.ok(doc);
+    assert.equal(doc.lastActivityAt, '2026-04-01T10:05:00Z');
+  });
+
+  it('returns error for non-existent session', async () => {
+    const result = await sessionHeartbeat.handler({ sessionId: 'ses-nonexistent' });
+    assert.deepEqual(result, { ok: false, error: 'Session not found' });
+  });
+
+  it('has callableBy anima and permission write', () => {
+    const callableBy = Array.isArray(sessionHeartbeat.callableBy)
+      ? sessionHeartbeat.callableBy
+      : [sessionHeartbeat.callableBy];
+    assert.ok(callableBy.includes('anima'));
+    assert.equal(sessionHeartbeat.permission, 'write');
+  });
+});
+
+// ── Terminal-state immutability tests ─────────────────────────────
+
+describe('Terminal-state immutability', () => {
+  beforeEach(() => setup());
+  afterEach(() => cleanup());
+
+  it('rejects write to completed session', async () => {
+    await sessions.put({
+      id: 'ses-term-001',
+      status: 'completed',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      exitCode: 0,
+    });
+
+    const result = await sessionRecord.handler({
+      sessionId: 'ses-term-001',
+      status: 'failed',
+      exitCode: 1,
+      error: 'late failure',
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.status, 'completed');
+
+    const doc = await sessions.get('ses-term-001');
+    assert.ok(doc);
+    assert.equal(doc.status, 'completed');
+  });
+
+  it('rejects write to failed session', async () => {
+    await sessions.put({
+      id: 'ses-term-002',
+      status: 'failed',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      exitCode: 1,
+      error: 'reconciled',
+    });
+
+    const result = await sessionRecord.handler({
+      sessionId: 'ses-term-002',
+      status: 'completed',
+      exitCode: 0,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.status, 'failed');
+
+    const doc = await sessions.get('ses-term-002');
+    assert.ok(doc);
+    assert.equal(doc.status, 'failed');
+  });
+
+  it('writes transcript for duplicate terminal report', async () => {
+    await sessions.put({
+      id: 'ses-term-003',
+      status: 'failed',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      exitCode: 1,
+    });
+
+    const transcript = [{ role: 'assistant', content: 'late transcript' }];
+
+    const result = await sessionRecord.handler({
+      sessionId: 'ses-term-003',
+      status: 'completed',
+      exitCode: 0,
+      transcript,
+    });
+
+    assert.equal(result.status, 'failed');
+
+    const tDoc = await transcripts.get('ses-term-003');
+    assert.ok(tDoc);
+    assert.equal(tDoc.messages.length, 1);
   });
 });

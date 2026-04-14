@@ -64,6 +64,8 @@ export interface BabysitterConfig {
   startedAt: string;
   provider: string;
   metadata?: Record<string, unknown>;
+  /** Temp directory for the system prompt file. Cleaned up in finally block. */
+  systemPromptTmpDir?: string;
 }
 
 // ── Retry constants ─────────────────────────────────────────────────────
@@ -434,7 +436,7 @@ export function writeTranscript(
  */
 export async function reportRunning(
   config: BabysitterConfig,
-  claudePid: number,
+  cancelHandle: Record<string, unknown>,
   timeoutMs?: number,
 ): Promise<void> {
   const route = toolNameToRoute('session-running');
@@ -444,7 +446,7 @@ export async function reportRunning(
     startedAt: config.startedAt,
     provider: config.provider,
     metadata: config.metadata,
-    cancelMetadata: { pid: claudePid },
+    cancelHandle,
   };
 
   try {
@@ -464,10 +466,11 @@ export async function reportResult(
   result: StreamJsonResult,
   transcript: Record<string, unknown>[],
   timeoutMs?: number,
+  statusOverride?: 'cancelled',
 ): Promise<void> {
   const route = toolNameToRoute('session-record');
   const url = `${config.guildToolUrl}${route}`;
-  const status = result.exitCode === 0 ? 'completed' : 'failed';
+  const status = statusOverride ?? (result.exitCode === 0 ? 'completed' : 'failed');
   const output = extractFinalAssistantText(transcript);
 
   const payload = {
@@ -574,9 +577,53 @@ export async function runBabysitter(
     claudeProc.stdin!.end();
 
     // 5. Report "running" status (don't await — fire and forget with retry)
-    const runningPromise = reportRunning(config, claudeProc.pid!, retryTimeoutMs).catch((err) => {
+    const cancelHandle = { kind: 'local-pgid' as const, pgid: process.pid };
+    const runningPromise = reportRunning(config, cancelHandle, retryTimeoutMs).catch((err) => {
       process.stderr.write(`[babysitter] Failed to report running: ${err}\n`);
     });
+
+    // 5b. Heartbeat timer — sends liveness signal every 30s after ready report.
+    const HEARTBEAT_INTERVAL_MS = 30_000;
+    const HEARTBEAT_TIMEOUT_MS = 10_000;
+    let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function scheduleHeartbeat() {
+      heartbeatTimer = setTimeout(async () => {
+        const route = toolNameToRoute('session-heartbeat');
+        const hbUrl = `${config.guildToolUrl}${route}`;
+        try {
+          await callGuildHttpApi(hbUrl, config.sessionId, { sessionId: config.sessionId }, HEARTBEAT_TIMEOUT_MS);
+        } catch {
+          // Dropped — next heartbeat in 30s. Staleness threshold (90s) tolerates this.
+        }
+        scheduleHeartbeat();
+      }, HEARTBEAT_INTERVAL_MS);
+    }
+
+    // Start heartbeat after running report completes
+    runningPromise.then(() => scheduleHeartbeat());
+
+    // 5c. SIGTERM handler — sets cancelled flag and propagates to claude.
+    let cancelledBySignal = false;
+
+    const onSigterm = () => {
+      cancelledBySignal = true;
+      // Stop heartbeat timer
+      if (heartbeatTimer) {
+        clearTimeout(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+      // Propagate SIGTERM to the claude process
+      if (claudeProc && claudeProc.pid && !claudeProc.killed) {
+        try {
+          claudeProc.kill('SIGTERM');
+        } catch { /* already dead */ }
+      }
+      // The normal claude exit path will run, check cancelledBySignal,
+      // and report status 'cancelled' instead of computing from exit code.
+    };
+
+    process.on('SIGTERM', onSigterm);
 
     // 6. Consume stdout, stream transcript
     const acc: {
@@ -611,6 +658,15 @@ export async function runBabysitter(
       });
     });
 
+    // Stop heartbeat before terminal report
+    if (heartbeatTimer) {
+      clearTimeout(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+
+    // Clean up SIGTERM handler
+    process.removeListener('SIGTERM', onSigterm);
+
     // Ensure running report completed before recording result
     await runningPromise;
 
@@ -625,7 +681,7 @@ export async function runBabysitter(
     };
 
     // 8. Report result
-    await reportResult(config, result, acc.transcript, retryTimeoutMs);
+    await reportResult(config, result, acc.transcript, retryTimeoutMs, cancelledBySignal ? 'cancelled' : undefined);
   } catch (err) {
     // Top-level error: attempt to report failure
     const message = err instanceof Error ? err.message : String(err);
@@ -651,10 +707,14 @@ export async function runBabysitter(
     throw err;
   } finally {
     // 9. Cleanup
+    process.removeAllListeners('SIGTERM');
     await mcpHandle?.close().catch(() => {});
     db?.close();
     if (tmpDir) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+    if (config.systemPromptTmpDir) {
+      fs.rmSync(config.systemPromptTmpDir, { recursive: true, force: true });
     }
   }
 }

@@ -59,16 +59,26 @@ const provider: AnimatorSessionProvider = {
   name: 'claude-code',
 
   async cancel(cancelMetadata: Record<string, unknown>): Promise<void> {
-    const pid = cancelMetadata.pid as number | undefined;
-    if (pid === undefined) return;
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
-        // Process already dead — expected for race conditions. Silent no-op.
-        return;
+    const kind = cancelMetadata.kind as string | undefined;
+
+    if (kind === 'local-pgid') {
+      const pgid = cancelMetadata.pgid as number | undefined;
+      if (pgid === undefined) return;
+      try {
+        process.kill(-pgid, 'SIGTERM');
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
+          // Process group already dead — expected for race conditions. Silent no-op.
+          return;
+        }
+        throw err;
       }
-      throw err;
+      return;
+    }
+
+    // Unknown kind — log and skip
+    if (kind) {
+      console.warn(`[claude-code] Unknown cancelHandle kind: ${kind}`);
     }
   },
 

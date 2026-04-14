@@ -28,9 +28,10 @@ import type {
   AnimatorSessionProvider,
   SessionProviderConfig,
   SessionProviderResult,
+  GuildStateDoc,
 } from './types.ts';
 
-import { sessionList, sessionShow, summon as summonTool, sessionCancel, sessionRunning, sessionRecord } from './tools/index.ts';
+import { sessionList, sessionShow, summon as summonTool, sessionCancel, sessionRunning, sessionRecord, sessionHeartbeat } from './tools/index.ts';
 import { animatorRoutes } from './oculus-routes.ts';
 import { drainDlq, recoverOrphans } from './startup.ts';
 
@@ -320,7 +321,7 @@ async function recordRunning(
   startedAt: string,
   providerName: string,
   request: AnimateRequest,
-  cancelMetadata?: Record<string, unknown>,
+  cancelHandle?: Record<string, unknown>,
 ): Promise<void> {
   try {
     // Merge with any pre-existing doc (e.g. `pending` pre-written by
@@ -343,8 +344,8 @@ async function recordRunning(
     if (request.metadata !== undefined || existing?.metadata !== undefined) {
       merged.metadata = { ...(existing?.metadata ?? {}), ...(request.metadata ?? {}) };
     }
-    if (cancelMetadata !== undefined) {
-      merged.cancelMetadata = { ...(existing?.cancelMetadata ?? {}), ...cancelMetadata };
+    if (cancelHandle !== undefined) {
+      merged.cancelHandle = { ...(existing?.cancelHandle ?? {}), ...cancelHandle };
     }
     await sessions.put(merged);
   } catch (err) {
@@ -418,12 +419,12 @@ export function createAnimator(): Plugin {
         );
       }
 
-      // Step 3: If cancelMetadata available, delegate to provider
-      if (doc.cancelMetadata) {
+      // Step 3: If cancelHandle available, delegate to provider
+      if (doc.cancelHandle) {
         try {
           const prov = resolveProvider(config);
           if (prov.cancel) {
-            await prov.cancel(doc.cancelMetadata);
+            await prov.cancel(doc.cancelHandle);
           }
         } catch (err) {
           console.warn(
@@ -544,17 +545,17 @@ export function createAnimator(): Plugin {
       })();
 
       // Write initial record (fire and forget — don't block streaming).
-      // Await processInfo so cancelMetadata is persisted with the running record.
+      // Await processInfo so cancelHandle is persisted with the running record.
       const initPromise = (async () => {
-        let cancelMetadata: Record<string, unknown> | undefined;
+        let cancelHandle: Record<string, unknown> | undefined;
         if (processInfoPromise) {
           try {
-            cancelMetadata = await processInfoPromise;
+            cancelHandle = await processInfoPromise;
           } catch (err) {
             console.warn(`[animator] Failed to get processInfo for ${id}: ${err instanceof Error ? err.message : err}`);
           }
         }
-        await recordRunning(sessions, id, startedAt, provider.name, request, cancelMetadata);
+        await recordRunning(sessions, id, startedAt, provider.name, request, cancelHandle);
       })();
 
       const result = (async () => {
@@ -650,8 +651,9 @@ export function createAnimator(): Plugin {
           transcripts: {
             indexes: ['sessionId'],
           },
+          state: {},
         },
-        tools: [sessionList, sessionShow, summonTool, sessionCancel, sessionRunning, sessionRecord],
+        tools: [sessionList, sessionShow, summonTool, sessionCancel, sessionRunning, sessionRecord, sessionHeartbeat],
         pages: [
           { id: 'animator', title: 'Animator', dir: 'src/static' },
         ],
@@ -668,7 +670,13 @@ export function createAnimator(): Plugin {
         sessions = stacks.book<SessionDoc>('animator', 'sessions');
         transcripts = stacks.book<TranscriptDoc>('animator', 'transcripts');
 
-        // Run DLQ drain then orphan recovery in background (don't block startup).
+        const GUILD_HEARTBEAT_INTERVAL_MS = 30_000;
+        const GUILD_HEARTBEAT_DOC_ID = 'guild-heartbeat';
+        const RECONCILER_INTERVAL_MS = 30_000;
+
+        const state = stacks.book<GuildStateDoc>('animator', 'state');
+
+        // Run DLQ drain, compute downtime credit, then orphan recovery in background.
         (async () => {
           try {
             await drainDlq(g.home);
@@ -677,14 +685,60 @@ export function createAnimator(): Plugin {
               `[animator] DLQ drain failed: ${err instanceof Error ? err.message : err}`,
             );
           }
+
+          // Compute downtime credit from the gap between previous guild_alive_at and now.
+          let downtimeCredit = 0;
           try {
-            await recoverOrphans(sessions);
+            const prev = await state.get(GUILD_HEARTBEAT_DOC_ID);
+            if (prev?.guildAliveAt) {
+              const gap = Date.now() - new Date(prev.guildAliveAt).getTime();
+              downtimeCredit = Math.max(0, gap - GUILD_HEARTBEAT_INTERVAL_MS);
+            }
+          } catch { /* fresh install — no credit */ }
+
+          // Write the initial guild_alive_at.
+          try {
+            await state.put({ id: GUILD_HEARTBEAT_DOC_ID, guildAliveAt: new Date().toISOString() });
+          } catch (err) {
+            console.warn(
+              `[animator] Failed to write initial guild_alive_at: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+
+          // Run initial reconciler with downtime credit.
+          try {
+            await recoverOrphans(sessions, downtimeCredit);
           } catch (err) {
             console.warn(
               `[animator] Orphan recovery failed: ${err instanceof Error ? err.message : err}`,
             );
           }
         })();
+
+        // Guild self-heartbeat timer — updates guild_alive_at every 30s.
+        const guildHeartbeatTimer = setInterval(async () => {
+          try {
+            await state.put({ id: GUILD_HEARTBEAT_DOC_ID, guildAliveAt: new Date().toISOString() });
+          } catch (err) {
+            console.warn(`[animator] Failed to update guild_alive_at: ${err instanceof Error ? err.message : err}`);
+          }
+        }, GUILD_HEARTBEAT_INTERVAL_MS);
+        guildHeartbeatTimer.unref();
+
+        // Periodic reconciler — runs every 30s with no downtime credit.
+        let reconciling = false;
+        const reconcilerTimer = setInterval(async () => {
+          if (reconciling) return;
+          reconciling = true;
+          try {
+            await recoverOrphans(sessions, 0);
+          } catch (err) {
+            console.warn(`[animator] Periodic reconciler failed: ${err instanceof Error ? err.message : err}`);
+          } finally {
+            reconciling = false;
+          }
+        }, RECONCILER_INTERVAL_MS);
+        reconcilerTimer.unref();
       },
     },
   };

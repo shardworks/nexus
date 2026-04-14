@@ -34,8 +34,8 @@ The provider implements `launch()` and `cancel()`:
 - **`launch(config)`** — spawns a **detached babysitter process** that hosts the session independently of the guild. The babysitter spawns `claude` in autonomous mode, streams transcripts to SQLite, and reports lifecycle events via HTTP. Returns `{ chunks, result, processInfo }` where:
   - `chunks` completes immediately (empty) — real-time output is available via the transcripts book
   - `result` polls the sessions book for terminal status (resolves when the babysitter calls `session-record`)
-  - `processInfo` polls the SessionDoc for `cancelMetadata.pid` (set by the babysitter via `session-running`)
-- **`cancel(cancelMetadata)`** — sends SIGTERM to the claude process using the PID from `cancelMetadata`. Works cross-process regardless of parent-child relationships.
+  - `processInfo` polls the SessionDoc for `cancelHandle` (set by the babysitter via `session-running`), falls back to `{ kind: 'local-pgid', pgid: babysitterPid }`
+- **`cancel(cancelMetadata)`** — dispatches on `cancelMetadata.kind`. For `local-pgid`, sends SIGTERM to the process group via `process.kill(-pgid, 'SIGTERM')`, killing both the babysitter and the claude process. Unknown kinds are logged and skipped.
 
 ### Stream Parsing
 
@@ -86,6 +86,7 @@ interface BabysitterConfig {
   startedAt: string;           // ISO timestamp of session start
   provider: string;            // Provider name (e.g. "claude-code")
   metadata?: Record<string, unknown>;  // Optional session metadata
+  systemPromptTmpDir?: string;         // Temp dir for system prompt file (cleaned up in finally)
 }
 
 interface SerializedTool {
@@ -102,10 +103,12 @@ interface SerializedTool {
 3. **Start MCP/SSE proxy server** — registers tools that forward calls to the guild's Tool HTTP API with retry and exponential backoff
 4. **Prepare session files** — temp directory, mcp-config.json pointing to the proxy server
 5. **Spawn claude** — pipes prompt to stdin, captures NDJSON stdout
-6. **Report "running"** — calls `session-running` tool on guild via HTTP (DLQ fallback)
-7. **Stream transcript** — parses NDJSON, writes to `books_animator_transcripts` table in SQLite after each message batch
-8. **Report result** — calls `session-record` tool on guild via HTTP (DLQ fallback)
-9. **Cleanup** — close MCP server, close SQLite, remove temp directory
+6. **Report "running"** — calls `session-running` tool on guild via HTTP (DLQ fallback). Reports `cancelHandle: { kind: 'local-pgid', pgid: process.pid }` (babysitter's own PID, which equals its PGID because it was spawned with `detached: true`)
+7. **Start heartbeat** — after running report completes, sends `session-heartbeat` every 30s to refresh `lastActivityAt` on the guild. Heartbeat failures are silently dropped (the 90s staleness threshold tolerates missed heartbeats)
+8. **Install SIGTERM handler** — sets a `cancelledBySignal` flag, stops the heartbeat timer, and propagates SIGTERM to the claude child process. The normal exit path checks this flag and reports status `cancelled` instead of computing from exit code
+9. **Stream transcript** — parses NDJSON, writes to `books_animator_transcripts` table in SQLite after each message batch
+10. **Report result** — stops heartbeat, calls `session-record` tool on guild via HTTP (DLQ fallback)
+11. **Cleanup** — close MCP server, close SQLite, remove temp directory and system prompt temp directory
 
 ### Error Handling
 

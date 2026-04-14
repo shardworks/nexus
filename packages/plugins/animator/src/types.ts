@@ -226,7 +226,7 @@ export interface AnimatorApi {
    * Cancel a running session.
    *
    * Patches the SessionDoc to 'cancelled' with endedAt, durationMs, and
-   * the optional reason in the error field. If cancelMetadata is available,
+   * the optional reason in the error field. If cancelHandle is available,
    * delegates to the provider's cancel() method to kill the process.
    *
    * Idempotent: if the session is already in a terminal state, returns the
@@ -277,7 +277,7 @@ export interface AnimatorSessionProvider {
     /**
      * Provider-specific process metadata for cross-process cancellation.
      * Resolves as soon as the process is spawned. The Animator persists the
-     * resolved value as `cancelMetadata` on the SessionDoc.
+     * resolved value as `cancelHandle` on the SessionDoc.
      *
      * Optional — providers that don't support cancellation omit this.
      */
@@ -402,17 +402,17 @@ export interface SessionDoc {
   /** The final assistant text from the session. */
   output?: string;
   /**
-   * Provider-owned opaque metadata for cross-process cancellation.
+   * Provider-owned opaque handle for cross-process cancellation.
    * Written by the Animator from the provider's processInfo at session launch.
    * The Animator does not interpret this — it passes it back to the provider's
    * cancel() method when cancellation is requested.
    *
-   * Shape is provider-specific:
-   * - claude-code: { pid: number }
-   * - future docker: { containerId: string }
-   * - future remote: { jobId: string, host: string }
+   * Shape is tagged by host type:
+   * - local process: { kind: 'local-pgid', pgid: number }
+   * - future container: { kind: 'container', containerId: string }
+   * - future remote: { kind: 'remote', jobId: string, host: string }
    */
-  cancelMetadata?: Record<string, unknown>;
+  cancelHandle?: Record<string, unknown>;
   /**
    * ISO timestamp of the last lifecycle signal from the session host.
    *
@@ -447,6 +447,18 @@ export interface TranscriptDoc {
   id: string;
   /** Full NDJSON transcript from the session. */
   messages: TranscriptMessage[];
+  /** Index signature required by BookEntry. */
+  [key: string]: unknown;
+}
+
+/**
+ * Operational state stored in the Animator's 'state' book.
+ * Single well-known document with id 'guild-heartbeat'.
+ */
+export interface GuildStateDoc {
+  id: string;
+  /** ISO timestamp of the last guild self-heartbeat. */
+  guildAliveAt: string;
   /** Index signature required by BookEntry. */
   [key: string]: unknown;
 }

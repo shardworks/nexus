@@ -115,7 +115,7 @@ If the session provider doesn't support streaming, `chunks` completes immediatel
 
 ### `cancel(sessionId, options?): Promise<SessionDoc>`
 
-Cancel a running session. Patches the SessionDoc to `'cancelled'` with `endedAt`, `durationMs`, and an optional reason. If the provider supports cancellation and `cancelMetadata` is available, delegates to the provider's `cancel()` method to kill the process.
+Cancel a running session. Patches the SessionDoc to `'cancelled'` with `endedAt`, `durationMs`, and an optional reason. If the provider supports cancellation and `cancelHandle` is available, delegates to the provider's `cancel()` method to kill the process.
 
 ```typescript
 const doc = await animator.cancel(sessionId, { reason: 'Cost overrun' });
@@ -125,7 +125,7 @@ console.log(doc.error);   // 'Cost overrun'
 
 **Idempotent:** calling `cancel()` on a session that is already in a terminal state (`completed`, `failed`, `timeout`, `cancelled`) returns the existing SessionDoc without modification. Throws if the session ID does not exist.
 
-**Cross-process:** the `cancelMetadata` field on `SessionDoc` stores provider-specific process metadata (e.g. `{ pid: number }` for local processes). This allows any process with Stacks access to cancel a session launched by another process.
+**Cross-process:** the `cancelHandle` field on `SessionDoc` stores a tagged cancel handle for cross-process cancellation (e.g. `{ kind: 'local-pgid', pgid: number }` for local process groups). This allows any process with Stacks access to cancel a session launched by another process.
 
 ### Types
 
@@ -204,7 +204,7 @@ interface AnimatorSessionProvider {
   launch(config: SessionProviderConfig): {
     chunks: AsyncIterable<SessionChunk>;
     result: Promise<SessionProviderResult>;
-    processInfo?: Promise<Record<string, unknown>>; // e.g. { pid: number }
+    processInfo?: Promise<Record<string, unknown>>; // e.g. { kind: 'local-pgid', pgid: number }
   };
   cancel?(cancelMetadata: Record<string, unknown>): Promise<void>;
 }
@@ -267,6 +267,7 @@ The Animator contributes two books, inspection/dispatch tools, an Oculus page, a
 |---|---|---|
 | `sessions` | `startedAt`, `status`, `conversationId`, `provider` | Session records — one per `animate()` call. Includes `output` (final assistant text). |
 | `transcripts` | `sessionId` | Full NDJSON transcripts — one per session. Drives web UIs, operational logs, debugging. |
+| `state` | — | Operational state (guild self-heartbeat). Single well-known document `guild-heartbeat`. |
 
 ### Tools
 
@@ -278,16 +279,21 @@ The Animator contributes two books, inspection/dispatch tools, an Oculus page, a
 | `session-cancel` | `animate` | Cancel a running session by id, with optional reason |
 | `session-running` | `write` | Record initial "running" state for a detached session |
 | `session-record` | `write` | Record a terminal session result for a detached session |
+| `session-heartbeat` | `write` | Refresh session liveness timestamp (called periodically by babysitters) |
 
-The `summon` and `session-cancel` tools are patron-only (`callableBy: 'patron'`). The `session-running` and `session-record` tools are infrastructure-facing (`callableBy: 'anima'`) — called by session babysitters over the Tool HTTP API to report detached session lifecycle events. See `docs/architecture/detached-sessions.md`.
+The `summon` and `session-cancel` tools are patron-only (`callableBy: 'patron'`). The `session-running`, `session-record`, and `session-heartbeat` tools are infrastructure-facing (`callableBy: 'anima'`) — called by session babysitters over the Tool HTTP API to report detached session lifecycle events. See `docs/architecture/detached-sessions.md`.
 
 ### Startup Routines
 
-On startup the Animator runs two recovery routines (non-blocking, in background):
+On startup the Animator runs recovery and starts background timers (all non-blocking):
 
 1. **DLQ Drain** — Scans `.nexus/dlq/` for JSON files containing session-record payloads that babysitters couldn't deliver (guild was down). Each file is processed through the session-record handler and deleted on success. The directory is created if it doesn't exist.
 
-2. **Orphan Recovery** — After DLQ drain, queries sessions with `status: 'running'` and checks if their `cancelMetadata.pid` process is still alive. Dead-PID sessions are marked as `failed` with error `'Session process died unexpectedly (orphaned)'`. Sessions without a PID or with a live process are skipped.
+2. **Downtime Credit** — Reads the previous `guild-heartbeat` document from the `state` book to compute how long the guild was down. This credit is applied to the initial reconciliation pass so sessions that were healthy before the guild went down aren't falsely marked as stale.
+
+3. **Heartbeat-based Reconciliation** — Scans sessions in `pending` and `running` states. When `now - lastActivityAt - downtimeCredit > 90s`, the session is transitioned to `failed`. Sessions without `lastActivityAt` (legacy) are backfilled and skipped for one pass. Runs once at startup (with downtime credit) and then periodically every 30s (without credit) via an unref'd timer with a single-flight guard.
+
+4. **Guild Self-Heartbeat** — Writes `guildAliveAt` to the `state` book every 30s via an unref'd timer. This timestamp is used to compute the downtime credit on the next startup.
 
 ## Exports
 

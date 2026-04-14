@@ -147,11 +147,11 @@ export function buildBabysitterConfig(
   ];
 
   // System prompt: write to a temp file and include --system-prompt-file in claudeArgs.
-  // The file persists for the session duration — acceptable for detached sessions.
-  // The babysitter's tmpDir cleanup doesn't touch this, but OS tmp cleanup handles it.
+  // The temp directory is passed to the babysitter config for cleanup.
+  let systemPromptTmpDir: string | undefined;
   if (config.systemPrompt) {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nsg-detached-'));
-    const systemPromptPath = path.join(tmpDir, 'system-prompt.md');
+    systemPromptTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nsg-detached-'));
+    const systemPromptPath = path.join(systemPromptTmpDir, 'system-prompt.md');
     fs.writeFileSync(systemPromptPath, config.systemPrompt);
     claudeArgs.push('--system-prompt-file', systemPromptPath);
   }
@@ -173,6 +173,7 @@ export function buildBabysitterConfig(
     startedAt: new Date().toISOString(),
     provider: 'claude-code',
     metadata: opts?.metadata,
+    ...(systemPromptTmpDir ? { systemPromptTmpDir } : {}),
   };
 }
 
@@ -211,10 +212,10 @@ export async function pollForTerminalStatus(
 }
 
 /**
- * Poll the sessions book until cancelMetadata.pid is available.
+ * Poll the sessions book until cancelHandle is available.
  *
- * The babysitter reports the claude PID via the session-running tool,
- * which writes cancelMetadata to the SessionDoc. We poll for it.
+ * The babysitter reports the cancel handle via the session-running tool,
+ * which writes cancelHandle to the SessionDoc. We poll for it.
  */
 export async function pollForProcessInfo(
   sessionsBook: ReadOnlyBook<SessionDoc>,
@@ -227,8 +228,8 @@ export async function pollForProcessInfo(
   while (Date.now() < deadline) {
     const doc = await sessionsBook.get(sessionId);
 
-    if (doc?.cancelMetadata) {
-      return doc.cancelMetadata;
+    if (doc?.cancelHandle) {
+      return doc.cancelHandle;
     }
 
     // If the session already terminated, return empty (no process to cancel)
@@ -276,7 +277,7 @@ function docToProviderResult(doc: SessionDoc): SessionProviderResult {
  * Returns { chunks, result, processInfo } where:
  * - chunks: completes immediately (empty) — transcripts stream to SQLite
  * - result: polls sessions book for terminal status
- * - processInfo: polls SessionDoc for cancelMetadata (contains claude PID)
+ * - processInfo: polls SessionDoc for cancelHandle (contains PGID)
  */
 export function launchDetached(
   config: SessionProviderConfig,
@@ -406,8 +407,8 @@ export function launchDetached(
     }
   })();
 
-  // processInfo: await init, then poll for cancelMetadata (contains claude PID
-  // from babysitter). Falls back to the babysitter's own PID.
+  // processInfo: await init, then poll for cancelHandle (contains PGID
+  // from babysitter). Falls back to the babysitter's own PID as PGID.
   const processInfo = (async (): Promise<Record<string, unknown>> => {
     let proc;
     try {
@@ -426,9 +427,9 @@ export function launchDetached(
     } catch {
       // Fall through to babysitter PID
     }
-    // Fallback: return babysitter PID. Signals to the babysitter process group
-    // leader (detached: true) can still reach claude via process group.
-    return { pid: proc.pid };
+    // Fallback: construct cancel handle from babysitter PID (which is its PGID
+    // because it was spawned with detached: true → setsid())
+    return { kind: 'local-pgid', pgid: proc.pid };
   })();
 
   return { chunks, result, processInfo };

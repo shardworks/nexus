@@ -252,8 +252,21 @@ describe('buildBabysitterConfig()', () => {
     const content = fs.readFileSync(filePath, 'utf-8');
     assert.equal(content, 'You are a helpful assistant.');
 
+    // systemPromptTmpDir should be set
+    assert.ok(bc.systemPromptTmpDir, 'systemPromptTmpDir should be set');
+    assert.equal(bc.systemPromptTmpDir, path.dirname(filePath));
+
     // Cleanup
     fs.rmSync(path.dirname(filePath), { recursive: true, force: true });
+  });
+
+  it('does not set systemPromptTmpDir when no system prompt', () => {
+    const bc = buildBabysitterConfig(
+      makeProviderConfig(),
+      { guildToolUrl: 'http://x', dbPath: '/tmp/x.db' },
+    );
+
+    assert.equal(bc.systemPromptTmpDir, undefined);
   });
 
   it('serializes tools from Zod to JSON Schema', () => {
@@ -386,19 +399,19 @@ describe('pollForTerminalStatus()', () => {
 // ── pollForProcessInfo ─────────────────────────────────────────────────
 
 describe('pollForProcessInfo()', () => {
-  it('resolves immediately when cancelMetadata is available', async () => {
+  it('resolves immediately when cancelHandle is available', async () => {
     const doc = makeSessionDoc({
       status: 'running',
-      cancelMetadata: { pid: 12345 },
+      cancelHandle: { kind: 'local-pgid', pgid: 12345 },
     });
     const book = createMockSessionsBook(new Map([['ses-test-001', doc]]));
 
     const info = await pollForProcessInfo(book, 'ses-test-001', 50, 1000);
 
-    assert.deepEqual(info, { pid: 12345 });
+    assert.deepEqual(info, { kind: 'local-pgid', pgid: 12345 });
   });
 
-  it('polls until cancelMetadata appears', async () => {
+  it('polls until cancelHandle appears', async () => {
     let callCount = 0;
     const book = {
       async get(id: string) {
@@ -409,7 +422,7 @@ describe('pollForProcessInfo()', () => {
         return makeSessionDoc({
           id,
           status: 'running',
-          cancelMetadata: { pid: 99 },
+          cancelHandle: { kind: 'local-pgid', pgid: 99 },
         });
       },
       async find() { return []; },
@@ -419,10 +432,10 @@ describe('pollForProcessInfo()', () => {
 
     const info = await pollForProcessInfo(book, 'ses-test-001', 50, 5000);
 
-    assert.deepEqual(info, { pid: 99 });
+    assert.deepEqual(info, { kind: 'local-pgid', pgid: 99 });
   });
 
-  it('returns empty when session terminates before cancelMetadata', async () => {
+  it('returns empty when session terminates before cancelHandle', async () => {
     const doc = makeSessionDoc({
       status: 'completed',
       exitCode: 0,
@@ -597,7 +610,7 @@ describe('launchDetached()', () => {
     assert.deepEqual(providerResult.tokenUsage, { inputTokens: 1000, outputTokens: 500 });
   });
 
-  it('resolves processInfo with cancelMetadata from SessionDoc', async () => {
+  it('resolves processInfo with cancelHandle from SessionDoc', async () => {
     const babysitterScript = path.join(tmpDir, 'babysitter.js');
     fs.writeFileSync(babysitterScript, `
       let data = '';
@@ -612,19 +625,19 @@ describe('launchDetached()', () => {
         if (callCount < 2) {
           return makeSessionDoc({ id, status: 'running' });
         }
-        // After a few polls, cancelMetadata appears (babysitter called session-running)
+        // After a few polls, cancelHandle appears (babysitter called session-running)
         if (callCount < 5) {
           return makeSessionDoc({
             id,
             status: 'running',
-            cancelMetadata: { pid: 54321 },
+            cancelHandle: { kind: 'local-pgid', pgid: 54321 },
           });
         }
         return makeSessionDoc({
           id,
           status: 'completed',
           exitCode: 0,
-          cancelMetadata: { pid: 54321 },
+          cancelHandle: { kind: 'local-pgid', pgid: 54321 },
         });
       },
       async find() { return []; },
@@ -646,7 +659,7 @@ describe('launchDetached()', () => {
 
     assert.ok(processInfo, 'processInfo should be defined');
     const info = await processInfo!;
-    assert.deepEqual(info, { pid: 54321 });
+    assert.deepEqual(info, { kind: 'local-pgid', pgid: 54321 });
 
     // Also wait for result to avoid dangling promises
     await result;
@@ -813,7 +826,7 @@ describe('launchDetached()', () => {
 
   it('cancel sends SIGTERM to PID from processInfo', async () => {
     // This test verifies the provider's cancel() works with a PID obtained
-    // from the SessionDoc's cancelMetadata (set by the babysitter).
+    // from the SessionDoc's cancelHandle (set by the babysitter).
 
     // We can't easily test cross-process SIGTERM in a unit test, but we
     // can verify that the cancel() method from the provider handles the PID.
@@ -828,12 +841,12 @@ describe('launchDetached()', () => {
 
     const doc = makeSessionDoc({
       status: 'running',
-      cancelMetadata: { pid: 77777 },
+      cancelHandle: { kind: 'local-pgid', pgid: 77777 },
     });
     const terminalDoc = makeSessionDoc({
       status: 'completed',
       exitCode: 0,
-      cancelMetadata: { pid: 77777 },
+      cancelHandle: { kind: 'local-pgid', pgid: 77777 },
     });
 
     let callCount = 0;
@@ -861,7 +874,7 @@ describe('launchDetached()', () => {
     });
 
     const info = await processInfo!;
-    assert.deepEqual(info, { pid: 77777 });
+    assert.deepEqual(info, { kind: 'local-pgid', pgid: 77777 });
 
     await result;
   });
