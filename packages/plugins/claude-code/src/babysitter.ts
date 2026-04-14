@@ -49,6 +49,12 @@ export interface SerializedTool {
   description: string;
   /** JSON Schema for the tool's input parameters. */
   params: Record<string, unknown>;
+  /**
+   * HTTP method the guild tool server routes this tool under. The MCP proxy
+   * uses this to avoid POSTing to a GET-only read-tool route (which would
+   * 404). Derived from the tool's `permission` by `permissionToMethod()`.
+   */
+  method: 'GET' | 'POST' | 'DELETE';
 }
 
 /** Config written to the babysitter's stdin by the spawning process. */
@@ -155,25 +161,55 @@ export async function readConfigFromStdin(
  * Returns the parsed JSON response on success.
  * Throws after RETRY_TIMEOUT_MS of retrying.
  */
+/**
+ * Encode a params object as a query string for GET requests.
+ *
+ * Scalars (string/number/boolean) become their string form. Arrays and
+ * objects are JSON-encoded so the tool-server can still parse them after
+ * its param coercion pass (though read-tools generally take scalar
+ * inputs). null/undefined values are skipped.
+ */
+function encodeParamsAsQuery(params: unknown): string {
+  if (params == null || typeof params !== 'object') return '';
+  const usp = new URLSearchParams();
+  for (const [key, value] of Object.entries(params as Record<string, unknown>)) {
+    if (value == null) continue;
+    if (typeof value === 'string') {
+      usp.set(key, value);
+    } else if (typeof value === 'number' || typeof value === 'boolean') {
+      usp.set(key, String(value));
+    } else {
+      usp.set(key, JSON.stringify(value));
+    }
+  }
+  const s = usp.toString();
+  return s.length > 0 ? `?${s}` : '';
+}
+
 export async function callGuildHttpApi(
   url: string,
   sessionId: string,
   body: unknown,
   timeoutMs: number = RETRY_TIMEOUT_MS,
+  method: 'GET' | 'POST' | 'DELETE' = 'POST',
 ): Promise<unknown> {
   const startTime = Date.now();
   let delay = RETRY_INITIAL_DELAY_MS;
   let lastError: Error | undefined;
 
+  // GET can't carry a body — encode params as query string instead.
+  const targetUrl = method === 'GET' ? `${url}${encodeParamsAsQuery(body)}` : url;
+  const requestBody = method === 'GET' ? undefined : JSON.stringify(body);
+
   while (Date.now() - startTime < timeoutMs) {
     try {
-      const response = await fetch(url, {
-        method: 'POST',
+      const response = await fetch(targetUrl, {
+        method,
         headers: {
           'Content-Type': 'application/json',
           'X-Session-Id': sessionId,
         },
-        body: JSON.stringify(body),
+        ...(requestBody !== undefined ? { body: requestBody } : {}),
       });
 
       if (!response.ok) {
@@ -257,6 +293,14 @@ export async function createProxyMcpHttpServer(
     })),
   }));
 
+  // Build a name → HTTP method lookup so the proxy can route each call to
+  // the correct verb (read tools are GET-only on the tool server; POSTing
+  // to them 404s).
+  const toolMethods = new Map<string, 'GET' | 'POST' | 'DELETE'>();
+  for (const t of tools) {
+    toolMethods.set(t.name, t.method);
+  }
+
   // Register tools/call handler — proxies each call to the guild HTTP API.
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const toolName = request.params.name;
@@ -264,9 +308,10 @@ export async function createProxyMcpHttpServer(
 
     const route = toolNameToRoute(toolName);
     const url = `${guildToolUrl}${route}`;
+    const method = toolMethods.get(toolName) ?? 'POST';
 
     try {
-      const result = await callGuildHttpApi(url, sessionId, params);
+      const result = await callGuildHttpApi(url, sessionId, params, undefined, method);
       const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
       return {
         content: [{ type: 'text' as const, text }],

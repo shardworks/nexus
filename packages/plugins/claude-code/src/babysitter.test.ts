@@ -150,7 +150,7 @@ describe('readConfigFromStdin()', () => {
 
   it('accepts config with tools array', async () => {
     const tools: SerializedTool[] = [
-      { name: 'writ-list', description: 'List writs', params: { properties: { status: { type: 'string' } } } },
+      { name: 'writ-list', description: 'List writs', params: { properties: { status: { type: 'string' } } }, method: 'GET' },
     ];
     const config = makeConfig({ tools });
     const stream = streamFromString(JSON.stringify(config));
@@ -324,6 +324,7 @@ describe('createProxyMcpHttpServer()', () => {
             status: { type: 'string', description: 'Filter by status' },
           },
         },
+        method: 'GET',
       },
       {
         name: 'signal',
@@ -334,6 +335,7 @@ describe('createProxyMcpHttpServer()', () => {
           },
           required: ['message'],
         },
+        method: 'POST',
       },
     ];
 
@@ -365,6 +367,7 @@ describe('createProxyMcpHttpServer()', () => {
             status: { type: 'string', description: 'Filter by status' },
           },
         },
+        method: 'GET',
       },
       {
         name: 'signal',
@@ -375,6 +378,7 @@ describe('createProxyMcpHttpServer()', () => {
           },
           required: ['message'],
         },
+        method: 'POST',
       },
     ];
 

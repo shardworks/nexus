@@ -24,6 +24,7 @@ import type {
 } from '@shardworks/animator-apparatus';
 import type { StacksApi, ReadOnlyBook, Book } from '@shardworks/stacks-apparatus';
 import type { ResolvedTool } from '@shardworks/tools-apparatus';
+import { permissionToMethod } from '@shardworks/tools-apparatus';
 
 import type { BabysitterConfig, SerializedTool } from './babysitter.ts';
 
@@ -58,6 +59,7 @@ export function serializeTool(rt: ResolvedTool): SerializedTool {
     name: def.name,
     description: def.description,
     params,
+    method: permissionToMethod(def.permission),
   };
 }
 
