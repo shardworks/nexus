@@ -9366,6 +9366,7 @@ describe('Spider — rig cancellation', () => {
       opts: {
         sessionStatus: 'pending' | 'running' | 'completed' | 'failed';
         cancelMetadata?: Record<string, unknown>;
+        cancelHandle?: Record<string, unknown>;
         startedAt?: string;
         engineSessionId?: boolean; // false = no sessionId on engine
         engineStartedAt?: boolean; // false = no startedAt on engine
@@ -9382,6 +9383,7 @@ describe('Spider — rig cancellation', () => {
         startedAt: opts.startedAt ?? new Date(Date.now() - 600_000).toISOString(),
         provider: 'mock',
         ...(opts.cancelMetadata ? { cancelMetadata: opts.cancelMetadata } : {}),
+        ...(opts.cancelHandle ? { cancelHandle: opts.cancelHandle } : {}),
       } as SessionDoc);
 
       const rigId = generateId('rig', 4);
@@ -9504,6 +9506,77 @@ describe('Spider — rig cancellation', () => {
       const draft = rig!.engines.find((e: EngineInstance) => e.id === 'draft');
       assert.equal(draft?.status, 'failed');
       assert.ok(draft?.error?.includes('no process ID'));
+    });
+
+    it('does NOT reap engine with live pgid via cancelHandle (detached-session migration)', async () => {
+      // Regression: detached-session migration moved pid from
+      // cancelMetadata.pid → cancelHandle { kind: 'local-pgid', pgid }.
+      // Spider reaper must read the new shape or every long-running
+      // session gets mass-reaped after the zombie threshold.
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      const zombie = await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'running',
+        cancelHandle: { kind: 'local-pgid', pgid: process.pid }, // alive
+        // intentionally no cancelMetadata.pid — this is the new shape
+        startedAt: new Date(Date.now() - 600_000).toISOString(),
+      });
+
+      const result = await spider.crawl();
+      if (result && result.action === 'rig-completed') {
+        assert.notEqual((result as { rigId: string }).rigId, zombie.rigId);
+      }
+
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      const rig = await rBook.get(zombie.rigId);
+      assert.equal(rig!.status, 'running', 'live pgid in cancelHandle must not be reaped');
+    });
+
+    it('reaps engine with dead pgid via cancelHandle', async () => {
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      const zombie = await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'running',
+        cancelHandle: { kind: 'local-pgid', pgid: 999999999 }, // dead
+        startedAt: new Date(Date.now() - 600_000).toISOString(),
+      });
+
+      const result = await spider.crawl();
+      assert.ok(result);
+      assert.equal(result.action, 'rig-completed');
+      assert.equal((result as { outcome: string }).outcome, 'failed');
+      assert.equal((result as { rigId: string }).rigId, zombie.rigId);
+
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      const rig = await rBook.get(zombie.rigId);
+      const draft = rig!.engines.find((e: EngineInstance) => e.id === 'draft');
+      assert.equal(draft?.status, 'failed');
+      assert.ok(draft?.error?.includes('process died unexpectedly'));
+    });
+
+    it('does NOT reap engine with non-local cancelHandle (container/remote)', async () => {
+      // Non-local handles cannot be probed from spider's host. Reaping them
+      // based on local-liveness would be wrong — the owning host is
+      // responsible.
+      const fix2 = buildFixture();
+      const { stacks, clerk, spider } = fix2;
+
+      const zombie = await plantZombieRig(stacks, clerk, {
+        sessionStatus: 'running',
+        cancelHandle: { kind: 'container', containerId: 'abc123' },
+        startedAt: new Date(Date.now() - 600_000).toISOString(),
+      });
+
+      const result = await spider.crawl();
+      if (result && result.action === 'rig-completed') {
+        assert.notEqual((result as { rigId: string }).rigId, zombie.rigId);
+      }
+
+      const rBook = stacks.book<RigDoc>('spider', 'rigs');
+      const rig = await rBook.get(zombie.rigId);
+      assert.equal(rig!.status, 'running');
     });
 
     it('reaps engine with pending session and no PID after threshold (R6)', async () => {

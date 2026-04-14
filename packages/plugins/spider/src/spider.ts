@@ -189,6 +189,47 @@ function isProcessAlive(pid: number): boolean {
 }
 
 /**
+ * Extract a local OS pid from a session document for liveness checking.
+ *
+ * The detached-session migration moved cross-process cancellation metadata
+ * from the legacy `cancelMetadata.pid` field onto a tagged `cancelHandle`
+ * envelope on the SessionDoc. Handle shapes are tagged by host type:
+ *
+ *   - `{ kind: 'local-pgid', pgid: number }`  → local process, pgid == leader pid
+ *   - `{ kind: 'container', containerId: string }` → no local pid (skip liveness)
+ *   - `{ kind: 'remote', jobId, host }`        → no local pid (skip liveness)
+ *
+ * Returns:
+ *   - a number when we can locally check liveness
+ *   - `undefined` when there is simply no pid registered yet (genuine zombie
+ *     candidate)
+ *   - `'remote'` when the handle exists but is not locally checkable — the
+ *     caller should treat this as "alive, not our job to reap"
+ *
+ * Falls back to the legacy `cancelMetadata.pid` path so sessions recorded
+ * before the migration still work.
+ */
+function extractLocalPid(
+  session: { cancelHandle?: unknown; cancelMetadata?: unknown },
+): number | undefined | 'remote' {
+  const handle = session.cancelHandle as Record<string, unknown> | undefined;
+  if (handle && typeof handle === 'object') {
+    const kind = handle.kind;
+    if (kind === 'local-pgid' && typeof handle.pgid === 'number') {
+      return handle.pgid;
+    }
+    if (typeof kind === 'string' && kind !== 'local-pgid') {
+      // Non-local handle: spider cannot check liveness here. Treat as
+      // not-our-job rather than zombie.
+      return 'remote';
+    }
+  }
+  const legacy = (session.cancelMetadata as Record<string, unknown> | undefined)?.pid;
+  if (typeof legacy === 'number') return legacy;
+  return undefined;
+}
+
+/**
  * Determine whether a rig should enter the blocked state.
  *
  * A rig is blocked when:
@@ -1328,7 +1369,11 @@ export function createSpider(): Plugin {
         if (session.status === 'completed' || session.status === 'failed' ||
             session.status === 'timeout' || session.status === 'cancelled') continue;
 
-        const pid = (session.cancelMetadata as Record<string, unknown> | undefined)?.pid;
+        const pid = extractLocalPid(session);
+
+        // Non-local handle (container, remote) — spider cannot check liveness
+        // from here. Treat as alive; the owning host is responsible for reaping.
+        if (pid === 'remote') continue;
 
         // R7: live PID — legitimately running
         if (typeof pid === 'number' && isProcessAlive(pid)) continue;
@@ -1341,7 +1386,7 @@ export function createSpider(): Plugin {
         }
 
         // R6: no PID and session still pending/running — zombie
-        if (typeof pid !== 'number' && (session.status === 'pending' || session.status === 'running')) {
+        if (pid === undefined && (session.status === 'pending' || session.status === 'running')) {
           console.log(`[spider] Reaped zombie engine "${engine.id}" in rig "${rig.id}" — process dead`);
           await failEngine(rig, engine.id, 'Engine session has no process ID after threshold (zombie reaped)');
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
@@ -2264,7 +2309,10 @@ export function createSpider(): Plugin {
 
                 // Session running with a dead PID — zombie.
                 if (session && session.status === 'running') {
-                  const pid = (session.cancelMetadata as Record<string, unknown> | undefined)?.pid;
+                  const pid = extractLocalPid(session);
+                  // Non-local handle (container, remote) — owning host is
+                  // responsible for reaping; leave it alone at startup.
+                  if (pid === 'remote') continue;
                   if (typeof pid === 'number' && !isProcessAlive(pid)) {
                     await failEngine(rig, engine.id, 'Engine process died unexpectedly (zombie reaped)');
                     reaped++;
@@ -2272,7 +2320,7 @@ export function createSpider(): Plugin {
                   }
                   // No PID at startup + session running = also orphaned (babysitter
                   // never registered its PID with the session before the crash).
-                  if (typeof pid !== 'number') {
+                  if (pid === undefined) {
                     await failEngine(rig, engine.id, 'Engine session has no process ID at startup (zombie reaped)');
                     reaped++;
                     break;
