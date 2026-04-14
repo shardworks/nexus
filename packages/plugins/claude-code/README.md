@@ -37,24 +37,6 @@ The provider implements `launch()` and `cancel()`:
   - `processInfo` polls the SessionDoc for `cancelMetadata.pid` (set by the babysitter via `session-running`)
 - **`cancel(cancelMetadata)`** — sends SIGTERM to the claude process using the PID from `cancelMetadata`. Works cross-process regardless of parent-child relationships.
 
-An **attached mode** (`launchAttached()`) is preserved as an internal export for debugging — it spawns claude as a direct child process with in-process MCP server and streaming.
-
-### MCP Server
-
-The package exports functions for running MCP tool servers:
-
-```typescript
-import { createMcpServer, startMcpHttpServer } from '@shardworks/claude-code-apparatus';
-
-// Create an MCP server with resolved tool definitions
-const mcpServer = await createMcpServer(toolDefinitions);
-
-// Or start an HTTP server on an ephemeral port
-const handle = await startMcpHttpServer(toolDefinitions);
-console.log(handle.url); // "http://127.0.0.1:PORT/sse"
-await handle.close();    // cleanup
-```
-
 ### Stream Parsing
 
 Exported utilities for parsing Claude's NDJSON output:
@@ -135,7 +117,7 @@ interface SerializedTool {
 
 | Entry point | Description |
 |---|---|
-| `.` (`src/index.ts`) | Session provider plugin, MCP server, stream parsing utilities, `launchAttached()` |
+| `.` (`src/index.ts`) | Session provider plugin, stream parsing utilities |
 | `./babysitter` (`src/babysitter.ts`) | Babysitter module — `runBabysitter()`, config parsing, proxy server, transcript DB |
 
 ### Internal Modules

@@ -6,21 +6,15 @@
  *
  *   guild.json["animator"]["sessionProvider"] = "claude-code"
  *
- * Launches sessions via the `claude` CLI in autonomous mode (--print)
- * with --output-format stream-json for structured telemetry.
+ * All sessions launch in detached mode: a babysitter process is spawned
+ * that survives guild restarts, hosts the MCP server, spawns claude,
+ * streams transcripts to SQLite, and reports lifecycle events via HTTP.
  *
- * Key design choice: uses async spawn() instead of spawnSync().
- * This is required for stream-json transcript parsing, timeout enforcement,
- * and future concurrent session support.
+ * This module also exports the NDJSON stream parsing utilities used by
+ * both the provider and the babysitter.
  */
 
-import { spawn } from 'node:child_process';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
 import type { Plugin } from '@shardworks/nexus-core';
-import { guild } from '@shardworks/nexus-core';
 import type {
   AnimatorSessionProvider,
   SessionProviderConfig,
@@ -28,72 +22,7 @@ import type {
   SessionChunk,
 } from '@shardworks/animator-apparatus';
 
-import { startMcpHttpServer } from './mcp-server.ts';
-import type { McpHttpHandle } from './mcp-server.ts';
 import { launchDetached } from './detached.ts';
-
-// ── Session File Preparation ────────────────────────────────────────────
-
-/** Prepared session files in a temp directory. */
-interface PreparedSession {
-  tmpDir: string;
-  args: string[];
-  /** If an MCP server was started, this handle closes it. */
-  mcpHandle?: McpHttpHandle;
-}
-
-/**
- * Prepare session files and build base CLI args.
- *
- * Writes system prompt to a temp directory. Builds the base args array
- * including --resume support. When tools are provided, starts an
- * in-process MCP HTTP server and writes --mcp-config.
- *
- * Caller is responsible for cleaning up tmpDir and calling mcpHandle.close().
- */
-async function prepareSession(config: SessionProviderConfig): Promise<PreparedSession> {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nsg-session-'));
-
-  const args: string[] = [
-    '--setting-sources', 'user',
-    '--dangerously-skip-permissions',
-    '--model', config.model,
-  ];
-
-  if (config.systemPrompt) {
-    const systemPromptPath = path.join(tmpDir, 'system-prompt.md');
-    fs.writeFileSync(systemPromptPath, config.systemPrompt);
-    args.push('--system-prompt-file', systemPromptPath);
-  }
-
-  // Resume an existing conversation
-  if (config.conversationId) {
-    args.push('--resume', config.conversationId);
-  }
-
-  // Tool-equipped session: start MCP HTTP server, write --mcp-config
-  let mcpHandle: McpHttpHandle | undefined;
-
-  if (config.tools && config.tools.length > 0) {
-    const tools = config.tools.map((rt) => rt.definition);
-    mcpHandle = await startMcpHttpServer(tools);
-
-    const mcpConfig = {
-      mcpServers: {
-        'nexus-guild': {
-          type: 'sse',
-          url: mcpHandle.url,
-        },
-      },
-    };
-
-    const mcpConfigPath = path.join(tmpDir, 'mcp-config.json');
-    fs.writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig));
-    args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');
-  }
-
-  return { tmpDir, args, mcpHandle };
-}
 
 // ── Output extraction ───────────────────────────────────────────────
 
@@ -124,23 +53,6 @@ export function extractFinalAssistantText(transcript: Record<string, unknown>[])
   return undefined;
 }
 
-// ── Result builder ──────────────────────────────────────────────────
-
-function buildResult(raw: StreamJsonResult): SessionProviderResult {
-  const status = raw.exitCode === 0 ? 'completed' as const : 'failed' as const;
-  return {
-    status,
-    exitCode: raw.exitCode,
-    error: status === 'failed' ? `claude exited with code ${raw.exitCode}` : undefined,
-    costUsd: raw.costUsd,
-    tokenUsage: raw.tokenUsage,
-    providerSessionId: raw.providerSessionId,
-    transcript: raw.transcript,
-    output: extractFinalAssistantText(raw.transcript),
-    signal: raw.signal,
-  };
-}
-
 // ── Provider implementation ──────────────────────────────────────────
 
 const provider: AnimatorSessionProvider = {
@@ -165,144 +77,9 @@ const provider: AnimatorSessionProvider = {
     result: Promise<SessionProviderResult>;
     processInfo?: Promise<Record<string, unknown>>;
   } {
-    // Detached mode is the default: spawn a babysitter process that survives
-    // guild restarts, hosts the MCP server, spawns claude, streams transcripts
-    // to SQLite, and reports lifecycle events via HTTP.
-    //
-    // Escape hatch: guild.json["animator"]["detached"] = false opts out and
-    // runs claude in-process (attached mode) for debugging.
-    let detached = true;
-    try {
-      const animatorConfig = guild().guildConfig().animator as
-        | { detached?: boolean }
-        | undefined;
-      if (animatorConfig?.detached === false) detached = false;
-    } catch {
-      // No guild bound (e.g. unit tests) — fall back to detached default.
-    }
-    return detached ? launchDetached(config) : launchAttached(config);
+    return launchDetached(config);
   },
 };
-
-// ── Attached launch (preserved for debugging / non-detached mode) ──────
-
-/**
- * Launch a session in attached mode — claude as a direct child process.
- *
- * Preserved for debugging and potential future "attached mode" escape hatch.
- * Not currently wired into the provider, but all supporting code is kept.
- *
- * @internal
- */
-export function launchAttached(config: SessionProviderConfig): {
-  chunks: AsyncIterable<SessionChunk>;
-  result: Promise<SessionProviderResult>;
-  processInfo?: Promise<Record<string, unknown>>;
-} {
-    // prepareSession is async (MCP server start), so we wrap the launch
-    // in a promise. The chunks iterable bridges the async gap — it waits
-    // for prep to complete before yielding.
-
-    let chunkResolve: (() => void) | null = null;
-    let innerChunks: AsyncIterable<SessionChunk> | null = null;
-    let innerIterator: AsyncIterator<SessionChunk> | null = null;
-    let prepDone = false;
-    let prepError: Error | null = null;
-    let done = false;
-
-    // processInfo promise — resolved with { pid } once the process spawns.
-    let resolveProcessInfo: ((info: Record<string, unknown>) => void) | null = null;
-    let rejectProcessInfo: ((err: Error) => void) | null = null;
-    const processInfo = new Promise<Record<string, unknown>>((resolve, reject) => {
-      resolveProcessInfo = resolve;
-      rejectProcessInfo = reject;
-    });
-
-    const result = prepareSession(config).then(async ({ tmpDir, args, mcpHandle }) => {
-      // Autonomous mode: prompt piped via stdin (--print - reads from stdin).
-      // This avoids Commander parsing issues when the prompt starts with '-'
-      // (e.g. YAML frontmatter '---') and also avoids OS arg length limits.
-      const prompt = config.initialPrompt ?? '';
-      args.push(
-        '--print', '-',
-        '--output-format', 'stream-json',
-        '--verbose',
-      );
-
-      const cleanup = async () => {
-        await mcpHandle?.close().catch(() => {});
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      };
-
-      try {
-        if (config.streaming) {
-          const spawned = spawnClaudeStreamingJson(args, config.cwd, config.environment, prompt);
-          resolveProcessInfo!({ pid: spawned.pid });
-          innerChunks = spawned.chunks;
-          prepDone = true;
-          if (chunkResolve) { chunkResolve(); chunkResolve = null; }
-
-          const raw = await spawned.result;
-          await cleanup();
-          return buildResult(raw);
-        }
-
-        // Non-streaming
-        const { result: spawnResult, pid } = spawnClaudeStreamJson(args, config.cwd, config.environment, prompt);
-        resolveProcessInfo!({ pid });
-        prepDone = true;
-        done = true;
-        if (chunkResolve) { chunkResolve(); chunkResolve = null; }
-
-        const raw = await spawnResult;
-        await cleanup();
-        return buildResult(raw);
-      } catch (err) {
-        await cleanup();
-        throw err;
-      }
-    }).catch((err) => {
-      // If prep itself failed, unblock the chunk iterator and processInfo
-      prepError = err instanceof Error ? err : new Error(String(err));
-      prepDone = true;
-      done = true;
-      if (chunkResolve) { chunkResolve(); chunkResolve = null; }
-      rejectProcessInfo!(prepError);
-      throw err;
-    });
-
-    // Chunks iterable that bridges the async prep gap. In non-streaming
-    // mode or on error, it completes immediately with no items.
-    const chunks: AsyncIterable<SessionChunk> = {
-      [Symbol.asyncIterator]() {
-        return {
-          async next(): Promise<IteratorResult<SessionChunk>> {
-            // Wait for prep to complete
-            while (!prepDone) {
-              await new Promise<void>((resolve) => { chunkResolve = resolve; });
-            }
-
-            if (prepError || done) {
-              return { value: undefined as unknown as SessionChunk, done: true };
-            }
-
-            // Delegate to inner streaming iterator
-            if (innerChunks && !innerIterator) {
-              innerIterator = innerChunks[Symbol.asyncIterator]();
-            }
-
-            if (innerIterator) {
-              return innerIterator.next();
-            }
-
-            return { value: undefined as unknown as SessionChunk, done: true };
-          },
-        };
-      },
-    };
-
-    return { chunks, result, processInfo };
-}
 
 // ── Apparatus export ─────────────────────────────────────────────────
 
@@ -327,14 +104,6 @@ export function createClaudeCodeProvider(): Plugin {
 }
 
 export default createClaudeCodeProvider();
-
-// ── MCP server re-exports ───────────────────────────────────────────
-// The MCP server module is used by the session provider to attach tools
-// to sessions via --mcp-config, and can be imported directly for
-// testing or custom integrations.
-
-export { createMcpServer, startMcpHttpServer } from './mcp-server.ts';
-export type { McpHttpHandle } from './mcp-server.ts';
 
 // ── Spawn helpers ────────────────────────────────────────────────────
 
@@ -447,170 +216,3 @@ export function processNdjsonBuffer(
   return buffer;
 }
 
-/**
- * Spawn Claude in autonomous mode with --output-format stream-json.
- *
- * Captures stdout (NDJSON lines), parses each line to extract:
- * - assistant messages → transcript
- * - result message → cost, token usage, session ID
- *
- * Forwards assistant text content to stderr so it's visible during execution.
- */
-function spawnClaudeStreamJson(args: string[], cwd: string, env?: Record<string, string>, stdinData?: string): { result: Promise<StreamJsonResult>; pid: number } {
-  const proc = spawn('claude', args, {
-    cwd,
-    stdio: ['pipe', 'pipe', 'inherit'],
-    env: { ...process.env, ...env },
-  });
-
-  // Pipe prompt via stdin (--print - reads from stdin)
-  if (stdinData !== undefined) {
-    proc.stdin!.write(stdinData);
-    proc.stdin!.end();
-  }
-
-  const acc: {
-    transcript: Record<string, unknown>[];
-    costUsd?: number;
-    tokenUsage?: StreamJsonResult['tokenUsage'];
-    providerSessionId?: string;
-  } = { transcript: [] };
-
-  let buffer = '';
-
-  proc.stdout!.on('data', (chunk: Buffer) => {
-    buffer += chunk.toString();
-    buffer = processNdjsonBuffer(buffer, (msg) => {
-      const chunks = parseStreamJsonMessage(msg, acc);
-      for (const c of chunks) {
-        if (c.type === 'text') {
-          process.stderr.write(c.text);
-        }
-      }
-    });
-  });
-
-  const result = new Promise<StreamJsonResult>((resolve, reject) => {
-    proc.on('error', (err) => {
-      reject(new Error(`Failed to spawn claude: ${err.message}`));
-    });
-
-    proc.on('close', (code, signal) => {
-      if (acc.transcript.length > 0) {
-        process.stderr.write('\n');
-      }
-
-      resolve({
-        exitCode: code ?? 1,
-        transcript: acc.transcript,
-        costUsd: acc.costUsd,
-        tokenUsage: acc.tokenUsage,
-        providerSessionId: acc.providerSessionId,
-        signal: signal ?? undefined,
-      });
-    });
-  });
-
-  return { result, pid: proc.pid! };
-}
-
-/**
- * Spawn Claude with streaming — yields SessionChunks as they arrive
- * while also accumulating the full result.
- *
- * Returns an async iterable of chunks for real-time consumption and
- * a promise for the final StreamJsonResult.
- */
-function spawnClaudeStreamingJson(args: string[], cwd: string, env?: Record<string, string>, stdinData?: string): {
-  chunks: AsyncIterable<SessionChunk>;
-  result: Promise<StreamJsonResult>;
-  pid: number;
-} {
-  const chunkQueue: SessionChunk[] = [];
-  let chunkResolve: (() => void) | null = null;
-  let done = false;
-
-  const acc: {
-    transcript: Record<string, unknown>[];
-    costUsd?: number;
-    tokenUsage?: StreamJsonResult['tokenUsage'];
-    providerSessionId?: string;
-  } = { transcript: [] };
-
-  const proc = spawn('claude', args, {
-    cwd,
-    stdio: ['pipe', 'pipe', 'inherit'],
-    env: { ...process.env, ...env },
-  });
-
-  // Pipe prompt via stdin (--print - reads from stdin)
-  if (stdinData !== undefined) {
-    proc.stdin!.write(stdinData);
-    proc.stdin!.end();
-  }
-
-  let buffer = '';
-
-  proc.stdout!.on('data', (chunk: Buffer) => {
-    buffer += chunk.toString();
-    buffer = processNdjsonBuffer(buffer, (msg) => {
-      const newChunks = parseStreamJsonMessage(msg, acc);
-      for (const c of newChunks) {
-        if (c.type === 'text') {
-          process.stderr.write(c.text);
-        }
-      }
-      if (newChunks.length > 0) {
-        chunkQueue.push(...newChunks);
-        if (chunkResolve) {
-          chunkResolve();
-          chunkResolve = null;
-        }
-      }
-    });
-  });
-
-  const result = new Promise<StreamJsonResult>((resolve, reject) => {
-    proc.on('error', (err) => {
-      done = true;
-      if (chunkResolve) { chunkResolve(); chunkResolve = null; }
-      reject(new Error(`Failed to spawn claude: ${err.message}`));
-    });
-
-    proc.on('close', (code, signal) => {
-      if (acc.transcript.length > 0) {
-        process.stderr.write('\n');
-      }
-      done = true;
-      if (chunkResolve) { chunkResolve(); chunkResolve = null; }
-      resolve({
-        exitCode: code ?? 1,
-        transcript: acc.transcript,
-        costUsd: acc.costUsd,
-        tokenUsage: acc.tokenUsage,
-        providerSessionId: acc.providerSessionId,
-        signal: signal ?? undefined,
-      });
-    });
-  });
-
-  const chunks: AsyncIterable<SessionChunk> = {
-    [Symbol.asyncIterator]() {
-      return {
-        async next(): Promise<IteratorResult<SessionChunk>> {
-          while (true) {
-            if (chunkQueue.length > 0) {
-              return { value: chunkQueue.shift()!, done: false };
-            }
-            if (done) {
-              return { value: undefined as unknown as SessionChunk, done: true };
-            }
-            await new Promise<void>((resolve) => { chunkResolve = resolve; });
-          }
-        },
-      };
-    },
-  };
-
-  return { chunks, result, pid: proc.pid! };
-}

@@ -136,8 +136,8 @@ export function buildBabysitterConfig(
   config: SessionProviderConfig,
   opts?: DetachedLaunchOptions,
 ): BabysitterConfig {
-  // Build claude CLI args (same as the attached prepareSession() but without
-  // --print, --output-format, --verbose, --mcp-config — the babysitter adds those).
+  // Build claude CLI args (the babysitter adds --print, --output-format,
+  // --verbose, --mcp-config).
   const claudeArgs: string[] = [
     '--setting-sources', 'user',
     '--dangerously-skip-permissions',
@@ -271,8 +271,7 @@ function docToProviderResult(doc: SessionDoc): SessionProviderResult {
 /**
  * Launch a detached babysitter process.
  *
- * Returns the same { chunks, result, processInfo } shape as the attached
- * provider, but:
+ * Returns { chunks, result, processInfo } where:
  * - chunks: completes immediately (empty) — transcripts stream to SQLite
  * - result: polls sessions book for terminal status
  * - processInfo: polls SessionDoc for cancelMetadata (contains claude PID)
