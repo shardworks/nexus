@@ -81,6 +81,7 @@ function statusBadge(status) {
   const map = {
     new: 'badge badge--draft',
     open: 'badge badge--active',
+    stuck: 'badge badge--warning',
     completed: 'badge badge--success',
     failed: 'badge badge--error',
     cancelled: 'badge badge--warning',
@@ -107,6 +108,7 @@ function compareVal(a, b, col) {
 
 function rowActions(w) {
   const isTerminal = ['completed', 'failed', 'cancelled'].includes(w.status);
+      const isStuck = w.status === 'stuck';
   if (isTerminal) return '';
   const btns = [];
   if (w.status === 'new') {
@@ -159,6 +161,7 @@ function sortedFilteredWrits(writs, childrenMap, showChildren, searchText, sortC
  */
 function renderDetail(writ) {
   const isTerminal = ['completed', 'failed', 'cancelled'].includes(writ.status);
+  const isStuck = writ.status === 'stuck';
   const isDraft = writ.status === 'new';
   let html = '';
 

@@ -2,7 +2,7 @@
 
 The Spider is the guild's rig execution engine. It spawns rigs for open writs, drives engine pipelines to completion, and transitions writs via the Clerk when rigs finish. Each rig is an ordered pipeline of engine instances; the Spider's `crawl()` loop advances that pipeline one step at a time.
 
-The Spider maintains bidirectional CDC cascades between writs and rigs: when a rig reaches a terminal state, the associated writ is transitioned to match; when a writ is cancelled, the associated rig is cancelled (writs transitioning to `completed` or `failed` do not cancel the rig). Guards in both handlers break the circular cascade path so that a writ cancellation that triggers a rig cancellation does not attempt to re-transition the already-terminal writ.
+The Spider maintains bidirectional CDC cascades between writs and rigs: when a rig reaches a terminal or `stuck` state, the associated writ is transitioned to match; when a writ is cancelled, the associated rig is cancelled (writs transitioning to `completed` or `failed` do not cancel the rig). Engine failures cascade the rig to `stuck` (a non-terminal "needs attention" state) and the writ to `stuck`, preserving the obligation for future retry. Guards in both handlers break the circular cascade path so that a writ cancellation that triggers a rig cancellation does not attempt to re-transition the already-terminal writ.
 
 Depends on `@shardworks/stacks-apparatus` for rig persistence, `@shardworks/fabricator-apparatus` to look up engine designs, `@shardworks/clerk-apparatus` to transition writs, and `@shardworks/animator-apparatus` to launch quick-engine sessions.
 
@@ -51,7 +51,7 @@ CrawlResult variants:
 | `'engine-unblocked'` | A blocked engine's condition cleared |
 | `'engine-skipped'` | Engine (and any downstream-only dependents) was skipped due to `when` condition |
 | `'engine-grafted'` | Engine injected additional engines into the pipeline |
-| `'rig-completed'` | Rig reached terminal state (completed, failed, or cancelled) |
+| `'rig-completed'` | Rig reached terminal or stuck state (completed, stuck, failed, or cancelled) |
 | `'rig-blocked'` | All forward progress stalled; rig entered blocked status |
 
 ### `show(id): Promise<RigDoc>`
@@ -76,13 +76,15 @@ Manually clear a block on a specific engine, bypassing the block type's checker.
 
 ### `cancel(rigId, options?): Promise<RigDoc>`
 
-Cancel a running or blocked rig. The cancellation cascade:
+Cancel a running, blocked, or stuck rig. The cancellation cascade:
 
 1. If the active engine has a session, calls `AnimatorApi.cancel()` to kill it.
 2. Marks the active engine (running or blocked) as `'cancelled'`.
 3. Marks all pending/blocked downstream engines as `'cancelled'`.
 4. Rejects any pending `InputRequestDoc` entries for the rig.
 5. Transitions the rig to `'cancelled'` status, which triggers the CDC handler to transition the writ to `'cancelled'`.
+
+For stuck rigs (engine failure, no active engines), only step 5 applies — the rig transitions directly from `stuck` to `cancelled`.
 
 Cancellation is also triggered automatically when the associated writ is cancelled — for example, when a writ is cancelled directly via the Clerk or when a parent writ's cancellation cascades to its children. The cancel reason is set to `"Writ <writId> cancelled"`. Writs transitioning to `completed` or `failed` do not trigger rig cancellation.
 
@@ -270,7 +272,7 @@ The Spider contributes books and tools for rig inspection and control.
 | `rig-list` | `read` | List rigs with optional status/limit filters |
 | `rig-show` | `read` | Show full detail for a rig by id |
 | `rig-resume` | `write` | Manually clear a block on a specific engine |
-| `rig-cancel` | `write` | Cancel a running or blocked rig |
+| `rig-cancel` | `write` | Cancel a running, blocked, or stuck rig |
 | `crawl` | `write` | Execute a single crawl step |
 | `crawl-continual` | `write` | Poll `crawl()` in a loop until no work remains |
 

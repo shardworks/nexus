@@ -105,7 +105,7 @@ List writs with optional filters. Returns writs ordered by `createdAt` descendin
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `status` | `WritStatus` | no | Filter by status (all five values supported) |
+| `status` | `WritStatus` | no | Filter by status (all six values supported) |
 | `type` | `string` | no | Filter by writ type |
 | `parentId` | `string` | no | Filter to children of this parent writ |
 | `limit` | `number` | no | Max results (default: 20) |
@@ -136,7 +136,7 @@ Permission: `clerk:write`
 
 ### `writ-cancel` tool
 
-Cancel a writ. Transitions `new|open → cancelled`. If the writ has non-terminal children, they are automatically cancelled.
+Cancel a writ. Transitions `new|open|stuck → cancelled`. If the writ has non-terminal children, they are automatically cancelled.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -199,11 +199,15 @@ interface ClerkApi {
    * Updates the writ document and sets timestamp fields.
    *
    * Valid transitions:
-   *   new  → open       (publish — enter the queue)
-   *   new  → cancelled
-   *   open → completed
-   *   open → failed
-   *   open → cancelled
+   *   new   → open       (publish — enter the queue)
+   *   new   → cancelled
+   *   open  → completed
+   *   open  → failed
+   *   open  → cancelled
+   *   open  → stuck      (engine failure cascade)
+   *   stuck → open       (recovery/retry resumes execution)
+   *   stuck → failed     (obligation abandoned)
+   *   stuck → cancelled  (obligation withdrawn)
    *
    * The `fields` parameter allows setting additional fields
    * atomically with the transition (e.g. `resolution`).
@@ -267,6 +271,7 @@ interface WritDoc {
 type WritStatus =
   | "new"         // Draft — held out of the queue, not yet published
   | "open"        // In the queue, available for dispatch
+  | "stuck"       // Engine failure — needs attention, non-terminal
   | "completed"   // Work done successfully
   | "failed"      // Work failed
   | "cancelled"   // Cancelled by patron or system
@@ -352,22 +357,32 @@ The writ status machine governs all transitions. The Clerk enforces this — inv
                    ▼                          │
             ┌──────────────┐                  │
             │     open     │──────────┐       │
-            └──┬───────┬───┘          │       │
-               │       │              │       │
-          complete    fail          cancel    │
-               │       │              │       │
-               ▼       ▼              │       │
-        ┌───────────┐ ┌────────┐     │       │
-        │ completed │ │ failed │     │       │
-        └───────────┘ └────────┘     │       │
+            └──┬───┬───┬───┘          │       │
+               │   │   │              │       │
+          complete │  fail          cancel    │
+               │   │   │              │       │
+               ▼   │   ▼              │       │
+        ┌────────┐ │ ┌────────┐      │       │
+        │completed│ │ │ failed │◀──┐  │       │
+        └────────┘ │ └────────┘   │  │       │
+                   │  stuck       │  │       │
+                   ▼              │  │       │
+            ┌──────────────┐  fail │  │       │
+            │    stuck     │──────┘  │       │
+            │ (non-terminal)│───cancel┤       │
+            └──────┬───────┘         │       │
+                   │ open            │       │
+                   └──► (back to open)       │
                                      │       │
             ┌───────────┐            │       │
             │ cancelled │◀───────────┴───────┘
-            │           │ (from new or open)
+            │           │ (from new, open, or stuck)
             └───────────┘
 ```
 
 Terminal statuses: `completed`, `failed`, `cancelled`. No transitions out of terminal states.
+
+Non-terminal statuses: `new`, `open`, `stuck`. The `stuck` status represents an obligation whose rig hit an engine failure. It preserves the obligation for future retry. `stuck → open` is the recovery path; `stuck → failed` or `stuck → cancelled` abandon the obligation.
 
 The `new` status is a pre-queue holding state. A writ in `new` status:
 - Is **not** visible to the Spider's spawn phase (which queries exclusively for `open` writs)
@@ -392,14 +407,14 @@ Writs form a tree. A writ may be decomposed into child writs (tasks, steps, etc.
 - A writ may have zero or many children.
 - Depth is not limited (but deep hierarchies are a design smell).
 - Children inherit the parent's `codex` unless explicitly overridden.
-- Parents must be in `new` or `open` status to accept new children.
+- Parents must be in `new`, `open`, or `stuck` status to accept new children.
 
 ### CDC Cascade Behavior
 
 The Clerk registers a Phase 1 CDC watcher on the `clerk/writs` book. When a writ's status changes:
 
 **Upward cascade (child → parent):** When a child reaches a terminal status:
-- If the child **failed** and the parent is in `open` status: the parent transitions to `failed` with resolution `'Child "<childId>" failed: <childResolution>'`. The parent's failure triggers downward cascade, cancelling remaining siblings.
+- If the child **failed** and the parent is in `open` or `stuck` status: the parent transitions to `failed` with resolution `'Child "<childId>" failed: <childResolution>'`. The parent's failure triggers downward cascade, cancelling remaining siblings.
 
 **Downward cascade (parent → children):** When a writ reaches a terminal status, all non-terminal children are cancelled with resolution `'Automatically cancelled due to sibling failure'`.
 

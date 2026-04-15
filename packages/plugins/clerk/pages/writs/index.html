@@ -168,6 +168,7 @@
       const map = {
         new: 'badge badge--draft',
         open: 'badge badge--active',
+        stuck: 'badge badge--warning',
         completed: 'badge badge--success',
         failed: 'badge badge--error',
         cancelled: 'badge badge--warning',
@@ -238,6 +239,7 @@
     /** Returns the HTML for the context-aware Actions cell for a writ row. */
     function rowActions(w) {
       const isTerminal = ['completed', 'failed', 'cancelled'].includes(w.status);
+      const isStuck = w.status === 'stuck';
       if (isTerminal) return '';
       const btns = [];
       if (w.status === 'new') {
@@ -392,6 +394,9 @@
           html += `<button class="btn btn--danger" data-action="cancel" data-id="${writ.id}">Cancel</button>`;
         } else if (writ.status === 'open') {
           html += `<button class="btn btn--success" data-action="complete" data-id="${writ.id}">Complete</button>`;
+          html += `<button class="btn btn--danger" data-action="fail" data-id="${writ.id}">Fail</button>`;
+          html += `<button class="btn btn--danger" data-action="cancel" data-id="${writ.id}">Cancel</button>`;
+        } else if (writ.status === 'stuck') {
           html += `<button class="btn btn--danger" data-action="fail" data-id="${writ.id}">Fail</button>`;
           html += `<button class="btn btn--danger" data-action="cancel" data-id="${writ.id}">Cancel</button>`;
         }

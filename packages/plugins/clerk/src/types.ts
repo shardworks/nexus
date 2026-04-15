@@ -10,15 +10,20 @@
  * A writ's position in its lifecycle.
  *
  * Transitions:
- *   new  → open       (publish)   — draft enters the queue
- *   new  → cancelled  (cancel)
- *   open → completed  (complete)
- *   open → failed     (fail)
- *   open → cancelled  (cancel)
+ *   new    → open       (publish)   — draft enters the queue
+ *   new    → cancelled  (cancel)
+ *   open   → completed  (complete)
+ *   open   → failed     (fail)
+ *   open   → cancelled  (cancel)
+ *   open   → stuck      (engine failure cascade)
+ *   stuck  → open       (recovery/retry resumes execution)
+ *   stuck  → failed     (obligation abandoned)
+ *   stuck  → cancelled  (obligation withdrawn)
  *
  * completed, failed, cancelled are terminal — no further transitions.
+ * stuck is non-terminal — it represents a "needs attention" state.
  */
-export type WritStatus = 'new' | 'open' | 'completed' | 'failed' | 'cancelled';
+export type WritStatus = 'new' | 'open' | 'stuck' | 'completed' | 'failed' | 'cancelled';
 
 // ── Documents ────────────────────────────────────────────────────────
 

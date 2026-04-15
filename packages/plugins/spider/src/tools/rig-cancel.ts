@@ -9,10 +9,11 @@ import type { SpiderApi } from '../types.ts';
 
 export default tool({
   name: 'rig-cancel',
-  description: 'Cancel a running or blocked rig',
+  description: 'Cancel a running, blocked, or stuck rig',
   instructions:
     'Cancels the rig: kills the active session (if any), marks all non-terminal engines ' +
     'as cancelled, rejects pending input requests, and transitions the rig to cancelled. ' +
+    'Stuck rigs (engine failure, awaiting retry) can also be cancelled. ' +
     'Idempotent — returns the rig unchanged if already in a terminal state.',
   params: {
     rigId: z.string().describe('The rig id to cancel.'),

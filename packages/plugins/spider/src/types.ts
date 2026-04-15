@@ -81,7 +81,7 @@ export interface EngineInstance {
 
 // ── Rig ──────────────────────────────────────────────────────────────
 
-export type RigStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked';
+export type RigStatus = 'running' | 'stuck' | 'completed' | 'failed' | 'cancelled' | 'blocked';
 
 /**
  * A rig — the execution context for a single writ.
@@ -204,7 +204,7 @@ export type CrawlResult =
   | { action: 'engine-skipped'; rigId: string; engineId: string; cascadeSkipped?: string[] }
   | { action: 'engine-grafted'; rigId: string; engineId: string; graftedEngineIds: string[] }
   | { action: 'rig-spawned'; rigId: string; writId: string }
-  | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'failed' | 'cancelled' }
+  | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'stuck' | 'failed' | 'cancelled' }
   | { action: 'rig-blocked'; rigId: string; writId: string };
 
 // ── Block type ────────────────────────────────────────────────────────

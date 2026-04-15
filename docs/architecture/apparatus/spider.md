@@ -85,7 +85,7 @@ type CrawlResult =
   | { action: 'engine-completed'; rigId: string; engineId: string }
   | { action: 'engine-started'; rigId: string; engineId: string }
   | { action: 'rig-spawned'; rigId: string; writId: string }
-  | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'failed' }
+  | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'stuck' | 'failed' | 'cancelled' }
 ```
 
 Each `crawl()` call does exactly one thing. The priority ordering:
@@ -166,7 +166,7 @@ function spawnStaticRig(writ: Writ, config: SpiderConfig): EngineInstance[] {
 
 The `givensSpec` is populated from the Spider's config at rig spawn time. The rig is self-contained after spawning — no runtime config lookups needed. The `writ` is passed as a given to engines that need it (most do; `seal` doesn't). All engines start with `yields: null` — yields are populated when the engine completes (see [Yield Types](#yield-types-and-data-flow)).
 
-The rig is **completed** when the terminal engine (`seal`) has `status === 'completed'`. The rig is **failed** when any engine has `status === 'failed'`.
+The rig is **completed** when the terminal engine (`seal`) has `status === 'completed'`. The rig is **stuck** when any engine has `status === 'failed'` — a non-terminal state that preserves the obligation for future retry. A stuck rig stays stuck for its lifetime; recovery happens by spawning a new rig (future multi-rig work), not by resurrecting a stuck one.
 
 ---
 
@@ -619,23 +619,29 @@ The seal engine does **not** transition the writ — that's handled by the CDC h
 
 The Spider registers two CDC handlers at startup. Both are Phase 1 (cascade) — their effects join the same transaction as the triggering update.
 
-### Writ terminal state → rig cancellation
+### Writ cancelled → rig cancellation
 
 **Book:** `clerk/writs`
 **Phase:** Phase 1 (cascade)
-**Trigger:** writ status transitions to `completed`, `failed`, or `cancelled`
+**Trigger:** writ status transitions to `cancelled`
 
-When a writ reaches any terminal status, the Spider looks up the associated rig via `forWrit()` and cancels it. This ensures rigs don't keep running after their writ is resolved — for example, when a writ is cancelled directly via the Clerk, or when a parent writ's cancellation cascades to its children.
+When a writ is cancelled, the Spider looks up the associated rig via `forWrit()` and cancels it. This ensures rigs don't keep running after their writ is resolved — for example, when a writ is cancelled directly via the Clerk, or when a parent writ's cancellation cascades to its children.
 
-Silent no-ops: if no rig exists for the writ (writ was never dispatched), or the rig is already terminal, the handler returns without action.
+Silent no-ops: if no rig exists for the writ (writ was never dispatched), or the rig is already terminal or `stuck`, the handler returns without action. Only `cancelled` triggers rig cancellation — writs transitioning to `completed` or `failed` do not cancel the rig.
 
-### Rig terminal state → writ transition
+### Rig terminal/stuck state → writ transition
 
 **Book:** `spider/rigs`
 **Phase:** Phase 1 (cascade)
-**Trigger:** rig status transitions to `completed`, `failed`, or `cancelled`
+**Trigger:** rig status transitions to `stuck`, `completed`, `failed`, or `cancelled`
 
-When a rig reaches a terminal state, the handler transitions the associated writ to match. A guard reads the writ's current status first — if the writ is already terminal (e.g., it was cancelled before the rig), the handler skips the `clerk.transition()` call. This breaks the circular cascade path: writ cancelled → rig cancelled → rig CDC fires → writ already terminal → skip.
+When a rig reaches a terminal or `stuck` state, the handler transitions the associated writ to match:
+- `rig.stuck` → `writ: open → stuck` (only if the writ is still `open`)
+- `rig.completed` → `writ: completed`
+- `rig.failed` → `writ: failed`
+- `rig.cancelled` → `writ: cancelled`
+
+A guard reads the writ's current status first — if the writ is already terminal (e.g., it was cancelled before the rig), the handler skips the `clerk.transition()` call. This breaks the circular cascade path: writ cancelled → rig cancelled → rig CDC fires → writ already terminal → skip.
 
 Because both handlers are Phase 1, their effects are atomic with the triggering update. If either handler fails, the triggering status change rolls back.
 
@@ -646,12 +652,12 @@ Because both handlers are Phase 1, their effects are atomic with the triggering 
 When any engine fails (throws, or a quick engine's session has `status: 'failed'`):
 
 1. The engine is marked `status: 'failed'` with the error (detected during "collect completed engines" for quick engines, or directly during execution for clockwork engines)
-2. All engines in the rig with `status === 'pending'` are set to `status: 'cancelled'` — they will never run. Engines already in `'running'`, `'completed'`, or `'failed'` are left untouched. Cancelled engines do **not** receive `completedAt` or `error` — cancellation is a consequence, not a failure.
-3. The rig is marked `status: 'failed'` (same transaction as steps 1 and 2)
-4. CDC fires on the rig status change → handler calls Clerk API to transition the writ to `failed`
+2. All engines in the rig with `status === 'pending'` or `'blocked'` are set to `status: 'cancelled'` — they will never run. Engines already in `'running'`, `'completed'`, or `'failed'` are left untouched. Cancelled engines do **not** receive `completedAt` or `error` — cancellation is a consequence, not a failure.
+3. The rig is marked `status: 'stuck'` (same transaction as steps 1 and 2) — a non-terminal "needs attention" state
+4. CDC fires on the rig status change → handler calls Clerk API to transition the writ to `stuck`
 5. The draft is **not** abandoned — preserved for patron inspection
 
-No retry. No recovery. The patron inspects and decides what to do. This is appropriate for the static rig — see [Future Evolution](#future-evolution) for the retry/recovery direction.
+`stuck` is non-terminal: the obligation survives. A stuck rig stays stuck for its lifetime; recovery happens by spawning a new rig (future multi-rig work). The `stuck → failed` and `stuck → cancelled` transitions exist for explicit abandonment. No `stuck → running` — a stuck rig is never resurrected.
 
 Quick engine "failure" definition: if the Animator session completes with `status: 'failed'`, the engine fails. If the session completes with `status: 'completed'`, the engine succeeds — even if the anima's work is incomplete (that's the review engine's job to catch, not the Spider's).
 
@@ -680,7 +686,7 @@ These are known directions the Spider and its data model will grow. None are in 
 - **Engine needs declarations.** Engine designs will declare a `needs` specification that controls which upstream yields are included and how they're mapped — making the data flow between engines explicit and type-safe.
 - **Typed engine contracts.** The `Record<string, unknown>` givens map with type assertions is scaffolding. The needs/planning system will introduce typed contracts between engines — defining what each engine requires and provides. This scaffolding gets replaced, not extended.
 - **Dynamic rig extension.** Capability resolution (via the Fabricator) and rig growth at runtime. Engines can declare needs that the Fabricator resolves to additional engine chains, grafted onto the rig mid-execution.
-- **Retry and recovery.** The static rig has no retry. Recovery logic arrives with dynamic extension — a failed engine can trigger a recovery chain rather than failing the whole rig.
+- **Retry and recovery.** Stuck rigs preserve the obligation; the retry mechanism (CLI command, standing order, patron-facing UX) is future work. When multi-rig lands, rig-level `stuck` becomes the natural input to a computed writ-level "latest rig in trouble" signal, and recovery spawns a new rig rather than resurrecting the stuck one.
 - **Engine timeouts.** Liveness of an engine's underlying session is owned by the Animator's heartbeat reconciler — a session that stops reporting `lastActivityAt` within the staleness window is transitioned to `failed`, and the Spider then picks up the terminal session via `collect` on the next crawl. The Spider itself does not probe process liveness. A future extension may add a hard runtime ceiling that terminates still-heartbeating engines exceeding a configured maximum wall-clock duration.
 - **Unified capability catalog.** The Fabricator may absorb tool designs from the Instrumentarium, becoming the single answer to "what can this guild do?" regardless of whether the answer is an engine or a tool.
 

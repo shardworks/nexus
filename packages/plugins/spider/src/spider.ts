@@ -1218,8 +1218,10 @@ export function createSpider(): Plugin {
   // ── Internal crawl operations ─────────────────────────────────────
 
   /**
-   * Mark an engine failed and propagate failure to the rig (same update).
-   * Cancels all pending and blocked engines.
+   * Mark an engine failed and propagate to the rig as `stuck` (same update).
+   * The failed engine itself transitions to `failed`; pending/blocked engines
+   * are cancelled. The rig enters `stuck` — a non-terminal "needs attention"
+   * state that preserves the obligation for future retry.
    */
   async function failEngine(
     rig: RigDoc,
@@ -1238,7 +1240,7 @@ export function createSpider(): Plugin {
     });
     await rigsBook.patch(rig.id, {
       engines: updatedEngines,
-      status: 'failed',
+      status: 'stuck',
     });
   }
 
@@ -1314,7 +1316,7 @@ export function createSpider(): Plugin {
 
         if (session.status === 'failed' || session.status === 'timeout') {
           await failEngine(rig, engine.id, session.error ?? `Session ${session.status}`);
-          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
         }
 
         if (session.status === 'cancelled') {
@@ -1356,7 +1358,7 @@ export function createSpider(): Plugin {
 
         if (!isJsonSerializable(yields)) {
           await failEngine(rig, engine.id, 'Session yields are not JSON-serializable');
-          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
         }
 
         const updatedEngines = rig.engines.map((e) =>
@@ -1418,7 +1420,7 @@ export function createSpider(): Plugin {
     const validationError = validateGraft(rig, graft, fabricator, maxEngines);
     if (validationError !== null) {
       await failEngine(rig, engineId, `Graft validation failed: ${validationError}`);
-      return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+      return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
     }
 
     // Convert grafted RigTemplateEngine entries to EngineInstance
@@ -1487,7 +1489,7 @@ export function createSpider(): Plugin {
             ? `Block "${engine.block.type}" failed: ${result.reason}`
             : `Block "${engine.block.type}" failed permanently`;
           await failEngine(rig, engine.id, message);
-          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
         }
 
         if (result.status !== 'cleared') {
@@ -1593,7 +1595,7 @@ export function createSpider(): Plugin {
       const design = fabricator.getEngineDesign(pending.designId);
       if (!design) {
         await failEngine(rig, pending.id, `No engine design found for "${pending.designId}"`);
-        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
       }
 
       const givens = resolveYieldRefs(pending.givensSpec, upstream);
@@ -1642,7 +1644,7 @@ export function createSpider(): Plugin {
           const blockType = blockTypeRegistry.get(blockTypeId);
           if (!blockType) {
             await failEngine(updatedRig, pending.id, `Unknown block type: "${blockTypeId}"`);
-            return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+            return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
           }
 
           // Validate the condition against the block type's schema
@@ -1655,7 +1657,7 @@ export function createSpider(): Plugin {
               pending.id,
               `Block type "${blockTypeId}" rejected condition: ${zodMessage}`,
             );
-            return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+            return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
           }
 
           // Build the block record and persist the blocked engine
@@ -1686,7 +1688,7 @@ export function createSpider(): Plugin {
         const { yields } = engineResult;
         if (!isJsonSerializable(yields)) {
           await failEngine(updatedRig, pending.id, 'Engine yields are not JSON-serializable');
-          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
         }
 
         // Check for graft (SpiderEngineRunResult extension — duck-typing)
@@ -1729,7 +1731,7 @@ export function createSpider(): Plugin {
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         await failEngine(rig, pending.id, errorMessage);
-        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
       }
     }
     return null;
@@ -1893,6 +1895,13 @@ export function createSpider(): Plugin {
       // Idempotent for terminal rigs
       if (rig.status === 'completed' || rig.status === 'failed' || rig.status === 'cancelled') {
         return rig;
+      }
+
+      // Stuck rigs have no active engines — just mark cancelled directly.
+      if (rig.status === 'stuck') {
+        await rigsBook.patch(rig.id, { status: 'cancelled' });
+        await rejectPendingInputRequests(rig.id);
+        return api.show(rigId);
       }
 
       // Find the active engine to cancel
@@ -2069,7 +2078,7 @@ export function createSpider(): Plugin {
 
         // CDC — Phase 1 cascade on writs book.
         // When a writ is cancelled, cancel the associated rig.
-        // Silent no-op when no rig exists or the rig is already terminal.
+        // Silent no-op when no rig exists or the rig is already terminal/stuck.
         // Only cancelled triggers cascade — completed/failed writs leave the rig alone.
         stacks.watch<WritDoc>(
           'clerk',
@@ -2087,8 +2096,8 @@ export function createSpider(): Plugin {
             const rig = await api.forWrit(writ.id);
             if (!rig) return; // No rig for this writ — silent no-op
 
-            // Already terminal — silent no-op (avoids redundant cancel cycle)
-            if (rig.status === 'completed' || rig.status === 'failed' || rig.status === 'cancelled') return;
+            // Already terminal or stuck — silent no-op (avoids redundant cancel cycle)
+            if (rig.status === 'completed' || rig.status === 'failed' || rig.status === 'cancelled' || rig.status === 'stuck') return;
 
             await api.cancel(rig.id, { reason: `Writ ${writ.id} cancelled` });
           },
@@ -2096,7 +2105,7 @@ export function createSpider(): Plugin {
         );
 
         // CDC — Phase 1 cascade on rigs book.
-        // When a rig reaches a terminal state, transition the associated writ.
+        // When a rig reaches a terminal or stuck state, transition the associated writ.
         // The 'blocked' status intentionally falls through — no CDC action.
         stacks.watch<RigDoc>(
           'spider',
@@ -2107,7 +2116,7 @@ export function createSpider(): Plugin {
             const rig = event.entry;
             const prev = event.prev;
 
-            // Only act when status changes to a terminal state
+            // Only act when status changes
             if (rig.status === prev.status) return;
 
             // Skip writ transition when the writ is already in a terminal state.
@@ -2118,7 +2127,15 @@ export function createSpider(): Plugin {
               writ.status === 'completed' || writ.status === 'failed' || writ.status === 'cancelled'
             );
 
-            if (rig.status === 'completed') {
+            if (rig.status === 'stuck') {
+              // Engine failure cascade: rig stuck → writ stuck.
+              // Only cascade if the writ is still in open status (not already terminal or stuck).
+              if (writ && writ.status === 'open') {
+                const failedEngine = rig.engines.find((e) => e.status === 'failed');
+                const resolution = failedEngine?.error ?? 'Engine failure';
+                await clerk.transition(rig.writId, 'stuck', { resolution });
+              }
+            } else if (rig.status === 'completed') {
               let resolutionYields: unknown;
 
               // 1. Try the declared resolution engine

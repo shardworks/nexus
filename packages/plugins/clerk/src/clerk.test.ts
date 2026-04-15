@@ -371,6 +371,16 @@ describe('Clerk', () => {
       assert.ok(!statuses.has('completed'));
     });
 
+    it('filters by stuck status', async () => {
+      const writ = await clerk.post({ title: 'Stuck writ', body: 'Body' });
+      await clerk.transition(writ.id, 'stuck');
+      await clerk.post({ title: 'Open writ', body: 'Body' });
+
+      const result = await clerk.list({ status: 'stuck' });
+      assert.equal(result.length, 1);
+      assert.equal(result[0]!.status, 'stuck');
+    });
+
     it('single-element status array behaves like a scalar filter', async () => {
       await clerk.post({ title: 'Open writ', body: 'Body' });
       const w2 = await clerk.post({ title: 'New writ', body: 'Body', draft: true });
@@ -711,6 +721,112 @@ describe('Clerk', () => {
     });
   });
 
+  // ── transition() — open → stuck (non-terminal) ──────────────────
+
+  describe('transition() to stuck', () => {
+    beforeEach(async () => { await setup(); });
+
+    it('transitions an open writ to stuck', async () => {
+      const writ = await clerk.post({ title: 'Stuck writ', body: 'Body' });
+      const stuck = await clerk.transition(writ.id, 'stuck', { resolution: 'Engine failure' });
+
+      assert.equal(stuck.status, 'stuck');
+      // stuck is non-terminal — no resolvedAt
+      assert.equal(stuck.resolvedAt, undefined);
+      assert.equal(stuck.resolution, 'Engine failure');
+    });
+
+    it('stuck is non-terminal — resolvedAt is not set', async () => {
+      const writ = await clerk.post({ title: 'Non-terminal', body: 'Body' });
+      const stuck = await clerk.transition(writ.id, 'stuck');
+      assert.equal(stuck.resolvedAt, undefined);
+    });
+
+    it('throws when transitioning new → stuck', async () => {
+      const writ = await clerk.post({ title: 'Draft', body: 'Body', draft: true });
+      await assert.rejects(
+        () => clerk.transition(writ.id, 'stuck'),
+        /Cannot transition/,
+      );
+    });
+
+    it('throws when transitioning completed → stuck', async () => {
+      const writ = await clerk.post({ title: 'Done', body: 'Body' });
+      await clerk.transition(writ.id, 'completed', { resolution: 'Done' });
+      await assert.rejects(
+        () => clerk.transition(writ.id, 'stuck'),
+        /Cannot transition/,
+      );
+    });
+
+    it('throws when transitioning failed → stuck', async () => {
+      const writ = await clerk.post({ title: 'Failed', body: 'Body' });
+      await clerk.transition(writ.id, 'failed', { resolution: 'Broke' });
+      await assert.rejects(
+        () => clerk.transition(writ.id, 'stuck'),
+        /Cannot transition/,
+      );
+    });
+
+    it('throws when transitioning cancelled → stuck', async () => {
+      const writ = await clerk.post({ title: 'Cancelled', body: 'Body' });
+      await clerk.transition(writ.id, 'cancelled');
+      await assert.rejects(
+        () => clerk.transition(writ.id, 'stuck'),
+        /Cannot transition/,
+      );
+    });
+  });
+
+  // ── transition() — stuck → open/failed/cancelled ──────────────────
+
+  describe('transition() from stuck', () => {
+    beforeEach(async () => { await setup(); });
+
+    it('transitions stuck → open (recovery)', async () => {
+      const writ = await clerk.post({ title: 'Recoverable', body: 'Body' });
+      await clerk.transition(writ.id, 'stuck');
+      const reopened = await clerk.transition(writ.id, 'open');
+      assert.equal(reopened.status, 'open');
+      assert.equal(reopened.resolvedAt, undefined);
+    });
+
+    it('transitions stuck → failed (abandon)', async () => {
+      const writ = await clerk.post({ title: 'Abandoned', body: 'Body' });
+      await clerk.transition(writ.id, 'stuck');
+      const failed = await clerk.transition(writ.id, 'failed', { resolution: 'Giving up' });
+      assert.equal(failed.status, 'failed');
+      assert.ok(failed.resolvedAt);
+      assert.equal(failed.resolution, 'Giving up');
+    });
+
+    it('transitions stuck → cancelled (withdrawn)', async () => {
+      const writ = await clerk.post({ title: 'Withdrawn', body: 'Body' });
+      await clerk.transition(writ.id, 'stuck');
+      const cancelled = await clerk.transition(writ.id, 'cancelled', { resolution: 'No longer needed' });
+      assert.equal(cancelled.status, 'cancelled');
+      assert.ok(cancelled.resolvedAt);
+    });
+
+    it('throws when transitioning stuck → completed', async () => {
+      const writ = await clerk.post({ title: 'Cannot complete from stuck', body: 'Body' });
+      await clerk.transition(writ.id, 'stuck');
+      await assert.rejects(
+        () => clerk.transition(writ.id, 'completed'),
+        /Cannot transition/,
+      );
+    });
+
+    it('throws when transitioning stuck → stuck (no self-transition)', async () => {
+      const writ = await clerk.post({ title: 'Already stuck', body: 'Body' });
+      await clerk.transition(writ.id, 'stuck');
+      await assert.rejects(
+        () => clerk.transition(writ.id, 'stuck'),
+        /Cannot transition/,
+      );
+    });
+  });
+
   // ── Full lifecycle ───────────────────────────────────────────────
 
   describe('full lifecycle', () => {
@@ -744,6 +860,26 @@ describe('Clerk', () => {
       const writ = await clerk.post({ title: 'Cancelled early', body: 'Body' });
       const cancelled = await clerk.transition(writ.id, 'cancelled');
       assert.equal(cancelled.status, 'cancelled');
+    });
+
+    it('stuck path: open → stuck → failed', async () => {
+      const writ = await clerk.post({ title: 'Stuck then failed', body: 'Body' });
+      const stuck = await clerk.transition(writ.id, 'stuck', { resolution: 'Engine failure' });
+      assert.equal(stuck.status, 'stuck');
+      assert.equal(stuck.resolvedAt, undefined, 'stuck is non-terminal');
+
+      const failed = await clerk.transition(writ.id, 'failed', { resolution: 'Abandoned' });
+      assert.equal(failed.status, 'failed');
+      assert.ok(failed.resolvedAt);
+    });
+
+    it('stuck recovery path: open → stuck → open → completed', async () => {
+      const writ = await clerk.post({ title: 'Recovered', body: 'Body' });
+      await clerk.transition(writ.id, 'stuck');
+      await clerk.transition(writ.id, 'open');
+      const completed = await clerk.transition(writ.id, 'completed', { resolution: 'Recovered and done' });
+      assert.equal(completed.status, 'completed');
+      assert.ok(completed.resolvedAt);
     });
 
     it('updatedAt changes on each mutation', async () => {
@@ -1881,6 +2017,14 @@ describe('Parent/child relationships', () => {
         },
       );
     });
+
+    it('allows child creation when parent is stuck', async () => {
+      const parent = await clerk.post({ title: 'Stuck parent', body: 'Body' });
+      await clerk.transition(parent.id, 'stuck');
+
+      const child = await clerk.post({ title: 'Child of stuck', body: 'Body', parentId: parent.id });
+      assert.equal(child.parentId, parent.id);
+    });
   });
 
   // ── Child failure cascade ──────────────────────────────────────────
@@ -1898,6 +2042,18 @@ describe('Parent/child relationships', () => {
       assert.equal(updated.status, 'failed');
       assert.ok(updated.resolution?.includes('Child'));
       assert.ok(updated.resolution?.includes('Broke'));
+    });
+
+    it('transitions stuck parent to failed when child fails', async () => {
+      const parent = await clerk.post({ title: 'Stuck Parent', body: 'Body' });
+      await clerk.transition(parent.id, 'stuck');
+      const child = await clerk.post({ title: 'Child of stuck', body: 'Body', parentId: parent.id });
+
+      await clerk.transition(child.id, 'failed', { resolution: 'Broke too' });
+
+      const updated = await clerk.show(parent.id);
+      assert.equal(updated.status, 'failed');
+      assert.ok(updated.resolution?.includes('Child'));
     });
 
     it('does not cascade failure when parent is in new status', async () => {

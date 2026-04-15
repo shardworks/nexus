@@ -30,6 +30,7 @@
       case 'completed': return 'badge--success';
       case 'running':   return 'badge--active';
       case 'failed':    return 'badge--error';
+      case 'stuck':     return 'badge--warning';
       case 'blocked':   return 'badge--warning';
       case 'cancelled': return 'badge--cancelled';
       case 'pending':
@@ -497,7 +498,7 @@
 
     // Cancel button — shown when rig is running/blocked OR engine is running with sessionId
     var showCancel = false;
-    if (currentRig && (currentRig.status === 'running' || currentRig.status === 'blocked')) {
+    if (currentRig && (currentRig.status === 'running' || currentRig.status === 'blocked' || currentRig.status === 'stuck')) {
       showCancel = true;
     }
     if (engine.status === 'running' && engine.sessionId) {

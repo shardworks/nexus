@@ -2,7 +2,8 @@
  * The Clerk — writ lifecycle management apparatus.
  *
  * The Clerk manages the lifecycle of writs: lightweight work orders that flow
- * through a fixed status machine (new → open → completed/failed/cancelled).
+ * through a fixed status machine (new → open → completed/failed/cancelled,
+ * with stuck as a non-terminal "needs attention" state off open).
  * Each writ has a type, a title, a body, and optional codex and resolution
  * fields.
  *
@@ -60,10 +61,11 @@ const BUILTIN_TYPES = new Set(['mandate']);
 // ── Status machine ───────────────────────────────────────────────────
 
 const ALLOWED_FROM: Record<WritStatus, WritStatus[]> = {
-  open: ['new'],
+  open: ['new', 'stuck'],
+  stuck: ['open'],
   completed: ['open'],
-  failed: ['open'],
-  cancelled: ['new', 'open'],
+  failed: ['open', 'stuck'],
+  cancelled: ['new', 'open', 'stuck'],
   new: [],
 };
 
@@ -72,7 +74,7 @@ const TERMINAL_STATUSES = new Set<WritStatus>(['completed', 'failed', 'cancelled
 // ── Factory ──────────────────────────────────────────────────────────
 
 /** Parent statuses that allow adding children. */
-const CHILD_ALLOWED_PARENT_STATUSES = new Set<WritStatus>(['new', 'open']);
+const CHILD_ALLOWED_PARENT_STATUSES = new Set<WritStatus>(['new', 'open', 'stuck']);
 
 export function createClerk(): Plugin {
   let stacks: StacksApi;
@@ -409,7 +411,7 @@ export function createClerk(): Plugin {
     if (!child.parentId) return;
 
     const parent = await writs.get(child.parentId);
-    if (!parent || parent.status !== 'open') return;
+    if (!parent || (parent.status !== 'open' && parent.status !== 'stuck')) return;
 
     if (child.status === 'failed') {
       const childResolution = child.resolution ?? 'unknown';

@@ -1,6 +1,6 @@
 # `@shardworks/clerk-apparatus`
 
-The Clerk manages the lifecycle of **writs** — lightweight work orders that flow through a fixed status machine. Writs are created as commissions and ultimately completed, failed, or cancelled. Writs can be organized into parent/child hierarchies for decomposing complex work.
+The Clerk manages the lifecycle of **writs** — lightweight work orders that flow through a fixed status machine. Writs are created as commissions and ultimately completed, failed, or cancelled. Writs may also enter a `stuck` state when their rig encounters an engine failure — a non-terminal "needs attention" status that preserves the obligation for future retry. Writs can be organized into parent/child hierarchies for decomposing complex work.
 
 The Clerk sits downstream of The Stacks: `stacks ← clerk`.
 
@@ -53,7 +53,7 @@ const writ = await clerk.post({
 | `parentId` | `string` | Parent writ id for hierarchical decomposition (optional) |
 
 When `parentId` is provided:
-- The parent must exist and be in `new` or `open` status.
+- The parent must exist and be in `new`, `open`, or `stuck` status.
 - The child inherits the parent's `codex` if no explicit codex is provided.
 - The entire operation is atomic.
 
@@ -153,7 +153,7 @@ await clerk.transition(id, 'cancelled', { resolution: 'No longer needed' });
 
 Throws if the transition is not legal for the writ's current status.
 
-**Cascade behavior:** When a writ with children transitions to a terminal status, all non-terminal children are automatically cancelled. When a child fails, its parent is failed and remaining siblings are cancelled.
+**Cascade behavior:** When a writ with children transitions to a terminal status, all non-terminal children are automatically cancelled. When a child fails and its parent is `open` or `stuck`, the parent is failed and remaining siblings are cancelled.
 
 ---
 
@@ -162,21 +162,30 @@ Throws if the transition is not legal for the writ's current status.
 ```
 new ──► open ──┬──► completed
   │       │    │
-  │       │    ├──► failed
-  │       │    │
+  │       │    ├──► stuck ──┬──► failed
+  │       │    │     │      │
+  │       │    │     └──────┤
+  │       │    │     ▲      │
+  │       │    │     │      ├──► cancelled
+  │       │    ├─────┘      │
+  │       │    │            │
+  │       │    ├──► failed  │
+  │       │    │            │
   └───────┴────┴──► cancelled
 ```
 
 - `completed`, `failed`, and `cancelled` are **terminal** — no transitions out.
+- `stuck` is **non-terminal** — a "needs attention" state for writs whose rig hit an engine failure. Recovery (future retry) transitions back to `open`; giving up transitions to `failed` or `cancelled`.
 
 ### Allowed transitions
 
 | To | From |
 |---|---|
-| `open` | `new` |
+| `open` | `new`, `stuck` |
+| `stuck` | `open` |
 | `completed` | `open` |
-| `failed` | `open` |
-| `cancelled` | `new`, `open` |
+| `failed` | `open`, `stuck` |
+| `cancelled` | `new`, `open`, `stuck` |
 
 ---
 
@@ -184,8 +193,8 @@ new ──► open ──┬──► completed
 
 Writs can be organized into parent/child relationships for decomposing complex work:
 
-- **Creating children:** Pass `parentId` to `post()`. The parent stays in its current status.
-- **Failure cascade:** When a child fails and the parent is `open`, the parent is failed and remaining non-terminal siblings are cancelled.
+- **Creating children:** Pass `parentId` to `post()`. The parent stays in its current status. Parents in `new`, `open`, or `stuck` status accept children.
+- **Failure cascade:** When a child fails and the parent is `open` or `stuck`, the parent is failed and remaining non-terminal siblings are cancelled.
 - **Cancellation cascade:** When a parent reaches terminal status, all non-terminal children are cancelled.
 - **Codex inheritance:** Children inherit the parent's codex if none is specified.
 - **Immutability:** `parentId` cannot be changed after creation.
@@ -239,8 +248,8 @@ The Clerk contributes books, tools, and pages to the guild:
 | `writ-list` | `clerk:read` | List writs with optional filters (status, type, parentId) |
 | `writ-edit` | `clerk:write` | Edit a writ (title/body any status; type/codex draft only) |
 | `writ-complete` | `clerk:write` | Complete a writ (open → completed) |
-| `writ-fail` | `clerk:write` | Fail a writ (open → failed) |
-| `writ-cancel` | `clerk:write` | Cancel a writ (new/open → cancelled) |
+| `writ-fail` | `clerk:write` | Fail a writ (open/stuck → failed) |
+| `writ-cancel` | `clerk:write` | Cancel a writ (new/open/stuck → cancelled) |
 | `writ-publish` | `clerk:write` | Publish a draft writ (new → open) |
 | `writ-link` | `clerk:write` | Create a typed link between writs |
 | `writ-unlink` | `clerk:write` | Remove a typed link between writs |
@@ -251,7 +260,7 @@ The Clerk contributes books, tools, and pages to the guild:
 ## Key Types
 
 ```typescript
-type WritStatus = 'new' | 'open' | 'completed' | 'failed' | 'cancelled';
+type WritStatus = 'new' | 'open' | 'stuck' | 'completed' | 'failed' | 'cancelled';
 
 interface WritDoc {
   id: string;           // ULID-like, prefixed "w-"

@@ -585,7 +585,7 @@ describe('Spider', () => {
       assert.doesNotThrow(() => JSON.stringify(impl2?.yields));
     });
 
-    it('marks engine and rig failed when engine design is not found', async () => {
+    it('marks engine failed and rig stuck when engine design is not found', async () => {
       const { clerk, spider, stacks } = fix;
       await postWrit(clerk);
       await spider.crawl(); // spawn
@@ -601,10 +601,10 @@ describe('Spider', () => {
 
       const result = await spider.crawl();
       assert.equal(result?.action, 'rig-completed');
-      assert.equal((result as { outcome: string }).outcome, 'failed');
+      assert.equal((result as { outcome: string }).outcome, 'stuck');
 
       const [updated] = await book.list();
-      assert.equal(updated.status, 'failed');
+      assert.equal(updated.status, 'stuck');
       const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
       assert.equal(draft?.status, 'failed');
       assert.ok(draft?.error?.includes('nonexistent-engine'));
@@ -651,10 +651,10 @@ describe('Spider', () => {
       const result = await spider.crawl();
       assert.ok(result !== null);
       assert.equal(result.action, 'rig-completed');
-      assert.equal((result as { outcome: string }).outcome, 'failed');
+      assert.equal((result as { outcome: string }).outcome, 'stuck');
 
       const [updated] = await book.list();
-      assert.equal(updated.status, 'failed');
+      assert.equal(updated.status, 'stuck');
       const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
       assert.equal(draft?.status, 'failed');
       assert.ok(draft?.error !== undefined && draft.error.length > 0, `expected engine to have an error, got: ${draft?.error}`);
@@ -721,7 +721,7 @@ describe('Spider', () => {
       assert.equal(summonCalls[0].prompt, expectedPrompt);
     });
 
-    it('session failure propagates: engine fails → rig fails → writ transitions to failed', async () => {
+    it('session failure propagates: engine fails → rig stuck → writ transitions to stuck', async () => {
       const { clerk, spider, stacks, setSessionOutcome } = fix;
       setSessionOutcome({ status: 'failed', error: 'Process exited with code 1' });
 
@@ -739,10 +739,10 @@ describe('Spider', () => {
       });
 
       await spider.crawl(); // launch implement (session already terminal in Stacks)
-      await spider.crawl(); // collect: session failed → engine fails → rig fails
+      await spider.crawl(); // collect: session failed → engine fails → rig stuck
 
       const [updatedRig] = await book.list();
-      assert.equal(updatedRig.status, 'failed', 'rig should be failed');
+      assert.equal(updatedRig.status, 'stuck', 'rig should be stuck');
       const impl = updatedRig.engines.find((e: EngineInstance) => e.id === 'implement');
       assert.equal(impl?.status, 'failed', 'implement engine should be failed');
 
@@ -759,7 +759,7 @@ describe('Spider', () => {
       }
 
       const failedWrit = await clerk.show(writ.id);
-      assert.equal(failedWrit.status, 'failed', 'writ should transition to failed via CDC');
+      assert.equal(failedWrit.status, 'stuck', 'writ should transition to stuck via CDC');
     });
 
     it('ImplementYields contain sessionId and sessionStatus from the session record', async () => {
@@ -840,7 +840,7 @@ describe('Spider', () => {
       assert.equal(yields.sessionStatus, 'completed');
     });
 
-    it('marks engine and rig failed when session failed', async () => {
+    it('marks engine failed and rig stuck when session failed', async () => {
       const { clerk, spider, stacks } = fix;
       await postWrit(clerk);
       await spider.crawl(); // spawn
@@ -874,10 +874,10 @@ describe('Spider', () => {
 
       const result = await spider.crawl();
       assert.equal(result?.action, 'rig-completed');
-      assert.equal((result as { outcome: string }).outcome, 'failed');
+      assert.equal((result as { outcome: string }).outcome, 'stuck');
 
       const [updated] = await book.list();
-      assert.equal(updated.status, 'failed');
+      assert.equal(updated.status, 'stuck');
       const impl = updated.engines.find((e: EngineInstance) => e.id === 'implement');
       assert.equal(impl?.status, 'failed');
 
@@ -980,7 +980,7 @@ describe('Spider', () => {
   // ── Failure propagation ────────────────────────────────────────────
 
   describe('failure propagation', () => {
-    it('engine failure → rig failed → writ transitions to failed via CDC', async () => {
+    it('engine failure → rig stuck → writ transitions to stuck via CDC', async () => {
       const { clerk, spider, stacks } = fix;
       const writ = await postWrit(clerk);
 
@@ -996,11 +996,11 @@ describe('Spider', () => {
       );
       await book.patch(rig.id, { engines: brokenEngines });
 
-      // Walk: engine fails → rig fails → CDC → writ fails
+      // Walk: engine fails → rig stuck → CDC → writ stuck
       await spider.crawl();
 
       const [updatedRig] = await book.list();
-      assert.equal(updatedRig.status, 'failed');
+      assert.equal(updatedRig.status, 'stuck');
 
       const failedDraft = updatedRig.engines.find((e: EngineInstance) => e.id === 'draft');
       assert.equal(failedDraft?.status, 'failed', 'draft engine should be failed');
@@ -1014,7 +1014,7 @@ describe('Spider', () => {
       }
 
       const failedWrit = await clerk.show(writ.id);
-      assert.equal(failedWrit.status, 'failed');
+      assert.equal(failedWrit.status, 'stuck');
     });
   });
 
@@ -1798,7 +1798,7 @@ describe('Spider', () => {
 
       const result = await spider.crawl();
       assert.equal(result?.action, 'rig-completed');
-      assert.equal((result as { outcome: string }).outcome, 'failed');
+      assert.equal((result as { outcome: string }).outcome, 'stuck');
 
       const [updated] = await book.list();
       const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
@@ -1832,7 +1832,7 @@ describe('Spider', () => {
 
       const result = await spider.crawl();
       assert.equal(result?.action, 'rig-completed');
-      assert.equal((result as { outcome: string }).outcome, 'failed');
+      assert.equal((result as { outcome: string }).outcome, 'stuck');
 
       const [updated] = await book.list();
 
@@ -1880,9 +1880,9 @@ describe('Spider', () => {
 
       // review now has no upstream and bad designId — running it will fail it
       const result = await spider.crawl();
-      // review fails (bad designId) → rig fails
+      // review fails (bad designId) → rig stuck
       assert.equal(result?.action, 'rig-completed');
-      assert.equal((result as { outcome: string }).outcome, 'failed');
+      assert.equal((result as { outcome: string }).outcome, 'stuck');
 
       const [updated] = await book.list();
 
@@ -3015,7 +3015,7 @@ describe('Spider tools — structure (V6/R8/R9/R10/R12)', () => {
     });
 
     it('accepts all valid status values', () => {
-      for (const status of ['running', 'completed', 'failed', 'blocked']) {
+      for (const status of ['running', 'completed', 'failed', 'stuck', 'blocked']) {
         const result = rigListTool.params.safeParse({ status });
         assert.ok(result.success, `status "${status}" should be accepted`);
       }
@@ -3689,10 +3689,10 @@ describe('Spider — engine blocking on external conditions', () => {
 
       assert.ok(result !== null);
       assert.equal(result.action, 'rig-completed');
-      assert.equal((result as { outcome: string }).outcome, 'failed');
+      assert.equal((result as { outcome: string }).outcome, 'stuck');
 
       const [rig] = await fix.spider.list();
-      assert.equal(rig.status, 'failed');
+      assert.equal(rig.status, 'stuck');
       const engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
       assert.ok(engine?.error?.includes('Unknown block type'), `expected error to include "Unknown block type", got: ${engine?.error}`);
       assert.ok(engine?.error?.includes('does-not-exist'), `expected error to include block type name, got: ${engine?.error}`);
@@ -3729,7 +3729,7 @@ describe('Spider — engine blocking on external conditions', () => {
 
       assert.ok(result !== null);
       assert.equal(result.action, 'rig-completed');
-      assert.equal((result as { outcome: string }).outcome, 'failed');
+      assert.equal((result as { outcome: string }).outcome, 'stuck');
 
       const [rig] = await fix.spider.list();
       const engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
@@ -4266,15 +4266,15 @@ describe('Spider — engine blocking on external conditions', () => {
   // ── failEngine cancels blocked engines (V15, R21) ──────────────────────
 
   describe('failEngine cancels blocked engines alongside pending ones (V15, R21)', () => {
-    it('blocked engines are cancelled (with block cleared) when rig fails', async () => {
+    it('blocked engines are cancelled (with block cleared) when rig stuck', async () => {
       const fix = buildBlockingFixture();
 
-      // Create a real writ so the CDC handler can transition it when the rig fails.
+      // Create a real writ so the CDC handler can transition it when the rig becomes stuck.
       const writ = await fix.clerk.post({ title: 'Fail test writ', body: 'Body' });
       // Writ starts in 'open' — it can transition to failed directly.
 
       // Directly insert a rig with one blocked engine and one pending engine.
-      // A third engine (running) will fail via its session, triggering failEngine.
+      // A third engine (running) will fail via its session, triggering failEngine (rig → stuck).
       const book = fix.stacks.book<RigDoc>('spider', 'rigs');
       const rigId = generateId('rig', 4);
       const now = new Date().toISOString();
@@ -4335,7 +4335,7 @@ describe('Spider — engine blocking on external conditions', () => {
 
       const updatedRig = await book.get(rigId);
       assert.ok(updatedRig !== null, 'rig should still exist');
-      assert.equal(updatedRig!.status, 'failed', 'rig should be failed');
+      assert.equal(updatedRig!.status, 'stuck', 'rig should be stuck');
 
       const engBlocked = updatedRig!.engines.find((e: EngineInstance) => e.id === 'eng-blocked');
       const engPending = updatedRig!.engines.find((e: EngineInstance) => e.id === 'eng-pending');
@@ -4543,7 +4543,7 @@ describe('Spider — engine blocking on external conditions', () => {
   // ── Checker failure path (R4, R5, R8, R9) ────────────────────────────────
 
   describe('Checker failure path — permanent block failure', () => {
-    it('checker returns { status: "failed" } with no reason — engine/rig failed permanently', async () => {
+    it('checker returns { status: "failed" } with no reason — engine failed, rig stuck permanently', async () => {
       const failingEngine: EngineDesign = {
         id: 'fail-engine',
         async run() {
@@ -4567,10 +4567,10 @@ describe('Spider — engine blocking on external conditions', () => {
       const result = await fix.spider.crawl(); // checkBlocked → failed
       assert.ok(result !== null);
       assert.equal(result.action, 'rig-completed');
-      assert.equal((result as { outcome: string }).outcome, 'failed');
+      assert.equal((result as { outcome: string }).outcome, 'stuck');
 
       const [rig] = await fix.spider.list();
-      assert.equal(rig.status, 'failed');
+      assert.equal(rig.status, 'stuck');
       const engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
       assert.ok(engine !== undefined);
       assert.equal(engine.status, 'failed');
@@ -4608,7 +4608,7 @@ describe('Spider — engine blocking on external conditions', () => {
       const result = await fix.spider.crawl(); // checkBlocked → failed
       assert.ok(result !== null);
       assert.equal(result.action, 'rig-completed');
-      assert.equal((result as { outcome: string }).outcome, 'failed');
+      assert.equal((result as { outcome: string }).outcome, 'stuck');
 
       const [rig] = await fix.spider.list();
       const engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
@@ -4650,13 +4650,13 @@ describe('Spider — engine blocking on external conditions', () => {
       await fix.spider.crawl(); // spawn
       await fix.spider.crawl(); // run a → rig-blocked (b depends on a)
 
-      const result = await fix.spider.crawl(); // checkBlocked → a fails → rig failed
+      const result = await fix.spider.crawl(); // checkBlocked → a fails → rig stuck
       assert.ok(result !== null);
       assert.equal(result.action, 'rig-completed');
-      assert.equal((result as { outcome: string }).outcome, 'failed');
+      assert.equal((result as { outcome: string }).outcome, 'stuck');
 
       const [rig] = await fix.spider.list();
-      assert.equal(rig.status, 'failed');
+      assert.equal(rig.status, 'stuck');
       const engineA = rig.engines.find((e: EngineInstance) => e.id === 'a');
       const engineB = rig.engines.find((e: EngineInstance) => e.id === 'b');
       assert.equal(engineA?.status, 'failed');
@@ -4692,14 +4692,14 @@ describe('Spider — engine blocking on external conditions', () => {
       await fix.spider.crawl(); // checkBlocked → failed
 
       [rig] = await fix.spider.list();
-      assert.equal(rig.status, 'failed');
+      assert.equal(rig.status, 'stuck');
       // Engine is now failed; the block record should be gone (failEngine cleared it)
       engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
       assert.equal(engine?.status, 'failed');
       // lastCheckedAt was never set (failure path skips it)
     });
 
-    it('checker failure on rig with blocked status — rig transitions to failed', async () => {
+    it('checker failure on rig with blocked status — rig transitions to stuck', async () => {
       const blockedThenFailEngine: EngineDesign = {
         id: 'btf-engine',
         async run() {
@@ -4726,10 +4726,10 @@ describe('Spider — engine blocking on external conditions', () => {
       const result = await fix.spider.crawl(); // checkBlocked → failed
       assert.ok(result !== null);
       assert.equal(result.action, 'rig-completed');
-      assert.equal((result as { outcome: string }).outcome, 'failed');
+      assert.equal((result as { outcome: string }).outcome, 'stuck');
 
       [rig] = await fix.spider.list();
-      assert.equal(rig.status, 'failed', 'rig should transition from blocked to failed');
+      assert.equal(rig.status, 'stuck', 'rig should transition from blocked to stuck');
       const engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
       assert.ok(engine?.error?.includes('gone'), `expected error to include "gone", got: ${engine?.error}`);
     });
@@ -7266,7 +7266,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       // B should remain skipped (not cancelled), C should be failed
       assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'B')?.status, 'skipped', 'B should remain skipped');
       assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'C')?.status, 'failed', 'C should be failed');
-      assert.equal(rig.status, 'failed');
+      assert.equal(rig.status, 'stuck');
       assert.equal(bRan, false, 'B should not have run');
     });
   });
@@ -7570,10 +7570,10 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const r = await spider.crawl(); // process graft → validation fails → rig-completed/failed
 
       assert.equal(r?.action, 'rig-completed', 'should return rig-completed on graft failure');
-      assert.equal((r as { outcome: string }).outcome, 'failed', 'outcome should be failed');
+      assert.equal((r as { outcome: string }).outcome, 'stuck', 'outcome should be stuck');
 
       const [rig] = await rigsBook(stacks).list();
-      assert.equal(rig.status, 'failed');
+      assert.equal(rig.status, 'stuck');
       const failedEngine = rig.engines.find((e: EngineInstance) => e.id === 'bad-grafter');
       assert.ok(failedEngine?.error?.includes('Duplicate engine id'), 'error should mention duplicate engine id');
     });
@@ -7609,7 +7609,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const r = await spider.crawl(); // process graft → validation fails
 
       assert.equal(r?.action, 'rig-completed');
-      assert.equal((r as { outcome: string }).outcome, 'failed');
+      assert.equal((r as { outcome: string }).outcome, 'stuck');
       const [rig] = await rigsBook(stacks).list();
       const failedEngine = rig.engines.find((e: EngineInstance) => e.id === 'grafter');
       assert.ok(failedEngine?.error?.includes('unknown designId'), 'error should mention unknown designId');
@@ -7654,7 +7654,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const r = await spider.crawl(); // process graft → cycle detected → fail
 
       assert.equal(r?.action, 'rig-completed');
-      assert.equal((r as { outcome: string }).outcome, 'failed');
+      assert.equal((r as { outcome: string }).outcome, 'stuck');
       const [rig] = await rigsBook(stacks).list();
       const failedEngine = rig.engines.find((e: EngineInstance) => e.id === 'cycle-grafter');
       assert.ok(failedEngine?.error?.includes('cycle') || failedEngine?.error?.includes('Graft validation failed'), 'error should mention cycle');
@@ -7697,9 +7697,9 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const r = await spider.crawl(); // process graft → when validation fails
 
       assert.equal(r?.action, 'rig-completed');
-      assert.equal((r as { outcome: string }).outcome, 'failed');
+      assert.equal((r as { outcome: string }).outcome, 'stuck');
       const [rig] = await rigsBook(stacks).list();
-      assert.equal(rig.status, 'failed');
+      assert.equal(rig.status, 'stuck');
     });
   });
 
@@ -7742,7 +7742,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const r = await spider.crawl(); // process graft → exceeds maxEnginesPerRig(2) → fail
 
       assert.equal(r?.action, 'rig-completed');
-      assert.equal((r as { outcome: string }).outcome, 'failed');
+      assert.equal((r as { outcome: string }).outcome, 'stuck');
       const [rig] = await rigsBook(stacks).list();
       const failedEngine = rig.engines.find((e: EngineInstance) => e.id === 'grafter-max');
       assert.ok(
@@ -7787,7 +7787,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const r = await spider.crawl(); // process graft → exceeds 50
 
       assert.equal(r?.action, 'rig-completed');
-      assert.equal((r as { outcome: string }).outcome, 'failed');
+      assert.equal((r as { outcome: string }).outcome, 'stuck');
       const [rig] = await rigsBook(stacks).list();
       const failedEngine = rig.engines.find((e: EngineInstance) => e.id === 'big-grafter');
       assert.ok(

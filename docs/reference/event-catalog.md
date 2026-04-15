@@ -42,6 +42,7 @@ Writ lifecycle events use the writ's **type** as the event namespace. For exampl
 |---------------|---------|---------|------|
 | `{type}.ready` | `{ writId, parentId?, commissionId? }` | `framework` | Writ transitions to `ready` — available for dispatch |
 | `{type}.completed` | `{ writId, parentId?, commissionId? }` | `framework` | Writ transitions to `completed` |
+| `{type}.stuck` | `{ writId, parentId?, commissionId? }` | `framework` | Writ transitions to `stuck` (engine failure, needs attention) |
 | `{type}.failed` | `{ writId, parentId?, commissionId? }` | `framework` | Writ transitions to `failed` |
 
 **`{type}.ready`** is the primary dispatch signal. Standing orders wire these to summon animas (e.g. `{ on: "mandate.ready", summon: "artificer" }`). When a commission is posted, the framework creates a `mandate` writ and signals `mandate.ready`.
