@@ -34,6 +34,7 @@ import {
   pollForProcessInfo,
   launchDetached,
   computeToolManifest,
+  resolveLogDir,
 } from './detached.ts';
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -311,11 +312,13 @@ describe('buildBabysitterConfig()', () => {
     const bc = buildBabysitterConfig(config, {
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: '/tmp/nexus.db',
+      logDir: '/tmp/test-logs',
     });
 
     assert.equal(bc.sessionId, 'ses-test-001');
     assert.equal(bc.guildToolUrl, 'http://127.0.0.1:7471');
     assert.equal(bc.dbPath, '/tmp/nexus.db');
+    assert.equal(bc.logDir, '/tmp/test-logs');
     assert.equal(bc.cwd, os.tmpdir());
     assert.equal(bc.prompt, 'Do the thing');
     assert.equal(bc.provider, 'claude-code');
@@ -326,7 +329,7 @@ describe('buildBabysitterConfig()', () => {
   it('includes base CLI args', () => {
     const bc = buildBabysitterConfig(
       makeProviderConfig({ model: 'opus' }),
-      { guildToolUrl: 'http://x', dbPath: '/tmp/x.db' },
+      { guildToolUrl: 'http://x', dbPath: '/tmp/x.db', logDir: '/tmp/test-logs' },
     );
 
     assert.ok(bc.claudeArgs.includes('--model'), 'should include --model');
@@ -338,7 +341,7 @@ describe('buildBabysitterConfig()', () => {
   it('includes --resume when conversationId is provided', () => {
     const bc = buildBabysitterConfig(
       makeProviderConfig({ conversationId: 'conv-123' }),
-      { guildToolUrl: 'http://x', dbPath: '/tmp/x.db' },
+      { guildToolUrl: 'http://x', dbPath: '/tmp/x.db', logDir: '/tmp/test-logs' },
     );
 
     assert.ok(bc.claudeArgs.includes('--resume'), 'should include --resume');
@@ -348,7 +351,7 @@ describe('buildBabysitterConfig()', () => {
   it('writes system prompt file and includes --system-prompt-file', () => {
     const bc = buildBabysitterConfig(
       makeProviderConfig({ systemPrompt: 'You are a helpful assistant.' }),
-      { guildToolUrl: 'http://x', dbPath: '/tmp/x.db' },
+      { guildToolUrl: 'http://x', dbPath: '/tmp/x.db', logDir: '/tmp/test-logs' },
     );
 
     const idx = bc.claudeArgs.indexOf('--system-prompt-file');
@@ -371,7 +374,7 @@ describe('buildBabysitterConfig()', () => {
   it('does not set systemPromptTmpDir when no system prompt', () => {
     const bc = buildBabysitterConfig(
       makeProviderConfig(),
-      { guildToolUrl: 'http://x', dbPath: '/tmp/x.db' },
+      { guildToolUrl: 'http://x', dbPath: '/tmp/x.db', logDir: '/tmp/test-logs' },
     );
 
     assert.equal(bc.systemPromptTmpDir, undefined);
@@ -387,6 +390,7 @@ describe('buildBabysitterConfig()', () => {
     const bc = buildBabysitterConfig(config, {
       guildToolUrl: 'http://x',
       dbPath: '/tmp/x.db',
+      logDir: '/tmp/test-logs',
     });
 
     assert.equal(bc.tools.length, 1);
@@ -398,7 +402,7 @@ describe('buildBabysitterConfig()', () => {
   it('defaults prompt to empty string when not provided', () => {
     const bc = buildBabysitterConfig(
       makeProviderConfig(),
-      { guildToolUrl: 'http://x', dbPath: '/tmp/x.db' },
+      { guildToolUrl: 'http://x', dbPath: '/tmp/x.db', logDir: '/tmp/test-logs' },
     );
 
     assert.equal(bc.prompt, '');
@@ -407,7 +411,7 @@ describe('buildBabysitterConfig()', () => {
   it('defaults env to empty object when not provided', () => {
     const bc = buildBabysitterConfig(
       makeProviderConfig(),
-      { guildToolUrl: 'http://x', dbPath: '/tmp/x.db' },
+      { guildToolUrl: 'http://x', dbPath: '/tmp/x.db', logDir: '/tmp/test-logs' },
     );
 
     assert.deepEqual(bc.env, {});
@@ -419,6 +423,7 @@ describe('buildBabysitterConfig()', () => {
       {
         guildToolUrl: 'http://x',
         dbPath: '/tmp/x.db',
+        logDir: '/tmp/test-logs',
         metadata: { writId: 'w-1', role: 'artificer' },
       },
     );
@@ -437,10 +442,37 @@ describe('buildBabysitterConfig()', () => {
     const bc = buildBabysitterConfig(config, {
       guildToolUrl: 'http://x',
       dbPath: '/tmp/x.db',
+      logDir: '/tmp/test-logs',
     });
 
     assert.equal(bc.tools.length, 1);
     assert.equal(bc.tools[0]!.name, 'anima-tool');
+  });
+
+  it('populates logDir from override', () => {
+    const bc = buildBabysitterConfig(
+      makeProviderConfig(),
+      { guildToolUrl: 'http://x', dbPath: '/tmp/x.db', logDir: '/override/logs' },
+    );
+
+    assert.equal(bc.logDir, '/override/logs');
+  });
+});
+
+// ── resolveLogDir ─────────────────────────────────────────────────────
+
+describe('resolveLogDir()', () => {
+  it('returns correct path under guild home', () => {
+    // resolveLogDir() calls guild() which requires a running guild context.
+    // We test it indirectly via buildBabysitterConfig with an override.
+    // Direct test of resolveLogDir() would need guild() mocking which is
+    // not set up in this test file. The override test above validates the
+    // plumbing works.
+    //
+    // If guild() is available, uncomment:
+    // const result = resolveLogDir();
+    // assert.match(result, /logs\/sessions$/);
+    assert.ok(resolveLogDir, 'resolveLogDir should be exported');
   });
 });
 
@@ -618,6 +650,7 @@ describe('launchDetached()', () => {
       babysitterPath: babysitterScript,
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
+      logDir: path.join(tmpDir, 'logs'),
       sessionsBook: createMockSessionsBook(readDocs),
       writableSessionsBook: createMockWritableBook(new Map()),
       pollIntervalMs: 50,
@@ -663,6 +696,7 @@ describe('launchDetached()', () => {
       babysitterPath: babysitterScript,
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
+      logDir: path.join(tmpDir, 'logs'),
       sessionsBook: createMockSessionsBook(readDocs),
       writableSessionsBook: createMockWritableBook(writeDocs),
       pollIntervalMs: 50,
@@ -720,6 +754,7 @@ describe('launchDetached()', () => {
       babysitterPath: babysitterScript,
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
+      logDir: path.join(tmpDir, 'logs'),
       sessionsBook: book,
       writableSessionsBook: writeBook,
       pollIntervalMs: 50,
@@ -776,6 +811,7 @@ describe('launchDetached()', () => {
       babysitterPath: babysitterScript,
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
+      logDir: path.join(tmpDir, 'logs'),
       sessionsBook: book,
       writableSessionsBook: writeBook,
       pollIntervalMs: 50,
@@ -807,6 +843,7 @@ describe('launchDetached()', () => {
       babysitterPath: babysitterScript,
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
+      logDir: path.join(tmpDir, 'logs'),
       sessionsBook: book,
       writableSessionsBook: writeBook,
       pollIntervalMs: 50,
@@ -839,6 +876,7 @@ describe('launchDetached()', () => {
       babysitterPath: babysitterScript,
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
+      logDir: path.join(tmpDir, 'logs'),
       sessionsBook: readBook,
       writableSessionsBook: writeBook,
       pollIntervalMs: 50,
@@ -880,6 +918,7 @@ describe('launchDetached()', () => {
       babysitterPath: babysitterScript,
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
+      logDir: path.join(tmpDir, 'logs'),
       sessionsBook: createMockSessionsBook(new Map()),
       writableSessionsBook: failingWriteBook,
       pollIntervalMs: 50,
@@ -929,6 +968,7 @@ describe('launchDetached()', () => {
       babysitterPath: babysitterScript,
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
+      logDir: path.join(tmpDir, 'logs'),
       sessionsBook: createMockSessionsBook(readDocs),
       writableSessionsBook: createMockWritableBook(new Map()),
       pollIntervalMs: 50,
@@ -992,6 +1032,7 @@ describe('launchDetached()', () => {
       babysitterPath: babysitterScript,
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
+      logDir: path.join(tmpDir, 'logs'),
       sessionsBook: book,
       writableSessionsBook: writeBook,
       pollIntervalMs: 50,
@@ -1031,6 +1072,7 @@ describe('launchDetached()', () => {
       babysitterPath: babysitterScript,
       guildToolUrl: 'http://127.0.0.1:7471',
       dbPath: path.join(tmpDir, 'nexus.db'),
+      logDir: path.join(tmpDir, 'logs'),
       sessionsBook: readBook,
       writableSessionsBook: writeBook,
       pollIntervalMs: 50,

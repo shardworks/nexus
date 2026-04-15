@@ -62,6 +62,7 @@ export interface BabysitterConfig {
   sessionId: string;
   guildToolUrl: string;
   dbPath: string;
+  logDir: string;
   claudeArgs: string[];
   cwd: string;
   env: Record<string, string>;
@@ -140,7 +141,7 @@ export async function readConfigFromStdin(
 
   // Validate required fields
   const required: (keyof BabysitterConfig)[] = [
-    'sessionId', 'guildToolUrl', 'dbPath', 'claudeArgs',
+    'sessionId', 'guildToolUrl', 'dbPath', 'logDir', 'claudeArgs',
     'cwd', 'env', 'prompt', 'tools', 'startedAt', 'provider',
   ];
   for (const field of required) {
@@ -538,6 +539,53 @@ export async function reportResult(
   }
 }
 
+// ── Stderr redirect ────────────────────────────────────────────────────
+
+/**
+ * Open a per-session log file and redirect process.stderr.write to it.
+ *
+ * Creates the logDir (recursive) and opens `<logDir>/<sessionId>.log`
+ * for append-writing. Replaces process.stderr.write with a function
+ * that calls fs.writeSync on the owned fd. Writes the startup banner
+ * as the first line.
+ *
+ * Returns the owned fd so the caller can close it in a finally block.
+ *
+ * @internal Exported for testing only.
+ */
+export function redirectStderrToFile(logDir: string, sessionId: string): number {
+  fs.mkdirSync(logDir, { recursive: true });
+  const logFilePath = path.join(logDir, `${sessionId}.log`);
+  const fd = fs.openSync(logFilePath, 'a');
+
+  // Replace process.stderr.write with a function that writes to our fd.
+  process.stderr.write = function (
+    chunk: string | Buffer | Uint8Array,
+    encodingOrCallback?: BufferEncoding | ((err?: Error) => void),
+    callback?: (err?: Error) => void,
+  ): boolean {
+    const encoding: BufferEncoding =
+      typeof encodingOrCallback === 'string' ? encodingOrCallback : 'utf8';
+    const cb = typeof encodingOrCallback === 'function' ? encodingOrCallback : callback;
+
+    const buffer = typeof chunk === 'string'
+      ? Buffer.from(chunk, encoding)
+      : chunk;
+    fs.writeSync(fd, buffer);
+
+    if (cb) cb();
+    return true;
+  } as typeof process.stderr.write;
+
+  // Write the startup banner (now goes to the log file).
+  const pgid = process.getgid?.() ?? process.pid;
+  process.stderr.write(
+    `[babysitter] session=${sessionId} pid=${process.pid} pgid=${pgid} log=${logFilePath} started at ${new Date().toISOString()}\n`,
+  );
+
+  return fd;
+}
+
 // ── Main babysitter function ────────────────────────────────────────────
 
 /**
@@ -611,7 +659,7 @@ export async function runBabysitter(
     // 4. Spawn claude
     claudeProc = spawnFn('claude', args, {
       cwd: config.cwd,
-      stdio: ['pipe', 'pipe', 'inherit'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...config.env },
     });
 
@@ -620,6 +668,11 @@ export async function runBabysitter(
       claudeProc.stdin!.write(config.prompt);
     }
     claudeProc.stdin!.end();
+
+    // Forward claude's stderr through the babysitter's redirected stderr
+    claudeProc.stderr?.on('data', (chunk: Buffer) => {
+      process.stderr.write(chunk);
+    });
 
     // 5. Report "running" status (don't await — fire and forget with retry)
     const cancelHandle = { kind: 'local-pgid' as const, pgid: process.pid };
@@ -772,8 +825,10 @@ export async function runBabysitter(
  * Only executes when this file is run directly (not when imported).
  */
 async function main(): Promise<void> {
+  let fd: number | undefined;
   try {
     const config = await readConfigFromStdin();
+    fd = redirectStderrToFile(config.logDir, config.sessionId);
     await runBabysitter(config);
     process.exit(0);
   } catch (err) {
@@ -781,6 +836,10 @@ async function main(): Promise<void> {
       `[babysitter] Fatal error: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     process.exit(1);
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* already closed */ }
+    }
   }
 }
 

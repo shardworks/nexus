@@ -78,6 +78,7 @@ interface BabysitterConfig {
   sessionId: string;           // Pre-generated session ID
   guildToolUrl: string;        // Guild's Tool HTTP API URL (e.g. "http://127.0.0.1:7471")
   dbPath: string;              // Path to guild's SQLite database
+  logDir: string;              // Directory for per-session log files
   claudeArgs: string[];        // CLI args for claude (--model, --system-prompt-file, etc.)
   cwd: string;                 // Working directory for the claude process
   env: Record<string, string>; // Environment variables for the claude process
@@ -93,6 +94,7 @@ interface SerializedTool {
   name: string;
   description: string;
   params: Record<string, unknown>;  // JSON Schema
+  method: 'GET' | 'POST' | 'DELETE';  // HTTP method for tool server routing
 }
 ```
 
@@ -109,6 +111,21 @@ interface SerializedTool {
 9. **Stream transcript** — parses NDJSON, writes to `books_animator_transcripts` table in SQLite after each message batch
 10. **Report result** — stops heartbeat, calls `session-record` tool on guild via HTTP (DLQ fallback)
 11. **Cleanup** — close MCP server, close SQLite, remove temp directory and system prompt temp directory
+
+### Session Logs
+
+Each babysitter process writes its own per-session log file, independent of the guild's stderr. This eliminates EPIPE crashes when the guild restarts (which would invalidate an inherited stderr fd).
+
+- **Location**: `<guildHome>/logs/sessions/<sessionId>.log`
+- **Format**: Plain text, `[babysitter]`-prefixed lines. Claude subprocess stderr is also forwarded into the same file.
+- **Lifetime**: Log files persist until manually deleted. They are not cleaned up automatically.
+- **Ownership**: Each log file is owned by its babysitter process. The babysitter opens the file in append mode immediately after reading config from stdin, redirects all `process.stderr.write` output to it, and closes the fd on exit.
+
+The first line of each log file is a startup banner:
+
+```
+[babysitter] session=<sessionId> pid=<pid> pgid=<pgid> log=<path> started at <iso>
+```
 
 ### Error Handling
 

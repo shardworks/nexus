@@ -10,7 +10,7 @@
  * - End-to-end with mock guild server (integration)
  */
 
-import { describe, it, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -35,6 +35,7 @@ import {
   reportRunning,
   reportResult,
   runBabysitter,
+  redirectStderrToFile,
   type BabysitterConfig,
   type SerializedTool,
   type TranscriptDb,
@@ -49,6 +50,7 @@ function makeConfig(overrides?: Partial<BabysitterConfig>): BabysitterConfig {
     sessionId: 'test-session-001',
     guildToolUrl: 'http://127.0.0.1:9999',
     dbPath: ':memory:',
+    logDir: os.tmpdir(),
     claudeArgs: ['--model', 'sonnet'],
     cwd: os.tmpdir(),
     env: {},
@@ -1055,5 +1057,320 @@ describe('callGuildHttpApi() non-retryable errors', () => {
         return true;
       },
     );
+  });
+});
+
+// ── redirectStderrToFile ──────────────────────────────────────────────
+
+describe('redirectStderrToFile()', () => {
+  let tmpDir: string;
+  let fd: number | undefined;
+  let originalWrite: typeof process.stderr.write;
+
+  // Save and restore the real stderr.write around each test so we don't
+  // corrupt the test runner's own output.
+  beforeEach(() => {
+    originalWrite = process.stderr.write;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stderr-redirect-'));
+  });
+
+  afterEach(() => {
+    // Restore original stderr.write
+    process.stderr.write = originalWrite;
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ok */ }
+      fd = undefined;
+    }
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates log file with startup banner', () => {
+    fd = redirectStderrToFile(tmpDir, 'sess-001');
+
+    const logPath = path.join(tmpDir, 'sess-001.log');
+    assert.ok(fs.existsSync(logPath), 'log file should exist');
+
+    const content = fs.readFileSync(logPath, 'utf-8');
+    assert.match(content, /^\[babysitter\] session=sess-001 pid=\d+ pgid=\d+ log=.+ started at \d{4}-/);
+  });
+
+  it('handles string and Buffer writes', () => {
+    fd = redirectStderrToFile(tmpDir, 'sess-002');
+
+    process.stderr.write('line-one\n');
+    process.stderr.write(Buffer.from('line-two\n'));
+    process.stderr.write(new Uint8Array(Buffer.from('line-three\n')));
+
+    const content = fs.readFileSync(path.join(tmpDir, 'sess-002.log'), 'utf-8');
+    assert.ok(content.includes('line-one'), 'should contain string write');
+    assert.ok(content.includes('line-two'), 'should contain Buffer write');
+    assert.ok(content.includes('line-three'), 'should contain Uint8Array write');
+  });
+
+  it('invokes callback when provided', () => {
+    fd = redirectStderrToFile(tmpDir, 'sess-003');
+
+    let callbackInvoked = false;
+    process.stderr.write('test\n', () => {
+      callbackInvoked = true;
+    });
+    assert.ok(callbackInvoked, 'callback should be invoked');
+  });
+
+  it('creates logDir recursively', () => {
+    const nestedDir = path.join(tmpDir, 'a', 'b', 'c');
+    fd = redirectStderrToFile(nestedDir, 'sess-004');
+
+    assert.ok(fs.existsSync(path.join(nestedDir, 'sess-004.log')), 'log file in nested dir should exist');
+  });
+});
+
+// ── readConfigFromStdin logDir validation ─────────────────────────────
+
+describe('readConfigFromStdin() logDir validation', () => {
+  it('rejects config missing logDir', async () => {
+    const config = {
+      sessionId: 'x',
+      guildToolUrl: 'http://x',
+      dbPath: '/tmp/x',
+      claudeArgs: [],
+      cwd: '/tmp',
+      env: {},
+      prompt: '',
+      tools: [],
+      startedAt: '2026-01-01T00:00:00Z',
+      provider: 'claude-code',
+    };
+    const stream = streamFromString(JSON.stringify(config));
+    await assert.rejects(
+      () => readConfigFromStdin(stream),
+      /Missing required config field: logDir/,
+    );
+  });
+
+  it('accepts config with logDir', async () => {
+    const config = makeConfig({ logDir: '/tmp/test-logs' });
+    const stream = streamFromString(JSON.stringify(config));
+    const result = await readConfigFromStdin(stream);
+    assert.equal(result.logDir, '/tmp/test-logs');
+  });
+});
+
+// ── runBabysitter log file integration ────────────────────────────────
+
+describe('runBabysitter() log file', () => {
+  let mockServer: Awaited<ReturnType<typeof startMockServer>> | null = null;
+  let tmpDir: string;
+  let originalWrite: typeof process.stderr.write;
+
+  beforeEach(() => {
+    originalWrite = process.stderr.write;
+  });
+
+  afterEach(async () => {
+    process.stderr.write = originalWrite;
+    if (mockServer) {
+      await mockServer.close();
+      mockServer = null;
+    }
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates log file when redirectStderrToFile is called before runBabysitter', async () => {
+    mockServer = await startMockServer(() => ({
+      status: 200,
+      body: { ok: true },
+    }));
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'log-e2e-'));
+    const logDir = path.join(tmpDir, 'logs');
+    const dbPath = path.join(tmpDir, 'guild.db');
+    const db = initTranscriptDb(Database, dbPath);
+
+    const config = makeConfig({
+      guildToolUrl: mockServer.url,
+      cwd: tmpDir,
+      dbPath,
+      logDir,
+      sessionId: 'log-sess-1',
+    });
+
+    // Redirect stderr before calling runBabysitter (mimics main())
+    const fd = redirectStderrToFile(config.logDir, config.sessionId);
+
+    const mockSpawn = (() => {
+      const proc = new EventEmitter() as EventEmitter & {
+        stdin: { write: (d: string) => void; end: () => void };
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        pid: number;
+      };
+      proc.stdin = { write: () => {}, end: () => {} };
+      proc.stdout = new EventEmitter();
+      proc.stderr = new EventEmitter();
+      proc.pid = 42;
+
+      setTimeout(() => proc.emit('close', 0), 50);
+      return proc;
+    }) as unknown as typeof import('node:child_process').spawn;
+
+    try {
+      await runBabysitter(config, { db, spawnFn: mockSpawn });
+    } finally {
+      try { fs.closeSync(fd); } catch { /* ok */ }
+    }
+
+    // Verify log file exists and contains the startup banner
+    const logPath = path.join(logDir, 'log-sess-1.log');
+    assert.ok(fs.existsSync(logPath), 'log file should exist');
+    const logContent = fs.readFileSync(logPath, 'utf-8');
+    assert.match(logContent, /\[babysitter\] session=log-sess-1/);
+    assert.match(logContent, /\[babysitter\] MCP proxy server listening on port/);
+
+    db.close();
+  });
+
+  it('forwards claude stderr to log file', async () => {
+    mockServer = await startMockServer(() => ({
+      status: 200,
+      body: { ok: true },
+    }));
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'log-claude-stderr-'));
+    const logDir = path.join(tmpDir, 'logs');
+    const dbPath = path.join(tmpDir, 'guild.db');
+    const db = initTranscriptDb(Database, dbPath);
+
+    const config = makeConfig({
+      guildToolUrl: mockServer.url,
+      cwd: tmpDir,
+      dbPath,
+      logDir,
+      sessionId: 'claude-stderr-1',
+    });
+
+    const fd = redirectStderrToFile(config.logDir, config.sessionId);
+
+    const mockSpawn = (() => {
+      const proc = new EventEmitter() as EventEmitter & {
+        stdin: { write: (d: string) => void; end: () => void };
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        pid: number;
+      };
+      proc.stdin = { write: () => {}, end: () => {} };
+      proc.stdout = new EventEmitter();
+      proc.stderr = new EventEmitter();
+      proc.pid = 42;
+
+      setTimeout(() => {
+        // Emit stderr data from "claude"
+        proc.stderr.emit('data', Buffer.from('claude error output\n'));
+        setTimeout(() => proc.emit('close', 0), 50);
+      }, 50);
+      return proc;
+    }) as unknown as typeof import('node:child_process').spawn;
+
+    try {
+      await runBabysitter(config, { db, spawnFn: mockSpawn });
+    } finally {
+      try { fs.closeSync(fd); } catch { /* ok */ }
+    }
+
+    const logPath = path.join(logDir, 'claude-stderr-1.log');
+    const logContent = fs.readFileSync(logPath, 'utf-8');
+    assert.ok(logContent.includes('claude error output'), 'log should contain claude stderr');
+
+    db.close();
+  });
+});
+
+// ── stderr isolation (real child process) ─────────────────────────────
+
+import { spawn as nodeSpawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+describe('stderr isolation', () => {
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('parent receives no babysitter stderr when logDir is configured', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stderr-isolation-'));
+    const logDir = path.join(tmpDir, 'logs');
+
+    const config = makeConfig({
+      sessionId: 'iso-sess-1',
+      logDir,
+      guildToolUrl: 'http://127.0.0.1:1', // unreachable — babysitter will fail
+      dbPath: path.join(tmpDir, 'nexus.db'),
+      cwd: tmpDir,
+    });
+
+    // Resolve babysitter script path
+    const thisFile = fileURLToPath(import.meta.url);
+    const babysitterPath = path.join(path.dirname(thisFile), 'babysitter.ts');
+
+    const child = nodeSpawn(
+      process.execPath,
+      [...process.execArgv, babysitterPath],
+      {
+        cwd: tmpDir,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: process.env,
+      },
+    );
+
+    // Write config and close stdin
+    child.stdin!.write(JSON.stringify(config));
+    child.stdin!.end();
+
+    // Collect stderr
+    const stderrChunks: Buffer[] = [];
+    child.stderr!.on('data', (chunk: Buffer) => {
+      stderrChunks.push(chunk);
+    });
+
+    // Wait for exit (with timeout)
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        resolve();
+      }, 15_000);
+      child.on('close', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+
+    // Key assertion: parent's captured stderr should be empty
+    const collectedStderr = Buffer.concat(stderrChunks).toString('utf-8');
+    assert.equal(collectedStderr, '', 'parent should receive no stderr from babysitter');
+
+    // Log file should exist and be non-empty
+    const logPath = path.join(logDir, 'iso-sess-1.log');
+    assert.ok(fs.existsSync(logPath), 'log file should exist');
+    const logContent = fs.readFileSync(logPath, 'utf-8');
+    assert.ok(logContent.length > 0, 'log file should be non-empty');
+    assert.match(logContent, /\[babysitter\]/, 'log should contain babysitter output');
+  });
+});
+
+// ── EPIPE survival (skipped) ──────────────────────────────────────────
+
+describe('EPIPE survival', () => {
+  it.skip('survives EPIPE on inherited stderr after guild restart', () => {
+    // OS-level fd lifecycle (closing the write end of a pipe that backs fd 2)
+    // is not reliably simulable in Node's test harness. The log-file-creation
+    // and stderr-isolation tests verify the redirect is in place, which is the
+    // mechanism that prevents EPIPE.
   });
 });

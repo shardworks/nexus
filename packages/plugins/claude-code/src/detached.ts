@@ -120,6 +120,12 @@ export function resolveDbPath(): string {
   return path.join(g.home, '.nexus', 'nexus.db');
 }
 
+/** Resolve the path to the guild's session log directory. */
+export function resolveLogDir(): string {
+  const g = guild();
+  return path.join(g.home, 'logs', 'sessions');
+}
+
 /**
  * Resolve the babysitter script path, picking the .ts source or .js compiled
  * output to match how this module itself was loaded.
@@ -148,6 +154,8 @@ export interface DetachedLaunchOptions {
   guildToolUrl?: string;
   /** Override database path (for testing). */
   dbPath?: string;
+  /** Override log directory (for testing). */
+  logDir?: string;
   /** Override poll interval in ms (for testing). */
   pollIntervalMs?: number;
   /** Override poll timeout in ms (for testing). */
@@ -199,6 +207,7 @@ export function buildBabysitterConfig(
     sessionId: config.sessionId,
     guildToolUrl: opts?.guildToolUrl ?? resolveGuildToolUrl(),
     dbPath: opts?.dbPath ?? resolveDbPath(),
+    logDir: opts?.logDir ?? resolveLogDir(),
     claudeArgs,
     cwd: config.cwd,
     env: config.environment ?? {},
@@ -370,7 +379,7 @@ export function launchDetached(
     });
 
     // Spawn the babysitter as a detached process.
-    // stdio: ['pipe', 'ignore', 'inherit'] — config via stdin, no stdout, stderr to parent
+    // stdio: ['pipe', 'ignore', 'ignore'] — config via stdin, no stdout, no stderr (babysitter logs to its own file)
     //
     // In source mode (.ts babysitter), forward the parent's execArgv so that
     // --experimental-transform-types (and friends) reach the child. Without
@@ -381,7 +390,7 @@ export function launchDetached(
       : [babysitterPath];
     const proc = spawnFn(process.execPath, nodeArgs, {
       cwd: config.cwd,
-      stdio: ['pipe', 'ignore', 'inherit'],
+      stdio: ['pipe', 'ignore', 'ignore'],
       detached: true,
       env: { ...process.env, ...config.environment },
     });
