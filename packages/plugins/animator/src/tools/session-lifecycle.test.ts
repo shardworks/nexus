@@ -160,6 +160,131 @@ describe('session-running tool', () => {
     assert.ok(callableBy.includes('anima'));
     assert.equal(sessionRunning.permission, 'write');
   });
+
+  it('already-running session refreshes lastActivityAt and cancelHandle only', async () => {
+    // Seed a running session with known values
+    await sessions.put({
+      id: 'ses-idem-001',
+      status: 'running',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      lastActivityAt: '2026-04-01T10:00:00Z',
+      metadata: { writId: 'wrt-orig' },
+    });
+
+    // Call with different metadata, startedAt, provider, and a cancelHandle
+    const result = await sessionRunning.handler({
+      sessionId: 'ses-idem-001',
+      startedAt: '2026-04-01T11:00:00Z',
+      provider: 'other-provider',
+      metadata: { writId: 'wrt-new' },
+      cancelHandle: { kind: 'local-pgid', pgid: 55555 },
+    });
+
+    // Return value should not include status
+    assert.deepEqual(result, { ok: true, sessionId: 'ses-idem-001' });
+
+    const doc = await sessions.get('ses-idem-001');
+    assert.ok(doc);
+    // lastActivityAt should be refreshed
+    assert.notEqual(doc.lastActivityAt, '2026-04-01T10:00:00Z');
+    // cancelHandle should be updated
+    assert.deepEqual(doc.cancelHandle, { kind: 'local-pgid', pgid: 55555 });
+    // metadata should NOT be overwritten
+    assert.deepEqual(doc.metadata, { writId: 'wrt-orig' });
+    // startedAt should NOT be overwritten
+    assert.equal(doc.startedAt, '2026-04-01T10:00:00Z');
+    // provider should NOT be overwritten
+    assert.equal(doc.provider, 'claude-code');
+  });
+
+  it('ready report against completed session does not regress state', async () => {
+    await sessions.put({
+      id: 'ses-term-run-001',
+      status: 'completed',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      exitCode: 0,
+    });
+
+    const result = await sessionRunning.handler({
+      sessionId: 'ses-term-run-001',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+    });
+
+    assert.deepEqual(result, { ok: true, sessionId: 'ses-term-run-001', status: 'completed' });
+
+    const doc = await sessions.get('ses-term-run-001');
+    assert.ok(doc);
+    assert.equal(doc.status, 'completed');
+  });
+
+  it('ready report against failed session does not regress state', async () => {
+    await sessions.put({
+      id: 'ses-term-run-002',
+      status: 'failed',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      exitCode: 1,
+      error: 'reconciled',
+    });
+
+    const result = await sessionRunning.handler({
+      sessionId: 'ses-term-run-002',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+    });
+
+    assert.deepEqual(result, { ok: true, sessionId: 'ses-term-run-002', status: 'failed' });
+
+    const doc = await sessions.get('ses-term-run-002');
+    assert.ok(doc);
+    assert.equal(doc.status, 'failed');
+  });
+
+  it('ready report against cancelled session does not regress state', async () => {
+    await sessions.put({
+      id: 'ses-term-run-003',
+      status: 'cancelled',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      error: 'User cancelled',
+    });
+
+    const result = await sessionRunning.handler({
+      sessionId: 'ses-term-run-003',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+    });
+
+    assert.deepEqual(result, { ok: true, sessionId: 'ses-term-run-003', status: 'cancelled' });
+
+    const doc = await sessions.get('ses-term-run-003');
+    assert.ok(doc);
+    assert.equal(doc.status, 'cancelled');
+  });
+
+  it('ready report against timeout session does not regress state', async () => {
+    await sessions.put({
+      id: 'ses-term-run-004',
+      status: 'timeout',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+    });
+
+    const result = await sessionRunning.handler({
+      sessionId: 'ses-term-run-004',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+    });
+
+    assert.deepEqual(result, { ok: true, sessionId: 'ses-term-run-004', status: 'timeout' });
+
+    const doc = await sessions.get('ses-term-run-004');
+    assert.ok(doc);
+    assert.equal(doc.status, 'timeout');
+  });
 });
 
 // ── session-record tool tests ──────────────────────────────────────
@@ -444,6 +569,51 @@ describe('DLQ drain', () => {
 
     const processed = await drainDlq(tmpDir);
     assert.equal(processed, 0);
+  });
+});
+
+// ── DLQ-before-reconciler ordering ────────────────────────────────
+
+describe('DLQ-before-reconciler ordering', () => {
+  beforeEach(() => setup());
+  afterEach(() => cleanup());
+
+  it('DLQ drain result takes precedence over reconciler staleness detection', async () => {
+    // Seed a stale running session (120s ago — well past 90s threshold)
+    const staleTime = new Date(Date.now() - 120_000).toISOString();
+    await sessions.put({
+      id: 'ses-order-001',
+      status: 'running',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      lastActivityAt: staleTime,
+    });
+
+    // Write a DLQ file with completed status for the same session
+    const dlqDir = path.join(tmpDir, '.nexus', 'dlq');
+    fs.mkdirSync(dlqDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dlqDir, 'ses-order-001.json'),
+      JSON.stringify({
+        sessionId: 'ses-order-001',
+        status: 'completed',
+        exitCode: 0,
+        costUsd: 1.23,
+      }),
+    );
+
+    // Run DLQ drain first, then orphan recovery (same order as animator start())
+    await drainDlq(tmpDir);
+    const recovered = await recoverOrphans(sessions, 0);
+
+    // The session should be completed (from DLQ), not failed (from reconciler)
+    const doc = await sessions.get('ses-order-001');
+    assert.ok(doc);
+    assert.equal(doc.status, 'completed', 'DLQ result should win over reconciler staleness');
+    assert.equal(doc.costUsd, 1.23, 'DLQ payload should be applied');
+
+    // Reconciler should have recovered 0 sessions (already terminal)
+    assert.equal(recovered, 0, 'reconciler should skip already-terminal session');
   });
 });
 

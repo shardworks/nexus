@@ -33,6 +33,7 @@ import {
   pollForTerminalStatus,
   pollForProcessInfo,
   launchDetached,
+  computeToolManifest,
 } from './detached.ts';
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -102,6 +103,113 @@ function makeSessionDoc(overrides?: Partial<SessionDoc>): SessionDoc {
     ...overrides,
   } as SessionDoc;
 }
+
+// ── computeToolManifest ───────────────────────────────────────────────
+
+function makeResolvedToolWithCallableBy(
+  name: string,
+  callableBy?: Array<'patron' | 'anima' | 'library'>,
+): ResolvedTool {
+  return {
+    definition: {
+      name,
+      description: `Tool: ${name}`,
+      params: z.object({}),
+      handler: () => ({ ok: true }),
+      ...(callableBy ? { callableBy } : {}),
+    },
+    pluginId: 'test-plugin',
+  };
+}
+
+describe('computeToolManifest()', () => {
+  it('filters out tools not callable by anima', () => {
+    const tools = [makeResolvedToolWithCallableBy('patron-only', ['patron'])];
+    const result = computeToolManifest(tools);
+
+    assert.equal(result.tools.length, 0);
+    // authorizedToolNames should only contain infrastructure tools
+    const nonInfra = result.authorizedToolNames.filter(
+      (n) => !['session-running', 'session-record', 'session-heartbeat'].includes(n),
+    );
+    assert.equal(nonInfra.length, 0);
+  });
+
+  it('includes tools callable by anima', () => {
+    const tools = [makeResolvedToolWithCallableBy('anima-tool', ['anima'])];
+    const result = computeToolManifest(tools);
+
+    assert.equal(result.tools.length, 1);
+    assert.equal(result.tools[0]!.definition.name, 'anima-tool');
+    assert.ok(result.authorizedToolNames.includes('anima-tool'));
+  });
+
+  it('includes tools with no callableBy (unrestricted)', () => {
+    const tools = [makeResolvedToolWithCallableBy('unrestricted-tool')];
+    const result = computeToolManifest(tools);
+
+    assert.equal(result.tools.length, 1);
+    assert.equal(result.tools[0]!.definition.name, 'unrestricted-tool');
+    assert.ok(result.authorizedToolNames.includes('unrestricted-tool'));
+  });
+
+  it('includes tools callable by multiple callers including anima', () => {
+    const tools = [makeResolvedToolWithCallableBy('multi-caller', ['patron', 'anima'])];
+    const result = computeToolManifest(tools);
+
+    assert.equal(result.tools.length, 1);
+    assert.ok(result.authorizedToolNames.includes('multi-caller'));
+  });
+
+  it('always appends infrastructure tool names to authorizedToolNames', () => {
+    const result = computeToolManifest([]);
+
+    assert.deepEqual(result.tools, []);
+    assert.deepEqual(result.authorizedToolNames, [
+      'session-running',
+      'session-record',
+      'session-heartbeat',
+    ]);
+  });
+
+  it('handles undefined tools input', () => {
+    const result = computeToolManifest(undefined);
+
+    assert.deepEqual(result.tools, []);
+    assert.deepEqual(result.authorizedToolNames, [
+      'session-running',
+      'session-record',
+      'session-heartbeat',
+    ]);
+  });
+
+  it('non-infrastructure authorizedToolNames match serialized tool names in order', () => {
+    const tools = [
+      makeResolvedToolWithCallableBy('tool-a', ['anima']),
+      makeResolvedToolWithCallableBy('tool-b', ['anima']),
+    ];
+    const result = computeToolManifest(tools);
+
+    assert.deepEqual(result.authorizedToolNames, [
+      'tool-a',
+      'tool-b',
+      'session-running',
+      'session-record',
+      'session-heartbeat',
+    ]);
+
+    // Serialize the returned tools and verify name order matches
+    const serialized = serializeTools(result.tools);
+    const serializedNames = serialized.map((t) => t.name);
+    assert.deepEqual(serializedNames, ['tool-a', 'tool-b']);
+
+    // Non-infrastructure prefix of authorizedToolNames matches serialized names
+    const nonInfra = result.authorizedToolNames.filter(
+      (n) => !['session-running', 'session-record', 'session-heartbeat'].includes(n),
+    );
+    assert.deepEqual(nonInfra, serializedNames);
+  });
+});
 
 // ── serializeTool ─────────────────────────────────────────────────────
 
@@ -316,6 +424,23 @@ describe('buildBabysitterConfig()', () => {
     );
 
     assert.deepEqual(bc.metadata, { writId: 'w-1', role: 'artificer' });
+  });
+
+  it('filters tools via computeToolManifest — excludes patron-only tools', () => {
+    const config = makeProviderConfig({
+      tools: [
+        makeResolvedToolWithCallableBy('anima-tool', ['anima']),
+        makeResolvedToolWithCallableBy('patron-tool', ['patron']),
+      ],
+    });
+
+    const bc = buildBabysitterConfig(config, {
+      guildToolUrl: 'http://x',
+      dbPath: '/tmp/x.db',
+    });
+
+    assert.equal(bc.tools.length, 1);
+    assert.equal(bc.tools[0]!.name, 'anima-tool');
   });
 });
 
@@ -877,5 +1002,65 @@ describe('launchDetached()', () => {
     assert.deepEqual(info, { kind: 'local-pgid', pgid: 77777 });
 
     await result;
+  });
+
+  it('authorizedTools in pending doc excludes patron-only tools', async () => {
+    const babysitterScript = path.join(tmpDir, 'babysitter.js');
+    fs.writeFileSync(babysitterScript, `
+      let data = '';
+      process.stdin.on('data', (chunk) => { data += chunk; });
+      process.stdin.on('end', () => { process.exit(0); });
+    `);
+
+    const writtenDocs = new Map<string, SessionDoc>();
+    const writeBook = createMockWritableBook(writtenDocs);
+
+    const readDocs = new Map<string, SessionDoc>();
+    readDocs.set('ses-test-001', makeSessionDoc({ status: 'completed', exitCode: 0 }));
+    const readBook = createMockSessionsBook(readDocs);
+
+    const config = makeProviderConfig({
+      cwd: tmpDir,
+      tools: [
+        makeResolvedToolWithCallableBy('anima-tool', ['anima']),
+        makeResolvedToolWithCallableBy('patron-tool', ['patron']),
+      ],
+    });
+
+    const { result } = launchDetached(config, {
+      babysitterPath: babysitterScript,
+      guildToolUrl: 'http://127.0.0.1:7471',
+      dbPath: path.join(tmpDir, 'nexus.db'),
+      sessionsBook: readBook,
+      writableSessionsBook: writeBook,
+      pollIntervalMs: 50,
+      pollTimeoutMs: 5000,
+    });
+
+    await result;
+
+    const pendingDoc = writtenDocs.get('ses-test-001');
+    assert.ok(pendingDoc, 'pending doc should have been written');
+    assert.ok(pendingDoc!.authorizedTools, 'should have authorizedTools');
+    assert.ok(
+      pendingDoc!.authorizedTools!.includes('anima-tool'),
+      'authorizedTools should include anima-tool',
+    );
+    assert.ok(
+      !pendingDoc!.authorizedTools!.includes('patron-tool'),
+      'authorizedTools should NOT include patron-tool',
+    );
+    assert.ok(
+      pendingDoc!.authorizedTools!.includes('session-running'),
+      'authorizedTools should include session-running',
+    );
+    assert.ok(
+      pendingDoc!.authorizedTools!.includes('session-record'),
+      'authorizedTools should include session-record',
+    );
+    assert.ok(
+      pendingDoc!.authorizedTools!.includes('session-heartbeat'),
+      'authorizedTools should include session-heartbeat',
+    );
   });
 });

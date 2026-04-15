@@ -46,6 +46,32 @@ export default tool({
     // may not have passed.
     const existing = await sessions.get(params.sessionId);
 
+    // Terminal-state guard: a late or duplicate ready report must not regress
+    // a session that has already reached a terminal state.
+    const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timeout', 'cancelled']);
+    if (existing && TERMINAL_STATUSES.has(existing.status)) {
+      console.warn(
+        `[animator] Ignoring session-running for ${params.sessionId} (already ${existing.status})`,
+      );
+      return { ok: true, sessionId: params.sessionId, status: existing.status };
+    }
+
+    // Already-running guard: only refresh lastActivityAt and cancelHandle.
+    // Do not overwrite metadata, startedAt, provider, or other fields that
+    // were set during the initial pending→running transition.
+    if (existing && existing.status === 'running') {
+      const update: SessionDoc = {
+        ...existing,
+        lastActivityAt: new Date().toISOString(),
+        ...(params.cancelHandle
+          ? { cancelHandle: { ...(existing.cancelHandle ?? {}), ...params.cancelHandle } }
+          : {}),
+      };
+      await sessions.put(update);
+      return { ok: true, sessionId: params.sessionId };
+    }
+
+    // Normal path: pending→running transition or cold start (no existing doc).
     const doc: SessionDoc = {
       ...(existing ?? {}),
       id: params.sessionId,

@@ -37,6 +37,38 @@ const POLL_TIMEOUT_MS = 24 * 60 * 60 * 1_000;
 /** Default tool server port (matches Instrumentarium default). */
 const DEFAULT_TOOL_SERVER_PORT = 7471;
 
+/** Infrastructure tools added to every detached session's authorized set. */
+const INFRASTRUCTURE_TOOLS: readonly string[] = [
+  'session-running',
+  'session-record',
+  'session-heartbeat',
+];
+
+/**
+ * Compute the tool manifest for a detached session.
+ *
+ * Filters the resolved tools by callableBy (only tools callable by 'anima'
+ * or unrestricted tools pass), then builds the authorized tool names list
+ * by appending infrastructure tool names.
+ *
+ * Returns:
+ * - tools: the filtered ResolvedTool[] (for serialization into BabysitterConfig)
+ * - authorizedToolNames: filtered tool names + infrastructure tool names (for SessionDoc)
+ */
+export function computeToolManifest(
+  tools: ResolvedTool[] | undefined,
+): { tools: ResolvedTool[]; authorizedToolNames: string[] } {
+  const input = tools ?? [];
+  const filtered = input.filter(
+    (rt) => !rt.definition.callableBy || rt.definition.callableBy.includes('anima'),
+  );
+  const authorizedToolNames = [
+    ...filtered.map((rt) => rt.definition.name),
+    ...INFRASTRUCTURE_TOOLS,
+  ];
+  return { tools: filtered, authorizedToolNames };
+}
+
 // ── Tool serialization ─────────────────────────────────────────────────
 
 /**
@@ -171,7 +203,7 @@ export function buildBabysitterConfig(
     cwd: config.cwd,
     env: config.environment ?? {},
     prompt: config.initialPrompt ?? '',
-    tools: serializeTools(config.tools ?? []),
+    tools: serializeTools(computeToolManifest(config.tools).tools),
     startedAt: new Date().toISOString(),
     provider: 'claude-code',
     metadata: opts?.metadata,
@@ -309,15 +341,10 @@ export function launchDetached(
   // Build babysitter config
   const babysitterConfig = buildBabysitterConfig(config, opts);
 
-  // Compute the full authorized tool set for this session: every tool the
-  // session was composed with, plus the two infrastructure tools it needs
+  // Compute the full authorized tool set for this session: every anima-callable
+  // tool the session was composed with, plus the infrastructure tools it needs
   // to report its own lifecycle back to the guild.
-  const authorizedTools = [
-    ...(config.tools?.map((rt) => rt.definition.name) ?? []),
-    'session-running',
-    'session-record',
-    'session-heartbeat',
-  ];
+  const { authorizedToolNames: authorizedTools } = computeToolManifest(config.tools);
 
   // Shared initialization promise: pre-write the pending record, then
   // spawn the babysitter. Both `result` and `processInfo` await this

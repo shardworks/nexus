@@ -676,7 +676,12 @@ export function createAnimator(): Plugin {
 
         const state = stacks.book<GuildStateDoc>('animator', 'state');
 
-        // Run DLQ drain, compute downtime credit, then orphan recovery in background.
+        // IMPORTANT: DLQ drain MUST complete before orphan recovery.
+        // DLQ files contain real terminal results from babysitters that couldn't
+        // reach the guild. If the reconciler runs first, it sees those sessions as
+        // stale (no recent heartbeat) and marks them failed — losing the real result.
+        // drainDlq() applies the correct terminal status; recoverOrphans() then
+        // correctly skips them as already-terminal.
         (async () => {
           try {
             await drainDlq(g.home);
