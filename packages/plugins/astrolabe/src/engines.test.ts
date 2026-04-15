@@ -615,8 +615,8 @@ describe('decision-review engine', () => {
       () => engine.run({ planId: plan.id }, reRunCtx),
       (err: Error) => {
         assert.ok(
-          err.message.includes('Unresolved decisions after patron review: D2'),
-          `Expected message about D2, got: ${err.message}`,
+          err.message.includes('inconsistent state') && err.message.includes('D2'),
+          `Expected inconsistent state message about D2, got: ${err.message}`,
         );
         return true;
       },
@@ -657,7 +657,7 @@ describe('decision-review engine', () => {
       () => engine.run({ planId: plan.id }, reRunCtx),
       (err: Error) => {
         assert.ok(
-          err.message.includes('Unresolved decisions after patron review: D1, D3'),
+          err.message.includes('inconsistent state') && err.message.includes('D1') && err.message.includes('D3'),
           `Expected D1 and D3 in message, got: ${err.message}`,
         );
         return true;
@@ -696,6 +696,269 @@ describe('decision-review engine', () => {
     assert.equal(finalPlan?.decisions?.[0].patronOverride, 'A custom override');
     assert.equal(finalPlan?.decisions?.[0].selected, undefined);
   });
+  // ── Invariant enforcement tests ──────────────────────────────────────
+
+  it('custom override clears stale selected (regression: dual-state bug)', async () => {
+    const engine = createDecisionReviewEngine(() => plansBook);
+    const decisions: Decision[] = [
+      {
+        id: 'D1',
+        scope: [],
+        question: 'Which approach?',
+        options: { A: 'Option A', B: 'Option B' },
+        recommendation: 'A',
+        selected: 'A', // stale pre-fill from analyst
+      },
+    ];
+
+    const plan = makePlan({ status: 'analyzing', decisions });
+    await plansBook.put(plan);
+
+    // First run
+    const firstResult = await engine.run({ planId: plan.id }, buildCtx());
+    const blocked = firstResult as { status: 'blocked'; condition: { requestId: string } };
+    const requestId = blocked.condition.requestId;
+
+    // Patron provides a custom override
+    await inputRequestsBook.patch(requestId, {
+      status: 'completed',
+      answers: { D1: { custom: 'Use twoPhaseRigTemplate and threePhaseRigTemplate' } },
+      updatedAt: new Date().toISOString(),
+    });
+
+    const reRunCtx = buildCtx({
+      priorBlock: { type: 'patron-input', condition: { requestId }, blockedAt: new Date().toISOString() },
+    });
+    const result = await engine.run({ planId: plan.id }, reRunCtx);
+    assert.equal(result.status, 'completed');
+
+    const finalPlan = await plansBook.get(plan.id);
+    assert.equal(finalPlan?.decisions?.[0].patronOverride, 'Use twoPhaseRigTemplate and threePhaseRigTemplate');
+    assert.equal(finalPlan?.decisions?.[0].selected, undefined);
+    // Verify the field is absent, not just undefined
+    assert.equal('selected' in (finalPlan?.decisions?.[0] ?? {}), false);
+  });
+
+  it('selected answer clears stale patronOverride', async () => {
+    const engine = createDecisionReviewEngine(() => plansBook);
+    const decisions: Decision[] = [
+      {
+        id: 'D1',
+        scope: [],
+        question: 'Which approach?',
+        options: { A: 'Option A', B: 'Option B' },
+        patronOverride: 'stale custom text', // stale override from prior run
+      },
+    ];
+
+    const plan = makePlan({ status: 'analyzing', decisions });
+    await plansBook.put(plan);
+
+    const firstResult = await engine.run({ planId: plan.id }, buildCtx());
+    const blocked = firstResult as { status: 'blocked'; condition: { requestId: string } };
+    const requestId = blocked.condition.requestId;
+
+    // Patron picks a listed option
+    await inputRequestsBook.patch(requestId, {
+      status: 'completed',
+      answers: { D1: { selected: 'B' } },
+      updatedAt: new Date().toISOString(),
+    });
+
+    const reRunCtx = buildCtx({
+      priorBlock: { type: 'patron-input', condition: { requestId }, blockedAt: new Date().toISOString() },
+    });
+    const result = await engine.run({ planId: plan.id }, reRunCtx);
+    assert.equal(result.status, 'completed');
+
+    const finalPlan = await plansBook.get(plan.id);
+    assert.equal(finalPlan?.decisions?.[0].selected, 'B');
+    assert.equal(finalPlan?.decisions?.[0].patronOverride, undefined);
+    assert.equal('patronOverride' in (finalPlan?.decisions?.[0] ?? {}), false);
+  });
+
+  it('patron picks a different listed option — selected updated, no patronOverride', async () => {
+    const engine = createDecisionReviewEngine(() => plansBook);
+    const decisions: Decision[] = [
+      {
+        id: 'D1',
+        scope: [],
+        question: 'Which approach?',
+        options: { A: 'Option A', B: 'Option B' },
+        recommendation: 'A',
+      },
+    ];
+
+    const plan = makePlan({ status: 'analyzing', decisions });
+    await plansBook.put(plan);
+
+    const firstResult = await engine.run({ planId: plan.id }, buildCtx());
+    const blocked = firstResult as { status: 'blocked'; condition: { requestId: string } };
+    const requestId = blocked.condition.requestId;
+
+    // Patron picks B instead of recommended A
+    await inputRequestsBook.patch(requestId, {
+      status: 'completed',
+      answers: { D1: { selected: 'B' } },
+      updatedAt: new Date().toISOString(),
+    });
+
+    const reRunCtx = buildCtx({
+      priorBlock: { type: 'patron-input', condition: { requestId }, blockedAt: new Date().toISOString() },
+    });
+    const result = await engine.run({ planId: plan.id }, reRunCtx);
+    assert.equal(result.status, 'completed');
+
+    const finalPlan = await plansBook.get(plan.id);
+    assert.equal(finalPlan?.decisions?.[0].selected, 'B');
+    assert.equal(finalPlan?.decisions?.[0].patronOverride, undefined);
+  });
+
+  it('invariant violation throws — both selected and patronOverride set', async () => {
+    // This test simulates a scenario where a decision somehow ends up
+    // with both fields after reconcile (shouldn't happen with correct code,
+    // but the validation catches it if it does).
+    const engine = createDecisionReviewEngine(() => plansBook);
+    const decisions: Decision[] = [
+      {
+        id: 'D1',
+        scope: [],
+        question: 'Q?',
+        options: { A: 'A' },
+        // Both set — violates invariant
+        selected: 'A',
+        patronOverride: 'custom text',
+      },
+      {
+        id: 'D2',
+        scope: [],
+        question: 'Q2?',
+        options: { X: 'X' },
+      },
+    ];
+
+    const plan = makePlan({ status: 'analyzing', decisions });
+    await plansBook.put(plan);
+
+    const firstResult = await engine.run({ planId: plan.id }, buildCtx());
+    const blocked = firstResult as { status: 'blocked'; condition: { requestId: string } };
+    const requestId = blocked.condition.requestId;
+
+    // Only answer D2 — D1 retains both fields since no answer overwrites it
+    // But wait: D1 already has both, and no answer for D1 means it keeps both
+    // Actually the filter checks (selected !== undefined) === (patronOverride !== undefined)
+    // D1: selected='A', patronOverride='custom text' → true === true → true → inconsistent ✓
+    // D2: answer { selected: 'X' } → selected='X', patronOverride=undefined → true === false → false → ok
+    await inputRequestsBook.patch(requestId, {
+      status: 'completed',
+      answers: { D2: { selected: 'X' } },
+      updatedAt: new Date().toISOString(),
+    });
+
+    const reRunCtx = buildCtx({
+      priorBlock: { type: 'patron-input', condition: { requestId }, blockedAt: new Date().toISOString() },
+    });
+
+    await assert.rejects(
+      () => engine.run({ planId: plan.id }, reRunCtx),
+      (err: Error) => {
+        assert.ok(
+          err.message.includes('inconsistent state') && err.message.includes('D1'),
+          `Expected inconsistent state error for D1, got: ${err.message}`,
+        );
+        return true;
+      },
+    );
+  });
+
+  it('invariant violation throws — neither selected nor patronOverride set', async () => {
+    const engine = createDecisionReviewEngine(() => plansBook);
+    const decisions: Decision[] = [
+      { id: 'D1', scope: [], question: 'Q1?', options: { A: 'A' } },
+      { id: 'D2', scope: [], question: 'Q2?', options: { X: 'X' } },
+    ];
+
+    const plan = makePlan({ status: 'analyzing', decisions });
+    await plansBook.put(plan);
+
+    const firstResult = await engine.run({ planId: plan.id }, buildCtx());
+    const blocked = firstResult as { status: 'blocked'; condition: { requestId: string } };
+    const requestId = blocked.condition.requestId;
+
+    // Only answer D1 — D2 has neither field
+    await inputRequestsBook.patch(requestId, {
+      status: 'completed',
+      answers: { D1: { selected: 'A' } },
+      updatedAt: new Date().toISOString(),
+    });
+
+    const reRunCtx = buildCtx({
+      priorBlock: { type: 'patron-input', condition: { requestId }, blockedAt: new Date().toISOString() },
+    });
+
+    await assert.rejects(
+      () => engine.run({ planId: plan.id }, reRunCtx),
+      (err: Error) => {
+        assert.ok(
+          err.message.includes('inconsistent state') && err.message.includes('D2'),
+          `Expected inconsistent state error for D2, got: ${err.message}`,
+        );
+        return true;
+      },
+    );
+  });
+
+  it('buildDecisionSummary emits one line per decision — selected-only and patronOverride-only', async () => {
+    const engine = createDecisionReviewEngine(() => plansBook);
+    const decisions: Decision[] = [
+      {
+        id: 'D1',
+        scope: [],
+        question: 'Pattern?',
+        options: { A: 'Strategy', B: 'Observer' },
+      },
+      {
+        id: 'D2',
+        scope: [],
+        question: 'Naming?',
+        options: { X: 'camelCase', Y: 'snake_case' },
+      },
+    ];
+
+    const plan = makePlan({ status: 'analyzing', decisions });
+    await plansBook.put(plan);
+
+    const firstResult = await engine.run({ planId: plan.id }, buildCtx());
+    const blocked = firstResult as { status: 'blocked'; condition: { requestId: string } };
+    const requestId = blocked.condition.requestId;
+
+    // D1: selected, D2: custom override
+    await inputRequestsBook.patch(requestId, {
+      status: 'completed',
+      answers: {
+        D1: { selected: 'A' },
+        D2: { custom: 'Use PascalCase for all identifiers' },
+      },
+      updatedAt: new Date().toISOString(),
+    });
+
+    const reRunCtx = buildCtx({
+      priorBlock: { type: 'patron-input', condition: { requestId }, blockedAt: new Date().toISOString() },
+    });
+    const result = await engine.run({ planId: plan.id }, reRunCtx);
+    const { decisionSummary } = (result as { status: 'completed'; yields: { decisionSummary: string } }).yields;
+
+    // D1 should have Selected line, not Patron override
+    assert.ok(decisionSummary.includes('**Selected:** Strategy'));
+    assert.ok(!decisionSummary.includes('**Patron override:** Strategy'));
+
+    // D2 should have Patron override line, not Selected
+    assert.ok(decisionSummary.includes('**Patron override:** Use PascalCase for all identifiers'));
+    // Should NOT have a Selected line for D2
+    const d2Section = decisionSummary.split('D2:')[1];
+    assert.ok(!d2Section.includes('**Selected:**'));
+  });
+
   // ── Analysis tags tests ──────────────────────────────────────────────
 
   it('decision with full analysis produces correct sorted tags', async () => {

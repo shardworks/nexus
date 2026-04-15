@@ -92,14 +92,11 @@ function buildDecisionSummary(decisions: Decision[], scope: ScopeItem[]): string
     parts.push('');
     for (const decision of decisions) {
       parts.push(`### ${decision.id}: ${decision.question}`);
-      const selectedKey = decision.selected ?? decision.recommendation;
-      if (selectedKey && decision.options[selectedKey]) {
-        parts.push(`**Selected:** ${decision.options[selectedKey]}`);
-      } else if (selectedKey) {
-        parts.push(`**Selected:** ${selectedKey}`);
-      }
       if (decision.patronOverride) {
         parts.push(`**Patron override:** ${decision.patronOverride}`);
+      } else if (decision.selected) {
+        const label = decision.options[decision.selected] ?? decision.selected;
+        parts.push(`**Selected:** ${label}`);
       }
       parts.push('');
     }
@@ -283,20 +280,25 @@ export function createDecisionReviewEngine(getPlansBook: () => Book<PlanDoc>): E
               const choiceAnswer = answer as ChoiceAnswer;
               if ('selected' in choiceAnswer) {
                 decision.selected = choiceAnswer.selected;
+                delete decision.patronOverride;
               } else if ('custom' in choiceAnswer) {
                 decision.patronOverride = choiceAnswer.custom;
+                delete decision.selected;
               }
             }
           }
         }
 
-        // ── Validate consistency ──────────────────────────────────
-        const unresolved = decisions.filter(
-          d => d.selected === undefined && d.patronOverride === undefined,
+        // ── Validate invariant: exactly one of selected / patronOverride ──
+        const inconsistent = decisions.filter(
+          d => (d.selected !== undefined) === (d.patronOverride !== undefined),
         );
-        if (unresolved.length > 0) {
-          const ids = unresolved.map(d => d.id).join(', ');
-          throw new Error(`Unresolved decisions after patron review: ${ids}`);
+        if (inconsistent.length > 0) {
+          const ids = inconsistent.map(d => d.id).join(', ');
+          throw new Error(
+            `Decisions in inconsistent state after reconcile (must have exactly one of ` +
+              `selected/patronOverride): ${ids}`,
+          );
         }
 
         const decisionSummary = buildDecisionSummary(decisions, scopeItems);
