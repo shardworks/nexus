@@ -95,9 +95,8 @@ Each decision needs:
 - `options` — key → description map of reasonable approaches (keep descriptions to one line each)
 - `recommendation` — the option key you recommend
 - `rationale` — why this option, in one line
+- `selected` — pre-fill with your recommendation. This enables a trust-and-submit review path: in high-trust or urgent situations the patron can accept all decisions as-is without touching each one. The patron changes `selected` only when overriding, and if they write a custom override the reconcile loop replaces `selected` with `patronOverride` automatically. Never set both yourself.
 - `analysis` — classification metadata (see below)
-
-Do **not** write to `selected` — that field is owned by the patron-review pass. The analyst writes `recommendation`; the patron's choice populates `selected` (or `patronOverride` for custom write-ins) during decision review.
 
 Order decisions by scope item, then by category (product → api → implementation).
 
