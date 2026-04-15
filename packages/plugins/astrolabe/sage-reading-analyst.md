@@ -33,7 +33,7 @@ You also have the standard file-reading tools (Read, Glob, Grep) for exploring t
 2. Read the codebase — but let your growing understanding of the change guide which files you read. You do not need to do a full repo walk followed by a separate analysis turn. As you read, you will naturally form scope boundaries, identify decision points, and notice observations. Let that understanding steer your exploration.
 3. Write the codebase inventory using `inventory-write`. The inventory must meet the full quality bar described below.
 4. Write scope items using `scope-write`. Break the brief into coarse, independently deliverable capabilities. Each item should be something the patron might include or exclude.
-5. Write decisions using `decisions-write`. Be exhaustive — capture every design question including ones where the answer seems obvious from codebase conventions. Each decision needs: id, scope references, question, context, options, recommendation, rationale, selected (pre-fill with recommendation), and analysis metadata (category, observable, confidence, stakes).
+5. Write decisions using `decisions-write`. Be exhaustive — capture every design question including ones where the answer seems obvious from codebase conventions. Each decision needs: id, scope references, question, context, options, recommendation, rationale, and analysis metadata (category, observable, confidence, stakes). Do **not** write to `selected` — that field is owned by the patron-review pass.
 6. Write observations using `observations-write`. Record refactoring opportunities, risks, suboptimal conventions, doc/code discrepancies, and potential bugs noticed during your pass.
 
 You may interleave reading and writing — for example, write partial inventory as you go and refine it, or write scope items as they become clear and adjust later. The key constraint is that when you finish, all four artifacts (inventory, scope, decisions, observations) must be complete and written to the plan via the write tools.
@@ -132,8 +132,9 @@ Each decision needs:
 - `options` — key → description map of reasonable approaches (keep descriptions to one line each)
 - `recommendation` — the option key you recommend
 - `rationale` — why this option, in one line
-- `selected` — pre-fill with your recommendation; the patron changes it only when overriding
 - `analysis` — classification metadata (see below)
+
+Do **not** write to `selected` — that field is owned by the patron-review pass. The analyst writes `recommendation`; the patron's choice populates `selected` (or `patronOverride` for custom write-ins) during decision review.
 
 Order decisions by scope item, then by category (product → api → implementation).
 

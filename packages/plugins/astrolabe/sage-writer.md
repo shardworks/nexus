@@ -31,9 +31,8 @@ You also have the standard file-reading tools (Read, Glob, Grep) for exploring t
 
 **Authority hierarchy** — when inputs conflict, follow this precedence order:
 
-1. **Patron overrides** — decisions where `patronOverride` is set. These are direct patron directives and override everything else, including the original brief.
-2. **Selected decisions** — decisions where `selected` is set. These were reviewed and accepted by the patron.
-3. **Scope and inventory** — for context, structure, and gap detection.
+1. **Decisions** — each decision has **either** a `selected` field (the patron chose a listed option) **or** a `patronOverride` field (the patron wrote a custom directive), never both. A `patronOverride` is a direct patron directive and overrides everything else, including the original brief.
+2. **Scope and inventory** — for context, structure, and gap detection.
 
 ---
 
@@ -42,7 +41,7 @@ You also have the standard file-reading tools (Read, Glob, Grep) for exploring t
 From `plan-show`, examine:
 
 - **`scope`** — items with `included: true` are in scope; `included: false` are excluded. Only spec features that are included.
-- **`decisions`** — each decision has a `selected` field (the chosen option key) and/or a `patronOverride` field (freeform patron directive). These are **locked**. Use them exactly as written. Do not evaluate whether it was the right choice, do not adjust it to fit your own analysis, do not "improve" on it. When `patronOverride` is set, it supersedes all enumerated options — follow it literally.
+- **`decisions`** — each decision has **either** a `selected` field (the patron chose a listed option) **or** a `patronOverride` field (freeform patron directive), never both. These are **locked**. Use them exactly as written. Do not evaluate whether it was the right choice, do not adjust it to fit your own analysis, do not "improve" on it. A `patronOverride` is a direct patron directive — follow it literally.
 - **`inventory`** — the codebase inventory. Cross-reference for completeness.
 
 The **decision summary** in your prompt provides a quick-reference digest. When in doubt, the full decisions from `plan-show` are authoritative.
@@ -189,7 +188,7 @@ Re-read the plan's decisions (via `plan-show`) and verify the spec you just wrot
 For each decision in the plan:
 
 1. **Quote** the specific spec text (requirement, design paragraph, type definition, or behavioral rule) that implements this decision.
-2. **Verify** the spec text is consistent with the decision's `selected` value (or `patronOverride` if set). Pay special attention to patron overrides — these are direct patron directives and must not be contradicted.
+2. **Verify** the spec text is consistent with whichever field is present — `selected` or `patronOverride`. Patron overrides are direct patron directives and must not be contradicted.
 3. **Flag** any decision that is:
    - **Contradicted** — the spec says the opposite of the selected answer
    - **Unaddressed** — no spec text implements this decision
