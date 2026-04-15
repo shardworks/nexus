@@ -26,20 +26,23 @@ export interface TestStacks {
   backend: StacksBackend;
   /** Ensure a book exists (bypasses kit contribution flow). */
   ensureBook(ownerId: string, bookName: string, schema?: { indexes?: (string | string[])[] }): void;
+  /** Seal the CDC registry (mirrors arbor's `phase:started` seal). */
+  sealCdc(): void;
 }
 
 export function createTestStacks(backendFactory: () => StacksBackend): TestStacks {
   const backend = backendFactory();
   backend.open({ home: '/tmp/stacks-test' });
 
-  const stacks = createTestableStacks(backend);
+  const { api, sealCdc } = createTestableStacks(backend);
 
   return {
-    stacks,
+    stacks: api,
     backend,
     ensureBook(ownerId: string, bookName: string, schema = {}) {
       backend.ensureBook({ ownerId, book: bookName }, schema);
     },
+    sealCdc,
   };
 }
 

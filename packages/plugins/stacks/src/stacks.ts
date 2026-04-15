@@ -45,6 +45,14 @@ class StacksApparatus {
     if (autoMigrate) {
       this.reconcileSchemas(ctx);
     }
+
+    // Seal the CDC registry once every apparatus has finished starting.
+    // Doing this at `phase:started` (not on first write) means one
+    // apparatus's startup writes don't lock out watch() registration in
+    // a dependent apparatus that starts later in the topological order.
+    ctx.on('phase:started', () => {
+      this.core.sealCdc();
+    });
   }
 
   stop(): void {

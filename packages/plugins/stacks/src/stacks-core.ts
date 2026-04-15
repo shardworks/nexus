@@ -106,6 +106,17 @@ export class StacksCore {
 
   constructor(readonly backend: StacksBackend) {}
 
+  /**
+   * Seal the CDC registry. After this is called, any further `watch()`
+   * calls throw. Invoked by the guild runtime (arbor) via the
+   * `phase:started` event, after all apparatus start() methods complete,
+   * so startup-time writes in one apparatus don't lock out watcher
+   * registration in a dependent apparatus that starts later.
+   */
+  sealCdc(): void {
+    this.cdc.lock();
+  }
+
   // ── API surface ───────────────────────────────────────────────────
 
   createApi(): StacksApi {
@@ -196,7 +207,6 @@ export class StacksCore {
 
   private async doPutInTx(ref: BookRef, entry: BookEntry): Promise<void> {
     const tx = this.requireTx();
-    this.cdc.lock();
 
     // Check cascade depth
     tx.depth++;
@@ -252,7 +262,6 @@ export class StacksCore {
     fields: Record<string, unknown>,
   ): Promise<BookEntry> {
     const tx = this.requireTx();
-    this.cdc.lock();
 
     tx.depth++;
     if (tx.depth > MAX_CASCADE_DEPTH) {
@@ -293,7 +302,6 @@ export class StacksCore {
 
   private async doDeleteInTx(ref: BookRef, id: string): Promise<void> {
     const tx = this.requireTx();
-    this.cdc.lock();
 
     tx.depth++;
     if (tx.depth > MAX_CASCADE_DEPTH) {

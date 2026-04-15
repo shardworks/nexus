@@ -525,7 +525,10 @@ export function createClerk(): Plugin {
         }, { failOnError: true });
 
         // ── One-shot migration: collapse legacy statuses to 'open' ──
-        // Runs after CDC watcher registration so Stacks allows writes.
+        // Safe to run inside start(): stacks only seals the CDC registry
+        // at phase:started (after every apparatus has started), so these
+        // writes don't lock out downstream apparatuses that register
+        // watchers in their own start().
         const legacyStatuses = ['ready', 'active', 'waiting'];
         for (const oldStatus of legacyStatuses) {
           const found = await writs.find({ where: [['status', '=', oldStatus]] });

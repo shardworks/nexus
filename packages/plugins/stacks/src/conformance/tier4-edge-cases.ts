@@ -55,13 +55,25 @@ export function tier4EdgeCases(backendFactory: () => StacksBackend): void {
       assert.deepStrictEqual(resultB, { id: 'x', name: 'B-item' });
     });
 
-    it('4.3 Watch registration after writes throws', async () => {
+    it('4.3 Watch registration after CDC seal throws', async () => {
+      // Writes during startup are allowed — they no longer lock the
+      // registry. Sealing happens when arbor fires `phase:started`,
+      // after every apparatus has finished starting. The test harness
+      // exposes `sealCdc()` to simulate that moment.
       const book = t.stacks.book<BookEntry>(OWNER, BOOK);
       await book.put({ id: 'a', name: 'Alice' });
 
+      // Before seal: watch() is still accepted even after a write.
+      assert.doesNotThrow(() =>
+        t.stacks.watch(OWNER, BOOK, () => {}),
+      );
+
+      t.sealCdc();
+
+      // After seal: further watch() calls throw.
       assert.throws(
         () => t.stacks.watch(OWNER, BOOK, () => {}),
-        /watch.*after.*writes|locked/i,
+        /watch.*startup|locked/i,
       );
     });
 

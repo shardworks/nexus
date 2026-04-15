@@ -1108,14 +1108,21 @@ stacks.book('plugin-b', 'items').get('x') → { id: 'x', name: 'B-item' }
 
 Same book name under different owners must be completely independent.
 
-### 4.3 Watch registration after writes throws
+### 4.3 Watch registration after CDC seal throws
 
 ```
 put({ id: 'a', name: 'Alice' })
+watch('owner', 'book', handler)   // OK — writes no longer seal
+sealCdc()                          // arbor fires phase:started
 watch('owner', 'book', handler) → throws
 ```
 
-Per the spec, watch must be called during startup before any writes.
+Per the spec, watch must be called during startup. The Stacks seals the
+CDC registry when arbor fires `phase:started`, after every apparatus has
+finished starting — not on the first write. This lets an apparatus run
+startup-time writes (e.g. idempotent migrations) without locking out a
+dependent apparatus that registers watchers later in the topological
+order.
 
 ### 4.4 Large document round-trip
 
@@ -1298,6 +1305,7 @@ The `helpers.ts` module should accept a `StacksBackend` factory function, so the
 export function createTestStacks(backendFactory: () => StacksBackend): {
   stacks: StacksApi;
   backend: StacksBackend;
+  sealCdc(): void;
 } {
   // Each test gets a fresh backend instance
   // Books are created fresh per test
@@ -1321,9 +1329,7 @@ For these, consider a small set of backend-specific tests that supplement the co
 
 ### Test data seeding pattern
 
-Tests that need pre-existing data before registering watchers face a timing challenge: the spec requires `watch()` before any writes, and the `CdcRegistry.lock()` activates on the first write through `StacksApi`.
-
-**Recommended approach:** Seed data at the backend level, bypassing the `StacksApi` lock mechanism:
+Tests that need pre-existing data before registering watchers no longer face the historical timing challenge, since writes no longer seal the CDC registry — only an explicit `sealCdc()` (or arbor's `phase:started` event in production) does. Tests can still use the backend-level seed helper when they want to set up state without going through `StacksApi`:
 
 ```typescript
 function seedDocument(

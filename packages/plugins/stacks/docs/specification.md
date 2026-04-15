@@ -372,7 +372,7 @@ This is the correct phase for external notification: Clockworks event emission, 
 
 **Choosing a phase:** Use Phase 1 when your handler's writes must succeed or fail atomically with the trigger — cascade status propagation, referential integrity, any logic where partial completion is a corrupt state. Use Phase 2 for notification, dispatch, and external system synchronization — Clockworks event emission, telemetry, audit logging. **If your Phase 1 handler produces effects outside the Stacks (sends a message, calls an external API), it probably belongs in Phase 2.** Transaction rollback cannot undo non-database side effects; a Phase 1 handler with external effects creates a false sense of atomicity.
 
-**Registration window:** `watch()` must be called during startup — before any writes occur. Calling `watch()` after the apparatus is in use is a programming error and throws.
+**Registration window:** `watch()` must be called during guild startup — from an apparatus's `start()` method. The Stacks seals the CDC registry when arbor fires the `phase:started` event, after every apparatus has finished starting. Calling `watch()` after the seal is a programming error and throws. Startup-time writes (e.g. idempotent data migrations in an apparatus's `start()`) do not seal the registry, so a dependent apparatus that starts later in the topological order can still register watchers.
 
 **Handler ordering:** Within each phase, handlers fire in registration order. All Phase 1 handlers complete before the transaction commits. All Phase 2 handlers fire after the commit. If apparatus A registers before apparatus B (i.e. A comes first in topological startup order), A's handler fires first within its phase.
 
@@ -839,7 +839,7 @@ The in-memory `StacksBackend` for tests ships inside `@shardworks/stacks` as a t
 Via the `guild()` singleton from `@shardworks/nexus-core` — same as all other plugin code. Handlers receive only the change event, no context parameter. Transaction binding is transparent via `AsyncLocalStorage`: Phase 1 handlers run inside an async context where all Stacks operations automatically join the active transaction. Phase 2 handlers run outside any transaction context. See §6.2.
 
 **Q: Registration timing enforcement**
-Option A: track a `started` flag, throw if `watch()` is called after the first write. Lightweight safety net — the practical risk of late registration is low, but the check is cheap.
+The Stacks tracks a `locked` flag on the CDC registry. Arbor fires `phase:started` after every apparatus `start()` completes; the Stacks subscribes to that event and calls `sealCdc()`, which flips the flag. Any later `watch()` call throws. Note: earlier drafts sealed the registry on first write, but that ordering broke dependent apparatuses — an upstream apparatus doing a startup migration locked out downstream apparatuses that had not yet run their `start()`.
 
 **Q: Cascade cycle detection?**
 Handled via cascade depth limiting (§6.3). A counter in the transaction context is incremented on each nested Phase 1 handler invocation. If it exceeds `MAX_CASCADE_DEPTH` (default 16, configurable), the write throws and the entire transaction rolls back. This catches accidental cycles without requiring graph analysis.

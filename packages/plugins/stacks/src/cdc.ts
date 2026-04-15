@@ -128,7 +128,9 @@ export class CdcRegistry {
 
   /**
    * Register a CDC handler for a book.
-   * Must be called before any writes (enforced by `locked` flag).
+   * Must be called during guild startup — arbor calls `sealCdc()` on the
+   * Stacks core via the `phase:started` event after all apparatus start()
+   * methods return, after which this throws.
    */
   watch(
     ownerId: string,
@@ -138,7 +140,7 @@ export class CdcRegistry {
   ): void {
     if (this.locked) {
       throw new Error(
-        `[stacks] watch() called after writes have started. ` +
+        `[stacks] watch() called after guild startup completed. ` +
         `Handlers must be registered during apparatus startup.`,
       );
     }

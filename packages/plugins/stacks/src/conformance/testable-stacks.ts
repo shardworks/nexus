@@ -10,7 +10,16 @@ import type { StacksBackend } from '../backend.ts';
 import type { StacksApi } from '../types.ts';
 import { StacksCore } from '../stacks-core.ts';
 
-export function createTestableStacks(backend: StacksBackend): StacksApi {
+export interface TestableStacks {
+  api: StacksApi;
+  /** Seal the CDC registry (mirrors arbor's `phase:started` seal). */
+  sealCdc(): void;
+}
+
+export function createTestableStacks(backend: StacksBackend): TestableStacks {
   const core = new StacksCore(backend);
-  return core.createApi();
+  return {
+    api: core.createApi(),
+    sealCdc: () => core.sealCdc(),
+  };
 }
