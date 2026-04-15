@@ -59,10 +59,11 @@ describe('Astrolabe supportKit shape', () => {
 
   // ── R5: writTypes ──────────────────────────────────────────────────
 
-  it('contributes brief writType', () => {
+  it('contributes exactly one brief writType', () => {
     const kit = getKit(plugin);
     const writTypes = kit.writTypes as Array<{ name: string; description?: string }>;
     assert.ok(Array.isArray(writTypes), 'writTypes must be an array');
+    assert.equal(writTypes.length, 1, 'must have exactly one writ type');
     const brief = writTypes.find(w => w.name === 'brief');
     assert.ok(brief, 'brief writType must exist');
     assert.ok(brief.description);
@@ -70,17 +71,56 @@ describe('Astrolabe supportKit shape', () => {
 
   // ── R6: roles ──────────────────────────────────────────────────────
 
-  it('contributes sage role with correct permissions', () => {
+  it('contributes sage-reader role with correct permissions', () => {
     const kit = getKit(plugin);
     const roles = kit.roles as Record<string, {
       permissions: string[];
       strict?: boolean;
       instructionsFile?: string;
     }>;
-    assert.ok(roles?.sage, 'sage role must exist');
-    assert.deepEqual(roles.sage.permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read']);
-    assert.equal(roles.sage.strict, true);
-    assert.ok(roles.sage.instructionsFile, 'instructionsFile must be set');
+    assert.ok(roles?.['sage-reader'], 'sage-reader role must exist');
+    assert.deepEqual(roles['sage-reader'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read']);
+    assert.equal(roles['sage-reader'].strict, true);
+    assert.equal(roles['sage-reader'].instructionsFile, 'sage-reader.md');
+  });
+
+  it('contributes sage-analyst role with correct permissions', () => {
+    const kit = getKit(plugin);
+    const roles = kit.roles as Record<string, {
+      permissions: string[];
+      strict?: boolean;
+      instructionsFile?: string;
+    }>;
+    assert.ok(roles?.['sage-analyst'], 'sage-analyst role must exist');
+    assert.deepEqual(roles['sage-analyst'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read']);
+    assert.equal(roles['sage-analyst'].strict, true);
+    assert.equal(roles['sage-analyst'].instructionsFile, 'sage-analyst.md');
+  });
+
+  it('contributes sage-writer role with correct permissions', () => {
+    const kit = getKit(plugin);
+    const roles = kit.roles as Record<string, {
+      permissions: string[];
+      strict?: boolean;
+      instructionsFile?: string;
+    }>;
+    assert.ok(roles?.['sage-writer'], 'sage-writer role must exist');
+    assert.deepEqual(roles['sage-writer'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read']);
+    assert.equal(roles['sage-writer'].strict, true);
+    assert.equal(roles['sage-writer'].instructionsFile, 'sage-writer.md');
+  });
+
+  it('contributes sage-reading-analyst role with correct permissions', () => {
+    const kit = getKit(plugin);
+    const roles = kit.roles as Record<string, {
+      permissions: string[];
+      strict?: boolean;
+      instructionsFile?: string;
+    }>;
+    assert.ok(roles?.['sage-reading-analyst'], 'sage-reading-analyst role must exist');
+    assert.deepEqual(roles['sage-reading-analyst'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read']);
+    assert.equal(roles['sage-reading-analyst'].strict, true);
+    assert.equal(roles['sage-reading-analyst'].instructionsFile, 'sage-reading-analyst.md');
   });
 
   // ── R7: engines ────────────────────────────────────────────────────
@@ -106,15 +146,41 @@ describe('Astrolabe supportKit shape', () => {
 
   // ── R8: rigTemplates and rigTemplateMappings ───────────────────────
 
-  it('contributes planning rig template with 9 engines', () => {
+  it('contributes two-phase-planning rig template with 8 engines', () => {
     const kit = getKit(plugin);
     const rigTemplates = kit.rigTemplates as Record<string, {
       engines: Array<{ id: string; designId: string }>;
       resolutionEngine?: string;
     }>;
-    assert.ok(rigTemplates?.planning, 'planning template must exist');
+    assert.ok(rigTemplates?.['two-phase-planning'], 'two-phase-planning template must exist');
 
-    const templateEngines = rigTemplates.planning.engines;
+    const templateEngines = rigTemplates['two-phase-planning'].engines;
+    assert.equal(templateEngines.length, 8);
+
+    const engineIds = templateEngines.map(e => e.id);
+    assert.deepEqual(engineIds, [
+      'plan-init',
+      'draft',
+      'reader-analyst',
+      'inventory-check',
+      'decision-review',
+      'spec-writer',
+      'spec-publish',
+      'seal',
+    ]);
+
+    assert.equal(rigTemplates['two-phase-planning'].resolutionEngine, 'spec-writer');
+  });
+
+  it('contributes three-phase-planning rig template with 9 engines', () => {
+    const kit = getKit(plugin);
+    const rigTemplates = kit.rigTemplates as Record<string, {
+      engines: Array<{ id: string; designId: string }>;
+      resolutionEngine?: string;
+    }>;
+    assert.ok(rigTemplates?.['three-phase-planning'], 'three-phase-planning template must exist');
+
+    const templateEngines = rigTemplates['three-phase-planning'].engines;
     assert.equal(templateEngines.length, 9);
 
     const engineIds = templateEngines.map(e => e.id);
@@ -130,13 +196,13 @@ describe('Astrolabe supportKit shape', () => {
       'seal',
     ]);
 
-    assert.equal(rigTemplates.planning.resolutionEngine, 'spec-writer');
+    assert.equal(rigTemplates['three-phase-planning'].resolutionEngine, 'spec-writer');
   });
 
-  it('maps brief to astrolabe.planning', () => {
+  it('maps brief to astrolabe.two-phase-planning', () => {
     const kit = getKit(plugin);
     const mappings = kit.rigTemplateMappings as Record<string, string>;
-    assert.equal(mappings?.brief, 'astrolabe.planning');
+    assert.equal(mappings?.brief, 'astrolabe.two-phase-planning');
   });
 
   // ── R9: tools ──────────────────────────────────────────────────────
@@ -194,9 +260,9 @@ describe('Astrolabe supportKit shape', () => {
     const rigTemplates = kit.rigTemplates as Record<string, {
       engines: Array<{ id: string; givens?: Record<string, unknown> }>;
     }>;
-    const animaEngines = ['reader', 'analyst', 'spec-writer'];
+    const animaEngines = ['reader-analyst', 'spec-writer'];
     for (const id of animaEngines) {
-      const eng = rigTemplates.planning.engines.find(e => e.id === id);
+      const eng = rigTemplates['two-phase-planning'].engines.find(e => e.id === id);
       assert.ok(eng, `Engine "${id}" must exist`);
       assert.ok(eng.givens?.writ, `Engine "${id}" must have writ given`);
       assert.ok(eng.givens?.prompt, `Engine "${id}" must have prompt given`);
@@ -211,25 +277,21 @@ describe('Astrolabe supportKit shape', () => {
     }
   });
 
-  it('analyst and spec-writer chain conversationId from upstream', () => {
+  it('no engine in either template has a conversationId given', () => {
     const kit = getKit(plugin);
     const rigTemplates = kit.rigTemplates as Record<string, {
       engines: Array<{ id: string; givens?: Record<string, unknown> }>;
     }>;
-    const analyst = rigTemplates.planning.engines.find(e => e.id === 'analyst');
-    assert.equal(analyst?.givens?.conversationId, '${yields.reader.conversationId}');
 
-    const specWriter = rigTemplates.planning.engines.find(e => e.id === 'spec-writer');
-    assert.equal(specWriter?.givens?.conversationId, '${yields.analyst.conversationId}');
-  });
-
-  it('reader has no conversationId', () => {
-    const kit = getKit(plugin);
-    const rigTemplates = kit.rigTemplates as Record<string, {
-      engines: Array<{ id: string; givens?: Record<string, unknown> }>;
-    }>;
-    const reader = rigTemplates.planning.engines.find(e => e.id === 'reader');
-    assert.equal(reader?.givens?.conversationId, undefined);
+    for (const templateName of ['two-phase-planning', 'three-phase-planning']) {
+      const engines = rigTemplates[templateName].engines;
+      for (const eng of engines) {
+        assert.equal(
+          eng.givens?.conversationId, undefined,
+          `Engine "${eng.id}" in ${templateName} must not have conversationId`,
+        );
+      }
+    }
   });
 
   it('spec-publish engine is upstream of seal', () => {
@@ -237,21 +299,8 @@ describe('Astrolabe supportKit shape', () => {
     const rigTemplates = kit.rigTemplates as Record<string, {
       engines: Array<{ id: string; upstream?: string[] }>;
     }>;
-    const seal = rigTemplates.planning.engines.find(e => e.id === 'seal');
+    const seal = rigTemplates['two-phase-planning'].engines.find(e => e.id === 'seal');
     assert.deepEqual(seal?.upstream, ['spec-publish']);
-  });
-
-  it('spec-writer prompt includes decisionSummary interpolation', () => {
-    const kit = getKit(plugin);
-    const rigTemplates = kit.rigTemplates as Record<string, {
-      engines: Array<{ id: string; givens?: Record<string, unknown> }>;
-    }>;
-    const specWriter = rigTemplates.planning.engines.find(e => e.id === 'spec-writer');
-    const prompt = specWriter?.givens?.prompt as string;
-    assert.ok(
-      prompt.includes('${yields.decision-review.decisionSummary}'),
-      'spec-writer prompt must include decisionSummary interpolation',
-    );
   });
 
   // ── Bare-level permission convention ──────────────────────────────
@@ -270,39 +319,71 @@ describe('Astrolabe supportKit shape', () => {
     }
   });
 
-  it('sage role grants resolve all expected tools after bare-level normalization', () => {
+  it('all four roles resolve all expected tools after bare-level normalization', () => {
     const kit = getKit(plugin);
     const tools = kit.tools as Array<{ name: string; permission?: string }>;
     const roles = kit.roles as Record<string, { permissions: string[]; strict?: boolean }>;
-    const sage = roles.sage;
-    assert.ok(sage, 'sage role must exist');
 
-    // Parse sage grants
-    const grants = sage.permissions.map(g => {
-      const idx = g.indexOf(':');
-      return idx === -1 ? null : { plugin: g.slice(0, idx), level: g.slice(idx + 1) };
-    }).filter(Boolean) as Array<{ plugin: string; level: string }>;
+    const roleNames = ['sage-reader', 'sage-analyst', 'sage-writer', 'sage-reading-analyst'];
+    for (const roleName of roleNames) {
+      const role = roles[roleName];
+      assert.ok(role, `${roleName} role must exist`);
 
-    // Simulate permission matching for astrolabe tools
-    const matched = tools.filter(t => {
-      if (!t.permission) return false;
-      return grants.some(g =>
-        (g.plugin === 'astrolabe' && g.level === t.permission) ||
-        (g.plugin === 'astrolabe' && g.level === '*') ||
-        (g.plugin === '*' && g.level === t.permission) ||
-        (g.plugin === '*' && g.level === '*'),
-      );
-    });
+      // Parse grants
+      const grants = role.permissions.map(g => {
+        const idx = g.indexOf(':');
+        return idx === -1 ? null : { plugin: g.slice(0, idx), level: g.slice(idx + 1) };
+      }).filter(Boolean) as Array<{ plugin: string; level: string }>;
 
-    const matchedNames = matched.map(t => t.name).sort();
-    assert.deepEqual(matchedNames, [
-      'decisions-write',
-      'inventory-write',
-      'observations-write',
-      'plan-list',
-      'plan-show',
-      'scope-write',
-      'spec-write',
-    ]);
+      // Simulate permission matching for astrolabe tools
+      const matched = tools.filter(t => {
+        if (!t.permission) return false;
+        return grants.some(g =>
+          (g.plugin === 'astrolabe' && g.level === t.permission) ||
+          (g.plugin === 'astrolabe' && g.level === '*') ||
+          (g.plugin === '*' && g.level === t.permission) ||
+          (g.plugin === '*' && g.level === '*'),
+        );
+      });
+
+      const matchedNames = matched.map(t => t.name).sort();
+      assert.deepEqual(matchedNames, [
+        'decisions-write',
+        'inventory-write',
+        'observations-write',
+        'plan-list',
+        'plan-show',
+        'scope-write',
+        'spec-write',
+      ], `${roleName} must resolve all 7 tools`);
+    }
+  });
+
+  // ── Negative assertions: old identifiers must not appear ──────────
+
+  it('old identifiers do not appear in roles', () => {
+    const kit = getKit(plugin);
+    const roles = kit.roles as Record<string, unknown>;
+    assert.equal(roles.sage, undefined, 'sage role must not exist');
+  });
+
+  it('old identifiers do not appear in rigTemplates', () => {
+    const kit = getKit(plugin);
+    const rigTemplates = kit.rigTemplates as Record<string, unknown>;
+    assert.equal(rigTemplates.planning, undefined, 'planning template must not exist');
+    assert.equal(rigTemplates['planning-mra'], undefined, 'planning-mra template must not exist');
+  });
+
+  it('old identifiers do not appear in rigTemplateMappings', () => {
+    const kit = getKit(plugin);
+    const mappings = kit.rigTemplateMappings as Record<string, string>;
+    assert.equal(mappings['brief-mra'], undefined, 'brief-mra mapping must not exist');
+  });
+
+  it('old identifiers do not appear in writTypes', () => {
+    const kit = getKit(plugin);
+    const writTypes = kit.writTypes as Array<{ name: string }>;
+    const briefMra = writTypes.find(w => w.name === 'brief-mra');
+    assert.equal(briefMra, undefined, 'brief-mra writ type must not exist');
   });
 });

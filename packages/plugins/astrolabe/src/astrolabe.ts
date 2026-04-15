@@ -38,108 +38,14 @@ import {
   createSpecPublishEngine,
 } from './engines/index.ts';
 
-import { planningMraTemplate } from './planning-mra.ts';
+import { twoPhaseRigTemplate } from './two-phase-planning.ts';
+import { threePhaseRigTemplate } from './three-phase-planning.ts';
 
 // ── Config resolver ──────────────────────────────────────────────────
 
 function resolveAstrolabeConfig(): AstrolabeConfig {
   return guild().guildConfig().astrolabe ?? {};
 }
-
-// ── Rig template ─────────────────────────────────────────────────────
-
-const planningTemplate: RigTemplate = {
-  engines: [
-    {
-      id: 'plan-init',
-      designId: 'astrolabe.plan-init',
-      upstream: [],
-      givens: { writ: '${writ}' },
-    },
-    {
-      id: 'draft',
-      designId: 'draft',
-      upstream: ['plan-init'],
-      givens: { writ: '${writ}' },
-    },
-    {
-      id: 'reader',
-      designId: 'anima-session',
-      upstream: ['draft'],
-      givens: {
-        role: 'astrolabe.sage',
-        prompt:
-          'MODE: READER\n\nPlan ID: ${yields.plan-init.planId}\n\n' +
-          'You are beginning a new planning session. Use plan-show to read the plan, ' +
-          'then inventory the codebase and write the inventory using inventory-write.',
-        cwd: '${yields.draft.path}',
-        writ: '${writ}',
-      },
-    },
-    {
-      id: 'inventory-check',
-      designId: 'astrolabe.inventory-check',
-      upstream: ['reader'],
-      givens: {
-        planId: '${yields.plan-init.planId}',
-      },
-    },
-    {
-      id: 'analyst',
-      designId: 'anima-session',
-      upstream: ['inventory-check'],
-      givens: {
-        role: 'astrolabe.sage',
-        prompt:
-          'MODE: ANALYST\n\nPlan ID: ${yields.plan-init.planId}\n\n' +
-          'You are continuing the reader conversation. Use plan-show to read the current ' +
-          'plan state, then produce scope, decisions, and observations using the write tools.',
-        cwd: '${yields.draft.path}',
-        conversationId: '${yields.reader.conversationId}',
-        writ: '${writ}',
-      },
-    },
-    {
-      id: 'decision-review',
-      designId: 'astrolabe.decision-review',
-      upstream: ['analyst'],
-      givens: {
-        planId: '${yields.plan-init.planId}',
-      },
-    },
-    {
-      id: 'spec-writer',
-      designId: 'anima-session',
-      upstream: ['decision-review'],
-      givens: {
-        role: 'astrolabe.sage',
-        prompt:
-          'MODE: WRITER\n\nPlan ID: ${yields.plan-init.planId}\n\n' +
-          'You are continuing the analyst conversation. Use plan-show to read the full ' +
-          'plan including patron-reviewed decisions, then write the specification using spec-write.' +
-          '\n\nDecision summary:\n${yields.decision-review.decisionSummary}',
-        cwd: '${yields.draft.path}',
-        conversationId: '${yields.analyst.conversationId}',
-        writ: '${writ}',
-      },
-    },
-    {
-      id: 'spec-publish',
-      designId: 'astrolabe.spec-publish',
-      upstream: ['spec-writer'],
-      givens: {
-        planId: '${yields.plan-init.planId}',
-      },
-    },
-    {
-      id: 'seal',
-      designId: 'seal',
-      upstream: ['spec-publish'],
-      givens: { abandon: true },
-    },
-  ],
-  resolutionEngine: 'spec-writer',
-};
 
 // ── Factory ──────────────────────────────────────────────────────────
 
@@ -350,14 +256,28 @@ export function createAstrolabe(): Plugin {
 
         writTypes: [
           { name: 'brief', description: 'A patron brief triggering the planning pipeline' },
-          { name: 'brief-mra', description: 'Experimental brief using merged reader/analyst pipeline' },
         ],
 
         roles: {
-          sage: {
+          'sage-reader': {
             permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read'],
             strict: true,
-            instructionsFile: 'sage.md',
+            instructionsFile: 'sage-reader.md',
+          },
+          'sage-analyst': {
+            permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read'],
+            strict: true,
+            instructionsFile: 'sage-analyst.md',
+          },
+          'sage-writer': {
+            permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read'],
+            strict: true,
+            instructionsFile: 'sage-writer.md',
+          },
+          'sage-reading-analyst': {
+            permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read'],
+            strict: true,
+            instructionsFile: 'sage-reading-analyst.md',
           },
         } satisfies Record<string, KitRoleDefinition>,
 
@@ -369,13 +289,12 @@ export function createAstrolabe(): Plugin {
         },
 
         rigTemplates: {
-          planning: planningTemplate,
-          'planning-mra': planningMraTemplate,
+          'two-phase-planning': twoPhaseRigTemplate,
+          'three-phase-planning': threePhaseRigTemplate,
         },
 
         rigTemplateMappings: {
-          brief: 'astrolabe.planning',
-          'brief-mra': 'astrolabe.planning-mra',
+          brief: 'astrolabe.two-phase-planning',
         },
 
         tools: [

@@ -142,13 +142,15 @@ The Astrolabe declares one book in Stacks:
 | Name | Description |
 |---|---|
 | `brief` | A patron brief triggering the planning pipeline |
-| `brief-mra` | Experimental brief using merged reader/analyst pipeline |
 
 ### Roles (contributed to Loom)
 
-| Role | Qualified Name | Permissions | Strict |
-|---|---|---|---|
-| `sage` | `astrolabe.sage` | `astrolabe:read`, `astrolabe:write`, `clerk:read` | `true` |
+| Role | Qualified Name | Permissions | Strict | Used In |
+|---|---|---|---|---|
+| `sage-reader` | `astrolabe.sage-reader` | `astrolabe:read`, `astrolabe:write`, `clerk:read` | `true` | three-phase reader stage |
+| `sage-analyst` | `astrolabe.sage-analyst` | `astrolabe:read`, `astrolabe:write`, `clerk:read` | `true` | three-phase analyst stage |
+| `sage-writer` | `astrolabe.sage-writer` | `astrolabe:read`, `astrolabe:write`, `clerk:read` | `true` | spec-writer stage (both templates) |
+| `sage-reading-analyst` | `astrolabe.sage-reading-analyst` | `astrolabe:read`, `astrolabe:write`, `clerk:read` | `true` | two-phase reader-analyst stage |
 
 ### Engines (contributed to Fabricator)
 
@@ -157,21 +159,32 @@ The Astrolabe declares one book in Stacks:
 | `astrolabe.plan-init` | Creates a PlanDoc from the brief writ; validates codex presence |
 | `astrolabe.inventory-check` | Validates that the reader produced a non-empty inventory |
 | `astrolabe.decision-review` | Two-pass engine: blocks for patron review, then reconciles answers |
+| `astrolabe.spec-publish` | Publishes the generated specification as a new writ |
 
 ### Rig Templates (contributed to Spider)
 
 | Template | Mapped Writ Type | Engines |
 |---|---|---|
-| `astrolabe.planning` | `brief` | plan-init → draft → reader → inventory-check → analyst → decision-review → spec-writer → spec-publish → seal |
-| `astrolabe.planning-mra` | `brief-mra` | plan-init → draft → reader-analyst → inventory-check → decision-review → spec-writer → spec-publish → seal |
+| `astrolabe.two-phase-planning` | `brief` (default) | plan-init → draft → reader-analyst → inventory-check → decision-review → spec-writer → spec-publish → seal |
+| `astrolabe.three-phase-planning` | — | plan-init → draft → reader → inventory-check → analyst → decision-review → spec-writer → spec-publish → seal |
 
 The `resolutionEngine` is `spec-writer` for both templates — the rig's completion summary comes from the specification writer session.
 
-#### `planning-mra` (experimental)
+#### Rig Template Selection
 
-The `planning-mra` template collapses the separate `reader` and `analyst` anima-session stages into a single `reader-analyst` stage. This stage produces inventory, scope, decisions, and observations in one session, avoiding the redundant codebase navigation observed in profiling. The downstream `inventory-check`, `decision-review`, `spec-writer`, and `spec-publish` engines are unchanged.
+The `brief` writ type maps to `astrolabe.two-phase-planning` by default. The two-phase template merges the reader and analyst into a single `reader-analyst` anima session that produces inventory, scope, decisions, and observations in one pass.
 
-The `reader-analyst` stage emits `metadata.engineId = 'reader-analyst'` on its session record so profiling can distinguish it from the separate reader and analyst sessions in the control template. Post a commission with `--type brief-mra` to route through this template.
+To use the three-phase template instead (separate reader and analyst sessions), add a rig template mapping override in `guild.json`:
+
+```json
+{
+  "spider": {
+    "rigTemplateMappings": {
+      "brief": "astrolabe.three-phase-planning"
+    }
+  }
+}
+```
 
 ### Tools
 

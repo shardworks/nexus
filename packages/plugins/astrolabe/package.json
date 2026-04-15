@@ -35,7 +35,10 @@
   },
   "files": [
     "dist",
-    "sage.md",
+    "sage-reader.md",
+    "sage-analyst.md",
+    "sage-writer.md",
+    "sage-reading-analyst.md",
     "pages"
   ],
   "publishConfig": {
