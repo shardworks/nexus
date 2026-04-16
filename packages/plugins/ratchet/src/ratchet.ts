@@ -495,6 +495,9 @@ export function createRatchet(): Plugin {
           clickExtract,
           clickTree,
         ],
+        pages: [
+          { id: 'clicks', title: 'Clicks', dir: 'pages/clicks' },
+        ],
       },
 
       provides: api,

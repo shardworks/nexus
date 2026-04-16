@@ -115,10 +115,15 @@ describe('Ratchet', () => {
       ]);
     });
 
-    it('has no pages in supportKit', () => {
+    it('supportKit includes pages contribution for clicks', () => {
       const plugin = createRatchet();
-      const app = (plugin as { apparatus: { supportKit: Record<string, unknown> } }).apparatus;
-      assert.strictEqual(app.supportKit.pages, undefined);
+      const p = plugin as { apparatus: { supportKit: { pages?: Array<{ id: string; title: string; dir: string }> } } };
+      const pages = p.apparatus.supportKit.pages;
+      assert.ok(Array.isArray(pages), 'pages should be an array');
+      const clicksPage = pages!.find((pg) => pg.id === 'clicks');
+      assert.ok(clicksPage, 'pages should include a clicks entry');
+      assert.strictEqual(clicksPage.title, 'Clicks');
+      assert.strictEqual(clicksPage.dir, 'pages/clicks');
     });
   });
 
@@ -1045,6 +1050,83 @@ describe('Ratchet', () => {
         secondLine.indexOf('Second'),
         'sibling goals should align in the same column',
       );
+    });
+
+    // ── JSON format (D1) ────────────────────────────────────────
+
+    it('returns structured ClickTree[] when format=json', async () => {
+      const root = await ratchet.create({ goal: 'Root goal' });
+      const child = await ratchet.create({ goal: 'Child', parentId: root.id });
+
+      const result = await clickTree.handler({ format: 'json' }) as ClickTree[];
+      assert.ok(Array.isArray(result), 'should return an array');
+      assert.strictEqual(result.length, 1, 'should have one root');
+      assert.strictEqual(result[0].click.id, root.id);
+      assert.strictEqual(result[0].click.goal, 'Root goal');
+      assert.strictEqual(result[0].children.length, 1);
+      assert.strictEqual(result[0].children[0].click.id, child.id);
+    });
+
+    it('returns empty array for format=json with no clicks', async () => {
+      const result = await clickTree.handler({ format: 'json' }) as ClickTree[];
+      assert.ok(Array.isArray(result));
+      assert.strictEqual(result.length, 0);
+    });
+
+    it('returns empty array for format=json when filters match nothing', async () => {
+      await ratchet.create({ goal: 'Live click' });
+      const result = await clickTree.handler({ format: 'json', status: 'parked' }) as ClickTree[];
+      assert.ok(Array.isArray(result));
+      assert.strictEqual(result.length, 0);
+    });
+
+    it('preserves default text output when format is omitted', async () => {
+      const root = await ratchet.create({ goal: 'Root goal' });
+      await ratchet.create({ goal: 'Child', parentId: root.id });
+
+      const defaultOutput = await clickTree.handler({}) as string;
+      const explicitTextOutput = await clickTree.handler({ format: 'text' }) as string;
+
+      // Explicit text === omitted default.
+      assert.strictEqual(typeof defaultOutput, 'string');
+      assert.strictEqual(defaultOutput, explicitTextOutput);
+    });
+
+    it('format=json honors status filter with prune semantics', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const live = await ratchet.create({ goal: 'Live child', parentId: root.id });
+      const parked = await ratchet.create({ goal: 'Parked child', parentId: root.id });
+      await ratchet.park(parked.id);
+      await ratchet.create({ goal: 'Grandchild of parked', parentId: parked.id });
+
+      const result = await clickTree.handler({ format: 'json', status: 'live' }) as ClickTree[];
+      assert.strictEqual(result.length, 1);
+      assert.strictEqual(result[0].children.length, 1, 'parked branch should be pruned');
+      assert.strictEqual(result[0].children[0].click.id, live.id);
+    });
+
+    it('format=json honors depth parameter', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const child = await ratchet.create({ goal: 'Child', parentId: root.id });
+      await ratchet.create({ goal: 'Grandchild', parentId: child.id });
+
+      const result = await clickTree.handler({ format: 'json', depth: 1 }) as ClickTree[];
+      assert.strictEqual(result.length, 1);
+      assert.strictEqual(result[0].children.length, 1);
+      // Depth 1 includes root (0) + children (1); grandchild (2) should be pruned
+      assert.strictEqual(result[0].children[0].children.length, 0);
+    });
+
+    it('format=json honors rootId parameter', async () => {
+      const a = await ratchet.create({ goal: 'Root A' });
+      await ratchet.create({ goal: 'Root B' });
+      const childOfA = await ratchet.create({ goal: 'Child of A', parentId: a.id });
+
+      const result = await clickTree.handler({ format: 'json', rootId: a.id }) as ClickTree[];
+      assert.strictEqual(result.length, 1);
+      assert.strictEqual(result[0].click.id, a.id);
+      assert.strictEqual(result[0].children.length, 1);
+      assert.strictEqual(result[0].children[0].click.id, childOfA.id);
     });
   });
 

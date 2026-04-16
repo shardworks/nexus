@@ -106,7 +106,9 @@ export default tool({
     'column before the goal, so the ID can be fed directly to click-show / click-extract / --root-id. ' +
     'Shows all root clicks and their descendants by default. ' +
     'Use --root-id to show a specific subtree, --status to filter by status (prune semantics), ' +
-    'and --depth to limit tree depth.',
+    'and --depth to limit tree depth. ' +
+    'Pass --format json to return the structured ClickTree[] forest instead of the rendered ASCII ' +
+    '(the default --format text preserves the existing CLI rendering exactly).',
   params: {
     rootId: z.string().optional().describe('Show subtree rooted at this click ID or prefix'),
     status: z
@@ -117,6 +119,10 @@ export default tool({
       .optional()
       .describe('Filter by click status (repeatable — pass multiple to match any). Non-matching nodes and their subtrees are pruned.'),
     depth: z.number().optional().describe('Maximum tree depth to display (0 = roots only)'),
+    format: z
+      .enum(['text', 'json'])
+      .default('text')
+      .describe('Output format. "text" returns the ASCII tree (default). "json" returns the structured ClickTree[] forest.'),
   },
   permission: 'read',
   handler: async (params) => {
@@ -131,6 +137,13 @@ export default tool({
       status: params.status,
       depth: params.depth,
     });
+
+    // JSON format: return the structured forest directly. Empty forests are
+    // represented by an empty array — callers (e.g. the Oculus clicks page)
+    // render their own "no clicks" state.
+    if (params.format === 'json') {
+      return forest;
+    }
 
     if (forest.length === 0) {
       if (params.rootId || params.status || params.depth !== undefined) {
