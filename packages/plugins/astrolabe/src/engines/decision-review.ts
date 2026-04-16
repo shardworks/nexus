@@ -139,8 +139,15 @@ export function createDecisionReviewEngine(getPlansBook: () => Book<PlanDoc>): E
         const decisions = plan.decisions ?? [];
         const scopeItems = plan.scope ?? [];
 
-        // Fast-path: no decisions and no scope
-        if (decisions.length === 0 && scopeItems.length === 0) {
+        // Reviewable decisions are those the analyst left for the patron by
+        // leaving `selected` unset. Pre-decided decisions (where the analyst
+        // already pre-filled `selected`) are auto-accepted — they skip the
+        // InputRequestDoc entirely and flow through reconcile unchanged.
+        const reviewableDecisions = decisions.filter(d => d.selected === undefined);
+
+        // Fast-path: nothing is reviewable. Scope items are implicitly
+        // auto-accepted in that case — the analyst has settled everything.
+        if (reviewableDecisions.length === 0) {
           await book.patch(planId, {
             status: 'writing',
             updatedAt: new Date().toISOString(),
@@ -151,11 +158,12 @@ export function createDecisionReviewEngine(getPlansBook: () => Book<PlanDoc>): E
           };
         }
 
-        // Build questions
+        // Build questions — only for reviewable decisions plus scope items.
+        // Pre-decided decisions are omitted from both `questions` and `answers`.
         const questions: Record<string, ChoiceQuestionSpec | BooleanQuestionSpec> = {};
         const answers: Record<string, AnswerValue> = {};
 
-        for (const decision of decisions) {
+        for (const decision of reviewableDecisions) {
           const tags = buildAnalysisTags(decision.analysis);
           const choiceSpec: ChoiceQuestionSpec = {
             type: 'choice',

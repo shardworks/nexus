@@ -702,7 +702,13 @@ describe('decision-review engine', () => {
   });
   // ── Invariant enforcement tests ──────────────────────────────────────
 
-  it('custom override clears stale selected (regression: dual-state bug)', async () => {
+  it('custom override leaves selected absent (regression: dual-state bug)', async () => {
+    // Under the razor semantics an analyst-set `selected` means the decision
+    // is auto-accepted and never appears in the InputRequestDoc — so the
+    // "stale pre-fill" scenario from the original regression can no longer
+    // occur. What still matters is the reconcile branch that ensures
+    // `selected` is absent (not just undefined) after a custom override
+    // answer — this test guards that invariant-preserving `delete`.
     const engine = createDecisionReviewEngine(() => plansBook);
     const decisions: Decision[] = [
       {
@@ -711,7 +717,8 @@ describe('decision-review engine', () => {
         question: 'Which approach?',
         options: { A: 'Option A', B: 'Option B' },
         recommendation: 'A',
-        selected: 'A', // stale pre-fill from analyst
+        // no `selected` — reviewable decision (per razor: left unset so the
+        // patron can weigh in).
       },
     ];
 
@@ -739,7 +746,8 @@ describe('decision-review engine', () => {
     const finalPlan = await plansBook.get(plan.id);
     assert.equal(finalPlan?.decisions?.[0].patronOverride, 'Use twoPhaseRigTemplate and threePhaseRigTemplate');
     assert.equal(finalPlan?.decisions?.[0].selected, undefined);
-    // Verify the field is absent, not just undefined
+    // Verify the field is absent, not just undefined — protects the invariant
+    // that exactly one of { selected, patronOverride } is set.
     assert.equal('selected' in (finalPlan?.decisions?.[0] ?? {}), false);
   });
 
@@ -1135,6 +1143,217 @@ describe('decision-review engine', () => {
 
     const q2 = inputReq?.questions['D2'] as Record<string, unknown>;
     assert.equal('tags' in q2, false);
+  });
+
+  // ── Analyst pre-decision / fast-path tests (razor + three defaults) ─
+
+  it('fast-path: all decisions pre-decided with no scope — skips gate', async () => {
+    // D10(a): when the analyst has pre-filled `selected` on every decision
+    // and there are no scope items, the engine must skip the patron-review
+    // gate entirely and transition straight to 'writing'.
+    const engine = createDecisionReviewEngine(() => plansBook);
+    const decisions: Decision[] = [
+      {
+        id: 'D1',
+        scope: [],
+        question: 'Q1?',
+        options: { A: 'A', B: 'B' },
+        recommendation: 'A',
+        selected: 'A', // analyst pre-decided
+      },
+      {
+        id: 'D2',
+        scope: [],
+        question: 'Q2?',
+        options: { X: 'X', Y: 'Y' },
+        recommendation: 'Y',
+        selected: 'Y', // analyst pre-decided
+      },
+    ];
+
+    const plan = makePlan({ status: 'analyzing', decisions, scope: [] });
+    await plansBook.put(plan);
+
+    const result = await engine.run({ planId: plan.id }, buildCtx());
+    assert.equal(result.status, 'completed');
+    assert.deepEqual((result as { status: 'completed'; yields: unknown }).yields, { decisionSummary: '' });
+
+    // Plan transitions straight to 'writing' — no 'reviewing' stop
+    const updated = await plansBook.get(plan.id);
+    assert.equal(updated?.status, 'writing');
+
+    // Analyst pre-fills are preserved on the plan
+    assert.equal(updated?.decisions?.[0].selected, 'A');
+    assert.equal(updated?.decisions?.[1].selected, 'Y');
+
+    // No InputRequestDoc was created
+    const reqs = await inputRequestsBook.find({
+      where: [['rigId', '=', 'rig-test-001'], ['engineId', '=', 'decision-review']],
+      limit: 10,
+    });
+    assert.equal(reqs.length, 0);
+  });
+
+  it('mixed: pre-decided decisions excluded, reviewable + scope surfaced', async () => {
+    // D10(b): only reviewable decisions (selected === undefined) populate the
+    // InputRequestDoc; pre-decided decisions are skipped entirely (no question,
+    // no answer). Scope items populate as before.
+    const engine = createDecisionReviewEngine(() => plansBook);
+    const decisions: Decision[] = [
+      {
+        id: 'D1',
+        scope: ['S1'],
+        question: 'Reviewable?',
+        options: { A: 'A', B: 'B' },
+        recommendation: 'A',
+        // no `selected` — reviewable
+      },
+      {
+        id: 'D2',
+        scope: ['S1'],
+        question: 'Pre-decided?',
+        options: { X: 'X', Y: 'Y' },
+        recommendation: 'X',
+        selected: 'X', // analyst pre-decided — should NOT appear in InputRequestDoc
+      },
+    ];
+    const scope: ScopeItem[] = [
+      { id: 'S1', description: 'Scope item', rationale: 'Reason', included: true },
+    ];
+
+    const plan = makePlan({ status: 'analyzing', decisions, scope });
+    await plansBook.put(plan);
+
+    const result = await engine.run({ planId: plan.id }, buildCtx());
+    assert.equal(result.status, 'blocked');
+    const blocked = result as { status: 'blocked'; blockType: string; condition: { requestId: string } };
+
+    const inputReq = await inputRequestsBook.get(blocked.condition.requestId);
+    assert.ok(inputReq);
+
+    // D1 (reviewable) is present; D2 (pre-decided) is absent entirely
+    assert.ok('D1' in inputReq.questions);
+    assert.equal('D2' in inputReq.questions, false);
+    assert.deepEqual(inputReq.answers['D1'], { selected: 'A' });
+    assert.equal('D2' in inputReq.answers, false);
+
+    // Scope still surfaces
+    assert.ok('scope:S1' in inputReq.questions);
+    assert.equal(inputReq.answers['scope:S1'], true);
+  });
+
+  it('fast-path: pre-decided only with scope — scope auto-accepted, no gate', async () => {
+    // D10(c) with D6 consistency: fast-path is scope-agnostic. When every
+    // decision is pre-decided — even if scope items exist — the engine
+    // skips the patron-review gate; scope items' existing `included`
+    // flags are implicitly accepted.
+    const engine = createDecisionReviewEngine(() => plansBook);
+    const decisions: Decision[] = [
+      {
+        id: 'D1',
+        scope: ['S1'],
+        question: 'All pre-decided?',
+        options: { A: 'A', B: 'B' },
+        recommendation: 'A',
+        selected: 'A',
+      },
+    ];
+    const scope: ScopeItem[] = [
+      { id: 'S1', description: 'In-scope item', rationale: 'R', included: true },
+      { id: 'S2', description: 'Out-of-scope item', rationale: 'R', included: false },
+    ];
+
+    const plan = makePlan({ status: 'analyzing', decisions, scope });
+    await plansBook.put(plan);
+
+    const result = await engine.run({ planId: plan.id }, buildCtx());
+
+    // Fast-path: plan transitions directly to 'writing', no block emitted
+    assert.equal(result.status, 'completed');
+    assert.deepEqual((result as { status: 'completed'; yields: unknown }).yields, { decisionSummary: '' });
+
+    const updated = await plansBook.get(plan.id);
+    assert.equal(updated?.status, 'writing');
+    assert.equal(updated?.decisions?.[0].selected, 'A');
+    // Scope inclusion flags are preserved exactly as the analyst set them
+    assert.equal(updated?.scope?.[0].included, true);
+    assert.equal(updated?.scope?.[1].included, false);
+
+    // No InputRequestDoc was created
+    const reqs = await inputRequestsBook.find({
+      where: [['rigId', '=', 'rig-test-001'], ['engineId', '=', 'decision-review']],
+      limit: 10,
+    });
+    assert.equal(reqs.length, 0);
+  });
+
+  it('reconcile preserves analyst-set `selected` through the round trip', async () => {
+    // D10(d): a mixed plan goes through first-pass (reviewable + pre-decided)
+    // and reconcile; the pre-decided decision's analyst-set `selected`
+    // must survive reconcile untouched, while the reviewable decision's
+    // patron answer lands correctly. The invariant check must pass.
+    const engine = createDecisionReviewEngine(() => plansBook);
+    const decisions: Decision[] = [
+      {
+        id: 'D1',
+        scope: [],
+        question: 'Reviewable?',
+        options: { A: 'A', B: 'B' },
+        recommendation: 'A',
+        // no `selected` — reviewable
+      },
+      {
+        id: 'D2',
+        scope: [],
+        question: 'Pre-decided?',
+        options: { X: 'X', Y: 'Y' },
+        recommendation: 'X',
+        selected: 'X', // analyst pre-decided
+      },
+    ];
+
+    const plan = makePlan({ status: 'analyzing', decisions });
+    await plansBook.put(plan);
+
+    // First run — blocks on D1 only; D2 is not in the InputRequestDoc
+    const firstResult = await engine.run({ planId: plan.id }, buildCtx());
+    assert.equal(firstResult.status, 'blocked');
+    const blocked = firstResult as { status: 'blocked'; condition: { requestId: string } };
+    const requestId = blocked.condition.requestId;
+
+    const inputReq = await inputRequestsBook.get(requestId);
+    assert.ok(inputReq);
+    assert.ok('D1' in inputReq.questions);
+    assert.equal('D2' in inputReq.questions, false);
+
+    // Patron answers D1 (overriding the recommendation)
+    await inputRequestsBook.patch(requestId, {
+      status: 'completed',
+      answers: { D1: { selected: 'B' } },
+      updatedAt: new Date().toISOString(),
+    });
+
+    // Re-run — reconcile must not throw the invariant error for D2
+    const reRunCtx = buildCtx({
+      priorBlock: { type: 'patron-input', condition: { requestId }, blockedAt: new Date().toISOString() },
+    });
+    const secondResult = await engine.run({ planId: plan.id }, reRunCtx);
+    assert.equal(secondResult.status, 'completed');
+
+    const finalPlan = await plansBook.get(plan.id);
+    assert.equal(finalPlan?.status, 'writing');
+    // D1: patron's selected answer landed
+    assert.equal(finalPlan?.decisions?.[0].selected, 'B');
+    assert.equal(finalPlan?.decisions?.[0].patronOverride, undefined);
+    // D2: analyst-set `selected` preserved unchanged
+    assert.equal(finalPlan?.decisions?.[1].selected, 'X');
+    assert.equal(finalPlan?.decisions?.[1].patronOverride, undefined);
+
+    // The decisionSummary yields both entries identically (no auto vs. confirmed marker)
+    const { decisionSummary } = (secondResult as { status: 'completed'; yields: { decisionSummary: string } }).yields;
+    assert.ok(decisionSummary.includes('D1'));
+    assert.ok(decisionSummary.includes('D2'));
+    assert.ok(decisionSummary.includes('**Selected:** X'));
   });
 
   it('decision with empty analysis object produces no tags', async () => {

@@ -70,9 +70,16 @@ brief writ posted
   │
   ├─ 6. Patron review (astrolabe.decision-review, clockwork)
   │     → reads decisions from the plans book
-  │     → creates an InputRequestDoc with each decision as a ChoiceQuestionSpec
-  │     → pre-fills answers with analyst recommendations
-  │     → blocks on patron-input until patron completes the request
+  │     → filters out decisions the analyst has already pre-decided
+  │       (`selected` set by the analyst — see the razor policy in the
+  │       sage instruction files); these are auto-accepted and excluded
+  │       from the InputRequestDoc entirely
+  │     → creates an InputRequestDoc with each reviewable decision as a
+  │       ChoiceQuestionSpec; pre-fills answers with analyst recommendations
+  │     → fast-paths to 'writing' when no reviewable decisions remain
+  │       (regardless of whether scope items exist) — scope items are
+  │       implicitly auto-accepted in that case
+  │     → otherwise blocks on patron-input until patron completes the request
   │     → on resume: reads completed InputRequestDoc, reconciles patron
   │       answers back into PlanDoc.decisions (selected / patronOverride)
   │     → validates all decisions resolved and scope is consistent
@@ -106,7 +113,7 @@ The Astrolabe contributes three clockwork engine designs to the Fabricator:
 
 - **`astrolabe.plan-init`** — creates a `PlanDoc` in the plans book, keyed by the brief writ ID. Sets initial status to `reading`. Yields `{ planId }` so downstream engines can reference the plan via `${yields.plan-init.planId}` in their givens/prompts.
 - **`astrolabe.inventory-check`** — reads the plans book, validates that an inventory document exists for the current plan. On success, transitions the plan status from `'reading'` to `'analyzing'`, marking the reading phase complete and enabling the analyst stage and subsequent `decision-review` engine to proceed. Fails the engine if no inventory is found.
-- **`astrolabe.decision-review`** — the patron interaction engine. On first run: reads decisions from the plans book, maps them to an `InputRequestDoc` (each `Decision` → `ChoiceQuestionSpec`), pre-fills answers with analyst recommendations, writes the request to the Spider's `input-requests` book, and returns `{ status: 'blocked', blockType: 'patron-input', condition: { requestId } }`. On re-run after block clears (detected via `priorBlock` in context): reads the completed `InputRequestDoc`, reconciles patron answers back into `PlanDoc.decisions` (setting `selected` and `patronOverride` fields), validates all decisions are resolved and scope is consistent, and completes normally. Yields `{ decisionSummary }` — a human-readable string summarizing all decisions and the patron's selections, for injection into the spec-writer's prompt via inline interpolation.
+- **`astrolabe.decision-review`** — the patron interaction engine. On first run: reads decisions from the plans book and partitions them into pre-decided decisions (where the analyst already set `selected` per the razor policy) and reviewable decisions (where `selected` is unset). Pre-decided decisions are auto-accepted and skipped entirely — they produce no `questions[id]` or `answers[id]` entry in the `InputRequestDoc`. If no reviewable decisions remain, the engine fast-paths to `'writing'` without opening the patron-review gate, regardless of whether scope items exist (scope items are implicitly auto-accepted). Otherwise the engine maps each reviewable decision to a `ChoiceQuestionSpec`, pre-fills answers with analyst recommendations, writes the request to the Spider's `input-requests` book, and returns `{ status: 'blocked', blockType: 'patron-input', condition: { requestId } }`. On re-run after block clears (detected via `priorBlock` in context): reads the completed `InputRequestDoc`, reconciles patron answers back into `PlanDoc.decisions` (setting `selected` and `patronOverride` fields), validates all decisions are resolved and scope is consistent, and completes normally. Pre-decided decisions flow through reconcile unchanged — the analyst-set `selected` is preserved and the invariant (exactly one of `selected` / `patronOverride`) still holds. Yields `{ decisionSummary }` — a human-readable string summarizing all decisions and the patron's selections, for injection into the spec-writer's prompt via inline interpolation. The decision summary renders auto-decided and patron-confirmed decisions identically.
 
 ---
 
@@ -181,7 +188,7 @@ interface Decision {
 
 ### Mapping to `patron-input` Questions
 
-The `astrolabe.decision-review` engine maps each `Decision` to a `ChoiceQuestionSpec` in the `InputRequestDoc`. The question key is the decision's `id`.
+The `astrolabe.decision-review` engine maps each **reviewable** `Decision` — one where `selected` is unset — to a `ChoiceQuestionSpec` in the `InputRequestDoc`. Pre-decided decisions (analyst-set `selected`) are skipped entirely: no `questions[id]` entry, no `answers[id]` entry. The question key is the decision's `id`.
 
 | Decision field | InputRequestDoc field |
 |---|---|
@@ -190,6 +197,7 @@ The `astrolabe.decision-review` engine maps each `Decision` to a `ChoiceQuestion
 | `context` + `rationale` | `questions[id].details` |
 | `options` | `questions[id].options` |
 | `recommendation` | pre-filled in `answers[id]` as `{ selected: recommendation }` |
+| `selected` (analyst pre-set) | decision omitted from `questions` and `answers` — auto-accepted |
 | — | `questions[id].allowCustom: true` (always, for patron overrides) |
 
 When the patron completes the request, the `decision-review` engine reconciles answers back:

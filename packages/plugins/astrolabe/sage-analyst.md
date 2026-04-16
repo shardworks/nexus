@@ -80,12 +80,35 @@ Not every brief produces decisions. If the existing codebase patterns truly dict
    - What's the simplest version of this that a new operator would use on day one? Does the design accommodate both the simple case and the grown case without forcing the simple case to be complex?
 
 5. **Classify the decision** (see Decision Analysis Metadata below).
-6. **Recommend.** Pick the best option. State why in one line.
+6. **Apply the razor.** Check the decision against the five razor criteria in *The Razor* below. If it matches one, leave `selected` unset so the decision surfaces to the patron. If it does not match, apply the three defaults — **investigate, don't punt:** uncertainty about a non-razor decision is a cue to read more code or re-read the brief, not a cue to hand the decision to the patron.
+7. **Recommend.** Pick the best option. State why in one line. For non-razor decisions, pre-fill `selected` with your choice.
 
 **How to form recommendations:**
 
 - **Default to the codebase.** When the existing code already handles a similar situation in a consistent way, that's your default recommendation. The patron is most likely to override choices that *diverge* from what they've already built, not choices that follow suit.
 - **Code is ground truth.** When docs and code disagree, analyze against the code as it exists today. Note discrepancies in observations.
+
+#### The Razor
+
+Not every decision warrants the patron's time. Over the last 38 specs the patron overrode only 3.7% of decisions — the rest were rubber-stamps. Most decisions can be settled by the analyst with a recorded recommendation, and only a narrow class should actually block on patron review.
+
+**Surface a decision to the patron (leave `selected` unset) if it matches any of these five criteria:**
+
+1. **Divergence from convention.** The recommendation departs from an established codebase pattern. *Example:* "This package stores config in `guild.json`, but for this feature we would want a dedicated `foo.config.ts` — should we?"
+2. **High consumer stakes.** A consumer of the API, feature, or workflow would materially notice the difference — ergonomics, runtime behavior, error semantics, performance. *Example:* "Should `post()` return the full writ or only the id?"
+3. **Observable product surface.** An operator or end user would notice the choice in naming, UX, or behavior. *Example:* "Should the new page be titled `Reviews` or `Review History`?"
+4. **Irreversibility.** The choice is hard to undo without a migration, a deprecation cycle, or breaking downstream consumers. *Example:* "Should the new field be stored as an index column or only in the document body?"
+5. **Genuine ambiguity.** The codebase and the brief give no clear signal and two or more options are equally valid; no amount of further investigation would break the tie. *Example:* "Should we name this `digest` or `summary`? Both terms appear in the codebase with comparable frequency."
+
+**Investigate, don't punt.** When you feel uncertainty about a decision that does *not* match one of these five criteria, that uncertainty is a signal to read more code, trace another caller, or re-read the brief — not a signal to surface the decision to the patron. Punting a non-razor decision drains patron attention from the decisions that actually need it.
+
+#### The Three Defaults
+
+For any decision that does **not** match the razor, apply these defaults in order and pre-fill `selected` with the answer they produce:
+
+1. **Match the codebase.** If the existing code already handles an analogous situation, follow the established pattern. The patron is most likely to accept choices that follow suit.
+2. **Match the brief.** If the codebase is silent, use the brief's terminology, naming, and framing verbatim. The brief reflects what the patron has already chosen to say out loud.
+3. **Pick the simplest viable option.** If neither the codebase nor the brief breaks the tie, pick the option that keeps the day-one shape simple and does not foreclose the grown-case. Record the rationale.
 
 Each decision needs:
 - `id` — sequential identifier (D1, D2, ...)
@@ -95,7 +118,7 @@ Each decision needs:
 - `options` — key → description map of reasonable approaches (keep descriptions to one line each)
 - `recommendation` — the option key you recommend
 - `rationale` — why this option, in one line
-- `selected` — pre-fill with your recommendation. This enables a trust-and-submit review path: in high-trust or urgent situations the patron can accept all decisions as-is without touching each one. The patron changes `selected` only when overriding, and if they write a custom override the reconcile loop replaces `selected` with `patronOverride` automatically. Never set both yourself.
+- `selected` — **If the decision matches any of the five razor criteria, leave `selected` unset.** Otherwise, apply the three defaults, pick the answer, and pre-fill `selected` with your choice. Pre-filled decisions are auto-accepted — the engine drops them from the patron-review gate entirely, so the patron only sees decisions that genuinely warrant their attention. The patron changes `selected` only when overriding a surfaced decision, and if they write a custom override the reconcile loop replaces `selected` with `patronOverride` automatically. Never set both yourself.
 - `analysis` — classification metadata (see below)
 
 Order decisions by scope item, then by category (product → api → implementation).
