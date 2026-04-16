@@ -256,6 +256,7 @@ export function createAstrolabe(): Plugin {
 
         writTypes: [
           { name: 'brief', description: 'A patron brief triggering the planning pipeline' },
+          { name: 'piece', description: 'An atomic task piece within a mandate, executed sequentially' },
         ],
 
         roles: {
