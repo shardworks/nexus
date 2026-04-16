@@ -428,6 +428,35 @@ export interface SealYields {
 }
 
 /**
+ * Yields from the `seal` clockwork engine when it catches a rebase-conflict
+ * failure from Scriptorium and grafts a manual-merge recovery tail instead
+ * of failing the rig. The original rig still has a terminal `seal` engine
+ * holding these yields; the retry seal that runs after the grafted
+ * manual-merge anima produces standard SealYields under a new engine id.
+ */
+export interface SealRecoveryYields {
+  /** Always false — the initial seal attempt did not succeed. */
+  ok: false;
+  /** The Scriptorium error message that triggered recovery. */
+  reason: string;
+  /** Always true — flags this record as a recovery handoff. */
+  grafted: true;
+}
+
+/**
+ * Yields from the `manual-merge` quick engine when the mender anima
+ * reconciles the draft branch against the target. A `SUCCESS` marker
+ * produces these yields; any other outcome throws in `collect()` and
+ * fails the engine.
+ */
+export interface ManualMergeYields {
+  /** The Animator session id. */
+  sessionId: string;
+  /** Always true — the mender emitted `### Merge: SUCCESS`. */
+  merged: true;
+}
+
+/**
  * Yields from the `implement` quick engine.
  * Set by the Spider's collect step when the Animator session completes.
  */

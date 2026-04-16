@@ -27,6 +27,7 @@
     "@shardworks/tools-apparatus": "workspace:*",
     "@shardworks/animator-apparatus": "workspace:*",
     "@shardworks/codexes-apparatus": "workspace:*",
+    "@shardworks/loom-apparatus": "workspace:*",
     "hono": "^4.7.11",
     "yaml": "^2.0.0",
     "zod": "4.3.6"
@@ -37,7 +38,8 @@
   },
   "files": [
     "dist",
-    "src/static"
+    "src/static",
+    "loom-roles"
   ],
   "publishConfig": {
     "exports": {

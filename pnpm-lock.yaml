@@ -305,6 +305,9 @@ importers:
       '@shardworks/fabricator-apparatus':
         specifier: workspace:*
         version: link:../fabricator
+      '@shardworks/loom-apparatus':
+        specifier: workspace:*
+        version: link:../loom
       '@shardworks/stacks-apparatus':
         specifier: workspace:*
         version: link:../stacks

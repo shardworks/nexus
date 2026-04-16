@@ -32,6 +32,7 @@ import type { StacksApi, Book, ReadOnlyBook, WhereClause } from '@shardworks/sta
 import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import type { FabricatorApi } from '@shardworks/fabricator-apparatus';
 import type { SessionDoc, AnimatorApi } from '@shardworks/animator-apparatus';
+import type { KitRoleDefinition } from '@shardworks/loom-apparatus';
 
 import type {
   RigDoc,
@@ -56,6 +57,7 @@ import {
   draftEngine,
   implementEngine,
   implementLoopEngine,
+  manualMergeEngine,
   pieceSessionEngine,
   reviewEngine,
   reviseEngine,
@@ -1340,7 +1342,18 @@ export function createSpider(): Plugin {
           const upstream = buildUpstreamMap(rig);
           const givens = resolveYieldRefs(engine.givensSpec, upstream);
           const context = { rigId: rig.id, engineId: engine.id, upstream };
-          const collectResult = await design.collect(engine.sessionId!, givens, context);
+          // Treat a collect() throw the same way tryRun() treats a run() throw:
+          // fail the engine with the error message and take the rig to stuck.
+          // This is what engines like manual-merge rely on to signal failure
+          // when the anima's output does not satisfy the output contract.
+          let collectResult: unknown;
+          try {
+            collectResult = await design.collect(engine.sessionId!, givens, context);
+          } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            await failEngine(rig, engine.id, errorMessage);
+            return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
+          }
           // Check for SpiderCollectResult shape (duck-typing)
           if (
             collectResult !== null &&
@@ -2007,7 +2020,12 @@ export function createSpider(): Plugin {
   return {
     apparatus: {
       requires: ['stacks', 'clerk', 'fabricator'],
-      recommends: ['oculus'],
+      // 'loom' is recommended (not required) so Spider still boots in guilds
+      // that do not install the Loom. When Loom is absent the mender role
+      // registration is simply inert — the manual-merge engine will fail at
+      // summon time if a rig ever tries to invoke it without Loom, which is
+      // the same failure mode as every other role-based quick engine.
+      recommends: ['oculus', 'loom'],
       consumes: ['blockTypes', 'rigTemplates', 'rigTemplateMappings'],
 
       supportKit: {
@@ -2024,11 +2042,23 @@ export function createSpider(): Plugin {
           draft:     draftEngine,
           implement: implementEngine,
           'implement-loop': implementLoopEngine,
+          'manual-merge': manualMergeEngine,
           'piece-session': pieceSessionEngine,
           review:    reviewEngine,
           revise:    reviseEngine,
           seal:      sealEngine,
         },
+        roles: {
+          // Mender — the anima the seal engine's recovery tail summons to
+          // reconcile rebase conflicts in a draft worktree. Push is
+          // explicitly NOT granted; the retry seal engine handles the push
+          // itself. See packages/plugins/spider/loom-roles/mender.md.
+          'mender': {
+            permissions: [],
+            strict: false,
+            instructionsFile: 'loom-roles/mender.md',
+          },
+        } satisfies Record<string, KitRoleDefinition>,
         blockTypes: {
           'writ-status':    writStatusBlockType,
           'scheduled-time': scheduledTimeBlockType,

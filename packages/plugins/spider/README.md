@@ -4,7 +4,7 @@ The Spider is the guild's rig execution engine. It spawns rigs for open writs, d
 
 The Spider maintains bidirectional CDC cascades between writs and rigs: when a rig reaches a terminal or `stuck` state, the associated writ is transitioned to match; when a writ is cancelled, the associated rig is cancelled (writs transitioning to `completed` or `failed` do not cancel the rig). Engine failures cascade the rig to `stuck` (a non-terminal "needs attention" state) and the writ to `stuck`, preserving the obligation for future retry. Guards in both handlers break the circular cascade path so that a writ cancellation that triggers a rig cancellation does not attempt to re-transition the already-terminal writ.
 
-Depends on `@shardworks/stacks-apparatus` for rig persistence, `@shardworks/fabricator-apparatus` to look up engine designs, `@shardworks/clerk-apparatus` to transition writs, and `@shardworks/animator-apparatus` to launch quick-engine sessions.
+Depends on `@shardworks/stacks-apparatus` for rig persistence, `@shardworks/fabricator-apparatus` to look up engine designs, `@shardworks/clerk-apparatus` to transition writs, and `@shardworks/animator-apparatus` to launch quick-engine sessions. Recommends `@shardworks/loom-apparatus` so the Spider's support kit can contribute the `mender` role used by the seal-engine recovery tail.
 
 ---
 
@@ -276,7 +276,7 @@ Config-defined templates and mappings override kit-contributed ones with the sam
 
 ## Support Kit
 
-The Spider contributes books and tools for rig inspection and control.
+The Spider contributes books, tools, engines, and a role for rig inspection and control.
 
 ### Books
 
@@ -294,6 +294,40 @@ The Spider contributes books and tools for rig inspection and control.
 | `rig-cancel` | `write` | Cancel a running, blocked, or stuck rig |
 | `crawl` | `write` | Execute a single crawl step |
 | `crawl-continual` | `write` | Poll `crawl()` in a loop until no work remains |
+
+### Engines
+
+| Engine | Kind | Description |
+|---|---|---|
+| `draft` | clockwork | Open a draft binding on the commission's target codex |
+| `implement` | quick | Run the implementation session |
+| `review` | quick | Run the review session |
+| `revise` | quick | Revise based on review findings |
+| `seal` | clockwork | Seal the draft (or grafts a recovery tail on rebase conflict — see below) |
+| `anima-session` | quick | General-purpose anima session engine |
+| `manual-merge` | quick | Grafted by the `seal` engine — summons the `spider.mender` anima to reconcile rebase conflicts |
+
+### Roles
+
+The Spider contributes one role via its support kit (registered with Loom as `spider.mender`):
+
+| Role | Permissions | Description |
+|---|---|---|
+| `mender` | *(none)* | A merge-conflict reconciliation anima. Summoned by the grafted `manual-merge` engine when Scriptorium reports a rebase conflict during sealing. The role has no tool permissions; it operates through the draft worktree's local `git` binary (available on the host). Its instructions live at `loom-roles/mender.md` in this package. |
+
+### Seal Recovery Tail
+
+The `seal` engine's default behavior is to try Scriptorium's `seal()` and return `SealYields` on success. When Scriptorium throws a rebase-conflict failure (message prefix `Sealing seized:`) and the optional `recover` given is not `false`, the engine instead completes with `SealRecoveryYields = { ok: false, reason, grafted: true }` and grafts a two-engine recovery tail onto the rig:
+
+1. `manual-merge` — summons the `spider.mender` anima in the draft worktree. The anima rebases the draft onto the latest target, resolves conflicts by hand, and emits `### Merge: SUCCESS` when the worktree is ready for a fast-forward push.
+2. `seal` (retry) — a second `seal` engine with `givens.recover = false`, preventing a second recovery layer.
+
+Recovery is disabled on three paths:
+- `abandon: true` — abandon failures always re-throw unchanged.
+- `recover: false` — the retry seal itself, so a second rebase conflict takes the rig to `stuck`.
+- Any error whose message does not start with `Sealing seized:` (auth, network, missing branch, push race, etc.) — re-throws unchanged.
+
+If the mender emits `### Merge: FAILURE`, emits no marker, or the retry seal also fails, the rig goes `stuck` via the standard `failEngine` path. There is no third attempt.
 
 ## Types
 

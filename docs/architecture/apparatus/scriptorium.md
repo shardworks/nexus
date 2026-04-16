@@ -596,6 +596,8 @@ Seal Attempt:
 
 The retry loop handles **contention** — when multiple animas seal to the same codex in quick succession, each fetch-rebase-ff cycle picks up the other's sealed inscriptions. Three retries (configurable via `settings.maxMergeRetries`) is sufficient for typical guild concurrency; the limit prevents infinite loops in pathological cases.
 
+> **Apparatus-level contract is unchanged.** The Scriptorium's `seal()` primitive still throws on a rebase conflict with the message prefix `Sealing seized:`. The Scriptorium does not auto-resolve, retry with an alternative strategy, or know anything about recovery. What changed lives one layer up: the Spider's `seal` engine now catches the `Sealing seized:` throw and grafts a `manual-merge → seal (retry)` tail that summons a `spider.mender` anima to reconcile the conflict inside the draft worktree. If the mender emits `### Merge: SUCCESS` the retry seal performs the push; if it emits `### Merge: FAILURE` (or no marker) the rig goes stuck exactly as before. See `docs/architecture/apparatus/spider.md#seal-clockwork` for the engine-level contract.
+
 ---
 
 ## Clone Readiness and Fetch Policy

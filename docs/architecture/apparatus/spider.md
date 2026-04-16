@@ -59,10 +59,16 @@ supportKit: {
     'revise':         reviseEngine,
     'seal':           sealEngine,
     'anima-session':  animaSessionEngine,
+    'manual-merge':   manualMergeEngine,
+  },
+  roles: {
+    'mender': { permissions: [], instructionsFile: 'loom-roles/mender.md' },
   },
   tools: [crawlOneTool, crawlContinualTool],
 },
 ```
+
+The `manual-merge` engine is grafted onto the rig by `seal` when Scriptorium reports a rebase-conflict failure; it is not part of the static five-engine template. The `mender` role is registered through Loom's role-kit contribution path so the Spider can summon the mender anima without the guild operator adding anything to `guild.json`. See the [`seal` engine section](#seal-clockwork) for the recovery tail contract.
 
 The Fabricator scans kit `engines` contributions at startup (same pattern as the Instrumentarium scanning tools). The Spider contributes its engines like any other kit — no special registration path.
 
@@ -299,6 +305,31 @@ interface SealYields {
 **Consumed by:** nothing (terminal). Used by the CDC handler for the writ transition resolution message.
 
 > **Note:** Field names mirror the Scriptorium's `SealResult` type. The Scriptorium's `seal()` method pushes the target branch to the remote after sealing.
+
+### `SealRecoveryYields`
+
+```typescript
+interface SealRecoveryYields {
+  ok: false                                  // always false — recovery is only reported on a failed attempt
+  reason: string                             // Scriptorium's `Sealing seized: …` message
+  grafted: true                              // marker that the engine queued a recovery tail instead of throwing
+}
+```
+
+**Produced by:** `seal` engine, but **only** when Scriptorium's `seal()` throws a rebase-conflict failure (message prefixed `Sealing seized:`) and recovery is enabled. The engine completes with these yields and grafts a `manual-merge → seal (retry)` tail onto the rig.
+**Consumed by:** `manual-merge` (reads `reason` out of upstream yields to include in the mender's prompt).
+
+### `ManualMergeYields`
+
+```typescript
+interface ManualMergeYields {
+  sessionId: string                          // the mender anima session
+  merged: true                               // reconciliation succeeded; the retry seal can now run
+}
+```
+
+**Produced by:** `manual-merge` engine when the mender anima emits `### Merge: SUCCESS`.
+**Consumed by:** nothing — the retry `seal` engine only needs the draft branch to be rebased in the worktree (a side effect of the mender's work), not any data flowing through yields.
 
 ---
 
@@ -579,39 +610,86 @@ Closes a draft binding — either sealing (merging inscriptions) or abandoning (
 
 **Givens:**
 - `abandon` *(optional, boolean)* — when truthy, abandons the draft instead of sealing. Used by rigs that need codebase access but don't produce inscriptions (e.g. planning rigs).
+- `recover` *(optional, boolean, default `true`)* — when set to `false`, disables the rebase-conflict recovery tail. Used by the grafted retry seal to prevent infinite recovery layering (one attempt only). The default `true` path is what the five-engine template spawns.
+
+**Happy path.** On successful `scriptorium.seal()`, the engine returns `SealYields` and the rig completes.
+
+**Abandon path.** When `givens.abandon` is truthy, the engine calls `abandonDraft` instead. Abandon failures always re-throw — recovery does not apply, and the rig goes stuck via the standard `failEngine` path.
+
+**Rebase-conflict recovery tail.** When `scriptorium.seal()` throws an error whose message starts with `Sealing seized:` (Scriptorium's rebase-conflict signal) **and** `givens.recover !== false`, the engine catches the throw and grafts a two-engine recovery tail instead of failing:
+
+1. `manual-merge` (quick) — summons the `spider.mender` anima in the draft worktree to rebase-and-resolve by hand.
+2. `seal` (clockwork, retry) — runs with `givens.recover = false` so a second failure cannot chain another recovery layer.
+
+The original seal engine completes (not fails) with `SealRecoveryYields = { ok: false, reason, grafted: true }`. The `graftTail` points at the retry seal's engine id, so any hypothetical downstream engine declared after the original seal waits for the retry seal to finish. Current templates have nothing after seal, but the contract is preserved for future templates.
+
+All other `seal()` throws — auth, network, missing branch, push race, any message not prefixed `Sealing seized:` — re-throw unchanged. Recovery is scoped narrowly to the one failure mode that mender can actually address.
 
 ```typescript
-async run(givens: Record<string, unknown>, ctx: EngineRunContext): Promise<EngineRunResult> {
+async run(givens, ctx) {
   const scriptorium = guild().apparatus<ScriptoriumApi>('codexes')
   const draft = ctx.upstream.draft as DraftYields
 
   if (givens.abandon) {
-    await scriptorium.abandonDraft({
-      codexName: draft.codexName,
-      branch: draft.branch,
-      force: true,
-    })
+    await scriptorium.abandonDraft({ /* ... */ })   // abandon failures re-throw
     return { status: 'completed', yields: { abandoned: true } }
   }
 
-  const result = await scriptorium.seal({
-    codexName: draft.codexName,
-    sourceBranch: draft.branch,
-  })
+  const recoverEnabled = givens.recover !== false
 
-  return {
-    status: 'completed',
-    yields: {
-      sealedCommit: result.sealedCommit,
-      strategy: result.strategy,
-      retries: result.retries,
-      inscriptionsSealed: result.inscriptionsSealed,
-    } satisfies SealYields,
+  try {
+    const result = await scriptorium.seal({ /* ... */ })
+    return { status: 'completed', yields: { /* SealYields */ } }
+  } catch (err) {
+    if (!recoverEnabled || !isRebaseConflictFailure(err)) throw err
+
+    const reason = err instanceof Error ? err.message : String(err)
+    const manualMergeEngineId = `${ctx.engineId}-manual-merge`
+    const retrySealEngineId   = `${ctx.engineId}-retry`
+
+    return {
+      status: 'completed',
+      yields: { ok: false, reason, grafted: true } satisfies SealRecoveryYields,
+      graft: [
+        {
+          id: manualMergeEngineId,
+          designId: 'manual-merge',
+          upstream: [ctx.engineId],
+          givens: { writ: '${writ}', role: 'spider.mender', cwd: '${yields.draft.path}' },
+        },
+        {
+          id: retrySealEngineId,
+          designId: 'seal',
+          upstream: [manualMergeEngineId],
+          givens: { recover: false },   // prevents a second recovery layer
+        },
+      ],
+      graftTail: retrySealEngineId,
+    }
   }
 }
 ```
 
 The seal engine does **not** transition the writ — that's handled by the CDC handler on the rigs book.
+
+### `manual-merge` (quick)
+
+Summoned by the `seal` engine's recovery tail. Runs the `spider.mender` anima inside the existing draft worktree to reconcile rebase conflicts so the retry seal can fast-forward. The mender is explicitly denied `git push` — the grafted retry seal performs the push.
+
+**Givens:**
+- `writ` *(WritDoc)* — the commission, so the mender can read the spec when deciding how to resolve conflicts.
+- `role` *(optional, string, default `'spider.mender'`)* — the anima role to summon.
+- `cwd` *(string)* — the draft worktree path. The seal engine resolves this from `${yields.draft.path}` at graft time.
+
+**Prompt composition.** The engine assembles the work prompt inline from four sources: the writ body (spec), Scriptorium's `Sealing seized:` reason (pulled from the upstream seal engine's `SealRecoveryYields`), draft context (codex name, branch, worktree path), and the current `git status --porcelain=v1 -b` output. The anima's identity and tools come from the Loom via the `spider.mender` role — the Spider contributes the role through its supportKit with no permissions (the mender only needs `git`, available on the host) and an `instructionsFile` pointing at `loom-roles/mender.md`.
+
+**Output contract.** The mender must end its final message with exactly one marker line:
+- `### Merge: SUCCESS` — reconciliation complete; the draft branch is rebased onto the target and ready for a fast-forward seal.
+- `### Merge: FAILURE` — the mender could not reconcile safely; reason explained in the lines above the marker.
+
+**Collect step.** The custom `collect()` reads `session.output`, matches the marker (case-insensitive, line-anchored), and either returns `ManualMergeYields = { sessionId, merged: true }` on SUCCESS, or throws on FAILURE or missing marker. The Spider's `tryCollect` catches the throw, marks the engine failed, and takes the rig to `stuck` — the retry seal never runs.
+
+The marker prefix (`### Merge:`) deliberately differs from the review engine's `### Overall:` prefix to avoid cross-talk.
 
 ---
 
