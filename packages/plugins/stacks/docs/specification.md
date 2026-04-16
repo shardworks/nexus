@@ -400,7 +400,7 @@ The Stacks enforces a maximum cascade depth to prevent infinite recursion from a
 
 This is a safety net, not a design constraint — legitimate cascade trees are unlikely to exceed single-digit depth. If a handler hits the limit, it indicates a cycle or a design problem in the cascade graph, not a need to raise the limit.
 
-`MAX_CASCADE_DEPTH` is configurable via the `stacks` plugin configuration section in `guild.json` (e.g., `"stacks": { "maxCascadeDepth": 32 }`). Raising it is discouraged without understanding why the limit was hit.
+`MAX_CASCADE_DEPTH` is a hardcoded constant (16). Making it configurable via guild.json is deferred — there is no current use case that requires a different value.
 
 #### Example: transactional writ status cascade
 
@@ -850,21 +850,4 @@ Via the `guild()` singleton from `@shardworks/nexus-core` — same as all other 
 The Stacks tracks a `locked` flag on the CDC registry. Arbor fires `phase:started` after every apparatus `start()` completes; the Stacks subscribes to that event and calls `sealCdc()`, which flips the flag. Any later `watch()` call throws. Note: earlier drafts sealed the registry on first write, but that ordering broke dependent apparatuses — an upstream apparatus doing a startup migration locked out downstream apparatuses that had not yet run their `start()`.
 
 **Q: Cascade cycle detection?**
-Handled via cascade depth limiting (§6.3). A counter in the transaction context is incremented on each nested Phase 1 handler invocation. If it exceeds `MAX_CASCADE_DEPTH` (default 16, configurable), the write throws and the entire transaction rolls back. This catches accidental cycles without requiring graph analysis.
-
----
-
-## 10. Relationship to Existing Code
-
-The following existing code will migrate to this contract once The Stacks ships:
-
-| Existing | Destination |
-|----------|-------------|
-| `arbor/src/db/` — `BookStore`, `sqlite-adapter`, `reconcile-books` | Moves into `@shardworks/stacks` as the SQLite `StacksBackend` implementation |
-| `arbor/src/arbor.ts` — `getDatabase()`, `reconcileBooks()` call | Removed from Arbor; delegated to The Stacks |
-| `core/src/book.ts` — `Book<T>`, `ReadOnlyBook<T>`, `BookQuery`, `Pagination` | Superseded by this spec's types (minor evolution) |
-| `core/src/books.ts` — `BookOptions` | Becomes `BookSchema` in `@shardworks/stacks` |
-| `nexus-clockworks/src/lib/db.ts` | Replace with `guild().apparatus<StacksApi>('stacks')` calls |
-| `nexus-sessions/src/lib/db.ts` | Replace with `guild().apparatus<StacksApi>('stacks')` calls |
-
-The `Arbor.getDatabase()` method (already `@deprecated`) is removed when The Stacks ships. No other public surface is breaking.
+Handled via cascade depth limiting (§6.3). A counter in the transaction context is incremented on each nested Phase 1 handler invocation. If it exceeds `MAX_CASCADE_DEPTH` (hardcoded at 16), the write throws and the entire transaction rolls back. This catches accidental cycles without requiring graph analysis.
