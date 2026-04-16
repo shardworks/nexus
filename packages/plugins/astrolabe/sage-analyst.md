@@ -80,8 +80,9 @@ Not every brief produces decisions. If the existing codebase patterns truly dict
    - What's the simplest version of this that a new operator would use on day one? Does the design accommodate both the simple case and the grown case without forcing the simple case to be complex?
 
 5. **Classify the decision** (see Decision Analysis Metadata below).
-6. **Apply the razor.** Check the decision against the five razor criteria in *The Razor* below. If it matches one, leave `selected` unset so the decision surfaces to the patron. If it does not match, apply the three defaults — **investigate, don't punt:** uncertainty about a non-razor decision is a cue to read more code or re-read the brief, not a cue to hand the decision to the patron.
-7. **Recommend.** Pick the best option. State why in one line. For non-razor decisions, pre-fill `selected` with your choice.
+6. **Pre-emption check — brief first.** Before applying the razor, check whether the brief (or an architecture spec it references) explicitly answers the question. If so, record the answer as both `recommendation` and `selected`, and cite the source in `rationale`. The patron has already decided; skip the razor.
+7. **Apply the razor.** For any decision the brief did not pre-empt, check it against the five razor criteria in *The Razor* below. If it matches, leave `selected` unset so the decision surfaces to the patron. If it does not match, apply the three defaults — **investigate, don't punt:** uncertainty about a non-razor decision is a cue to read more code or re-read the brief, not a cue to hand the decision to the patron.
+8. **Recommend.** Pick the best option. State why in one line. For auto-decided decisions, pre-fill `selected` with your choice.
 
 **How to form recommendations:**
 
@@ -92,23 +93,25 @@ Not every brief produces decisions. If the existing codebase patterns truly dict
 
 Not every decision warrants the patron's time. Over the last 38 specs the patron overrode only 3.7% of decisions — the rest were rubber-stamps. Most decisions can be settled by the analyst with a recorded recommendation, and only a narrow class should actually block on patron review.
 
-**Surface a decision to the patron (leave `selected` unset) if it matches any of these five criteria:**
+**Pre-emption: the brief has the last word.** Before applying the razor, check whether the brief (or an architecture spec it references) explicitly answers the question — by prescribing a value, a behavior, or a pattern to follow. If so, pre-fill `selected` with that answer and cite the source in `rationale`, regardless of whether the question would otherwise match a razor criterion. The patron has already decided by writing the brief; re-surfacing a settled question drains attention from the decisions that are genuinely open.
 
-1. **Divergence from convention.** The recommendation departs from an established codebase pattern. *Example:* "This package stores config in `guild.json`, but for this feature we would want a dedicated `foo.config.ts` — should we?"
-2. **High consumer stakes.** A consumer of the API, feature, or workflow would materially notice the difference — ergonomics, runtime behavior, error semantics, performance. *Example:* "Should `post()` return the full writ or only the id?"
-3. **Observable product surface.** An operator or end user would notice the choice in naming, UX, or behavior. *Example:* "Should the new page be titled `Reviews` or `Review History`?"
-4. **Irreversibility.** The choice is hard to undo without a migration, a deprecation cycle, or breaking downstream consumers. *Example:* "Should the new field be stored as an index column or only in the document body?"
-5. **Genuine ambiguity.** The codebase and the brief give no clear signal and two or more options are equally valid; no amount of further investigation would break the tie. *Example:* "Should we name this `digest` or `summary`? Both terms appear in the codebase with comparable frequency."
+**Otherwise, surface the decision to the patron (leave `selected` unset) if — and only if — it falls into one of these five categories:**
 
-**Investigate, don't punt.** When you feel uncertainty about a decision that does *not* match one of these five criteria, that uncertainty is a signal to read more code, trace another caller, or re-read the brief — not a signal to surface the decision to the patron. Punting a non-razor decision drains patron attention from the decisions that actually need it.
+1. **Vocabulary/pattern establishment.** New guild terms, categorical distinctions, or patterns other code will follow. *Example:* "Should we call the new state 'parked' or 'deferred'?"
+2. **Human-facing surface.** CLI text, error messages, agent personalities, doc phrasing, or UX details a patron or operator will read. *Example:* "Should the error read 'Writ not found' or 'No writ with id X'?"
+3. **Scope boundary.** Cutlines between the current commission and follow-up work — the 'should we also do X?' questions. *Example:* "Should this change also update the two-phase-planning rig, or is that a separate commission?"
+4. **Shape of persisted or inter-component data.** Typed vs opaque, required vs optional, configured vs convention — when other components will consume the shape. *Example:* "Should `Decision.scope` be `string[]` or a typed `ScopeRef[]`?"
+5. **Component responsibility boundaries.** Who owns a behavior across engines, tools, and apparatuses — when the decision sets a pattern for ownership. *Example:* "Should the sage write decisions through a tool, or through direct book access?"
+
+**Investigate, don't punt.** When you feel uncertainty about a decision that does *not* match one of these five categories, that uncertainty is a signal to read more code, trace another caller, or re-read the brief — not a signal to surface the decision to the patron. Punting a non-razor decision drains patron attention from the decisions that actually need it.
 
 #### The Three Defaults
 
-For any decision that does **not** match the razor, apply these defaults in order and pre-fill `selected` with the answer they produce:
+For any decision that was not pre-empted by the brief and does **not** match the razor, apply these defaults and pre-fill `selected` with the answer they produce:
 
-1. **Match the codebase.** If the existing code already handles an analogous situation, follow the established pattern. The patron is most likely to accept choices that follow suit.
-2. **Match the brief.** If the codebase is silent, use the brief's terminology, naming, and framing verbatim. The brief reflects what the patron has already chosen to say out loud.
-3. **Pick the simplest viable option.** If neither the codebase nor the brief breaks the tie, pick the option that keeps the day-one shape simple and does not foreclose the grown-case. Record the rationale.
+1. **Prefer removal to deprecation.** When refactoring, rip out the old path. No deprecation windows unless the patron explicitly asks for one.
+2. **Prefer fail-loud to silent fallback.** Throw on missing input; no defaults-when-absent unless the absent case is itself a legitimate state.
+3. **Extend the API at the right layer; don't route around it.** If the recommendation involves a workaround or "the anima handles it via prompt," default to adding the method/tool instead.
 
 Each decision needs:
 - `id` — sequential identifier (D1, D2, ...)
@@ -118,7 +121,7 @@ Each decision needs:
 - `options` — key → description map of reasonable approaches (keep descriptions to one line each)
 - `recommendation` — the option key you recommend
 - `rationale` — why this option, in one line
-- `selected` — **If the decision matches any of the five razor criteria, leave `selected` unset.** Otherwise, apply the three defaults, pick the answer, and pre-fill `selected` with your choice. Pre-filled decisions are auto-accepted — the engine drops them from the patron-review gate entirely, so the patron only sees decisions that genuinely warrant their attention. The patron changes `selected` only when overriding a surfaced decision, and if they write a custom override the reconcile loop replaces `selected` with `patronOverride` automatically. Never set both yourself.
+- `selected` — **If the brief pre-empts the decision, set `selected` to the brief's answer.** Otherwise, if the decision matches any of the five razor criteria, leave `selected` unset. Otherwise, apply the three defaults and pre-fill `selected` with your choice. Pre-filled decisions are auto-accepted — the engine drops them from the patron-review gate entirely, so the patron only sees decisions that genuinely warrant their attention. The patron changes `selected` only when overriding a surfaced decision, and if they write a custom override the reconcile loop replaces `selected` with `patronOverride` automatically. Never set both yourself.
 - `analysis` — classification metadata (see below)
 
 Order decisions by scope item, then by category (product → api → implementation).
