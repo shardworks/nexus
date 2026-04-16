@@ -334,7 +334,7 @@ async run(givens: Record<string, unknown>, context: EngineRunContext): Promise<E
   const writ = givens.writ as Writ
   const draft = context.upstream.draft as DraftYields
 
-  const prompt = `${writ.body}\n\nCommit all changes before ending your session.`
+  const prompt = `${writ.body}\n${EXECUTION_EPILOGUE}`
 
   const handle = animator.summon({
     role: givens.role as string,
@@ -348,7 +348,7 @@ async run(givens: Record<string, unknown>, context: EngineRunContext): Promise<E
 }
 ```
 
-The implement engine wraps the writ body with a commit instruction — each engine owns its own prompt contract rather than relying on `dispatch.sh` to append instructions to the writ body.
+The implement engine appends an execution epilogue to the writ body. When the body contains a `<task-manifest>` (produced by the Astrolabe sage-writer), the epilogue instructs the anima to work through tasks in order, run each task's `<verify>` command as a checkpoint, and commit after each task or logical group. When no manifest is present, behaviour is unchanged — the epilogue's instructions are conditional on the manifest's presence.
 
 **Collect step:** The implement engine has no `collect` method — the Spider uses the generic default: `{ sessionId, sessionStatus, output? }`.
 

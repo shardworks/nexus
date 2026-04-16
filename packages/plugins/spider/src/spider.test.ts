@@ -717,8 +717,37 @@ describe('Spider', () => {
       assert.equal(launchResult2?.action, 'engine-started');
 
       assert.equal(summonCalls.length, 1);
-      const expectedPrompt = 'Build the feature.\n\nCommit all changes before ending your session.';
-      assert.equal(summonCalls[0].prompt, expectedPrompt);
+      const prompt = summonCalls[0].prompt as string;
+      assert.ok(prompt.startsWith('Build the feature.\n'), 'prompt starts with writ body');
+      assert.ok(prompt.includes('Commit all changes before ending your session.'), 'prompt includes commit instruction');
+      assert.ok(prompt.includes('<task-manifest>'), 'prompt includes task manifest execution instructions');
+    });
+
+    it('execution epilogue includes task manifest processing rules', async () => {
+      const { clerk, spider, stacks, summonCalls } = fix;
+      await clerk.post({ title: 'My writ', body: 'Spec body here.' });
+      await spider.crawl(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) =>
+          e.id === 'draft'
+            ? { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/wt' } }
+            : e,
+        ),
+      });
+
+      await spider.crawl(); // launch implement
+      const prompt = summonCalls[0].prompt as string;
+
+      // Verify key task manifest execution rules are present
+      assert.ok(prompt.includes('Work through tasks in the order listed'), 'includes ordering rule');
+      assert.ok(prompt.includes('<verify>'), 'includes verify checkpoint rule');
+      assert.ok(prompt.includes('<done>'), 'includes done criterion rule');
+      assert.ok(prompt.includes('<files>'), 'includes files blast-radius rule');
+      assert.ok(prompt.includes('Commit after each task'), 'includes commit-per-task rule');
+      assert.ok(prompt.includes('verify scope independently'), 'includes scope independence rule');
     });
 
     it('session failure propagates: engine fails → rig stuck → writ transitions to stuck', async () => {

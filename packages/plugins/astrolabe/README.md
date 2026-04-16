@@ -63,7 +63,7 @@ interface PlanDoc {
   observations?: string; // Markdown: refactoring opportunities, risks, conventions
   scope?: ScopeItem[];  // What's in and what's out
   decisions?: Decision[]; // Architectural/design decisions with options
-  spec?: string;        // The generated specification (markdown)
+  spec?: string;        // The generated specification (implementation brief + task manifest)
   generatedWritId?: string; // ID of the generated mandate/configured writ type
   createdAt: string;
   updatedAt: string;
