@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clicks</title>
+  <style>
+    .error-msg { color: var(--red, #f7768e); font-size: 0.875rem; margin-top: 0.25rem; }
+    .warn-msg  { color: var(--yellow, #e0af68); font-size: 0.875rem; margin-top: 0.25rem; }
+
+    /* Split layout: tree on the left, persistent detail pane on the right. */
+    #clicks-layout {
+      display: grid;
+      grid-template-columns: minmax(320px, 1fr) minmax(360px, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      #clicks-layout { grid-template-columns: 1fr; }
+    }
+
+    /* Tree */
+    .tree-node { margin: 0; padding: 0; list-style: none; }
+    .tree-children { list-style: none; padding-left: 1.25rem; margin: 0; border-left: 1px dashed var(--border, #3b4261); }
+    .tree-row {
+      display: flex; align-items: center; gap: 0.35rem;
+      padding: 0.15rem 0.25rem; border-radius: 4px;
+      font-family: var(--font-mono, monospace);
+    }
+    .tree-row.selected {
+      background: rgba(125, 207, 255, 0.12);
+      outline: 1px solid var(--cyan, #7dcfff);
+    }
+    .tree-row:hover:not(.selected) { background: rgba(47, 53, 73, 0.3); }
+    .tree-toggle, .tree-focus, .tree-disclose, .tree-copy {
+      background: transparent; border: 1px solid var(--border, #3b4261);
+      color: var(--text-dim, #565f89);
+      padding: 0 0.3rem;
+      border-radius: 4px; cursor: pointer; font-size: 0.75rem;
+      min-width: 1.25rem; min-height: 1.25rem;
+    }
+    .tree-toggle:hover, .tree-focus:hover, .tree-disclose:hover, .tree-copy:hover {
+      color: var(--text, #c0caf5);
+      background: var(--surface2, #2f3549);
+    }
+    .tree-toggle.leaf { visibility: hidden; }
+    .tree-goal { cursor: pointer; padding: 0 0.25rem; }
+    .tree-goal:hover { text-decoration: underline; }
+    .tree-id { font-size: 0.75rem; opacity: 0.65; }
+    .tree-conclusion {
+      margin: 0.25rem 0 0.5rem 2.5rem;
+      padding: 0.5rem 0.75rem;
+      background: var(--surface, #24283b);
+      border-left: 2px solid var(--border, #3b4261);
+      font-size: 0.85rem;
+      white-space: pre-wrap; word-break: break-word;
+    }
+
+    /* Breadcrumb */
+    .breadcrumb {
+      display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center;
+      font-size: 0.85rem; margin-bottom: 0.5rem;
+    }
+    .breadcrumb a { color: var(--cyan, #7dcfff); cursor: pointer; }
+    .breadcrumb .sep { opacity: 0.4; }
+    .breadcrumb .current { opacity: 0.8; }
+
+    /* Detail pane */
+    #detail-pane { position: sticky; top: 8px; max-height: calc(100vh - 32px); overflow-y: auto; }
+    .detail-section { margin-bottom: 1rem; }
+    .detail-section h4 { margin: 0 0 0.4rem; font-size: 0.875rem; text-transform: uppercase; opacity: 0.6; }
+    .detail-grid { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; font-size: 0.875rem; }
+    .detail-grid dt { opacity: 0.6; }
+    .detail-grid dd { margin: 0; word-break: break-word; }
+    .detail-conclusion {
+      margin-top: 0.35rem;
+      padding: 0.5rem 0.75rem;
+      background: var(--surface, #24283b);
+      border-left: 2px solid var(--border, #3b4261);
+      white-space: pre-wrap; word-break: break-word;
+      font-size: 0.85rem;
+    }
+
+    .link-row {
+      display: flex; align-items: center; gap: 0.5rem;
+      font-size: 0.875rem; margin-bottom: 0.25rem; flex-wrap: wrap;
+    }
+    .link-dir { font-weight: bold; opacity: 0.5; }
+    .link-id { cursor: pointer; text-decoration: underline; color: var(--blue, #7aa2f7); }
+    .link-id.plain { cursor: default; text-decoration: none; color: inherit; opacity: 0.8; }
+    .link-id:hover:not(.plain) { opacity: 0.8; }
+    .link-meta { opacity: 0.65; }
+
+    .add-link-form {
+      display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: flex-end;
+      margin-top: 0.5rem;
+    }
+    .add-link-form input, .add-link-form select {
+      padding: 0.3rem 0.5rem;
+      background: var(--surface, #24283b);
+      border: 1px solid var(--border, #3b4261);
+      border-radius: 4px; color: inherit; font-size: 0.875rem;
+    }
+
+    .confirm-section {
+      display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: flex-end;
+      margin-top: 0.5rem; padding: 0.75rem;
+      background: var(--surface, #24283b);
+      border-radius: 6px;
+    }
+    .confirm-section label { font-size: 0.875rem; opacity: 0.8; }
+    .confirm-section input {
+      padding: 0.3rem 0.5rem;
+      background: var(--bg, #1a1b26);
+      border: 1px solid var(--border, #3b4261);
+      border-radius: 4px; color: inherit; min-width: 220px;
+    }
+
+    #post-section { margin-bottom: 16px; display: none; }
+    #post-section.open { display: block; }
+    .form-row { margin-bottom: 0.75rem; display: flex; flex-direction: column; gap: 0.3rem; }
+    .form-row label { font-size: 0.875rem; opacity: 0.7; }
+    .form-row input, .form-row textarea {
+      padding: 0.4rem 0.6rem;
+      background: var(--surface, #24283b);
+      border: 1px solid var(--border, #3b4261);
+      border-radius: 4px; color: inherit; font-size: 0.9rem;
+    }
+
+    .action-buttons { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .status-count-strip { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem; font-size: 0.875rem; }
+
+    .children-table tr { cursor: pointer; }
+    .children-table tr:hover { background: rgba(47, 53, 73, 0.3); }
+  </style>
+</head>
+<body>
+<main style="padding: 24px;">
+  <h1>Clicks</h1>
+
+  <div id="clicks-layout">
+    <div id="tree-area">
+      <div class="card" style="margin-bottom: 16px;">
+        <div class="toolbar" id="toolbar">
+          <button class="btn btn--primary" id="btn-new-click">New Click</button>
+          <button class="btn" id="btn-refresh">Refresh</button>
+          <span style="display:inline-flex;gap:0.4rem;flex-wrap:wrap;align-items:center">
+            <span style="font-size:0.875rem;opacity:0.6">Status:</span>
+            <button class="btn filter-btn active-filter" data-status="">All</button>
+            <button class="btn filter-btn active-filter" data-status="live">live</button>
+            <button class="btn filter-btn active-filter" data-status="parked">parked</button>
+            <button class="btn filter-btn active-filter" data-status="concluded">concluded</button>
+            <button class="btn filter-btn active-filter" data-status="dropped">dropped</button>
+          </span>
+        </div>
+      </div>
+
+      <div id="post-section" class="card">
+        <h3 id="post-title">New Click</h3>
+        <div class="form-row">
+          <label for="post-goal-input">Goal</label>
+          <input type="text" id="post-goal-input" placeholder="What are you tracking?" required>
+        </div>
+        <div class="form-row">
+          <label for="post-parent-input">Parent click ID (optional)</label>
+          <input type="text" id="post-parent-input" placeholder="c-... (prefix ok)">
+        </div>
+        <div class="action-buttons">
+          <button class="btn btn--primary" id="post-submit-btn">Create Click</button>
+          <button class="btn" id="post-cancel-btn">Cancel</button>
+        </div>
+        <div id="post-error" class="error-msg" style="display:none"></div>
+      </div>
+
+      <div class="card" style="margin-bottom: 16px;">
+        <div id="breadcrumb-bar" class="breadcrumb" style="display:none"></div>
+        <div id="tree-container"></div>
+      </div>
+    </div>
+
+    <div id="detail-pane" class="card">
+      <div id="detail-empty" class="empty-state">Select a click to see its detail.</div>
+      <div id="detail-content" style="display:none"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+  (() => {
+    // ── State ──────────────────────────────────────────────────────────
+    const ALL_STATUSES = ['live', 'parked', 'concluded', 'dropped'];
+    const LINK_TYPES = ['related', 'commissioned', 'supersedes', 'depends-on'];
+    const TERMINAL_STATUSES = new Set(['concluded', 'dropped']);
+
+    let forest = [];                         // ClickTree[] from the server
+    let activeStatuses = new Set(ALL_STATUSES);
+    let collapsed = new Set();               // click ids whose children are hidden
+    let disclosed = new Set();               // terminal click ids with expanded inline conclusion
+    let scopedRootId = null;                 // ?root=<id>
+    let selectedId = null;                   // currently selected click (deep: the one in the pane)
+    let selectedDetail = null;               // enriched click-show response for selectedId
+    let linkMetaCache = {};                  // id -> { goal?: string, title?: string } | null
+    let confirmPending = null;               // { action: 'conclude' | 'drop', text: string }
+
+    // ── Helpers ────────────────────────────────────────────────────────
+
+    async function api(method, path, body) {
+      const opts = { method, headers: { 'Content-Type': 'application/json' } };
+      if (body !== undefined) opts.body = JSON.stringify(body);
+      const res = await fetch(path, opts);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+      return json;
+    }
+
+    function statusBadge(status) {
+      const map = {
+        live: 'badge badge--active',
+        parked: 'badge badge--warning',
+        concluded: 'badge badge--success',
+        dropped: 'badge badge--error',
+      };
+      const cls = map[status] ?? 'badge';
+      return `<span class="${cls}">${status}</span>`;
+    }
+
+    function fmtDate(iso) {
+      if (!iso) return '';
+      return new Date(iso).toLocaleString();
+    }
+
+    function escHtml(s) {
+      return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function escAttr(s) {
+      return escHtml(s);
+    }
+
+    function showError(el, msg) {
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+
+    function clearError(el) {
+      el.textContent = '';
+      el.style.display = 'none';
+    }
+
+    async function copyToClipboard(text, feedbackEl) {
+      try {
+        await navigator.clipboard.writeText(text);
+        const original = feedbackEl.textContent;
+        feedbackEl.textContent = '✓';
+        setTimeout(() => { feedbackEl.textContent = original; }, 1500);
+      } catch (e) {
+        console.error('Copy failed:', e);
+      }
+    }
+
+    // ── Pure tree helpers (exported shape for testing) ─────────────────
+
+    /**
+     * Prune a forest by status. Non-matching nodes and their entire subtrees
+     * are dropped. Matches ratchet.tree() prune semantics (D6).
+     */
+    function pruneByStatus(forestIn, statusSet) {
+      if (!statusSet || statusSet.size === ALL_STATUSES.length) return forestIn;
+      const out = [];
+      for (const node of forestIn) {
+        if (!statusSet.has(node.click.status)) continue;
+        out.push({
+          click: node.click,
+          children: pruneByStatus(node.children, statusSet),
+        });
+      }
+      return out;
+    }
+
+    /**
+     * Find a node in a forest by click id. Returns the ClickTree or null.
+     */
+    function findInForest(forestIn, id) {
+      for (const node of forestIn) {
+        if (node.click.id === id) return node;
+        const found = findInForest(node.children, id);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    /**
+     * Return the ancestor chain from the forest root (topmost ancestor first)
+     * down to the given node, inclusive. Returns [] if not found.
+     */
+    function ancestorPath(forestIn, id, acc) {
+      acc = acc ?? [];
+      for (const node of forestIn) {
+        const next = acc.concat([node]);
+        if (node.click.id === id) return next;
+        const deep = ancestorPath(node.children, id, next);
+        if (deep.length > 0) return deep;
+      }
+      return [];
+    }
+
+    /**
+     * Dispatch a link target id by prefix convention (D15).
+     * Returns one of:
+     *   { kind: 'click', id }        -> c-... : open in-page
+     *   { kind: 'writ',  id, href }  -> w-... : navigate to the writs page
+     *   { kind: 'plain', id }        -> otherwise: render as plain text
+     */
+    function linkDispatch(targetId) {
+      if (typeof targetId !== 'string' || targetId.length === 0) {
+        return { kind: 'plain', id: String(targetId ?? '') };
+      }
+      if (targetId.startsWith('c-')) return { kind: 'click', id: targetId };
+      if (targetId.startsWith('w-')) {
+        return { kind: 'writ', id: targetId, href: `/pages/writs/?writ=${encodeURIComponent(targetId)}` };
+      }
+      return { kind: 'plain', id: targetId };
+    }
+
+    /**
+     * Count nodes in a forest grouped by status. Shallow — only first-generation
+     * children contribute. Used by the detail pane children-status strip (D22).
+     */
+    function countChildrenByStatus(children) {
+      const out = { live: 0, parked: 0, concluded: 0, dropped: 0 };
+      for (const c of children) {
+        if (out[c.status] === undefined) out[c.status] = 0;
+        out[c.status] += 1;
+      }
+      return out;
+    }
+
+    // ── URL handling ───────────────────────────────────────────────────
+
+    function currentUrlParams() {
+      return new URLSearchParams(window.location.search);
+    }
+
+    function updateUrl(changes) {
+      const params = currentUrlParams();
+      for (const [key, value] of Object.entries(changes)) {
+        if (value === null || value === undefined || value === '') params.delete(key);
+        else params.set(key, value);
+      }
+      const qs = params.toString();
+      const next = window.location.pathname + (qs ? '?' + qs : '');
+      window.history.pushState({}, '', next);
+    }
+
+    // ── Data loading ───────────────────────────────────────────────────
+
+    async function loadForest() {
+      try {
+        forest = await api('GET', '/api/click/tree?format=json');
+      } catch (e) {
+        forest = [];
+        console.error('Failed to load click tree:', e);
+        alert(`Failed to load clicks: ${e.message}`);
+      }
+    }
+
+    async function loadDetail(id) {
+      try {
+        return await api('GET', `/api/click/show?id=${encodeURIComponent(id)}`);
+      } catch (e) {
+        console.error('Failed to load click:', e);
+        return null;
+      }
+    }
+
+    async function fetchLinkMeta(id) {
+      if (linkMetaCache[id] !== undefined) return linkMetaCache[id];
+      const dispatch = linkDispatch(id);
+      try {
+        if (dispatch.kind === 'click') {
+          const click = await api('GET', `/api/click/show?id=${encodeURIComponent(id)}`);
+          linkMetaCache[id] = { goal: click.goal };
+        } else if (dispatch.kind === 'writ') {
+          const writ = await api('GET', `/api/writ/show?id=${encodeURIComponent(id)}`);
+          linkMetaCache[id] = { title: writ.title };
+        } else {
+          linkMetaCache[id] = null;
+        }
+      } catch (e) {
+        linkMetaCache[id] = null;
+      }
+      return linkMetaCache[id];
+    }
+
+    // ── Refresh cycle ──────────────────────────────────────────────────
+
+    async function refreshAll(preserveSelection = true) {
+      await loadForest();
+      if (preserveSelection && selectedId) {
+        selectedDetail = await loadDetail(selectedId);
+      }
+      renderTree();
+      renderDetail();
+    }
+
+    // ── Tree rendering ─────────────────────────────────────────────────
+
+    function pickScopedForest() {
+      if (!scopedRootId) return forest;
+      const node = findInForest(forest, scopedRootId);
+      return node ? [node] : [];
+    }
+
+    function renderTree() {
+      renderBreadcrumb();
+      const scoped = pickScopedForest();
+      const pruned = pruneByStatus(scoped, activeStatuses);
+      const container = document.getElementById('tree-container');
+      container.innerHTML = '';
+
+      if (pruned.length === 0) {
+        container.innerHTML = `<div class="empty-state">${forest.length === 0 ? 'No clicks yet.' : 'No clicks match the current filters.'}</div>`;
+        return;
+      }
+
+      const ul = document.createElement('ul');
+      ul.className = 'tree-node';
+      for (const node of pruned) {
+        ul.appendChild(buildTreeNodeEl(node));
+      }
+      container.appendChild(ul);
+    }
+
+    function buildTreeNodeEl(node) {
+      const li = document.createElement('li');
+      li.className = 'tree-node';
+      li.dataset.id = node.click.id;
+
+      const row = document.createElement('div');
+      row.className = 'tree-row' + (node.click.id === selectedId ? ' selected' : '');
+
+      // Expand / collapse toggle
+      const hasChildren = node.children.length > 0;
+      const isCollapsed = collapsed.has(node.click.id);
+      const toggle = document.createElement('button');
+      toggle.className = 'tree-toggle' + (hasChildren ? '' : ' leaf');
+      toggle.textContent = hasChildren ? (isCollapsed ? '▸' : '▾') : '·';
+      toggle.title = hasChildren ? (isCollapsed ? 'Expand' : 'Collapse') : '';
+      toggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!hasChildren) return;
+        if (collapsed.has(node.click.id)) collapsed.delete(node.click.id);
+        else collapsed.add(node.click.id);
+        renderTree();
+      });
+      row.appendChild(toggle);
+
+      // Status badge
+      const badge = document.createElement('span');
+      badge.innerHTML = statusBadge(node.click.status);
+      row.appendChild(badge.firstChild);
+
+      // Short ID + copy
+      const idSpan = document.createElement('span');
+      idSpan.className = 'tree-id';
+      idSpan.innerHTML = `<code>${escHtml(shortId(node.click.id))}</code>`;
+      row.appendChild(idSpan);
+
+      const copy = document.createElement('button');
+      copy.className = 'tree-copy';
+      copy.textContent = '📋';
+      copy.title = 'Copy click ID';
+      copy.addEventListener('click', (e) => {
+        e.stopPropagation();
+        copyToClipboard(node.click.id, copy);
+      });
+      row.appendChild(copy);
+
+      // Focus button (subtree scope)
+      const focus = document.createElement('button');
+      focus.className = 'tree-focus';
+      focus.textContent = '⊙';
+      focus.title = 'Focus on this subtree';
+      focus.addEventListener('click', (e) => {
+        e.stopPropagation();
+        scopedRootId = node.click.id;
+        updateUrl({ root: node.click.id });
+        renderTree();
+      });
+      row.appendChild(focus);
+
+      // Terminal-node disclosure (conclusion)
+      if (TERMINAL_STATUSES.has(node.click.status) && node.click.conclusion) {
+        const disc = document.createElement('button');
+        disc.className = 'tree-disclose';
+        disc.textContent = disclosed.has(node.click.id) ? '▾' : '▸';
+        disc.title = 'Show conclusion';
+        disc.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (disclosed.has(node.click.id)) disclosed.delete(node.click.id);
+          else disclosed.add(node.click.id);
+          renderTree();
+        });
+        row.appendChild(disc);
+      }
+
+      // Goal (click to select)
+      const goal = document.createElement('span');
+      goal.className = 'tree-goal';
+      goal.textContent = node.click.goal;
+      goal.addEventListener('click', () => selectClick(node.click.id));
+      row.appendChild(goal);
+
+      li.appendChild(row);
+
+      // Inline conclusion (disclosure)
+      if (TERMINAL_STATUSES.has(node.click.status) && node.click.conclusion && disclosed.has(node.click.id)) {
+        const concl = document.createElement('div');
+        concl.className = 'tree-conclusion';
+        concl.textContent = node.click.conclusion;
+        li.appendChild(concl);
+      }
+
+      if (hasChildren && !isCollapsed) {
+        const childUl = document.createElement('ul');
+        childUl.className = 'tree-children';
+        for (const child of node.children) {
+          childUl.appendChild(buildTreeNodeEl(child));
+        }
+        li.appendChild(childUl);
+      }
+
+      return li;
+    }
+
+    function shortId(id) {
+      const parts = String(id).split('-');
+      return parts.length >= 2 ? parts.slice(0, 2).join('-') : id;
+    }
+
+    // ── Breadcrumb ─────────────────────────────────────────────────────
+
+    function renderBreadcrumb() {
+      const bar = document.getElementById('breadcrumb-bar');
+      if (!scopedRootId) {
+        bar.style.display = 'none';
+        bar.innerHTML = '';
+        return;
+      }
+      const path = ancestorPath(forest, scopedRootId);
+      bar.innerHTML = '';
+      bar.style.display = '';
+
+      const showAll = document.createElement('a');
+      showAll.textContent = 'Show all';
+      showAll.addEventListener('click', () => {
+        scopedRootId = null;
+        updateUrl({ root: null });
+        renderTree();
+      });
+      bar.appendChild(showAll);
+
+      for (let i = 0; i < path.length; i++) {
+        const node = path[i];
+        const sep = document.createElement('span');
+        sep.className = 'sep';
+        sep.textContent = '›';
+        bar.appendChild(sep);
+
+        if (i === path.length - 1) {
+          const cur = document.createElement('span');
+          cur.className = 'current';
+          cur.textContent = node.click.goal;
+          bar.appendChild(cur);
+        } else {
+          const a = document.createElement('a');
+          a.textContent = node.click.goal;
+          a.addEventListener('click', () => {
+            scopedRootId = node.click.id;
+            updateUrl({ root: node.click.id });
+            renderTree();
+          });
+          bar.appendChild(a);
+        }
+      }
+    }
+
+    // ── Selection ──────────────────────────────────────────────────────
+
+    async function selectClick(id) {
+      selectedId = id;
+      confirmPending = null;
+      updateUrl({ click: id });
+      selectedDetail = await loadDetail(id);
+      renderTree();
+      renderDetail();
+    }
+
+    // ── Detail pane rendering ──────────────────────────────────────────
+
+    function renderDetail() {
+      const empty = document.getElementById('detail-empty');
+      const content = document.getElementById('detail-content');
+      if (!selectedId) {
+        empty.style.display = '';
+        content.style.display = 'none';
+        content.innerHTML = '';
+        return;
+      }
+      empty.style.display = 'none';
+      content.style.display = '';
+
+      if (!selectedDetail) {
+        content.innerHTML = `<div class="empty-state">Loading click <code>${escHtml(selectedId)}</code>…</div>`;
+        return;
+      }
+
+      content.innerHTML = buildDetailHtml(selectedDetail);
+      wireDetailEvents(content, selectedDetail);
+      resolveLinkMetaInDom(content, selectedDetail);
+    }
+
+    function buildDetailHtml(click) {
+      const isTerminal = TERMINAL_STATUSES.has(click.status);
+      const statusCounts = countChildrenByStatus(click.children?.items ?? []);
+      let html = '';
+
+      // Title row
+      html += `<h2 style="margin-top:0">${escHtml(click.goal)}</h2>`;
+      html += `<div style="margin-bottom:0.75rem;font-size:0.875rem;opacity:0.7">`;
+      html += `<code id="detail-id">${escHtml(click.id)}</code> `;
+      html += `<button class="btn tree-copy" id="detail-copy-btn" style="padding:0.1rem 0.35rem">📋</button>`;
+      html += `</div>`;
+
+      // Fields grid (D24)
+      html += `<div class="detail-section"><h4>Details</h4><dl class="detail-grid">`;
+      html += `<dt>Status</dt><dd>${statusBadge(click.status)}</dd>`;
+      if (click.parent) {
+        html += `<dt>Parent</dt><dd><a class="link-id" data-click-id="${escAttr(click.parent.id)}">${escHtml(click.parent.goal)}</a> ${statusBadge(click.parent.status)}</dd>`;
+      }
+      html += `<dt>Created</dt><dd>${fmtDate(click.createdAt)}</dd>`;
+      if (click.resolvedAt) html += `<dt>Resolved</dt><dd>${fmtDate(click.resolvedAt)}</dd>`;
+      if (click.createdSessionId) html += `<dt>Created by</dt><dd><code>${escHtml(click.createdSessionId)}</code></dd>`;
+      if (click.resolvedSessionId) html += `<dt>Resolved by</dt><dd><code>${escHtml(click.resolvedSessionId)}</code></dd>`;
+      html += `</dl>`;
+      if (isTerminal && click.conclusion) {
+        html += `<details style="margin-top:0.5rem"><summary>Conclusion</summary>`;
+        html += `<div class="detail-conclusion">${escHtml(click.conclusion)}</div>`;
+        html += `</details>`;
+      }
+      html += `</div>`;
+
+      // Lifecycle actions (D11)
+      if (!isTerminal) {
+        html += `<div class="detail-section"><h4>Actions</h4>`;
+        html += `<div class="action-buttons" id="detail-actions">`;
+        if (click.status === 'live') {
+          html += `<button class="btn" data-action="park">Park</button>`;
+          html += `<button class="btn btn--success" data-action="conclude">Conclude…</button>`;
+          html += `<button class="btn btn--danger" data-action="drop">Drop…</button>`;
+        } else if (click.status === 'parked') {
+          html += `<button class="btn" data-action="resume">Resume</button>`;
+          html += `<button class="btn btn--success" data-action="conclude">Conclude…</button>`;
+          html += `<button class="btn btn--danger" data-action="drop">Drop…</button>`;
+        }
+        html += `</div>`;
+        html += `<div id="confirm-area"></div>`;
+        html += `<div id="action-error" class="error-msg" style="display:none"></div>`;
+        html += `</div>`;
+      }
+
+      // Links section (D15, D16, D14)
+      const outbound = click.links?.outbound ?? [];
+      const inbound = click.links?.inbound ?? [];
+      html += `<div class="detail-section"><h4>Links</h4>`;
+      if (outbound.length === 0 && inbound.length === 0) {
+        html += `<p style="font-size:0.875rem;opacity:0.5;margin:0 0 0.5rem">No links.</p>`;
+      }
+      for (const l of outbound) html += renderLinkRow(l, 'outbound');
+      for (const l of inbound) html += renderLinkRow(l, 'inbound');
+      html += `<div class="add-link-form">`;
+      html += `<input type="text" id="link-target-input" placeholder="Target ID (c-… or w-…)" style="width:180px">`;
+      html += `<select id="link-type-select">`;
+      for (const t of LINK_TYPES) html += `<option value="${t}">${t}</option>`;
+      html += `</select>`;
+      html += `<button class="btn" data-action="addlink">Link</button>`;
+      html += `<div id="link-error" class="error-msg" style="display:none"></div>`;
+      html += `</div>`;
+      html += `</div>`;
+
+      // Children section (D22)
+      const items = click.children?.items ?? [];
+      html += `<div class="detail-section"><h4>Children</h4>`;
+      if (items.length === 0) {
+        html += `<p style="font-size:0.875rem;opacity:0.5;margin:0">No children.</p>`;
+      } else {
+        html += `<div class="status-count-strip">`;
+        for (const status of ALL_STATUSES) {
+          const n = statusCounts[status] ?? 0;
+          html += `${statusBadge(status)} <span>${n}</span>`;
+        }
+        html += `</div>`;
+        html += `<table class="data-table children-table"><thead><tr>`;
+        html += `<th>Status</th><th>Goal</th><th>ID</th>`;
+        html += `</tr></thead><tbody>`;
+        for (const child of items) {
+          html += `<tr data-child-id="${escAttr(child.id)}">`;
+          html += `<td>${statusBadge(child.status)}</td>`;
+          html += `<td>${escHtml(child.goal)}</td>`;
+          html += `<td><code>${escHtml(shortId(child.id))}</code></td>`;
+          html += `</tr>`;
+        }
+        html += `</tbody></table>`;
+      }
+      html += `</div>`;
+
+      return html;
+    }
+
+    function renderLinkRow(link, direction) {
+      const isOutbound = direction === 'outbound';
+      const otherId = isOutbound ? link.targetId : link.sourceId;
+      const dispatch = linkDispatch(otherId);
+      let targetHtml;
+      if (dispatch.kind === 'click') {
+        targetHtml = `<a class="link-id" data-click-id="${escAttr(otherId)}">${escHtml(otherId)}</a>`;
+      } else if (dispatch.kind === 'writ') {
+        targetHtml = `<a class="link-id" href="${escAttr(dispatch.href)}">${escHtml(otherId)}</a>`;
+      } else {
+        targetHtml = `<span class="link-id plain">${escHtml(otherId)}</span>`;
+      }
+      return `<div class="link-row">
+        <span class="link-dir">${isOutbound ? '→' : '←'}</span>
+        ${targetHtml}
+        <span class="link-meta" data-meta-for="${escAttr(otherId)}"></span>
+        <span>(${escHtml(link.linkType)})</span>
+        <button class="btn btn--danger" style="padding:0.1rem 0.5rem;font-size:0.75rem"
+          data-action="unlink"
+          data-source="${escAttr(link.sourceId)}"
+          data-target="${escAttr(link.targetId)}"
+          data-linktype="${escAttr(link.linkType)}">×</button>
+      </div>`;
+    }
+
+    function resolveLinkMetaInDom(container, click) {
+      const outbound = click.links?.outbound ?? [];
+      const inbound = click.links?.inbound ?? [];
+      const seen = new Set();
+      const ids = [];
+      for (const l of outbound) { if (!seen.has(l.targetId)) { seen.add(l.targetId); ids.push(l.targetId); } }
+      for (const l of inbound)  { if (!seen.has(l.sourceId)) { seen.add(l.sourceId); ids.push(l.sourceId); } }
+      for (const id of ids) {
+        const dispatch = linkDispatch(id);
+        if (dispatch.kind === 'plain') continue;
+        fetchLinkMeta(id).then((meta) => {
+          const els = container.querySelectorAll(`[data-meta-for="${cssEscape(id)}"]`);
+          const text = meta ? (meta.goal ?? meta.title ?? '') : '';
+          if (text) {
+            for (const el of els) el.textContent = '— ' + text;
+          }
+        });
+      }
+    }
+
+    function cssEscape(s) {
+      if (window.CSS && window.CSS.escape) return window.CSS.escape(s);
+      return String(s).replace(/["\\]/g, '\\$&');
+    }
+
+    function wireDetailEvents(container, click) {
+      // Copy ID
+      const copyBtn = container.querySelector('#detail-copy-btn');
+      if (copyBtn) {
+        copyBtn.addEventListener('click', () => copyToClipboard(click.id, copyBtn));
+      }
+
+      // Link-id click -> select that click
+      container.querySelectorAll('.link-id[data-click-id]').forEach((a) => {
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          selectClick(a.dataset.clickId);
+        });
+      });
+
+      // Child row click -> select that child
+      container.querySelectorAll('tr[data-child-id]').forEach((row) => {
+        row.addEventListener('click', () => selectClick(row.dataset.childId));
+      });
+
+      // Data-action buttons
+      container.querySelectorAll('[data-action]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const action = btn.dataset.action;
+          if (action === 'park') doLifecycle('park', click.id, btn);
+          else if (action === 'resume') doLifecycle('resume', click.id, btn);
+          else if (action === 'conclude') showTerminalConfirm('conclude', click.id);
+          else if (action === 'drop') showTerminalConfirm('drop', click.id);
+          else if (action === 'addlink') doAddLink(click.id, btn);
+          else if (action === 'unlink') doUnlink(
+            btn.dataset.source,
+            btn.dataset.target,
+            btn.dataset.linktype,
+            btn,
+            click.id,
+          );
+        });
+      });
+    }
+
+    async function doLifecycle(endpoint, id, btn) {
+      const errEl = document.getElementById('action-error');
+      if (errEl) clearError(errEl);
+      btn.disabled = true;
+      const orig = btn.textContent;
+      btn.textContent = '…';
+      try {
+        await api('POST', `/api/click/${endpoint}`, { id });
+        await refreshAll(true);
+      } catch (e) {
+        if (errEl) showError(errEl, e.message);
+        else alert(e.message);
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }
+
+    function showTerminalConfirm(action, id) {
+      const area = document.getElementById('confirm-area');
+      if (!area) return;
+      const label = action === 'conclude' ? 'Conclusion (required)' : 'Drop reason (required)';
+      const confirmLabel = action === 'conclude' ? 'Confirm Conclude' : 'Confirm Drop';
+      const btnClass = action === 'conclude' ? 'btn--success' : 'btn--danger';
+
+      area.innerHTML = `
+        <div class="confirm-section">
+          <label>${label}</label>
+          <input type="text" id="confirm-input" placeholder="Describe the outcome">
+          <button class="btn ${btnClass}" id="confirm-submit" disabled>${confirmLabel}</button>
+          <button class="btn" id="confirm-abort">Cancel</button>
+          <div class="error-msg" id="confirm-error" style="display:none"></div>
+        </div>`;
+
+      const input = document.getElementById('confirm-input');
+      const submit = document.getElementById('confirm-submit');
+      const abort = document.getElementById('confirm-abort');
+      const errEl = document.getElementById('confirm-error');
+
+      input.addEventListener('input', () => {
+        submit.disabled = !input.value.trim();
+      });
+
+      abort.addEventListener('click', () => {
+        area.innerHTML = '';
+      });
+
+      submit.addEventListener('click', async () => {
+        const conclusion = input.value.trim();
+        if (!conclusion) return;
+        submit.disabled = true;
+        submit.textContent = 'Saving…';
+        try {
+          await api('POST', `/api/click/${action}`, { id, conclusion });
+          await refreshAll(true);
+        } catch (e) {
+          showError(errEl, e.message);
+          submit.disabled = false;
+          submit.textContent = confirmLabel;
+        }
+      });
+    }
+
+    async function doAddLink(sourceId, btn) {
+      const targetInput = document.getElementById('link-target-input');
+      const typeSelect = document.getElementById('link-type-select');
+      const errEl = document.getElementById('link-error');
+      clearError(errEl);
+      const targetId = (targetInput?.value ?? '').trim();
+      const linkType = typeSelect?.value;
+      if (!targetId) {
+        showError(errEl, 'Target ID is required.');
+        return;
+      }
+      if (!LINK_TYPES.includes(linkType)) {
+        showError(errEl, 'Choose a link type.');
+        return;
+      }
+      btn.disabled = true;
+      const orig = btn.textContent;
+      btn.textContent = 'Linking…';
+      try {
+        await api('POST', '/api/click/link', { sourceId, targetId, linkType });
+        targetInput.value = '';
+        // Clear the meta cache for this target so its metadata re-fetches.
+        delete linkMetaCache[targetId];
+        await refreshAll(true);
+      } catch (e) {
+        showError(errEl, e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }
+
+    async function doUnlink(sourceId, targetId, linkType, btn, selectedIdForRefresh) {
+      const orig = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '…';
+      try {
+        await api('POST', '/api/click/unlink', { sourceId, targetId, linkType });
+        await refreshAll(true);
+      } catch (e) {
+        alert(`Unlink failed: ${e.message}`);
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }
+
+    // ── Create-click form ──────────────────────────────────────────────
+
+    function openPostForm(parentId) {
+      const section = document.getElementById('post-section');
+      section.classList.add('open');
+      document.getElementById('post-parent-input').value = parentId ?? '';
+      document.getElementById('post-goal-input').focus();
+      clearError(document.getElementById('post-error'));
+    }
+
+    function closePostForm() {
+      const section = document.getElementById('post-section');
+      section.classList.remove('open');
+      document.getElementById('post-goal-input').value = '';
+      document.getElementById('post-parent-input').value = '';
+      clearError(document.getElementById('post-error'));
+    }
+
+    async function submitPostForm() {
+      const goal = document.getElementById('post-goal-input').value.trim();
+      const parentId = document.getElementById('post-parent-input').value.trim() || undefined;
+      const errEl = document.getElementById('post-error');
+      const btn = document.getElementById('post-submit-btn');
+      clearError(errEl);
+      if (!goal) {
+        showError(errEl, 'Goal is required.');
+        return;
+      }
+      btn.disabled = true;
+      const orig = btn.textContent;
+      btn.textContent = 'Creating…';
+      try {
+        const payload = { goal };
+        if (parentId) payload.parentId = parentId;
+        const created = await api('POST', '/api/click/create', payload);
+        closePostForm();
+        await refreshAll(false);
+        if (created && created.id) {
+          selectClick(created.id);
+        }
+      } catch (e) {
+        showError(errEl, e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }
+
+    // ── Status filter ──────────────────────────────────────────────────
+
+    function setStatusFilter(status) {
+      if (status === '') {
+        // "All" — toggle between all-selected and nothing-else selected.
+        activeStatuses = new Set(ALL_STATUSES);
+      } else {
+        if (activeStatuses.has(status)) activeStatuses.delete(status);
+        else activeStatuses.add(status);
+      }
+      updateFilterButtons();
+      renderTree();
+    }
+
+    function updateFilterButtons() {
+      const allActive = activeStatuses.size === ALL_STATUSES.length;
+      document.querySelectorAll('.filter-btn').forEach((btn) => {
+        const status = btn.dataset.status;
+        if (status === '') {
+          btn.classList.toggle('active-filter', allActive);
+        } else {
+          btn.classList.toggle('active-filter', activeStatuses.has(status));
+        }
+      });
+    }
+
+    // ── Event wiring ───────────────────────────────────────────────────
+
+    document.getElementById('btn-new-click').addEventListener('click', () => {
+      const section = document.getElementById('post-section');
+      if (section.classList.contains('open')) closePostForm();
+      else openPostForm(selectedId);
+    });
+
+    document.getElementById('btn-refresh').addEventListener('click', () => refreshAll(true));
+    document.getElementById('post-submit-btn').addEventListener('click', submitPostForm);
+    document.getElementById('post-cancel-btn').addEventListener('click', closePostForm);
+
+    document.querySelectorAll('.filter-btn').forEach((btn) => {
+      btn.addEventListener('click', () => setStatusFilter(btn.dataset.status));
+    });
+
+    window.addEventListener('popstate', () => {
+      const params = currentUrlParams();
+      scopedRootId = params.get('root');
+      const clickParam = params.get('click');
+      if (clickParam) selectClick(clickParam);
+      else { selectedId = null; selectedDetail = null; renderDetail(); }
+      renderTree();
+    });
+
+    // ── Init ───────────────────────────────────────────────────────────
+
+    (async function init() {
+      const params = currentUrlParams();
+      scopedRootId = params.get('root');
+      const clickParam = params.get('click');
+
+      updateFilterButtons();
+      await loadForest();
+      renderTree();
+
+      if (clickParam) {
+        selectedId = clickParam;
+        selectedDetail = await loadDetail(clickParam);
+        renderTree();
+        renderDetail();
+      } else {
+        renderDetail();
+      }
+    })();
+  })();
+</script>
+</body>
+</html>
