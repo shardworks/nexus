@@ -157,7 +157,7 @@ export class CdcRegistry {
     });
   }
 
-  /** Mark the registry as locked — called on first write. */
+  /** Seal the CDC registry — called by the Stacks core when arbor fires phase:started, after all apparatus start() methods complete. */
   lock(): void {
     this.locked = true;
   }
@@ -200,15 +200,12 @@ export class CdcRegistry {
    */
   async firePhase2(events: ChangeEvent<BookEntry>[]): Promise<void> {
     for (const event of events) {
-      const key = `${event.ownerId}/${event.book}`;
-      const handlers = (this.watchers.get(key) ?? []).filter((e) => !e.failOnError);
-
-      for (const entry of handlers) {
+      for (const entry of this.getPhase2Handlers(event.ownerId, event.book)) {
         try {
           await entry.handler(event);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          console.warn(`[stacks] Phase 2 handler error (${key}): ${msg}`);
+          console.warn(`[stacks] Phase 2 handler error (${event.ownerId}/${event.book}): ${msg}`);
         }
       }
     }
