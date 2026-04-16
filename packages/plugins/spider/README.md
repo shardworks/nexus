@@ -218,6 +218,25 @@ When the condition is falsy, the engine (and any engines that have no other upst
 
 `upstream` lists engine IDs within this template that must complete before this engine can run. The Spider validates that upstream references are acyclic and that `${yields.*}` givens only reference upstream engines.
 
+### Grafting and `graftTail`
+
+Clockwork and quick engines can dynamically inject engines into the rig pipeline by returning a `graft` array (via `SpiderEngineRunResult` or `SpiderCollectResult`). Grafted engines are appended to the rig and processed on the next crawl cycle.
+
+When grafting sequential work that existing downstream engines should wait for, use `graftTail` — the ID of the last grafted engine in the chain. The Spider patches any existing engine that depends on the grafting engine to also depend on the `graftTail` engine, ensuring downstream work waits for all grafted engines to complete.
+
+```typescript
+// Clockwork engine that grafts two sequential tasks before seal runs:
+return {
+  status: 'completed',
+  yields: { taskCount: 2 },
+  graft: [
+    { id: 'task-0', designId: 'task-runner', upstream: ['orchestrator'], givens: { ... } },
+    { id: 'task-1', designId: 'task-runner', upstream: ['task-0'], givens: { ... } },
+  ],
+  graftTail: 'task-1', // engines downstream of 'orchestrator' now also wait for 'task-1'
+};
+```
+
 ## Rig Template Kit Interface
 
 Apparatus plugins can contribute rig templates and block types via their kit:

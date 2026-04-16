@@ -87,7 +87,10 @@ const implementLoopEngine: EngineDesign = {
       previousEngineId = engineId;
     }
 
-    // Return as a SpiderEngineRunResult with graft
+    // Return as a SpiderEngineRunResult with graft.
+    // graftTail tells Spider that any engine downstream of implement-loop
+    // should also wait for the last grafted piece-session to complete.
+    const lastPieceEngineId = `piece-${sortedPieces.length - 1}`;
     const result: SpiderEngineRunResult = {
       status: 'completed',
       yields: {
@@ -95,6 +98,7 @@ const implementLoopEngine: EngineDesign = {
         pieceIds: sortedPieces.map(p => p.id),
       },
       graft,
+      graftTail: lastPieceEngineId,
     };
 
     return result as EngineRunResult;

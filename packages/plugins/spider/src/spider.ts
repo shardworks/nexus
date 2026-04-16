@@ -1219,7 +1219,7 @@ export function createSpider(): Plugin {
    * Written by tryCollect/tryRun when a completed engine has a graft.
    * Consumed by tryProcessGrafts.
    */
-  const pendingGrafts = new Map<string, { engineId: string; graft: RigTemplateEngine[]; writId: string }>();
+  const pendingGrafts = new Map<string, { engineId: string; graft: RigTemplateEngine[]; writId: string; graftTail?: string }>();
 
   // ── Internal crawl operations ─────────────────────────────────────
 
@@ -1335,6 +1335,7 @@ export function createSpider(): Plugin {
         const design = fabricator.getEngineDesign(engine.designId);
         let yields: unknown;
         let collectGraft: RigTemplateEngine[] | undefined;
+        let collectGraftTail: string | undefined;
         if (design?.collect) {
           const upstream = buildUpstreamMap(rig);
           const givens = resolveYieldRefs(engine.givensSpec, upstream);
@@ -1350,6 +1351,7 @@ export function createSpider(): Plugin {
             const scr = collectResult as SpiderCollectResult;
             yields = scr.yields;
             collectGraft = scr.graft;
+            collectGraftTail = scr.graftTail;
           } else {
             yields = collectResult;
           }
@@ -1378,7 +1380,7 @@ export function createSpider(): Plugin {
         // we must queue the graft first and return engine-completed so the graft
         // is processed on the next crawl step.
         if (collectGraft !== undefined && collectGraft.length > 0) {
-          pendingGrafts.set(rig.id, { engineId: engine.id, graft: collectGraft, writId: rig.writId });
+          pendingGrafts.set(rig.id, { engineId: engine.id, graft: collectGraft, writId: rig.writId, graftTail: collectGraftTail });
           await rigsBook.patch(rig.id, { engines: updatedEngines, status: 'running' });
           return { action: 'engine-completed', rigId: rig.id, engineId: engine.id };
         }
@@ -1411,7 +1413,7 @@ export function createSpider(): Plugin {
   async function tryProcessGrafts(): Promise<CrawlResult | null> {
     if (pendingGrafts.size === 0) return null;
 
-    const [rigId, { engineId, graft, writId }] = pendingGrafts.entries().next().value!;
+    const [rigId, { engineId, graft, writId, graftTail }] = pendingGrafts.entries().next().value!;
     pendingGrafts.delete(rigId);
 
     // Re-fetch the rig to get the latest state
@@ -1439,7 +1441,27 @@ export function createSpider(): Plugin {
       ...(entry.when !== undefined ? { when: entry.when } : {}),
     }));
 
-    const updatedEngines = [...rig.engines, ...graftedInstances];
+    let updatedEngines = [...rig.engines, ...graftedInstances];
+
+    // graftTail: when specified, any existing engine that has the grafting
+    // engine (`engineId`) in its upstream also gains the graftTail engine
+    // as an upstream dependency. This ensures downstream engines wait for
+    // all grafted work to finish before running.
+    if (graftTail) {
+      const graftedIds = new Set(graftedInstances.map((e) => e.id));
+      if (!graftedIds.has(graftTail)) {
+        await failEngine(rig, engineId, `Graft validation failed: graftTail "${graftTail}" is not a grafted engine id`);
+        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
+      }
+      updatedEngines = updatedEngines.map((e) => {
+        // Only patch existing (non-grafted) engines that depend on the grafting engine
+        if (!graftedIds.has(e.id) && e.upstream.includes(engineId)) {
+          return { ...e, upstream: [...e.upstream, graftTail] };
+        }
+        return e;
+      });
+    }
+
     await rigsBook.patch(rig.id, { engines: updatedEngines });
 
     return {
@@ -1698,7 +1720,9 @@ export function createSpider(): Plugin {
         }
 
         // Check for graft (SpiderEngineRunResult extension — duck-typing)
-        const runGraft = (engineResult as Record<string, unknown>).graft as RigTemplateEngine[] | undefined;
+        const engineResultRecord = engineResult as Record<string, unknown>;
+        const runGraft = engineResultRecord.graft as RigTemplateEngine[] | undefined;
+        const runGraftTail = engineResultRecord.graftTail as string | undefined;
 
         const completedAt = new Date().toISOString();
         const completedEngines = updatedRig.engines.map((e) =>
@@ -1712,7 +1736,7 @@ export function createSpider(): Plugin {
         // we must queue the graft first and return engine-completed so the graft
         // is processed on the next crawl step.
         if (runGraft !== undefined && runGraft.length > 0) {
-          pendingGrafts.set(rig.id, { engineId: pending.id, graft: runGraft, writId: rig.writId });
+          pendingGrafts.set(rig.id, { engineId: pending.id, graft: runGraft, writId: rig.writId, graftTail: runGraftTail });
           await rigsBook.patch(rig.id, {
             engines: completedEngines,
             status: 'running',

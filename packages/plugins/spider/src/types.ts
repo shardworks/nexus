@@ -572,7 +572,7 @@ export interface InputRequestDoc {
  * (duck-typing — the Fabricator type is not modified).
  */
 export type SpiderEngineRunResult =
-  | { status: 'completed'; yields: unknown; graft?: RigTemplateEngine[] }
+  | { status: 'completed'; yields: unknown; graft?: RigTemplateEngine[]; graftTail?: string }
   | { status: 'launched'; sessionId: string }
   | { status: 'blocked'; blockType: string; condition: unknown; message?: string };
 
@@ -587,6 +587,7 @@ export type SpiderEngineRunResult =
 export interface SpiderCollectResult {
   yields: unknown;
   graft?: RigTemplateEngine[];
+  graftTail?: string;
 }
 
 // Augment GuildConfig so `guild().guildConfig().spider` is typed.
