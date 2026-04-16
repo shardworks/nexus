@@ -217,7 +217,7 @@ Where conditions are expressed as an array of tuples — `[field, operator, valu
  * the type system permits any string to avoid forcing casts on every
  * nested-field query.
  */
-type WhereCondition<T> =
+type WhereCondition =
   | [string, '=' | '!=', Scalar]
   | [string, '>' | '>=' | '<' | '<=', number | string]
   | [string, 'LIKE', string]       // % and _ wildcards
@@ -226,7 +226,7 @@ type WhereCondition<T> =
 
 type Scalar = string | number | boolean | null
 
-type WhereClause<T> = WhereCondition<T>[]
+type WhereClause = WhereCondition[]
 ```
 
 **`LIKE` semantics:** Standard SQL LIKE — `%` matches any sequence of characters, `_` matches exactly one character. Case-sensitivity is backend-defined (SQLite is case-insensitive for ASCII by default).
@@ -260,10 +260,10 @@ type Pagination =
 /**
  * The `where` field accepts two forms:
  *
- * - `WhereClause<T>` (an array) — all conditions are AND'd. This is the
+ * - `WhereClause` (an array) — all conditions are AND'd. This is the
  *   common case and the only form most queries need.
  *
- * - `{ or: WhereClause<T>[] }` — each element is an AND-clause; results
+ * - `{ or: WhereClause[] }` — each element is an AND-clause; results
  *   are the union of all clauses. Duplicates (by `id`) are removed.
  *
  * @example AND: { where: [['status', '=', 'active'], ['animaId', '=', 'vera']] }
@@ -272,8 +272,8 @@ type Pagination =
  *   [['animaId', '=', 'vera']],
  * ]}}
  */
-type BookQuery<T extends BookEntry> = {
-  where?:   WhereClause<T> | { or: WhereClause<T>[] }
+type BookQuery = {
+  where?:   WhereClause | { or: WhereClause[] }
   orderBy?: OrderBy
 } & Pagination
 
