@@ -5,11 +5,12 @@
  * the originating brief via a 'refines' link, records generatedWritId on
  * the PlanDoc, and transitions the plan to 'completed'.
  *
- * When the spec contains a `<task-manifest>`, the engine:
- *   1. Strips the manifest block from the spec (mandate body).
- *   2. Posts the mandate writ in draft state.
- *   3. Creates one child piece writ per `<task>` element.
- *   4. Transitions the mandate from draft to open (ready for dispatch).
+ * The engine always posts the full spec verbatim — including any
+ * `<task-manifest>` block the spec-writer produced. The planning pipeline
+ * does not fan the manifest out into child `piece` writs; the implementing
+ * artificer (or a downstream tool) is responsible for acting on the
+ * manifest if it chooses to. This keeps spec-publish a pure "publish what
+ * was written" step with no hidden surgery on the mandate body.
  *
  * Preconditions:
  *   - plan.status must be 'writing'
@@ -21,40 +22,6 @@ import type { EngineDesign, EngineRunContext, EngineRunResult } from '@shardwork
 import type { Book } from '@shardworks/stacks-apparatus';
 import type { ClerkApi } from '@shardworks/clerk-apparatus';
 import type { PlanDoc } from '../types.ts';
-
-/**
- * Parse the `<task-manifest>` block from the spec string.
- * Returns the individual `<task ...>...</task>` fragments and the spec
- * with the manifest block removed.
- *
- * If no manifest is found, returns null.
- */
-export function parseTaskManifest(spec: string): {
-  tasks: string[];
-  strippedSpec: string;
-} | null {
-  // Match the full <task-manifest>...</task-manifest> block (greedy, single match)
-  const manifestMatch = spec.match(/<task-manifest>([\s\S]*?)<\/task-manifest>/);
-  if (!manifestMatch) return null;
-
-  const manifestBlock = manifestMatch[0];
-  const manifestInner = manifestMatch[1]!;
-
-  // Extract individual <task ...>...</task> elements
-  const taskRegex = /<task\b[^>]*>[\s\S]*?<\/task>/g;
-  const tasks: string[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = taskRegex.exec(manifestInner)) !== null) {
-    tasks.push(match[0].trim());
-  }
-
-  if (tasks.length === 0) return null;
-
-  // Strip the manifest block from the spec
-  const strippedSpec = spec.replace(manifestBlock, '').trim();
-
-  return { tasks, strippedSpec };
-}
 
 export function createSpecPublishEngine(getPlansBook: () => Book<PlanDoc>): EngineDesign {
   return {
@@ -94,59 +61,7 @@ export function createSpecPublishEngine(getPlansBook: () => Book<PlanDoc>): Engi
       // Resolve generated writ type from config
       const generatedWritType = guild().guildConfig().astrolabe?.generatedWritType ?? 'mandate';
 
-      // Check for task manifest
-      const manifestResult = parseTaskManifest(plan.spec);
-
-      if (manifestResult) {
-        // ── Piece-aware path: manifest found ──
-        const { tasks, strippedSpec } = manifestResult;
-
-        // 1. Post mandate in draft state (pieces need parent to exist)
-        const generatedWrit = await clerk.post({
-          type: generatedWritType,
-          title: briefWrit.title,
-          body: strippedSpec,
-          codex: plan.codex,
-          draft: true,
-        });
-
-        // 2. Create child piece writs (one per task, in manifest order)
-        for (const taskXml of tasks) {
-          // Extract task id for a meaningful title
-          const idMatch = taskXml.match(/<task\s+id="([^"]+)"/);
-          const taskId = idMatch?.[1] ?? 'task';
-          const nameMatch = taskXml.match(/<name>([\s\S]*?)<\/name>/);
-          const taskName = nameMatch?.[1]?.trim() ?? taskId;
-
-          await clerk.post({
-            type: 'piece',
-            title: taskName,
-            body: taskXml,
-            parentId: generatedWrit.id,
-          });
-        }
-
-        // 3. Link: mandate (source) → brief (target), type 'refines'
-        await clerk.link(generatedWrit.id, planId, 'refines');
-
-        // 4. Transition mandate from draft to open (ready for dispatch)
-        await clerk.transition(generatedWrit.id, 'open');
-
-        // 5. Update PlanDoc
-        const now = new Date().toISOString();
-        await book.patch(planId, {
-          generatedWritId: generatedWrit.id,
-          status: 'completed',
-          updatedAt: now,
-        });
-
-        return {
-          status: 'completed',
-          yields: { generatedWritId: generatedWrit.id },
-        };
-      }
-
-      // ── Legacy path: no manifest ──
+      // Post the mandate with the full spec verbatim (task-manifest included if present).
       const generatedWrit = await clerk.post({
         type: generatedWritType,
         title: briefWrit.title,

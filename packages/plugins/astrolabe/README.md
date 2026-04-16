@@ -159,7 +159,7 @@ The Astrolabe declares one book in Stacks:
 | `astrolabe.plan-init` | Creates a PlanDoc from the brief writ; validates codex presence |
 | `astrolabe.inventory-check` | Validates that the reader produced a non-empty inventory |
 | `astrolabe.decision-review` | Two-pass engine: blocks for patron review, then reconciles answers. Decisions with `selected` already pre-set by the analyst are auto-accepted — they are excluded from the InputRequestDoc, and if nothing remains reviewable the engine fast-paths to `writing` without opening the gate. |
-| `astrolabe.spec-publish` | Publishes the generated specification as a new writ |
+| `astrolabe.spec-publish` | Publishes the generated specification as a new writ. Posts the spec body verbatim — any `<task-manifest>` block is preserved and is not fanned out into child `piece` writs. |
 
 ### Rig Templates (contributed to Spider)
 

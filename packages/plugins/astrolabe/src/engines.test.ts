@@ -20,7 +20,6 @@ import {
   createInventoryCheckEngine,
   createDecisionReviewEngine,
   createSpecPublishEngine,
-  parseTaskManifest,
 } from './engines/index.ts';
 import type { PlanDoc, Decision, ScopeItem } from './types.ts';
 import type { EngineRunContext } from '@shardworks/fabricator-apparatus';
@@ -1545,19 +1544,17 @@ describe('spec-publish engine', () => {
     );
   });
 
-  it('creates piece writs from task-manifest and strips manifest from body', async () => {
+  it('posts spec verbatim when it contains a task-manifest block (no pieces, no stripping)', async () => {
     const engine = createSpecPublishEngine(() => plansBook);
 
     const postCalls: Array<Record<string, unknown>> = [];
     const linkCalls: [string, string, string][] = [];
     const transitionCalls: Array<{ id: string; to: string }> = [];
-    let postCounter = 0;
 
     mockClerkPost = async (params) => {
       const p = params as Record<string, unknown>;
       postCalls.push(p);
-      postCounter++;
-      return { id: `writ-${postCounter}`, title: p.title as string };
+      return { id: 'writ-mandate-002', title: p.title as string };
     };
     mockClerkLink = async (src, tgt, type) => {
       linkCalls.push([src, tgt, type]);
@@ -1593,44 +1590,35 @@ Some preamble text.
     const result = await engine.run({ planId: plan.id }, buildCtx());
     assert.equal(result.status, 'completed');
     const yields = (result as { status: 'completed'; yields: { generatedWritId: string } }).yields;
-    assert.equal(yields.generatedWritId, 'writ-1');
+    assert.equal(yields.generatedWritId, 'writ-mandate-002');
 
-    // First post: mandate in draft state
-    assert.equal(postCalls.length, 3); // 1 mandate + 2 pieces
-    assert.equal(postCalls[0].draft, true);
+    // Exactly one post (the mandate). No piece children, no draft/transition dance.
+    assert.equal(postCalls.length, 1, 'spec-publish must not create piece child writs');
     assert.equal(postCalls[0].type, 'mandate');
-    // Body should NOT contain the task-manifest block
+    assert.equal(postCalls[0].draft, undefined, 'mandate must be posted live, not as draft');
+
+    // Body must be the spec verbatim — manifest block intact.
     const mandateBody = postCalls[0].body as string;
-    assert.ok(!mandateBody.includes('<task-manifest>'), 'Mandate body should not contain task-manifest');
-    assert.ok(mandateBody.includes('# Implementation Spec'), 'Mandate body should contain preamble');
+    assert.equal(mandateBody, specWithManifest);
+    assert.ok(
+      mandateBody.includes('<task-manifest>'),
+      'Mandate body must retain the task-manifest block (no stripping)',
+    );
 
-    // Piece posts
-    assert.equal(postCalls[1].type, 'piece');
-    assert.equal(postCalls[1].title, 'First task');
-    assert.equal(postCalls[1].parentId, 'writ-1');
-    assert.ok((postCalls[1].body as string).includes('<task id="t1">'));
+    // No draft→open transition (live post already).
+    assert.equal(transitionCalls.length, 0);
 
-    assert.equal(postCalls[2].type, 'piece');
-    assert.equal(postCalls[2].title, 'Second task');
-    assert.equal(postCalls[2].parentId, 'writ-1');
-    assert.ok((postCalls[2].body as string).includes('<task id="t2">'));
-
-    // Link created
+    // Link still created from mandate → brief.
     assert.equal(linkCalls.length, 1);
-    assert.deepEqual(linkCalls[0], ['writ-1', 'w-manifest-001', 'refines']);
+    assert.deepEqual(linkCalls[0], ['writ-mandate-002', 'w-manifest-001', 'refines']);
 
-    // Mandate transitioned from draft to open
-    assert.equal(transitionCalls.length, 1);
-    assert.equal(transitionCalls[0].id, 'writ-1');
-    assert.equal(transitionCalls[0].to, 'open');
-
-    // PlanDoc updated
+    // PlanDoc updated.
     const updatedPlan = await plansBook.get(plan.id);
-    assert.equal(updatedPlan?.generatedWritId, 'writ-1');
+    assert.equal(updatedPlan?.generatedWritId, 'writ-mandate-002');
     assert.equal(updatedPlan?.status, 'completed');
   });
 
-  it('falls back to legacy path when spec has no task-manifest', async () => {
+  it('posts spec verbatim when there is no task-manifest', async () => {
     const engine = createSpecPublishEngine(() => plansBook);
 
     const postCalls: Array<Record<string, unknown>> = [];
@@ -1639,7 +1627,7 @@ Some preamble text.
     mockClerkPost = async (params) => {
       const p = params as Record<string, unknown>;
       postCalls.push(p);
-      return { id: 'writ-legacy-001', title: p.title as string };
+      return { id: 'writ-nomanifest-001', title: p.title as string };
     };
     mockClerkLink = async () => {};
     mockClerkTransition = async (id, to) => {
@@ -1658,69 +1646,12 @@ Some preamble text.
     const result = await engine.run({ planId: plan.id }, buildCtx());
     assert.equal(result.status, 'completed');
 
-    // Only one post (the mandate), no draft, no pieces
+    // One post (the mandate), posted live (no draft), body verbatim.
     assert.equal(postCalls.length, 1);
     assert.equal(postCalls[0].draft, undefined);
     assert.equal(postCalls[0].body, '# Spec\nPlain spec without manifest.');
 
-    // No transition call (legacy path doesn't use draft)
+    // No transition (live post).
     assert.equal(transitionCalls.length, 0);
-  });
-});
-
-// ── parseTaskManifest tests ─────────────────────────────────────────
-
-describe('parseTaskManifest', () => {
-  it('parses tasks from a spec with task-manifest block', () => {
-    const spec = `# Spec
-
-<task-manifest>
-  <task id="t1">
-    <name>First</name>
-    <action>Do first</action>
-  </task>
-  <task id="t2">
-    <name>Second</name>
-    <action>Do second</action>
-  </task>
-</task-manifest>`;
-
-    const result = parseTaskManifest(spec);
-    assert.ok(result);
-    assert.equal(result.tasks.length, 2);
-    assert.ok(result.tasks[0].includes('<task id="t1">'));
-    assert.ok(result.tasks[1].includes('<task id="t2">'));
-    assert.ok(!result.strippedSpec.includes('<task-manifest>'));
-    assert.ok(result.strippedSpec.includes('# Spec'));
-  });
-
-  it('returns null when no task-manifest block exists', () => {
-    const spec = '# Spec\nJust regular content.';
-    assert.equal(parseTaskManifest(spec), null);
-  });
-
-  it('returns null when task-manifest is empty', () => {
-    const spec = '# Spec\n<task-manifest></task-manifest>';
-    assert.equal(parseTaskManifest(spec), null);
-  });
-
-  it('preserves raw task XML fragments', () => {
-    const spec = `Preamble
-<task-manifest>
-  <task id="t1">
-    <name>Register piece writ type</name>
-    <files>packages/plugins/astrolabe/src/astrolabe.ts</files>
-    <action>Add piece as a writ type</action>
-    <verify>pnpm -w typecheck</verify>
-    <done>The piece writ type is registered</done>
-  </task>
-</task-manifest>`;
-
-    const result = parseTaskManifest(spec);
-    assert.ok(result);
-    assert.equal(result.tasks.length, 1);
-    assert.ok(result.tasks[0].includes('<files>'));
-    assert.ok(result.tasks[0].includes('<verify>'));
-    assert.ok(result.tasks[0].includes('<done>'));
   });
 });
