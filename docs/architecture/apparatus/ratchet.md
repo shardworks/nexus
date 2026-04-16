@@ -273,7 +273,7 @@ List clicks with filters.
 
 ### `click-tree`
 
-Render the click tree with status indicators.
+Render the click tree with short IDs and status indicators. Each row places the short click ID (e.g. `c-mo1mq8ry`) in a fixed-width column between the tree-drawing connectors and the goal text, so the ID can be fed directly into `click-show` / `click-extract` / `--root-id` without a second lookup.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

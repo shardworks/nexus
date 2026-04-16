@@ -989,6 +989,63 @@ describe('Ratchet', () => {
       assert.ok(output.includes('Child of A'), 'should include child');
       assert.ok(!output.includes('Root B'), 'should not include Root B');
     });
+
+    it('renders the short ID in a fixed-width column before the goal', async () => {
+      const root = await ratchet.create({ goal: 'Root goal' });
+      const child = await ratchet.create({ goal: 'Child one', parentId: root.id });
+
+      const output = await clickTree.handler({}) as string;
+      const lines = output.split('\n');
+
+      // Short ID form: `c-<base36ts>`, i.e. the first two hyphen-delimited segments.
+      // Two clicks created in the same millisecond will share this prefix — the
+      // random suffix is what disambiguates them — so lookups below go by goal text.
+      const rootShort = root.id.split('-').slice(0, 2).join('-');
+      const childShort = child.id.split('-').slice(0, 2).join('-');
+
+      assert.ok(rootShort.startsWith('c-'), 'short ID starts with click prefix');
+      assert.ok(rootShort.length < root.id.length, 'short ID is shorter than full ID');
+
+      // Root line: no connector, so the ID sits at column 0.
+      const rootLine = lines.find((l) => l.includes('Root goal'))!;
+      assert.strictEqual(rootLine.indexOf(rootShort), 0, 'root row should start with the short ID');
+
+      // Child line: the `└── ` or `├── ` connector comes first, then the ID column.
+      const childLine = lines.find((l) => l.includes('Child one'))!;
+      const connectorMatch = childLine.match(/^(└── |├── )/);
+      assert.ok(connectorMatch, `child row should start with a tree connector: ${JSON.stringify(childLine)}`);
+      assert.strictEqual(
+        childLine.indexOf(childShort),
+        connectorMatch![0].length,
+        'child short ID should sit immediately after the connector',
+      );
+
+      // Goal text follows the ID column (IDs and goals align in fixed columns).
+      const goalIdx = childLine.indexOf('Child one');
+      assert.ok(
+        goalIdx > childLine.indexOf(childShort) + childShort.length,
+        'goal text should appear after the ID column',
+      );
+    });
+
+    it('aligns goal text in a consistent column across rows', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      await ratchet.create({ goal: 'First', parentId: root.id });
+      await ratchet.create({ goal: 'Second', parentId: root.id });
+
+      const output = await clickTree.handler({}) as string;
+      const lines = output.split('\n');
+
+      // Sibling rows render at the same depth — their goal text should start
+      // at the same column because the ID column is fixed-width.
+      const firstLine = lines.find((l) => l.includes('First'))!;
+      const secondLine = lines.find((l) => l.includes('Second'))!;
+      assert.strictEqual(
+        firstLine.indexOf('First'),
+        secondLine.indexOf('Second'),
+        'sibling goals should align in the same column',
+      );
+    });
   });
 
   // ── click-extract tool with full flag ─────────────────────────
