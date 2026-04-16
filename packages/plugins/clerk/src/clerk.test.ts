@@ -2224,6 +2224,130 @@ describe('Parent/child relationships', () => {
       const updatedC2 = await clerk.show(c2.id);
       assert.equal(updatedC2.status, 'cancelled');
     });
+
+    it('cancels non-terminal children when parent is failed directly', async () => {
+      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
+      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
+
+      // Transition parent directly to failed (no child failure driving it).
+      await clerk.transition(parent.id, 'failed', { resolution: 'Parent-level failure' });
+
+      const updatedC1 = await clerk.show(c1.id);
+      assert.equal(updatedC1.status, 'cancelled');
+      assert.equal(updatedC1.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
+
+      const updatedC2 = await clerk.show(c2.id);
+      assert.equal(updatedC2.status, 'cancelled');
+      assert.equal(updatedC2.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
+    });
+  });
+
+  // ── Downward completion cascade (warn, do not cancel) ────────────
+
+  describe('completion cascade (downward)', () => {
+    beforeEach(async () => { await setup(); });
+
+    it('does not cancel non-terminal children when parent completes; warns for each', async () => {
+      const warnings: string[] = [];
+      const original = console.warn;
+      console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+
+      try {
+        const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+        const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
+        const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
+
+        // Transition the parent straight to completed while children are still open.
+        // This simulates the race the commission is defending against: parent
+        // reaches `completed` before child-writ bookkeeping has caught up.
+        await clerk.transition(parent.id, 'completed', { resolution: 'Parent completed early' });
+
+        // Children must remain non-terminal — the cascade must not mask the gap.
+        const updatedC1 = await clerk.show(c1.id);
+        assert.equal(updatedC1.status, 'open');
+        assert.equal(updatedC1.resolution, undefined);
+
+        const updatedC2 = await clerk.show(c2.id);
+        assert.equal(updatedC2.status, 'open');
+        assert.equal(updatedC2.resolution, undefined);
+
+        // A warning must be emitted referencing each non-terminal child so the
+        // bookkeeping gap is visible to operators.
+        assert.ok(
+          warnings.some((w) => w.includes(c1.id) && w.includes(parent.id) && w.includes('completed')),
+          `Expected warning referencing c1 (${c1.id}) and parent (${parent.id}), got: ${JSON.stringify(warnings)}`,
+        );
+        assert.ok(
+          warnings.some((w) => w.includes(c2.id) && w.includes(parent.id) && w.includes('completed')),
+          `Expected warning referencing c2 (${c2.id}) and parent (${parent.id}), got: ${JSON.stringify(warnings)}`,
+        );
+      } finally {
+        console.warn = original;
+      }
+    });
+
+    it('does not warn when all children are already terminal at parent completion', async () => {
+      const warnings: string[] = [];
+      const original = console.warn;
+      console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+
+      try {
+        const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+        const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
+
+        await clerk.transition(c1.id, 'completed', { resolution: 'Done' });
+        await clerk.transition(parent.id, 'completed', { resolution: 'All done' });
+
+        const updatedC1 = await clerk.show(c1.id);
+        assert.equal(updatedC1.status, 'completed');
+
+        assert.ok(
+          !warnings.some((w) => w.includes('non-terminal')),
+          `Expected no non-terminal child warnings, got: ${JSON.stringify(warnings)}`,
+        );
+      } finally {
+        console.warn = original;
+      }
+    });
+
+    it('does not cancel non-terminal children when parent completes, regardless of child count', async () => {
+      const warnings: string[] = [];
+      const original = console.warn;
+      console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+
+      try {
+        const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+        const openChild = await clerk.post({ title: 'Open', body: 'B', parentId: parent.id });
+        const stuckChild = await clerk.post({ title: 'Stuck', body: 'B', parentId: parent.id });
+        await clerk.transition(stuckChild.id, 'stuck');
+        const doneChild = await clerk.post({ title: 'Done', body: 'B', parentId: parent.id });
+        await clerk.transition(doneChild.id, 'completed', { resolution: 'Done' });
+
+        await clerk.transition(parent.id, 'completed', { resolution: 'Parent done' });
+
+        // Terminal child stays terminal; non-terminal children stay non-terminal.
+        assert.equal((await clerk.show(openChild.id)).status, 'open');
+        assert.equal((await clerk.show(stuckChild.id)).status, 'stuck');
+        assert.equal((await clerk.show(doneChild.id)).status, 'completed');
+
+        // Cascade must have warned for both non-terminal children, but not the terminal one.
+        assert.ok(
+          warnings.some((w) => w.includes(openChild.id) && w.includes('non-terminal')),
+          `Expected warning for open child, got: ${JSON.stringify(warnings)}`,
+        );
+        assert.ok(
+          warnings.some((w) => w.includes(stuckChild.id) && w.includes('non-terminal')),
+          `Expected warning for stuck child, got: ${JSON.stringify(warnings)}`,
+        );
+        assert.ok(
+          !warnings.some((w) => w.includes(doneChild.id) && w.includes('non-terminal')),
+          `Did not expect warning for already-terminal child, got: ${JSON.stringify(warnings)}`,
+        );
+      } finally {
+        console.warn = original;
+      }
+    });
   });
 
   // ── Full lifecycle with children ──────────────────────────────────
