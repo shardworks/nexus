@@ -59,14 +59,17 @@ describe('Astrolabe supportKit shape', () => {
 
   // ── R5: writTypes ──────────────────────────────────────────────────
 
-  it('contributes exactly one brief writType', () => {
+  it('contributes brief and piece writTypes', () => {
     const kit = getKit(plugin);
     const writTypes = kit.writTypes as Array<{ name: string; description?: string }>;
     assert.ok(Array.isArray(writTypes), 'writTypes must be an array');
-    assert.equal(writTypes.length, 1, 'must have exactly one writ type');
+    assert.equal(writTypes.length, 2, 'must have exactly two writ types');
     const brief = writTypes.find(w => w.name === 'brief');
     assert.ok(brief, 'brief writType must exist');
     assert.ok(brief.description);
+    const piece = writTypes.find(w => w.name === 'piece');
+    assert.ok(piece, 'piece writType must exist');
+    assert.ok(piece.description);
   });
 
   // ── R6: roles ──────────────────────────────────────────────────────
