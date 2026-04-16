@@ -1782,7 +1782,7 @@ export function createSpider(): Plugin {
     // Only consider writ types that have a rig template mapping. Rig dispatch
     // is opt-in per writ type; filtering at the query level (rather than
     // inside the loop) prevents head-of-line blocking when non-dispatchable
-    // writs (e.g. quests) accumulate in `open` older than dispatchable ones
+    // writ types accumulate in `open` older than dispatchable ones
     // and fill the page of 10.
     const dispatchableTypes = Object.keys(rigTemplateRegistry.listTemplateMappings());
     if (dispatchableTypes.length === 0) return null;

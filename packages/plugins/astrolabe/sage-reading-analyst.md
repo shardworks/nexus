@@ -15,7 +15,7 @@ You have access to these Astrolabe tools for reading and writing plan artifacts:
 - **`decisions-write`** — write or replace the decisions for a plan
 - **`observations-write`** — write the analyst observations for a plan
 
-You also have access to Clerk read tools for reviewing quests and commissions:
+You also have access to Clerk read tools for reviewing writs and commissions:
 
 - **`writ-show`** — show a writ by ID
 - **`writ-list`** — list writs with optional filters

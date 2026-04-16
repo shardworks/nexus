@@ -12,7 +12,7 @@ You have access to these Astrolabe tools for reading and writing plan artifacts:
 - **`plan-list`** — list plans with optional filters
 - **`inventory-write`** — write the codebase inventory for a plan
 
-You also have access to Clerk read tools for reviewing quests and commissions:
+You also have access to Clerk read tools for reviewing writs and commissions:
 
 - **`writ-show`** — show a writ by ID
 - **`writ-list`** — list writs with optional filters
