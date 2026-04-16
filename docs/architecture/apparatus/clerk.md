@@ -14,7 +14,7 @@ The Clerk owns the boundary between "what is asked for" and "how it gets done." 
 
 The Clerk does **not** execute work. It does not launch sessions, manage rigs, or orchestrate engines. It tracks obligations: what has been commissioned, what state each obligation is in, and whether the guild has fulfilled its commitments. When the Clockworks and rigging system exist, the Clerk will integrate with them via lifecycle events and signals.
 
-Writs can be organized into parent/child hierarchies for decomposing complex work. A parent writ stays in `open` status while its children are being processed. Failure cascades upward (child failure fails the parent) and cancellation cascades downward (parent termination cancels non-terminal children).
+Writs can be organized into parent/child hierarchies for decomposing complex work. A parent writ stays in `open` status while its children are being processed. Failure cascades upward (child failure fails the parent) and cancellation cascades downward when a parent reaches `failed` or `cancelled` (its non-terminal children are auto-cancelled). When a parent reaches `completed`, any still-open children are left as-is and a warning is logged — see [CDC Cascade Behavior](#cdc-cascade-behavior).
 
 ---
 
@@ -215,7 +215,10 @@ interface ClerkApi {
    *
    * CDC cascade behavior:
    * - Child failed → parent: failure propagates up
-   * - Parent terminal → children: non-terminal children are cancelled
+   * - Parent failed/cancelled → children: non-terminal children are cancelled
+   * - Parent completed → children: non-terminal children are left as-is
+   *   and a warning is logged (their existence indicates an upstream
+   *   bookkeeping gap that should be investigated)
    */
   transition(id: string, to: WritStatus, fields?: Partial<WritDoc>): Promise<WritDoc>
 
@@ -398,7 +401,7 @@ Writs form a tree. A writ may be decomposed into child writs (tasks, steps, etc.
 
 - **Decomposition** — a broad commission broken into concrete tasks
 - **Failure propagation** — child failure cascades upward, failing the parent
-- **Cancellation cascade** — parent termination cancels all non-terminal children
+- **Cancellation cascade** — when a parent terminates as `failed` or `cancelled`, its non-terminal children are auto-cancelled (a `completed` parent leaves them in place and warns instead)
 - **Scope tracking** — the patron sees one mandate; the guild sees the tree
 
 ### Hierarchy Rules
