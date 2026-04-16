@@ -1,0 +1,22 @@
+export {
+  type RatchetApi,
+  type ClickDoc,
+  type ClickLinkDoc,
+  type ClickLinks,
+  type ClickStatus,
+  type LinkType,
+  type CreateClickRequest,
+  type ConcludeClickRequest,
+  type DropClickRequest,
+  type ReparentClickRequest,
+  type LinkClickRequest,
+  type UnlinkClickRequest,
+  type ExtractClickRequest,
+  type ClickFilters,
+  type ClickTree,
+} from './types.ts';
+
+export { createRatchet } from './ratchet.ts';
+
+import { createRatchet } from './ratchet.ts';
+export default createRatchet();

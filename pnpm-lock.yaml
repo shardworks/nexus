@@ -272,6 +272,25 @@ importers:
         specifier: 25.5.0
         version: 25.5.0
 
+  packages/plugins/ratchet:
+    dependencies:
+      '@shardworks/stacks-apparatus':
+        specifier: workspace:*
+        version: link:../stacks
+      '@shardworks/tools-apparatus':
+        specifier: workspace:*
+        version: link:../tools
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
   packages/plugins/spider:
     dependencies:
       '@shardworks/animator-apparatus':
