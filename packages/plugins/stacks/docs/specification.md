@@ -662,6 +662,8 @@ Explicit enumeration of all conceivable use cases. The "status" column is the de
 
 The `StacksBackend` interface is the only persistence contract. All SQLite-specific types stay behind this interface — `better-sqlite3`, raw SQL strings, and JSONPath expressions are implementation details of the SQLite adapter, not visible to the apparatus or to plugins.
 
+> **Async vs. sync signatures.** The signatures below use `Promise` return types as the general contract — a future backend (e.g. libSQL over HTTP, a networked store) may require asynchronous I/O. The current `better-sqlite3` implementation is fully synchronous: all methods return plain values, not promises. Both shapes satisfy the interface; callers should `await` regardless so they remain backend-agnostic.
+
 ```typescript
 /**
  * Persistence abstraction for The Stacks.
@@ -733,11 +735,12 @@ interface BackendTransaction {
   find(ref: BookRef, query: InternalQuery): Promise<BookEntry[]>
 
   /**
-   * Count documents matching a where clause. Takes conditions only —
-   * pagination (limit/offset) is not meaningful for counts and is
-   * excluded from this signature to avoid ambiguity.
+   * Count documents matching a query. Uses `CountQuery` rather than bare
+   * `InternalCondition[]` for consistency with the `InternalQuery` wrapper
+   * pattern. Pagination fields (limit/offset) are not meaningful for counts
+   * and are excluded from `CountQuery` to avoid ambiguity.
    */
-  count(ref: BookRef, where?: InternalCondition[]): Promise<number>
+  count(ref: BookRef, query: CountQuery): Promise<number>
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
   commit(): Promise<void>
@@ -792,6 +795,11 @@ type InternalCondition =
   | { field: string; op: 'like'; value: string }
   | { field: string; op: 'in'; values: Scalar[] }
   | { field: string; op: 'isNull' | 'isNotNull' }
+
+/** Narrowed query type for count() — conditions only, no pagination. */
+interface CountQuery {
+  where?: InternalCondition[]
+}
 ```
 
 ---
