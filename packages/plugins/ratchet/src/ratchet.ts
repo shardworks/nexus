@@ -427,20 +427,15 @@ export function createRatchet(): Plugin {
         return tree ? [tree] : [];
       }
 
-      // Forest mode: find all root clicks (no parentId)
-      const roots = await clicks.find({
-        where: [['parentId', '=', undefined]] as unknown as WhereClause,
+      // Forest mode: find all root clicks (no parentId).
+      // Fetch all and filter — querying parentId = undefined is unreliable
+      // across backends (SQLite stores absent fields differently from
+      // MemoryBackend).
+      const all = await clicks.find({
         orderBy: [['createdAt', 'asc']],
-        limit: 1000,
+        limit: 10000,
       });
-
-      // MemoryBackend may not support undefined equality — fall back to filtering all
-      let rootDocs = roots;
-      if (rootDocs.some((c) => c.parentId)) {
-        const all = await clicks.find({ limit: 10000 });
-        rootDocs = all.filter((c) => !c.parentId);
-        rootDocs.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      }
+      const rootDocs = all.filter((c) => !c.parentId);
 
       const forest: ClickTree[] = [];
       for (const root of rootDocs) {
