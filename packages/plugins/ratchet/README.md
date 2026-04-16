@@ -64,12 +64,14 @@ List clicks with optional filters, ordered by `createdAt` descending.
 const live = await ratchet.list({ status: 'live', limit: 10 });
 const children = await ratchet.list({ parentId: parent.id });
 const mixed = await ratchet.list({ status: ['live', 'parked'] });
+const descendants = await ratchet.list({ rootId: parent.id }); // recursive
 ```
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `status` | `ClickStatus \| ClickStatus[]` | — | Filter by status |
 | `parentId` | `string` | — | Filter to direct children |
+| `rootId` | `string` | — | Filter to all descendants (recursive) |
 | `limit` | `number` | `20` | Max results |
 | `offset` | `number` | — | Skip N results |
 
@@ -137,12 +139,35 @@ const fullId = await ratchet.resolveId('c-mo0z');
 
 ### `extract(rootId, params): Promise<string | ClickTree>`
 
-Extract a click tree in markdown or JSON format.
+Extract a click tree in markdown or JSON format. By default, only goals are shown (conclusions omitted). Pass `full: true` to include conclusions.
 
 ```typescript
-const md = await ratchet.extract(root.id, { format: 'md' });
-const tree = await ratchet.extract(root.id, { format: 'json' });
+const md = await ratchet.extract(root.id, { format: 'md' });           // goals only
+const full = await ratchet.extract(root.id, { format: 'md', full: true }); // with conclusions
+const tree = await ratchet.extract(root.id, { format: 'json' });       // JSON, goals only
 ```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `format` | `'md' \| 'json'` | — | Output format |
+| `full` | `boolean` | `false` | Include conclusions (default: goals only) |
+
+### `tree(params?): Promise<ClickTree[]>`
+
+Return the click hierarchy as a forest of trees. Returns all root clicks by default, or a specific subtree when `rootId` is given. Supports status filtering (prune semantics) and depth limiting.
+
+```typescript
+const forest = await ratchet.tree();                           // all roots
+const subtree = await ratchet.tree({ rootId: root.id });       // specific subtree
+const live = await ratchet.tree({ status: 'live' });           // only live clicks
+const shallow = await ratchet.tree({ depth: 2 });              // limit depth
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `rootId` | `string` | — | Show subtree from this click |
+| `status` | `ClickStatus \| ClickStatus[]` | — | Filter by status (prune semantics) |
+| `depth` | `number` | — | Maximum tree depth |
 
 ---
 
@@ -189,9 +214,10 @@ Terminal statuses (`concluded`, `dropped`) allow no further transitions.
 | `click-reparent` | write | Move a click to a new parent |
 | `click-link` | write | Create a typed link |
 | `click-unlink` | write | Remove a link |
-| `click-extract` | read | Extract a click tree |
+| `click-extract` | read | Extract a click tree (goals only by default; `--full` includes conclusions) |
+| `click-tree` | read | Display click hierarchy as a visual tree with status indicators |
 
-All tools that accept an `id` parameter resolve short ID prefixes automatically via `resolveId()`.
+All tools that accept an `id` parameter resolve short ID prefixes automatically via `resolveId()`. Tools with a single required ID parameter also accept the ID as a positional argument (e.g., `nsg click show <id>`).
 
 ---
 
@@ -216,5 +242,6 @@ import type {
   LinkClickRequest,
   UnlinkClickRequest,
   ExtractClickRequest,
+  TreeParams,
 } from '@shardworks/ratchet-apparatus';
 ```

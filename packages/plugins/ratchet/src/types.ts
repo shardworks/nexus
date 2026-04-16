@@ -63,11 +63,13 @@ export interface UnlinkClickRequest {
 
 export interface ExtractClickRequest {
   format: 'md' | 'json';
+  full?: boolean;
 }
 
 export interface ClickFilters {
   status?: ClickStatus | ClickStatus[];
   parentId?: string;
+  rootId?: string;
   limit?: number;
   offset?: number;
 }
@@ -75,6 +77,12 @@ export interface ClickFilters {
 export interface ClickTree {
   click: ClickDoc;
   children: ClickTree[];
+}
+
+export interface TreeParams {
+  rootId?: string;
+  status?: ClickStatus | ClickStatus[];
+  depth?: number;
 }
 
 export interface RatchetApi {
@@ -89,6 +97,7 @@ export interface RatchetApi {
   link(params: LinkClickRequest): Promise<ClickLinkDoc>;
   unlink(params: UnlinkClickRequest): Promise<void>;
   extract(rootId: string, params: ExtractClickRequest): Promise<string | ClickTree>;
+  tree(params?: TreeParams): Promise<ClickTree[]>;
   resolveId(prefix: string): Promise<string>;
   links(clickId: string): Promise<ClickLinks>;
 }

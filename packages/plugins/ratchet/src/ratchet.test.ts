@@ -15,10 +15,12 @@ import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 
 import { createRatchet } from './ratchet.ts';
-import type { RatchetApi, ClickDoc, ClickStatus } from './types.ts';
+import type { RatchetApi, ClickDoc, ClickTree, ClickStatus } from './types.ts';
 import clickShow from './tools/click-show.ts';
 import clickList from './tools/click-list.ts';
 import clickPark from './tools/click-park.ts';
+import clickExtract from './tools/click-extract.ts';
+import clickTree from './tools/click-tree.ts';
 
 // ── Test harness ─────────────────────────────────────────────────────
 
@@ -699,6 +701,285 @@ describe('Ratchet', () => {
       const result = await clickList.handler({ status: 'live', limit: 20 }) as ClickDoc[];
       assert.strictEqual(result.length, 1);
       assert.strictEqual(result[0].goal, 'Live');
+    });
+  });
+
+  // ── tree() API ────────────────────────────────────────────────
+
+  describe('tree', () => {
+    it('returns forest of all root clicks', async () => {
+      const a = await ratchet.create({ goal: 'Root A' });
+      const b = await ratchet.create({ goal: 'Root B' });
+      await ratchet.create({ goal: 'Child of A', parentId: a.id });
+
+      const forest = await ratchet.tree();
+      assert.strictEqual(forest.length, 2);
+      assert.strictEqual(forest[0].click.id, a.id);
+      assert.strictEqual(forest[1].click.id, b.id);
+      // Root A should have one child
+      assert.strictEqual(forest[0].children.length, 1);
+      // Root B should have no children
+      assert.strictEqual(forest[1].children.length, 0);
+    });
+
+    it('returns single-element array for subtree mode', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const child = await ratchet.create({ goal: 'Child', parentId: root.id });
+      await ratchet.create({ goal: 'Grandchild', parentId: child.id });
+
+      const forest = await ratchet.tree({ rootId: root.id });
+      assert.strictEqual(forest.length, 1);
+      assert.strictEqual(forest[0].click.id, root.id);
+      assert.strictEqual(forest[0].children.length, 1);
+      assert.strictEqual(forest[0].children[0].children.length, 1);
+    });
+
+    it('filters by status with prune semantics', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const live = await ratchet.create({ goal: 'Live child', parentId: root.id });
+      const parked = await ratchet.create({ goal: 'Parked child', parentId: root.id });
+      await ratchet.park(parked.id);
+      // Child of parked should also be pruned
+      await ratchet.create({ goal: 'Grandchild of parked', parentId: parked.id });
+
+      const forest = await ratchet.tree({ status: 'live' });
+      assert.strictEqual(forest.length, 1);
+      // Only root and live child remain
+      assert.strictEqual(forest[0].children.length, 1);
+      assert.strictEqual(forest[0].children[0].click.id, live.id);
+    });
+
+    it('filters by multiple statuses', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const child1 = await ratchet.create({ goal: 'Parked', parentId: root.id });
+      await ratchet.park(child1.id);
+      const child2 = await ratchet.create({ goal: 'Concluded', parentId: root.id });
+      await ratchet.conclude(child2.id, { conclusion: 'Done' });
+
+      const forest = await ratchet.tree({ status: ['parked', 'concluded'] });
+      // Root is live, so it gets pruned and entire forest is empty
+      assert.strictEqual(forest.length, 0);
+    });
+
+    it('limits depth', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const child = await ratchet.create({ goal: 'Child', parentId: root.id });
+      await ratchet.create({ goal: 'Grandchild', parentId: child.id });
+
+      const forest = await ratchet.tree({ depth: 1 });
+      assert.strictEqual(forest.length, 1);
+      assert.strictEqual(forest[0].children.length, 1);
+      // Grandchild should not be included — depth 1 means root (depth 0) + children (depth 1)
+      assert.strictEqual(forest[0].children[0].children.length, 0);
+    });
+
+    it('depth 0 returns roots only', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      await ratchet.create({ goal: 'Child', parentId: root.id });
+
+      const forest = await ratchet.tree({ depth: 0 });
+      assert.strictEqual(forest.length, 1);
+      assert.strictEqual(forest[0].children.length, 0);
+    });
+
+    it('returns empty array when no clicks exist', async () => {
+      const forest = await ratchet.tree();
+      assert.strictEqual(forest.length, 0);
+    });
+
+    it('returns empty array when filters match nothing', async () => {
+      await ratchet.create({ goal: 'Live click' });
+      const forest = await ratchet.tree({ status: 'parked' });
+      assert.strictEqual(forest.length, 0);
+    });
+  });
+
+  // ── list with rootId ──────────────────────────────────────────
+
+  describe('list with rootId', () => {
+    it('returns all descendants of a click', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const child = await ratchet.create({ goal: 'Child', parentId: root.id });
+      const grandchild = await ratchet.create({ goal: 'Grandchild', parentId: child.id });
+      await ratchet.create({ goal: 'Unrelated' });
+
+      const result = await ratchet.list({ rootId: root.id });
+      assert.strictEqual(result.length, 2);
+      const ids = result.map((c) => c.id);
+      assert.ok(ids.includes(child.id));
+      assert.ok(ids.includes(grandchild.id));
+    });
+
+    it('combines rootId with status filter', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const live = await ratchet.create({ goal: 'Live child', parentId: root.id });
+      const parked = await ratchet.create({ goal: 'Parked child', parentId: root.id });
+      await ratchet.park(parked.id);
+
+      const result = await ratchet.list({ rootId: root.id, status: 'live' });
+      assert.strictEqual(result.length, 1);
+      assert.strictEqual(result[0].id, live.id);
+    });
+
+    it('combines rootId with limit', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      for (let i = 0; i < 5; i++) {
+        await ratchet.create({ goal: `Child ${i}`, parentId: root.id });
+      }
+
+      const result = await ratchet.list({ rootId: root.id, limit: 3 });
+      assert.strictEqual(result.length, 3);
+    });
+
+    it('returns empty when click has no descendants', async () => {
+      const root = await ratchet.create({ goal: 'Leaf' });
+      const result = await ratchet.list({ rootId: root.id });
+      assert.strictEqual(result.length, 0);
+    });
+  });
+
+  // ── extract with full flag ────────────────────────────────────
+
+  describe('extract with full flag', () => {
+    it('defaults to goals-only in markdown (omits conclusions)', async () => {
+      const click = await ratchet.create({ goal: 'Test' });
+      await ratchet.conclude(click.id, { conclusion: 'All done' });
+
+      const md = await ratchet.extract(click.id, { format: 'md' }) as string;
+      assert.ok(!md.includes('All done'), 'should not include conclusion in goals-only mode');
+      assert.ok(md.includes('Test'), 'should still include goal');
+    });
+
+    it('includes conclusions when full=true in markdown', async () => {
+      const click = await ratchet.create({ goal: 'Test' });
+      await ratchet.conclude(click.id, { conclusion: 'All done' });
+
+      const md = await ratchet.extract(click.id, { format: 'md', full: true }) as string;
+      assert.ok(md.includes('All done'), 'should include conclusion in full mode');
+    });
+
+    it('omits conclusion field in JSON when full=false', async () => {
+      const click = await ratchet.create({ goal: 'Test' });
+      await ratchet.conclude(click.id, { conclusion: 'All done' });
+
+      const tree = await ratchet.extract(click.id, { format: 'json' }) as ClickTree;
+      assert.strictEqual(tree.click.conclusion, undefined, 'conclusion should be stripped');
+      assert.ok(tree.click.goal, 'goal should remain');
+    });
+
+    it('includes conclusion field in JSON when full=true', async () => {
+      const click = await ratchet.create({ goal: 'Test' });
+      await ratchet.conclude(click.id, { conclusion: 'All done' });
+
+      const tree = await ratchet.extract(click.id, { format: 'json', full: true }) as ClickTree;
+      assert.strictEqual(tree.click.conclusion, 'All done', 'conclusion should be present in full mode');
+    });
+
+    it('strips conclusions from nested children in JSON', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const child = await ratchet.create({ goal: 'Child', parentId: root.id });
+      await ratchet.conclude(child.id, { conclusion: 'Child done' });
+
+      const tree = await ratchet.extract(root.id, { format: 'json' }) as ClickTree;
+      assert.strictEqual(tree.children[0].click.conclusion, undefined);
+    });
+  });
+
+  // ── click-tree tool ───────────────────────────────────────────
+
+  describe('click-tree tool', () => {
+    it('renders a basic tree with connectors', async () => {
+      const root = await ratchet.create({ goal: 'Root goal' });
+      await ratchet.create({ goal: 'Child 1', parentId: root.id });
+      await ratchet.create({ goal: 'Child 2', parentId: root.id });
+
+      const output = await clickTree.handler({}) as string;
+      assert.ok(output.includes('Root goal'), 'should include root goal');
+      assert.ok(output.includes('├──') || output.includes('└──'), 'should have tree connectors');
+      assert.ok(output.includes('●'), 'should have live status indicator');
+    });
+
+    it('uses correct status indicators', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const parked = await ratchet.create({ goal: 'Parked', parentId: root.id });
+      await ratchet.park(parked.id);
+      const concluded = await ratchet.create({ goal: 'Concluded', parentId: root.id });
+      await ratchet.conclude(concluded.id, { conclusion: 'Done' });
+      const dropped = await ratchet.create({ goal: 'Dropped', parentId: root.id });
+      await ratchet.drop(dropped.id, { conclusion: 'Nope' });
+
+      const output = await clickTree.handler({}) as string;
+      assert.ok(output.includes('●'), 'should have live indicator');
+      assert.ok(output.includes('◇'), 'should have parked indicator');
+      assert.ok(output.includes('○'), 'should have concluded indicator');
+      assert.ok(output.includes('✕'), 'should have dropped indicator');
+    });
+
+    it('returns empty message when no clicks exist', async () => {
+      const output = await clickTree.handler({}) as string;
+      assert.strictEqual(output, 'No clicks found.');
+    });
+
+    it('returns filter-aware empty message', async () => {
+      await ratchet.create({ goal: 'Live' });
+      const output = await clickTree.handler({ status: 'parked' }) as string;
+      assert.strictEqual(output, 'No clicks match the given filters.');
+    });
+
+    it('respects depth parameter', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const child = await ratchet.create({ goal: 'Child', parentId: root.id });
+      await ratchet.create({ goal: 'Grandchild', parentId: child.id });
+
+      const output = await clickTree.handler({ depth: 1 }) as string;
+      assert.ok(output.includes('Root'), 'should include root');
+      assert.ok(output.includes('Child'), 'should include child');
+      assert.ok(!output.includes('Grandchild'), 'should not include grandchild');
+    });
+
+    it('respects rootId parameter', async () => {
+      const a = await ratchet.create({ goal: 'Root A' });
+      await ratchet.create({ goal: 'Root B' });
+      await ratchet.create({ goal: 'Child of A', parentId: a.id });
+
+      const output = await clickTree.handler({ rootId: a.id }) as string;
+      assert.ok(output.includes('Root A'), 'should include Root A');
+      assert.ok(output.includes('Child of A'), 'should include child');
+      assert.ok(!output.includes('Root B'), 'should not include Root B');
+    });
+  });
+
+  // ── click-extract tool with full flag ─────────────────────────
+
+  describe('click-extract tool full flag', () => {
+    it('defaults to goals-only', async () => {
+      const click = await ratchet.create({ goal: 'Test' });
+      await ratchet.conclude(click.id, { conclusion: 'All done' });
+
+      const result = await clickExtract.handler({ id: click.id, format: 'md' }) as string;
+      assert.ok(!result.includes('All done'));
+    });
+
+    it('includes conclusions when full=true', async () => {
+      const click = await ratchet.create({ goal: 'Test' });
+      await ratchet.conclude(click.id, { conclusion: 'All done' });
+
+      const result = await clickExtract.handler({ id: click.id, format: 'md', full: true }) as string;
+      assert.ok(result.includes('All done'));
+    });
+  });
+
+  // ── click-list tool with rootId ───────────────────────────────
+
+  describe('click-list tool rootId', () => {
+    it('passes rootId through to API', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      await ratchet.create({ goal: 'Child', parentId: root.id });
+      await ratchet.create({ goal: 'Unrelated' });
+
+      const result = await clickList.handler({ rootId: root.id, limit: 20 }) as ClickDoc[];
+      assert.strictEqual(result.length, 1);
+      assert.strictEqual(result[0].goal, 'Child');
     });
   });
 });

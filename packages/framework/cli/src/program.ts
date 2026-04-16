@@ -37,6 +37,35 @@ type ZodShape = Record<string, z.ZodTypeAny>;
  * The action handler validates params through the tool's Zod schema before
  * calling the handler — Zod error messages are surfaced cleanly.
  */
+/**
+ * Detect whether a Zod schema is a required string type (not optional, not defaulted).
+ */
+function isRequiredStringSchema(schema: z.ZodTypeAny): boolean {
+  return !schema.isOptional() && schema.safeParse('test').success && !schema.safeParse(42).success;
+}
+
+/**
+ * Detect if a tool has exactly one required string param named 'id' or ending
+ * with 'Id'. Returns the param key if found, undefined otherwise.
+ *
+ * Convention: when detected, the CLI registers this param as an optional
+ * positional argument so `nsg click show <id>` works alongside `--id <id>`.
+ */
+function detectPositionalId(shape: ZodShape): string | undefined {
+  const requiredStringKeys: string[] = [];
+  for (const [key, schema] of Object.entries(shape)) {
+    if (isRequiredStringSchema(schema)) {
+      requiredStringKeys.push(key);
+    }
+  }
+  // Must be exactly one required string param
+  if (requiredStringKeys.length !== 1) return undefined;
+  const key = requiredStringKeys[0];
+  // Must be named 'id' or end with 'Id'
+  if (key === 'id' || key.endsWith('Id')) return key;
+  return undefined;
+}
+
 export function buildToolCommand(
   commandName: string,
   toolDef: ToolDefinition,
@@ -44,6 +73,8 @@ export function buildToolCommand(
   const cmd = new Command(commandName).description(toolDef.description);
 
   const shape = toolDef.params.shape as ZodShape;
+  const positionalKey = detectPositionalId(shape);
+
   for (const [key, schema] of Object.entries(shape)) {
     const flag = toFlag(key);
     const description = schema.description ?? key;
@@ -60,6 +91,10 @@ export function buildToolCommand(
         (value: string, prev: string[]) => [...prev, value],
         [] as string[],
       );
+    } else if (key === positionalKey) {
+      // Positional ID convention: register both as optional flag AND positional.
+      // The flag is optional because the positional can supply the value.
+      cmd.option(`${flag} <value>`, description);
     } else if (schema.isOptional()) {
       cmd.option(`${flag} <value>`, description);
     } else {
@@ -67,8 +102,30 @@ export function buildToolCommand(
     }
   }
 
-  cmd.action(async (opts: Record<string, unknown>) => {
+  // Add positional argument for the ID param (optional, since --flag still works)
+  if (positionalKey) {
+    cmd.argument(`[${positionalKey}]`, shape[positionalKey].description ?? positionalKey);
+  }
+
+  cmd.action(async (...args: unknown[]) => {
     try {
+      // Commander passes positional args before opts. With one optional positional:
+      // action(positionalValue, opts, cmd) or action(opts, cmd) if no positional defined
+      let opts: Record<string, unknown>;
+      let positionalValue: string | undefined;
+
+      if (positionalKey) {
+        positionalValue = args[0] as string | undefined;
+        opts = args[1] as Record<string, unknown>;
+      } else {
+        opts = args[0] as Record<string, unknown>;
+      }
+
+      // Merge positional into opts — flag takes precedence over positional
+      if (positionalKey && positionalValue && opts[positionalKey] === undefined) {
+        opts[positionalKey] = positionalValue;
+      }
+
       const coerced = coerceCliOpts(shape, opts);
       const validated = toolDef.params.parse(coerced);
       const result = await toolDef.handler(validated);

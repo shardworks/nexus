@@ -14,6 +14,7 @@ export {
   type ExtractClickRequest,
   type ClickFilters,
   type ClickTree,
+  type TreeParams,
 } from './types.ts';
 
 export { createRatchet } from './ratchet.ts';

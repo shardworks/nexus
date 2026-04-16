@@ -9,3 +9,4 @@ export { default as clickReparent } from './click-reparent.ts';
 export { default as clickLink } from './click-link.ts';
 export { default as clickUnlink } from './click-unlink.ts';
 export { default as clickExtract } from './click-extract.ts';
+export { default as clickTree } from './click-tree.ts';

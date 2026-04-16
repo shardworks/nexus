@@ -8,7 +8,8 @@ export default tool({
   description: 'List clicks with optional filters',
   instructions:
     'Returns clicks ordered by createdAt descending (newest first). ' +
-    'Filter by status or parentId to narrow results.',
+    'Filter by status or parentId to narrow results. ' +
+    'Use --root-id to return all descendants of a given click (not just direct children).',
   params: {
     status: z
       .union([
@@ -18,6 +19,7 @@ export default tool({
       .optional()
       .describe('Filter by click status (repeatable — pass multiple to match any)'),
     parentId: z.string().optional().describe('Filter to children of this parent click'),
+    rootId: z.string().optional().describe('Filter to all descendants of this click (recursive)'),
     limit: z.number().optional().default(20).describe('Maximum results (default: 20)'),
     offset: z.number().optional().describe('Number of results to skip'),
   },
@@ -27,6 +29,7 @@ export default tool({
     return ratchet.list({
       status: params.status,
       parentId: params.parentId,
+      rootId: params.rootId,
       limit: params.limit,
       offset: params.offset,
     });

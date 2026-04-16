@@ -18,6 +18,7 @@ import type {
   LinkClickRequest,
   UnlinkClickRequest,
   ExtractClickRequest,
+  TreeParams,
 } from './types.ts';
 
 import {
@@ -32,6 +33,7 @@ import {
   clickLink,
   clickUnlink,
   clickExtract,
+  clickTree,
 } from './tools/index.ts';
 
 // ── Status machine ──────────────────────────────────────────────────
@@ -94,19 +96,59 @@ export function createRatchet(): Plugin {
     return clauses.length > 0 ? clauses : undefined;
   }
 
-  async function buildTree(clickId: string): Promise<ClickTree> {
+  /**
+   * Build a ClickTree recursively. Supports optional status filtering
+   * (prune semantics — filtered nodes and their subtrees are removed)
+   * and depth limiting.
+   */
+  async function buildTree(
+    clickId: string,
+    options?: { statusSet?: Set<ClickStatus>; depth?: number; currentDepth?: number },
+  ): Promise<ClickTree | null> {
     const click = await api.get(clickId);
+    const statusSet = options?.statusSet;
+    const maxDepth = options?.depth;
+    const currentDepth = options?.currentDepth ?? 0;
+
+    // Prune: if this node doesn't match the status filter, drop it and its subtree
+    if (statusSet && !statusSet.has(click.status)) {
+      return null;
+    }
+
+    // Depth limit: include this node but don't recurse into children
+    if (maxDepth !== undefined && currentDepth >= maxDepth) {
+      return { click, children: [] };
+    }
+
     const children = await clicks.find({ where: [['parentId', '=', clickId]] });
     const childTrees: ClickTree[] = [];
     // Sort children by createdAt ascending
     children.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     for (const child of children) {
-      childTrees.push(await buildTree(child.id));
+      const childTree = await buildTree(child.id, {
+        statusSet,
+        depth: maxDepth,
+        currentDepth: currentDepth + 1,
+      });
+      if (childTree) childTrees.push(childTree);
     }
     return { click, children: childTrees };
   }
 
-  function renderMarkdown(tree: ClickTree, depth: number = 0): string {
+  /**
+   * Recursively collect all descendant IDs of a given click.
+   */
+  async function collectDescendantIds(clickId: string): Promise<string[]> {
+    const children = await clicks.find({ where: [['parentId', '=', clickId]] });
+    const ids: string[] = [clickId];
+    for (const child of children) {
+      const childIds = await collectDescendantIds(child.id);
+      ids.push(...childIds);
+    }
+    return ids;
+  }
+
+  function renderMarkdown(tree: ClickTree, depth: number = 0, full: boolean = true): string {
     const lines: string[] = [];
     const click = tree.click;
 
@@ -120,7 +162,7 @@ export function createRatchet(): Plugin {
 
     lines.push(`> ${click.goal}`);
     lines.push(`Status: ${click.status}`);
-    if (click.conclusion !== undefined) lines.push(`Conclusion: ${click.conclusion}`);
+    if (full && click.conclusion !== undefined) lines.push(`Conclusion: ${click.conclusion}`);
     if (click.createdSessionId !== undefined) lines.push(`Created by: ${click.createdSessionId}`);
     if (click.resolvedSessionId !== undefined) lines.push(`Resolved by: ${click.resolvedSessionId}`);
     lines.push(`Created: ${click.createdAt}`);
@@ -128,10 +170,21 @@ export function createRatchet(): Plugin {
 
     for (const child of tree.children) {
       lines.push('');
-      lines.push(renderMarkdown(child, depth + 1));
+      lines.push(renderMarkdown(child, depth + 1, full));
     }
 
     return lines.join('\n');
+  }
+
+  /**
+   * Strip conclusion fields from a ClickTree for goals-only JSON output.
+   */
+  function stripConclusions(tree: ClickTree): ClickTree {
+    const { conclusion: _, ...clickWithout } = tree.click;
+    return {
+      click: clickWithout as ClickDoc,
+      children: tree.children.map(stripConclusions),
+    };
   }
 
   // ── API ─────────────────────────────────────────────────────────
@@ -169,6 +222,41 @@ export function createRatchet(): Plugin {
     },
 
     async list(filters?: ClickFilters): Promise<ClickDoc[]> {
+      // rootId: recursively collect descendants, then apply remaining filters
+      if (filters?.rootId) {
+        const allDescendantIds = await collectDescendantIds(filters.rootId);
+        // Remove the root itself — rootId means "descendants of", not "including"
+        const descendantIds = allDescendantIds.slice(1);
+        if (descendantIds.length === 0) return [];
+
+        // Fetch all descendants, then filter in-memory
+        const allDescendants: ClickDoc[] = [];
+        for (const did of descendantIds) {
+          try {
+            const doc = await clicks.get(did);
+            if (doc) allDescendants.push(doc);
+          } catch {
+            // skip missing
+          }
+        }
+
+        // Apply status filter
+        let filtered = allDescendants;
+        if (filters.status) {
+          const statusArr = Array.isArray(filters.status) ? filters.status : [filters.status];
+          const statusSet = new Set(statusArr);
+          filtered = filtered.filter((c) => statusSet.has(c.status));
+        }
+
+        // Sort by createdAt descending
+        filtered.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+        // Apply offset and limit
+        const offset = filters.offset ?? 0;
+        const limit = filters.limit ?? 20;
+        return filtered.slice(offset, offset + limit);
+      }
+
       const limit = filters?.limit ?? 20;
       const offset = filters?.offset;
       const where = buildWhereClause(filters);
@@ -320,8 +408,46 @@ export function createRatchet(): Plugin {
 
     async extract(rootId: string, params: ExtractClickRequest): Promise<string | ClickTree> {
       const tree = await buildTree(rootId);
-      if (params.format === 'json') return tree;
-      return renderMarkdown(tree);
+      if (tree === null) throw new Error(`Click "${rootId}" not found.`);
+      const full = params.full ?? false;
+      if (params.format === 'json') {
+        return full ? tree : stripConclusions(tree);
+      }
+      return renderMarkdown(tree, 0, full);
+    },
+
+    async tree(params?: TreeParams): Promise<ClickTree[]> {
+      const statusSet = params?.status
+        ? new Set(Array.isArray(params.status) ? params.status : [params.status])
+        : undefined;
+      const opts = { statusSet, depth: params?.depth };
+
+      if (params?.rootId) {
+        const tree = await buildTree(params.rootId, opts);
+        return tree ? [tree] : [];
+      }
+
+      // Forest mode: find all root clicks (no parentId)
+      const roots = await clicks.find({
+        where: [['parentId', '=', undefined]] as unknown as WhereClause,
+        orderBy: [['createdAt', 'asc']],
+        limit: 1000,
+      });
+
+      // MemoryBackend may not support undefined equality — fall back to filtering all
+      let rootDocs = roots;
+      if (rootDocs.some((c) => c.parentId)) {
+        const all = await clicks.find({ limit: 10000 });
+        rootDocs = all.filter((c) => !c.parentId);
+        rootDocs.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      }
+
+      const forest: ClickTree[] = [];
+      for (const root of rootDocs) {
+        const tree = await buildTree(root.id, opts);
+        if (tree) forest.push(tree);
+      }
+      return forest;
     },
 
     async resolveId(prefix: string): Promise<string> {
@@ -372,6 +498,7 @@ export function createRatchet(): Plugin {
           clickLink,
           clickUnlink,
           clickExtract,
+          clickTree,
         ],
       },
 

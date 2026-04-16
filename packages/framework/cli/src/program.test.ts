@@ -313,7 +313,7 @@ describe('resolveGuildRoot', () => {
 // ── buildToolCommand ────────────────────────────────────────────────
 
 describe('buildToolCommand', () => {
-  it('generates mandatory option for non-optional string param', () => {
+  it('generates non-mandatory option for sole required string id param (positional convention)', () => {
     const tool: ToolDefinition = {
       name: 'test-tool',
       description: 'A test tool',
@@ -324,7 +324,22 @@ describe('buildToolCommand', () => {
     const cmd = buildToolCommand('test', tool);
     const option = cmd.options.find((o) => o.long === '--id');
     assert.ok(option, '--id option should exist');
-    assert.ok(option.mandatory, '--id should be mandatory');
+    // With the positional convention, --id becomes optional since the positional can provide it
+    assert.ok(!option.mandatory, '--id should not be mandatory when positional convention applies');
+  });
+
+  it('generates mandatory option for required string param that does not match positional convention', () => {
+    const tool: ToolDefinition = {
+      name: 'test-tool',
+      description: 'A test tool',
+      params: z.object({ name: z.string().describe('The name') }),
+      handler: async () => null,
+    };
+
+    const cmd = buildToolCommand('test', tool);
+    const option = cmd.options.find((o) => o.long === '--name');
+    assert.ok(option, '--name option should exist');
+    assert.ok(option.mandatory, '--name should be mandatory (not named id or ending in Id)');
   });
 
   it('generates non-mandatory flags for optional string params', () => {
@@ -586,5 +601,140 @@ describe('buildToolCommand', () => {
     const helpText = cmd.helpInformation();
     assert.ok(helpText.includes('--status'), 'help should mention --status');
     assert.ok(helpText.includes('repeatable'), 'help should indicate repeatable');
+  });
+
+  // ── Positional ID convention ──────────────────────────────────
+
+  it('detects sole required string param named "id" as positional', async () => {
+    let captured: Record<string, unknown> | undefined;
+
+    const tool: ToolDefinition = {
+      name: 'click-show',
+      description: 'Show a click',
+      params: z.object({
+        id: z.string().describe('Click ID or prefix'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('show', tool);
+    cmd.exitOverride();
+    // Positional usage: nsg click show <id>
+    await cmd.parseAsync(['c-abc123'], { from: 'user' });
+
+    assert.ok(captured, 'handler should have been called');
+    assert.equal(captured['id'], 'c-abc123');
+  });
+
+  it('positional id works alongside --id flag', async () => {
+    let captured: Record<string, unknown> | undefined;
+
+    const tool: ToolDefinition = {
+      name: 'click-show',
+      description: 'Show a click',
+      params: z.object({
+        id: z.string().describe('Click ID or prefix'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('show', tool);
+    cmd.exitOverride();
+    // Flag usage still works
+    await cmd.parseAsync(['--id', 'c-abc123'], { from: 'user' });
+
+    assert.ok(captured, 'handler should have been called');
+    assert.equal(captured['id'], 'c-abc123');
+  });
+
+  it('--id flag takes precedence over positional', async () => {
+    let captured: Record<string, unknown> | undefined;
+
+    const tool: ToolDefinition = {
+      name: 'click-show',
+      description: 'Show a click',
+      params: z.object({
+        id: z.string().describe('Click ID or prefix'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('show', tool);
+    cmd.exitOverride();
+    await cmd.parseAsync(['--id', 'c-flag', 'c-positional'], { from: 'user' });
+
+    assert.ok(captured, 'handler should have been called');
+    assert.equal(captured['id'], 'c-flag');
+  });
+
+  it('detects param ending with Id as positional', async () => {
+    let captured: Record<string, unknown> | undefined;
+
+    const tool: ToolDefinition = {
+      name: 'test-tool',
+      description: 'Test',
+      params: z.object({
+        writId: z.string().describe('Writ ID'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('test', tool);
+    cmd.exitOverride();
+    await cmd.parseAsync(['w-abc123'], { from: 'user' });
+
+    assert.ok(captured, 'handler should have been called');
+    assert.equal(captured['writId'], 'w-abc123');
+  });
+
+  it('does not add positional when tool has multiple required string params', () => {
+    const tool: ToolDefinition = {
+      name: 'click-link',
+      description: 'Link two clicks',
+      params: z.object({
+        sourceId: z.string().describe('Source click ID'),
+        targetId: z.string().describe('Target click ID'),
+        linkType: z.enum(['related', 'commissioned']).describe('Link type'),
+      }),
+      handler: async () => null,
+    };
+
+    const cmd = buildToolCommand('link', tool);
+    // Should have no positional argument registered
+    assert.equal(cmd.registeredArguments.length, 0);
+  });
+
+  it('does not add positional when required string param is not named id/Id', () => {
+    const tool: ToolDefinition = {
+      name: 'test-tool',
+      description: 'Test',
+      params: z.object({
+        name: z.string().describe('Name'),
+      }),
+      handler: async () => null,
+    };
+
+    const cmd = buildToolCommand('test', tool);
+    assert.equal(cmd.registeredArguments.length, 0);
+  });
+
+  it('positional works for tool with id plus optional params', async () => {
+    let captured: Record<string, unknown> | undefined;
+
+    const tool: ToolDefinition = {
+      name: 'click-park',
+      description: 'Park a click',
+      params: z.object({
+        id: z.string().describe('Click ID or prefix'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('park', tool);
+    cmd.exitOverride();
+    await cmd.parseAsync(['c-abc123'], { from: 'user' });
+
+    assert.ok(captured, 'handler should have been called');
+    assert.equal(captured['id'], 'c-abc123');
   });
 });

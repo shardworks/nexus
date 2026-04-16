@@ -60,6 +60,18 @@ Zod param schemas are converted to Commander flags:
 | `z.union([z.enum([…]), z.array(…)])` | `--param <value>` (repeatable, collects into array) |
 | camelCase key | `--kebab-case` flag |
 
+### Positional ID Convention
+
+Tools with exactly one required string parameter named `id` or ending with `Id` automatically accept that parameter as a positional argument in addition to the `--id` flag:
+
+```sh
+# These are equivalent:
+nsg click show c-abc123
+nsg click show --id c-abc123
+```
+
+The flag takes precedence if both are provided. This convention applies automatically to any matching tool — no metadata changes needed.
+
 ### Guild Root Resolution
 
 The CLI resolves the guild root in priority order:
@@ -195,6 +207,25 @@ Rig and crawl commands come from the `spider` plugin.
 | `nsg rig resume` | spider | Manually clear a block on a specific engine, regardless of checker result |
 | `nsg crawl one` | spider | Execute one step of the Spider's crawl loop |
 | `nsg crawl continual` | spider | Run the Spider's crawl loop continuously |
+
+### Clicks
+
+Click (task tracking) commands come from the `ratchet` plugin.
+
+| Command | Source | Description |
+|---|---|---|
+| `nsg click create` | ratchet | Create a new click |
+| `nsg click show` | ratchet | Show full detail for a click including links, parent, and children context |
+| `nsg click list` | ratchet | List clicks with optional filters (status, parentId, rootId) |
+| `nsg click tree` | ratchet | Display click hierarchy as a visual tree with status indicators |
+| `nsg click park` | ratchet | Park a live click |
+| `nsg click resume` | ratchet | Resume a parked click |
+| `nsg click conclude` | ratchet | Conclude a click |
+| `nsg click drop` | ratchet | Drop a click |
+| `nsg click reparent` | ratchet | Move a click to a new parent or root |
+| `nsg click link` | ratchet | Create a typed link between clicks |
+| `nsg click unlink` | ratchet | Remove a link |
+| `nsg click extract` | ratchet | Extract a click tree as markdown or JSON |
 
 ### Introspection
 
