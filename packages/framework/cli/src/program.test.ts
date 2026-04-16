@@ -577,11 +577,11 @@ describe('buildToolCommand', () => {
 
     const cmd = buildToolCommand('list', tool);
     cmd.exitOverride();
-    await cmd.parseAsync(['--type', 'quest'], { from: 'user' });
+    await cmd.parseAsync(['--type', 'epic'], { from: 'user' });
 
     assert.ok(captured, 'handler should have been called');
     assert.equal(captured['status'], undefined);
-    assert.equal(captured['type'], 'quest');
+    assert.equal(captured['type'], 'epic');
   });
 
   it('shows repeatable --status in help text', () => {

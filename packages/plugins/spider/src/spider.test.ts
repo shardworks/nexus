@@ -2103,8 +2103,8 @@ describe('Spider — template dispatch', () => {
   it('leaves a writ in open when its type has no rigTemplateMappings entry', async () => {
     // Dispatch is strictly opt-in. A writ type with no mapping is inert by
     // configuration — the Spider's crawl loop skips it and the writ remains
-    // in `open` status. This is the substrate for quest writs and any other
-    // type that should be tracked in the books without being executed.
+    // in `open` status. This is the substrate for any writ type that should
+    // be tracked in the books without being executed.
     const fix = buildFixture({
       spider: {
         rigTemplates: { hotfix: { engines: [{ id: 'x', designId: 'seal', givens: {} }] } },

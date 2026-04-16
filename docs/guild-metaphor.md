@@ -67,11 +67,11 @@ A commission describes **origin** — it is the patron's request, the act that s
 
 ### Writ
 
-A **writ** is the guild's formal record of a tracked item — kept in its books, given a status, and addressed by name. Every writ has a *type* that names what kind of record it is. A **mandate** is a writ that captures an obligation: a commission received, work the guild owes. A **quest** is a writ that captures an area of inquiry: a question the guild is working through, a line of thought it wants to keep. The guild chooses its own vocabulary for the kinds of writs it issues — *feature*, *task*, *bug*, *quest*, or whatever fits the craft. The common thread is not obligation but *being tracked in the books*.
+A **writ** is the guild's formal record of a tracked item — kept in its books, given a status, and addressed by name. Every writ has a *type* that names what kind of record it is. A **mandate** is a writ that captures an obligation: a commission received, work the guild owes. The guild chooses its own vocabulary for the kinds of writs it issues — *feature*, *task*, *bug*, or whatever fits the craft. The common thread is not obligation but *being tracked in the books*. For inquiry and decision-tracking, the guild uses the Ratchet's click model rather than writs (see the Ratchet apparatus).
 
-Writs are how the guild gives shape to its tracked concerns at every scale, and most are tree-structured — a parent writ decomposing into children. A mandate might describe a broad undertaking or a narrow task; a quest might branch into sub-questions. The vocabulary is the guild's; the framework imposes no fixed hierarchy.
+Writs are how the guild gives shape to its tracked concerns at every scale, and most are tree-structured — a parent writ decomposing into children. A mandate might describe a broad undertaking or a narrow task. The vocabulary is the guild's; the framework imposes no fixed hierarchy.
 
-When a writ names work the guild must carry out, it spawns a **rig** to carry the obligation through. The writ names what is owed; the rig does the work. Not every writ produces a rig — some kinds, like quests, are kept in the books but never dispatched. Dispatch is the guild's choice, made per writ type.
+When a writ names work the guild must carry out, it spawns a **rig** to carry the obligation through. The writ names what is owed; the rig does the work. Not every writ produces a rig — dispatch is opt-in per writ type, and unmapped types are kept in the books without automatic execution.
 
 ### Rig
 

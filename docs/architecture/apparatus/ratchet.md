@@ -4,7 +4,7 @@ Status: **Draft**
 
 Package: `@shardworks/ratchet-apparatus` · Plugin id: `ratchet`
 
-> **⚠️ MVP scope.** MVP covers the click data model, Stacks books, status lifecycle, immutability enforcement, cross-substrate links, and CLI commands. Oculus visualization, migration tooling from the legacy quest writ type, and the `commission` sugar command are deferred to follow-up commissions.
+> **⚠️ MVP scope.** MVP covers the click data model, Stacks books, status lifecycle, immutability enforcement, cross-substrate links, and CLI commands. Oculus visualization and the `commission` sugar command are deferred to follow-up commissions.
 
 ---
 
@@ -18,7 +18,7 @@ The Ratchet does **not** manage obligations, dispatch work, or orchestrate execu
 
 ### Design rationale
 
-The Ratchet replaces the earlier "quest" writ type, which stored inquiry records as writs in the Clerk's books. A pilgrimage assessment (see References) found that the writ substrate's obligation semantics created structural friction: the status model, Oculus views, CLI vocabulary, and body format were all optimized for obligations, and quests were fighting the substrate at every surface. The click model addresses this by providing a purpose-built substrate for inquiry with its own lifecycle, invariants, and tooling.
+The Ratchet provides a purpose-built substrate for inquiry. A pilgrimage assessment (see References) found that storing inquiry records as writs in the Clerk's books created structural friction: the status model, Oculus views, CLI vocabulary, and body format were all optimized for obligations, and inquiry records were fighting the substrate at every surface. The click model addresses this by providing a dedicated substrate for inquiry with its own lifecycle, invariants, and tooling.
 
 Key design principles:
 - **Immutable on create.** A click's goal (the question being asked) is frozen at creation. If the framing is wrong, drop the click and create a new one. This eliminates body-editing complexity and ensures the decision record is append-only.
@@ -431,7 +431,7 @@ Stretch goals: graph visualization (nodes + edges), drag-and-drop reparenting, n
 
 ## References
 
-- Pilgrimage assessment: `docs/archive/design-sessions/click-model-assessment.md` (quest `w-mo0gias9`)
+- Pilgrimage assessment: `docs/archive/design-sessions/click-model-assessment.md` (writ `w-mo0gias9`)
 - Clerk apparatus (peer, architectural reference): `docs/architecture/apparatus/clerk.md`
 - Stacks apparatus (storage layer): `docs/architecture/apparatus/stacks.md`
 - Guild vocabulary: `docs/future/guild-vocabulary.md` (Ratchet to be added)

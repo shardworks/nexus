@@ -221,7 +221,7 @@ describe('Clerk', () => {
     it('rejects a type that is not in clerk writTypes', async () => {
       await setup({ clerkConfig: { writTypes: [{ name: 'errand', description: 'A small errand' }] } });
       await assert.rejects(
-        () => clerk.post({ title: 'Test', body: 'Body', type: 'quest' }),
+        () => clerk.post({ title: 'Test', body: 'Body', type: 'epic' }),
         /Unknown writ type/,
       );
     });
@@ -1433,17 +1433,17 @@ describe('Clerk', () => {
       await setup({
         clerkConfig: {
           writTypes: [
-            { name: 'quest', description: 'A significant task' },
+            { name: 'epic', description: 'A significant task' },
             { name: 'errand', description: 'A small errand' },
           ],
         },
       });
-      const w = await clerk.post({ title: 'Go on a quest', body: 'Body', type: 'quest' });
-      assert.equal(w.type, 'quest');
+      const w = await clerk.post({ title: 'Start an epic', body: 'Body', type: 'epic' });
+      assert.equal(w.type, 'epic');
     });
 
     it('undeclared types are rejected even when other custom types exist', async () => {
-      await setup({ clerkConfig: { writTypes: [{ name: 'quest', description: 'A quest' }] } });
+      await setup({ clerkConfig: { writTypes: [{ name: 'epic', description: 'An epic' }] } });
       await assert.rejects(
         () => clerk.post({ title: 'Test', body: 'Body', type: 'unknown' }),
         /Unknown writ type/,

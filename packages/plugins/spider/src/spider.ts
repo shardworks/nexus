@@ -1131,8 +1131,8 @@ class RigTemplateRegistry {
    * Dispatch is strictly opt-in: a writ type must have an explicit mapping
    * in `rigTemplateMappings` (config or kit) to be dispatched. Writ types
    * with no mapping return `undefined` and the caller should skip dispatch,
-   * leaving the writ for non-dispatch handling (e.g. quest writs tracked
-   * for inquiry rather than execution).
+   * leaving the writ for non-dispatch handling (e.g. custom writ types
+   * tracked without automatic dispatch).
    *
    * Precedence: config mapping → kit mapping → undefined.
    */

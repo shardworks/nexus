@@ -218,7 +218,7 @@ Writ types are declared at the top level of the guild config:
 ```json
 {
   "writTypes": {
-    "quest": { "description": "A significant multi-step task" },
+    "epic": { "description": "A significant multi-step task" },
     "errand": { "description": "A small one-off task" }
   }
 }
