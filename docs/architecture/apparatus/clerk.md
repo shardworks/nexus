@@ -416,7 +416,9 @@ The Clerk registers a Phase 1 CDC watcher on the `clerk/writs` book. When a writ
 **Upward cascade (child → parent):** When a child reaches a terminal status:
 - If the child **failed** and the parent is in `open` or `stuck` status: the parent transitions to `failed` with resolution `'Child "<childId>" failed: <childResolution>'`. The parent's failure triggers downward cascade, cancelling remaining siblings.
 
-**Downward cascade (parent → children):** When a writ reaches a terminal status, all non-terminal children are cancelled with resolution `'Automatically cancelled due to sibling failure'`.
+**Downward cascade (parent → children):** When a writ reaches a terminal status, behavior depends on which terminal status the parent reached:
+- If the parent reached **`failed`** or **`cancelled`**: all non-terminal children are cancelled with resolution `'Automatically cancelled due to parent termination'` (exported from `clerk.ts` as `CASCADE_PARENT_TERMINATION_RESOLUTION`).
+- If the parent reached **`completed`**: non-terminal children are **not** cancelled. Their existence at this point indicates an upstream bookkeeping gap (typically a child-writ transition that lost a race against the parent's terminal write); the cascade logs a warning naming the parent and each non-terminal child rather than masking the discrepancy with a cancellation.
 
 ### Cascade Depth
 

@@ -153,7 +153,7 @@ await clerk.transition(id, 'cancelled', { resolution: 'No longer needed' });
 
 Throws if the transition is not legal for the writ's current status.
 
-**Cascade behavior:** When a writ with children transitions to a terminal status, all non-terminal children are automatically cancelled. When a child fails and its parent is `open` or `stuck`, the parent is failed and remaining siblings are cancelled.
+**Cascade behavior:** When a writ with children transitions to `failed` or `cancelled`, all non-terminal children are automatically cancelled with resolution `'Automatically cancelled due to parent termination'` (exported as `CASCADE_PARENT_TERMINATION_RESOLUTION`). When a parent transitions to `completed`, non-terminal children are **not** cancelled — instead a warning is logged (their existence indicates an upstream bookkeeping gap). When a child fails and its parent is `open` or `stuck`, the parent is failed and remaining siblings are cancelled.
 
 ---
 
@@ -195,7 +195,7 @@ Writs can be organized into parent/child relationships for decomposing complex w
 
 - **Creating children:** Pass `parentId` to `post()`. The parent stays in its current status. Parents in `new`, `open`, or `stuck` status accept children.
 - **Failure cascade:** When a child fails and the parent is `open` or `stuck`, the parent is failed and remaining non-terminal siblings are cancelled.
-- **Cancellation cascade:** When a parent reaches terminal status, all non-terminal children are cancelled.
+- **Cancellation cascade:** When a parent reaches `failed` or `cancelled`, all non-terminal children are cancelled. When a parent reaches `completed` with non-terminal children still present, the Clerk logs a warning and leaves the children alone — this signals an upstream bookkeeping gap rather than normal flow.
 - **Codex inheritance:** Children inherit the parent's codex if none is specified.
 - **Immutability:** `parentId` cannot be changed after creation.
 

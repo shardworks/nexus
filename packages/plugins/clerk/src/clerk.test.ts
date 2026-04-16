@@ -17,7 +17,7 @@ import { createStacksApparatus } from '@shardworks/stacks-apparatus';
 import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 
-import { createClerk } from './clerk.ts';
+import { createClerk, CASCADE_PARENT_TERMINATION_RESOLUTION } from './clerk.ts';
 import type { ClerkKit } from './clerk.ts';
 import type { ClerkApi, ClerkConfig, WritLinkDoc } from './types.ts';
 import type { WritLinks } from './index.ts';
@@ -2140,11 +2140,11 @@ describe('Parent/child relationships', () => {
 
       const updatedC2 = await clerk.show(c2.id);
       assert.equal(updatedC2.status, 'cancelled');
-      assert.equal(updatedC2.resolution, 'Automatically cancelled due to sibling failure');
+      assert.equal(updatedC2.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
 
       const updatedC3 = await clerk.show(c3.id);
       assert.equal(updatedC3.status, 'cancelled');
-      assert.equal(updatedC3.resolution, 'Automatically cancelled due to sibling failure');
+      assert.equal(updatedC3.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
     });
 
     it('fails parent when single child fails', async () => {
@@ -2201,7 +2201,7 @@ describe('Parent/child relationships', () => {
 
       const updatedC1 = await clerk.show(c1.id);
       assert.equal(updatedC1.status, 'cancelled');
-      assert.equal(updatedC1.resolution, 'Automatically cancelled due to sibling failure');
+      assert.equal(updatedC1.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
 
       const updatedC2 = await clerk.show(c2.id);
       assert.equal(updatedC2.status, 'cancelled');

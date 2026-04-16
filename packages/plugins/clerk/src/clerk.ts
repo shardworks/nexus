@@ -59,6 +59,18 @@ export interface ClerkKit {
 
 const BUILTIN_TYPES = new Set(['mandate']);
 
+// ── Cascade resolution constants ─────────────────────────────────────
+
+/**
+ * Resolution string applied to non-terminal children that are cancelled by
+ * the downward cascade when their parent transitions to a terminal failure
+ * or cancellation status. Single source of truth — referenced by code,
+ * tests, and documentation. Modeled on `PIECE_EXECUTION_EPILOGUE` in the
+ * Spider plugin.
+ */
+export const CASCADE_PARENT_TERMINATION_RESOLUTION =
+  'Automatically cancelled due to parent termination';
+
 // ── Status machine ───────────────────────────────────────────────────
 
 const ALLOWED_FROM: Record<WritStatus, WritStatus[]> = {
@@ -431,12 +443,31 @@ export function createClerk(): Plugin {
     const children = await writs.find({ where: [['parentId', '=', parent.id]] });
     if (children.length === 0) return;
 
-    for (const child of children) {
-      if (!TERMINAL_STATUSES.has(child.status)) {
-        await api.transition(child.id, 'cancelled', {
-          resolution: 'Automatically cancelled due to sibling failure',
-        });
+    const nonTerminalChildren = children.filter((c) => !TERMINAL_STATUSES.has(c.status));
+    if (nonTerminalChildren.length === 0) return;
+
+    // When the parent reached `completed`, non-terminal children shouldn't
+    // exist — their presence indicates an upstream bookkeeping gap (e.g. a
+    // child-writ transition lost a race). Warn loudly rather than masking
+    // the discrepancy by cancelling.
+    if (parent.status === 'completed') {
+      for (const child of nonTerminalChildren) {
+        console.warn(
+          `[clerk] Parent writ "${parent.id}" transitioned to "completed" but ` +
+            `child writ "${child.id}" is still in non-terminal status ` +
+            `"${child.status}". Leaving the child as-is; this indicates an ` +
+            `upstream bookkeeping gap that should be investigated.`,
+        );
       }
+      return;
+    }
+
+    // Parent reached `failed` or `cancelled` — cancel all non-terminal children
+    // with the single canonical resolution string.
+    for (const child of nonTerminalChildren) {
+      await api.transition(child.id, 'cancelled', {
+        resolution: CASCADE_PARENT_TERMINATION_RESOLUTION,
+      });
     }
   }
 

@@ -27,7 +27,7 @@ export {
   type WritTypeInfo,
 } from './types.ts';
 
-export { createClerk } from './clerk.ts';
+export { createClerk, CASCADE_PARENT_TERMINATION_RESOLUTION } from './clerk.ts';
 export type { ClerkKit } from './clerk.ts';
 
 // ── Default export: the apparatus plugin ──────────────────────────────
