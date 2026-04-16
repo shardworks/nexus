@@ -7,9 +7,13 @@
  *
  * Custom collect():
  *   - On session completion → transitions the piece writ to 'completed'.
- *   - On session failure → transitions the piece writ to 'failed'.
  *   - After collecting, checks for dynamically added child pieces of the
- *     mandate and returns them as a graft for the implement-loop to process.
+ *     mandate and grafts new piece-session engines for them.
+ *
+ * Note on failure: Spider's tryCollect() calls failEngine() directly for
+ * failed/timeout sessions and never invokes collect(). Piece writ failure
+ * relies on Clerk's parent/child cascade when the mandate reaches a
+ * terminal state (stuck → child pieces get cancelled).
  *
  * Givens:
  *   - writ: WritDoc (the mandate writ)
@@ -23,7 +27,7 @@ import type { EngineDesign, EngineRunContext } from '@shardworks/fabricator-appa
 import type { AnimatorApi, SessionDoc } from '@shardworks/animator-apparatus';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
-import type { SpiderCollectResult, RigTemplateEngine } from '../types.ts';
+import type { SpiderCollectResult, RigTemplateEngine, RigDoc } from '../types.ts';
 
 /**
  * Execution instructions for piece sessions. Focuses the anima on a single
@@ -69,6 +73,8 @@ const pieceSessionEngine: EngineDesign = {
     return { status: 'launched', sessionId: handle.sessionId };
   },
 
+  // Note: collect() is only called for completed sessions. Spider's tryCollect()
+  // calls failEngine() directly for failed/timeout sessions, bypassing collect().
   async collect(sessionId: string, givens: Record<string, unknown>, context: EngineRunContext): Promise<SpiderCollectResult | unknown> {
     const stacks = guild().apparatus<StacksApi>('stacks');
     const clerk = guild().apparatus<ClerkApi>('clerk');
@@ -86,23 +92,6 @@ const pieceSessionEngine: EngineDesign = {
       };
     }
 
-    // Transition piece writ based on session outcome
-    if (session?.status === 'failed' || session?.status === 'timeout') {
-      try {
-        await clerk.transition(piece.id, 'failed', {
-          resolution: session.error ?? `Session ${session.status}`,
-        });
-      } catch {
-        // Piece may already be in a terminal state — ignore
-      }
-      return {
-        sessionId,
-        sessionStatus: session.status,
-        pieceId: piece.id,
-        pieceFailed: true,
-      };
-    }
-
     // Completed session → mark piece completed
     try {
       await clerk.transition(piece.id, 'completed', {
@@ -112,32 +101,70 @@ const pieceSessionEngine: EngineDesign = {
       // Piece may already be in a terminal state — ignore
     }
 
-    // Check for dynamically added child pieces since this rig started
-    const allChildren = await clerk.list({
+    // ── Dynamic piece pickup ──────────────────────────────────────────
+    // Check for dynamically added child pieces that don't yet have engines.
+    // Graft new piece-session engines for them so they run after this piece.
+    const openChildren = await clerk.list({
       parentId: mandateWrit.id,
       type: 'piece',
       status: 'open',
       limit: 50,
     });
 
-    // Build graft entries for any open pieces that don't already have engines
-    // The implement-loop's collect will check which pieces already have engines
-    // We pass back the list of new piece IDs for the implement-loop to handle
+    // Determine which piece IDs already have engines in the rig
+    const rigsBook = stacks.readBook<RigDoc>('spider', 'rigs');
+    const rig = await rigsBook.get(context.rigId);
+    const existingPieceIds = new Set<string>();
+    if (rig) {
+      for (const engine of rig.engines) {
+        // Piece engines have a literal piece object in givensSpec
+        const enginePiece = engine.givensSpec?.piece as WritDoc | undefined;
+        if (enginePiece?.id) {
+          existingPieceIds.add(enginePiece.id);
+        }
+      }
+    }
+
+    // Filter to pieces that don't already have engines
+    const newPieces = openChildren.filter(c => !existingPieceIds.has(c.id));
+
+    // Build graft entries for new pieces with sequential dependencies
     const graft: RigTemplateEngine[] = [];
-    // We don't graft individual piece engines here — the implement-loop
-    // handles dynamic piece incorporation. Instead, we signal via yields.
-    const newPieceIds = allChildren.map(c => c.id);
+    let previousEngineId = context.engineId; // chain starts after this engine
+
+    for (let i = 0; i < newPieces.length; i++) {
+      const newPiece = newPieces[i]!;
+      const engineId = `piece-${newPiece.id}`;
+
+      graft.push({
+        id: engineId,
+        designId: 'piece-session',
+        upstream: [previousEngineId],
+        givens: {
+          writ: '${writ}',
+          piece: newPiece, // literal WritDoc — survives resolveGivens/resolveYieldRefs
+          role: givens.role as string,
+          cwd: `\${yields.draft.path}`,
+        },
+      });
+
+      previousEngineId = engineId;
+    }
 
     const yields = {
       sessionId,
       sessionStatus: session?.status ?? 'completed',
       pieceId: piece.id,
       ...(session?.output !== undefined ? { output: session.output } : {}),
-      ...(newPieceIds.length > 0 ? { openPieceIds: newPieceIds } : {}),
+      ...(newPieces.length > 0 ? { dynamicPieceIds: newPieces.map(p => p.id) } : {}),
     };
 
     if (graft.length > 0) {
-      return { yields, graft };
+      // graftTail ensures engines downstream of this piece-session (e.g. the
+      // next piece in the original chain, or seal via the original graftTail)
+      // also wait for all dynamically added pieces to complete.
+      const graftTail = `piece-${newPieces[newPieces.length - 1]!.id}`;
+      return { yields, graft, graftTail } satisfies SpiderCollectResult;
     }
 
     return yields;

@@ -424,7 +424,13 @@ describe('implement-loop engine', () => {
     assert.equal(updatedPiece.status, 'completed');
   });
 
-  it('piece-session transitions piece writs on failure', async () => {
+  it('piece writ stays open on session failure — collect() is not called', async () => {
+    // Design: Spider's tryCollect() calls failEngine() directly for failed sessions
+    // and never invokes the engine's collect() method. This means piece-session
+    // cannot transition the piece writ to 'failed' on session failure.
+    //
+    // The piece writ remains 'open' until the mandate reaches a terminal state,
+    // at which point Clerk's parent/child cascade cancels remaining child writs.
     const { clerk, spider, stacks: s } = fix;
 
     const mandate = await clerk.post({ title: 'Fail transition', body: 'Spec', codex: 'test', draft: true });
@@ -443,21 +449,130 @@ describe('implement-loop engine', () => {
     const lastSession = sessions[sessions.length - 1];
     await sessBook.patch(lastSession.id, { status: 'failed', error: 'Build failed' });
 
-    await spider.crawl(); // collect → rig stuck
+    await spider.crawl(); // failEngine → rig stuck
 
-    // The piece should be failed by the spider (engine failure cascade through clerk CDC)
-    // Note: piece-session collect only runs for completed sessions; failed sessions
-    // go through Spider's failEngine path which doesn't call collect
-    // The piece writ failure happens through clerk's CDC parent/child cascade:
-    // mandate goes stuck/failed → child pieces get cancelled
+    // The piece writ stays 'open' because collect() was never called.
     const updatedPiece = await clerk.show(piece.id);
-    // The piece stays in open since the failure path doesn't call collect.
-    // This is correct — the spider fails the engine directly.
-    // The piece writ will be cancelled when the mandate reaches a terminal state.
-    assert.ok(
-      updatedPiece.status === 'open' || updatedPiece.status === 'cancelled',
-      `Expected piece to be open or cancelled, got ${updatedPiece.status}`,
-    );
+    assert.equal(updatedPiece.status, 'open',
+      'Piece writ stays open — failEngine bypasses collect, so no transition occurs');
+  });
+
+  it('dynamically added pieces are picked up after the current piece completes', async () => {
+    const { clerk, spider, stacks: s } = fix;
+
+    const mandate = await clerk.post({ title: 'Dynamic pieces', body: 'Spec', codex: 'test', draft: true });
+    await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
+    await clerk.transition(mandate.id, 'open');
+
+    // Spawn → draft → implement-loop → graft → piece-0 starts
+    await spider.crawl(); // rig-spawned
+    await preCompleteDraft(s, mandate.id);
+    await spider.crawl(); // implement-loop completed
+    await spider.crawl(); // graft (piece-0)
+    await spider.crawl(); // piece-0 started
+
+    // While piece-0 is running, dynamically add a new piece via clerk
+    const dynPiece = await clerk.post({
+      type: 'piece',
+      title: 'Dynamic Task',
+      body: '<task id="dyn1"><name>Dynamic</name></task>',
+      parentId: mandate.id,
+    });
+
+    // piece-0 collects — its collect() discovers the new open piece and grafts it
+    const r1 = await spider.crawl();
+    assert.equal(r1?.action, 'engine-completed', 'piece-0 should complete');
+
+    // Process the graft from piece-0's collect
+    const r2 = await spider.crawl();
+    assert.equal(r2?.action, 'engine-grafted', 'Dynamic piece should be grafted');
+    if (r2?.action === 'engine-grafted') {
+      assert.equal(r2.graftedEngineIds.length, 1);
+      assert.ok(r2.graftedEngineIds[0].includes(dynPiece.id),
+        'Grafted engine ID should reference the dynamic piece writ ID');
+    }
+
+    // The dynamic piece-session should now start
+    const r3 = await spider.crawl();
+    assert.equal(r3?.action, 'engine-started', 'Dynamic piece session should start');
+
+    // It completes and transitions the piece writ
+    const r4 = await spider.crawl();
+    assert.equal(r4?.action, 'engine-completed', 'Dynamic piece session should complete');
+
+    const updatedDynPiece = await clerk.show(dynPiece.id);
+    assert.equal(updatedDynPiece.status, 'completed', 'Dynamic piece should be marked completed');
+  });
+
+  it('dynamically added pieces delay seal via graftTail', async () => {
+    const { clerk, spider, stacks: s } = fix;
+
+    const mandate = await clerk.post({ title: 'Dynamic graftTail', body: 'Spec', codex: 'test', draft: true });
+    await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
+    await clerk.transition(mandate.id, 'open');
+
+    await spider.crawl(); // rig-spawned
+    await preCompleteDraft(s, mandate.id);
+    await spider.crawl(); // implement-loop completed
+    await spider.crawl(); // graft
+    await spider.crawl(); // piece-0 started
+
+    // Add a dynamic piece while piece-0 is running
+    await clerk.post({
+      type: 'piece',
+      title: 'Dynamic Task',
+      body: '<task id="dyn1"><name>Dynamic</name></task>',
+      parentId: mandate.id,
+    });
+
+    await spider.crawl(); // piece-0 collected
+    await spider.crawl(); // dynamic piece grafted
+
+    // After graft, verify seal now has the dynamic piece in its upstream
+    const rigs = await rigsBook(s).find({ where: [['writId', '=', mandate.id]] });
+    const rig = rigs[0];
+    const sealEngine = rig.engines.find(e => e.id === 'seal');
+    assert.ok(sealEngine, 'Seal engine should exist');
+
+    // Seal should have both implement-loop and the original piece-0 in upstream
+    // (from the original graftTail), AND the dynamic piece (from the dynamic graftTail)
+    const dynPieceEngine = rig.engines.find(e => e.designId === 'piece-session' && e.id.startsWith('piece-') && e.id !== 'piece-0');
+    assert.ok(dynPieceEngine, 'Dynamic piece engine should exist in rig');
+    assert.ok(sealEngine.upstream.includes(dynPieceEngine!.id),
+      `Seal upstream should include dynamic piece engine (${dynPieceEngine!.id}), got: ${JSON.stringify(sealEngine.upstream)}`);
+  });
+
+  it('literal WritDoc givens survive yield resolution in piece-session engines', async () => {
+    const { clerk, spider, stacks: s, summonCalls } = fix;
+
+    const mandate = await clerk.post({ title: 'Givens test', body: 'Spec body', codex: 'test', draft: true });
+    const piece = await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
+    await clerk.transition(mandate.id, 'open');
+
+    await spider.crawl(); // rig-spawned
+    await preCompleteDraft(s, mandate.id);
+    await spider.crawl(); // implement-loop completed
+    await spider.crawl(); // graft
+
+    // Verify the grafted engine's givensSpec has the piece as a literal object
+    const rigs = await rigsBook(s).find({ where: [['writId', '=', mandate.id]] });
+    const rig = rigs[0];
+    const pieceEngine = rig.engines.find(e => e.id === 'piece-0');
+    assert.ok(pieceEngine, 'piece-0 engine should exist');
+
+    // The piece given should be a literal object (not stringified)
+    const pieceGiven = pieceEngine!.givensSpec.piece as WritDoc;
+    assert.equal(typeof pieceGiven, 'object', 'piece given should be an object');
+    assert.equal(pieceGiven.id, piece.id, 'piece given should have the correct writ ID');
+    assert.equal(pieceGiven.type, 'piece', 'piece given should have the correct type');
+
+    // Now run the piece-session and verify the summon call used the piece body
+    await spider.crawl(); // piece-0 started
+    const lastSummon = summonCalls[summonCalls.length - 1];
+    assert.ok(lastSummon.prompt.includes('<task id="t1">'),
+      'Piece prompt should include the piece body from the literal WritDoc given');
+    assert.ok(lastSummon.prompt.includes(mandate.id),
+      'Piece prompt should include mandate ID from the resolved writ given');
   });
 
   it('full pipeline: pieces complete → seal runs → rig completes', async () => {
