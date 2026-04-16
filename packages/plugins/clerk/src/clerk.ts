@@ -35,6 +35,7 @@ import type {
 
 import {
   commissionPost,
+  pieceAdd,
   writShow,
   writList,
   writEdit,
@@ -472,6 +473,7 @@ export function createClerk(): Plugin {
         },
         tools: [
           commissionPost,
+          pieceAdd,
           writShow,
           writList,
           writEdit,

@@ -2407,3 +2407,90 @@ describe('Page file structure', () => {
     assert.ok(content.includes('id="post-section" class="card"'), 'post-section must use card class');
   });
 });
+
+// ── piece-add tool tests ──────────────────────────────────────────────
+
+describe('piece-add tool', () => {
+  afterEach(() => { clearGuild(); });
+
+  it('creates a piece writ as child of a mandate with structured XML body', async () => {
+    await setup({
+      clerkConfig: {
+        writTypes: [{ name: 'piece', description: 'task piece' }],
+      },
+    });
+
+    // Create a mandate first
+    const mandate = await clerk.post({ title: 'Parent mandate', body: 'Do all things', type: 'mandate' });
+
+    // Use piece-add handler directly
+    const pieceAddTool = (await import('./tools/piece-add.ts')).default;
+    const handler = pieceAddTool.handler as (params: Record<string, unknown>) => Promise<unknown>;
+    const piece = await handler({
+      mandateId: mandate.id,
+      name: 'First task',
+      action: 'Do the first thing',
+      files: 'src/app.ts',
+      verify: 'pnpm test',
+      done: 'Tests pass',
+    }) as { id: string; type: string; title: string; body: string; parentId: string; status: string };
+
+    assert.equal(piece.type, 'piece');
+    assert.equal(piece.title, 'First task');
+    assert.equal(piece.parentId, mandate.id);
+    assert.equal(piece.status, 'open');
+    assert.ok(piece.body.includes('<task id='));
+    assert.ok(piece.body.includes('<name>First task</name>'));
+    assert.ok(piece.body.includes('<action>Do the first thing</action>'));
+    assert.ok(piece.body.includes('<files>src/app.ts</files>'));
+    assert.ok(piece.body.includes('<verify>pnpm test</verify>'));
+    assert.ok(piece.body.includes('<done>Tests pass</done>'));
+  });
+
+  it('creates a piece with only required fields', async () => {
+    await setup({
+      clerkConfig: {
+        writTypes: [{ name: 'piece', description: 'task piece' }],
+      },
+    });
+
+    const mandate = await clerk.post({ title: 'Parent mandate', body: 'Do things', type: 'mandate' });
+
+    const pieceAddTool = (await import('./tools/piece-add.ts')).default;
+    const handler = pieceAddTool.handler as (params: Record<string, unknown>) => Promise<unknown>;
+    const piece = await handler({
+      mandateId: mandate.id,
+      name: 'Minimal task',
+      action: 'Do something simple',
+    }) as { body: string };
+
+    assert.ok(piece.body.includes('<name>Minimal task</name>'));
+    assert.ok(piece.body.includes('<action>Do something simple</action>'));
+    assert.ok(!piece.body.includes('<files>'));
+    assert.ok(!piece.body.includes('<verify>'));
+    assert.ok(!piece.body.includes('<done>'));
+  });
+
+  it('rejects when parent mandate does not exist', async () => {
+    await setup({
+      clerkConfig: {
+        writTypes: [{ name: 'piece', description: 'task piece' }],
+      },
+    });
+
+    const pieceAddTool = (await import('./tools/piece-add.ts')).default;
+    const handler = pieceAddTool.handler as (params: Record<string, unknown>) => Promise<unknown>;
+
+    await assert.rejects(
+      () => handler({
+        mandateId: 'nonexistent-mandate',
+        name: 'Orphan task',
+        action: 'This should fail',
+      }),
+      (err: Error) => {
+        assert.ok(err.message.includes('not found'));
+        return true;
+      },
+    );
+  });
+});

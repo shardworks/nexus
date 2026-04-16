@@ -1,4 +1,5 @@
 export { default as commissionPost } from './commission-post.ts';
+export { default as pieceAdd } from './piece-add.ts';
 export { default as writShow } from './writ-show.ts';
 export { default as writList } from './writ-list.ts';
 export { default as writEdit } from './writ-edit.ts';
