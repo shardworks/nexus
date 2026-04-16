@@ -1286,7 +1286,7 @@ Plugin code should not depend on unordered result ordering, but tests that asser
 Each tier should be runnable independently. The recommended structure:
 
 ```
-packages/stacks/src/
+packages/plugins/stacks/src/
   conformance/
     suite.ts                    # Parametric suite — exports registration functions
     tier1-data-integrity.ts     # Tier 1 test definitions
@@ -1296,7 +1296,7 @@ packages/stacks/src/
     tier4-edge-cases.ts         # Tier 4 test definitions
     helpers.ts                  # Shared utilities (event collectors, fixtures, seeding)
   conformance.memory.test.ts    # Runs suite against MemoryBackend
-  conformance.sqlite.test.ts    # Runs suite against SqliteBackend
+  conformance.sqlite.test.ts    # Runs suite against SqliteBackend (not yet implemented)
 ```
 
 The `helpers.ts` module should accept a `StacksBackend` factory function, so the same suite runs against SQLite, in-memory, or any future backend:
