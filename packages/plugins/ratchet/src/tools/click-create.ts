@@ -17,9 +17,13 @@ export default tool({
   permission: 'write',
   handler: async (params) => {
     const ratchet = guild().apparatus<RatchetApi>('ratchet');
+    let resolvedParentId: string | undefined;
+    if (params.parentId) {
+      resolvedParentId = await ratchet.resolveId(params.parentId);
+    }
     return ratchet.create({
       goal: params.goal,
-      parentId: params.parentId,
+      parentId: resolvedParentId,
       createdSessionId: params.createdSessionId,
     });
   },

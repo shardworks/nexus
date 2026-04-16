@@ -16,6 +16,7 @@ import type { StacksApi } from '@shardworks/stacks-apparatus';
 
 import { createRatchet } from './ratchet.ts';
 import type { RatchetApi, ClickDoc, ClickTree, ClickStatus } from './types.ts';
+import clickCreate from './tools/click-create.ts';
 import clickShow from './tools/click-show.ts';
 import clickList from './tools/click-list.ts';
 import clickPark from './tools/click-park.ts';
@@ -701,6 +702,47 @@ describe('Ratchet', () => {
       const result = await clickList.handler({ status: 'live', limit: 20 }) as ClickDoc[];
       assert.strictEqual(result.length, 1);
       assert.strictEqual(result[0].goal, 'Live');
+    });
+  });
+
+  // ── click-create tool ──────────────────────────────────────────
+
+  describe('click-create tool', () => {
+    it('resolves short parentId prefix', async () => {
+      const parent = await ratchet.create({ goal: 'Parent' });
+      const prefix = parent.id.substring(0, 10);
+      const child = await clickCreate.handler({ goal: 'Child', parentId: prefix }) as ClickDoc;
+      assert.strictEqual(child.parentId, parent.id);
+      assert.strictEqual(child.goal, 'Child');
+    });
+
+    it('resolves full parentId', async () => {
+      const parent = await ratchet.create({ goal: 'Parent' });
+      const child = await clickCreate.handler({ goal: 'Child', parentId: parent.id }) as ClickDoc;
+      assert.strictEqual(child.parentId, parent.id);
+    });
+
+    it('creates without parentId', async () => {
+      const click = await clickCreate.handler({ goal: 'Standalone' }) as ClickDoc;
+      assert.ok(click.id.startsWith('c-'));
+      assert.strictEqual(click.goal, 'Standalone');
+      assert.strictEqual(click.parentId, undefined);
+    });
+
+    it('throws on non-existent parentId prefix', async () => {
+      await assert.rejects(
+        () => clickCreate.handler({ goal: 'Orphan', parentId: 'c-zzzzzzzzz' }),
+        /No click found/,
+      );
+    });
+
+    it('throws on ambiguous parentId prefix', async () => {
+      await ratchet.create({ goal: 'A' });
+      await ratchet.create({ goal: 'B' });
+      await assert.rejects(
+        () => clickCreate.handler({ goal: 'Child', parentId: 'c-' }),
+        /Ambiguous prefix/,
+      );
     });
   });
 
