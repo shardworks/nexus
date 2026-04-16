@@ -30,6 +30,26 @@ import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import type { SpiderCollectResult, RigTemplateEngine, RigDoc } from '../types.ts';
 
 /**
+ * Classify a caught transition error. Returns true if the error message
+ * indicates the writ is already in a terminal state (cancelled, completed,
+ * failed) — in which case the failed transition is expected (the cascade or
+ * another path beat us to it) and should be swallowed silently.
+ *
+ * Matches the wording produced by Clerk's `transition()` guard, e.g.
+ *   `Cannot transition writ "…" to "completed": status is "cancelled", expected one of: open.`
+ * Also tolerates future phrasing like "already terminal".
+ */
+function isAlreadyTerminalTransitionError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.includes('already terminal')) return true;
+  return (
+    message.includes('status is "cancelled"') ||
+    message.includes('status is "completed"') ||
+    message.includes('status is "failed"')
+  );
+}
+
+/**
  * Execution instructions for piece sessions. Focuses the anima on a single
  * task — no manifest traversal, commit-per-piece guidance.
  */
@@ -92,13 +112,40 @@ const pieceSessionEngine: EngineDesign = {
       };
     }
 
-    // Completed session → mark piece completed
+    // Completed session → mark piece completed.
+    //
+    // The transition may fail if the piece writ is already in a terminal
+    // state (e.g. Clerk's downward cascade beat us to it after a sibling
+    // failure). Classify the error: already-terminal is expected and silent;
+    // anything else is a genuine bookkeeping failure that must be surfaced
+    // via a warning so the race is visible in logs.
     try {
       await clerk.transition(piece.id, 'completed', {
         resolution: 'Task completed',
       });
+    } catch (err) {
+      if (!isAlreadyTerminalTransitionError(err)) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[piece-session] Unexpected error transitioning piece "${piece.id}" ` +
+            `to completed: ${message}`,
+        );
+      }
+      // Swallow — collect() must not throw. The current piece writ status
+      // will be observed below and included in yields so downstream
+      // consumers can see the actual outcome.
+    }
+
+    // Re-read the piece writ after the transition attempt so yields reflect
+    // the observed, authoritative status — whether the transition succeeded
+    // or was caught as already-terminal.
+    let observedPieceStatus: WritDoc['status'] | undefined;
+    try {
+      const observedPiece = await clerk.show(piece.id);
+      observedPieceStatus = observedPiece.status;
     } catch {
-      // Piece may already be in a terminal state — ignore
+      // Writ lookup failure should not propagate out of collect(). Leave
+      // observedPieceStatus undefined so yields omit the field entirely.
     }
 
     // ── Dynamic piece pickup ──────────────────────────────────────────
@@ -155,6 +202,7 @@ const pieceSessionEngine: EngineDesign = {
       sessionId,
       sessionStatus: session?.status ?? 'completed',
       pieceId: piece.id,
+      ...(observedPieceStatus !== undefined ? { pieceStatus: observedPieceStatus } : {}),
       ...(session?.output !== undefined ? { output: session.output } : {}),
       ...(newPieces.length > 0 ? { dynamicPieceIds: newPieces.map(p => p.id) } : {}),
     };
