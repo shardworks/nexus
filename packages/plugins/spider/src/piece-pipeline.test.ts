@@ -605,6 +605,178 @@ describe('implement-loop engine', () => {
   });
 });
 
+// ── Regression: piece writ transition race in collect() ─────────────
+//
+// See: commission "Fix piece writ cancelled despite successful session".
+//
+// The bug was that piece-session `collect()` swallowed every error from its
+// `clerk.transition(piece, 'completed')` call with a bare `catch {}`. When
+// that transition failed — typically because the parent's downward cascade
+// beat it to the writ — the failure was invisible, and the piece writ ended
+// up misattributed as "sibling failure". The fix:
+//
+//   (a) Classify caught transition errors: already-terminal is expected and
+//       silent; anything else logs a warning so the race is visible.
+//   (b) Re-read the piece writ after the transition attempt and include the
+//       observed status in `yields.pieceStatus`, regardless of outcome.
+//
+// These regression tests fail if the bare `catch {}` is reintroduced (the
+// unexpected-error warning would not fire) or if the re-read is removed (the
+// observed `pieceStatus` would be missing from yields).
+
+describe('piece-session collect() — transition error classification', () => {
+  let fix: ReturnType<typeof buildFixture>;
+
+  beforeEach(() => { fix = buildFixture(); });
+  afterEach(() => { clearGuild(); });
+
+  /**
+   * Drive the rig up to the point where piece-0 has started (its session is
+   * already completed in the mock Animator) but has not yet been collected.
+   * Returns the piece writ so callers can manipulate its state before the
+   * next crawl invokes `collect()`.
+   */
+  async function advanceToPieceStarted(): Promise<{ mandate: WritDoc; piece: WritDoc }> {
+    const { clerk, spider, stacks: s } = fix;
+    const mandate = await clerk.post({ title: 'Race', body: 'Spec', codex: 'test', draft: true });
+    const piece = await clerk.post({
+      type: 'piece',
+      title: 'Task 1',
+      body: '<task id="t1"><name>T1</name></task>',
+      parentId: mandate.id,
+    });
+    await clerk.transition(mandate.id, 'open');
+
+    await spider.crawl();                      // rig-spawned
+    await preCompleteDraft(s, mandate.id);
+    await spider.crawl();                      // implement-loop completed
+    await spider.crawl();                      // graft (piece-0)
+    const started = await spider.crawl();      // piece-0 started
+    assert.equal(started?.action, 'engine-started');
+    return { mandate, piece };
+  }
+
+  function captureWarnings(): { warnings: string[]; restore: () => void } {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+    return { warnings, restore: () => { console.warn = original; } };
+  }
+
+  it('pre-cancelled piece writ: collect() swallows already-terminal silently and yields observed status', async () => {
+    const { clerk, spider, stacks: s } = fix;
+    const { mandate, piece } = await advanceToPieceStarted();
+
+    // Simulate the race: something (e.g. the parent's downward cascade) has
+    // already cancelled the piece writ before Spider's tryCollect invokes
+    // piece-session's collect().
+    await clerk.transition(piece.id, 'cancelled', { resolution: 'Pre-race cancel' });
+
+    const { warnings, restore } = captureWarnings();
+    let result;
+    try {
+      result = await spider.crawl();           // piece-0 collect()
+    } finally {
+      restore();
+    }
+
+    // (a) collect() did not throw — Spider reports work done.
+    assert.ok(result !== null, 'crawl should return a non-null result');
+
+    // (b) already-terminal is expected — no [piece-session] warning fires.
+    const pieceSessionWarnings = warnings.filter((w) => w.startsWith('[piece-session]'));
+    assert.equal(
+      pieceSessionWarnings.length, 0,
+      `expected no [piece-session] warnings for already-terminal transition error, got: ${JSON.stringify(pieceSessionWarnings)}`,
+    );
+
+    // The piece writ status is unchanged — collect() did not flip cancelled → completed.
+    const observedPiece = await clerk.show(piece.id);
+    assert.equal(observedPiece.status, 'cancelled',
+      'piece writ should remain cancelled after collect()');
+
+    // (c) yields include the observed piece writ status.
+    const rigs = await rigsBook(s).find({ where: [['writId', '=', mandate.id]] });
+    const pieceEngine = rigs[0]!.engines.find((e) => e.id === 'piece-0');
+    assert.ok(pieceEngine, 'piece-0 engine must exist in the rig');
+    const pieceYields = pieceEngine!.yields as Record<string, unknown> | undefined;
+    assert.ok(pieceYields, 'piece-0 engine should have yields recorded');
+    assert.equal(pieceYields!.pieceStatus, 'cancelled',
+      'yields should include the observed piece writ status');
+    assert.equal(pieceYields!.pieceId, piece.id,
+      'yields should reference the piece writ id');
+
+    // (d) the engine is completed from Spider's perspective.
+    assert.equal(pieceEngine!.status, 'completed',
+      'piece-0 engine should be marked completed even though the writ was pre-cancelled');
+  });
+
+  it('unexpected transition error: collect() logs a [piece-session] warning and still yields observed status', async () => {
+    const { clerk, spider, stacks: s } = fix;
+    const { mandate, piece } = await advanceToPieceStarted();
+
+    // Stub clerk.transition so the piece → completed call throws an error
+    // whose message does NOT look like an already-terminal classification.
+    // Any other transition (including cascades the CDC watcher may trigger)
+    // delegates to the original implementation.
+    const api = clerk as unknown as { transition: ClerkApi['transition'] };
+    const originalTransition = api.transition.bind(clerk);
+    const UNEXPECTED_ERROR_MESSAGE = 'simulated storage I/O failure';
+    api.transition = async (id, to, fields) => {
+      if (id === piece.id && to === 'completed') {
+        throw new Error(UNEXPECTED_ERROR_MESSAGE);
+      }
+      return originalTransition(id, to, fields);
+    };
+
+    const { warnings, restore } = captureWarnings();
+    let result;
+    try {
+      result = await spider.crawl();           // piece-0 collect()
+    } finally {
+      restore();
+      api.transition = originalTransition;
+    }
+
+    // (a) collect() did not throw.
+    assert.ok(result !== null, 'crawl should return a non-null result');
+
+    // (b) exactly one [piece-session] warning fires, and it identifies both
+    // the piece writ id and the underlying error message.
+    const pieceSessionWarnings = warnings.filter((w) => w.startsWith('[piece-session]'));
+    assert.equal(
+      pieceSessionWarnings.length, 1,
+      `expected exactly one [piece-session] warning, got: ${JSON.stringify(pieceSessionWarnings)}`,
+    );
+    const warning = pieceSessionWarnings[0]!;
+    assert.ok(warning.includes(piece.id),
+      `warning should include the piece id (got: ${warning})`);
+    assert.ok(warning.includes(UNEXPECTED_ERROR_MESSAGE),
+      `warning should include the underlying error message (got: ${warning})`);
+
+    // The piece writ stays open — the transition call never succeeded.
+    const observedPiece = await clerk.show(piece.id);
+    assert.equal(observedPiece.status, 'open',
+      'piece writ should remain open because transition never succeeded');
+
+    // (c) yields still include the observed piece writ status.
+    const rigs = await rigsBook(s).find({ where: [['writId', '=', mandate.id]] });
+    const pieceEngine = rigs[0]!.engines.find((e) => e.id === 'piece-0');
+    assert.ok(pieceEngine, 'piece-0 engine must exist in the rig');
+    const pieceYields = pieceEngine!.yields as Record<string, unknown> | undefined;
+    assert.ok(pieceYields, 'piece-0 engine should have yields recorded');
+    assert.equal(pieceYields!.pieceStatus, 'open',
+      'yields should reflect the observed (unchanged) piece writ status');
+    assert.equal(pieceYields!.pieceId, piece.id,
+      'yields should reference the piece writ id');
+
+    // (d) the engine is completed from Spider's perspective — the bookkeeping
+    // warning is surfaced in logs, but does not block rig progress.
+    assert.equal(pieceEngine!.status, 'completed',
+      'piece-0 engine should be marked completed even when the transition log-warned');
+  });
+});
+
 // ── Epilogue tests ───────────────────────────────────────────────────
 
 describe('PIECE_EXECUTION_EPILOGUE', () => {
