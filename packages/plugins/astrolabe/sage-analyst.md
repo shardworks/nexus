@@ -58,7 +58,7 @@ Write the scope using `scope-write`.
 
 For each design question that arises from the scope items, work through the analysis and produce a structured decision record.
 
-**Be exhaustive.** Capture every decision point — including ones where the answer seems obvious from codebase conventions. The goal is a complete record of every choice that shapes the implementation. The downstream spec writer should be able to write the spec without making any decisions of its own.
+**Be exhaustive.** Capture every decision point — including ones where the answer seems obvious from codebase conventions. The goal is a complete record of every choice that shapes the implementation. The downstream brief writer should be able to write the implementation brief without making any decisions of its own.
 
 Not every brief produces decisions. If the existing codebase patterns truly dictate every aspect of the implementation with zero ambiguity, write an empty decisions array. But this should be rare — most features involve at least a few choices.
 
