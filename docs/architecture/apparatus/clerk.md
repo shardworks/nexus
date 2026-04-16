@@ -106,7 +106,7 @@ List writs with optional filters. Returns writs ordered by `createdAt` descendin
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `status` | `WritStatus` | no | Filter by status (all six values supported) |
-| `type` | `string` | no | Filter by writ type |
+| `type` | `string \| string[]` | no | Filter by writ type (repeatable — pass multiple to match any) |
 | `parentId` | `string` | no | Filter to children of this parent writ |
 | `limit` | `number` | no | Max results (default: 20) |
 
@@ -286,8 +286,8 @@ interface PostCommissionRequest {
 }
 
 interface WritFilters {
-  status?: WritStatus
-  type?: string
+  status?: WritStatus | WritStatus[]
+  type?: string | string[]
   parentId?: string       // Filter to children of this parent writ
   limit?: number
   offset?: number

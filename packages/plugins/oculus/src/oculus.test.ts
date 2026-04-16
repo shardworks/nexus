@@ -30,7 +30,7 @@ import { tool } from '@shardworks/tools-apparatus';
 import type { InstrumentariumApi, ResolvedTool } from '@shardworks/tools-apparatus';
 import type { ToolDefinition } from '@shardworks/tools-apparatus';
 
-import { createOculus, toolNameToRoute, permissionToMethod, coerceParams, injectChrome } from './oculus.ts';
+import { createOculus, toolNameToRoute, permissionToMethod, coerceParams, injectChrome, isArrayAcceptingSchema, parseQueryParams } from './oculus.ts';
 import type { PageContribution, RouteContribution } from './types.ts';
 
 // ── Test helpers ──────────────────────────────────────────────────────
@@ -268,6 +268,115 @@ describe('coerceParams', () => {
     const shape = { flag: z.boolean().optional() };
     const result = coerceParams(shape, { flag: 'true' });
     assert.equal(result.flag, true);
+  });
+});
+
+// ── Unit tests: isArrayAcceptingSchema ───────────────────────────────
+
+describe('isArrayAcceptingSchema', () => {
+  it('returns true for z.array()', () => {
+    assert.ok(isArrayAcceptingSchema(z.array(z.string())));
+  });
+
+  it('returns true for z.union containing an array', () => {
+    const schema = z.union([z.string(), z.array(z.string()).min(1)]);
+    assert.ok(isArrayAcceptingSchema(schema));
+  });
+
+  it('returns true for optional union containing an array', () => {
+    const schema = z.union([z.string(), z.array(z.string()).min(1)]).optional();
+    assert.ok(isArrayAcceptingSchema(schema));
+  });
+
+  it('returns false for plain string schema', () => {
+    assert.ok(!isArrayAcceptingSchema(z.string()));
+  });
+
+  it('returns false for optional string schema', () => {
+    assert.ok(!isArrayAcceptingSchema(z.string().optional()));
+  });
+
+  it('returns false for number schema', () => {
+    assert.ok(!isArrayAcceptingSchema(z.number()));
+  });
+
+  it('returns false for union without array', () => {
+    const schema = z.union([z.string(), z.number()]);
+    assert.ok(!isArrayAcceptingSchema(schema));
+  });
+});
+
+// ── Unit tests: parseQueryParams ─────────────────────────────────────
+
+describe('parseQueryParams', () => {
+  it('repeated params with array schema → parsed as array', () => {
+    const shape = {
+      type: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
+    };
+    const result = parseQueryParams('http://localhost/api/writ/list?type=mandate&type=brief', shape);
+    assert.deepEqual(result.type, ['mandate', 'brief']);
+  });
+
+  it('single param with array schema → parsed as string', () => {
+    const shape = {
+      type: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
+    };
+    const result = parseQueryParams('http://localhost/api/writ/list?type=mandate', shape);
+    assert.equal(result.type, 'mandate');
+  });
+
+  it('repeated params without array schema → last value wins', () => {
+    const shape = {
+      parentId: z.string().optional(),
+    };
+    const result = parseQueryParams('http://localhost/api/writ/list?parentId=a&parentId=b', shape);
+    assert.equal(result.parentId, 'b');
+  });
+
+  it('number coercion still works after parseQueryParams', () => {
+    const shape = {
+      limit: z.number().optional().default(20),
+    };
+    const parsed = parseQueryParams('http://localhost/api/writ/list?limit=20', shape);
+    const coerced = coerceParams(shape, parsed as Record<string, string>);
+    assert.equal(coerced.limit, 20);
+    assert.equal(typeof coerced.limit, 'number');
+  });
+
+  it('array values pass through coerceParams unchanged', () => {
+    const shape = {
+      type: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
+      limit: z.number().optional().default(20),
+    };
+    const parsed = parseQueryParams('http://localhost/api?type=a&type=b&limit=10', shape);
+    const coerced = coerceParams(shape, parsed as Record<string, string>);
+    // Array should pass through unchanged (coerceParams skips non-string values)
+    assert.deepEqual(coerced.type, ['a', 'b']);
+    // Number should still be coerced
+    assert.equal(coerced.limit, 10);
+  });
+
+  it('handles URL with no query params', () => {
+    const shape = {
+      type: z.string().optional(),
+    };
+    const result = parseQueryParams('http://localhost/api/writ/list', shape);
+    assert.deepEqual(result, {});
+  });
+
+  it('handles mixed repeated and single params', () => {
+    const shape = {
+      status: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
+      type: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
+      limit: z.number().optional(),
+    };
+    const result = parseQueryParams(
+      'http://localhost/api?status=open&status=new&type=mandate&limit=10',
+      shape,
+    );
+    assert.deepEqual(result.status, ['open', 'new']);
+    assert.equal(result.type, 'mandate');
+    assert.equal(result.limit, '10');
   });
 });
 

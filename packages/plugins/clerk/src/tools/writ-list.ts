@@ -19,7 +19,10 @@ export default tool({
       ])
       .optional()
       .describe('Filter by writ status (repeatable — pass multiple to match any)'),
-    type: z.string().optional().describe('Filter by writ type'),
+    type: z
+      .union([z.string(), z.array(z.string()).min(1)])
+      .optional()
+      .describe('Filter by writ type (repeatable — pass multiple to match any)'),
     parentId: z.string().optional().describe('Filter to children of this parent writ'),
     limit: z.number().optional().default(20).describe('Maximum results (default: 20)'),
     offset: z.number().optional().describe('Number of results to skip'),

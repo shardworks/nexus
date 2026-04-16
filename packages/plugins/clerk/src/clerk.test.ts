@@ -318,6 +318,26 @@ describe('Clerk', () => {
       assert.equal(errands[0]!.type, 'errand');
     });
 
+    it('filters by multiple types (OR)', async () => {
+      await clerk.post({ title: 'Mandate writ', body: 'Body', type: 'mandate' });
+      await clerk.post({ title: 'Errand writ', body: 'Body', type: 'errand' });
+
+      const result = await clerk.list({ type: ['mandate', 'errand'] });
+      assert.equal(result.length, 2);
+      const types = new Set(result.map((w) => w.type));
+      assert.ok(types.has('mandate'));
+      assert.ok(types.has('errand'));
+    });
+
+    it('single-element type array behaves like a scalar filter', async () => {
+      await clerk.post({ title: 'Mandate writ', body: 'Body', type: 'mandate' });
+      await clerk.post({ title: 'Errand writ', body: 'Body', type: 'errand' });
+
+      const result = await clerk.list({ type: ['mandate'] });
+      assert.equal(result.length, 1);
+      assert.equal(result[0]!.type, 'mandate');
+    });
+
     it('respects the limit parameter', async () => {
       for (let i = 0; i < 5; i++) {
         await clerk.post({ title: `Writ ${i}`, body: 'Body' });

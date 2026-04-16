@@ -90,6 +90,41 @@ function isBooleanSchema(schema: z.ZodTypeAny): boolean {
   return inner instanceof z.ZodBoolean;
 }
 
+export function isArrayAcceptingSchema(schema: z.ZodTypeAny): boolean {
+  let inner: z.ZodTypeAny = schema;
+  if (inner instanceof z.ZodOptional) inner = inner.unwrap() as z.ZodTypeAny;
+  if (inner instanceof z.ZodDefault) inner = inner.unwrap() as z.ZodTypeAny;
+  if (inner instanceof z.ZodOptional) inner = inner.unwrap() as z.ZodTypeAny;
+  if (inner instanceof z.ZodArray) return true;
+  if (inner instanceof z.ZodUnion) {
+    return (inner.options as z.ZodTypeAny[]).some(
+      (opt) => opt instanceof z.ZodArray,
+    );
+  }
+  return false;
+}
+
+/**
+ * Parse URL query params, preserving repeated keys as arrays when the
+ * Zod schema for that param accepts an array type.
+ */
+export function parseQueryParams(
+  url: string,
+  shape: Record<string, z.ZodTypeAny>,
+): Record<string, unknown> {
+  const searchParams = new URL(url, 'http://localhost').searchParams;
+  const result: Record<string, unknown> = {};
+  for (const key of new Set(searchParams.keys())) {
+    const values = searchParams.getAll(key);
+    if (values.length > 1 && shape[key] && isArrayAcceptingSchema(shape[key]!)) {
+      result[key] = values;
+    } else {
+      result[key] = values[values.length - 1];
+    }
+  }
+  return result;
+}
+
 export function coerceParams(
   shape: Record<string, z.ZodTypeAny>,
   params: Record<string, string>,
@@ -386,8 +421,8 @@ export function createOculus(): Plugin {
           if (method === "GET") {
             app.get(routePath, async (c) => {
               try {
-                const rawQuery = c.req.query();
-                const coerced = coerceParams(shape, rawQuery);
+                const rawQuery = parseQueryParams(c.req.url, shape);
+                const coerced = coerceParams(shape, rawQuery as Record<string, string>);
                 const validated = toolDef.params.parse(coerced);
                 const result = await toolDef.handler(validated);
                 return c.json(result);

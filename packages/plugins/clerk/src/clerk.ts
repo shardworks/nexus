@@ -121,7 +121,12 @@ export function createClerk(): Plugin {
       }
     }
     if (filters?.type) {
-      conditions.push(['type', '=', filters.type]);
+      const types = Array.isArray(filters.type) ? filters.type : [filters.type];
+      if (types.length === 1) {
+        conditions.push(['type', '=', types[0]!]);
+      } else if (types.length > 1) {
+        conditions.push(['type', 'IN', types]);
+      }
     }
     if (filters?.parentId) {
       conditions.push(['parentId', '=', filters.parentId]);

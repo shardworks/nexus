@@ -143,7 +143,7 @@
     let writs = [];          // root writs only (no parentId)
     let offset = 0;
     let currentStatus = '';  // '' = all
-    let currentType = '';    // '' = all
+    let currentType = new Set();  // Set<string> — empty = no types selected (empty state)
     let searchText = '';
     let sortCol = 'createdAt';
     let sortDir = 'desc';
@@ -314,7 +314,7 @@
           '<td>' + statusBadge(w.status) + '</td>' +
           '<td' + (isChild ? ' style="padding-left:2rem"' : '') + '>' + escHtml(w.title ?? '') + '</td>' +
           '<td>' + (w.type ?? '') + '</td>' +
-          '<td><code>' + w.id + '</code></td>' +
+          '<td class="id-cell"><code>' + w.id + '</code> <button class="btn copy-id-btn" data-copy-id="' + w.id + '" style="padding:0.1rem 0.3rem;font-size:0.7rem;cursor:pointer">📋</button></td>' +
           '<td>' + (isChild ? '' : fmtDate(w.createdAt)) + '</td>' +
           '<td class="row-actions" style="white-space:nowrap">' + rowActions(w) + '</td>';
 
@@ -325,12 +325,35 @@
             handleRowAction(btn.dataset.action, btn.dataset.id, btn);
           });
         });
+        // Stop propagation on the ID cell so clicking text or copy button doesn't open detail
+        const idCell = tr.querySelector('.id-cell');
+        if (idCell) {
+          idCell.addEventListener('click', e => e.stopPropagation());
+        }
+        // Wire copy button in ID cell
+        const copyBtn = tr.querySelector('.copy-id-btn');
+        if (copyBtn) {
+          copyBtn.addEventListener('click', () => {
+            copyToClipboard(copyBtn.dataset.copyId, copyBtn);
+          });
+        }
         // Click row -> show detail view
         tr.addEventListener('click', () => showWritDetail(w.id));
         tbody.appendChild(tr);
       }
 
       updateSortIndicators();
+    }
+
+    async function copyToClipboard(text, feedbackEl) {
+      try {
+        await navigator.clipboard.writeText(text);
+        const original = feedbackEl.textContent;
+        feedbackEl.textContent = '✓';
+        setTimeout(() => { feedbackEl.textContent = original; }, 1500);
+      } catch (e) {
+        console.error('Copy failed:', e);
+      }
     }
 
     function escHtml(s) {
@@ -829,6 +852,25 @@
       document.getElementById('writ-detail-view').style.display = '';
       document.getElementById('detail-title').textContent = writ.title ?? writ.id;
 
+      // Remove any previous subtitle
+      const oldSubtitle = document.getElementById('detail-id-subtitle');
+      if (oldSubtitle) oldSubtitle.remove();
+
+      // Create subtitle with ID and copy button
+      const subtitle = document.createElement('div');
+      subtitle.id = 'detail-id-subtitle';
+      subtitle.style.cssText = 'margin-top:0.25rem;margin-bottom:0.75rem;font-size:0.875rem;opacity:0.7';
+      subtitle.innerHTML = '<code>' + writ.id + '</code> <button class="btn copy-id-btn" style="padding:0.1rem 0.3rem;font-size:0.7rem;cursor:pointer">📋</button>';
+
+      const detailTitle = document.getElementById('detail-title');
+      detailTitle.after(subtitle);
+
+      // Wire copy button
+      const detailCopyBtn = subtitle.querySelector('.copy-id-btn');
+      detailCopyBtn.addEventListener('click', () => {
+        copyToClipboard(writ.id, detailCopyBtn);
+      });
+
       const content = document.getElementById('detail-content');
       content.innerHTML = renderDetail(writ);
       wireDetailEvents(content, writ);
@@ -845,7 +887,16 @@
 
       const params = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) });
       if (currentStatus) params.set('status', currentStatus);
-      if (currentType) params.set('type', currentType);
+      if (currentType.size === 0) {
+        // No types selected — show empty state without hitting the API
+        if (replace) { writs = []; }
+        renderTable();
+        document.getElementById('load-more-row').style.display = 'none';
+        return;
+      }
+      for (const t of currentType) {
+        params.append('type', t);
+      }
 
       let result;
       try {
@@ -947,12 +998,10 @@
         btn.addEventListener('click', () => setTypeFilter(btn.dataset.type));
       });
 
-      // Default: select 'mandate' if present, otherwise 'All'
-      const hasMandateType = types.some(t => t.name === 'mandate');
-      const defaultType = hasMandateType ? 'mandate' : '';
-      currentType = defaultType;
+      // Default: select all types
+      currentType = new Set(types.map(t => t.name));
       bar.querySelectorAll('.type-filter-btn').forEach(btn => {
-        btn.classList.toggle('active-filter', btn.dataset.type === defaultType);
+        btn.classList.add('active-filter');
       });
     }
 
@@ -1135,10 +1184,37 @@
     }
 
     function setTypeFilter(type) {
-      currentType = type;
-      document.querySelectorAll('.type-filter-btn').forEach(btn => {
-        btn.classList.toggle('active-filter', btn.dataset.type === type);
+      const bar = document.getElementById('type-filter-bar');
+      const allBtn = bar.querySelector('.type-filter-btn[data-type=""]');
+      const typeBtns = [...bar.querySelectorAll('.type-filter-btn:not([data-type=""])')];
+      const allTypeNames = typeBtns.map(b => b.dataset.type);
+
+      if (type === '') {
+        // "All" clicked: select all individual types
+        currentType = new Set(allTypeNames);
+      } else {
+        // Check if "All" is currently active (all types selected)
+        const allActive = allTypeNames.length > 0 && allTypeNames.every(t => currentType.has(t));
+        if (allActive) {
+          // "All" was active — deselect everything except the clicked type
+          currentType = new Set([type]);
+        } else {
+          // Normal toggle
+          if (currentType.has(type)) {
+            currentType.delete(type);
+          } else {
+            currentType.add(type);
+          }
+        }
+      }
+
+      // Update button visual state
+      const nowAllActive = allTypeNames.length > 0 && allTypeNames.every(t => currentType.has(t));
+      allBtn.classList.toggle('active-filter', nowAllActive);
+      typeBtns.forEach(btn => {
+        btn.classList.toggle('active-filter', currentType.has(btn.dataset.type));
       });
+
       loadWrits(true);
     }
 

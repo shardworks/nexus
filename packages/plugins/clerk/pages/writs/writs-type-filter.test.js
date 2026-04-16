@@ -3,8 +3,8 @@
  *
  * Extracts and tests the pure logic behind the type filter bar:
  * - Button generation from writ types
- * - Default type selection (mandate if present, else All)
- * - Filter toggling via setTypeFilter
+ * - Default type selection (all types selected)
+ * - Multi-select filter toggling via setTypeFilter
  *
  * Uses a minimal DOM shim to validate element creation without a browser.
  */
@@ -32,11 +32,24 @@ class FakeElement {
     return child;
   }
 
+  querySelector(selector) {
+    // Support '.type-filter-btn[data-type=""]' and ':not(...)' patterns
+    const btns = this.querySelectorAll('.type-filter-btn');
+    if (selector.includes('data-type=""')) {
+      return btns.find(b => b.dataset.type === '') ?? null;
+    }
+    return btns[0] ?? null;
+  }
+
   querySelectorAll(selector) {
-    // Only supports '.type-filter-btn'
-    return this.children.filter(c =>
+    // Only supports '.type-filter-btn' variants
+    const allBtns = this.children.filter(c =>
       c.className.includes('type-filter-btn'),
     );
+    if (selector.includes(':not([data-type=""])')) {
+      return allBtns.filter(b => b.dataset.type !== '');
+    }
+    return allBtns;
   }
 
   addEventListener(event, fn) {
@@ -58,6 +71,11 @@ class FakeElement {
         if (!force && idx !== -1) classes.splice(idx, 1);
         self.className = classes.join(' ');
       },
+      add(cls) {
+        const classes = self.className.split(/\s+/).filter(Boolean);
+        if (!classes.includes(cls)) classes.push(cls);
+        self.className = classes.join(' ');
+      },
       contains(cls) {
         return self.className.split(/\s+/).includes(cls);
       },
@@ -71,9 +89,12 @@ function createElement(tag) {
 
 // ── Extracted logic (mirrors index.html) ────────────────────────────
 
+/** Shared state — mirrors the IIFE variable in index.html. */
+let currentType = new Set();
+
 /**
  * Builds type filter buttons from a types array into a bar element.
- * Returns { bar, defaultType } for testability.
+ * Returns the currentType Set for testability.
  */
 function buildTypeFilterBar(types, bar) {
   // Clear existing buttons (keep label span)
@@ -102,23 +123,48 @@ function buildTypeFilterBar(types, bar) {
     bar.appendChild(btn);
   }
 
-  // Default: select 'mandate' if present, otherwise 'All'
-  const hasMandateType = types.some(t => t.name === 'mandate');
-  const defaultType = hasMandateType ? 'mandate' : '';
-
+  // Default: select all types
+  currentType = new Set(types.map(t => t.name));
   bar.querySelectorAll('.type-filter-btn').forEach(btn => {
-    btn.classList.toggle('active-filter', btn.dataset.type === defaultType);
+    btn.classList.add('active-filter');
   });
 
-  return defaultType;
+  return currentType;
 }
 
 /**
- * Applies a type filter selection to the bar (mirrors setTypeFilter).
+ * Multi-select type filter toggle (mirrors setTypeFilter in index.html).
+ * Does not call loadWrits — just updates state and button classes.
  */
 function applyTypeFilter(bar, type) {
-  bar.querySelectorAll('.type-filter-btn').forEach(btn => {
-    btn.classList.toggle('active-filter', btn.dataset.type === type);
+  const allBtn = bar.querySelector('.type-filter-btn[data-type=""]');
+  const typeBtns = bar.querySelectorAll('.type-filter-btn').filter(b => b.dataset.type !== '');
+  const allTypeNames = typeBtns.map(b => b.dataset.type);
+
+  if (type === '') {
+    // "All" clicked: select all individual types
+    currentType = new Set(allTypeNames);
+  } else {
+    // Check if "All" is currently active (all types selected)
+    const allActive = allTypeNames.length > 0 && allTypeNames.every(t => currentType.has(t));
+    if (allActive) {
+      // "All" was active — deselect everything except the clicked type
+      currentType = new Set([type]);
+    } else {
+      // Normal toggle
+      if (currentType.has(type)) {
+        currentType.delete(type);
+      } else {
+        currentType.add(type);
+      }
+    }
+  }
+
+  // Update button visual state
+  const nowAllActive = allTypeNames.length > 0 && allTypeNames.every(t => currentType.has(t));
+  allBtn.classList.toggle('active-filter', nowAllActive);
+  typeBtns.forEach(btn => {
+    btn.classList.toggle('active-filter', currentType.has(btn.dataset.type));
   });
 }
 
@@ -129,6 +175,7 @@ describe('buildTypeFilterBar()', () => {
 
   beforeEach(() => {
     bar = createElement('span');
+    currentType = new Set();
   });
 
   it('creates "All" button plus one per type', () => {
@@ -148,49 +195,46 @@ describe('buildTypeFilterBar()', () => {
     assert.equal(btns[2].dataset.type, 'task');
   });
 
-  it('defaults to mandate when mandate is present', () => {
+  it('defaults to all types selected', () => {
     const types = [
       { name: 'task' },
       { name: 'mandate' },
       { name: 'bug' },
     ];
-    const defaultType = buildTypeFilterBar(types, bar);
+    const result = buildTypeFilterBar(types, bar);
 
-    assert.equal(defaultType, 'mandate');
+    assert.deepEqual(result, new Set(['task', 'mandate', 'bug']));
 
     const btns = bar.querySelectorAll('.type-filter-btn');
-    // "All" should NOT be active
-    const allBtn = btns.find(b => b.dataset.type === '');
-    assert.ok(!allBtn.classList.contains('active-filter'), 'All should not be active');
-    // "mandate" should be active
-    const mandateBtn = btns.find(b => b.dataset.type === 'mandate');
-    assert.ok(mandateBtn.classList.contains('active-filter'), 'mandate should be active');
-    // others should not be active
-    const taskBtn = btns.find(b => b.dataset.type === 'task');
-    assert.ok(!taskBtn.classList.contains('active-filter'), 'task should not be active');
+    // All buttons should be active (including "All")
+    for (const btn of btns) {
+      assert.ok(btn.classList.contains('active-filter'), `${btn.textContent} should be active`);
+    }
   });
 
-  it('defaults to All when mandate is not present', () => {
+  it('defaults to all types even when mandate is present', () => {
     const types = [
       { name: 'task' },
-      { name: 'bug' },
+      { name: 'mandate' },
     ];
-    const defaultType = buildTypeFilterBar(types, bar);
+    const result = buildTypeFilterBar(types, bar);
 
-    assert.equal(defaultType, '');
+    assert.deepEqual(result, new Set(['task', 'mandate']));
 
     const btns = bar.querySelectorAll('.type-filter-btn');
     const allBtn = btns.find(b => b.dataset.type === '');
     assert.ok(allBtn.classList.contains('active-filter'), 'All should be active');
+    const mandateBtn = btns.find(b => b.dataset.type === 'mandate');
+    assert.ok(mandateBtn.classList.contains('active-filter'), 'mandate should be active');
     const taskBtn = btns.find(b => b.dataset.type === 'task');
-    assert.ok(!taskBtn.classList.contains('active-filter'), 'task should not be active');
+    assert.ok(taskBtn.classList.contains('active-filter'), 'task should be active');
   });
 
-  it('handles empty types array — only All button', () => {
+  it('handles empty types array — only All button, empty set', () => {
     const types = [];
-    const defaultType = buildTypeFilterBar(types, bar);
+    const result = buildTypeFilterBar(types, bar);
 
-    assert.equal(defaultType, '');
+    assert.deepEqual(result, new Set());
 
     const btns = bar.querySelectorAll('.type-filter-btn');
     assert.equal(btns.length, 1);
@@ -198,11 +242,11 @@ describe('buildTypeFilterBar()', () => {
     assert.ok(btns[0].classList.contains('active-filter'));
   });
 
-  it('handles single mandate type', () => {
+  it('handles single type', () => {
     const types = [{ name: 'mandate' }];
-    const defaultType = buildTypeFilterBar(types, bar);
+    const result = buildTypeFilterBar(types, bar);
 
-    assert.equal(defaultType, 'mandate');
+    assert.deepEqual(result, new Set(['mandate']));
     const btns = bar.querySelectorAll('.type-filter-btn');
     assert.equal(btns.length, 2); // All + mandate
   });
@@ -233,11 +277,12 @@ describe('buildTypeFilterBar()', () => {
   });
 });
 
-describe('applyTypeFilter()', () => {
+describe('applyTypeFilter() — multi-select', () => {
   let bar;
 
   beforeEach(() => {
     bar = createElement('span');
+    currentType = new Set();
     buildTypeFilterBar([
       { name: 'mandate' },
       { name: 'task' },
@@ -245,9 +290,11 @@ describe('applyTypeFilter()', () => {
     ], bar);
   });
 
-  it('switches active state to selected type', () => {
+  it('clicking type when All is active deselects all except clicked', () => {
+    // Initially all types are selected (All is active)
     applyTypeFilter(bar, 'task');
 
+    assert.deepEqual(currentType, new Set(['task']));
     const btns = bar.querySelectorAll('.type-filter-btn');
     const taskBtn = btns.find(b => b.dataset.type === 'task');
     const mandateBtn = btns.find(b => b.dataset.type === 'mandate');
@@ -258,26 +305,68 @@ describe('applyTypeFilter()', () => {
     assert.ok(!allBtn.classList.contains('active-filter'));
   });
 
-  it('switches active state to All', () => {
-    applyTypeFilter(bar, '');
+  it('clicking "All" selects all types', () => {
+    // First deselect all by breaking the "all active" state
+    applyTypeFilter(bar, 'task'); // only task selected now
+    applyTypeFilter(bar, 'task'); // deselect task — empty set
 
+    applyTypeFilter(bar, ''); // click All
+
+    assert.deepEqual(currentType, new Set(['mandate', 'task', 'bug']));
     const btns = bar.querySelectorAll('.type-filter-btn');
-    const allBtn = btns.find(b => b.dataset.type === '');
-    assert.ok(allBtn.classList.contains('active-filter'));
-
-    // All others should be inactive
     for (const btn of btns) {
-      if (btn.dataset.type !== '') {
-        assert.ok(!btn.classList.contains('active-filter'), `${btn.dataset.type} should not be active`);
-      }
+      assert.ok(btn.classList.contains('active-filter'), `${btn.textContent} should be active`);
     }
   });
 
-  it('only one button is active at a time', () => {
-    applyTypeFilter(bar, 'bug');
+  it('toggling individual types on/off when All is not active', () => {
+    // Break "All" state first
+    applyTypeFilter(bar, 'mandate'); // only mandate selected
+    assert.deepEqual(currentType, new Set(['mandate']));
 
+    // Toggle on 'task'
+    applyTypeFilter(bar, 'task');
+    assert.deepEqual(currentType, new Set(['mandate', 'task']));
+
+    // Toggle off 'mandate'
+    applyTypeFilter(bar, 'mandate');
+    assert.deepEqual(currentType, new Set(['task']));
+  });
+
+  it('auto-activates All when all types manually selected', () => {
+    // Break "All" state
+    applyTypeFilter(bar, 'mandate'); // only mandate
+    // Add task
+    applyTypeFilter(bar, 'task'); // mandate + task
+    // Add bug — now all types are selected
+    applyTypeFilter(bar, 'bug'); // mandate + task + bug
+
+    assert.deepEqual(currentType, new Set(['mandate', 'task', 'bug']));
+    const btns = bar.querySelectorAll('.type-filter-btn');
+    const allBtn = btns.find(b => b.dataset.type === '');
+    assert.ok(allBtn.classList.contains('active-filter'), 'All should auto-activate');
+  });
+
+  it('empty set when all types deselected — no buttons active', () => {
+    // Break "All" state by clicking one type
+    applyTypeFilter(bar, 'task'); // only task
+    // Deselect task
+    applyTypeFilter(bar, 'task'); // empty set
+
+    assert.equal(currentType.size, 0);
     const btns = bar.querySelectorAll('.type-filter-btn');
     const activeCount = btns.filter(b => b.classList.contains('active-filter')).length;
-    assert.equal(activeCount, 1);
+    assert.equal(activeCount, 0);
+  });
+
+  it('clicking All after partial selection selects all', () => {
+    // Break "All" state
+    applyTypeFilter(bar, 'mandate'); // only mandate
+    // Add bug
+    applyTypeFilter(bar, 'bug'); // mandate + bug
+
+    // Click All
+    applyTypeFilter(bar, '');
+    assert.deepEqual(currentType, new Set(['mandate', 'task', 'bug']));
   });
 });

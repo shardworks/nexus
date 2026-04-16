@@ -114,8 +114,8 @@ export interface PostCommissionRequest {
 export interface WritFilters {
   /** Filter by status. Accepts a single status or an array of statuses (OR). */
   status?: WritStatus | WritStatus[];
-  /** Filter by writ type. */
-  type?: string;
+  /** Filter by writ type. Accepts a single type or an array of types (OR). */
+  type?: string | string[];
   /** Filter to children of this parent writ. */
   parentId?: string;
   /** Maximum number of results (default: 20). */
