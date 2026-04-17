@@ -214,7 +214,7 @@ Terminal statuses (`concluded`, `dropped`) allow no further transitions.
 | `click-reparent` | write | Move a click to a new parent |
 | `click-link` | write | Create a typed link |
 | `click-unlink` | write | Remove a link |
-| `click-extract` | read | Extract a click tree (goals only by default; `--full` includes conclusions) |
+| `click-extract` | read | Extract a click tree (always includes conclusions for concluded/dropped clicks) |
 | `click-tree` | read | Display click hierarchy as a visual tree with short IDs and status indicators |
 
 All tools that accept an `id` parameter resolve short ID prefixes automatically via `resolveId()`. Tools with a single required ID parameter also accept the ID as a positional argument (e.g., `nsg click show <id>`).

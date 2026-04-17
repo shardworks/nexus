@@ -1130,23 +1130,16 @@ describe('Ratchet', () => {
     });
   });
 
-  // ── click-extract tool with full flag ─────────────────────────
+  // ── click-extract tool always includes conclusions ────────────
 
-  describe('click-extract tool full flag', () => {
-    it('defaults to goals-only', async () => {
+  describe('click-extract tool', () => {
+    it('always includes conclusions (no opt-out flag)', async () => {
       const click = await ratchet.create({ goal: 'Test' });
       await ratchet.conclude(click.id, { conclusion: 'All done' });
 
       const result = await clickExtract.handler({ id: click.id, format: 'md' }) as string;
-      assert.ok(!result.includes('All done'));
-    });
-
-    it('includes conclusions when full=true', async () => {
-      const click = await ratchet.create({ goal: 'Test' });
-      await ratchet.conclude(click.id, { conclusion: 'All done' });
-
-      const result = await clickExtract.handler({ id: click.id, format: 'md', full: true }) as string;
-      assert.ok(result.includes('All done'));
+      assert.ok(result.includes('All done'), 'conclusion should appear in CLI output');
+      assert.ok(result.includes('Test'), 'goal should appear in CLI output');
     });
   });
 
