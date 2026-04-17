@@ -324,8 +324,12 @@ function buildFixture(
   };
   apparatusMap.set('animator', mockAnimatorApi);
 
-  // Start clerk
-  clerkApparatus.start(noopCtx);
+  // Start clerk. Clerk consumes `linkKinds` kit entries, so pass the full
+  // kit-entry snapshot through its ctx — this is how `spider.follows`
+  // (contributed by Spider's supportKit) gets registered in the kind
+  // registry and becomes acceptable to `clerk.link(_, _, _, 'spider.follows')`.
+  const { ctx: clerkCtx } = buildCtx(spiderKitEntries);
+  clerkApparatus.start(clerkCtx);
   const clerk = clerkApparatus.provides as ClerkApi;
   apparatusMap.set('clerk', clerk);
 
@@ -9508,5 +9512,494 @@ describe('Spider — writ→rig cascade', () => {
     assert.equal(rig1Engine!.error, `Writ ${child1.id} cancelled`, 'child1 rig engine error should reference child1 writ');
     assert.ok(rig2Engine, 'child2 rig should have a cancelled engine with error');
     assert.equal(rig2Engine!.error, `Writ ${child2.id} cancelled`, 'child2 rig engine error should reference child2 writ');
+  });
+});
+
+// ── spider.follows gate behavior ─────────────────────────────────────────
+
+describe('Spider — spider.follows gate', () => {
+  let fix: ReturnType<typeof buildFixture>;
+
+  beforeEach(() => {
+    fix = buildFixture();
+  });
+
+  afterEach(() => {
+    clearGuild();
+  });
+
+  // Small helper: run crawl() repeatedly and collect actions until a
+  // terminal-ish pause (null or a gated/unstuck outcome). Used to drive
+  // the gate machinery without coupling tests to the exact number of
+  // ticks a given flow takes.
+  async function drainCrawls(spider: SpiderApi, maxTicks = 10): Promise<Array<{ action: string; [k: string]: unknown }>> {
+    const actions: Array<{ action: string; [k: string]: unknown }> = [];
+    for (let i = 0; i < maxTicks; i++) {
+      const result = await spider.crawl();
+      if (result === null) break;
+      actions.push(result as { action: string });
+      // Stop on actions that signal end-of-tick for spawning work.
+      if (result.action === 'gated' || result.action === 'writ-unstuck' || result.action === 'rig-spawned') break;
+    }
+    return actions;
+  }
+
+  describe('link-kind registration', () => {
+    it('spider.follows appears in listKinds() with the prescribed description', async () => {
+      const kinds = await fix.clerk.listKinds();
+      const entry = kinds.find((k) => k.id === 'spider.follows');
+      assert.ok(entry, 'spider.follows should be registered');
+      assert.equal(entry!.ownerPlugin, 'spider');
+      assert.equal(
+        entry!.description,
+        'The source writ is a precedence-successor of the target: source cannot be dispatched until the target reaches a terminal state. Consumers define their own policy for what happens on each terminal state.',
+      );
+    });
+
+    it('clerk.link() accepts kind="spider.follows" and rejects the colon form', async () => {
+      const { clerk } = fix;
+      const a = await postWrit(clerk, 'A');
+      const b = await postWrit(clerk, 'B');
+      const linkDoc = await clerk.link(a.id, b.id, 'depends on', 'spider.follows');
+      assert.equal(linkDoc.kind, 'spider.follows');
+      await assert.rejects(
+        () => clerk.link(a.id, b.id, 'fixes', 'spider:follows'),
+        /Unknown link kind/,
+      );
+    });
+  });
+
+  describe('single-blocker hold and release', () => {
+    it('does not dispatch while a non-terminal blocker exists', async () => {
+      const { clerk, spider, stacks } = fix;
+      const blocker = await postWrit(clerk, 'Blocker');
+      const dependent = await postWrit(clerk, 'Dependent');
+      await clerk.link(dependent.id, blocker.id, 'depends on', 'spider.follows');
+
+      // Dependent is younger than blocker, so blocker dispatches first.
+      // Prevent blocker from spawning by completing it out-of-band via
+      // transition (no rig needed). Do this *after* we verify the gate.
+      //
+      // First crawl: blocker is oldest, no gate → spawns rig for blocker.
+      const r1 = await spider.crawl();
+      assert.equal(r1?.action, 'rig-spawned');
+      assert.equal((r1 as { writId: string }).writId, blocker.id);
+
+      // Force-fail the blocker's rig into stuck via out-of-band phase change
+      // — we're isolating the gate. Since blocker is still `open`, the
+      // dependent remains gated.
+      //
+      // Drive another crawl: dependent should emit `gated`, not `rig-spawned`.
+      // The blocker's rig is running its draft engine; skip that via
+      // completing the rig's engines to keep focus on gating. Simpler: just
+      // cancel the blocker's rig so no engine work happens.
+      const rig = await fix.spider.forWrit(blocker.id);
+      if (rig) await fix.spider.cancel(rig.id);
+
+      // Blocker writ should now be cancelled — released per D17.
+      const blockerAfter = await clerk.show(blocker.id);
+      assert.ok(
+        blockerAfter.phase === 'cancelled' || blockerAfter.phase === 'open',
+        `blocker phase is ${blockerAfter.phase}`,
+      );
+
+      // Re-block the blocker by posting a fresh pair — that's the cleaner
+      // setup. (The above was just to confirm nothing crashed mid-flow.)
+      //
+      // Exercise actual gating against an explicitly-open blocker:
+      const blocker2 = await postWrit(clerk, 'Blocker 2');
+      const dependent2 = await postWrit(clerk, 'Dependent 2');
+      await clerk.link(dependent2.id, blocker2.id, 'depends on', 'spider.follows');
+
+      // Walk until either gated or spawn. With blocker2 older than
+      // dependent2, spider may first spawn a rig for blocker2. Track the
+      // candidates tried.
+      let sawGated = false;
+      for (let i = 0; i < 8; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        if (r.action === 'gated' && (r as { writId: string }).writId === dependent2.id) {
+          sawGated = true;
+          break;
+        }
+        // Advance blocker2's rig by keeping it "stuck" in draft — but we
+        // actually just need to prevent dependent2 from dispatching. If
+        // blocker2 reaches a rig-spawned state, cancel it to force the
+        // blocker writ into cancelled, which would then release the gate
+        // — so instead, stall it by leaving the rig in place and not
+        // completing engines. The next crawl for dependent2 will still
+        // see blocker2 as `open` → gated.
+        if (r.action === 'rig-spawned') continue;
+      }
+
+      // The dependent must not have spawned a rig.
+      const depRig = await rigsBook(stacks).find({ where: [['writId', '=', dependent2.id]] });
+      assert.equal(depRig.length, 0, 'dependent should not have spawned a rig while blocker is non-terminal');
+      assert.ok(sawGated, 'expected a gated outcome for the dependent');
+    });
+
+    it('releases the gate once the blocker reaches completed (dispatches dependent on next poll)', async () => {
+      const { clerk, spider } = fix;
+      const blocker = await postWrit(clerk, 'Blocker');
+      const dependent = await postWrit(clerk, 'Dependent');
+      await clerk.link(dependent.id, blocker.id, 'depends on', 'spider.follows');
+
+      // Complete blocker out-of-band (transition handles 'open' → 'completed').
+      await clerk.transition(blocker.id, 'completed', { resolution: 'Done.' });
+
+      // Drain crawls: there is no rig for blocker (we skipped dispatch),
+      // and dependent should spawn cleanly.
+      let depSpawned = false;
+      for (let i = 0; i < 5; i++) {
+        const r = await spider.crawl();
+        if (r?.action === 'rig-spawned' && (r as { writId: string }).writId === dependent.id) {
+          depSpawned = true;
+          break;
+        }
+      }
+      assert.ok(depSpawned, 'dependent should dispatch after blocker completes');
+    });
+
+    it('releases the gate when the blocker reaches cancelled', async () => {
+      const { clerk, spider } = fix;
+      const blocker = await postWrit(clerk, 'Blocker');
+      const dependent = await postWrit(clerk, 'Dependent');
+      await clerk.link(dependent.id, blocker.id, 'depends on', 'spider.follows');
+
+      await clerk.transition(blocker.id, 'cancelled', { resolution: 'Moot.' });
+
+      let depSpawned = false;
+      for (let i = 0; i < 5; i++) {
+        const r = await spider.crawl();
+        if (r?.action === 'rig-spawned' && (r as { writId: string }).writId === dependent.id) {
+          depSpawned = true;
+          break;
+        }
+      }
+      assert.ok(depSpawned, 'dependent should dispatch after blocker is cancelled');
+    });
+  });
+
+  describe('conjunctive multi-blocker composition', () => {
+    it('holds when any of N blockers is non-terminal; dispatches only when all reach terminal-success', async () => {
+      const { clerk, spider, stacks } = fix;
+      const b1 = await postWrit(clerk, 'B1');
+      const b2 = await postWrit(clerk, 'B2');
+      const b3 = await postWrit(clerk, 'B3');
+      const dep = await postWrit(clerk, 'Dependent');
+      await clerk.link(dep.id, b1.id, 'depends on', 'spider.follows');
+      await clerk.link(dep.id, b2.id, 'depends on', 'spider.follows');
+      await clerk.link(dep.id, b3.id, 'depends on', 'spider.follows');
+
+      // Complete two of three out-of-band via direct stacks patch. Using the
+      // direct book here (rather than clerk.transition()) sidesteps the rig
+      // machinery — we do not want b3 to also race through trySpawn and
+      // engine failure during this test; the gate's conjunctive rule is the
+      // only behavior under test.
+      const writsStacksBook = stacks.book<WritDoc>('clerk', 'writs');
+      await writsStacksBook.patch(b1.id, { phase: 'completed' });
+      await writsStacksBook.patch(b2.id, { phase: 'cancelled' });
+
+      // Drive enough crawls to surface the gated outcome for `dep`. Along
+      // the way, other non-gated candidates (b3 in particular) may spawn
+      // rigs; we assert only about `dep`'s state.
+      let sawGated = false;
+      for (let i = 0; i < 12; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        if (r.action === 'gated' && (r as { writId: string }).writId === dep.id) {
+          sawGated = true;
+          break;
+        }
+      }
+      const depRigBefore = await rigsBook(stacks).find({ where: [['writId', '=', dep.id]] });
+      assert.equal(depRigBefore.length, 0, 'dependent should not have spawned a rig while b3 is non-terminal');
+      assert.ok(sawGated, 'dependent should be gated while b3 is open');
+
+      // Release the last blocker (patch direct to avoid transition phase rules).
+      await writsStacksBook.patch(b3.id, { phase: 'completed' });
+
+      let dispatched = false;
+      for (let i = 0; i < 8; i++) {
+        const r = await spider.crawl();
+        if (r?.action === 'rig-spawned' && (r as { writId: string }).writId === dep.id) {
+          dispatched = true;
+          break;
+        }
+        if (!r) break;
+      }
+      assert.ok(dispatched, 'dependent should dispatch after all blockers release');
+    });
+  });
+
+  describe('failed-blocker stuck cascade', () => {
+    it('singular resolution text and shape for one failed blocker', async () => {
+      const { clerk, spider } = fix;
+      const blocker = await postWrit(clerk, 'Blocker');
+      const dependent = await postWrit(clerk, 'Dependent');
+      await clerk.link(dependent.id, blocker.id, 'depends on', 'spider.follows');
+
+      await clerk.transition(blocker.id, 'failed', { resolution: 'boom' });
+
+      // Drain crawls until dependent is stuck.
+      let gatedFired = false;
+      for (let i = 0; i < 6; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        if (r.action === 'gated' && (r as { writId: string }).writId === dependent.id) {
+          gatedFired = true;
+          break;
+        }
+      }
+      assert.ok(gatedFired, 'expected gated outcome for failed blocker');
+
+      const writAfter = await clerk.show(dependent.id);
+      assert.equal(writAfter.phase, 'stuck');
+      const expectedShort = blocker.id.split('-').slice(0, 2).join('-');
+      assert.equal(writAfter.resolution, `Blocked by failed dependency: ${expectedShort}`);
+      const spiderStatus = writAfter.status?.spider as Record<string, unknown> | undefined;
+      assert.ok(spiderStatus, 'status.spider should be populated');
+      assert.equal(spiderStatus!.stuckCause, 'failed-blocker');
+      assert.deepEqual(spiderStatus!.blockerIds, [blocker.id]);
+      assert.ok(typeof spiderStatus!.observedAt === 'string', 'observedAt should be an ISO timestamp string');
+      assert.ok(!Number.isNaN(Date.parse(spiderStatus!.observedAt as string)), 'observedAt should parse as a date');
+    });
+
+    it('plural resolution text for multiple failed blockers', async () => {
+      const { clerk, spider } = fix;
+      const b1 = await postWrit(clerk, 'B1');
+      const b2 = await postWrit(clerk, 'B2');
+      const dep = await postWrit(clerk, 'Dependent');
+      await clerk.link(dep.id, b1.id, 'depends on', 'spider.follows');
+      await clerk.link(dep.id, b2.id, 'depends on', 'spider.follows');
+
+      await clerk.transition(b1.id, 'failed', { resolution: 'one' });
+      await clerk.transition(b2.id, 'failed', { resolution: 'two' });
+
+      for (let i = 0; i < 6; i++) {
+        const r = await spider.crawl();
+        if (r?.action === 'gated' && (r as { writId: string }).writId === dep.id) break;
+        if (!r) break;
+      }
+
+      const writAfter = await clerk.show(dep.id);
+      assert.equal(writAfter.phase, 'stuck');
+      const short1 = b1.id.split('-').slice(0, 2).join('-');
+      const short2 = b2.id.split('-').slice(0, 2).join('-');
+      assert.equal(
+        writAfter.resolution,
+        `Blocked by failed dependencies: ${short1}, ${short2}`,
+      );
+      const spiderStatus = writAfter.status?.spider as Record<string, unknown> | undefined;
+      assert.deepEqual(spiderStatus!.blockerIds, [b1.id, b2.id]);
+      assert.equal(spiderStatus!.stuckCause, 'failed-blocker');
+    });
+  });
+
+  describe('cycle detection', () => {
+    it('sticks every cycle member with stuckCause="cycle"', async () => {
+      const { clerk, spider } = fix;
+      const a = await postWrit(clerk, 'A');
+      const b = await postWrit(clerk, 'B');
+      const c = await postWrit(clerk, 'C');
+      // A → B → C → A (cycle)
+      await clerk.link(a.id, b.id, 'depends on', 'spider.follows');
+      await clerk.link(b.id, c.id, 'depends on', 'spider.follows');
+      await clerk.link(c.id, a.id, 'depends on', 'spider.follows');
+
+      // Drain crawls until we've seen a gated outcome.
+      let gated = false;
+      for (let i = 0; i < 6; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        if (r.action === 'gated') { gated = true; break; }
+      }
+      assert.ok(gated, 'expected a gated outcome from cycle detection');
+
+      for (const writId of [a.id, b.id, c.id]) {
+        const w = await clerk.show(writId);
+        assert.equal(w.phase, 'stuck', `${writId} should be stuck`);
+        assert.equal(w.resolution, 'Cycle detected in spider.follows graph');
+        const status = w.status?.spider as Record<string, unknown> | undefined;
+        assert.ok(status, `status.spider should be set on ${writId}`);
+        assert.equal(status!.stuckCause, 'cycle');
+        const members = status!.blockerIds as string[];
+        assert.ok(members.includes(a.id) && members.includes(b.id) && members.includes(c.id), 'every cycle member should be recorded');
+      }
+    });
+
+    it('diamond (no back-edge) does not trigger cycle detection', async () => {
+      const { clerk, spider } = fix;
+      const target = await postWrit(clerk, 'Target');
+      const left = await postWrit(clerk, 'Left');
+      const right = await postWrit(clerk, 'Right');
+      const top = await postWrit(clerk, 'Top');
+      // top → left → target;  top → right → target  (diamond, two paths)
+      await clerk.link(top.id, left.id, 'depends on', 'spider.follows');
+      await clerk.link(top.id, right.id, 'depends on', 'spider.follows');
+      await clerk.link(left.id, target.id, 'depends on', 'spider.follows');
+      await clerk.link(right.id, target.id, 'depends on', 'spider.follows');
+
+      // Complete target so the dependents can eventually dispatch.
+      await clerk.transition(target.id, 'completed', { resolution: 'ok' });
+
+      // Drain a few crawls — nothing should be stuck with cause='cycle'.
+      for (let i = 0; i < 8; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+      }
+
+      for (const id of [top.id, left.id, right.id]) {
+        const w = await clerk.show(id);
+        const status = w.status?.spider as Record<string, unknown> | undefined;
+        if (w.phase === 'stuck') {
+          assert.notEqual(status?.stuckCause, 'cycle', `${id} must not be stuck with cause=cycle`);
+        }
+      }
+    });
+  });
+
+  describe('auto-unstick on recovery', () => {
+    it('clears the cause and returns stuck writ to open when failed blockers resolve', async () => {
+      const { clerk, spider } = fix;
+      const blocker = await postWrit(clerk, 'Blocker');
+      const dependent = await postWrit(clerk, 'Dependent');
+      await clerk.link(dependent.id, blocker.id, 'depends on', 'spider.follows');
+
+      await clerk.transition(blocker.id, 'failed', { resolution: 'boom' });
+
+      // Drive crawls until dependent is stuck.
+      for (let i = 0; i < 6; i++) {
+        const r = await spider.crawl();
+        if (r?.action === 'gated' && (r as { writId: string }).writId === dependent.id) break;
+        if (!r) break;
+      }
+      const stuck = await clerk.show(dependent.id);
+      assert.equal(stuck.phase, 'stuck');
+
+      // Remediate the blocker: post a retry writ and link it, then complete
+      // the retry. But the simpler/more literal test is: flip the blocker
+      // out-of-band into a terminal-success state. `failed → stuck → cancelled`
+      // is a legal path for the failed writ's blocker; we use a direct
+      // transition-to-open-then-cancelled workaround via the Stacks directly.
+      //
+      // The acceptance test actually says "failed blockers reach success" —
+      // we'll model that by force-overwriting the blocker's phase.
+      const writsStacksBook = fix.stacks.book<WritDoc>('clerk', 'writs');
+      await writsStacksBook.patch(blocker.id, { phase: 'completed', resolution: 'fixed out-of-band' });
+
+      // Next crawl: autoUnstick should fire.
+      let unstuckFired = false;
+      for (let i = 0; i < 4; i++) {
+        const r = await spider.crawl();
+        if (r?.action === 'writ-unstuck' && (r as { writId: string }).writId === dependent.id) {
+          unstuckFired = true;
+          break;
+        }
+      }
+      assert.ok(unstuckFired, 'autoUnstick should fire once blocker is terminal-success');
+
+      const w = await clerk.show(dependent.id);
+      assert.equal(w.phase, 'open');
+      const status = w.status?.spider as Record<string, unknown> | undefined;
+      assert.ok(!status || !status.stuckCause, 'stuckCause should be cleared');
+    });
+
+    it('does not touch writs stuck by the engine-cascade path (no status.spider slot)', async () => {
+      const { clerk, spider, stacks } = fix;
+      // Cause an engine-cascade stuck by failing a rig. Spawn, then mark
+      // the rig as stuck with a failed engine — the CDC handler transitions
+      // the writ to `stuck` with only a `resolution`, no `status.spider`.
+      await postWrit(clerk, 'OrdinaryWrit');
+      await spider.crawl(); // spawn
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+
+      // Inject a failed engine and mark rig as stuck.
+      const brokenEngines = rig.engines.map((e: EngineInstance) =>
+        e.id === 'draft' ? { ...e, status: 'failed' as const, error: 'boom' } : e,
+      );
+      await book.patch(rig.id, { engines: brokenEngines, status: 'stuck' });
+
+      // Give CDC a tick.
+      const writs = await clerk.list({ phase: 'stuck' });
+      const stuckWrit = writs[0];
+      assert.ok(stuckWrit, 'writ should be stuck via engine-cascade');
+      assert.equal(stuckWrit.status?.spider, undefined, 'engine-cascade stuck must not write status.spider');
+
+      // Run a bunch of crawls — autoUnstick must NEVER flip this writ.
+      for (let i = 0; i < 5; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        if (r.action === 'writ-unstuck') {
+          assert.notEqual((r as { writId: string }).writId, stuckWrit.id, 'engine-cascade stuck must not be auto-unstuck');
+        }
+      }
+
+      const finalWrit = await clerk.show(stuckWrit.id);
+      assert.equal(finalWrit.phase, 'stuck', 'engine-cascade writ should remain stuck');
+      assert.equal(finalWrit.status?.spider, undefined, 'status.spider should still be absent');
+    });
+  });
+
+  describe('transitive cascade across polls', () => {
+    it('only the direct dependent stucks on the failed-blocker tick; a two-hop writ cascades on a later poll after the intermediate fails', async () => {
+      const { clerk, spider, stacks } = fix;
+      // A depends on B, B depends on C. C fails.
+      const c = await postWrit(clerk, 'C');
+      const b = await postWrit(clerk, 'B');
+      const a = await postWrit(clerk, 'A');
+      await clerk.link(b.id, c.id, 'depends on', 'spider.follows');
+      await clerk.link(a.id, b.id, 'depends on', 'spider.follows');
+
+      // Move C to failed directly via Stacks (bypass the phase state machine:
+      // we don't need to go through `open → failed`, we just want C in
+      // failed state for the gate test).
+      const writsStacksBook = stacks.book<WritDoc>('clerk', 'writs');
+      await writsStacksBook.patch(c.id, { phase: 'failed', resolution: 'boom' });
+
+      // Tick 1: Spider sees B (oldest open candidate). Evaluates gate —
+      // C is failed → B becomes stuck with cause='failed-blocker'. A stays
+      // `open`; it was NOT transitively cascaded in the same tick (D14).
+      let bWent = false;
+      for (let i = 0; i < 4; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        const bw = await clerk.show(b.id);
+        if (bw.phase === 'stuck') { bWent = true; break; }
+      }
+      assert.ok(bWent, 'B should be stuck after the failed-blocker cascade');
+      const aAfterB = await clerk.show(a.id);
+      assert.equal(aAfterB.phase, 'open', 'A must remain open immediately after B is stucked — no transitive single-poll cascade');
+
+      // Subsequent polls with B in `stuck` (non-terminal) gate A (A is not
+      // stuck — B is non-terminal per D17, which holds the gate).
+      for (let i = 0; i < 3; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+      }
+      const aGated = await clerk.show(a.id);
+      assert.equal(aGated.phase, 'open', 'A stays open while B is stuck (non-terminal blocker holds gate)');
+
+      // Now move B to failed (external action). On the next poll, A
+      // cascades into stuck per the same mechanism — this is the
+      // "next poll naturally handles transitive dependents through the
+      // same mechanism" wording in D14.
+      await writsStacksBook.patch(b.id, { phase: 'failed', resolution: 'also boom' });
+
+      let aWent = false;
+      for (let i = 0; i < 4; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        const aw = await clerk.show(a.id);
+        if (aw.phase === 'stuck') { aWent = true; break; }
+      }
+      assert.ok(aWent, 'A should be stuck after B reaches failed — on a later poll than B');
+      const aFinal = await clerk.show(a.id);
+      assert.equal(aFinal.phase, 'stuck');
+      const aStatus = aFinal.status?.spider as Record<string, unknown> | undefined;
+      assert.equal(aStatus?.stuckCause, 'failed-blocker');
+      assert.deepEqual(aStatus?.blockerIds, [b.id]);
+    });
   });
 });

@@ -150,6 +150,7 @@
     let showChildren = true; // toggle state — children shown by default
     let childrenMap = {};    // { parentId: WritDoc[] } — fetched children keyed by parent id
     let repostSourceId = null;
+    let linkKinds = [];      // [{ id, ownerPlugin, description }] — registered writ link kinds
 
     const LIMIT = 20;
 
@@ -500,9 +501,15 @@
         </div>`;
       }
 
-      // Add link form
+      // Add link form — layout: [target] [kind▼] [label] [Link]
+      let kindOptionsHtml = '<option value="">None</option>';
+      for (const k of linkKinds) {
+        const title = k.description ? ` title="${escHtml(k.description)}"` : '';
+        kindOptionsHtml += `<option value="${escHtml(k.id)}"${title}>${escHtml(k.id)}</option>`;
+      }
       html += `<div class="add-link-form" id="add-link-form-${writ.id}">
         <input type="text" id="link-target-${writ.id}" placeholder="Target writ id" style="width:140px">
+        <select id="link-kind-${writ.id}" style="width:140px">${kindOptionsHtml}</select>
         <input type="text" id="link-label-${writ.id}" list="link-labels" placeholder="Link label" style="width:120px">
         <button class="btn" data-action="addlink" data-id="${writ.id}">Link</button>
         <div class="error-msg" id="link-error-${writ.id}" style="display:none"></div>
@@ -613,8 +620,10 @@
       } else if (action === 'addlink') {
         const targetInput = document.getElementById(`link-target-${id}`);
         const labelInput = document.getElementById(`link-label-${id}`);
+        const kindSelect = document.getElementById(`link-kind-${id}`);
         const errEl = document.getElementById(`link-error-${id}`);
-        doAddLink(id, targetInput.value.trim(), labelInput.value.trim(), btn, errEl, targetInput, labelInput);
+        const kindValue = kindSelect ? kindSelect.value : '';
+        doAddLink(id, targetInput.value.trim(), labelInput.value.trim(), kindValue, btn, errEl, targetInput, labelInput, kindSelect);
       }
     }
 
@@ -755,7 +764,7 @@
       }
     }
 
-    async function doAddLink(writId, targetId, label, btn, errEl, targetInput, labelInput) {
+    async function doAddLink(writId, targetId, label, kind, btn, errEl, targetInput, labelInput, kindSelect) {
       clearError(errEl);
       if (!targetId || !label) {
         showError(errEl, 'Target writ id and link label are required.');
@@ -765,9 +774,12 @@
       const orig = btn.textContent;
       btn.textContent = 'Linking...';
       try {
-        await api('POST', '/api/writ/link', { sourceId: writId, targetId, label });
+        const payload = { sourceId: writId, targetId, label };
+        if (kind) payload.kind = kind;
+        await api('POST', '/api/writ/link', payload);
         targetInput.value = '';
         labelInput.value = '';
+        if (kindSelect) kindSelect.value = '';
         await refreshDetail(writId);
       } catch (e) {
         showError(errEl, e.message);
@@ -945,6 +957,16 @@
         }
       });
       await Promise.all(fetches);
+    }
+
+    async function loadLinkKinds() {
+      try {
+        const kinds = await api('GET', '/api/writ/link-kinds?json=true');
+        linkKinds = Array.isArray(kinds) ? kinds : [];
+      } catch (e) {
+        console.error('Failed to load link kinds:', e);
+        linkKinds = [];
+      }
     }
 
     async function loadWritTypes() {
@@ -1270,6 +1292,7 @@
 
     // ── Init ────────────────────────────────────────────────────────────
     loadCodexes();
+    loadLinkKinds();
 
     // Deep-link: ?writ=ID
     (async function () {

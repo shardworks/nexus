@@ -50,6 +50,8 @@ import type {
   RigTemplateInfo,
   SpiderCollectResult,
   InputRequestDoc,
+  SpiderWritStatus,
+  SpiderStuckCause,
 } from './types.ts';
 
 import {
@@ -110,6 +112,16 @@ export interface SpiderKit {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Produce the two-segment short id form of a writ id for human-readable
+ * resolution text (e.g. `w-abc123`). Mirrors the canonical implementation
+ * in `ratchet/src/tools/click-tree.ts`; replicated inline here to avoid a
+ * Spider → Ratchet dependency for a three-line utility.
+ */
+function shortId(id: string): string {
+  return id.split('-').slice(0, 2).join('-');
+}
 
 /**
  * Check whether a value is JSON-serializable.
@@ -1785,6 +1797,237 @@ export function createSpider(): Plugin {
    *
    * Find the oldest open writ with no existing rig. Create a rig for it.
    */
+  // ── spider.follows gate evaluation ──────────────────────────────────
+  //
+  // These are the terminal phase-categories the gate cares about. A blocker
+  // in a terminal-success state (completed or cancelled) releases its edge;
+  // a blocker that has `failed` cascades the dependent into stuck; any
+  // non-terminal phase (new/open/stuck) holds the gate.
+  const TERMINAL_SUCCESS_PHASES = new Set(['completed', 'cancelled']);
+  const TERMINAL_PHASES = new Set(['completed', 'failed', 'cancelled']);
+
+  /**
+   * Gate evaluation result for a single candidate writ. The walk inspects
+   * the candidate's outbound `spider.follows` links and transitively
+   * follows further outbound links on those targets only to the extent
+   * needed for cycle detection. Phase-category decisions (ready / gated /
+   * failed-blocker) are scoped to the candidate's *direct* outbound
+   * edges per D14 (stick only the direct dependent; transitive cascade
+   * happens across polls).
+   */
+  type GateOutcome =
+    | { kind: 'ready' }
+    | { kind: 'gated'; blockerIds: string[] }
+    | { kind: 'failed-blocker'; blockerIds: string[] }
+    | { kind: 'cycle'; members: string[] };
+
+  /** Fetch outbound `spider.follows` target ids for a given writ id. */
+  async function getSpiderFollowsTargets(writId: string): Promise<string[]> {
+    const { outbound } = await clerk.links(writId);
+    return outbound
+      .filter((l) => l.kind === 'spider.follows')
+      .map((l) => l.targetId);
+  }
+
+  /**
+   * Walk the candidate's outbound `spider.follows` edges.
+   *
+   * Decisions about the candidate's gate state come from the **direct**
+   * outbound edges only (per D14). Cycle detection, however, runs an
+   * iterative DFS over the full transitive closure so back-edges that
+   * only reveal themselves two or more hops out still fire.
+   *
+   * Per D3: `visiting` (in-stack) distinguishes back-edges from forward
+   * re-visits. `visited` (fully explored) keeps diamonds from being
+   * mistaken for cycles — a node reachable through two paths but never
+   * appearing on the current DFS stack is a diamond, not a cycle.
+   */
+  async function evaluateGate(candidateId: string): Promise<GateOutcome> {
+    const directTargets = await getSpiderFollowsTargets(candidateId);
+
+    // Fast path: no outbound spider.follows at all → nothing to gate on.
+    if (directTargets.length === 0) return { kind: 'ready' };
+
+    // First: run a DFS for cycle detection over the transitive closure.
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    // Parent tracker: at the time we add `child` to visiting, we record
+    // parent[child] = current node. We use it to reconstruct the cycle
+    // path when a back-edge fires.
+    const parent = new Map<string, string | null>();
+
+    // Work item: either "enter" a node or "leave" it.
+    type Frame = { kind: 'enter' | 'leave'; id: string; parent: string | null };
+    const stack: Frame[] = [{ kind: 'enter', id: candidateId, parent: null }];
+
+    while (stack.length > 0) {
+      const frame = stack.pop()!;
+      if (frame.kind === 'leave') {
+        visiting.delete(frame.id);
+        visited.add(frame.id);
+        continue;
+      }
+
+      // enter
+      if (visited.has(frame.id)) continue; // diamond — not a cycle
+      if (visiting.has(frame.id)) {
+        // Back-edge: frame.id is already on the current DFS stack. Walk
+        // up via `parent` from the discovering node (frame.parent) until
+        // we hit frame.id, then include frame.id itself. These are the
+        // cycle members.
+        const members: string[] = [];
+        let cursor: string | null = frame.parent;
+        while (cursor !== null && cursor !== frame.id) {
+          members.push(cursor);
+          cursor = parent.get(cursor) ?? null;
+        }
+        members.push(frame.id);
+        return { kind: 'cycle', members };
+      }
+
+      visiting.add(frame.id);
+      parent.set(frame.id, frame.parent);
+
+      // Schedule leave *before* enqueuing children so they run first (LIFO).
+      stack.push({ kind: 'leave', id: frame.id, parent: frame.parent });
+
+      const outboundTargets = await getSpiderFollowsTargets(frame.id);
+      for (const t of outboundTargets) {
+        stack.push({ kind: 'enter', id: t, parent: frame.id });
+      }
+    }
+
+    // No cycle — classify the direct blockers by target phase.
+    const failedBlockers: string[] = [];
+    const nonTerminalBlockers: string[] = [];
+    for (const targetId of directTargets) {
+      const target = await writsBook.get(targetId);
+      if (!target) {
+        // Dangling reference — treat as non-terminal hold. The link was
+        // created against a live target, so a missing target is an
+        // operator/data-integrity condition better surfaced as "still
+        // gated" than as "ready".
+        nonTerminalBlockers.push(targetId);
+        continue;
+      }
+      const phase = target.phase;
+      if (phase === 'failed') {
+        failedBlockers.push(targetId);
+      } else if (TERMINAL_SUCCESS_PHASES.has(phase)) {
+        // Released — no-op.
+      } else {
+        nonTerminalBlockers.push(targetId);
+      }
+    }
+
+    if (failedBlockers.length > 0) {
+      return { kind: 'failed-blocker', blockerIds: failedBlockers };
+    }
+    if (nonTerminalBlockers.length > 0) {
+      return { kind: 'gated', blockerIds: nonTerminalBlockers };
+    }
+    return { kind: 'ready' };
+  }
+
+  /**
+   * Stick a writ because its gate evaluation produced a stuck condition.
+   * Writes both the phase transition (via Clerk) and the provenance slot
+   * (via setWritStatus) — the load-bearing `status.spider.stuckCause` is
+   * the signal `autoUnstick` uses to re-evaluate later.
+   */
+  async function stuckFromGate(
+    writId: string,
+    cause: SpiderStuckCause,
+    blockerIds: string[],
+    resolution: string,
+  ): Promise<void> {
+    await clerk.transition(writId, 'stuck', { resolution });
+    const status: SpiderWritStatus = {
+      stuckCause: cause,
+      blockerIds,
+      observedAt: new Date().toISOString(),
+    };
+    await clerk.setWritStatus(writId, 'spider', status);
+  }
+
+  /**
+   * Phase: autoUnstick.
+   *
+   * Re-evaluate every writ Spider previously stuck through the gating
+   * path. Writs without `status.spider?.stuckCause` are skipped entirely
+   * — the engine-cascade stuck path never writes that slot, so this is
+   * how we avoid touching those (D20 / D5).
+   *
+   * Release conditions (D15):
+   *   - `failed-blocker`: every recorded blocker id is now in a
+   *     terminal-success phase. (If any are still failed or
+   *     non-terminal, keep the writ stuck.)
+   *   - `cycle`: any recorded cycle member has moved out of the cycle
+   *     (non-open phase, or no longer has the originally-observed
+   *     outbound `spider.follows` edge — the simplest proxy is that at
+   *     least one member is no longer in `open`). The next poll's
+   *     trySpawn pass will re-evaluate the gate; if the cycle remains,
+   *     it re-sticks.
+   *
+   * Returns the first successful unstick as a CrawlResult so callers
+   * can observe progress; returns null when nothing was unsticked.
+   */
+  async function autoUnstick(): Promise<CrawlResult | null> {
+    const stuckWrits = await writsBook.find({
+      where: [['phase', '=', 'stuck']],
+    });
+
+    for (const writ of stuckWrits) {
+      const spiderStatus = writ.status?.spider as SpiderWritStatus | undefined;
+      const cause = spiderStatus?.stuckCause;
+      if (!cause) continue; // engine-cascade stuck or operator stuck — not ours
+
+      const blockerIds = spiderStatus?.blockerIds ?? [];
+
+      if (cause === 'failed-blocker') {
+        // Every blocker must now be in a terminal-success state.
+        let allResolved = true;
+        for (const blockerId of blockerIds) {
+          const blocker = await writsBook.get(blockerId);
+          if (!blocker) {
+            // Blocker disappeared — treat as resolved (no longer a gate).
+            continue;
+          }
+          if (!TERMINAL_SUCCESS_PHASES.has(blocker.phase)) {
+            allResolved = false;
+            break;
+          }
+        }
+        if (!allResolved) continue;
+      } else if (cause === 'cycle') {
+        // Release if any cycle member has moved out of `open` — the
+        // cycle can only persist while every member is still open.
+        let brokenByAnyMember = false;
+        for (const memberId of blockerIds) {
+          const member = await writsBook.get(memberId);
+          if (!member) {
+            brokenByAnyMember = true;
+            break;
+          }
+          if (member.id === writ.id) continue; // self is currently stuck
+          if (member.phase !== 'open' && member.phase !== 'stuck') {
+            brokenByAnyMember = true;
+            break;
+          }
+        }
+        if (!brokenByAnyMember) continue;
+      }
+
+      // Release: stuck → open. Clear the spider sub-slot (so future
+      // `autoUnstick` passes don't revisit this writ).
+      await clerk.transition(writ.id, 'open');
+      await clerk.setWritStatus(writ.id, 'spider', {});
+      return { action: 'writ-unstuck', writId: writ.id };
+    }
+
+    return null;
+  }
+
   async function trySpawn(): Promise<CrawlResult | null> {
     // Throttle: do not spawn new rigs if system-wide engine limit is reached.
     // Spawned rigs would just sit with their first engine in pending, cluttering the rig list.
@@ -1817,6 +2060,50 @@ export function createSpider(): Plugin {
         limit: 1,
       });
       if (existing.length > 0) continue;
+
+      // Gate on outbound spider.follows links before dispatch. Evaluation
+      // produces one of four outcomes — see `evaluateGate`. The walk also
+      // runs cycle detection; back-edges surface as a `cycle` outcome.
+      const gate = await evaluateGate(writ.id);
+
+      if (gate.kind === 'gated') {
+        // Non-terminal blockers — hold dispatch. Nothing is written to
+        // status (D1: the gate-but-not-stuck state is not persisted). We
+        // continue to the next candidate so a later, unblocked writ can
+        // still dispatch this tick.
+        return { action: 'gated', writId: writ.id, blockerIds: gate.blockerIds };
+      }
+
+      if (gate.kind === 'failed-blocker') {
+        const shortIds = gate.blockerIds.map(shortId);
+        const resolution = gate.blockerIds.length === 1
+          ? `Blocked by failed dependency: ${shortIds[0]}`
+          : `Blocked by failed dependencies: ${shortIds.join(', ')}`;
+        await stuckFromGate(writ.id, 'failed-blocker', gate.blockerIds, resolution);
+        return { action: 'gated', writId: writ.id, blockerIds: gate.blockerIds };
+      }
+
+      if (gate.kind === 'cycle') {
+        // Stick every member of the cycle with stuckCause='cycle'. Only
+        // members still in `open` are transitioned — a member already
+        // in another phase (e.g. stuck from a prior detection) just gets
+        // its provenance slot rewritten with the fresh observedAt.
+        for (const memberId of gate.members) {
+          const member = await writsBook.get(memberId);
+          if (!member) continue;
+          if (member.phase === 'open') {
+            await stuckFromGate(
+              memberId,
+              'cycle',
+              gate.members,
+              'Cycle detected in spider.follows graph',
+            );
+          }
+        }
+        return { action: 'gated', writId: writ.id, blockerIds: gate.members };
+      }
+
+      // gate.kind === 'ready' — fall through to dispatch.
 
       // The query-level type filter above guarantees this lookup succeeds.
       // A null here would mean the registry's mappings diverged from what
@@ -1867,6 +2154,13 @@ export function createSpider(): Plugin {
 
       const ran = await tryRun();
       if (ran) return ran;
+
+      // Before trySpawn: re-evaluate writs Spider previously stuck via the
+      // gating path. `autoUnstick` skips writs without
+      // `status.spider?.stuckCause` so the engine-cascade stuck path stays
+      // untouched (D6).
+      const unstuck = await autoUnstick();
+      if (unstuck) return unstuck;
 
       const spawned = await trySpawn();
       if (spawned) return spawned;
@@ -2037,6 +2331,13 @@ export function createSpider(): Plugin {
             indexes: ['status', 'rigId', 'engineId', 'createdAt', ['rigId', 'engineId', 'status']],
           },
         },
+        linkKinds: [
+          {
+            id: 'spider.follows',
+            description:
+              'The source writ is a precedence-successor of the target: source cannot be dispatched until the target reaches a terminal state. Consumers define their own policy for what happens on each terminal state.',
+          },
+        ],
         engines: {
           'anima-session': animaSessionEngine,
           draft:     draftEngine,

@@ -53,6 +53,19 @@ CrawlResult variants:
 | `'engine-grafted'` | Engine injected additional engines into the pipeline |
 | `'rig-completed'` | Rig reached terminal or stuck state (completed, stuck, failed, or cancelled) |
 | `'rig-blocked'` | All forward progress stalled; rig entered blocked status |
+| `'gated'` | Spawn was deferred — the writ has outbound `spider.follows` blockers (includes the case where a blocker reached `failed` and the writ was cascaded to `stuck`) |
+| `'writ-unstuck'` | `autoUnstick` phase returned a previously-Spider-stuck writ to `open` because its recorded blockers resolved |
+
+### Dispatch gating via `spider.follows`
+
+Spider contributes a `spider.follows` link kind and consults outbound `spider.follows` links when deciding whether to spawn a rig for an open writ. The gate is evaluated in `trySpawn` before any rig is created:
+
+- If any direct outbound `spider.follows` target is still `new`, `open`, or `stuck` — the writ is held. `trySpawn` emits a `'gated'` result and the writ stays `open` until a later poll.
+- If any direct outbound target is `failed` — the writ is cascaded to `stuck`. A `status.spider` record is written with `stuckCause: 'failed-blocker'` and the ids of every failed blocker. The resolution text is `Blocked by failed dependency: <short-id>` (or `Blocked by failed dependencies: …` when plural).
+- If the full transitive `spider.follows` walk from the writ visits a cycle — the writ is cascaded to `stuck` with `stuckCause: 'cycle'` and the cycle members as blockers. The resolution text is `Detected spider.follows cycle: <id> → <id> → … → <id>`.
+- Only when every direct outbound target is in a terminal-success state (`completed`, or `cancelled`) does the writ proceed to rig spawn.
+
+Before `trySpawn`, each crawl tick runs an `autoUnstick` pass that re-evaluates every writ whose `status.spider.stuckCause` is set by this plugin. When the recorded cause resolves (all `failed-blocker` ids are now `completed`/`cancelled`, or any `cycle` member has moved out of `open`/`stuck`), the writ is returned to `open` and emits a `'writ-unstuck'` result. Engine-cascade `stuck` writs (no `status.spider` slot present — the legacy path that writes only `resolution`) are left untouched.
 
 ### `show(id): Promise<RigDoc>`
 

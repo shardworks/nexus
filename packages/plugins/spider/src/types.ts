@@ -193,6 +193,14 @@ export interface RigTemplate {
  * - 'rig-spawned'       — created a new rig for a ready writ
  * - 'rig-completed'     — the crawl step caused a rig to reach a terminal state
  * - 'rig-blocked'       — all forward progress stalled; rig entered blocked status
+ * - 'gated'             — an open writ's dispatch is gated on outbound
+ *                         spider.follows links that point at non-terminal
+ *                         blockers; no rig was spawned and no status was
+ *                         written (gate-only state is never persisted).
+ * - 'writ-unstuck'      — a writ that Spider previously stuck via the gating
+ *                         path returned to `open` because its recorded causes
+ *                         resolved (all failed blockers reached success, or
+ *                         a cycle was broken by external action).
  *
  * null means no work was available.
  */
@@ -205,7 +213,9 @@ export type CrawlResult =
   | { action: 'engine-grafted'; rigId: string; engineId: string; graftedEngineIds: string[] }
   | { action: 'rig-spawned'; rigId: string; writId: string }
   | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'stuck' | 'failed' | 'cancelled' }
-  | { action: 'rig-blocked'; rigId: string; writId: string };
+  | { action: 'rig-blocked'; rigId: string; writId: string }
+  | { action: 'gated'; writId: string; blockerIds: string[] }
+  | { action: 'writ-unstuck'; writId: string };
 
 // ── Block type ────────────────────────────────────────────────────────
 
@@ -617,6 +627,47 @@ export interface SpiderCollectResult {
   yields: unknown;
   graft?: RigTemplateEngine[];
   graftTail?: string;
+}
+
+// ── status.spider sub-slot shape ────────────────────────────────────────
+
+/**
+ * The reason a writ is stuck in Spider's gating machinery.
+ *
+ * - 'failed-blocker' — at least one outbound `spider.follows` blocker
+ *                      reached `failed`; the dependent was cascaded to
+ *                      `stuck` directly (not transitively).
+ * - 'cycle'          — a back-edge was discovered in the `spider.follows`
+ *                      graph during gate evaluation; every cycle member is
+ *                      stuck with this cause.
+ */
+export type SpiderStuckCause = 'failed-blocker' | 'cycle';
+
+/**
+ * Shape of the plugin-owned `status.spider` sub-slot as written by the
+ * Spider's gating paths.
+ *
+ * The slot is absent (not the empty object) on writs Spider has never
+ * touched. It is **also** absent on writs that reached `stuck` via the
+ * pre-existing engine-cascade path (rig → writ CDC handler) — absence is
+ * the load-bearing signal that tells `autoUnstick` not to revisit those
+ * writs.
+ *
+ * The slot is written only on stuck transitions and cleared on
+ * auto-unstick. Nothing is written while a writ is gated-but-not-stuck.
+ */
+export interface SpiderWritStatus {
+  /** Present only while the writ is stuck for a gating reason. */
+  stuckCause?: SpiderStuckCause;
+  /**
+   * The blockers responsible for the stuck transition. For
+   * `failed-blocker`, these are the outbound `spider.follows` targets that
+   * reached `failed`. For `cycle`, these are the members of the detected
+   * cycle (typically including the dependent itself).
+   */
+  blockerIds?: string[];
+  /** ISO timestamp recorded at the moment the stuck transition was taken. */
+  observedAt?: string;
 }
 
 // Augment GuildConfig so `guild().guildConfig().spider` is typed.
