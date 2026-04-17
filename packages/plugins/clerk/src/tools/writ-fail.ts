@@ -18,6 +18,7 @@ export default tool({
   permission: 'write',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
-    return clerk.transition(params.id, 'failed', { resolution: params.resolution });
+    const resolvedId = await clerk.resolveId(params.id);
+    return clerk.transition(resolvedId, 'failed', { resolution: params.resolution });
   },
 });

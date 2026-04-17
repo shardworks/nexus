@@ -26,6 +26,10 @@ export default tool({
   permission: 'write',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
-    return clerk.link(params.sourceId, params.targetId, params.type, params.meaning);
+    const [resolvedSource, resolvedTarget] = await Promise.all([
+      clerk.resolveId(params.sourceId),
+      clerk.resolveId(params.targetId),
+    ]);
+    return clerk.link(resolvedSource, resolvedTarget, params.type, params.meaning);
   },
 });

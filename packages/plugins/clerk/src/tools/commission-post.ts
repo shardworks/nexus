@@ -37,13 +37,16 @@ export default tool({
   permission: 'write',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
+    const resolvedParentId = params.parentId
+      ? await clerk.resolveId(params.parentId)
+      : undefined;
     return clerk.post({
       title: params.title,
       body: params.body,
       type: params.type,
       codex: params.codex,
       draft: params.draft,
-      parentId: params.parentId,
+      parentId: resolvedParentId,
     });
   },
 });

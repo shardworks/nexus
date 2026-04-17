@@ -365,6 +365,21 @@ export function createClerk(): Plugin {
       return writ;
     },
 
+    async resolveId(prefix: string): Promise<string> {
+      // Exact-match fast path — avoids LIKE scans for full ids.
+      const exact = await writs.get(prefix);
+      if (exact) return exact.id;
+
+      const results = await writs.find({ where: [['id', 'LIKE', prefix + '%']] });
+      if (results.length === 0) {
+        throw new Error(`No writ found matching prefix "${prefix}".`);
+      }
+      if (results.length > 1) {
+        throw new Error(`Ambiguous prefix "${prefix}": matches ${results.length} writs.`);
+      }
+      return results[0].id;
+    },
+
     async list(filters?: WritFilters): Promise<WritDoc[]> {
       const where = buildWhereClause(filters);
       const limit = filters?.limit ?? 20;

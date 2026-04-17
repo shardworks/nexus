@@ -18,8 +18,9 @@ export default tool({
   permission: 'write',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
+    const resolvedId = await clerk.resolveId(params.id);
     return clerk.transition(
-      params.id,
+      resolvedId,
       'cancelled',
       params.resolution !== undefined ? { resolution: params.resolution } : undefined,
     );

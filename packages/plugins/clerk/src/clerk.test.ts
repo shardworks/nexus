@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
 
-import { setGuild, clearGuild } from '@shardworks/nexus-core';
+import { setGuild, clearGuild, guild } from '@shardworks/nexus-core';
 import type { Guild, GuildConfig, LoadedKit, LoadedApparatus, StartupContext, KitEntry } from '@shardworks/nexus-core';
 import { createStacksApparatus } from '@shardworks/stacks-apparatus';
 import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
@@ -19,7 +19,7 @@ import type { StacksApi } from '@shardworks/stacks-apparatus';
 
 import { createClerk, CASCADE_PARENT_TERMINATION_RESOLUTION } from './clerk.ts';
 import type { ClerkKit } from './clerk.ts';
-import type { ClerkApi, ClerkConfig, WritLinkDoc, MeaningDoc } from './types.ts';
+import type { ClerkApi, ClerkConfig, WritDoc, WritLinkDoc, MeaningDoc } from './types.ts';
 import type { WritLinks } from './index.ts';
 import writShow from './tools/writ-show.ts';
 import writEdit from './tools/writ-edit.ts';
@@ -302,6 +302,64 @@ describe('Clerk', () => {
       assert.equal(fetched.id, posted.id);
       assert.equal(fetched.title, 'Show me');
       assert.equal(fetched.status, 'open');
+    });
+  });
+
+  // ── resolveId() ──────────────────────────────────────────────────
+
+  describe('resolveId()', () => {
+    beforeEach(async () => { await setup(); });
+
+    it('returns the full id unchanged when given an exact match', async () => {
+      const posted = await clerk.post({ title: 'Exact', body: 'Body' });
+      const resolved = await clerk.resolveId(posted.id);
+      assert.equal(resolved, posted.id);
+    });
+
+    it('resolves a short id prefix to the full id', async () => {
+      const posted = await clerk.post({ title: 'Prefix', body: 'Body' });
+      // Writ ids are `w-{base36_timestamp}{hex_random}` — the `w-{timestamp}`
+      // segment before the final hyphen is the short display form.
+      const shortId = posted.id.slice(0, posted.id.lastIndexOf('-'));
+      const resolved = await clerk.resolveId(shortId);
+      assert.equal(resolved, posted.id);
+    });
+
+    it('throws when no writ matches the prefix', async () => {
+      await assert.rejects(
+        () => clerk.resolveId('w-nonexistent'),
+        /No writ found matching prefix/,
+      );
+    });
+
+    it('throws when the prefix matches multiple writs', async () => {
+      // Direct backend inserts to contrive an ambiguous prefix without
+      // relying on id generation timing.
+      const stacks = guild().apparatus<StacksApi>('stacks');
+      const writs = stacks.book<WritDoc>('clerk', 'writs');
+      const now = new Date().toISOString();
+      await writs.put({
+        id: 'w-ambigxx-aaaa1111aaaa1111',
+        type: 'mandate',
+        status: 'open',
+        title: 'A',
+        body: '',
+        createdAt: now,
+        updatedAt: now,
+      });
+      await writs.put({
+        id: 'w-ambigxx-bbbb2222bbbb2222',
+        type: 'mandate',
+        status: 'open',
+        title: 'B',
+        body: '',
+        createdAt: now,
+        updatedAt: now,
+      });
+      await assert.rejects(
+        () => clerk.resolveId('w-ambigxx'),
+        /Ambiguous prefix.*matches 2 writs/,
+      );
     });
   });
 
@@ -3204,7 +3262,12 @@ describe('piece-add tool', () => {
         action: 'This should fail',
       }),
       (err: Error) => {
-        assert.ok(err.message.includes('not found'));
+        // Short-id resolution surfaces the mismatch before post() runs —
+        // the error comes from resolveId's "No writ found matching prefix".
+        assert.ok(
+          /No writ found matching prefix|not found/.test(err.message),
+          `unexpected error message: ${err.message}`,
+        );
         return true;
       },
     );

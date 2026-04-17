@@ -53,13 +53,14 @@ export default tool({
   permission: 'write',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
+    const resolvedMandateId = await clerk.resolveId(params.mandateId);
     const body = buildTaskXml(params);
 
     return clerk.post({
       type: 'piece',
       title: params.name,
       body,
-      parentId: params.mandateId,
+      parentId: resolvedMandateId,
     });
   },
 });

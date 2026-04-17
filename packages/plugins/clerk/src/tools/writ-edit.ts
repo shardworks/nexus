@@ -32,8 +32,9 @@ export default tool({
     }
 
     const clerk = guild().apparatus<ClerkApi>('clerk');
+    const resolvedId = await clerk.resolveId(params.id);
     return clerk.edit({
-      id: params.id,
+      id: resolvedId,
       title: params.title,
       body: params.body,
       type: params.type,

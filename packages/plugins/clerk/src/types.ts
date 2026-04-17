@@ -287,6 +287,14 @@ export interface ClerkApi {
   show(id: string): Promise<WritDoc>;
 
   /**
+   * Resolve a writ id prefix to the full id. Mirrors ratchet's resolveId
+   * for clicks — callers may pass the short display form (e.g. `w-mo2xi6pt`)
+   * and receive the full id back. Throws when no writ matches or when the
+   * prefix is ambiguous.
+   */
+  resolveId(prefix: string): Promise<string>;
+
+  /**
    * List writs with optional filters, ordered by createdAt descending.
    */
   list(filters?: WritFilters): Promise<WritDoc[]>;

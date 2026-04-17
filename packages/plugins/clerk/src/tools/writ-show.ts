@@ -15,9 +15,10 @@ export default tool({
   permission: 'read',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
+    const resolvedId = await clerk.resolveId(params.id);
     const [writ, links] = await Promise.all([
-      clerk.show(params.id),
-      clerk.links(params.id),
+      clerk.show(resolvedId),
+      clerk.links(resolvedId),
     ]);
 
     // Parent context
