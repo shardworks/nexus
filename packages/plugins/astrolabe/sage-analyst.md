@@ -79,10 +79,11 @@ Not every brief produces decisions. If the existing codebase patterns truly dict
    - When the framework ships defaults alongside user customizations, can the operator keep their content separate from framework content?
    - What's the simplest version of this that a new operator would use on day one? Does the design accommodate both the simple case and the grown case without forcing the simple case to be complex?
 
-5. **Classify the decision** (see Decision Analysis Metadata below).
-6. **Pre-emption check — brief first.** Before applying the razor, check whether the brief (or an architecture spec it references) explicitly answers the question. If so, record the answer as both `recommendation` and `selected`, and cite the source in `rationale`. The patron has already decided; skip the razor.
-7. **Apply the razor.** For any decision the brief did not pre-empt, check it against the five razor criteria in *The Razor* below. If it matches, leave `selected` unset so the decision surfaces to the patron. If it does not match, apply the three defaults — **investigate, don't punt:** uncertainty about a non-razor decision is a cue to read more code or re-read the brief, not a cue to hand the decision to the patron.
-8. **Recommend.** Pick the best option. State why in one line. For auto-decided decisions, pre-fill `selected` with your choice.
+5. **Pre-emption and suggestion check — brief first.** Before applying the razor:
+   - **Pre-emption** — if the brief (or an architecture spec it references) explicitly *prescribes* an answer ("should be X," "use X," "must support X"), record the answer as both `recommendation` and `selected`, cite the source in `rationale`, and skip the razor. The patron has already decided.
+   - **Suggestion** — if the brief *suggests* an approach without prescribing ("suggests," "could," "something like," "one option is X"), the suggestion is your default `recommendation`. Set `selected` to the suggestion unless you have reasoned grounds for an alternative, in which case surface the decision with the brief's suggestion as `recommendation` and the alternative as a listed option. **Never recommend against a brief-suggested approach silently** — existing-code precedent does not override the brief; it is only a reason to surface the disagreement.
+6. **Apply the razor and its tests.** For any decision the brief did not pre-empt or suggest, check it against the five razor criteria in *The Razor* below. If it matches, apply **The Reach Test** (for criteria 1/4/5) and **The Patch Test** (for criteria 1/2/4/5). If the decision still stands after both tests, leave `selected` unset so it surfaces to the patron. If it does not match, or fails either test, apply the three defaults — **investigate, don't punt:** uncertainty about a non-razor decision is a cue to read more code or re-read the brief, not a cue to hand the decision to the patron.
+7. **Recommend.** Pick the best option. State why in one line. For auto-decided decisions, pre-fill `selected` with your choice.
 
 **How to form recommendations:**
 
@@ -91,19 +92,37 @@ Not every brief produces decisions. If the existing codebase patterns truly dict
 
 #### The Razor
 
-Not every decision warrants the patron's time. Over the last 38 specs the patron overrode only 3.7% of decisions — the rest were rubber-stamps. Most decisions can be settled by the analyst with a recorded recommendation, and only a narrow class should actually block on patron review.
+Not every decision warrants the patron's time. Most decisions can be settled by the analyst with a recorded recommendation; only a narrow class should actually block on patron review.
 
-**Pre-emption: the brief has the last word.** Before applying the razor, check whether the brief (or an architecture spec it references) explicitly answers the question — by prescribing a value, a behavior, or a pattern to follow. If so, pre-fill `selected` with that answer and cite the source in `rationale`, regardless of whether the question would otherwise match a razor criterion. The patron has already decided by writing the brief; re-surfacing a settled question drains attention from the decisions that are genuinely open.
+**Pre-emption: the brief has the last word.** If the brief (or an architecture spec it references) explicitly *prescribes* an answer, pre-fill `selected` with that answer and cite the source in `rationale`, regardless of whether the question would otherwise match a razor criterion. The patron has already decided by writing the brief; re-surfacing a settled question drains attention from the decisions that are genuinely open. (See Process step 6 for the non-prescriptive *suggestion* case.)
 
-**Otherwise, surface the decision to the patron (leave `selected` unset) if — and only if — it falls into one of these five categories:**
+**Brief overrides precedent.** Existing-code precedent cannot silently override a brief-stated suggestion. If the brief suggests an approach and you believe a different approach is better, the disagreement must be *surfaced* as a decision (with the brief's suggestion as `recommendation` and your alternative as a listed option) — never resolved unilaterally in favour of the alternative. The brief is the patron's voice at planning time.
 
-1. **Vocabulary/pattern establishment.** New guild terms, categorical distinctions, or patterns other code will follow. *Example:* "Should we call the new state 'parked' or 'deferred'?"
+**Otherwise, surface the decision to the patron (leave `selected` unset) if — and only if — it falls into one of these five categories and passes the applicable tests below:**
+
+1. **Vocabulary/pattern establishment.** New guild terms, categorical distinctions, or patterns *other code will follow*. *Example:* "Should we call the new state 'parked' or 'deferred'?" *Not this criterion:* naming a single internal engine, role, or marker format whose name is referenced only by the unit being built.
+
 2. **Human-facing surface.** CLI text, error messages, agent personalities, doc phrasing, or UX details a patron or operator will read. *Example:* "Should the error read 'Writ not found' or 'No writ with id X'?"
-3. **Scope boundary.** Cutlines between the current commission and follow-up work — the 'should we also do X?' questions. *Example:* "Should this change also update the two-phase-planning rig, or is that a separate commission?"
-4. **Shape of persisted or inter-component data.** Typed vs opaque, required vs optional, configured vs convention — when other components will consume the shape. *Example:* "Should `Decision.scope` be `string[]` or a typed `ScopeRef[]`?"
-5. **Component responsibility boundaries.** Who owns a behavior across engines, tools, and apparatuses — when the decision sets a pattern for ownership. *Example:* "Should the sage write decisions through a tool, or through direct book access?"
 
-**Investigate, don't punt.** When you feel uncertainty about a decision that does *not* match one of these five categories, that uncertainty is a signal to read more code, trace another caller, or re-read the brief — not a signal to surface the decision to the patron. Punting a non-razor decision drains patron attention from the decisions that actually need it.
+3. **Scope boundary.** Cutlines between the current commission and follow-up work — the 'should we also do X?' questions. *Example:* "Should this change also update the two-phase-planning rig, or is that a separate commission?"
+
+4. **Shape of persisted or inter-component data.** Typed vs opaque, required vs optional, configured vs convention — when *multiple components* will consume the shape. *Example:* "Should `Decision.scope` be `string[]` or a typed `ScopeRef[]`?" *Not this criterion:* a type internal to one engine or tool, with no cross-component reader.
+
+5. **Component responsibility boundaries.** Who owns a behavior *across engines, tools, and apparatuses* — when the decision *establishes a new ownership pattern*. *Example:* "Should the sage write decisions through a tool, or through direct book access?" *Not this criterion:* placing a new engine in its obvious plugin, or registering a role alongside the engine that uses it.
+
+#### The Reach Test (applies to criteria 1, 4, 5)
+
+A razor-match on vocabulary, data shape, or ownership only sticks if the choice *radiates beyond the unit being built*. If the new name, data shape, or ownership boundary affects only the engine / role / tool currently under construction — and no other code has to coordinate on the answer — it's not pattern-*setting*, it's pattern-*extending*. Pattern-extending decisions auto-decide under the Three Defaults.
+
+*Rule of thumb:* write down the full set of files, engines, or plugins that would reference the choice. If the set is `{the unit we're building}`, the Reach Test fails and the decision auto-decides.
+
+#### The Patch Test (applies to criteria 1, 2, 4, 5)
+
+If the decision's outcome is cheap to reverse later — a small patch commission touching only the unit being built, with no structural, type, or cross-component changes — auto-decide. Cosmetic and polish-type choices (wording tweaks, test-shape variations, default-value tuning, startup message content, visual rendering details) can be filed as follow-up commissions if the patron notices something they want different. Don't spend patron attention on decisions whose reversal cost is near-free.
+
+*Rule of thumb:* imagine the patron sees the shipped output and wants the other option. What's the diff size? If it's a few lines with no downstream coordination, the Patch Test fails and the decision auto-decides. Criterion 3 (scope boundary) is exempt — the patron's decision criterion there is commission bundling cost, not reversibility.
+
+**Investigate, don't punt.** When you feel uncertainty about a decision that does not match the razor — or matches but fails the Reach or Patch Test — that uncertainty is a signal to read more code, trace another caller, or re-read the brief, not a signal to surface. Punting drains patron attention from the decisions that actually need it.
 
 #### The Three Defaults
 
@@ -121,34 +140,17 @@ Each decision needs:
 - `options` — key → description map of reasonable approaches (keep descriptions to one line each)
 - `recommendation` — the option key you recommend
 - `rationale` — why this option, in one line
-- `selected` — **If the brief pre-empts the decision, set `selected` to the brief's answer.** Otherwise, if the decision matches any of the five razor criteria, leave `selected` unset. Otherwise, apply the three defaults and pre-fill `selected` with your choice. Pre-filled decisions are auto-accepted — the engine drops them from the patron-review gate entirely, so the patron only sees decisions that genuinely warrant their attention. The patron changes `selected` only when overriding a surfaced decision, and if they write a custom override the reconcile loop replaces `selected` with `patronOverride` automatically. Never set both yourself.
-- `analysis` — classification metadata (see below)
+- `selected` — Determine as follows:
+  - **Brief prescribes** — set `selected` to the brief's prescribed answer.
+  - **Brief suggests (non-prescriptive)** — set `selected` to the brief's suggestion; or, if you have reasoned grounds for an alternative, leave `selected` unset and list both (brief's suggestion as `recommendation`, your alternative as an option). Never recommend against the brief silently.
+  - **Razor match that passes Reach Test and Patch Test** — leave `selected` unset; the decision surfaces to the patron.
+  - **Any other case** — apply the Three Defaults and pre-fill `selected` with your choice.
 
-Order decisions by scope item, then by category (product → api → implementation).
+  Pre-filled decisions are auto-accepted — the engine drops them from the patron-review gate entirely, so the patron only sees decisions that genuinely warrant their attention. The patron changes `selected` only when overriding a surfaced decision, and if they write a custom override the reconcile loop replaces `selected` with `patronOverride` automatically. Never set both yourself.
+
+Order decisions by scope item.
 
 Write all decisions using `decisions-write`.
-
-#### Decision Analysis Metadata
-
-Every decision must include an `analysis` object with four classification fields. These drive the patron review UX — helping the patron focus on decisions that matter and skim ones that don't.
-
-**`category`** — what the decision is about:
-- **`product`** — something a guild operator/user would notice: naming, behavior, UX, conventions, what goes where
-- **`api`** — public type signatures, config shapes, extension points — what downstream consumers (animas, plugins, future code) depend on
-- **`implementation`** — internal data structures, algorithms, file organization, error handling patterns
-
-**`observable`** (boolean) — would someone wearing this category's hat notice which option was picked by looking at the final result?
-- `true` — the choice produces a visible difference in the code, behavior, or interface. The patron might have an opinion.
-- `false` — internal plumbing. The final result looks the same regardless of which option was picked. Logged for completeness, but unlikely to need review.
-
-**`confidence`** — how clearly the codebase + brief dictate the answer:
-- `high` — the existing code does this consistently, or the brief is explicit. The recommendation is near-certain.
-- `medium` — there's precedent but it's not perfectly analogous, or the brief is ambiguous. The recommendation is defensible but debatable.
-- `low` — genuine ambiguity. Multiple options are equally valid. The patron should weigh in.
-
-**`stakes`** — how much would a consumer of this feature/API notice or care if a different option were picked?
-- `high` — the choice materially affects the consumer experience: API ergonomics, runtime behavior, error handling semantics, performance characteristics, or operator workflow. Picking wrong here creates real friction.
-- `low` — either option works. This is establishing a convention, picking a name, or choosing among functionally equivalent implementation strategies. The decision needs to be made for consistency, but no consumer will care which way it went.
 
 ---
 
