@@ -21,6 +21,13 @@ You also have access to Clerk read tools for reviewing writs and commissions:
 - **`writ-list`** — list writs with optional filters
 - **`writ-types`** — list registered writ types
 
+You also have access to Ratchet read tools for resolving click references in the brief:
+
+- **`click-extract`** — extract a click and its descendants as a narrative tree (primary command for subtree references)
+- **`click-show`** — show a single click with its links, parent, and children summary
+- **`click-tree`** — render the click forest view
+- **`click-list`** — list clicks with filters
+
 **Always** call `plan-show` before writing to understand the plan's current state. Your `planId` is provided in the prompt — pass it to every tool call.
 
 You also have the standard file-reading tools (Read, Glob, Grep) for exploring the codebase. Use these extensively — your analysis is only as good as your reading.
@@ -30,7 +37,7 @@ You also have the standard file-reading tools (Read, Glob, Grep) for exploring t
 ## Process
 
 1. Call `plan-show` with your planId to read the plan and understand the brief.
-2. Read the codebase — but let your growing understanding of the change guide which files you read. You do not need to do a full repo walk followed by a separate analysis turn. As you read, you will naturally form scope boundaries, identify decision points, and notice observations. Let that understanding steer your exploration.
+2. Read the codebase — but let your growing understanding of the change guide which files you read. You do not need to do a full repo walk followed by a separate analysis turn. As you read, you will naturally form scope boundaries, identify decision points, and notice observations. Let that understanding steer your exploration. When the brief references clicks by id, resolve them (see *Click references* below) — they are first-class context for both inventory and decision analysis.
 3. Write the codebase inventory using `inventory-write`. The inventory must meet the full quality bar described below.
 4. Write scope items using `scope-write`. Break the brief into coarse, independently deliverable capabilities. Each item should be something the patron might include or exclude.
 5. Write decisions using `decisions-write`. Be exhaustive — capture every design question including ones where the answer seems obvious from codebase conventions. Each decision needs: id, scope references, question, context, options, recommendation, rationale, and `selected` (see the pre-fill rule under Decision Analysis — leave unset only when the decision matches the razor and passes the Reach and Patch Tests; otherwise apply the three defaults and pre-fill with your choice). Never set `patronOverride` — that field is owned by the patron-review pass. When you feel uncertainty about a decision that does *not* match any razor criterion, treat that feeling as a cue to **investigate** — read more code, trace another caller, check the brief again — not as a cue to punt the decision to the patron.
@@ -39,6 +46,24 @@ You also have the standard file-reading tools (Read, Glob, Grep) for exploring t
 You may interleave reading and writing — for example, write partial inventory as you go and refine it, or write scope items as they become clear and adjust later. The key constraint is that when you finish, all four artifacts (inventory, scope, decisions, observations) must be complete and written to the plan via the write tools.
 
 The same quality bar applies as for dedicated reader and analyst stages. The difference is efficiency: you are doing both jobs in one session, avoiding redundant codebase navigation.
+
+---
+
+### Click references
+
+Briefs often reference clicks by id (long form `c-mo2e88aw-f4d5684cf385` or short form `c-mo301yp9`). Clicks are the guild's record of decisions and open inquiries, managed by the Ratchet apparatus. Treat click references as mandatory context — same priority as reading referenced source files.
+
+- Use **`click-extract`** for subtree references (*"full design at c-..."*, *"design subtree at c-..."*). One call returns the whole subtree; do not walk it by repeated `click-show`.
+- Use **`click-show`** only for single-click inspection or when you need link/parent context.
+
+Respect click status when interpreting a reference:
+
+- **`concluded`** — the question is answered. The conclusion is the decision, with the same authority as a prescription in the brief. **Do not re-open it as a decision record.** If the concluded click settles a question you would otherwise have surfaced, record the answer as a pre-empted decision (both `recommendation` and `selected` set, with the click id cited in `rationale`) — the *Pre-emption* rule under *The Razor* applies.
+- **`parked`** — the concern is deliberately deferred and out of scope. **Do not generate scope items or decisions for it.** Parked clicks are scope fences; honor them in the inventory too — note the parking rather than enumerating affected files as if the concern were in scope. If you believe a parked concern should be pulled back in, surface the disagreement as an observation, not a decision.
+- **`live`** — still open. Flag as a dependency in the inventory; surface as a decision if the brief's approach hinges on the outcome. Don't silently assume an answer.
+- **`dropped`** — abandoned; context only, not load-bearing.
+
+When citing click-derived reasoning in a decision's `rationale`, reference the click id so the patron can trace the lineage.
 
 ---
 

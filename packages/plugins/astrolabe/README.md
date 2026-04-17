@@ -117,10 +117,10 @@ The Astrolabe declares one book in Stacks:
 
 | Role | Qualified Name | Permissions | Strict | Used In |
 |---|---|---|---|---|
-| `sage-reader` | `astrolabe.sage-reader` | `astrolabe:read`, `astrolabe:write`, `clerk:read` | `true` | three-phase reader stage |
-| `sage-analyst` | `astrolabe.sage-analyst` | `astrolabe:read`, `astrolabe:write`, `clerk:read` | `true` | three-phase analyst stage |
-| `sage-writer` | `astrolabe.sage-writer` | `astrolabe:read`, `astrolabe:write`, `clerk:read` | `true` | spec-writer stage (both templates) |
-| `sage-reading-analyst` | `astrolabe.sage-reading-analyst` | `astrolabe:read`, `astrolabe:write`, `clerk:read` | `true` | two-phase reader-analyst stage |
+| `sage-reader` | `astrolabe.sage-reader` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | three-phase reader stage |
+| `sage-analyst` | `astrolabe.sage-analyst` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | three-phase analyst stage |
+| `sage-writer` | `astrolabe.sage-writer` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | spec-writer stage (both templates) |
+| `sage-reading-analyst` | `astrolabe.sage-reading-analyst` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | two-phase reader-analyst stage |
 
 ### Engines (contributed to Fabricator)
 

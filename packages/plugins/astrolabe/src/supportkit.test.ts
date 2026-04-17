@@ -40,8 +40,8 @@ describe('Astrolabe supportKit shape', () => {
     assert.deepEqual(apparatus.requires, ['stacks', 'clerk']);
   });
 
-  it('declares recommends: spider, loom, fabricator, oculus', () => {
-    assert.deepEqual(apparatus.recommends, ['spider', 'loom', 'fabricator', 'oculus']);
+  it('declares recommends: spider, loom, fabricator, oculus, ratchet', () => {
+    assert.deepEqual(apparatus.recommends, ['spider', 'loom', 'fabricator', 'oculus', 'ratchet']);
   });
 
   it('does not declare consumes', () => {
@@ -82,7 +82,7 @@ describe('Astrolabe supportKit shape', () => {
       instructionsFile?: string;
     }>;
     assert.ok(roles?.['sage-reader'], 'sage-reader role must exist');
-    assert.deepEqual(roles['sage-reader'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read']);
+    assert.deepEqual(roles['sage-reader'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read']);
     assert.equal(roles['sage-reader'].strict, true);
     assert.equal(roles['sage-reader'].instructionsFile, 'sage-reader.md');
   });
@@ -95,7 +95,7 @@ describe('Astrolabe supportKit shape', () => {
       instructionsFile?: string;
     }>;
     assert.ok(roles?.['sage-analyst'], 'sage-analyst role must exist');
-    assert.deepEqual(roles['sage-analyst'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read']);
+    assert.deepEqual(roles['sage-analyst'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read']);
     assert.equal(roles['sage-analyst'].strict, true);
     assert.equal(roles['sage-analyst'].instructionsFile, 'sage-analyst.md');
   });
@@ -108,7 +108,7 @@ describe('Astrolabe supportKit shape', () => {
       instructionsFile?: string;
     }>;
     assert.ok(roles?.['sage-writer'], 'sage-writer role must exist');
-    assert.deepEqual(roles['sage-writer'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read']);
+    assert.deepEqual(roles['sage-writer'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read']);
     assert.equal(roles['sage-writer'].strict, true);
     assert.equal(roles['sage-writer'].instructionsFile, 'sage-writer.md');
   });
@@ -121,7 +121,7 @@ describe('Astrolabe supportKit shape', () => {
       instructionsFile?: string;
     }>;
     assert.ok(roles?.['sage-reading-analyst'], 'sage-reading-analyst role must exist');
-    assert.deepEqual(roles['sage-reading-analyst'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read']);
+    assert.deepEqual(roles['sage-reading-analyst'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read']);
     assert.equal(roles['sage-reading-analyst'].strict, true);
     assert.equal(roles['sage-reading-analyst'].instructionsFile, 'sage-reading-analyst.md');
   });

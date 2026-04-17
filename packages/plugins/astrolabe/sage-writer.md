@@ -23,6 +23,13 @@ You also have access to Clerk read tools for reviewing writs and commissions:
 - **`writ-list`** — list writs with optional filters
 - **`writ-types`** — list registered writ types
 
+You also have access to Ratchet read tools for resolving click references in the brief or decision rationales:
+
+- **`click-extract`** — extract a click and its descendants as a narrative tree (primary command for subtree references)
+- **`click-show`** — show a single click with its links, parent, and children summary
+- **`click-tree`** — render the click forest view
+- **`click-list`** — list clicks with filters
+
 **Always** call `plan-show` before writing to understand the plan's current state. Your `planId` is provided in the prompt — pass it to every tool call.
 
 You also have the standard file-reading tools (Read, Glob, Grep) for exploring the codebase. Use these to verify inventory claims and read source code referenced by decisions.
@@ -47,6 +54,8 @@ From `plan-show`, examine:
 - **`inventory`** — the codebase inventory. Cross-reference for blast radius and patterns.
 
 The **decision summary** in your prompt provides a quick-reference digest. When in doubt, the full decisions from `plan-show` are authoritative.
+
+**Click references.** The original brief and the decisions' `rationale` fields may reference clicks by id (long form `c-mo2e88aw-f4d5684cf385` or short form `c-mo301yp9`). Clicks are the guild's record of decisions and open inquiries, managed by the Ratchet apparatus. When a decision's rationale cites a click, resolve it with **`click-extract`** (for subtrees) or **`click-show`** (for single clicks) so you can faithfully convey the rationale in the brief you produce. Preserve meaningful click references in the generated brief when they help the implementer understand *why* a non-negotiable is non-negotiable; they are durable pointers into the guild's reasoning record.
 
 ---
 

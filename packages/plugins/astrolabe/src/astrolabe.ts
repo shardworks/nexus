@@ -238,7 +238,7 @@ export function createAstrolabe(): Plugin {
   return {
     apparatus: {
       requires: ['stacks', 'clerk'],
-      recommends: ['spider', 'loom', 'fabricator', 'oculus'],
+      recommends: ['spider', 'loom', 'fabricator', 'oculus', 'ratchet'],
 
       supportKit: {
         books: {
@@ -252,22 +252,22 @@ export function createAstrolabe(): Plugin {
 
         roles: {
           'sage-reader': {
-            permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read'],
+            permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read'],
             strict: true,
             instructionsFile: 'sage-reader.md',
           },
           'sage-analyst': {
-            permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read'],
+            permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read'],
             strict: true,
             instructionsFile: 'sage-analyst.md',
           },
           'sage-writer': {
-            permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read'],
+            permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read'],
             strict: true,
             instructionsFile: 'sage-writer.md',
           },
           'sage-reading-analyst': {
-            permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read'],
+            permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read'],
             strict: true,
             instructionsFile: 'sage-reading-analyst.md',
           },

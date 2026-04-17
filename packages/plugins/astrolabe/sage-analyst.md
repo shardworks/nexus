@@ -20,6 +20,13 @@ You also have access to Clerk read tools for reviewing writs and commissions:
 - **`writ-list`** — list writs with optional filters
 - **`writ-types`** — list registered writ types
 
+You also have access to Ratchet read tools for resolving click references in the brief:
+
+- **`click-extract`** — extract a click and its descendants as a narrative tree (primary command for subtree references)
+- **`click-show`** — show a single click with its links, parent, and children summary
+- **`click-tree`** — render the click forest view
+- **`click-list`** — list clicks with filters
+
 **Always** call `plan-show` before writing to understand the plan's current state. Your `planId` is provided in the prompt — pass it to every tool call.
 
 You also have the standard file-reading tools (Read, Glob, Grep) for exploring the codebase. Use these extensively — your analysis is only as good as your reading.
@@ -29,8 +36,26 @@ You also have the standard file-reading tools (Read, Glob, Grep) for exploring t
 ## Process
 
 1. Call `plan-show` to read the current plan state — the inventory has already been written by the reader. Read it for context.
-2. Read the codebase as needed to supplement the inventory.
+2. Read the codebase as needed to supplement the inventory. When the brief references clicks by id, resolve them (see *Click references* below) — they are first-class context for decision analysis.
 3. Produce scope, decisions, and observations using the write tools.
+
+---
+
+### Click references
+
+Briefs often reference clicks by id (long form `c-mo2e88aw-f4d5684cf385` or short form `c-mo301yp9`). Clicks are the guild's record of decisions and open inquiries, managed by the Ratchet apparatus. Treat click references as mandatory context — same priority as reading referenced source files.
+
+- Use **`click-extract`** for subtree references (*"full design at c-..."*, *"design subtree at c-..."*). One call returns the whole subtree; do not walk it by repeated `click-show`.
+- Use **`click-show`** only for single-click inspection or when you need link/parent context.
+
+Respect click status when interpreting a reference — this is where clicks most directly shape your analysis:
+
+- **`concluded`** — the question is answered. The conclusion is the decision, with the same authority as a prescription in the brief. **Do not re-open it as a decision record.** If the concluded click settles a question you would otherwise have surfaced, record the answer as a pre-empted decision (both `recommendation` and `selected` set, with the click id cited in `rationale`) — the *Pre-emption* rule under *The Razor* applies.
+- **`parked`** — the concern is deliberately deferred and out of scope. **Do not generate scope items or decisions for it.** Parked clicks are scope fences; honor them. If you believe a parked concern should be pulled back in, surface the disagreement as an observation, not a decision.
+- **`live`** — still open. If the brief's approach depends on its resolution, surface the dependency as a decision. Don't silently assume an answer.
+- **`dropped`** — abandoned; context only, not load-bearing.
+
+When citing click-derived reasoning in a decision's `rationale`, reference the click id so the patron can trace the lineage.
 
 ---
 

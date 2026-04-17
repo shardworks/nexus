@@ -734,8 +734,10 @@ describe('Instrumentarium', () => {
     });
 
     it('sage role grants resolve astrolabe + clerk read tools with bare-level permissions', () => {
-      // Simulates the astrolabe.sage role: permissions ['astrolabe:read', 'astrolabe:write', 'clerk:read']
-      // with strict: true. After normalization, tools use bare 'read'/'write' permissions.
+      // Simulates a sage-style role grant: permissions ['astrolabe:read', 'astrolabe:write', 'clerk:read']
+      // with strict: true. Exercises the multi-plugin permission-resolution path; the actual sage roles
+      // also grant 'ratchet:read' but that dimension is covered by other tests — this one focuses on
+      // astrolabe + clerk resolution. After normalization, tools use bare 'read'/'write' permissions.
       const astrolabeKit = mockKit('astrolabe', [
         testTool('plan-show', { permission: 'read' }),
         testTool('plan-list', { permission: 'read' }),
