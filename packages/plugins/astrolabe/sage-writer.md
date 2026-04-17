@@ -55,7 +55,9 @@ From `plan-show`, examine:
 
 The **decision summary** in your prompt provides a quick-reference digest. When in doubt, the full decisions from `plan-show` are authoritative.
 
-**Click references.** The original brief and the decisions' `rationale` fields may reference clicks by id (long form `c-mo2e88aw-f4d5684cf385` or short form `c-mo301yp9`). Clicks are the guild's record of decisions and open inquiries, managed by the Ratchet apparatus. When a decision's rationale cites a click, resolve it with **`click-extract`** (for subtrees) or **`click-show`** (for single clicks) so you can faithfully convey the rationale in the brief you produce. Preserve meaningful click references in the generated brief when they help the implementer understand *why* a non-negotiable is non-negotiable; they are durable pointers into the guild's reasoning record.
+**Click references.** The original brief and the decisions' `rationale` fields may reference clicks by id (long form `c-mo2e88aw-f4d5684cf385` or short form `c-mo301yp9`). Clicks are the guild's record of decisions and open inquiries, managed by the Ratchet apparatus. **Resolve every click reference you encounter** using `click-extract` (for subtrees) or `click-show` (for single clicks) so you can faithfully absorb the reasoning behind the decisions you are translating.
+
+**Do not preserve click ids in the generated brief.** The consumers of your output — the implementing artificer, reviewers, anyone reading the spec downstream — do not have click access. A click id in the final brief is a dead pointer that provides them no context. Instead, extract the substantive content from each referenced click (the decision, the supporting rationale, the constraint, the scope-fence reasoning) and **inline the relevant portions in your own prose**. The generated brief must be self-contained: every piece of reasoning the implementer needs to do the work correctly must be present in the brief itself, not behind a pointer the implementer cannot follow. Clicks are the sage's source material; the brief is the delivered artifact.
 
 ---
 
