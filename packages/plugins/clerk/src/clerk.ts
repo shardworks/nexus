@@ -565,11 +565,18 @@ export function createClerk(): Plugin {
       const isTerminal = TERMINAL_PHASES.has(to);
 
       // Strip managed fields — callers cannot override id, phase, or
-      // timestamps controlled by the phase machine. The observation slot
-      // `status` is plugin-owned: callers must not set it via transition();
-      // use setWritStatus() instead.
+      // timestamps controlled by the phase machine.
+      //
+      // The observation slot `status` IS allowed to flow through here
+      // (D15: status is user-writable, only phase is the managed lifecycle
+      // field). But patch() is a top-level shallow merge, so any caller
+      // supplying `status` through transition() will REPLACE the entire
+      // observation slot, clobbering sub-slots written by other plugins.
+      // Callers that want safe per-plugin sub-slot writes should use
+      // setWritStatus(writId, pluginId, value), which performs an atomic
+      // read-modify-write inside a single transaction.
       const { id: _id, phase: _phase, createdAt: _c, updatedAt: _u,
-        resolvedAt: _r, parentId: _p, status: _s,
+        resolvedAt: _r, parentId: _p,
         ...safeFields } = (fields ?? {}) as WritDoc;
 
       const patch: Partial<Omit<WritDoc, 'id'>> = {

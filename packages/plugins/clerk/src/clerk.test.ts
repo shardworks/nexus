@@ -1072,18 +1072,25 @@ describe('Clerk', () => {
       assert.deepEqual(fetched.status!['spider'], { lastRig: 'rig-1' });
     });
 
-    it('transition() ignores any caller-supplied status field (the slot is plugin-owned)', async () => {
-      const writ = await clerk.post({ title: 'Strip status', body: 'Body' });
-      await clerk.setWritStatus(writ.id, 'spider', { stuckCause: 'unchanged' });
+    it('transition() allows the caller-supplied status field to pass through (shallow-merge replace)', async () => {
+      // Per D15, status is a user-writable observation slot and is NOT
+      // stripped by transition(). Because patch() is a top-level shallow
+      // merge, callers that pass `status` through transition() wholesale
+      // replace the slot. Safe per-plugin sub-slot writes should go
+      // through setWritStatus().
+      const writ = await clerk.post({ title: 'Pass-through status', body: 'Body' });
+      await clerk.setWritStatus(writ.id, 'spider', { stuckCause: 'original' });
+      await clerk.setWritStatus(writ.id, 'ratchet', { progress: 0.2 });
 
       const done = await clerk.transition(writ.id, 'completed', {
         resolution: 'done',
-        // Attempt to smuggle a new status slot through transition()
-        status: { spider: { stuckCause: 'smuggled' } } as unknown as never,
+        status: { spider: { stuckCause: 'overwritten' } },
       });
 
-      assert.deepEqual(done.status!['spider'], { stuckCause: 'unchanged' },
-        'transition() must not overwrite the observation slot');
+      // The entire status slot is replaced by the caller-supplied object.
+      assert.deepEqual(done.status!['spider'], { stuckCause: 'overwritten' });
+      assert.equal(done.status!['ratchet'], undefined,
+        'top-level shallow merge clobbers sibling sub-slots when transition() is used to write status');
     });
 
     it('throws when writId is missing', async () => {
@@ -1106,6 +1113,28 @@ describe('Clerk', () => {
         () => clerk.setWritStatus('w-missing-xxxx', 'spider', {}),
         /not found/,
       );
+    });
+
+    it('emits a CDC update event carrying the new status sub-slot', async () => {
+      const writ = await clerk.post({ title: 'CDC emit', body: 'Body' });
+
+      // Subscribe to the writs book before invoking setWritStatus so the
+      // handler captures the event it fires.
+      const stacks = guild().apparatus<StacksApi>('stacks');
+      const events: Array<{ entry: WritDoc; prev: WritDoc | undefined }> = [];
+      stacks.watch<WritDoc>('clerk', 'writs', (event) => {
+        if (event.type !== 'update') return;
+        if (event.entry.id !== writ.id) return;
+        events.push({ entry: event.entry, prev: event.prev });
+      });
+
+      await clerk.setWritStatus(writ.id, 'spider', { stuckCause: 'cdc-emitted' });
+
+      assert.equal(events.length, 1, 'setWritStatus() should emit exactly one update event');
+      assert.deepEqual(events[0]!.entry.status!['spider'], { stuckCause: 'cdc-emitted' },
+        'CDC event carries the freshly-written sub-slot');
+      assert.equal(events[0]!.prev!.status, undefined,
+        'prev observation slot was empty before the write');
     });
 
     it('supports an arbitrary JSON-compatible value in the sub-slot', async () => {
@@ -1772,6 +1801,224 @@ describe('Clerk', () => {
       } finally {
         console.warn = original;
       }
+    });
+  });
+
+  // ── Writ migration (pre-rename rows) ───────────────────────────────
+
+  describe('start() migration — rewrites pre-rename writ rows', () => {
+    afterEach(() => { clearGuild(); });
+
+    it('rewrites pre-rename rows: moves `status` to `phase` and deletes the old key', async () => {
+      const seedWrits = [
+        {
+          id: 'w-open1',
+          type: 'mandate',
+          status: 'open',
+          title: 'Open writ',
+          body: 'Body',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'w-new1',
+          type: 'mandate',
+          status: 'new',
+          title: 'Draft writ',
+          body: 'Body',
+          createdAt: '2024-01-02T00:00:00.000Z',
+          updatedAt: '2024-01-02T00:00:00.000Z',
+        },
+        {
+          id: 'w-stuck1',
+          type: 'mandate',
+          status: 'stuck',
+          title: 'Stuck writ',
+          body: 'Body',
+          createdAt: '2024-01-03T00:00:00.000Z',
+          updatedAt: '2024-01-03T00:00:00.000Z',
+        },
+      ];
+      await setup({ seedWrits });
+
+      const stacks = guild().apparatus<StacksApi>('stacks');
+      const writsBook = stacks.book<Record<string, unknown> & { id: string }>('clerk', 'writs');
+
+      const open = await writsBook.get('w-open1');
+      assert.equal(open?.phase, 'open', 'status → phase');
+      assert.equal(open?.status, undefined, 'old `status` key is absent');
+      assert.equal(open?.updatedAt, '2024-01-01T00:00:00.000Z',
+        'updatedAt preserved — migration is a storage-format change, not a logical edit');
+
+      const draft = await writsBook.get('w-new1');
+      assert.equal(draft?.phase, 'new');
+      assert.equal(draft?.status, undefined);
+
+      const stuck = await writsBook.get('w-stuck1');
+      assert.equal(stuck?.phase, 'stuck');
+      assert.equal(stuck?.status, undefined);
+    });
+
+    it('collapses legacy values `ready` | `active` | `waiting` → `open`', async () => {
+      const seedWrits = [
+        {
+          id: 'w-ready',
+          type: 'mandate',
+          status: 'ready',
+          title: 'Ready writ',
+          body: 'Body',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'w-active',
+          type: 'mandate',
+          status: 'active',
+          title: 'Active writ',
+          body: 'Body',
+          createdAt: '2024-01-02T00:00:00.000Z',
+          updatedAt: '2024-01-02T00:00:00.000Z',
+        },
+        {
+          id: 'w-waiting',
+          type: 'mandate',
+          status: 'waiting',
+          title: 'Waiting writ',
+          body: 'Body',
+          createdAt: '2024-01-03T00:00:00.000Z',
+          updatedAt: '2024-01-03T00:00:00.000Z',
+        },
+      ];
+      await setup({ seedWrits });
+
+      const stacks = guild().apparatus<StacksApi>('stacks');
+      const writsBook = stacks.book<Record<string, unknown> & { id: string }>('clerk', 'writs');
+
+      for (const id of ['w-ready', 'w-active', 'w-waiting']) {
+        const row = await writsBook.get(id);
+        assert.equal(row?.phase, 'open', `legacy status collapsed to open for ${id}`);
+        assert.equal(row?.status, undefined, `legacy status key removed for ${id}`);
+      }
+    });
+
+    it('preserves terminal-phase rows (completed, failed, cancelled)', async () => {
+      const seedWrits = [
+        {
+          id: 'w-done',
+          type: 'mandate',
+          status: 'completed',
+          title: 'Done writ',
+          body: 'Body',
+          resolution: 'ok',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+          resolvedAt: '2024-01-01T01:00:00.000Z',
+        },
+        {
+          id: 'w-fail',
+          type: 'mandate',
+          status: 'failed',
+          title: 'Failed writ',
+          body: 'Body',
+          resolution: 'broken',
+          createdAt: '2024-01-02T00:00:00.000Z',
+          updatedAt: '2024-01-02T00:00:00.000Z',
+          resolvedAt: '2024-01-02T01:00:00.000Z',
+        },
+        {
+          id: 'w-cancel',
+          type: 'mandate',
+          status: 'cancelled',
+          title: 'Cancelled writ',
+          body: 'Body',
+          createdAt: '2024-01-03T00:00:00.000Z',
+          updatedAt: '2024-01-03T00:00:00.000Z',
+          resolvedAt: '2024-01-03T01:00:00.000Z',
+        },
+      ];
+      await setup({ seedWrits });
+
+      const stacks = guild().apparatus<StacksApi>('stacks');
+      const writsBook = stacks.book<Record<string, unknown> & { id: string }>('clerk', 'writs');
+
+      const done = await writsBook.get('w-done');
+      assert.equal(done?.phase, 'completed');
+      assert.equal(done?.status, undefined);
+      assert.equal(done?.resolvedAt, '2024-01-01T01:00:00.000Z', 'resolvedAt preserved');
+
+      const failed = await writsBook.get('w-fail');
+      assert.equal(failed?.phase, 'failed');
+      assert.equal(failed?.status, undefined);
+
+      const cancelled = await writsBook.get('w-cancel');
+      assert.equal(cancelled?.phase, 'cancelled');
+      assert.equal(cancelled?.status, undefined);
+    });
+
+    it('aborts startup with a clear error on an unknown `status` value', async () => {
+      const seedWrits = [
+        {
+          id: 'w-bogus',
+          type: 'mandate',
+          status: 'bogus-value',
+          title: 'Bogus writ',
+          body: 'Body',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+      ];
+      await assert.rejects(
+        () => setup({ seedWrits }),
+        /unrecognized status value "bogus-value"/,
+      );
+    });
+
+    it('is idempotent — restarting against already-migrated rows is a no-op', async () => {
+      // First pass: seed pre-rename rows and run the migration.
+      const seedWrits = [
+        {
+          id: 'w-idem1',
+          type: 'mandate',
+          status: 'open',
+          title: 'Idempotent writ',
+          body: 'Body',
+          createdAt: '2024-01-01T00:00:00.000Z',
+          updatedAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'w-idem2',
+          type: 'mandate',
+          status: 'ready', // legacy
+          title: 'Legacy writ',
+          body: 'Body',
+          createdAt: '2024-01-02T00:00:00.000Z',
+          updatedAt: '2024-01-02T00:00:00.000Z',
+        },
+      ];
+      await setup({ seedWrits });
+
+      const stacks = guild().apparatus<StacksApi>('stacks');
+      const writsBook = stacks.book<Record<string, unknown> & { id: string }>('clerk', 'writs');
+
+      const before1 = await writsBook.get('w-idem1');
+      const before2 = await writsBook.get('w-idem2');
+      assert.equal(before1?.phase, 'open');
+      assert.equal(before2?.phase, 'open');
+
+      // Second pass: create a second Clerk plugin instance, start it against
+      // the same guild (and therefore the same backend). The migration guard
+      // (`typeof phase === 'string'`) should cause it to skip every already-
+      // migrated row — no writes, no errors.
+      const clerk2 = createClerk();
+      const { ctx: ctx2 } = buildClerkCtx([]);
+      const clerk2Apparatus = (clerk2 as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
+      await clerk2Apparatus.start(ctx2);
+
+      const after1 = await writsBook.get('w-idem1');
+      const after2 = await writsBook.get('w-idem2');
+      // Rows unchanged after a second migration pass.
+      assert.deepEqual(after1, before1, 'already-migrated row is not rewritten');
+      assert.deepEqual(after2, before2, 'already-migrated legacy-origin row is not rewritten');
     });
   });
 

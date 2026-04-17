@@ -195,7 +195,7 @@ await clerk.transition(id, 'cancelled', { resolution: 'No longer needed' });
 
 Throws if the transition is not legal for the writ's current phase.
 
-`transition()` does **not** write the observation slot. Any `status` field passed in `fields` is silently stripped — plugins must use `setWritStatus()` instead.
+The observation slot is passed through `transition()` — `status` is a user-writable document field, and `transition()` only strips the phase machine's own managed fields (`id`, `phase`, `createdAt`, `updatedAt`, `resolvedAt`, `parentId`). Because `patch()` is a top-level shallow merge, supplying `status` through `transition()` **replaces the entire slot** and clobbers sibling sub-slots; use `setWritStatus()` for safe per-plugin writes.
 
 **Cascade behavior:** When a writ with children transitions to `failed` or `cancelled`, all non-terminal children are automatically cancelled with resolution `'Automatically cancelled due to parent termination'` (exported as `CASCADE_PARENT_TERMINATION_RESOLUTION`). When a parent transitions to `completed`, non-terminal children are **not** cancelled — instead a warning is logged (their existence indicates an upstream bookkeeping gap). When a child fails and its parent is `open` or `stuck`, the parent is failed and remaining siblings are cancelled.
 
@@ -271,8 +271,10 @@ Clerk follows a Kubernetes-style spec/status split:
 The slot is a soft convention rather than a hard enforcement boundary:
 
 - No runtime guard stops a plugin from reading another plugin's sub-slot — the convention is *write only your own key*, and the `setWritStatus()` API makes the right thing easy.
-- `transition()` silently strips any `status` field passed by callers. The observation slot is plugin-owned and must be written via `setWritStatus()`, not smuggled through the phase machine.
+- `transition()` does not strip the `status` field — it is a user-writable document field, not part of the phase machine. However, `transition()` writes through Stacks' top-level shallow merge, so any caller that passes `status` through `transition()` **replaces the entire observation slot**, clobbering sibling sub-slots. For safe per-plugin sub-slot writes, always prefer `setWritStatus(writId, pluginId, value)`, which performs an atomic read-modify-write that preserves siblings.
 - Concurrent writes from different plugins to different sub-slots are disjoint and safe: `setWritStatus()` runs its read-modify-write inside a Stacks transaction.
+- Within a single plugin's sub-slot, concurrent writes are last-writer-wins at the sub-slot level — `setWritStatus()` replaces the plugin's sub-slot value wholesale. Per-key atomicity inside a sub-slot is deferred until real contention appears.
+- Slot writes emit CDC events like any other field change. Downstream observers (page renderers, audits, further observation pipelines) can watch the writs book for `update` events and react to the new `status` contents.
 - Terminal transitions do **not** clear the slot. Observations persist on the writ for post-mortem inspection.
 
 ### Worked example: `status.spider.stuckCause`
@@ -300,6 +302,10 @@ if (spiderStatus?.stuckCause === 'engine-failed') {
 ```
 
 The phase (`stuck`) is the authoritative lifecycle state — queries, cascades, and the phase machine all reason from it. The observation (`status.spider.stuckCause`) is diagnostic context that survives alongside the phase without becoming part of the state machine itself.
+
+### Guild-wide extensibility
+
+The spec/status split is guild-wide in intent, not a writs-only pattern. Other runtime objects — **rigs**, **engines**, **sessions**, **input requests**, **clicks**, and future apparatuses' primary objects — will adopt the same split on a per-consumer basis: the owning apparatus keeps the lifecycle field (renaming its current `status` to `phase` when the time comes), and a new plugin-keyed `status: Record<string, unknown>` slot appears when the first observation-slot consumer materializes. Until that trigger arrives, those objects keep their existing `status` field unchanged — the convention rolls out one object at a time, not in a big-bang migration. When you author a new apparatus whose primary object may gain observations, reach for the spec/status shape from day one to avoid the rename later.
 
 ---
 

@@ -443,8 +443,10 @@ Writ documents follow a Kubernetes-style spec/status split:
 ### Rules
 
 - **Plugin ownership is a soft convention.** Each plugin writes only under its own pluginId key. No runtime guard stops a plugin from reading another plugin's sub-slot — the convention is *write only your own key*, and the `setWritStatus()` API makes the right thing easy.
-- **The phase machine does not touch status.** `transition()` silently strips any `status` field passed in the `fields` argument. Writes to the observation slot must go through `setWritStatus()`.
+- **`transition()` does not manage the observation slot.** The phase machine strips `phase` (it owns that field) but lets `status` pass through, because `status` is a user-writable document field. Stacks' `patch()` is a top-level shallow merge, so a caller that passes `status` through `transition()` **replaces the entire slot**, clobbering sibling sub-slots. Safe per-plugin sub-slot writes always go through `setWritStatus()`.
 - **Disjoint sub-slots are concurrency-safe.** `setWritStatus()` runs its read-modify-write inside a Stacks transaction. Concurrent writes from different plugins to different sub-slots do not clobber each other.
+- **Within a single plugin's sub-slot, writes are last-writer-wins.** `setWritStatus()` replaces the plugin's sub-slot value wholesale — per-key atomicity inside a sub-slot is deferred until real contention appears.
+- **Slot writes emit CDC events.** Changes to the `status` slot propagate through the same `update` events on the `clerk/writs` book as any other field change; downstream watchers can react.
 - **Terminal transitions do not clear the slot.** Observations persist on the writ after `completed`/`failed`/`cancelled` for post-mortem inspection.
 
 ### Worked example: `status.spider.stuckCause`
@@ -472,6 +474,10 @@ if (spiderStatus?.stuckCause === 'engine-failed') {
 ```
 
 The phase (`stuck`) is the authoritative lifecycle state — queries, cascades, and the phase machine all reason from it. The observation (`status.spider.stuckCause`) is diagnostic context that survives alongside the phase without becoming part of the state machine itself.
+
+### Guild-wide extensibility
+
+The spec/status split is guild-wide in intent, not a writs-only pattern. Other runtime objects — **rigs**, **engines**, **sessions**, **input requests**, **clicks**, and future apparatuses' primary objects — will adopt the same split on a per-consumer basis: the owning apparatus keeps the lifecycle field (renaming its current `status` to `phase` when the time comes), and a new plugin-keyed `status: Record<string, unknown>` slot appears when the first observation-slot consumer materializes. Until that trigger arrives, those objects keep their existing `status` field unchanged — the convention rolls out one object at a time, not in a big-bang migration. Apparatus authors adding a new primary object whose state may gain observations should reach for the spec/status shape from day one to avoid the rename later.
 
 ---
 
@@ -621,7 +627,7 @@ The patron's experience doesn't change — they still call `commission-post`. Th
 - Standalone apparatus package at `packages/plugins/clerk/`. Requires only the Stacks.
 - `WritDoc.type` uses a guild-defined vocabulary, not a framework enum. The Clerk validates against `clerk.writTypes` in the apparatus config section but the framework imposes no meaning on the type name.
 - Writ ids use the format `w-{base36_timestamp}{hex_random}` — sortable by creation time, unique without coordination. Not a formal ULID, but provides the same useful properties (temporal ordering, no coordination).
-- The `transition()` method is the single choke point for all phase changes. All tools and future integrations go through it. This is where validation, timestamp setting, event emission, and hierarchy cascade happen. Writes to the observation slot `status` go through `setWritStatus()` — `transition()` silently strips the field if smuggled in via `fields`.
+- The `transition()` method is the single choke point for all phase changes. All tools and future integrations go through it. This is where validation, timestamp setting, event emission, and hierarchy cascade happen. The observation slot `status` is user-writable and passes through `transition()` unchanged, but callers should prefer `setWritStatus()` for per-plugin sub-slot writes — `patch()`'s top-level shallow merge means a caller-supplied `status` field through `transition()` replaces the slot wholesale.
 - When the Clockworks is eventually added as a recommended dependency, resolve it at emit time via `guild().apparatus()`, not at startup — so the Clerk functions with or without it.
 - Parent/child cascade uses a Phase 1 CDC watcher (`failOnError: true`) so cascade operations are transactional — if a cascade step fails, the triggering transition rolls back.
 - `parentId` is immutable: stripped from managed fields in `transition()`, preventing mutation through the API.
