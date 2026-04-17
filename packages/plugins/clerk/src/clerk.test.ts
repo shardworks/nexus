@@ -1007,6 +1007,7 @@ describe('Clerk', () => {
         resolution: 'Legit resolution',
         id: 'w-evil',
         phase: 'open' as const,
+        status: { evil: { injected: true } },
         createdAt: '1999-01-01T00:00:00Z',
         updatedAt: '1999-01-01T00:00:00Z',
         resolvedAt: '1999-01-01T00:00:00Z',
@@ -1014,6 +1015,8 @@ describe('Clerk', () => {
 
       assert.equal(done.id, writ.id);
       assert.equal(done.phase, 'completed');
+      assert.equal(done.status, undefined,
+        'status is a managed field — transition() must strip it from the body');
       assert.notEqual(done.createdAt, '1999-01-01T00:00:00Z');
       assert.notEqual(done.updatedAt, '1999-01-01T00:00:00Z');
       assert.notEqual(done.resolvedAt, '1999-01-01T00:00:00Z');
@@ -1072,13 +1075,15 @@ describe('Clerk', () => {
       assert.deepEqual(fetched.status!['spider'], { lastRig: 'rig-1' });
     });
 
-    it('transition() allows the caller-supplied status field to pass through (shallow-merge replace)', async () => {
-      // Per D15, status is a user-writable observation slot and is NOT
-      // stripped by transition(). Because patch() is a top-level shallow
-      // merge, callers that pass `status` through transition() wholesale
-      // replace the slot. Safe per-plugin sub-slot writes should go
-      // through setWritStatus().
-      const writ = await clerk.post({ title: 'Pass-through status', body: 'Body' });
+    it('transition() strips the caller-supplied status field and preserves sibling sub-slots', async () => {
+      // The observation slot is writable only via setWritStatus() — the
+      // one sanctioned slot-write path, which performs a transactional
+      // read-modify-write on the sub-slot keyed by pluginId so sibling
+      // sub-slots are preserved. transition() silently drops any `status`
+      // in its body (the same treatment as the other managed fields) so
+      // that a smuggled slot-write through the generic shallow-merge
+      // path cannot clobber sibling sub-slots.
+      const writ = await clerk.post({ title: 'Strip status on transition', body: 'Body' });
       await clerk.setWritStatus(writ.id, 'spider', { stuckCause: 'original' });
       await clerk.setWritStatus(writ.id, 'ratchet', { progress: 0.2 });
 
@@ -1087,10 +1092,11 @@ describe('Clerk', () => {
         status: { spider: { stuckCause: 'overwritten' } },
       });
 
-      // The entire status slot is replaced by the caller-supplied object.
-      assert.deepEqual(done.status!['spider'], { stuckCause: 'overwritten' });
-      assert.equal(done.status!['ratchet'], undefined,
-        'top-level shallow merge clobbers sibling sub-slots when transition() is used to write status');
+      // The caller-supplied sub-slot is discarded; sibling sub-slots survive.
+      assert.deepEqual(done.status!['spider'], { stuckCause: 'original' },
+        'caller-supplied status sub-slot is discarded by transition()');
+      assert.deepEqual(done.status!['ratchet'], { progress: 0.2 },
+        'sibling sub-slots are preserved when transition() drops the body status');
     });
 
     it('throws when writId is missing', async () => {

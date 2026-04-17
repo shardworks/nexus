@@ -42,12 +42,20 @@ export interface WritDoc {
   /**
    * Plugin-owned observation slot (status side of the spec/status split).
    *
-   * The observation slot is a plugin-keyed map: each top-level key is a
-   * plugin id, and the value is an arbitrary shape that plugin publishes
-   * for post-hoc observation. Ownership is convention-only — plugin `X`
-   * writes only to `status[X]`. Writers must go through
-   * `ClerkApi.setWritStatus()` to avoid clobbering sibling sub-slots.
-   * Readers access `writ.status?.[pluginId]` directly.
+   * The observation slot is a plugin-keyed map (`Record<PluginId,
+   * unknown>`): each top-level key is a plugin id, and the value is an
+   * arbitrary shape that plugin publishes for post-hoc observation.
+   * Ownership is convention-only — plugin `X` writes only to `status[X]`.
+   *
+   * There is exactly one sanctioned slot-write path:
+   * `ClerkApi.setWritStatus(writId, pluginId, value)`, which performs a
+   * transactional read-modify-write on the sub-slot keyed by `pluginId`
+   * so sibling sub-slots are preserved under concurrent writers.
+   * `transition()` silently strips `status` from its body, and the
+   * generic `put()` / `patch()` paths on the writs book are not
+   * supported slot-write mechanisms — every route other than
+   * `setWritStatus()` would wholesale-replace the slot and clobber
+   * sibling sub-slots. Readers access `writ.status?.[pluginId]` directly.
    *
    * The slot survives terminal phase transitions.
    */
@@ -320,6 +328,14 @@ export interface ClerkApi {
   /**
    * Transition a writ to a new phase, optionally setting additional fields.
    * Validates that the transition is legal.
+   *
+   * Managed fields supplied in `fields` are silently dropped before the
+   * patch is applied: `id`, `phase`, `status`, `createdAt`, `updatedAt`,
+   * `resolvedAt`, and `parentId`. `phase` is managed by the state machine;
+   * the plugin-owned observation slot `status` is writable only via
+   * `setWritStatus()` (the one sanctioned slot-write path) so that
+   * sibling sub-slots are preserved under concurrent writers. The generic
+   * `put()` / `patch()` paths are not supported slot-write mechanisms.
    */
   transition(id: string, to: WritPhase, fields?: Partial<WritDoc>): Promise<WritDoc>;
 

@@ -564,18 +564,23 @@ export function createClerk(): Plugin {
       const now = new Date().toISOString();
       const isTerminal = TERMINAL_PHASES.has(to);
 
-      // Strip managed fields — callers cannot override id, phase, or
-      // timestamps controlled by the phase machine.
+      // Strip managed fields — callers cannot override id, phase, the
+      // plugin-owned observation slot `status`, or timestamps controlled
+      // by the phase machine.
       //
-      // The observation slot `status` IS allowed to flow through here
-      // (D15: status is user-writable, only phase is the managed lifecycle
-      // field). But patch() is a top-level shallow merge, so any caller
-      // supplying `status` through transition() will REPLACE the entire
-      // observation slot, clobbering sub-slots written by other plugins.
-      // Callers that want safe per-plugin sub-slot writes should use
-      // setWritStatus(writId, pluginId, value), which performs an atomic
-      // read-modify-write inside a single transaction.
-      const { id: _id, phase: _phase, createdAt: _c, updatedAt: _u,
+      // The observation slot is a plugin-keyed map (`Record<PluginId,
+      // unknown>`) whose sub-slots are owned by different plugins. The
+      // only slot-write path that preserves sibling sub-slots under
+      // concurrent writers is ClerkApi.setWritStatus(writId, pluginId,
+      // value), which performs a transactional read-modify-write on the
+      // sub-slot keyed by pluginId. Because patch() is a top-level
+      // shallow merge, a `status` value smuggled through transition()
+      // would wholesale-replace the slot and silently clobber sibling
+      // sub-slots — so `status` is silently dropped here alongside the
+      // other managed fields. There is exactly one sanctioned slot-write
+      // path, and it is setWritStatus().
+      const { id: _id, phase: _phase, status: _status,
+        createdAt: _c, updatedAt: _u,
         resolvedAt: _r, parentId: _p,
         ...safeFields } = (fields ?? {}) as WritDoc;
 
