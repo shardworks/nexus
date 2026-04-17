@@ -1885,7 +1885,7 @@ describe('Clerk', () => {
     it('throws when the writ does not exist', async () => {
       await assert.rejects(
         () => writShow.handler({ id: 'w-ghost' }),
-        /not found/,
+        /No writ found/,
       );
     });
 
@@ -1943,7 +1943,7 @@ describe('Clerk', () => {
       const w2 = await clerk.post({ title: 'Target', body: 'Body' });
       await assert.rejects(
         () => writLink.handler({ sourceId: 'w-ghost', targetId: w2.id, type: 'fixes' }),
-        /not found/,
+        /No writ found/,
       );
     });
   });
