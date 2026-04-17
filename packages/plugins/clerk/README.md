@@ -112,45 +112,45 @@ Each entry includes:
 
 Source precedence: guild config entries fully shadow kit contributions with the same name (including description).
 
-### `link(sourceId, targetId, type, semanticMeaning?): Promise<WritLinkDoc>`
+### `link(sourceId, targetId, label, kind?): Promise<WritLinkDoc>`
 
 Create a directional link between two writs.
 
 ```typescript
-// Casual label — attach any open-string relationship type.
+// Casual label — attach any open-string relationship label.
 await clerk.link(src.id, tgt.id, 'fixes');
 
-// Load-bearing — attach a registered semantic meaning id.
-await clerk.link(src.id, tgt.id, 'refines', 'astrolabe:refines');
+// Load-bearing — attach a registered link-kind id.
+await clerk.link(src.id, tgt.id, 'refines', 'astrolabe.refines');
 ```
 
 Link rows carry two complementary identifiers:
 
-- **`type`** — a casual, human-facing label. Open string. Normalized at write time via a syntactic pipeline (lowercase → trim → camelCase split → snake_case/kebab-case split → whitespace collapse). Variant spellings of the same label (`depends-on`, `dependsOn`, `depends_on`) collapse to a single composite id; distinct labels (`requires` vs `depends on`) remain distinct. Normalization is **not** synonymy.
-- **`semanticMeaning`** — a stable, plugin-owned id from the kit-contributed meaning registry. The load-bearing identifier for downstream consumers. `null` when no meaning is attached. Unknown ids are rejected.
+- **`label`** — a casual, human-facing label. Open string. Normalized at write time via a syntactic pipeline (lowercase → trim → camelCase split → snake_case/kebab-case split → whitespace collapse). Variant spellings of the same label (`depends-on`, `dependsOn`, `depends_on`) collapse to a single composite id; distinct labels (`requires` vs `depends on`) remain distinct. Normalization is **not** synonymy.
+- **`kind`** — a stable, plugin-owned id from the kit-contributed link-kind registry. The load-bearing identifier for downstream consumers. `null` when no kind is attached. Unknown ids are rejected.
 
-Upsert semantics: calling `link()` again for the same `(sourceId, targetId, type)` returns the existing row. When a `semanticMeaning` is supplied on the repeat call, it replaces the existing meaning; when omitted, the existing meaning is preserved.
+Upsert semantics: calling `link()` again for the same `(sourceId, targetId, label)` returns the existing row. When a `kind` is supplied on the repeat call, it replaces the existing kind; when omitted, the existing kind is preserved.
 
-### `unlink(sourceId, targetId, type): Promise<void>`
+### `unlink(sourceId, targetId, label): Promise<void>`
 
-Remove a link. The `type` argument is normalized before deletion, so any spelling variant of the canonical form removes the same link. Idempotent — no error if the link does not exist.
+Remove a link. The `label` argument is normalized before deletion, so any spelling variant of the canonical form removes the same link. Idempotent — no error if the link does not exist.
 
 ### `links(writId): Promise<WritLinks>`
 
 Return every link for a writ in both directions: `outbound` (this writ is the source) and `inbound` (this writ is the target).
 
-### `listMeanings(): Promise<MeaningDoc[]>`
+### `listKinds(): Promise<LinkKindDoc[]>`
 
-List every kit-contributed link meaning in the registry. Each record includes the fully-qualified meaning id, the contributing plugin, and a human-readable description.
+List every kit-contributed link kind in the registry. Each record includes the fully-qualified kind id, the contributing plugin, and a human-readable description.
 
 ```typescript
-const meanings = await clerk.listMeanings();
+const kinds = await clerk.listKinds();
 // [
-//   { id: 'astrolabe:refines', ownerPlugin: 'astrolabe', description: 'Source refines target' },
+//   { id: 'astrolabe.refines', ownerPlugin: 'astrolabe', description: 'Source refines target' },
 // ]
 ```
 
-Kit authors register meanings under the `linkMeanings` key of their `ClerkKit` (or an apparatus's `supportKit`). Each entry is `{ id, description }`; the id must be prefixed with the contributing plugin id (`{pluginId}:{kebab-suffix}`). Malformed entries, duplicate ids, and plugin-prefix mismatches hard-fail at startup.
+Kit authors register kinds under the `linkKinds` key of their `ClerkKit` (or an apparatus's `supportKit`). Each entry is `{ id, description }`; the id must be prefixed with the contributing plugin id (`{pluginId}.{kebab-suffix}`, dot-separated). Malformed entries, duplicate ids, and plugin-prefix mismatches hard-fail at startup.
 
 ### `edit(request): Promise<WritDoc>`
 
@@ -277,7 +277,7 @@ The Clerk contributes books, tools, and pages to the guild:
 | Book | Indexes | Contents |
 |---|---|---|
 | `writs` | `status`, `type`, `createdAt`, `parentId`, `[status, type]`, `[status, createdAt]`, `[parentId, status]` | Writ documents |
-| `links` | `sourceId`, `targetId`, `type`, `[sourceId, type]`, `[targetId, type]` | Writ relationship links |
+| `links` | `sourceId`, `targetId`, `label`, `[sourceId, label]`, `[targetId, label]` | Writ relationship links |
 
 ### Tools
 
@@ -291,10 +291,10 @@ The Clerk contributes books, tools, and pages to the guild:
 | `writ-fail` | `clerk:write` | Fail a writ (open/stuck → failed) |
 | `writ-cancel` | `clerk:write` | Cancel a writ (new/open/stuck → cancelled) |
 | `writ-publish` | `clerk:write` | Publish a draft writ (new → open) |
-| `writ-link` | `clerk:write` | Create a typed link between writs (`--meaning <id>` to attach a registered semantic meaning) |
-| `writ-unlink` | `clerk:write` | Remove a typed link between writs |
-| `writ-link-meanings` | `clerk:read` | List registered link meanings (`--json` for raw array) |
-| `writ-link-meanings-show` | `clerk:read` | Show a single link meaning by id |
+| `writ-link` | `clerk:write` | Create a labeled link between writs (`--kind <id>` to attach a registered link kind) |
+| `writ-unlink` | `clerk:write` | Remove a labeled link between writs |
+| `writ-link-kinds` | `clerk:read` | List registered link kinds (`--json` for raw array) |
+| `writ-link-kinds-show` | `clerk:read` | Show a single link kind by id |
 | `writ-types` | `clerk:read` | List available writ types |
 
 ---
@@ -350,11 +350,11 @@ interface WritTypeInfo {
 }
 
 interface WritLinkDoc {
-  id: string;                // `{sourceId}:{targetId}:{normalized type}`
+  id: string;                // `{sourceId}:{targetId}:{normalized label}`
   sourceId: string;
   targetId: string;
-  type: string;              // casual label, syntactically normalized
-  semanticMeaning: string | null; // load-bearing meaning id (null when unattached)
+  label: string;             // casual label, syntactically normalized
+  kind: string | null;       // load-bearing link-kind id (null when unattached)
   createdAt: string;         // ISO timestamp
 }
 
@@ -363,14 +363,14 @@ interface WritLinks {
   inbound: WritLinkDoc[];    // other writs → this writ
 }
 
-// Kit-input shape for linkMeanings contributions on ClerkKit.
-interface MeaningEntry {
-  id: string;                // `{pluginId}:{kebab-suffix}`
+// Kit-input shape for linkKinds contributions on ClerkKit.
+interface KindEntry {
+  id: string;                // `{pluginId}.{kebab-suffix}`
   description: string;
 }
 
-// Registry-projection shape returned by listMeanings().
-interface MeaningDoc {
+// Registry-projection shape returned by listKinds().
+interface LinkKindDoc {
   id: string;
   ownerPlugin: string;
   description: string;

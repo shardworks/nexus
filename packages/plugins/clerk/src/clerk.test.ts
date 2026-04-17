@@ -19,14 +19,14 @@ import type { StacksApi } from '@shardworks/stacks-apparatus';
 
 import { createClerk, CASCADE_PARENT_TERMINATION_RESOLUTION } from './clerk.ts';
 import type { ClerkKit } from './clerk.ts';
-import type { ClerkApi, ClerkConfig, WritDoc, WritLinkDoc, MeaningDoc } from './types.ts';
+import type { ClerkApi, ClerkConfig, WritDoc, WritLinkDoc, LinkKindDoc } from './types.ts';
 import type { WritLinks } from './index.ts';
 import writShow from './tools/writ-show.ts';
 import writEdit from './tools/writ-edit.ts';
 import writLink from './tools/writ-link.ts';
 import writUnlink from './tools/writ-unlink.ts';
-import writLinkMeanings from './tools/writ-link-meanings.ts';
-import writLinkMeaningsShow from './tools/writ-link-meanings-show.ts';
+import writLinkKinds from './tools/writ-link-kinds.ts';
+import writLinkKindsShow from './tools/writ-link-kinds-show.ts';
 
 // ── Test harness ─────────────────────────────────────────────────────
 
@@ -139,7 +139,7 @@ async function setupCore(options: SetupOptions = {}, clerkCtx?: StartupContext):
     indexes: ['status', 'type', 'createdAt', 'parentId', ['status', 'type'], ['status', 'createdAt'], ['parentId', 'status']],
   });
   memBackend.ensureBook({ ownerId: 'clerk', book: 'links' }, {
-    indexes: ['sourceId', 'targetId', 'type', ['sourceId', 'type'], ['targetId', 'type']],
+    indexes: ['sourceId', 'targetId', 'label', ['sourceId', 'label'], ['targetId', 'label']],
   });
 
   // Seed pre-normalization rows for migration tests — use the already-started
@@ -1034,7 +1034,7 @@ describe('Clerk', () => {
 
       assert.equal(link.sourceId, w1.id);
       assert.equal(link.targetId, w2.id);
-      assert.equal(link.type, 'fixes');
+      assert.equal(link.label, 'fixes');
       assert.equal(link.id, `${w1.id}:${w2.id}:fixes`);
       assert.ok(link.createdAt);
     });
@@ -1078,7 +1078,7 @@ describe('Clerk', () => {
       );
     });
 
-    it('throws for empty type string', async () => {
+    it('throws for empty label string', async () => {
       const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
       const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
       await assert.rejects(
@@ -1087,7 +1087,7 @@ describe('Clerk', () => {
       );
     });
 
-    it('throws for whitespace-only type string', async () => {
+    it('throws for whitespace-only label string', async () => {
       const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
       const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
       await assert.rejects(
@@ -1096,21 +1096,21 @@ describe('Clerk', () => {
       );
     });
 
-    it('accepts various non-empty type strings', async () => {
+    it('accepts various non-empty label strings', async () => {
       const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
       const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
 
       const l1 = await clerk.link(w1.id, w2.id, 'fixes');
       const l2 = await clerk.link(w1.id, w2.id, 'retries');
 
-      assert.equal(l1.type, 'fixes');
-      assert.equal(l2.type, 'retries');
+      assert.equal(l1.label, 'fixes');
+      assert.equal(l2.label, 'retries');
 
       const result = await clerk.links(w1.id);
       assert.equal(result.outbound.length, 2);
     });
 
-    it('creates separate links for same pair with different types', async () => {
+    it('creates separate links for same pair with different labels', async () => {
       const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
       const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
 
@@ -1229,7 +1229,7 @@ describe('Clerk', () => {
 
       const result = await clerk.links(w1.id);
       assert.equal(result.outbound.length, 1);
-      assert.equal(result.outbound[0]!.type, 'retries');
+      assert.equal(result.outbound[0]!.label, 'retries');
     });
 
     it('does not update writ timestamps when unlinking', async () => {
@@ -1248,27 +1248,27 @@ describe('Clerk', () => {
     });
   });
 
-  // ── Link type normalization ───────────────────────────────────────
+  // ── Link label normalization ──────────────────────────────────────
   //
   // Normalization is syntactic, NOT synonymy. Variant spellings of the
   // same label collapse to a single canonical form; distinct labels
-  // stay distinct. Synonymy is expressed via `semanticMeaning`, not
+  // stay distinct. Synonymy is expressed via `kind`, not
   // via the normalization pipeline.
 
-  describe('link()/unlink() — syntactic type normalization (NOT synonymy)', () => {
+  describe('link()/unlink() — syntactic label normalization (NOT synonymy)', () => {
     beforeEach(async () => { await setup(); });
 
-    it('stores the canonicalized type on the link row', async () => {
+    it('stores the canonicalized label on the link row', async () => {
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
 
       const link = await clerk.link(w1.id, w2.id, 'DependsOn');
 
-      assert.equal(link.type, 'depends on');
+      assert.equal(link.label, 'depends on');
       assert.equal(link.id, `${w1.id}:${w2.id}:depends on`);
     });
 
-    it('variant spellings of the same type collapse to a single link', async () => {
+    it('variant spellings of the same label collapse to a single link', async () => {
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
 
@@ -1282,19 +1282,19 @@ describe('Clerk', () => {
       assert.equal(result.outbound.length, 1);
     });
 
-    it('unlink() normalizes its type argument before deletion', async () => {
+    it('unlink() normalizes its label argument before deletion', async () => {
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
       await clerk.link(w1.id, w2.id, 'depends-on');
 
-      // Unlink using a differently-spelled variant of the same type.
+      // Unlink using a differently-spelled variant of the same label.
       await clerk.unlink(w1.id, w2.id, 'dependsOn');
 
       const result = await clerk.links(w1.id);
       assert.equal(result.outbound.length, 0);
     });
 
-    it('keeps distinct types distinct (not synonymy)', async () => {
+    it('keeps distinct labels distinct (not synonymy)', async () => {
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
 
@@ -1306,7 +1306,7 @@ describe('Clerk', () => {
       assert.equal(result.outbound.length, 2);
     });
 
-    it('rejects a whitespace-only type (canonicalizes to empty)', async () => {
+    it('rejects a whitespace-only label (canonicalizes to empty)', async () => {
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
       await assert.rejects(
@@ -1321,113 +1321,113 @@ describe('Clerk', () => {
       const link = await clerk.link(w1.id, w2.id, 'fixes');
       // `fixes` is already canonical — the existing assertion shape still holds.
       assert.equal(link.id, `${w1.id}:${w2.id}:fixes`);
-      assert.equal(link.type, 'fixes');
+      assert.equal(link.label, 'fixes');
     });
   });
 
-  // ── semanticMeaning ────────────────────────────────────────────────
+  // ── kind ────────────────────────────────────────────────
 
-  describe('link() — semanticMeaning field and upsert', () => {
-    const meaningKit: LoadedKit = {
-      packageName: '@test/meanings',
+  describe('link() — kind field and upsert', () => {
+    const kindKit: LoadedKit = {
+      packageName: '@test/kinds',
       id: 'testkit',
       version: '0.0.0',
       kit: {
-        linkMeanings: [
-          { id: 'testkit:refines', description: 'Source refines target' },
-          { id: 'testkit:supersedes', description: 'Source supersedes target' },
+        linkKinds: [
+          { id: 'testkit.refines', description: 'Source refines target' },
+          { id: 'testkit.supersedes', description: 'Source supersedes target' },
         ],
       },
     };
 
-    beforeEach(async () => { await setup({ extraKits: [meaningKit] }); });
+    beforeEach(async () => { await setup({ extraKits: [kindKit] }); });
 
-    it('defaults semanticMeaning to null when no meaning is provided', async () => {
+    it('defaults kind to null when no kind is provided', async () => {
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
       const link = await clerk.link(w1.id, w2.id, 'fixes');
-      assert.equal(link.semanticMeaning, null);
+      assert.equal(link.kind, null);
     });
 
-    it('stores the supplied semanticMeaning on the new row', async () => {
+    it('stores the supplied kind on the new row', async () => {
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
-      const link = await clerk.link(w1.id, w2.id, 'refines', 'testkit:refines');
-      assert.equal(link.semanticMeaning, 'testkit:refines');
+      const link = await clerk.link(w1.id, w2.id, 'refines', 'testkit.refines');
+      assert.equal(link.kind, 'testkit.refines');
     });
 
-    it('upserts semanticMeaning onto an existing link on a subsequent call', async () => {
+    it('upserts kind onto an existing link on a subsequent call', async () => {
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
 
       const first = await clerk.link(w1.id, w2.id, 'supersedes');
-      assert.equal(first.semanticMeaning, null);
+      assert.equal(first.kind, null);
 
-      const second = await clerk.link(w1.id, w2.id, 'supersedes', 'testkit:supersedes');
+      const second = await clerk.link(w1.id, w2.id, 'supersedes', 'testkit.supersedes');
       assert.equal(second.id, first.id);
-      assert.equal(second.semanticMeaning, 'testkit:supersedes');
+      assert.equal(second.kind, 'testkit.supersedes');
 
       // Only one row exists.
       const result = await clerk.links(w1.id);
       assert.equal(result.outbound.length, 1);
     });
 
-    it('leaves existing semanticMeaning untouched when a subsequent call omits it', async () => {
+    it('leaves existing kind untouched when a subsequent call omits it', async () => {
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
 
-      await clerk.link(w1.id, w2.id, 'refines', 'testkit:refines');
+      await clerk.link(w1.id, w2.id, 'refines', 'testkit.refines');
       const again = await clerk.link(w1.id, w2.id, 'refines');
-      assert.equal(again.semanticMeaning, 'testkit:refines');
+      assert.equal(again.kind, 'testkit.refines');
     });
 
-    it('rejects an unknown semanticMeaning id', async () => {
+    it('rejects an unknown kind id', async () => {
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
       await assert.rejects(
-        () => clerk.link(w1.id, w2.id, 'fixes', 'nonexistent:meaning'),
-        /Unknown semanticMeaning/,
+        () => clerk.link(w1.id, w2.id, 'fixes', 'nonexistent.meaning'),
+        /Unknown link kind/,
       );
     });
 
-    it('writ-show surfaces semanticMeaning on each link row', async () => {
+    it('writ-show surfaces kind on each link row', async () => {
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
-      await clerk.link(w1.id, w2.id, 'refines', 'testkit:refines');
+      await clerk.link(w1.id, w2.id, 'refines', 'testkit.refines');
 
       const result = await writShow.handler({ id: w1.id }) as { links: WritLinks };
       assert.equal(result.links.outbound.length, 1);
-      assert.equal(result.links.outbound[0]!.semanticMeaning, 'testkit:refines');
+      assert.equal(result.links.outbound[0]!.kind, 'testkit.refines');
     });
   });
 
-  // ── Kit-contributed link meanings ──────────────────────────────────
+  // ── Kit-contributed link kinds ─────────────────────────────────────
 
-  describe('linkMeanings kit ingest', () => {
+  describe('linkKinds kit ingest', () => {
     afterEach(() => { clearGuild(); });
 
-    it('registers kit-contributed meanings', async () => {
+    it('registers kit-contributed kinds', async () => {
       const kit: LoadedKit = {
         packageName: '@test/alpha',
         id: 'alpha',
         version: '0.0.0',
         kit: {
-          linkMeanings: [
-            { id: 'alpha:refines', description: 'Refines relationship' },
-            { id: 'alpha:blocks', description: 'Blocks relationship' },
+          linkKinds: [
+            { id: 'alpha.refines', description: 'Refines relationship' },
+            { id: 'alpha.blocks', description: 'Blocks relationship' },
           ],
         },
       };
       await setup({ extraKits: [kit] });
-      const meanings = await clerk.listMeanings();
-      assert.equal(meanings.length, 2);
-      const refines = meanings.find((m) => m.id === 'alpha:refines');
-      assert.ok(refines, 'alpha:refines should be registered');
+      const kinds = await clerk.listKinds();
+      assert.equal(kinds.length, 2);
+      const refines = kinds.find((k) => k.id === 'alpha.refines');
+      assert.ok(refines, 'alpha.refines should be registered');
       assert.equal(refines.ownerPlugin, 'alpha');
       assert.equal(refines.description, 'Refines relationship');
     });
 
-    it('registers meanings contributed by apparatus supportKit', async () => {
+    it('registers kinds contributed by apparatus supportKit', async () => {
       const apparatus: LoadedApparatus = {
         packageName: '@test/support-app',
         id: 'support-app',
@@ -1436,23 +1436,23 @@ describe('Clerk', () => {
           requires: [],
           start: () => {},
           supportKit: {
-            linkMeanings: [
-              { id: 'support-app:refines', description: 'Support refines' },
+            linkKinds: [
+              { id: 'support-app.refines', description: 'Support refines' },
             ],
           },
         },
       };
       await setup({ extraApparatuses: [apparatus] });
-      const meanings = await clerk.listMeanings();
-      const m = meanings.find((x) => x.id === 'support-app:refines');
-      assert.ok(m, 'support-app:refines should be registered');
-      assert.equal(m.ownerPlugin, 'support-app');
+      const kinds = await clerk.listKinds();
+      const k = kinds.find((x) => x.id === 'support-app.refines');
+      assert.ok(k, 'support-app.refines should be registered');
+      assert.equal(k.ownerPlugin, 'support-app');
     });
 
-    it('returns an empty array when no meanings are registered', async () => {
+    it('returns an empty array when no kinds are registered', async () => {
       await setup();
-      const meanings = await clerk.listMeanings();
-      assert.deepEqual(meanings, []);
+      const kinds = await clerk.listKinds();
+      assert.deepEqual(kinds, []);
     });
 
     it('hard-fails when an entry is not an object', async () => {
@@ -1460,9 +1460,9 @@ describe('Clerk', () => {
         packageName: '@test/bad',
         id: 'bad',
         version: '0.0.0',
-        kit: { linkMeanings: ['not-an-object'] as unknown as Array<{ id: string; description: string }> },
+        kit: { linkKinds: ['not-an-object'] as unknown as Array<{ id: string; description: string }> },
       };
-      await assert.rejects(() => setup({ extraKits: [kit] }), /linkMeanings.*not an object/);
+      await assert.rejects(() => setup({ extraKits: [kit] }), /linkKinds.*not an object/);
     });
 
     it('hard-fails when an entry is missing the id field', async () => {
@@ -1470,7 +1470,7 @@ describe('Clerk', () => {
         packageName: '@test/bad',
         id: 'bad',
         version: '0.0.0',
-        kit: { linkMeanings: [{ description: 'missing id' }] as unknown as Array<{ id: string; description: string }> },
+        kit: { linkKinds: [{ description: 'missing id' }] as unknown as Array<{ id: string; description: string }> },
       };
       await assert.rejects(() => setup({ extraKits: [kit] }), /missing a non-empty string "id"/);
     });
@@ -1480,7 +1480,7 @@ describe('Clerk', () => {
         packageName: '@test/bad',
         id: 'bad',
         version: '0.0.0',
-        kit: { linkMeanings: [{ id: 'bad:refines' }] as unknown as Array<{ id: string; description: string }> },
+        kit: { linkKinds: [{ id: 'bad.refines' }] as unknown as Array<{ id: string; description: string }> },
       };
       await assert.rejects(
         () => setup({ extraKits: [kit] }),
@@ -1488,16 +1488,16 @@ describe('Clerk', () => {
       );
     });
 
-    it('hard-fails when a meaning id has no colon separator', async () => {
+    it('hard-fails when a kind id has no dot separator', async () => {
       const kit: LoadedKit = {
         packageName: '@test/bad',
         id: 'bad',
         version: '0.0.0',
-        kit: { linkMeanings: [{ id: 'refines', description: 'no prefix' }] },
+        kit: { linkKinds: [{ id: 'refines', description: 'no prefix' }] },
       };
       await assert.rejects(
         () => setup({ extraKits: [kit] }),
-        /must be of the form "\{pluginId\}:\{kebab-suffix\}"/,
+        /must be of the form "\{pluginId\}\.\{kebab-suffix\}"/,
       );
     });
 
@@ -1506,7 +1506,7 @@ describe('Clerk', () => {
         packageName: '@test/alpha',
         id: 'alpha',
         version: '0.0.0',
-        kit: { linkMeanings: [{ id: 'beta:refines', description: 'wrong owner' }] },
+        kit: { linkKinds: [{ id: 'beta.refines', description: 'wrong owner' }] },
       };
       await assert.rejects(
         () => setup({ extraKits: [kit] }),
@@ -1519,50 +1519,50 @@ describe('Clerk', () => {
         packageName: '@test/alpha',
         id: 'alpha',
         version: '0.0.0',
-        kit: { linkMeanings: [{ id: 'alpha:Refines_Not_Kebab', description: 'bad suffix' }] },
+        kit: { linkKinds: [{ id: 'alpha.Refines_Not_Kebab', description: 'bad suffix' }] },
       };
       await assert.rejects(() => setup({ extraKits: [kit] }), /must be kebab-case/);
     });
 
-    it('hard-fails when two kits contribute the same meaning id', async () => {
+    it('hard-fails when two kits contribute the same kind id', async () => {
       const kitA: LoadedKit = {
         packageName: '@test/alpha',
         id: 'alpha',
         version: '0.0.0',
-        kit: { linkMeanings: [{ id: 'alpha:refines', description: 'first' }] },
+        kit: { linkKinds: [{ id: 'alpha.refines', description: 'first' }] },
       };
       const kitB: LoadedKit = {
         packageName: '@test/alpha-again',
         // Same pluginId so the prefix rule doesn't fire first.
         id: 'alpha',
         version: '0.0.0',
-        kit: { linkMeanings: [{ id: 'alpha:refines', description: 'duplicate' }] },
+        kit: { linkKinds: [{ id: 'alpha.refines', description: 'duplicate' }] },
       };
       await assert.rejects(
         () => setup({ extraKits: [kitA, kitB] }),
-        /duplicate meaning id "alpha:refines"/,
+        /duplicate kind id "alpha\.refines"/,
       );
     });
 
-    it('link() rejects a semanticMeaning not present in the registry', async () => {
+    it('link() rejects a kind not present in the registry', async () => {
       await setup();
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
       await assert.rejects(
-        () => clerk.link(w1.id, w2.id, 'fixes', 'ghost:meaning'),
-        /Unknown semanticMeaning/,
+        () => clerk.link(w1.id, w2.id, 'fixes', 'ghost.meaning'),
+        /Unknown link kind/,
       );
     });
   });
 
-  // ── Apparatus consumes declaration for linkMeanings ────────────────
+  // ── Apparatus consumes declaration for linkKinds ────────────────
 
-  describe('apparatus declares linkMeanings in consumes', () => {
-    it('consumes declaration includes linkMeanings', () => {
+  describe('apparatus declares linkKinds in consumes', () => {
+    it('consumes declaration includes linkKinds', () => {
       const plugin = createClerk();
       const p = plugin as { apparatus: { consumes?: string[] } };
       assert.ok(Array.isArray(p.apparatus.consumes));
-      assert.ok(p.apparatus.consumes!.includes('linkMeanings'));
+      assert.ok(p.apparatus.consumes!.includes('linkKinds'));
     });
   });
 
@@ -1571,13 +1571,13 @@ describe('Clerk', () => {
   describe('start() migration — rewrites pre-normalization link rows', () => {
     afterEach(() => { clearGuild(); });
 
-    it('rewrites id and type to canonical form and sets semanticMeaning = null', async () => {
+    it('rewrites id and label to canonical form and sets kind = null', async () => {
       const seedLinks = [
         {
           id: 'w-src:w-tgt:DependsOn',
           sourceId: 'w-src',
           targetId: 'w-tgt',
-          type: 'DependsOn',
+          label: 'DependsOn',
           createdAt: '2024-01-01T00:00:00.000Z',
         },
       ];
@@ -1587,8 +1587,8 @@ describe('Clerk', () => {
       assert.equal(result.outbound.length, 1);
       const link = result.outbound[0]!;
       assert.equal(link.id, 'w-src:w-tgt:depends on');
-      assert.equal(link.type, 'depends on');
-      assert.equal(link.semanticMeaning, null);
+      assert.equal(link.label, 'depends on');
+      assert.equal(link.kind, null);
       assert.equal(link.createdAt, '2024-01-01T00:00:00.000Z');
     });
 
@@ -1603,21 +1603,21 @@ describe('Clerk', () => {
             id: 'w-src:w-tgt:depends-on',
             sourceId: 'w-src',
             targetId: 'w-tgt',
-            type: 'depends-on',
+            label: 'depends-on',
             createdAt: '2024-01-01T00:00:00.000Z',
           },
           {
             id: 'w-src:w-tgt:dependsOn',
             sourceId: 'w-src',
             targetId: 'w-tgt',
-            type: 'dependsOn',
+            label: 'dependsOn',
             createdAt: '2024-02-01T00:00:00.000Z',
           },
           {
             id: 'w-src:w-tgt:DEPENDS_ON',
             sourceId: 'w-src',
             targetId: 'w-tgt',
-            type: 'DEPENDS_ON',
+            label: 'DEPENDS_ON',
             createdAt: '2024-03-01T00:00:00.000Z',
           },
         ];
@@ -1627,10 +1627,10 @@ describe('Clerk', () => {
         assert.equal(result.outbound.length, 1);
         const survivor = result.outbound[0]!;
         assert.equal(survivor.id, 'w-src:w-tgt:depends on');
-        assert.equal(survivor.type, 'depends on');
+        assert.equal(survivor.label, 'depends on');
         // Oldest row wins.
         assert.equal(survivor.createdAt, '2024-01-01T00:00:00.000Z');
-        assert.equal(survivor.semanticMeaning, null);
+        assert.equal(survivor.kind, null);
 
         // Two collisions → two warnings, each mentioning w-src and w-tgt.
         const collisionWarns = warnings.filter((w) =>
@@ -1653,8 +1653,8 @@ describe('Clerk', () => {
             id: 'w-src:w-tgt:fixes',
             sourceId: 'w-src',
             targetId: 'w-tgt',
-            type: 'fixes',
-            semanticMeaning: null,
+            label: 'fixes',
+            kind: null,
             createdAt: '2024-01-01T00:00:00.000Z',
           },
         ];
@@ -1673,64 +1673,64 @@ describe('Clerk', () => {
     });
   });
 
-  // ── writ-link tool: --meaning flag ─────────────────────────────────
+  // ── writ-link tool: --kind flag ────────────────────────────────────
 
-  describe('writ-link tool with --meaning', () => {
-    const meaningKit: LoadedKit = {
+  describe('writ-link tool with --kind', () => {
+    const kindKit: LoadedKit = {
       packageName: '@test/toolkit',
       id: 'toolkit',
       version: '0.0.0',
       kit: {
-        linkMeanings: [
-          { id: 'toolkit:refines', description: 'Refines' },
+        linkKinds: [
+          { id: 'toolkit.refines', description: 'Refines' },
         ],
       },
     };
 
-    beforeEach(async () => { await setup({ extraKits: [meaningKit] }); });
+    beforeEach(async () => { await setup({ extraKits: [kindKit] }); });
 
-    it('attaches the supplied meaning to the created link', async () => {
+    it('attaches the supplied kind to the created link', async () => {
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
       const result = (await writLink.handler({
         sourceId: w1.id,
         targetId: w2.id,
-        type: 'refines',
-        meaning: 'toolkit:refines',
+        label: 'refines',
+        kind: 'toolkit.refines',
       })) as WritLinkDoc;
 
-      assert.equal(result.semanticMeaning, 'toolkit:refines');
+      assert.equal(result.kind, 'toolkit.refines');
     });
 
-    it('rejects with a clear error when the meaning id is unknown', async () => {
+    it('rejects with a clear error when the kind id is unknown', async () => {
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
       await assert.rejects(
         () => writLink.handler({
           sourceId: w1.id,
           targetId: w2.id,
-          type: 'fixes',
-          meaning: 'ghost:meaning',
+          label: 'fixes',
+          kind: 'ghost.meaning',
         }),
-        /Unknown semanticMeaning/,
+        /Unknown link kind/,
       );
     });
 
-    it('still works without --meaning (casual label path)', async () => {
+    it('still works without --kind (casual label path)', async () => {
       const w1 = await clerk.post({ title: 'W1', body: 'B' });
       const w2 = await clerk.post({ title: 'W2', body: 'B' });
       const result = (await writLink.handler({
         sourceId: w1.id,
         targetId: w2.id,
-        type: 'fixes',
+        label: 'fixes',
       })) as WritLinkDoc;
-      assert.equal(result.semanticMeaning, null);
+      assert.equal(result.kind, null);
     });
   });
 
-  // ── writ-link-meanings tools ───────────────────────────────────────
+  // ── writ-link-kinds tools ───────────────────────────────────────
 
-  describe('writ-link-meanings tool (list)', () => {
+  describe('writ-link-kinds tool (list)', () => {
     afterEach(() => { clearGuild(); });
 
     it('returns a table string with ID / OWNER / DESCRIPTION columns', async () => {
@@ -1739,19 +1739,19 @@ describe('Clerk', () => {
         id: 'kit',
         version: '0.0.0',
         kit: {
-          linkMeanings: [
-            { id: 'kit:refines', description: 'Source refines target' },
+          linkKinds: [
+            { id: 'kit.refines', description: 'Source refines target' },
           ],
         },
       };
       await setup({ extraKits: [kit] });
 
-      const result = (await writLinkMeanings.handler({ json: false })) as string;
+      const result = (await writLinkKinds.handler({ json: false })) as string;
       assert.equal(typeof result, 'string');
       assert.ok(result.includes('ID'));
       assert.ok(result.includes('OWNER'));
       assert.ok(result.includes('DESCRIPTION'));
-      assert.ok(result.includes('kit:refines'));
+      assert.ok(result.includes('kit.refines'));
       assert.ok(result.includes('Source refines target'));
     });
 
@@ -1760,44 +1760,44 @@ describe('Clerk', () => {
         packageName: '@test/kit',
         id: 'kit',
         version: '0.0.0',
-        kit: { linkMeanings: [{ id: 'kit:refines', description: 'Refines' }] },
+        kit: { linkKinds: [{ id: 'kit.refines', description: 'Refines' }] },
       };
       await setup({ extraKits: [kit] });
 
-      const result = (await writLinkMeanings.handler({ json: true })) as MeaningDoc[];
+      const result = (await writLinkKinds.handler({ json: true })) as LinkKindDoc[];
       assert.ok(Array.isArray(result));
       assert.equal(result.length, 1);
-      assert.equal(result[0]!.id, 'kit:refines');
+      assert.equal(result[0]!.id, 'kit.refines');
       assert.equal(result[0]!.ownerPlugin, 'kit');
     });
 
-    it('prints "No meanings registered." in table mode when the registry is empty', async () => {
+    it('prints "No link kinds registered." in table mode when the registry is empty', async () => {
       await setup();
-      const result = (await writLinkMeanings.handler({ json: false })) as string;
-      assert.equal(result, 'No meanings registered.');
+      const result = (await writLinkKinds.handler({ json: false })) as string;
+      assert.equal(result, 'No link kinds registered.');
     });
 
     it('returns [] under --json when the registry is empty', async () => {
       await setup();
-      const result = (await writLinkMeanings.handler({ json: true })) as MeaningDoc[];
+      const result = (await writLinkKinds.handler({ json: true })) as LinkKindDoc[];
       assert.deepEqual(result, []);
     });
   });
 
-  describe('writ-link-meanings-show tool (detail)', () => {
+  describe('writ-link-kinds-show tool (detail)', () => {
     afterEach(() => { clearGuild(); });
 
-    it('returns the full meaning record for a registered id', async () => {
+    it('returns the full kind record for a registered id', async () => {
       const kit: LoadedKit = {
         packageName: '@test/kit',
         id: 'kit',
         version: '0.0.0',
-        kit: { linkMeanings: [{ id: 'kit:refines', description: 'Refines' }] },
+        kit: { linkKinds: [{ id: 'kit.refines', description: 'Refines' }] },
       };
       await setup({ extraKits: [kit] });
 
-      const result = (await writLinkMeaningsShow.handler({ id: 'kit:refines' })) as MeaningDoc;
-      assert.equal(result.id, 'kit:refines');
+      const result = (await writLinkKindsShow.handler({ id: 'kit.refines' })) as LinkKindDoc;
+      assert.equal(result.id, 'kit.refines');
       assert.equal(result.ownerPlugin, 'kit');
       assert.equal(result.description, 'Refines');
     });
@@ -1805,8 +1805,8 @@ describe('Clerk', () => {
     it('throws a clear not-found error for an unknown id', async () => {
       await setup();
       await assert.rejects(
-        () => writLinkMeaningsShow.handler({ id: 'ghost:meaning' }),
-        /Unknown link meaning "ghost:meaning"/,
+        () => writLinkKindsShow.handler({ id: 'ghost.meaning' }),
+        /Unknown link kind "ghost\.meaning"/,
       );
     });
   });
@@ -1911,11 +1911,11 @@ describe('Clerk', () => {
       const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
       const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
 
-      const result = await writLink.handler({ sourceId: w1.id, targetId: w2.id, type: 'fixes' }) as WritLinkDoc;
+      const result = await writLink.handler({ sourceId: w1.id, targetId: w2.id, label: 'fixes' }) as WritLinkDoc;
 
       assert.equal(result.sourceId, w1.id);
       assert.equal(result.targetId, w2.id);
-      assert.equal(result.type, 'fixes');
+      assert.equal(result.label, 'fixes');
       assert.equal(result.id, `${w1.id}:${w2.id}:fixes`);
       assert.ok(result.createdAt);
     });
@@ -1924,8 +1924,8 @@ describe('Clerk', () => {
       const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
       const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
 
-      const r1 = await writLink.handler({ sourceId: w1.id, targetId: w2.id, type: 'fixes' }) as WritLinkDoc;
-      const r2 = await writLink.handler({ sourceId: w1.id, targetId: w2.id, type: 'fixes' }) as WritLinkDoc;
+      const r1 = await writLink.handler({ sourceId: w1.id, targetId: w2.id, label: 'fixes' }) as WritLinkDoc;
+      const r2 = await writLink.handler({ sourceId: w1.id, targetId: w2.id, label: 'fixes' }) as WritLinkDoc;
 
       assert.equal(r1.id, r2.id);
       assert.equal(r1.createdAt, r2.createdAt);
@@ -1934,7 +1934,7 @@ describe('Clerk', () => {
     it('propagates self-link error from clerk.link()', async () => {
       const w = await clerk.post({ title: 'Solo', body: 'Body' });
       await assert.rejects(
-        () => writLink.handler({ sourceId: w.id, targetId: w.id, type: 'fixes' }),
+        () => writLink.handler({ sourceId: w.id, targetId: w.id, label: 'fixes' }),
         /Cannot link a writ to itself/,
       );
     });
@@ -1942,7 +1942,7 @@ describe('Clerk', () => {
     it('propagates missing source error from clerk.link()', async () => {
       const w2 = await clerk.post({ title: 'Target', body: 'Body' });
       await assert.rejects(
-        () => writLink.handler({ sourceId: 'w-ghost', targetId: w2.id, type: 'fixes' }),
+        () => writLink.handler({ sourceId: 'w-ghost', targetId: w2.id, label: 'fixes' }),
         /No writ found/,
       );
     });
@@ -1958,7 +1958,7 @@ describe('Clerk', () => {
       const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
       await clerk.link(w1.id, w2.id, 'fixes');
 
-      const result = await writUnlink.handler({ sourceId: w1.id, targetId: w2.id, type: 'fixes' });
+      const result = await writUnlink.handler({ sourceId: w1.id, targetId: w2.id, label: 'fixes' });
 
       assert.deepEqual(result, { ok: true });
 
@@ -1971,21 +1971,21 @@ describe('Clerk', () => {
       const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
 
       // Link was never created — no error
-      const result = await writUnlink.handler({ sourceId: w1.id, targetId: w2.id, type: 'fixes' });
+      const result = await writUnlink.handler({ sourceId: w1.id, targetId: w2.id, label: 'fixes' });
       assert.deepEqual(result, { ok: true });
     });
 
-    it('does not remove other links when unlinking by type', async () => {
+    it('does not remove other links when unlinking by label', async () => {
       const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
       const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
       await clerk.link(w1.id, w2.id, 'fixes');
       await clerk.link(w1.id, w2.id, 'retries');
 
-      await writUnlink.handler({ sourceId: w1.id, targetId: w2.id, type: 'fixes' });
+      await writUnlink.handler({ sourceId: w1.id, targetId: w2.id, label: 'fixes' });
 
       const linksResult = await clerk.links(w1.id);
       assert.equal(linksResult.outbound.length, 1);
-      assert.equal(linksResult.outbound[0]!.type, 'retries');
+      assert.equal(linksResult.outbound[0]!.label, 'retries');
     });
   });
 

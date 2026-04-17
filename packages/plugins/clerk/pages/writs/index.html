@@ -127,7 +127,7 @@
     <div id="detail-content"></div>
   </div>
 
-  <datalist id="link-types">
+  <datalist id="link-labels">
     <option value="retries"></option>
     <option value="supersedes"></option>
     <option value="fixes"></option>
@@ -485,25 +485,25 @@
         html += `<div class="link-row">
           <span class="link-dir">→</span>
           <a class="link-id" data-writ-id="${l.targetId}">${l.targetId}</a>
-          <span>(${escHtml(l.type)})</span>
+          <span>(${escHtml(l.label)})</span>
           <button class="btn btn--danger" style="padding:0.1rem 0.5rem;font-size:0.75rem"
-            data-action="unlink" data-source="${l.sourceId}" data-target="${l.targetId}" data-type="${l.type}">×</button>
+            data-action="unlink" data-source="${l.sourceId}" data-target="${l.targetId}" data-label="${l.label}">×</button>
         </div>`;
       }
       for (const l of inbound) {
         html += `<div class="link-row">
           <span class="link-dir">←</span>
           <a class="link-id" data-writ-id="${l.sourceId}">${l.sourceId}</a>
-          <span>(${escHtml(l.type)})</span>
+          <span>(${escHtml(l.label)})</span>
           <button class="btn btn--danger" style="padding:0.1rem 0.5rem;font-size:0.75rem"
-            data-action="unlink" data-source="${l.sourceId}" data-target="${l.targetId}" data-type="${l.type}">×</button>
+            data-action="unlink" data-source="${l.sourceId}" data-target="${l.targetId}" data-label="${l.label}">×</button>
         </div>`;
       }
 
       // Add link form
       html += `<div class="add-link-form" id="add-link-form-${writ.id}">
         <input type="text" id="link-target-${writ.id}" placeholder="Target writ id" style="width:140px">
-        <input type="text" id="link-type-${writ.id}" list="link-types" placeholder="Link type" style="width:120px">
+        <input type="text" id="link-label-${writ.id}" list="link-labels" placeholder="Link label" style="width:120px">
         <button class="btn" data-action="addlink" data-id="${writ.id}">Link</button>
         <div class="error-msg" id="link-error-${writ.id}" style="display:none"></div>
       </div>`;
@@ -609,12 +609,12 @@
       } else if (action === 'repost') {
         openRepost(writ);
       } else if (action === 'unlink') {
-        doUnlink(btn.dataset.source, btn.dataset.target, btn.dataset.type, btn, id);
+        doUnlink(btn.dataset.source, btn.dataset.target, btn.dataset.label, btn, id);
       } else if (action === 'addlink') {
         const targetInput = document.getElementById(`link-target-${id}`);
-        const typeInput = document.getElementById(`link-type-${id}`);
+        const labelInput = document.getElementById(`link-label-${id}`);
         const errEl = document.getElementById(`link-error-${id}`);
-        doAddLink(id, targetInput.value.trim(), typeInput.value.trim(), btn, errEl, targetInput, typeInput);
+        doAddLink(id, targetInput.value.trim(), labelInput.value.trim(), btn, errEl, targetInput, labelInput);
       }
     }
 
@@ -741,11 +741,11 @@
       });
     }
 
-    async function doUnlink(sourceId, targetId, type, btn, writId) {
+    async function doUnlink(sourceId, targetId, label, btn, writId) {
       const orig = btn.textContent;
       btn.disabled = true;
       try {
-        await api('POST', '/api/writ/unlink', { sourceId, targetId, type });
+        await api('POST', '/api/writ/unlink', { sourceId, targetId, label });
         await refreshDetail(writId);
       } catch (e) {
         alert(`Unlink failed: ${e.message}`);
@@ -755,19 +755,19 @@
       }
     }
 
-    async function doAddLink(writId, targetId, type, btn, errEl, targetInput, typeInput) {
+    async function doAddLink(writId, targetId, label, btn, errEl, targetInput, labelInput) {
       clearError(errEl);
-      if (!targetId || !type) {
-        showError(errEl, 'Target writ id and link type are required.');
+      if (!targetId || !label) {
+        showError(errEl, 'Target writ id and link label are required.');
         return;
       }
       btn.disabled = true;
       const orig = btn.textContent;
       btn.textContent = 'Linking...';
       try {
-        await api('POST', '/api/writ/link', { sourceId: writId, targetId, type });
+        await api('POST', '/api/writ/link', { sourceId: writId, targetId, label });
         targetInput.value = '';
-        typeInput.value = '';
+        labelInput.value = '';
         await refreshDetail(writId);
       } catch (e) {
         showError(errEl, e.message);
@@ -1154,7 +1154,7 @@
           const srcId = repostSourceId;
           repostSourceId = null;
           try {
-            await api('POST', '/api/writ/link', { sourceId: newWrit.id, targetId: srcId, type: 'retries' });
+            await api('POST', '/api/writ/link', { sourceId: newWrit.id, targetId: srcId, label: 'retries' });
           } catch (le) {
             warnEl.textContent = `Writ posted but link to original failed: ${le.message}. You can add the link manually.`;
             warnEl.style.display = 'block';

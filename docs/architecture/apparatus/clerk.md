@@ -32,11 +32,19 @@ recommends: ['oculus']
 
 ## Kit Interface
 
-The Clerk consumes `writTypes` kit contributions. Kits may declare writ types that are merged into the guild's type vocabulary at startup.
+The Clerk consumes `writTypes` and `linkKinds` kit contributions. Kits may declare writ types that are merged into the guild's type vocabulary at startup, and link kinds that seed the kit-contributed link-kind registry.
 
 ```typescript
-consumes: ['writTypes']
+consumes: ['writTypes', 'linkKinds']
 ```
+
+### `linkKinds` registry
+
+Kits contribute link-kind descriptors via the `linkKinds` field on `ClerkKit` (or on an apparatus's `supportKit`). Each entry takes the shape `{ id, description }`. The `id` must have the form `{pluginId}.{kebab-suffix}` (dot-separated, kebab-case suffix), where the prefix matches the contributing plugin's id. Malformed entries, mismatched prefixes, non-kebab suffixes, and duplicate ids all hard-fail at startup — a malformed or colliding kind that silently disappeared would be worse than a boot failure, because downstream consumers key on it.
+
+The registry projection is exposed through `ClerkApi.listKinds()`, which returns `LinkKindDoc[]` — each entry pairs the fully-qualified id with the resolved `ownerPlugin` and the supplied `description`. Downstream consumers (tools, Oculus pages, other apparatuses) read the registry through that API; there is no direct access to the internal map.
+
+Link rows attach a kind via the optional `kind` field on `WritLinkDoc`. The `kind` is the load-bearing identifier (stable, plugin-owned, validated against the registry). The `label` field is the casual, human-facing string (open, syntactically normalized, not validated against any registry). Every link row has a `label`; `kind` is `null` when no kind is attached. `link()` rejects unknown `kind` ids at call time with `Unknown link kind "<id>". Registered link kinds: ...`.
 
 ---
 
@@ -52,7 +60,7 @@ supportKit: {
       ],
     },
     links: {
-      indexes: ['sourceId', 'targetId', 'type', ['sourceId', 'type'], ['targetId', 'type']],
+      indexes: ['sourceId', 'targetId', 'label', ['sourceId', 'label'], ['targetId', 'label']],
     },
   },
   tools: [
@@ -65,6 +73,8 @@ supportKit: {
     writPublish,
     writLink,
     writUnlink,
+    writLinkKinds,
+    writLinkKindsShow,
     writTypesTool,
   ],
 },
@@ -224,14 +234,21 @@ interface ClerkApi {
 
   // ── Links ─────────────────────────────────────────────────────
 
-  /** Create a typed directional link from one writ to another. Idempotent. */
-  link(sourceId: string, targetId: string, type: string): Promise<WritLinkDoc>
+  /**
+   * Create a labeled directional link from one writ to another.
+   * Idempotent. When `kind` is supplied it must appear in the
+   * kit-contributed link-kind registry; unknown ids throw.
+   */
+  link(sourceId: string, targetId: string, label: string, kind?: string): Promise<WritLinkDoc>
 
   /** Query all links for a writ — both outbound and inbound. */
   links(writId: string): Promise<WritLinks>
 
   /** Remove a link. Idempotent. */
-  unlink(sourceId: string, targetId: string, type: string): Promise<void>
+  unlink(sourceId: string, targetId: string, label: string): Promise<void>
+
+  /** List every kit-contributed link kind in the registry. */
+  listKinds(): Promise<LinkKindDoc[]>
 }
 ```
 

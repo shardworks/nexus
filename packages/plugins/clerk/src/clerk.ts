@@ -31,8 +31,8 @@ import type {
   EditWritRequest,
   WritFilters,
   WritTypeEntry,
-  MeaningEntry,
-  MeaningDoc,
+  KindEntry,
+  LinkKindDoc,
 } from './types.ts';
 
 import {
@@ -47,11 +47,11 @@ import {
   writPublish,
   writLink,
   writUnlink,
-  writLinkMeanings,
-  writLinkMeaningsShow,
+  writLinkKinds,
+  writLinkKindsShow,
 } from './tools/index.ts';
 
-import { normalizeLinkType } from './link-normalize.ts';
+import { normalizeLinkLabel } from './link-normalize.ts';
 
 // ── Kit contribution interface ────────────────────────────────────────
 
@@ -60,13 +60,13 @@ export interface ClerkKit {
   /** Writ type descriptors to register with the Clerk. Names are unqualified. */
   writTypes?: WritTypeEntry[];
   /**
-   * Link-meaning descriptors to register with the Clerk. Meaning ids must be
-   * prefixed with the contributing plugin id (e.g. `astrolabe:refines`).
+   * Link-kind descriptors to register with the Clerk. Kind ids must be
+   * prefixed with the contributing plugin id (e.g. `astrolabe.refines`).
    * Kit authors supply `{ id, description }`; the registry-projection view
-   * (returned by `listMeanings()`) embeds the resolved owner plugin id on
-   * each record as `ownerPlugin`.
+   * (returned by `listKinds()`) embeds the resolved owner plugin id on each
+   * record as `ownerPlugin`.
    */
-  linkMeanings?: MeaningEntry[];
+  linkKinds?: KindEntry[];
 }
 
 // ── Built-in writ types ──────────────────────────────────────────────
@@ -122,22 +122,22 @@ export function createClerk(): Plugin {
   /** Config-declared writ type names, for override checking during kit registration. */
   let configWritTypeNames: Set<string> = new Set();
 
-  /** Internal metadata stored per registered link meaning. */
-  interface MeaningMeta {
+  /** Internal metadata stored per registered link kind. */
+  interface KindMeta {
     ownerPlugin: string;
     description: string;
   }
 
-  /** Registry of kit-contributed link meanings, keyed by meaning id. */
-  let linkMeaningRegistry: Map<string, MeaningMeta> = new Map();
+  /** Registry of kit-contributed link kinds, keyed by kind id. */
+  let linkKindRegistry: Map<string, KindMeta> = new Map();
 
   /**
-   * Grammar for meaning-id suffixes after the `{pluginId}:` prefix.
+   * Grammar for kind-id suffixes after the `{pluginId}.` prefix.
    *
    * Kebab-case only: lowercase letters, digits, and hyphens. Must not start
    * or end with a hyphen and must have at least one character.
    */
-  const MEANING_SUFFIX_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+  const KIND_SUFFIX_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
   // ── Helpers ──────────────────────────────────────────────────────
 
@@ -214,19 +214,19 @@ export function createClerk(): Plugin {
     }
   }
 
-  function registerKitLinkMeanings(kitEntry: { pluginId: string; value: unknown }): void {
+  function registerKitLinkKinds(kitEntry: { pluginId: string; value: unknown }): void {
     const pluginId = kitEntry.pluginId;
     const raw = kitEntry.value;
     if (!Array.isArray(raw)) {
       throw new Error(
-        `[clerk] Kit "${pluginId}" linkMeanings: expected an array, got ${typeof raw}.`,
+        `[clerk] Kit "${pluginId}" linkKinds: expected an array, got ${typeof raw}.`,
       );
     }
 
     for (const entry of raw) {
       if (typeof entry !== 'object' || entry === null) {
         throw new Error(
-          `[clerk] Kit "${pluginId}" linkMeanings: entry is not an object (got ${entry === null ? 'null' : typeof entry}).`,
+          `[clerk] Kit "${pluginId}" linkKinds: entry is not an object (got ${entry === null ? 'null' : typeof entry}).`,
         );
       }
       const rec = entry as Record<string, unknown>;
@@ -235,44 +235,44 @@ export function createClerk(): Plugin {
 
       if (typeof id !== 'string' || id.length === 0) {
         throw new Error(
-          `[clerk] Kit "${pluginId}" linkMeanings: entry is missing a non-empty string "id" field.`,
+          `[clerk] Kit "${pluginId}" linkKinds: entry is missing a non-empty string "id" field.`,
         );
       }
       if (typeof description !== 'string' || description.length === 0) {
         throw new Error(
-          `[clerk] Kit "${pluginId}" linkMeanings: entry "${id}" is missing a non-empty string "description" field.`,
+          `[clerk] Kit "${pluginId}" linkKinds: entry "${id}" is missing a non-empty string "description" field.`,
         );
       }
 
-      const colonIdx = id.indexOf(':');
-      if (colonIdx <= 0 || colonIdx === id.length - 1) {
+      const dotIdx = id.indexOf('.');
+      if (dotIdx <= 0 || dotIdx === id.length - 1) {
         throw new Error(
-          `[clerk] Kit "${pluginId}" linkMeanings: entry "${id}" must be of the form "{pluginId}:{kebab-suffix}".`,
+          `[clerk] Kit "${pluginId}" linkKinds: entry "${id}" must be of the form "{pluginId}.{kebab-suffix}".`,
         );
       }
-      const prefix = id.slice(0, colonIdx);
-      const suffix = id.slice(colonIdx + 1);
+      const prefix = id.slice(0, dotIdx);
+      const suffix = id.slice(dotIdx + 1);
 
       if (prefix !== pluginId) {
         throw new Error(
-          `[clerk] Kit "${pluginId}" linkMeanings: entry "${id}" has prefix "${prefix}" but must match the contributing plugin id "${pluginId}".`,
+          `[clerk] Kit "${pluginId}" linkKinds: entry "${id}" has prefix "${prefix}" but must match the contributing plugin id "${pluginId}".`,
         );
       }
 
-      if (!MEANING_SUFFIX_RE.test(suffix)) {
+      if (!KIND_SUFFIX_RE.test(suffix)) {
         throw new Error(
-          `[clerk] Kit "${pluginId}" linkMeanings: entry "${id}" suffix "${suffix}" must be kebab-case (lowercase letters, digits, and hyphens, not starting or ending with "-").`,
+          `[clerk] Kit "${pluginId}" linkKinds: entry "${id}" suffix "${suffix}" must be kebab-case (lowercase letters, digits, and hyphens, not starting or ending with "-").`,
         );
       }
 
-      if (linkMeaningRegistry.has(id)) {
-        const existing = linkMeaningRegistry.get(id)!;
+      if (linkKindRegistry.has(id)) {
+        const existing = linkKindRegistry.get(id)!;
         throw new Error(
-          `[clerk] Kit "${pluginId}" linkMeanings: duplicate meaning id "${id}" — already registered by kit "${existing.ownerPlugin}".`,
+          `[clerk] Kit "${pluginId}" linkKinds: duplicate kind id "${id}" — already registered by kit "${existing.ownerPlugin}".`,
         );
       }
 
-      linkMeaningRegistry.set(id, {
+      linkKindRegistry.set(id, {
         ownerPlugin: pluginId,
         description,
       });
@@ -401,8 +401,8 @@ export function createClerk(): Plugin {
     async link(
       sourceId: string,
       targetId: string,
-      type: string,
-      semanticMeaning?: string,
+      label: string,
+      kind?: string,
     ): Promise<WritLinkDoc> {
       if (sourceId === targetId) {
         throw new Error(`Cannot link a writ to itself: "${sourceId}".`);
@@ -410,20 +410,20 @@ export function createClerk(): Plugin {
 
       // D2: normalize first, then reject empty canonical form. An all-
       // whitespace input canonicalizes to '' and is rejected here.
-      const normalizedType = normalizeLinkType(type);
-      if (!normalizedType) {
-        throw new Error('Link type must be a non-empty string.');
+      const normalizedLabel = normalizeLinkLabel(label);
+      if (!normalizedLabel) {
+        throw new Error('Link label must be a non-empty string.');
       }
 
-      // If a semanticMeaning was supplied, validate it against the registry
-      // before touching the store.
-      if (semanticMeaning !== undefined) {
-        if (!linkMeaningRegistry.has(semanticMeaning)) {
+      // If a kind was supplied, validate it against the registry before
+      // touching the store.
+      if (kind !== undefined) {
+        if (!linkKindRegistry.has(kind)) {
           throw new Error(
-            `Unknown semanticMeaning "${semanticMeaning}". Registered meanings: ${
-              linkMeaningRegistry.size === 0
+            `Unknown link kind "${kind}". Registered link kinds: ${
+              linkKindRegistry.size === 0
                 ? '(none)'
-                : [...linkMeaningRegistry.keys()].join(', ')
+                : [...linkKindRegistry.keys()].join(', ')
             }.`,
           );
         }
@@ -438,15 +438,14 @@ export function createClerk(): Plugin {
         throw new Error(`Writ "${targetId}" not found.`);
       }
 
-      const id = `${sourceId}:${targetId}:${normalizedType}`;
+      const id = `${sourceId}:${targetId}:${normalizedLabel}`;
       const existing = await links.get(id);
       if (existing) {
-        // Upsert: when the caller supplied a semanticMeaning, update the
-        // existing row's meaning. When no meaning was supplied, leave the
-        // existing row untouched (preserves prior meaning assignments made
-        // by earlier callers).
-        if (semanticMeaning !== undefined && existing.semanticMeaning !== semanticMeaning) {
-          return links.patch(id, { semanticMeaning });
+        // Upsert: when the caller supplied a kind, update the existing row's
+        // kind. When no kind was supplied, leave the existing row untouched
+        // (preserves prior kind assignments made by earlier callers).
+        if (kind !== undefined && existing.kind !== kind) {
+          return links.patch(id, { kind });
         }
         return existing;
       }
@@ -455,8 +454,8 @@ export function createClerk(): Plugin {
         id,
         sourceId,
         targetId,
-        type: normalizedType,
-        semanticMeaning: semanticMeaning ?? null,
+        label: normalizedLabel,
+        kind: kind ?? null,
         createdAt: new Date().toISOString(),
       };
       await links.put(doc);
@@ -471,16 +470,16 @@ export function createClerk(): Plugin {
       return { outbound, inbound };
     },
 
-    async unlink(sourceId: string, targetId: string, type: string): Promise<void> {
-      // Normalize first so variant spellings of the same type resolve to the
+    async unlink(sourceId: string, targetId: string, label: string): Promise<void> {
+      // Normalize first so variant spellings of the same label resolve to the
       // same composite id as link() used.
-      const normalizedType = normalizeLinkType(type);
-      if (!normalizedType) {
+      const normalizedLabel = normalizeLinkLabel(label);
+      if (!normalizedLabel) {
         // No-op when the canonical form is empty — unlink() is idempotent, so
         // returning silently is correct even for an unreachable composite id.
         return;
       }
-      const id = `${sourceId}:${targetId}:${normalizedType}`;
+      const id = `${sourceId}:${targetId}:${normalizedLabel}`;
       await links.delete(id);
     },
 
@@ -494,8 +493,8 @@ export function createClerk(): Plugin {
       }));
     },
 
-    async listMeanings(): Promise<MeaningDoc[]> {
-      return [...linkMeaningRegistry.entries()].map(([id, meta]) => ({
+    async listKinds(): Promise<LinkKindDoc[]> {
+      return [...linkKindRegistry.entries()].map(([id, meta]) => ({
         id,
         ownerPlugin: meta.ownerPlugin,
         description: meta.description,
@@ -649,7 +648,7 @@ export function createClerk(): Plugin {
     apparatus: {
       requires: ['stacks'],
       recommends: ['oculus'],
-      consumes: ['writTypes', 'linkMeanings'],
+      consumes: ['writTypes', 'linkKinds'],
 
       supportKit: {
         books: {
@@ -657,7 +656,7 @@ export function createClerk(): Plugin {
             indexes: ['status', 'type', 'createdAt', 'parentId', ['status', 'type'], ['status', 'createdAt'], ['parentId', 'status']],
           },
           links: {
-            indexes: ['sourceId', 'targetId', 'type', ['sourceId', 'type'], ['targetId', 'type']],
+            indexes: ['sourceId', 'targetId', 'label', ['sourceId', 'label'], ['targetId', 'label']],
           },
         },
         tools: [
@@ -672,8 +671,8 @@ export function createClerk(): Plugin {
           writPublish,
           writLink,
           writUnlink,
-          writLinkMeanings,
-          writLinkMeaningsShow,
+          writLinkKinds,
+          writLinkKindsShow,
           writTypesTool,
         ],
         pages: [
@@ -703,13 +702,13 @@ export function createClerk(): Plugin {
           registerKitWritTypes(entry);
         }
 
-        // Scan all kit-contributed link meanings via the Wire-phase snapshot.
+        // Scan all kit-contributed link kinds via the Wire-phase snapshot.
         // Unlike writTypes, malformed entries here hard-fail the start() call
-        // — a reserved meaning id that silently disappears would be worse
-        // than a startup failure, because downstream consumers key on it.
-        linkMeaningRegistry = new Map();
-        for (const entry of ctx.kits('linkMeanings')) {
-          registerKitLinkMeanings(entry);
+        // — a reserved kind id that silently disappears would be worse than
+        // a startup failure, because downstream consumers key on it.
+        linkKindRegistry = new Map();
+        for (const entry of ctx.kits('linkKinds')) {
+          registerKitLinkKinds(entry);
         }
 
         // ── CDC: parent/child cascade ───────────────────────────────
@@ -752,13 +751,13 @@ export function createClerk(): Plugin {
         // ── One-shot migration: normalize link rows ──────────────────
         // Two-pass flow per D7:
         //   Pass 1 — scan every link row, group by (sourceId, targetId,
-        //     normalizedType). A group with multiple rows is a collision:
+        //     normalizedLabel). A group with multiple rows is a collision:
         //     variant spellings that collapse to the same canonical form.
         //   Pass 2 — per group, keep the row with the earliest createdAt;
         //     warn and delete the younger siblings (older wins,
         //     deterministic regardless of iteration order). Rewrite the
-        //     survivor's id and type to the canonical form and set
-        //     `semanticMeaning = null` when absent.
+        //     survivor's id and label to the canonical form and set
+        //     `kind = null` when absent.
         //
         // Safe to run inside start(): stacks only seals the CDC registry
         // at phase:started (after every apparatus has started), so these
@@ -768,7 +767,7 @@ export function createClerk(): Plugin {
         const allLinks = await links.find({});
         const groups = new Map<string, WritLinkDoc[]>();
         for (const row of allLinks) {
-          const normalized = normalizeLinkType(row.type);
+          const normalized = normalizeLinkLabel(row.label);
           const key = `${row.sourceId}:${row.targetId}:${normalized}`;
           const bucket = groups.get(key) ?? [];
           bucket.push(row);
@@ -791,13 +790,13 @@ export function createClerk(): Plugin {
             await links.delete(loser.id);
           }
 
-          const normalizedType = canonicalId.slice(
+          const normalizedLabel = canonicalId.slice(
             (survivor.sourceId.length + 1) + (survivor.targetId.length + 1),
           );
           const needsRewrite =
             survivor.id !== canonicalId ||
-            survivor.type !== normalizedType ||
-            survivor.semanticMeaning === undefined;
+            survivor.label !== normalizedLabel ||
+            survivor.kind === undefined;
 
           if (!needsRewrite) continue;
 
@@ -807,8 +806,8 @@ export function createClerk(): Plugin {
             id: canonicalId,
             sourceId: survivor.sourceId,
             targetId: survivor.targetId,
-            type: normalizedType,
-            semanticMeaning: survivor.semanticMeaning ?? null,
+            label: normalizedLabel,
+            kind: survivor.kind ?? null,
             createdAt: survivor.createdAt,
           };
           if (survivor.id !== canonicalId) {

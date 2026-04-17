@@ -8,20 +8,20 @@ export default tool({
   description: 'Link two writs with a typed relationship',
   instructions:
     'Creates a directional link from source writ to target writ. ' +
-    'The type describes the relationship (e.g. "fixes", "retries", "supersedes", "duplicates"). ' +
-    'The type is normalized at write time — "depends-on", "dependsOn", and "depends on" all ' +
+    'The label describes the relationship (e.g. "fixes", "retries", "supersedes", "duplicates"). ' +
+    'The label is normalized at write time — "depends-on", "dependsOn", and "depends on" all ' +
     'collapse to the same canonical form. Idempotent — creating the same link twice returns ' +
-    'the existing link. For load-bearing relationships, pass `--meaning <id>` to attach a ' +
+    'the existing link. For load-bearing relationships, pass `--kind <id>` to attach a ' +
     'registered semantic meaning; the id must appear in the kit-contributed meaning registry ' +
-    '(see `writ link-meanings`).',
+    '(see `writ link-kinds`).',
   params: {
     sourceId: z.string().describe('The writ that is the origin of this relationship'),
     targetId: z.string().describe('The writ that is the target of this relationship'),
-    type: z.string().describe('Relationship type (e.g. "fixes", "retries", "supersedes", "duplicates") — casual label, normalized at write time'),
-    meaning: z
+    label: z.string().describe('Relationship label (e.g. "fixes", "retries", "supersedes", "duplicates") — casual label, normalized at write time'),
+    kind: z
       .string()
       .optional()
-      .describe('Optional load-bearing semantic meaning id (must be registered — see `writ link-meanings`)'),
+      .describe('Optional load-bearing link-kind id (must be registered — see `writ link-kinds`)'),
   },
   permission: 'write',
   handler: async (params) => {
@@ -30,6 +30,6 @@ export default tool({
       clerk.resolveId(params.sourceId),
       clerk.resolveId(params.targetId),
     ]);
-    return clerk.link(resolvedSource, resolvedTarget, params.type, params.meaning);
+    return clerk.link(resolvedSource, resolvedTarget, params.label, params.kind);
   },
 });
