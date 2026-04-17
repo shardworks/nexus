@@ -394,3 +394,329 @@ describe('spider.js rig list polling', () => {
     );
   });
 });
+
+// ── Engine-detail in-place update (no flicker / no scroll reset) ────────
+
+describe('spider.js engine-detail stable-skeleton + updater', () => {
+  it('defines updateEngineDetail as a separate function from showEngineDetail', () => {
+    assert.match(
+      spiderJs,
+      /function updateEngineDetail\(engine\)/,
+      'should define updateEngineDetail for the poll path',
+    );
+    assert.match(
+      spiderJs,
+      /function showEngineDetail\(engine\)/,
+      'should still define showEngineDetail for the click path',
+    );
+  });
+
+  it('defines a buildEngineDetailSkeleton that establishes stable field ids', () => {
+    assert.match(
+      spiderJs,
+      /function buildEngineDetailSkeleton\(/,
+      'should define a one-time skeleton builder',
+    );
+  });
+
+  it('skeleton declares stable id containers for the value-bearing fields', () => {
+    // Spot-check a representative subset of the stable-id contract.
+    const expectedIds = [
+      'ed-status',
+      'ed-design-id',
+      'ed-upstream',
+      'ed-started-at',
+      'ed-completed-at',
+      'ed-elapsed',
+      'ed-error',
+      'ed-session-id',
+      'ed-block-type',
+      'ed-cost-input',
+      'ed-cost-output',
+      'ed-cost-usd',
+      'ed-givens-code',
+      'ed-yields-code',
+      'ed-cancel-container',
+    ];
+    for (const id of expectedIds) {
+      assert.match(
+        spiderJs,
+        new RegExp(`id="${id}"`),
+        `skeleton should define a stable id container for ${id}`,
+      );
+    }
+  });
+
+  it('the old #cost-placeholder insertAdjacentHTML trick is gone', () => {
+    assert.doesNotMatch(
+      spiderJs,
+      /id="cost-placeholder"/,
+      'skeleton should not use the old #cost-placeholder span',
+    );
+    assert.doesNotMatch(
+      spiderJs,
+      /insertAdjacentHTML\('beforebegin'/,
+      'cost rendering should not use insertAdjacentHTML anymore',
+    );
+  });
+
+  it('the rig poll path calls updateEngineDetail (not showEngineDetail) for the selected engine', () => {
+    const pollBlock = spiderJs.match(
+      /function fetchCurrentRigQuiet[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(pollBlock, 'should find fetchCurrentRigQuiet');
+    assert.match(
+      pollBlock[0],
+      /updateEngineDetail\(/,
+      'fetchCurrentRigQuiet should call updateEngineDetail on poll',
+    );
+    assert.doesNotMatch(
+      pollBlock[0],
+      /showEngineDetail\(/,
+      'fetchCurrentRigQuiet must NOT call showEngineDetail (that would re-open SSE and rebuild the panel)',
+    );
+  });
+
+  it('updateEngineDetail does not rewrite the engine-detail-body innerHTML', () => {
+    const updaterBlock = spiderJs.match(
+      /function updateEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(updaterBlock, 'should find updateEngineDetail body');
+    assert.doesNotMatch(
+      updaterBlock[0],
+      /engine-detail-body[\s\S]*?innerHTML\s*=/,
+      'updateEngineDetail must not rewrite #engine-detail-body innerHTML',
+    );
+  });
+});
+
+// ── SSE stream lifecycle decoupled from rig polling ─────────────────────
+
+describe('spider.js SSE lifecycle decoupling', () => {
+  it('declares streamSessionId in module scope', () => {
+    assert.match(
+      spiderJs,
+      /var streamSessionId\s*=\s*null/,
+      'should track streamSessionId in module scope',
+    );
+  });
+
+  it('declares streamDone in module scope (hoisted out of showEngineDetail)', () => {
+    // The streamDone flag must survive the function boundary so the SSE
+    // error handler can still reference it after stopSessionStream nulls
+    // out the EventSource reference.
+    assert.match(
+      spiderJs,
+      /^\s*var streamDone\s*=\s*false;?\s*$/m,
+      'should declare streamDone in module scope',
+    );
+  });
+
+  it('defines ensureSessionStream that compares against streamSessionId', () => {
+    assert.match(
+      spiderJs,
+      /function ensureSessionStream\(/,
+      'should define ensureSessionStream',
+    );
+    const ensureBlock = spiderJs.match(
+      /function ensureSessionStream[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(ensureBlock, 'should find ensureSessionStream body');
+    assert.match(
+      ensureBlock[0],
+      /streamSessionId/,
+      'ensureSessionStream should compare against streamSessionId',
+    );
+  });
+
+  it('showEngineDetail calls ensureSessionStream (not raw EventSource)', () => {
+    const showBlock = spiderJs.match(
+      /function showEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(showBlock, 'should find showEngineDetail');
+    assert.match(
+      showBlock[0],
+      /ensureSessionStream\(/,
+      'click path should go through ensureSessionStream',
+    );
+    assert.doesNotMatch(
+      showBlock[0],
+      /new EventSource/,
+      'click path should not directly construct EventSource (delegated to openSessionStream)',
+    );
+  });
+
+  it('stopSessionStream clears streamSessionId so re-opens dedupe correctly', () => {
+    const stopBlock = spiderJs.match(
+      /function stopSessionStream\(\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(stopBlock, 'should find stopSessionStream');
+    assert.match(
+      stopBlock[0],
+      /streamSessionId\s*=\s*null/,
+      'stopSessionStream should null out streamSessionId',
+    );
+  });
+});
+
+// ── Transcript scroll preservation on all write paths ───────────────────
+
+describe('spider.js transcript scroll preservation', () => {
+  it('SSE chunk handler captures atBottom before mutating textarea', () => {
+    const chunkBlock = spiderJs.match(
+      /addEventListener\('chunk',\s*function[\s\S]*?\}\);/,
+    );
+    assert.ok(chunkBlock, 'should find chunk handler');
+    assert.match(
+      chunkBlock[0],
+      /var atBottom\s*=/,
+      'chunk handler should capture atBottom before mutation',
+    );
+    assert.match(
+      chunkBlock[0],
+      /if\s*\(atBottom\)/,
+      'chunk handler should restore scroll only when atBottom was true',
+    );
+  });
+
+  it('SSE transcript handler captures atBottom before replacing textarea value', () => {
+    const transcriptBlock = spiderJs.match(
+      /addEventListener\('transcript',\s*function[\s\S]*?\}\);/,
+    );
+    assert.ok(transcriptBlock, 'should find transcript handler');
+    assert.match(
+      transcriptBlock[0],
+      /var atBottom\s*=/,
+      'transcript handler should capture atBottom before mutation',
+    );
+    assert.match(
+      transcriptBlock[0],
+      /if\s*\(atBottom\)/,
+      'transcript handler should restore scroll only when atBottom was true',
+    );
+  });
+
+  it('noStream polling fallback also uses the atBottom pattern', () => {
+    // The noStream path's atBottom guard predates this fix and must remain.
+    const doneBlock = spiderJs.match(
+      /addEventListener\('done',\s*function[\s\S]*?if \(data\.noStream[\s\S]*?\}\);\s*$/m,
+    );
+    assert.ok(doneBlock, 'should find done handler with noStream branch');
+    assert.match(
+      doneBlock[0],
+      /var atBottom\s*=/,
+      'noStream fallback should retain its atBottom capture',
+    );
+  });
+});
+
+// ── Pipeline renderer keyed in-place update ─────────────────────────────
+
+describe('spider.js pipeline keyed update', () => {
+  it('renderPipelineInto indexes existing nodes by data-engine-id', () => {
+    const block = spiderJs.match(
+      /function renderPipelineInto\([\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find renderPipelineInto');
+    assert.match(
+      block[0],
+      /querySelectorAll\(['"]\.pipeline-node['"]\)/,
+      'renderPipelineInto should look up existing pipeline-node children',
+    );
+    assert.match(
+      block[0],
+      /getAttribute\(['"]data-engine-id['"]\)/,
+      'renderPipelineInto should key existing nodes by data-engine-id',
+    );
+  });
+
+  it('renderPipelineInto has a fast path that patches in place when order is unchanged', () => {
+    const block = spiderJs.match(
+      /function renderPipelineInto\([\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find renderPipelineInto');
+    assert.match(
+      block[0],
+      /orderUnchanged/,
+      'should compute an orderUnchanged flag for the keyed fast path',
+    );
+  });
+
+  it('exposes updatePipelineNode for in-place badge/selection updates', () => {
+    assert.match(
+      spiderJs,
+      /function updatePipelineNode\(node, engine\)/,
+      'should define updatePipelineNode helper for in-place node updates',
+    );
+  });
+
+  it('pipeline node carries a class hook for the status badge', () => {
+    // Without a class hook, the keyed-update path can't unambiguously
+    // target the status badge inside a node.
+    assert.match(
+      spiderJs,
+      /pipeline-node-status/,
+      'pipeline-node-status class hook should mark the badge for updates',
+    );
+  });
+});
+
+// ── Cost fetch gated on transition to completed ─────────────────────────
+
+describe('spider.js session cost fetch gating', () => {
+  it('declares costFetchedFor cache in module scope', () => {
+    assert.match(
+      spiderJs,
+      /var costFetchedFor\s*=\s*\{\}/,
+      'should declare costFetchedFor cache to gate the cost fetch',
+    );
+  });
+
+  it('cost fetch is not fired unconditionally on every render', () => {
+    // Locate the call to /api/session/show — it must be inside a guarded
+    // helper, not directly inside updateEngineDetail's per-render path.
+    const updaterBlock = spiderJs.match(
+      /function updateEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(updaterBlock, 'should find updateEngineDetail');
+    assert.doesNotMatch(
+      updaterBlock[0],
+      /fetch\(['"]\/api\/session\/show/,
+      'updateEngineDetail should not call /api/session/show directly',
+    );
+    assert.match(
+      updaterBlock[0],
+      /costFetchedFor\[engine\.id\]/,
+      'updateEngineDetail should consult costFetchedFor before requesting cost',
+    );
+  });
+
+  it('cost fetch helper exists and targets /api/session/show', () => {
+    assert.match(
+      spiderJs,
+      /function fetchSessionCost\(/,
+      'should define a dedicated fetchSessionCost helper',
+    );
+    const helperBlock = spiderJs.match(
+      /function fetchSessionCost\([\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(helperBlock, 'should find fetchSessionCost body');
+    assert.match(
+      helperBlock[0],
+      /\/api\/session\/show\?id=/,
+      'fetchSessionCost should call the session show endpoint',
+    );
+  });
+
+  it('updateEngineDetail tracks engine status across polls to detect transition', () => {
+    const updaterBlock = spiderJs.match(
+      /function updateEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(updaterBlock, 'should find updateEngineDetail');
+    assert.match(
+      updaterBlock[0],
+      /engineStatusByEngineId/,
+      'updateEngineDetail should record engine status to detect transitions',
+    );
+  });
+});

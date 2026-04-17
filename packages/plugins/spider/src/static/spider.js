@@ -21,6 +21,24 @@
   var rigListPollTimer = null;
   var currentRigPollTimer = null;
 
+  // SSE lifecycle state — decoupled from the rig-detail render path.
+  // streamSessionId tracks which sessionId the active EventSource was opened
+  // for, so we can dedupe re-opens across rig polls and only re-open when the
+  // tracked id actually changes (engine switch or pending → running).
+  var streamSessionId = null;
+  // streamDone is hoisted out of showEngineDetail so the EventSource error
+  // handler (which fires asynchronously after a clean close) can still see
+  // that the stream ended normally and skip the spurious "disconnected" badge.
+  var streamDone = false;
+
+  // Tracks engines for which the per-session cost has already been fetched.
+  // Reset when navigating to a new rig. Used to gate the cost fetch so each
+  // engine's /api/session/show is requested at most once.
+  var costFetchedFor = {};
+  // Tracks the engine's status from the previous tick so the poll updater
+  // can detect a transition into 'completed' and trigger the cost fetch.
+  var engineStatusByEngineId = {};
+
   var RIG_POLL_INTERVAL = 2000;
 
   // ── Badge mapping ──────────────────────────────────────────────────────
@@ -131,6 +149,8 @@
       sessionEventSource.close();
       sessionEventSource = null;
     }
+    streamSessionId = null;
+    streamDone = false;
     stopSessionPoll();
   }
 
@@ -196,7 +216,15 @@
     }, RIG_POLL_INTERVAL);
   }
 
-  /** Refetch the currently-viewed rig and update detail + pipeline in place. */
+  /**
+   * Refetch the currently-viewed rig and update detail + pipeline in place.
+   *
+   * The poll path must NOT call showEngineDetail directly — that function
+   * rebuilds the engine-detail body wholesale and re-opens the SSE stream,
+   * causing flicker, collapsing <details> blocks, and yanking textarea
+   * scroll. Instead, we call updateEngineDetail which does targeted writes
+   * into the stable field containers established on the click path.
+   */
   function fetchCurrentRigQuiet() {
     if (!currentRig) { stopCurrentRigPoll(); return; }
     fetch('/api/rig/show?id=' + encodeURIComponent(currentRig.id))
@@ -217,16 +245,17 @@
             '</tbody>';
         }
 
-        // Re-render pipeline, preserving selection
+        // Re-render pipeline using keyed in-place update (no flicker).
         renderPipeline(rig);
 
         // If an engine was selected, update engine detail with fresh data
+        // via the targeted updater — never rebuild the panel from a poll.
         if (selectedEngineId) {
           var updatedEngine = (rig.engines || []).find(function (e) {
             return e.id === selectedEngineId;
           });
           if (updatedEngine) {
-            showEngineDetail(updatedEngine);
+            updateEngineDetail(updatedEngine);
           }
         }
 
@@ -350,6 +379,11 @@
     stopSessionStream();
     stopCurrentRigPoll();
 
+    // Reset per-rig caches so the new rig's engines refetch cost cleanly
+    // and status transitions are tracked from a clean slate.
+    costFetchedFor = {};
+    engineStatusByEngineId = {};
+
     document.getElementById('rig-list-view').style.display = 'none';
     document.getElementById('rig-detail-view').style.display = '';
 
@@ -388,27 +422,85 @@
     var sessionLogSection = document.getElementById('session-log-section');
     if (sessionLogSection) sessionLogSection.style.display = 'none';
 
+    // Switching rigs: clear pipeline so any reused-id collisions can't reuse
+    // stale click handlers from a previous rig's nodes. The keyed-update
+    // path only kicks in for subsequent polls of the same rig.
+    var pipeline = document.getElementById('pipeline');
+    if (pipeline) pipeline.innerHTML = '';
+
     renderPipeline(rig);
 
     var engineDetail = document.getElementById('engine-detail');
     if (engineDetail) engineDetail.style.display = 'none';
 
+    // Clear the engine-detail body so the next selection rebuilds the
+    // skeleton from scratch (no leftover stable-id containers from a
+    // previously-selected engine of the previous rig).
+    var engineDetailBody = document.getElementById('engine-detail-body');
+    if (engineDetailBody) engineDetailBody.innerHTML = '';
+
     startCurrentRigPoll();
   }
 
-  // ── Render pipeline (generic) ──────────────────────────────────────────
+  // ── Render pipeline (generic, keyed in-place update) ───────────────────
 
+  /**
+   * Render or update a pipeline of engines into the given container.
+   *
+   * Uses a keyed in-place update strategy indexed by engine.id:
+   *   - Existing nodes are reused (preserving any internal DOM state).
+   *   - The status badge text/class and selection class are patched in place.
+   *   - Only nodes for previously-unseen engine ids are created.
+   *   - Nodes for engines no longer in the list are dropped on rebuild.
+   *
+   * Also serves the Config tab's template-pipeline preview; first invocation
+   * on an empty container is the degenerate "all new nodes" case.
+   */
   function renderPipelineInto(containerId, engines, detailConfig) {
     var pipeline = document.getElementById(containerId);
     if (!pipeline) return;
-    pipeline.innerHTML = '';
 
-    if (engines.length === 0) {
+    if (!engines || engines.length === 0) {
+      pipeline.innerHTML = '';
       pipeline.textContent = 'No engines.';
       return;
     }
 
     var sorted = topoSort(engines);
+
+    // Index existing pipeline-node children by engine id.
+    // (We deliberately do NOT touch arrow elements — they have no state.)
+    var existingNodes = {};
+    var existingList = pipeline.querySelectorAll('.pipeline-node');
+    for (var i = 0; i < existingList.length; i++) {
+      var existingId = existingList[i].getAttribute('data-engine-id');
+      if (existingId) existingNodes[existingId] = existingList[i];
+    }
+
+    // Fast path: same engine set in the same order. Patch each node in
+    // place without touching the parent's child list. This is the common
+    // case during rig polls.
+    var orderUnchanged =
+      existingList.length === sorted.length &&
+      sorted.every(function (e, idx) {
+        return existingList[idx].getAttribute('data-engine-id') === e.id;
+      });
+
+    if (orderUnchanged) {
+      sorted.forEach(function (engine) {
+        var node = existingNodes[engine.id];
+        if (node) {
+          updatePipelineNode(node, engine);
+        }
+      });
+      return;
+    }
+
+    // Slow path: engine set or order changed. Detach existing nodes,
+    // rebuild arrow markers, and re-attach reused nodes (creating fresh
+    // ones for previously-unseen engine ids). Stale nodes are dropped.
+    pipeline.innerHTML = '';
+    pipeline.textContent = '';
 
     sorted.forEach(function (engine, idx) {
       if (idx > 0) {
@@ -417,36 +509,76 @@
         arrow.textContent = '\u2192';
         pipeline.appendChild(arrow);
       }
-
-      var node = document.createElement('div');
-      node.className = 'pipeline-node' + (engine.id === selectedEngineId ? ' selected' : '');
-      node.setAttribute('data-engine-id', engine.id);
-
-      var idSpan = document.createElement('span');
-      idSpan.className = 'node-id';
-      idSpan.textContent = engine.id;
-      node.appendChild(idSpan);
-
-      var badgeEl = document.createElement('span');
-      var bc = badgeClass(engine.status);
-      badgeEl.className = bc ? 'badge ' + bc : 'badge';
-      badgeEl.textContent = engine.status;
-      node.appendChild(badgeEl);
-
-      if (engine.upstream && engine.upstream.length > 1) {
-        var upEl = document.createElement('span');
-        upEl.style.fontSize = '10px';
-        upEl.style.color = 'var(--text-dim, #888)';
-        upEl.textContent = '\u2191 ' + engine.upstream.join(', ');
-        node.appendChild(upEl);
+      var node = existingNodes[engine.id];
+      if (!node) {
+        node = createPipelineNode(engine, detailConfig);
       }
-
-      node.addEventListener('click', function () {
-        detailConfig.onClick(engine);
-      });
-
+      updatePipelineNode(node, engine);
       pipeline.appendChild(node);
     });
+  }
+
+  function createPipelineNode(engine, detailConfig) {
+    var node = document.createElement('div');
+    node.className = 'pipeline-node';
+    node.setAttribute('data-engine-id', engine.id);
+
+    var idSpan = document.createElement('span');
+    idSpan.className = 'node-id';
+    idSpan.textContent = engine.id;
+    node.appendChild(idSpan);
+
+    var badgeEl = document.createElement('span');
+    badgeEl.className = 'badge pipeline-node-status';
+    node.appendChild(badgeEl);
+
+    var upEl = document.createElement('span');
+    upEl.className = 'pipeline-node-upstream';
+    upEl.style.fontSize = '10px';
+    upEl.style.color = 'var(--text-dim, #888)';
+    upEl.style.display = 'none';
+    node.appendChild(upEl);
+
+    // Stash an engine-ref box on the node so the click handler reads the
+    // *latest* engine object after subsequent updates, not a stale closure.
+    node.__engineRef = { engine: engine };
+    node.addEventListener('click', function () {
+      detailConfig.onClick(node.__engineRef.engine);
+    });
+
+    return node;
+  }
+
+  function updatePipelineNode(node, engine) {
+    if (node.__engineRef) {
+      node.__engineRef.engine = engine;
+    }
+
+    var badgeEl = node.querySelector('.pipeline-node-status');
+    if (badgeEl) {
+      var bc = badgeClass(engine.status);
+      var nextClass = 'badge pipeline-node-status' + (bc ? ' ' + bc : '');
+      if (badgeEl.className !== nextClass) badgeEl.className = nextClass;
+      if (badgeEl.textContent !== engine.status) badgeEl.textContent = engine.status;
+    }
+
+    var upEl = node.querySelector('.pipeline-node-upstream');
+    if (upEl) {
+      if (engine.upstream && engine.upstream.length > 1) {
+        var upText = '\u2191 ' + engine.upstream.join(', ');
+        if (upEl.textContent !== upText) upEl.textContent = upText;
+        if (upEl.style.display === 'none') upEl.style.display = '';
+      } else if (upEl.style.display !== 'none') {
+        upEl.style.display = 'none';
+      }
+    }
+
+    // Selection class
+    if (engine.id === selectedEngineId) {
+      if (!node.classList.contains('selected')) node.classList.add('selected');
+    } else if (node.classList.contains('selected')) {
+      node.classList.remove('selected');
+    }
   }
 
   function topoSort(engines) {
@@ -471,21 +603,317 @@
     });
   }
 
-  // ── Show engine detail ─────────────────────────────────────────────────
+  // ── Engine detail skeleton + updater ───────────────────────────────────
 
-  function showEngineDetail(engine) {
-    selectedEngineId = engine.id;
+  /**
+   * Build the stable-id skeleton for the engine-detail panel exactly once
+   * per engine selection. Subsequent rig polls call updateEngineDetail to
+   * write only the value text into these containers — never rebuilding the
+   * markup, which would tear down <details> open state and <pre> scroll.
+   *
+   * Each value-bearing field has a stable id (#ed-*); the corresponding
+   * <dt> labels also have ids so we can hide entire rows when the field is
+   * absent (e.g. block-* rows for non-blocked engines).
+   *
+   * The cancel button sits inside #ed-cancel-container (toggled via
+   * style.display) so we never regenerate it across updates while the
+   * engine remains cancellable, keeping its click handler intact.
+   */
+  function buildEngineDetailSkeleton(body) {
+    var html = '';
 
-    // Update pipeline node selection
+    html += '<div id="ed-cancel-container" style="display:none">';
+    html += '<button class="btn btn--danger" id="cancel-engine-btn">Cancel Rig</button>';
+    html += '</div>';
+
+    html += '<dl class="engine-detail-field">';
+    html += '<dt>Status</dt><dd id="ed-status"></dd>';
+    html += '<dt>Design ID</dt><dd id="ed-design-id"></dd>';
+    html += '<dt>Upstream</dt><dd id="ed-upstream"></dd>';
+    html += '<dt>Started At</dt><dd id="ed-started-at"></dd>';
+    html += '<dt>Completed At</dt><dd id="ed-completed-at"></dd>';
+    html += '<dt id="ed-elapsed-dt" style="display:none">Elapsed</dt>';
+    html += '<dd id="ed-elapsed" style="display:none"></dd>';
+    html += '<dt id="ed-error-dt" style="display:none">Error</dt>';
+    html += '<dd id="ed-error" style="display:none;color:var(--red,#f55)"></dd>';
+    html += '<dt id="ed-session-id-dt" style="display:none">Session ID</dt>';
+    html += '<dd id="ed-session-id" style="display:none"></dd>';
+    html += '<dt id="ed-block-type-dt" style="display:none">Block Type</dt>';
+    html += '<dd id="ed-block-type" style="display:none"></dd>';
+    html += '<dt id="ed-block-blocked-at-dt" style="display:none">Blocked At</dt>';
+    html += '<dd id="ed-block-blocked-at" style="display:none"></dd>';
+    html += '<dt id="ed-block-message-dt" style="display:none">Block Message</dt>';
+    html += '<dd id="ed-block-message" style="display:none"></dd>';
+    html += '<dt id="ed-block-last-checked-dt" style="display:none">Last Checked</dt>';
+    html += '<dd id="ed-block-last-checked" style="display:none"></dd>';
+    html += '<dt id="ed-block-condition-dt" style="display:none">Block Condition</dt>';
+    html += '<dd id="ed-block-condition" style="display:none">';
+    html += '<pre id="ed-block-condition-pre" style="margin:0;font-size:11px"></pre></dd>';
+    // Explicit cost-row containers replace the old #cost-placeholder trick.
+    html += '<dt id="ed-cost-input-dt" style="display:none">Input Tokens</dt>';
+    html += '<dd id="ed-cost-input" style="display:none"></dd>';
+    html += '<dt id="ed-cost-output-dt" style="display:none">Output Tokens</dt>';
+    html += '<dd id="ed-cost-output" style="display:none"></dd>';
+    html += '<dt id="ed-cost-usd-dt" style="display:none">Cost (USD)</dt>';
+    html += '<dd id="ed-cost-usd" style="display:none"></dd>';
+    html += '</dl>';
+
+    // Stable <details> nodes — open/closed state and <pre> scroll inside
+    // these are preserved across polls because we never replace the nodes.
+    html += '<details class="collapsible" id="ed-givens-details">';
+    html += '<summary>Givens Spec</summary>';
+    html += '<pre><code id="ed-givens-code"></code></pre></details>';
+    html += '<details class="collapsible" id="ed-yields-details" style="display:none">';
+    html += '<summary>Yields</summary>';
+    html += '<pre><code id="ed-yields-code"></code></pre></details>';
+
+    body.innerHTML = html;
+
+    // Wire the cancel button click handler exactly once per skeleton build.
+    // The button itself is not regenerated on update, so this handler
+    // survives across polls.
+    var cancelBtn = document.getElementById('cancel-engine-btn');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        if (!currentRig) return;
+        var rigIdAtClick = currentRig.id;
+        var engineIdAtClick = selectedEngineId;
+        cancelBtn.disabled = true;
+        cancelBtn.textContent = 'Cancelling\u2026';
+        fetch('/api/rig/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rigId: rigIdAtClick }),
+        })
+          .then(function (r) {
+            if (!r.ok) throw new Error('Cancel failed: ' + r.status);
+            return r.json();
+          })
+          .then(function (rig) {
+            currentRig = rig;
+            renderPipeline(currentRig);
+            var updatedEngine = (currentRig.engines || []).find(function (en) {
+              return en.id === engineIdAtClick;
+            });
+            if (updatedEngine) updateEngineDetail(updatedEngine);
+          })
+          .catch(function (err) {
+            cancelBtn.disabled = false;
+            cancelBtn.textContent = 'Cancel Rig';
+            console.error('[spider] cancel error:', err);
+          });
+      });
+    }
+  }
+
+  function setText(id, text) {
+    var el = document.getElementById(id);
+    if (el && el.textContent !== text) el.textContent = text;
+  }
+
+  function setHtml(id, html) {
+    var el = document.getElementById(id);
+    if (el && el.innerHTML !== html) el.innerHTML = html;
+  }
+
+  function setRowDisplay(dtId, ddId, visible) {
+    var dt = document.getElementById(dtId);
+    var dd = document.getElementById(ddId);
+    var disp = visible ? '' : 'none';
+    if (dt && dt.style.display !== disp) dt.style.display = disp;
+    if (dd && dd.style.display !== disp) dd.style.display = disp;
+  }
+
+  /**
+   * Update only the value text of the existing engine-detail field
+   * containers. Does not touch the SSE stream, does not re-fetch the
+   * writ, and does not unconditionally re-fetch session cost — cost
+   * fetch is gated on a transition into 'completed' (see costFetchedFor).
+   *
+   * MUST be safe to call on every rig poll: any mutation that would
+   * disturb <details> open state, <pre> scroll, or the cancel-button
+   * click handler must NOT happen here.
+   */
+  function updateEngineDetail(engine) {
+    if (!engine) return;
+
+    // Decide cancel button visibility (in-place; never re-creates the button).
+    var showCancel = false;
+    if (currentRig && (currentRig.status === 'running' || currentRig.status === 'blocked' || currentRig.status === 'stuck')) {
+      showCancel = true;
+    }
+    if (engine.status === 'running' && engine.sessionId) {
+      showCancel = true;
+    }
+    if (currentRig && (currentRig.status === 'completed' || currentRig.status === 'failed' || currentRig.status === 'cancelled')) {
+      showCancel = false;
+    }
+    var cancelContainer = document.getElementById('ed-cancel-container');
+    if (cancelContainer) {
+      var nextDisp = showCancel ? '' : 'none';
+      if (cancelContainer.style.display !== nextDisp) cancelContainer.style.display = nextDisp;
+    }
+
+    // Always-present fields
+    setHtml('ed-status', badgeHtml(engine.status));
+    setText('ed-design-id', engine.designId == null ? '' : String(engine.designId));
+    setText('ed-upstream', (engine.upstream || []).join(', ') || '(none)');
+    setText('ed-started-at', formatDate(engine.startedAt) || '\u2014');
+    setText('ed-completed-at', formatDate(engine.completedAt) || '\u2014');
+
+    // Elapsed (only shown for completed-with-times or running-with-start)
+    var showElapsed = false;
+    if (engine.status === 'completed' && engine.startedAt && engine.completedAt) {
+      setHtml('ed-elapsed', esc(formatElapsed(engine.startedAt, engine.completedAt)));
+      showElapsed = true;
+    } else if (engine.status === 'running' && engine.startedAt) {
+      setHtml('ed-elapsed', '<span class="elapsed-running">running\u2026</span>');
+      showElapsed = true;
+    } else {
+      setHtml('ed-elapsed', '');
+    }
+    setRowDisplay('ed-elapsed-dt', 'ed-elapsed', showElapsed);
+
+    // Error (only when present)
+    if (engine.error) {
+      setText('ed-error', String(engine.error));
+      setRowDisplay('ed-error-dt', 'ed-error', true);
+    } else {
+      setText('ed-error', '');
+      setRowDisplay('ed-error-dt', 'ed-error', false);
+    }
+
+    // Session ID (only when present)
+    if (engine.sessionId) {
+      setText('ed-session-id', String(engine.sessionId));
+      setRowDisplay('ed-session-id-dt', 'ed-session-id', true);
+    } else {
+      setText('ed-session-id', '');
+      setRowDisplay('ed-session-id-dt', 'ed-session-id', false);
+    }
+
+    // Block info
+    if (engine.block) {
+      setText('ed-block-type', String(engine.block.type || ''));
+      setRowDisplay('ed-block-type-dt', 'ed-block-type', true);
+
+      setText('ed-block-blocked-at', formatDate(engine.block.blockedAt) || '');
+      setRowDisplay('ed-block-blocked-at-dt', 'ed-block-blocked-at', true);
+
+      if (engine.block.message) {
+        setText('ed-block-message', String(engine.block.message));
+        setRowDisplay('ed-block-message-dt', 'ed-block-message', true);
+      } else {
+        setRowDisplay('ed-block-message-dt', 'ed-block-message', false);
+      }
+
+      if (engine.block.lastCheckedAt) {
+        setText('ed-block-last-checked', formatDate(engine.block.lastCheckedAt));
+        setRowDisplay('ed-block-last-checked-dt', 'ed-block-last-checked', true);
+      } else {
+        setRowDisplay('ed-block-last-checked-dt', 'ed-block-last-checked', false);
+      }
+
+      var condText = JSON.stringify(engine.block.condition, null, 2);
+      var condPre = document.getElementById('ed-block-condition-pre');
+      if (condPre && condPre.textContent !== condText) condPre.textContent = condText;
+      setRowDisplay('ed-block-condition-dt', 'ed-block-condition', true);
+    } else {
+      setRowDisplay('ed-block-type-dt', 'ed-block-type', false);
+      setRowDisplay('ed-block-blocked-at-dt', 'ed-block-blocked-at', false);
+      setRowDisplay('ed-block-message-dt', 'ed-block-message', false);
+      setRowDisplay('ed-block-last-checked-dt', 'ed-block-last-checked', false);
+      setRowDisplay('ed-block-condition-dt', 'ed-block-condition', false);
+    }
+
+    // Givens spec (always present)
+    var givensCode = document.getElementById('ed-givens-code');
+    if (givensCode) {
+      var givensText = JSON.stringify(engine.givensSpec, null, 2);
+      if (givensCode.textContent !== givensText) givensCode.textContent = givensText;
+    }
+
+    // Yields (only when defined)
+    var yieldsDetails = document.getElementById('ed-yields-details');
+    var yieldsCode = document.getElementById('ed-yields-code');
+    if (engine.yields !== undefined) {
+      if (yieldsCode) {
+        var yieldsText = JSON.stringify(engine.yields, null, 2);
+        if (yieldsCode.textContent !== yieldsText) yieldsCode.textContent = yieldsText;
+      }
+      if (yieldsDetails && yieldsDetails.style.display === 'none') {
+        yieldsDetails.style.display = '';
+      }
+    } else if (yieldsDetails && yieldsDetails.style.display !== 'none') {
+      yieldsDetails.style.display = 'none';
+    }
+
+    // Cost fetch — gated on a transition to 'completed' status. We use
+    // costFetchedFor as the canonical guard so each engine's cost is
+    // requested at most once. The previous-status check expresses the
+    // "transition" intent and avoids re-firing once we've already fetched.
+    var prevStatus = engineStatusByEngineId[engine.id];
+    if (
+      engine.sessionId &&
+      engine.status === 'completed' &&
+      !costFetchedFor[engine.id] &&
+      (prevStatus === undefined || prevStatus !== 'completed')
+    ) {
+      costFetchedFor[engine.id] = true;
+      fetchSessionCost(engine.id, engine.sessionId);
+    }
+    engineStatusByEngineId[engine.id] = engine.status;
+
+    // Pipeline-node selection class (kept in sync without a full re-render).
     var nodes = document.querySelectorAll('#pipeline .pipeline-node');
     for (var i = 0; i < nodes.length; i++) {
       var n = nodes[i];
       if (n.getAttribute('data-engine-id') === engine.id) {
-        n.classList.add('selected');
-      } else {
+        if (!n.classList.contains('selected')) n.classList.add('selected');
+      } else if (n.classList.contains('selected')) {
         n.classList.remove('selected');
       }
     }
+  }
+
+  function fetchSessionCost(engineId, sessionId) {
+    fetch('/api/session/show?id=' + encodeURIComponent(sessionId))
+      .then(function (r) { return r.json(); })
+      .then(function (session) {
+        // Bail out if the user has navigated away from this engine.
+        if (selectedEngineId !== engineId) return;
+        applyCostUpdate(session);
+      })
+      .catch(function () { /* ignore */ });
+  }
+
+  function applyCostUpdate(session) {
+    var hasInput = session && session.tokenUsage && session.tokenUsage.inputTokens != null;
+    var hasOutput = session && session.tokenUsage && session.tokenUsage.outputTokens != null;
+    var hasCost = session && session.costUsd != null;
+
+    if (hasInput) setText('ed-cost-input', String(session.tokenUsage.inputTokens));
+    setRowDisplay('ed-cost-input-dt', 'ed-cost-input', !!hasInput);
+
+    if (hasOutput) setText('ed-cost-output', String(session.tokenUsage.outputTokens));
+    setRowDisplay('ed-cost-output-dt', 'ed-cost-output', !!hasOutput);
+
+    if (hasCost) setText('ed-cost-usd', '$' + Number(session.costUsd).toFixed(4));
+    setRowDisplay('ed-cost-usd-dt', 'ed-cost-usd', !!hasCost);
+  }
+
+  // ── Show engine detail (click path) ────────────────────────────────────
+
+  /**
+   * Click-path entry: build the skeleton (if needed), populate it via
+   * updateEngineDetail, ensure the SSE stream points at the engine's
+   * sessionId, and reveal the panel. Does not do per-poll work — the
+   * 2 s rig poll calls updateEngineDetail directly via fetchCurrentRigQuiet.
+   */
+  function showEngineDetail(engine) {
+    var engineChanged = selectedEngineId !== engine.id;
+    selectedEngineId = engine.id;
 
     var panel = document.getElementById('engine-detail');
     var title = document.getElementById('engine-detail-title');
@@ -496,265 +924,181 @@
     title.textContent = 'Engine: ' + engine.id;
     panel.style.display = '';
 
-    // Cancel button — shown when rig is running/blocked OR engine is running with sessionId
-    var showCancel = false;
-    if (currentRig && (currentRig.status === 'running' || currentRig.status === 'blocked' || currentRig.status === 'stuck')) {
-      showCancel = true;
-    }
-    if (engine.status === 'running' && engine.sessionId) {
-      showCancel = true;
-    }
-    // Hide if rig is already terminal
-    if (currentRig && (currentRig.status === 'completed' || currentRig.status === 'failed' || currentRig.status === 'cancelled')) {
-      showCancel = false;
+    // Ensure the stable-id skeleton is in place. We rebuild it whenever
+    // the body is empty (initial selection after rig switch) or when the
+    // user has selected a different engine — both cases need a fresh
+    // cancel button handler bound to the new context.
+    var hasSkeleton = !!document.getElementById('ed-status');
+    if (!hasSkeleton || engineChanged) {
+      buildEngineDetailSkeleton(body);
     }
 
-    var html = '';
-    if (showCancel) {
-      html += '<button class="btn btn--danger" id="cancel-engine-btn">Cancel Rig</button>';
+    updateEngineDetail(engine);
+
+    // SSE lifecycle is decoupled from rendering. ensureSessionStream
+    // reopens only when the tracked sessionId actually changes.
+    ensureSessionStream(engine.sessionId || null);
+  }
+
+  // ── SSE session stream lifecycle (decoupled from rendering) ────────────
+
+  /**
+   * Open the session stream for the given sessionId iff different from
+   * the one currently tracked. Called from both the click path and the
+   * poll path's updateEngineDetail; rig-data polls themselves do NOT call
+   * this — only an engine-selection change or a status-change that
+   * produces a new sessionId triggers a reopen.
+   */
+  function ensureSessionStream(sessionId) {
+    if (sessionId === streamSessionId) return;
+    if (!sessionId) {
+      // Selected engine has no session — close any open stream and hide UI.
+      stopSessionStream();
+      var sectionEmpty = document.getElementById('session-log-section');
+      if (sectionEmpty) sectionEmpty.style.display = 'none';
+      return;
     }
+    openSessionStream(sessionId);
+  }
 
-    html += '<dl class="engine-detail-field">';
-
-    html += '<dt>Status</dt><dd>' + badgeHtml(engine.status) + '</dd>';
-    html += '<dt>Design ID</dt><dd>' + esc(engine.designId) + '</dd>';
-    html += '<dt>Upstream</dt><dd>' + esc((engine.upstream || []).join(', ') || '(none)') + '</dd>';
-    html += '<dt>Started At</dt><dd>' + esc(formatDate(engine.startedAt) || '\u2014') + '</dd>';
-    html += '<dt>Completed At</dt><dd>' + esc(formatDate(engine.completedAt) || '\u2014') + '</dd>';
-
-    // Elapsed time
-    if (engine.status === 'completed' && engine.startedAt && engine.completedAt) {
-      html += '<dt>Elapsed</dt><dd>' + esc(formatElapsed(engine.startedAt, engine.completedAt)) + '</dd>';
-    } else if (engine.status === 'running' && engine.startedAt) {
-      html += '<dt>Elapsed</dt><dd><span class="elapsed-running">running\u2026</span></dd>';
-    }
-
-    if (engine.error) {
-      html += '<dt>Error</dt><dd style="color:var(--red,#f55)">' + esc(engine.error) + '</dd>';
-    }
-    if (engine.sessionId) {
-      html += '<dt>Session ID</dt><dd>' + esc(engine.sessionId) + '</dd>';
-    }
-
-    if (engine.block) {
-      html += '<dt>Block Type</dt><dd>' + esc(engine.block.type) + '</dd>';
-      html += '<dt>Blocked At</dt><dd>' + esc(formatDate(engine.block.blockedAt)) + '</dd>';
-      if (engine.block.message) {
-        html += '<dt>Block Message</dt><dd>' + esc(engine.block.message) + '</dd>';
-      }
-      if (engine.block.lastCheckedAt) {
-        html += '<dt>Last Checked</dt><dd>' + esc(formatDate(engine.block.lastCheckedAt)) + '</dd>';
-      }
-      html += '<dt>Block Condition</dt><dd><pre style="margin:0;font-size:11px">' + esc(JSON.stringify(engine.block.condition, null, 2)) + '</pre></dd>';
-    }
-
-    // Cost placeholder for async insertion
-    html += '<span id="cost-placeholder"></span>';
-
-    html += '</dl>';
-
-    // Collapsible givensSpec
-    html += '<details class="collapsible"><summary>Givens Spec</summary>' +
-      '<pre><code>' + esc(JSON.stringify(engine.givensSpec, null, 2)) + '</code></pre></details>';
-
-    // Collapsible yields
-    if (engine.yields !== undefined) {
-      html += '<details class="collapsible"><summary>Yields</summary>' +
-        '<pre><code>' + esc(JSON.stringify(engine.yields, null, 2)) + '</code></pre></details>';
-    }
-
-    body.innerHTML = html;
-
-    // Wire cancel button handler
-    var cancelBtn = document.getElementById('cancel-engine-btn');
-    if (cancelBtn && currentRig) {
-      cancelBtn.addEventListener('click', function (e) {
-        e.preventDefault();
-        cancelBtn.disabled = true;
-        cancelBtn.textContent = 'Cancelling\u2026';
-        fetch('/api/rig/cancel', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rigId: currentRig.id }),
-        })
-          .then(function (r) {
-            if (!r.ok) throw new Error('Cancel failed: ' + r.status);
-            return r.json();
-          })
-          .then(function (rig) {
-            currentRig = rig;
-            renderPipeline(currentRig);
-            var updatedEngine = currentRig.engines.find(function (e) { return e.id === engine.id; });
-            if (updatedEngine) showEngineDetail(updatedEngine);
-          })
-          .catch(function (err) {
-            cancelBtn.disabled = false;
-            cancelBtn.textContent = 'Cancel Rig';
-            console.error('[spider] cancel error:', err);
-          });
-      });
-    }
-
-    // Session costs (completed engines with sessionId)
-    if (engine.sessionId && engine.status === 'completed') {
-      fetch('/api/session/show?id=' + encodeURIComponent(engine.sessionId))
-        .then(function (r) { return r.json(); })
-        .then(function (session) {
-          var placeholder = document.getElementById('cost-placeholder');
-          if (!placeholder) return;
-          var costHtml = '';
-          if (session.tokenUsage) {
-            if (session.tokenUsage.inputTokens != null) {
-              costHtml += '<dt>Input Tokens</dt><dd>' + esc(String(session.tokenUsage.inputTokens)) + '</dd>';
-            }
-            if (session.tokenUsage.outputTokens != null) {
-              costHtml += '<dt>Output Tokens</dt><dd>' + esc(String(session.tokenUsage.outputTokens)) + '</dd>';
-            }
-          }
-          if (session.costUsd != null) {
-            costHtml += '<dt>Cost (USD)</dt><dd>$' + esc(Number(session.costUsd).toFixed(4)) + '</dd>';
-          }
-          if (costHtml) {
-            placeholder.insertAdjacentHTML('beforebegin', costHtml);
-          }
-        })
-        .catch(function () { /* ignore */ });
-    }
-
-    // Session log / transcript
+  function openSessionStream(sessionId) {
     stopSessionStream();
+    streamSessionId = sessionId;
+    streamDone = false;
+
     var sessionLogSection = document.getElementById('session-log-section');
     var sessionLogSpinner = document.getElementById('session-log-spinner');
     var sessionLogTextarea = document.getElementById('session-log');
 
-    if (sessionLogSection) sessionLogSection.style.display = 'none';
+    if (sessionLogSection) sessionLogSection.style.display = '';
+    if (sessionLogTextarea) sessionLogTextarea.value = '';
 
-    if (engine.sessionId) {
-      if (sessionLogSection) sessionLogSection.style.display = '';
-      if (sessionLogTextarea) sessionLogTextarea.value = '';
-
-      // Open a Server-Sent Events stream for real-time session output.
-      // The endpoint handles both running sessions (streaming chunks) and
-      // already-completed sessions (immediately emits transcript + done).
-      if (sessionLogSpinner) {
-        sessionLogSpinner.className = 'badge badge--active';
-        sessionLogSpinner.textContent = 'connecting\u2026';
-        sessionLogSpinner.style.display = '';
-      }
-
-      // Track whether the stream completed normally so the onerror handler
-      // (which fires when EventSource auto-reconnects after connection close)
-      // does not show a spurious "disconnected" badge.
-      var streamDone = false;
-
-      sessionEventSource = new EventSource(
-        '/api/spider/session-stream?sessionId=' + encodeURIComponent(engine.sessionId)
-      );
-
-      sessionEventSource.addEventListener('chunk', function (e) {
-        var chunk;
-        try { chunk = JSON.parse(e.data); } catch (err) { return; }
-        if (!sessionLogTextarea) return;
-        if (chunk.type === 'text') {
-          sessionLogTextarea.value += chunk.text;
-        } else if (chunk.type === 'tool_use') {
-          sessionLogTextarea.value += '\n[tool: ' + chunk.tool + ']\n';
-        } else if (chunk.type === 'tool_result') {
-          sessionLogTextarea.value += '[result: ' + chunk.tool + ']\n';
-        }
-        sessionLogTextarea.scrollTop = sessionLogTextarea.scrollHeight;
-        // Update pill to show we are actively receiving data
-        if (sessionLogSpinner) {
-          sessionLogSpinner.className = 'badge badge--active';
-          sessionLogSpinner.textContent = 'connected';
-        }
-      });
-
-      sessionEventSource.addEventListener('transcript', function (e) {
-        var data;
-        try { data = JSON.parse(e.data); } catch (err) { return; }
-        if (sessionLogTextarea) {
-          sessionLogTextarea.value = renderTranscript(data.messages || []);
-          sessionLogTextarea.scrollTop = sessionLogTextarea.scrollHeight;
-        }
-      });
-
-      sessionEventSource.addEventListener('done', function (e) {
-        var data;
-        try { data = JSON.parse(e.data); } catch (err) { data = {}; }
-        // Mark stream as intentionally done before closing to prevent the
-        // onerror handler from showing a spurious "disconnected" badge.
-        streamDone = true;
-        stopSessionStream();
-        if (sessionLogSpinner) {
-          sessionLogSpinner.style.display = 'none';
-        }
-        // If the server has no live in-process stream (e.g. detached sessions
-        // where the babysitter is in another process, or after a guild
-        // restart), fall back to polling the transcript endpoint until the
-        // session reaches a terminal status.
-        if (data.noStream) {
-          var pollSessionId = engine.sessionId;
-          var fetchTranscript = function () {
-            fetch('/api/spider/session-transcript?sessionId=' + encodeURIComponent(pollSessionId))
-              .then(function (r) { return r.json(); })
-              .then(function (res) {
-                if (sessionLogTextarea) {
-                  // Preserve scroll position if the user has scrolled away
-                  // from the bottom; otherwise stick to the tail.
-                  var atBottom =
-                    sessionLogTextarea.scrollTop + sessionLogTextarea.clientHeight >=
-                    sessionLogTextarea.scrollHeight - 4;
-                  sessionLogTextarea.value = renderTranscript(res.messages || []);
-                  if (atBottom) {
-                    sessionLogTextarea.scrollTop = sessionLogTextarea.scrollHeight;
-                  }
-                }
-                var status = res && res.sessionStatus;
-                var terminal = status && status !== 'running' && status !== 'pending';
-                if (terminal) {
-                  stopSessionPoll();
-                  if (sessionLogSpinner) sessionLogSpinner.style.display = 'none';
-                } else if (sessionLogSpinner) {
-                  sessionLogSpinner.className = 'badge badge--active';
-                  sessionLogSpinner.textContent = 'polling\u2026';
-                  sessionLogSpinner.style.display = '';
-                }
-              })
-              .catch(function () { /* ignore transient errors, keep polling */ });
-          };
-          fetchTranscript();
-          stopSessionPoll();
-          sessionPollTimer = setInterval(fetchTranscript, 2000);
-        }
-      });
-
-      sessionEventSource.addEventListener('error', function (e) {
-        if (streamDone) return;
-        var data;
-        try { data = JSON.parse(/** @type {MessageEvent} */(e).data || '{}'); } catch (err) { data = {}; }
-        if (sessionLogSpinner) {
-          sessionLogSpinner.className = 'badge badge--error';
-          sessionLogSpinner.textContent = data.error ? 'error: ' + data.error : 'error';
-          sessionLogSpinner.style.display = '';
-        }
-        stopSessionStream();
-      });
-
-      sessionEventSource.onerror = function () {
-        // Network-level error (browser fires this on connection failure / premature close).
-        // Skip if the stream completed normally — the connection close is expected.
-        if (streamDone) return;
-        if (sessionEventSource) {
-          stopSessionStream();
-          if (sessionLogSpinner && sessionLogSpinner.style.display !== 'none') {
-            sessionLogSpinner.className = 'badge badge--error';
-            sessionLogSpinner.textContent = 'disconnected';
-            sessionLogSpinner.style.display = '';
-          }
-        }
-      };
+    if (sessionLogSpinner) {
+      sessionLogSpinner.className = 'badge badge--active';
+      sessionLogSpinner.textContent = 'connecting\u2026';
+      sessionLogSpinner.style.display = '';
     }
+
+    sessionEventSource = new EventSource(
+      '/api/spider/session-stream?sessionId=' + encodeURIComponent(sessionId)
+    );
+
+    sessionEventSource.addEventListener('chunk', function (e) {
+      var chunk;
+      try { chunk = JSON.parse(e.data); } catch (err) { return; }
+      var ta = document.getElementById('session-log');
+      if (!ta) return;
+      // Capture pin-to-bottom state BEFORE mutating; restore only if pinned.
+      var atBottom = ta.scrollTop + ta.clientHeight >= ta.scrollHeight - 4;
+      if (chunk.type === 'text') {
+        ta.value += chunk.text;
+      } else if (chunk.type === 'tool_use') {
+        ta.value += '\n[tool: ' + chunk.tool + ']\n';
+      } else if (chunk.type === 'tool_result') {
+        ta.value += '[result: ' + chunk.tool + ']\n';
+      }
+      if (atBottom) {
+        ta.scrollTop = ta.scrollHeight;
+      }
+      var spinner = document.getElementById('session-log-spinner');
+      if (spinner) {
+        spinner.className = 'badge badge--active';
+        spinner.textContent = 'connected';
+      }
+    });
+
+    sessionEventSource.addEventListener('transcript', function (e) {
+      var data;
+      try { data = JSON.parse(e.data); } catch (err) { return; }
+      var ta = document.getElementById('session-log');
+      if (!ta) return;
+      // Capture pin-to-bottom state BEFORE replacing value; restore only if pinned.
+      var atBottom = ta.scrollTop + ta.clientHeight >= ta.scrollHeight - 4;
+      ta.value = renderTranscript(data.messages || []);
+      if (atBottom) {
+        ta.scrollTop = ta.scrollHeight;
+      }
+    });
+
+    sessionEventSource.addEventListener('done', function (e) {
+      var data;
+      try { data = JSON.parse(e.data); } catch (err) { data = {}; }
+      // Mark stream as intentionally done before closing to prevent the
+      // onerror handler from showing a spurious "disconnected" badge.
+      streamDone = true;
+      var pollSessionId = streamSessionId;
+      stopSessionStream();
+      var spinner = document.getElementById('session-log-spinner');
+      if (spinner) {
+        spinner.style.display = 'none';
+      }
+      // If the server has no live in-process stream (e.g. detached sessions
+      // where the babysitter is in another process, or after a guild
+      // restart), fall back to polling the transcript endpoint until the
+      // session reaches a terminal status.
+      if (data.noStream && pollSessionId) {
+        var fetchTranscript = function () {
+          fetch('/api/spider/session-transcript?sessionId=' + encodeURIComponent(pollSessionId))
+            .then(function (r) { return r.json(); })
+            .then(function (res) {
+              var ta = document.getElementById('session-log');
+              if (ta) {
+                // Preserve scroll position if the user has scrolled away
+                // from the bottom; otherwise stick to the tail.
+                var atBottom =
+                  ta.scrollTop + ta.clientHeight >= ta.scrollHeight - 4;
+                ta.value = renderTranscript(res.messages || []);
+                if (atBottom) {
+                  ta.scrollTop = ta.scrollHeight;
+                }
+              }
+              var status = res && res.sessionStatus;
+              var terminal = status && status !== 'running' && status !== 'pending';
+              var spinnerEl = document.getElementById('session-log-spinner');
+              if (terminal) {
+                stopSessionPoll();
+                if (spinnerEl) spinnerEl.style.display = 'none';
+              } else if (spinnerEl) {
+                spinnerEl.className = 'badge badge--active';
+                spinnerEl.textContent = 'polling\u2026';
+                spinnerEl.style.display = '';
+              }
+            })
+            .catch(function () { /* ignore transient errors, keep polling */ });
+        };
+        fetchTranscript();
+        stopSessionPoll();
+        sessionPollTimer = setInterval(fetchTranscript, 2000);
+      }
+    });
+
+    sessionEventSource.addEventListener('error', function (e) {
+      if (streamDone) return;
+      var data;
+      try { data = JSON.parse(/** @type {MessageEvent} */(e).data || '{}'); } catch (err) { data = {}; }
+      var spinner = document.getElementById('session-log-spinner');
+      if (spinner) {
+        spinner.className = 'badge badge--error';
+        spinner.textContent = data.error ? 'error: ' + data.error : 'error';
+        spinner.style.display = '';
+      }
+      stopSessionStream();
+    });
+
+    sessionEventSource.onerror = function () {
+      // Network-level error (browser fires this on connection failure / premature close).
+      // Skip if the stream completed normally — the connection close is expected.
+      if (streamDone) return;
+      if (sessionEventSource) {
+        stopSessionStream();
+        var spinner = document.getElementById('session-log-spinner');
+        if (spinner && spinner.style.display !== 'none') {
+          spinner.className = 'badge badge--error';
+          spinner.textContent = 'disconnected';
+          spinner.style.display = '';
+        }
+      }
+    };
   }
 
   // ── Back to list ───────────────────────────────────────────────────────
@@ -764,6 +1108,8 @@
     stopCurrentRigPoll();
     currentRig = null;
     selectedEngineId = null;
+    costFetchedFor = {};
+    engineStatusByEngineId = {};
     document.getElementById('rig-detail-view').style.display = 'none';
     document.getElementById('rig-list-view').style.display = '';
   }
@@ -908,6 +1254,11 @@
         givensSpec: e.givens || {},
       };
     });
+
+    // Switching templates: clear the preview pipeline so we don't reuse
+    // pipeline-node DOM (with stale onClick wiring) from a different template.
+    var templatePipeline = document.getElementById('template-pipeline');
+    if (templatePipeline) templatePipeline.innerHTML = '';
 
     renderPipelineInto('template-pipeline', syntheticEngines, {
       onClick: showTemplateEngineDetail,
