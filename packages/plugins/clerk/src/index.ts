@@ -25,6 +25,8 @@ export {
   type EditWritRequest,
   type WritFilters,
   type WritTypeInfo,
+  type MeaningEntry,
+  type MeaningDoc,
 } from './types.ts';
 
 export { createClerk, CASCADE_PARENT_TERMINATION_RESOLUTION } from './clerk.ts';

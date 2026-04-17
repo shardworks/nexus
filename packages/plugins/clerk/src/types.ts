@@ -158,20 +158,87 @@ declare module '@shardworks/nexus-core' {
 
 /**
  * A link document as stored in The Stacks (clerk/links book).
+ *
+ * A writ link has two complementary identifiers for its relationship:
+ *
+ *   - `type` is a casual, human-facing label. It is an open string, normalized
+ *     at write time via the link-type normalization pipeline (lowercase,
+ *     trim, camelCase split, snake_case/kebab-case split, whitespace
+ *     collapse). Variant spellings of the same label collapse to a single
+ *     canonical form; distinct labels remain distinct. Normalization is
+ *     purely syntactic — it is NOT synonymy. `requires` and `depends on`
+ *     normalize to different strings; callers that want to treat them as the
+ *     same relationship should attach the same `semanticMeaning` to both.
+ *
+ *   - `semanticMeaning` is the load-bearing identifier. It is a stable,
+ *     plugin-owned id drawn from the kit-contributed meaning registry, and
+ *     identifies the specific relationship a downstream consumer wants to
+ *     react to (rendering parent/child, gating publish on `refines`, etc.).
+ *     `null` when the caller treated this link as a casual label.
  */
 export interface WritLinkDoc {
   /** Index signature required to satisfy BookEntry constraint. */
   [key: string]: unknown;
-  /** Deterministic composite key: `{sourceId}:{targetId}:{type}`. */
+  /** Deterministic composite key: `{sourceId}:{targetId}:{normalized type}`. */
   id: string;
   /** The writ that is the origin of this relationship. */
   sourceId: string;
   /** The writ that is the target of this relationship. */
   targetId: string;
-  /** Relationship type — an open string (e.g. "fixes", "retries", "supersedes", "duplicates"). */
+  /**
+   * Casual relationship label — an open string normalized syntactically at
+   * write time (e.g. "fixes", "retries", "supersedes", "duplicates",
+   * "depends on"). NOT a synonymy layer. For load-bearing identity, use
+   * `semanticMeaning`.
+   */
   type: string;
+  /**
+   * Load-bearing identifier for this relationship. When non-null, references
+   * a registered meaning id from the `linkMeanings` kit registry and is the
+   * field downstream consumers key on. Always present on each row (`null`
+   * when the caller did not attach a meaning).
+   */
+  semanticMeaning: string | null;
   /** ISO timestamp when the link was created. */
   createdAt: string;
+}
+
+// ── Link meaning registry ────────────────────────────────────────────
+
+/**
+ * A link-meaning contribution declared by a kit's `linkMeanings` array.
+ *
+ * Kit authors use this shape when populating `ClerkKit.linkMeanings`. Meaning
+ * ids must be prefixed with the contributing plugin's id followed by `:` and
+ * a kebab-case suffix — e.g. kit `astrolabe` contributing `astrolabe:refines`.
+ * The registry-projection view (returned by `listMeanings()`) is `MeaningDoc`,
+ * which embeds the resolved owner plugin id; kit authors do not repeat their
+ * plugin id on each entry.
+ */
+export interface MeaningEntry {
+  /**
+   * Fully-qualified meaning id. Must begin with `{pluginId}:` and be followed
+   * by a non-empty kebab-case suffix (lowercase letters, digits, and hyphens,
+   * not starting or ending with a hyphen).
+   */
+  id: string;
+  /** Human-readable description of the relationship this meaning denotes. */
+  description: string;
+}
+
+/**
+ * A link-meaning record as projected by `listMeanings()`.
+ *
+ * Unlike `MeaningEntry`, this shape embeds the resolved owner plugin id so
+ * consumers of the registry do not need to parse it back out of `id`.
+ */
+export interface MeaningDoc {
+  /** Fully-qualified meaning id. */
+  id: string;
+  /** Plugin id of the kit that contributed this meaning. */
+  ownerPlugin: string;
+  /** Human-readable description of this meaning. */
+  description: string;
 }
 
 /**
@@ -237,10 +304,20 @@ export interface ClerkApi {
 
   /**
    * Create a typed directional link from one writ to another.
-   * Both writs must exist. Self-links are rejected. Idempotent — returns
-   * the existing link if the (sourceId, targetId, type) triple already exists.
+   * Both writs must exist. Self-links are rejected. The `type` argument is
+   * normalized before the composite id is constructed, so variant spellings
+   * of the same label collapse to a single link. When a link with the same
+   * canonical composite id already exists, the existing row is returned;
+   * if `semanticMeaning` is supplied, it is written onto the existing row
+   * (upsert). The optional `semanticMeaning` must reference an id registered
+   * in the kit-contributed meaning registry; unknown ids are rejected.
    */
-  link(sourceId: string, targetId: string, type: string): Promise<WritLinkDoc>;
+  link(
+    sourceId: string,
+    targetId: string,
+    type: string,
+    semanticMeaning?: string,
+  ): Promise<WritLinkDoc>;
 
   /**
    * Query all links for a writ — both outbound (this writ is the source)
@@ -268,4 +345,12 @@ export interface ClerkApi {
    * whether it is the default type.
    */
   listWritTypes(): WritTypeInfo[];
+
+  /**
+   * List all registered link meanings contributed by kits.
+   * Returns the registry-projection view of each meaning, including its
+   * owner plugin id. Returns an empty array when no meanings have been
+   * registered.
+   */
+  listMeanings(): Promise<MeaningDoc[]>;
 }

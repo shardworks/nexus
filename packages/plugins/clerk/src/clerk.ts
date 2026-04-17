@@ -31,6 +31,8 @@ import type {
   EditWritRequest,
   WritFilters,
   WritTypeEntry,
+  MeaningEntry,
+  MeaningDoc,
 } from './types.ts';
 
 import {
@@ -45,7 +47,11 @@ import {
   writPublish,
   writLink,
   writUnlink,
+  writLinkMeanings,
+  writLinkMeaningsShow,
 } from './tools/index.ts';
+
+import { normalizeLinkType } from './link-normalize.ts';
 
 // ── Kit contribution interface ────────────────────────────────────────
 
@@ -53,6 +59,14 @@ import {
 export interface ClerkKit {
   /** Writ type descriptors to register with the Clerk. Names are unqualified. */
   writTypes?: WritTypeEntry[];
+  /**
+   * Link-meaning descriptors to register with the Clerk. Meaning ids must be
+   * prefixed with the contributing plugin id (e.g. `astrolabe:refines`).
+   * Kit authors supply `{ id, description }`; the registry-projection view
+   * (returned by `listMeanings()`) embeds the resolved owner plugin id on
+   * each record as `ownerPlugin`.
+   */
+  linkMeanings?: MeaningEntry[];
 }
 
 // ── Built-in writ types ──────────────────────────────────────────────
@@ -107,6 +121,23 @@ export function createClerk(): Plugin {
 
   /** Config-declared writ type names, for override checking during kit registration. */
   let configWritTypeNames: Set<string> = new Set();
+
+  /** Internal metadata stored per registered link meaning. */
+  interface MeaningMeta {
+    ownerPlugin: string;
+    description: string;
+  }
+
+  /** Registry of kit-contributed link meanings, keyed by meaning id. */
+  let linkMeaningRegistry: Map<string, MeaningMeta> = new Map();
+
+  /**
+   * Grammar for meaning-id suffixes after the `{pluginId}:` prefix.
+   *
+   * Kebab-case only: lowercase letters, digits, and hyphens. Must not start
+   * or end with a hyphen and must have at least one character.
+   */
+  const MEANING_SUFFIX_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
   // ── Helpers ──────────────────────────────────────────────────────
 
@@ -179,6 +210,71 @@ export function createClerk(): Plugin {
       mergedWritTypes.set(name, {
         description: (entry as WritTypeEntry).description,
         source: pluginId,
+      });
+    }
+  }
+
+  function registerKitLinkMeanings(kitEntry: { pluginId: string; value: unknown }): void {
+    const pluginId = kitEntry.pluginId;
+    const raw = kitEntry.value;
+    if (!Array.isArray(raw)) {
+      throw new Error(
+        `[clerk] Kit "${pluginId}" linkMeanings: expected an array, got ${typeof raw}.`,
+      );
+    }
+
+    for (const entry of raw) {
+      if (typeof entry !== 'object' || entry === null) {
+        throw new Error(
+          `[clerk] Kit "${pluginId}" linkMeanings: entry is not an object (got ${entry === null ? 'null' : typeof entry}).`,
+        );
+      }
+      const rec = entry as Record<string, unknown>;
+      const id = rec.id;
+      const description = rec.description;
+
+      if (typeof id !== 'string' || id.length === 0) {
+        throw new Error(
+          `[clerk] Kit "${pluginId}" linkMeanings: entry is missing a non-empty string "id" field.`,
+        );
+      }
+      if (typeof description !== 'string' || description.length === 0) {
+        throw new Error(
+          `[clerk] Kit "${pluginId}" linkMeanings: entry "${id}" is missing a non-empty string "description" field.`,
+        );
+      }
+
+      const colonIdx = id.indexOf(':');
+      if (colonIdx <= 0 || colonIdx === id.length - 1) {
+        throw new Error(
+          `[clerk] Kit "${pluginId}" linkMeanings: entry "${id}" must be of the form "{pluginId}:{kebab-suffix}".`,
+        );
+      }
+      const prefix = id.slice(0, colonIdx);
+      const suffix = id.slice(colonIdx + 1);
+
+      if (prefix !== pluginId) {
+        throw new Error(
+          `[clerk] Kit "${pluginId}" linkMeanings: entry "${id}" has prefix "${prefix}" but must match the contributing plugin id "${pluginId}".`,
+        );
+      }
+
+      if (!MEANING_SUFFIX_RE.test(suffix)) {
+        throw new Error(
+          `[clerk] Kit "${pluginId}" linkMeanings: entry "${id}" suffix "${suffix}" must be kebab-case (lowercase letters, digits, and hyphens, not starting or ending with "-").`,
+        );
+      }
+
+      if (linkMeaningRegistry.has(id)) {
+        const existing = linkMeaningRegistry.get(id)!;
+        throw new Error(
+          `[clerk] Kit "${pluginId}" linkMeanings: duplicate meaning id "${id}" — already registered by kit "${existing.ownerPlugin}".`,
+        );
+      }
+
+      linkMeaningRegistry.set(id, {
+        ownerPlugin: pluginId,
+        description,
       });
     }
   }
@@ -287,12 +383,35 @@ export function createClerk(): Plugin {
       return writs.count(where);
     },
 
-    async link(sourceId: string, targetId: string, type: string): Promise<WritLinkDoc> {
+    async link(
+      sourceId: string,
+      targetId: string,
+      type: string,
+      semanticMeaning?: string,
+    ): Promise<WritLinkDoc> {
       if (sourceId === targetId) {
         throw new Error(`Cannot link a writ to itself: "${sourceId}".`);
       }
-      if (!type || !type.trim()) {
+
+      // D2: normalize first, then reject empty canonical form. An all-
+      // whitespace input canonicalizes to '' and is rejected here.
+      const normalizedType = normalizeLinkType(type);
+      if (!normalizedType) {
         throw new Error('Link type must be a non-empty string.');
+      }
+
+      // If a semanticMeaning was supplied, validate it against the registry
+      // before touching the store.
+      if (semanticMeaning !== undefined) {
+        if (!linkMeaningRegistry.has(semanticMeaning)) {
+          throw new Error(
+            `Unknown semanticMeaning "${semanticMeaning}". Registered meanings: ${
+              linkMeaningRegistry.size === 0
+                ? '(none)'
+                : [...linkMeaningRegistry.keys()].join(', ')
+            }.`,
+          );
+        }
       }
 
       const source = await writs.get(sourceId);
@@ -304,9 +423,16 @@ export function createClerk(): Plugin {
         throw new Error(`Writ "${targetId}" not found.`);
       }
 
-      const id = `${sourceId}:${targetId}:${type}`;
+      const id = `${sourceId}:${targetId}:${normalizedType}`;
       const existing = await links.get(id);
       if (existing) {
+        // Upsert: when the caller supplied a semanticMeaning, update the
+        // existing row's meaning. When no meaning was supplied, leave the
+        // existing row untouched (preserves prior meaning assignments made
+        // by earlier callers).
+        if (semanticMeaning !== undefined && existing.semanticMeaning !== semanticMeaning) {
+          return links.patch(id, { semanticMeaning });
+        }
         return existing;
       }
 
@@ -314,7 +440,8 @@ export function createClerk(): Plugin {
         id,
         sourceId,
         targetId,
-        type,
+        type: normalizedType,
+        semanticMeaning: semanticMeaning ?? null,
         createdAt: new Date().toISOString(),
       };
       await links.put(doc);
@@ -330,7 +457,15 @@ export function createClerk(): Plugin {
     },
 
     async unlink(sourceId: string, targetId: string, type: string): Promise<void> {
-      const id = `${sourceId}:${targetId}:${type}`;
+      // Normalize first so variant spellings of the same type resolve to the
+      // same composite id as link() used.
+      const normalizedType = normalizeLinkType(type);
+      if (!normalizedType) {
+        // No-op when the canonical form is empty — unlink() is idempotent, so
+        // returning silently is correct even for an unreachable composite id.
+        return;
+      }
+      const id = `${sourceId}:${targetId}:${normalizedType}`;
       await links.delete(id);
     },
 
@@ -341,6 +476,14 @@ export function createClerk(): Plugin {
         description: meta.description ?? null,
         source: meta.source,
         isDefault: name === defaultType,
+      }));
+    },
+
+    async listMeanings(): Promise<MeaningDoc[]> {
+      return [...linkMeaningRegistry.entries()].map(([id, meta]) => ({
+        id,
+        ownerPlugin: meta.ownerPlugin,
+        description: meta.description,
       }));
     },
 
@@ -491,7 +634,7 @@ export function createClerk(): Plugin {
     apparatus: {
       requires: ['stacks'],
       recommends: ['oculus'],
-      consumes: ['writTypes'],
+      consumes: ['writTypes', 'linkMeanings'],
 
       supportKit: {
         books: {
@@ -514,6 +657,8 @@ export function createClerk(): Plugin {
           writPublish,
           writLink,
           writUnlink,
+          writLinkMeanings,
+          writLinkMeaningsShow,
           writTypesTool,
         ],
         pages: [
@@ -541,6 +686,15 @@ export function createClerk(): Plugin {
         // Scan all kit-contributed writ types via the Wire-phase snapshot.
         for (const entry of ctx.kits('writTypes')) {
           registerKitWritTypes(entry);
+        }
+
+        // Scan all kit-contributed link meanings via the Wire-phase snapshot.
+        // Unlike writTypes, malformed entries here hard-fail the start() call
+        // — a reserved meaning id that silently disappears would be worse
+        // than a startup failure, because downstream consumers key on it.
+        linkMeaningRegistry = new Map();
+        for (const entry of ctx.kits('linkMeanings')) {
+          registerKitLinkMeanings(entry);
         }
 
         // ── CDC: parent/child cascade ───────────────────────────────
@@ -578,6 +732,74 @@ export function createClerk(): Plugin {
               updatedAt: new Date().toISOString(),
             });
           }
+        }
+
+        // ── One-shot migration: normalize link rows ──────────────────
+        // Two-pass flow per D7:
+        //   Pass 1 — scan every link row, group by (sourceId, targetId,
+        //     normalizedType). A group with multiple rows is a collision:
+        //     variant spellings that collapse to the same canonical form.
+        //   Pass 2 — per group, keep the row with the earliest createdAt;
+        //     warn and delete the younger siblings (older wins,
+        //     deterministic regardless of iteration order). Rewrite the
+        //     survivor's id and type to the canonical form and set
+        //     `semanticMeaning = null` when absent.
+        //
+        // Safe to run inside start(): stacks only seals the CDC registry
+        // at phase:started (after every apparatus has started), so these
+        // writes don't lock out downstream apparatuses that register
+        // watchers in their own start(). Writes here fire no links-book
+        // watcher today but could in the future.
+        const allLinks = await links.find({});
+        const groups = new Map<string, WritLinkDoc[]>();
+        for (const row of allLinks) {
+          const normalized = normalizeLinkType(row.type);
+          const key = `${row.sourceId}:${row.targetId}:${normalized}`;
+          const bucket = groups.get(key) ?? [];
+          bucket.push(row);
+          groups.set(key, bucket);
+        }
+
+        for (const [canonicalId, bucket] of groups) {
+          // Sort by createdAt ascending — the first element is the oldest.
+          bucket.sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+          const [survivor, ...losers] = bucket;
+          if (!survivor) continue;
+
+          for (const loser of losers) {
+            console.warn(
+              `[clerk] Link migration: collapsing duplicate link ` +
+                `"${loser.id}" into canonical "${canonicalId}" ` +
+                `(source="${loser.sourceId}", target="${loser.targetId}"); ` +
+                `older row kept, this one discarded.`,
+            );
+            await links.delete(loser.id);
+          }
+
+          const normalizedType = canonicalId.slice(
+            (survivor.sourceId.length + 1) + (survivor.targetId.length + 1),
+          );
+          const needsRewrite =
+            survivor.id !== canonicalId ||
+            survivor.type !== normalizedType ||
+            survivor.semanticMeaning === undefined;
+
+          if (!needsRewrite) continue;
+
+          // The composite id is immutable — delete-then-put the survivor to
+          // replace it with the canonical document.
+          const migrated: WritLinkDoc = {
+            id: canonicalId,
+            sourceId: survivor.sourceId,
+            targetId: survivor.targetId,
+            type: normalizedType,
+            semanticMeaning: survivor.semanticMeaning ?? null,
+            createdAt: survivor.createdAt,
+          };
+          if (survivor.id !== canonicalId) {
+            await links.delete(survivor.id);
+          }
+          await links.put(migrated);
         }
       },
     },

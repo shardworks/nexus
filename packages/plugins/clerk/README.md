@@ -112,6 +112,46 @@ Each entry includes:
 
 Source precedence: guild config entries fully shadow kit contributions with the same name (including description).
 
+### `link(sourceId, targetId, type, semanticMeaning?): Promise<WritLinkDoc>`
+
+Create a directional link between two writs.
+
+```typescript
+// Casual label — attach any open-string relationship type.
+await clerk.link(src.id, tgt.id, 'fixes');
+
+// Load-bearing — attach a registered semantic meaning id.
+await clerk.link(src.id, tgt.id, 'refines', 'astrolabe:refines');
+```
+
+Link rows carry two complementary identifiers:
+
+- **`type`** — a casual, human-facing label. Open string. Normalized at write time via a syntactic pipeline (lowercase → trim → camelCase split → snake_case/kebab-case split → whitespace collapse). Variant spellings of the same label (`depends-on`, `dependsOn`, `depends_on`) collapse to a single composite id; distinct labels (`requires` vs `depends on`) remain distinct. Normalization is **not** synonymy.
+- **`semanticMeaning`** — a stable, plugin-owned id from the kit-contributed meaning registry. The load-bearing identifier for downstream consumers. `null` when no meaning is attached. Unknown ids are rejected.
+
+Upsert semantics: calling `link()` again for the same `(sourceId, targetId, type)` returns the existing row. When a `semanticMeaning` is supplied on the repeat call, it replaces the existing meaning; when omitted, the existing meaning is preserved.
+
+### `unlink(sourceId, targetId, type): Promise<void>`
+
+Remove a link. The `type` argument is normalized before deletion, so any spelling variant of the canonical form removes the same link. Idempotent — no error if the link does not exist.
+
+### `links(writId): Promise<WritLinks>`
+
+Return every link for a writ in both directions: `outbound` (this writ is the source) and `inbound` (this writ is the target).
+
+### `listMeanings(): Promise<MeaningDoc[]>`
+
+List every kit-contributed link meaning in the registry. Each record includes the fully-qualified meaning id, the contributing plugin, and a human-readable description.
+
+```typescript
+const meanings = await clerk.listMeanings();
+// [
+//   { id: 'astrolabe:refines', ownerPlugin: 'astrolabe', description: 'Source refines target' },
+// ]
+```
+
+Kit authors register meanings under the `linkMeanings` key of their `ClerkKit` (or an apparatus's `supportKit`). Each entry is `{ id, description }`; the id must be prefixed with the contributing plugin id (`{pluginId}:{kebab-suffix}`). Malformed entries, duplicate ids, and plugin-prefix mismatches hard-fail at startup.
+
 ### `edit(request): Promise<WritDoc>`
 
 Edit a writ, updating one or more fields. Only the provided fields are updated.
@@ -251,8 +291,10 @@ The Clerk contributes books, tools, and pages to the guild:
 | `writ-fail` | `clerk:write` | Fail a writ (open/stuck → failed) |
 | `writ-cancel` | `clerk:write` | Cancel a writ (new/open/stuck → cancelled) |
 | `writ-publish` | `clerk:write` | Publish a draft writ (new → open) |
-| `writ-link` | `clerk:write` | Create a typed link between writs |
+| `writ-link` | `clerk:write` | Create a typed link between writs (`--meaning <id>` to attach a registered semantic meaning) |
 | `writ-unlink` | `clerk:write` | Remove a typed link between writs |
+| `writ-link-meanings` | `clerk:read` | List registered link meanings (`--json` for raw array) |
+| `writ-link-meanings-show` | `clerk:read` | Show a single link meaning by id |
 | `writ-types` | `clerk:read` | List available writ types |
 
 ---
@@ -305,6 +347,33 @@ interface WritTypeInfo {
   description: string | null; // human-readable description
   source: string;            // "builtin", "guild", or plugin id
   isDefault: boolean;        // whether this is the default type
+}
+
+interface WritLinkDoc {
+  id: string;                // `{sourceId}:{targetId}:{normalized type}`
+  sourceId: string;
+  targetId: string;
+  type: string;              // casual label, syntactically normalized
+  semanticMeaning: string | null; // load-bearing meaning id (null when unattached)
+  createdAt: string;         // ISO timestamp
+}
+
+interface WritLinks {
+  outbound: WritLinkDoc[];   // this writ → other writs
+  inbound: WritLinkDoc[];    // other writs → this writ
+}
+
+// Kit-input shape for linkMeanings contributions on ClerkKit.
+interface MeaningEntry {
+  id: string;                // `{pluginId}:{kebab-suffix}`
+  description: string;
+}
+
+// Registry-projection shape returned by listMeanings().
+interface MeaningDoc {
+  id: string;
+  ownerPlugin: string;
+  description: string;
 }
 ```
 
