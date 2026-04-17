@@ -970,38 +970,15 @@ describe('decision-review engine', () => {
     assert.ok(!d2Section.includes('**Selected:**'));
   });
 
-  // ── Analysis tags tests ──────────────────────────────────────────────
-
-  it('decision with full analysis produces correct sorted tags', async () => {
+  it('surfaced ChoiceQuestionSpec has no tags property', async () => {
     const engine = createDecisionReviewEngine(() => plansBook);
     const decisions: Decision[] = [
       {
         id: 'D1',
         scope: [],
-        question: 'Full analysis?',
-        options: { A: 'Option A' },
-        analysis: { category: 'product', observable: true, confidence: 'low', stakes: 'high' },
-      },
-    ];
-
-    const plan = makePlan({ status: 'analyzing', decisions });
-    await plansBook.put(plan);
-
-    const result = await engine.run({ planId: plan.id }, buildCtx());
-    const blocked = result as { status: 'blocked'; condition: { requestId: string } };
-    const inputReq = await inputRequestsBook.get(blocked.condition.requestId);
-    const q = inputReq?.questions['D1'] as { tags?: string[] };
-    assert.deepEqual(q.tags, ['high-stakes', 'low-confidence', 'observable', 'product']);
-  });
-
-  it('decision without analysis produces no tags property', async () => {
-    const engine = createDecisionReviewEngine(() => plansBook);
-    const decisions: Decision[] = [
-      {
-        id: 'D1',
-        scope: [],
-        question: 'No analysis?',
-        options: { A: 'Option A' },
+        question: 'Which approach?',
+        options: { A: 'Option A', B: 'Option B' },
+        recommendation: 'A',
       },
     ];
 
@@ -1013,135 +990,6 @@ describe('decision-review engine', () => {
     const inputReq = await inputRequestsBook.get(blocked.condition.requestId);
     const q = inputReq?.questions['D1'] as Record<string, unknown>;
     assert.equal('tags' in q, false);
-  });
-
-  it('decision with partial analysis produces tags only for present fields', async () => {
-    const engine = createDecisionReviewEngine(() => plansBook);
-    const decisions: Decision[] = [
-      {
-        id: 'D1',
-        scope: [],
-        question: 'Partial analysis?',
-        options: { A: 'Option A' },
-        analysis: { confidence: 'high' },
-      },
-    ];
-
-    const plan = makePlan({ status: 'analyzing', decisions });
-    await plansBook.put(plan);
-
-    const result = await engine.run({ planId: plan.id }, buildCtx());
-    const blocked = result as { status: 'blocked'; condition: { requestId: string } };
-    const inputReq = await inputRequestsBook.get(blocked.condition.requestId);
-    const q = inputReq?.questions['D1'] as { tags?: string[] };
-    assert.deepEqual(q.tags, ['high-confidence']);
-  });
-
-  it('all analysis field-value combinations map correctly', async () => {
-    const engine = createDecisionReviewEngine(() => plansBook);
-    const decisions: Decision[] = [
-      {
-        id: 'D1',
-        scope: [],
-        question: 'All combos?',
-        options: { A: 'Option A' },
-        analysis: { category: 'api', observable: false, confidence: 'medium', stakes: 'low' },
-      },
-    ];
-
-    const plan = makePlan({ status: 'analyzing', decisions });
-    await plansBook.put(plan);
-
-    const result = await engine.run({ planId: plan.id }, buildCtx());
-    const blocked = result as { status: 'blocked'; condition: { requestId: string } };
-    const inputReq = await inputRequestsBook.get(blocked.condition.requestId);
-    const q = inputReq?.questions['D1'] as { tags?: string[] };
-    assert.deepEqual(q.tags, ['api', 'internal', 'low-stakes', 'medium-confidence']);
-  });
-
-  it('category implementation maps to tag implementation', async () => {
-    const engine = createDecisionReviewEngine(() => plansBook);
-    const decisions: Decision[] = [
-      {
-        id: 'D1',
-        scope: [],
-        question: 'Implementation?',
-        options: { A: 'Option A' },
-        analysis: { category: 'implementation' },
-      },
-    ];
-
-    const plan = makePlan({ status: 'analyzing', decisions });
-    await plansBook.put(plan);
-
-    const result = await engine.run({ planId: plan.id }, buildCtx());
-    const blocked = result as { status: 'blocked'; condition: { requestId: string } };
-    const inputReq = await inputRequestsBook.get(blocked.condition.requestId);
-    const q = inputReq?.questions['D1'] as { tags?: string[] };
-    assert.deepEqual(q.tags, ['implementation']);
-  });
-
-  it('scope-item BooleanQuestionSpec has no tags', async () => {
-    const engine = createDecisionReviewEngine(() => plansBook);
-    const decisions: Decision[] = [
-      {
-        id: 'D1',
-        scope: ['S1'],
-        question: 'Q?',
-        options: { A: 'Option A' },
-        analysis: { category: 'product', confidence: 'high', stakes: 'high', observable: true },
-      },
-    ];
-    const scope: ScopeItem[] = [
-      { id: 'S1', description: 'Scope item', rationale: 'Reason', included: true },
-    ];
-
-    const plan = makePlan({ status: 'analyzing', decisions, scope });
-    await plansBook.put(plan);
-
-    const result = await engine.run({ planId: plan.id }, buildCtx());
-    const blocked = result as { status: 'blocked'; condition: { requestId: string } };
-    const inputReq = await inputRequestsBook.get(blocked.condition.requestId);
-
-    // Decision should have tags
-    const dq = inputReq?.questions['D1'] as { tags?: string[] };
-    assert.ok(dq.tags);
-
-    // Scope question should NOT have tags
-    const sq = inputReq?.questions['scope:S1'] as Record<string, unknown>;
-    assert.equal('tags' in sq, false);
-  });
-
-  it('multiple decisions with varying analysis', async () => {
-    const engine = createDecisionReviewEngine(() => plansBook);
-    const decisions: Decision[] = [
-      {
-        id: 'D1',
-        scope: [],
-        question: 'With analysis?',
-        options: { A: 'Option A' },
-        analysis: { category: 'api', stakes: 'low' },
-      },
-      {
-        id: 'D2',
-        scope: [],
-        question: 'Without analysis?',
-        options: { X: 'Option X' },
-      },
-    ];
-
-    const plan = makePlan({ status: 'analyzing', decisions });
-    await plansBook.put(plan);
-
-    const result = await engine.run({ planId: plan.id }, buildCtx());
-    const blocked = result as { status: 'blocked'; condition: { requestId: string } };
-    const inputReq = await inputRequestsBook.get(blocked.condition.requestId);
-
-    const q1 = inputReq?.questions['D1'] as { tags?: string[] };
-    assert.deepEqual(q1.tags, ['api', 'low-stakes']);
-
-    const q2 = inputReq?.questions['D2'] as Record<string, unknown>;
-    assert.equal('tags' in q2, false);
   });
 
   // ── Analyst pre-decision / fast-path tests (razor + three defaults) ─
@@ -1355,27 +1203,6 @@ describe('decision-review engine', () => {
     assert.ok(decisionSummary.includes('**Selected:** X'));
   });
 
-  it('decision with empty analysis object produces no tags', async () => {
-    const engine = createDecisionReviewEngine(() => plansBook);
-    const decisions: Decision[] = [
-      {
-        id: 'D1',
-        scope: [],
-        question: 'Empty analysis?',
-        options: { A: 'Option A' },
-        analysis: {},
-      },
-    ];
-
-    const plan = makePlan({ status: 'analyzing', decisions });
-    await plansBook.put(plan);
-
-    const result = await engine.run({ planId: plan.id }, buildCtx());
-    const blocked = result as { status: 'blocked'; condition: { requestId: string } };
-    const inputReq = await inputRequestsBook.get(blocked.condition.requestId);
-    const q = inputReq?.questions['D1'] as Record<string, unknown>;
-    assert.equal('tags' in q, false);
-  });
 });
 
 // ── spec-publish tests ────────────────────────────────────────────────

@@ -23,14 +23,6 @@ import type {
   PlanFilters,
 } from './types.ts';
 
-// DecisionAnalysis Zod schema — mirrors the DecisionAnalysis interface in types.ts.
-const decisionAnalysisSchema = z.object({
-  category: z.enum(['product', 'api', 'implementation']).optional(),
-  observable: z.boolean().optional(),
-  confidence: z.enum(['low', 'medium', 'high']).optional(),
-  stakes: z.enum(['low', 'high']).optional(),
-});
-
 import {
   createPlanInitEngine,
   createInventoryCheckEngine,
@@ -199,7 +191,6 @@ export function createAstrolabe(): Plugin {
             rationale: z.string().optional(),
             selected: z.string().optional(),
             patronOverride: z.string().optional(),
-            analysis: decisionAnalysisSchema.optional(),
           }),
         )
         .describe('Decision items'),

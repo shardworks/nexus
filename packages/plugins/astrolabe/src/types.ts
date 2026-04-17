@@ -29,7 +29,7 @@ export interface PlanDoc {
   observations?: string;
   /** Scope items: what's in and what's out. */
   scope?: ScopeItem[];
-  /** Architectural/design decisions with options and analysis. */
+  /** Architectural/design decisions with options. */
   decisions?: Decision[];
 
   // ── Spec-writer output ──────────────────────────────────────
@@ -49,17 +49,6 @@ export interface ScopeItem {
   included: boolean;
 }
 
-export interface DecisionAnalysis {
-  /** Decision domain: product-level, API contract, or internal implementation. */
-  category?: 'product' | 'api' | 'implementation';
-  /** Whether the choice is externally visible to consumers of the feature/API. */
-  observable?: boolean;
-  /** How clearly the codebase and brief dictate the answer. */
-  confidence?: 'low' | 'medium' | 'high';
-  /** How much a consumer would notice if a different option were picked. */
-  stakes?: 'low' | 'high';
-}
-
 export interface Decision {
   id: string;
   scope: string[];
@@ -70,8 +59,6 @@ export interface Decision {
   rationale?: string;
   selected?: string;
   patronOverride?: string;
-  /** Analyst classification metadata — used for patron review UX (filtering, prioritization). */
-  analysis?: DecisionAnalysis;
 }
 
 // ── Filters ──────────────────────────────────────────────────────────

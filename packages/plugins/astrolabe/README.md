@@ -81,36 +81,6 @@ interface PlanFilters {
 }
 ```
 
-### `Decision` and `DecisionAnalysis`
-
-Each `Decision` may carry an optional `analysis` field with classification metadata used for patron review UX (filtering, prioritization):
-
-```typescript
-interface DecisionAnalysis {
-  category?: 'product' | 'api' | 'implementation';
-  observable?: boolean;
-  confidence?: 'low' | 'medium' | 'high';
-  stakes?: 'low' | 'high';
-}
-```
-
-When the `decision-review` engine builds `ChoiceQuestionSpec` entries for patron review, analysis fields are mapped to `tags` on each question:
-
-| Field | Value | Tag |
-|---|---|---|
-| `confidence` | `'low'` | `low-confidence` |
-| `confidence` | `'medium'` | `medium-confidence` |
-| `confidence` | `'high'` | `high-confidence` |
-| `stakes` | `'low'` | `low-stakes` |
-| `stakes` | `'high'` | `high-stakes` |
-| `category` | `'product'` | `product` |
-| `category` | `'api'` | `api` |
-| `category` | `'implementation'` | `implementation` |
-| `observable` | `true` | `observable` |
-| `observable` | `false` | `internal` |
-
-Tags are sorted alphabetically. When analysis is absent or all fields are empty, the `tags` property is omitted. Scope-derived boolean questions never receive tags.
-
 ## Configuration
 
 Add an `astrolabe` section to `guild.json` to configure behaviour:

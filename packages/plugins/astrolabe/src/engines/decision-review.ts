@@ -27,7 +27,7 @@ import type {
   AnswerValue,
   ChoiceAnswer,
 } from '@shardworks/spider-apparatus';
-import type { PlanDoc, Decision, DecisionAnalysis, ScopeItem } from '../types.ts';
+import type { PlanDoc, Decision, ScopeItem } from '../types.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -38,50 +38,6 @@ function composeDetails(context?: string, rationale?: string): string | undefine
   if (context) return context;
   if (rationale) return `Recommendation rationale: ${rationale}`;
   return undefined;
-}
-
-const CONFIDENCE_TAGS: Record<string, string> = {
-  low: 'low-confidence',
-  medium: 'medium-confidence',
-  high: 'high-confidence',
-};
-
-const STAKES_TAGS: Record<string, string> = {
-  low: 'low-stakes',
-  high: 'high-stakes',
-};
-
-const CATEGORY_TAGS: Record<string, string> = {
-  product: 'product',
-  api: 'api',
-  implementation: 'implementation',
-};
-
-const OBSERVABLE_TAGS: Record<string, string> = {
-  true: 'observable',
-  false: 'internal',
-};
-
-function buildAnalysisTags(analysis: DecisionAnalysis | undefined): string[] | undefined {
-  if (!analysis) return undefined;
-
-  const tags: string[] = [];
-
-  if (analysis.confidence !== undefined && CONFIDENCE_TAGS[analysis.confidence]) {
-    tags.push(CONFIDENCE_TAGS[analysis.confidence]);
-  }
-  if (analysis.stakes !== undefined && STAKES_TAGS[analysis.stakes]) {
-    tags.push(STAKES_TAGS[analysis.stakes]);
-  }
-  if (analysis.category !== undefined && CATEGORY_TAGS[analysis.category]) {
-    tags.push(CATEGORY_TAGS[analysis.category]);
-  }
-  if (analysis.observable !== undefined && OBSERVABLE_TAGS[String(analysis.observable)]) {
-    tags.push(OBSERVABLE_TAGS[String(analysis.observable)]);
-  }
-
-  if (tags.length === 0) return undefined;
-  return tags.sort();
 }
 
 function buildDecisionSummary(decisions: Decision[], scope: ScopeItem[]): string {
@@ -164,14 +120,12 @@ export function createDecisionReviewEngine(getPlansBook: () => Book<PlanDoc>): E
         const answers: Record<string, AnswerValue> = {};
 
         for (const decision of reviewableDecisions) {
-          const tags = buildAnalysisTags(decision.analysis);
           const choiceSpec: ChoiceQuestionSpec = {
             type: 'choice',
             label: decision.question,
             details: composeDetails(decision.context, decision.rationale),
             options: decision.options,
             allowCustom: true,
-            ...(tags ? { tags } : {}),
           };
           questions[decision.id] = choiceSpec;
 
