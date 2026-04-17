@@ -36,16 +36,16 @@ import type { SpiderCollectResult, RigTemplateEngine, RigDoc } from '../types.ts
  * another path beat us to it) and should be swallowed silently.
  *
  * Matches the wording produced by Clerk's `transition()` guard, e.g.
- *   `Cannot transition writ "…" to "completed": status is "cancelled", expected one of: open.`
+ *   `Cannot transition writ "…" to "completed": phase is "cancelled", expected one of: open.`
  * Also tolerates future phrasing like "already terminal".
  */
 function isAlreadyTerminalTransitionError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   if (message.includes('already terminal')) return true;
   return (
-    message.includes('status is "cancelled"') ||
-    message.includes('status is "completed"') ||
-    message.includes('status is "failed"')
+    message.includes('phase is "cancelled"') ||
+    message.includes('phase is "completed"') ||
+    message.includes('phase is "failed"')
   );
 }
 
@@ -137,15 +137,15 @@ const pieceSessionEngine: EngineDesign = {
     }
 
     // Re-read the piece writ after the transition attempt so yields reflect
-    // the observed, authoritative status — whether the transition succeeded
+    // the observed, authoritative phase — whether the transition succeeded
     // or was caught as already-terminal.
-    let observedPieceStatus: WritDoc['status'] | undefined;
+    let observedPiecePhase: WritDoc['phase'] | undefined;
     try {
       const observedPiece = await clerk.show(piece.id);
-      observedPieceStatus = observedPiece.status;
+      observedPiecePhase = observedPiece.phase;
     } catch {
       // Writ lookup failure should not propagate out of collect(). Leave
-      // observedPieceStatus undefined so yields omit the field entirely.
+      // observedPiecePhase undefined so yields omit the field entirely.
     }
 
     // ── Dynamic piece pickup ──────────────────────────────────────────
@@ -154,7 +154,7 @@ const pieceSessionEngine: EngineDesign = {
     const openChildren = await clerk.list({
       parentId: mandateWrit.id,
       type: 'piece',
-      status: 'open',
+      phase: 'open',
       limit: 50,
     });
 
@@ -202,7 +202,7 @@ const pieceSessionEngine: EngineDesign = {
       sessionId,
       sessionStatus: session?.status ?? 'completed',
       pieceId: piece.id,
-      ...(observedPieceStatus !== undefined ? { pieceStatus: observedPieceStatus } : {}),
+      ...(observedPiecePhase !== undefined ? { pieceStatus: observedPiecePhase } : {}),
       ...(session?.output !== undefined ? { output: session.output } : {}),
       ...(newPieces.length > 0 ? { dynamicPieceIds: newPieces.map(p => p.id) } : {}),
     };

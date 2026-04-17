@@ -65,7 +65,7 @@ import {
 } from './engines/index.ts';
 
 import {
-  writStatusBlockType,
+  writPhaseBlockType,
   scheduledTimeBlockType,
   bookUpdatedBlockType,
   patronInputBlockType,
@@ -1803,7 +1803,7 @@ export function createSpider(): Plugin {
     // Find open writs of dispatchable types, ordered by creation time (oldest first)
     const openWrits = await writsBook.find({
       where: [
-        ['status', '=', 'open'],
+        ['phase', '=', 'open'],
         ['type', 'IN', dispatchableTypes],
       ],
       orderBy: ['createdAt', 'asc'],
@@ -2060,7 +2060,7 @@ export function createSpider(): Plugin {
           },
         } satisfies Record<string, KitRoleDefinition>,
         blockTypes: {
-          'writ-status':    writStatusBlockType,
+          'writ-phase':     writPhaseBlockType,
           'scheduled-time': scheduledTimeBlockType,
           'book-updated':   bookUpdatedBlockType,
           'patron-input':   patronInputBlockType,
@@ -2151,9 +2151,9 @@ export function createSpider(): Plugin {
             const writ = event.entry;
             const prev = event.prev;
 
-            // Only act when status changes to cancelled
-            if (writ.status === prev.status) return;
-            if (writ.status !== 'cancelled') return;
+            // Only act when phase changes to cancelled
+            if (writ.phase === prev.phase) return;
+            if (writ.phase !== 'cancelled') return;
 
             const rig = await api.forWrit(writ.id);
             if (!rig) return; // No rig for this writ — silent no-op
@@ -2186,13 +2186,13 @@ export function createSpider(): Plugin {
             // (e.g. via the clerk directly) and the rig is cancelled afterwards.
             const writ = await writsBook.get(rig.writId);
             const writAlreadyTerminal = writ && (
-              writ.status === 'completed' || writ.status === 'failed' || writ.status === 'cancelled'
+              writ.phase === 'completed' || writ.phase === 'failed' || writ.phase === 'cancelled'
             );
 
             if (rig.status === 'stuck') {
               // Engine failure cascade: rig stuck → writ stuck.
-              // Only cascade if the writ is still in open status (not already terminal or stuck).
-              if (writ && writ.status === 'open') {
+              // Only cascade if the writ is still in open phase (not already terminal or stuck).
+              if (writ && writ.phase === 'open') {
                 const failedEngine = rig.engines.find((e) => e.status === 'failed');
                 const resolution = failedEngine?.error ?? 'Engine failure';
                 await clerk.transition(rig.writId, 'stuck', { resolution });

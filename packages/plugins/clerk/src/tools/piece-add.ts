@@ -37,10 +37,10 @@ export default tool({
   description: 'Add a new piece (atomic task) to a mandate for sequential execution',
   instructions:
     'Creates a new piece writ as a child of the specified mandate. The piece is created ' +
-    'in open status and will be picked up by the implement-loop engine after the current ' +
+    'in open phase and will be picked up by the implement-loop engine after the current ' +
     'piece session completes. The body is structured as a <task> XML element matching the ' +
     'task-manifest format used by the spec writer. ' +
-    'Requires an explicit mandateId — the mandate must be in new, open, or stuck status.',
+    'Requires an explicit mandateId — the mandate must be in new, open, or stuck phase.',
   callableBy: ['anima', 'patron'],
   params: {
     mandateId: z.string().describe('ID of the parent mandate writ'),

@@ -7,9 +7,9 @@ export default tool({
   name: 'writ-publish',
   description: 'Publish a draft writ, transitioning it from new to open',
   instructions:
-    'Moves a writ from new (draft) status to open, placing it in the execution queue. ' +
+    'Moves a writ from new (draft) phase to open, placing it in the execution queue. ' +
     'Once published, the Spider will pick up the writ on its next crawl tick. ' +
-    'Only writs in new status can be published. Returns the updated writ.',
+    'Only writs in new phase can be published. Returns the updated writ.',
   params: {
     id: z.string().describe('Writ id'),
   },

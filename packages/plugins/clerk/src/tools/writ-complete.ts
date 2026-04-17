@@ -8,7 +8,7 @@ export default tool({
   description: 'Complete a writ, transitioning it from open to completed',
   instructions:
     'Marks the writ as successfully completed. ' +
-    'Writs in open status can be completed. ' +
+    'Writs in open phase can be completed. ' +
     'Returns the updated writ.',
   params: {
     id: z.string().describe('Writ id'),

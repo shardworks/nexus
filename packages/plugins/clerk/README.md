@@ -1,6 +1,8 @@
 # `@shardworks/clerk-apparatus`
 
-The Clerk manages the lifecycle of **writs** — lightweight work orders that flow through a fixed status machine. Writs are created as commissions and ultimately completed, failed, or cancelled. Writs may also enter a `stuck` state when their rig encounters an engine failure — a non-terminal "needs attention" status that preserves the obligation for future retry. Writs can be organized into parent/child hierarchies for decomposing complex work.
+The Clerk manages the lifecycle of **writs** — lightweight work orders that flow through a fixed phase machine. Writs are created as commissions and ultimately completed, failed, or cancelled. Writs may also enter a `stuck` phase when their rig encounters an engine failure — a non-terminal "needs attention" phase that preserves the obligation for future retry. Writs can be organized into parent/child hierarchies for decomposing complex work.
+
+Writ documents follow a Kubernetes-style spec/status split: **`phase`** is the Clerk-owned lifecycle state (the phase machine below), and **`status`** is a plugin-owned observation slot keyed by plugin id — a place for apparatuses like Spider to record side-channel observations (last rig, stuck cause, progress ratchets) without mutating the phase. See [Spec/Status Convention](#specstatus-convention) below.
 
 The Clerk sits downstream of The Stacks: `stacks ← clerk`.
 
@@ -32,7 +34,7 @@ const clerk = guild().apparatus<ClerkApi>('clerk');
 
 ### `post(request): Promise<WritDoc>`
 
-Post a new commission, creating a writ in `open` status.
+Post a new commission, creating a writ in `open` phase.
 
 ```typescript
 const writ = await clerk.post({
@@ -53,7 +55,7 @@ const writ = await clerk.post({
 | `parentId` | `string` | Parent writ id for hierarchical decomposition (optional) |
 
 When `parentId` is provided:
-- The parent must exist and be in `new`, `open`, or `stuck` status.
+- The parent must exist and be in `new`, `open`, or `stuck` phase.
 - The child inherits the parent's `codex` if no explicit codex is provided.
 - The entire operation is atomic.
 
@@ -68,13 +70,13 @@ Show a writ by id. Throws if not found.
 List writs with optional filters, ordered by `createdAt` descending (newest first).
 
 ```typescript
-const openWrits = await clerk.list({ status: 'open', limit: 10 });
+const openWrits = await clerk.list({ phase: 'open', limit: 10 });
 const children = await clerk.list({ parentId: parent.id });
 ```
 
 | Filter | Type | Description |
 |---|---|---|
-| `status` | `WritStatus \| WritStatus[]` | Filter by status (single or array — multiple values OR together) |
+| `phase` | `WritPhase \| WritPhase[]` | Filter by phase (single or array — multiple values OR together) |
 | `type` | `string` | Filter by writ type |
 | `parentId` | `string` | Filter to children of this parent writ |
 | `limit` | `number` | Maximum results (default: 20) |
@@ -85,12 +87,12 @@ const children = await clerk.list({ parentId: parent.id });
 Count writs matching optional filters. Accepts the same filters as `list()` (except `limit` and `offset`).
 
 ```typescript
-const total = await clerk.count({ status: 'open' });
+const total = await clerk.count({ phase: 'open' });
 ```
 
 ### `listWritTypes(): WritTypeInfo[]`
 
-List all registered writ types with full metadata — descriptions, source tracking, and default status.
+List all registered writ types with full metadata — descriptions, source tracking, and default flag.
 
 ```typescript
 const types = clerk.listWritTypes();
@@ -174,11 +176,11 @@ const edited = await clerk.edit({
 | `type` | `string` | New writ type — must be declared or built-in (optional) |
 | `codex` | `string` | New target codex name; empty string clears it (optional) |
 
-At least one field besides `id` must be provided. Title and body can be edited in any status. Type and codex can only be changed while the writ is in `new` (draft) status.
+At least one field besides `id` must be provided. Title and body can be edited in any phase. Type and codex can only be changed while the writ is in `new` (draft) phase.
 
 ### `transition(id, to, fields?): Promise<WritDoc>`
 
-Transition a writ to a new status, optionally setting additional fields atomically.
+Transition a writ to a new phase, optionally setting additional fields atomically.
 
 ```typescript
 // Complete with resolution
@@ -191,13 +193,31 @@ await clerk.transition(id, 'failed', { resolution: 'Build pipeline broke' });
 await clerk.transition(id, 'cancelled', { resolution: 'No longer needed' });
 ```
 
-Throws if the transition is not legal for the writ's current status.
+Throws if the transition is not legal for the writ's current phase.
+
+`transition()` does **not** write the observation slot. Any `status` field passed in `fields` is silently stripped — plugins must use `setWritStatus()` instead.
 
 **Cascade behavior:** When a writ with children transitions to `failed` or `cancelled`, all non-terminal children are automatically cancelled with resolution `'Automatically cancelled due to parent termination'` (exported as `CASCADE_PARENT_TERMINATION_RESOLUTION`). When a parent transitions to `completed`, non-terminal children are **not** cancelled — instead a warning is logged (their existence indicates an upstream bookkeeping gap). When a child fails and its parent is `open` or `stuck`, the parent is failed and remaining siblings are cancelled.
 
+### `setWritStatus(writId, pluginId, value): Promise<WritDoc>`
+
+Write (or overwrite) a plugin-owned sub-slot inside the writ's observation `status` map. The `status` field on `WritDoc` is a `Record<string, unknown>` keyed by plugin id — each plugin reads and writes under its own key.
+
+```typescript
+// Spider records stuck cause
+await clerk.setWritStatus(writ.id, 'spider', { stuckCause: 'engine-failed', lastRig: 'rig-01' });
+
+// Astrolabe records a progress ratchet in the same writ — does not clobber spider's slot.
+await clerk.setWritStatus(writ.id, 'astrolabe', { planVersion: 3 });
+```
+
+The write runs in a Stacks transaction (read-modify-write), so concurrent writes from different plugins to different sub-slots are disjoint and safe. The slot is not cleared on terminal transitions — observations persist for post-mortem analysis. See [Spec/Status Convention](#specstatus-convention) for conventions and a worked example.
+
+Throws if `writId` or `pluginId` is missing, or if the writ does not exist.
+
 ---
 
-## Status Machine
+## Phase Machine
 
 ```
 new ──► open ──┬──► completed
@@ -215,7 +235,7 @@ new ──► open ──┬──► completed
 ```
 
 - `completed`, `failed`, and `cancelled` are **terminal** — no transitions out.
-- `stuck` is **non-terminal** — a "needs attention" state for writs whose rig hit an engine failure. Recovery (future retry) transitions back to `open`; giving up transitions to `failed` or `cancelled`.
+- `stuck` is **non-terminal** — a "needs attention" phase for writs whose rig hit an engine failure. Recovery (future retry) transitions back to `open`; giving up transitions to `failed` or `cancelled`.
 
 ### Allowed transitions
 
@@ -233,11 +253,53 @@ new ──► open ──┬──► completed
 
 Writs can be organized into parent/child relationships for decomposing complex work:
 
-- **Creating children:** Pass `parentId` to `post()`. The parent stays in its current status. Parents in `new`, `open`, or `stuck` status accept children.
+- **Creating children:** Pass `parentId` to `post()`. The parent stays in its current phase. Parents in `new`, `open`, or `stuck` phase accept children.
 - **Failure cascade:** When a child fails and the parent is `open` or `stuck`, the parent is failed and remaining non-terminal siblings are cancelled.
 - **Cancellation cascade:** When a parent reaches `failed` or `cancelled`, all non-terminal children are cancelled. When a parent reaches `completed` with non-terminal children still present, the Clerk logs a warning and leaves the children alone — this signals an upstream bookkeeping gap rather than normal flow.
 - **Codex inheritance:** Children inherit the parent's codex if none is specified.
 - **Immutability:** `parentId` cannot be changed after creation.
+
+---
+
+## Spec/Status Convention
+
+Clerk follows a Kubernetes-style spec/status split:
+
+- **Spec fields** are the declared intent of the writ — `title`, `body`, `type`, `codex`, `parentId`, and the Clerk-owned lifecycle field `phase`. These describe *what should happen* and *where the writ currently sits on the phase machine*.
+- **Status slot** (the `status` field on `WritDoc`) is a `Record<string, unknown>` — a free-form observation map keyed by plugin id. Each plugin owns one sub-slot and uses it to record side-channel observations about the writ: last rig used, stuck cause, progress ratchets, planner version, etc.
+
+The slot is a soft convention rather than a hard enforcement boundary:
+
+- No runtime guard stops a plugin from reading another plugin's sub-slot — the convention is *write only your own key*, and the `setWritStatus()` API makes the right thing easy.
+- `transition()` silently strips any `status` field passed by callers. The observation slot is plugin-owned and must be written via `setWritStatus()`, not smuggled through the phase machine.
+- Concurrent writes from different plugins to different sub-slots are disjoint and safe: `setWritStatus()` runs its read-modify-write inside a Stacks transaction.
+- Terminal transitions do **not** clear the slot. Observations persist on the writ for post-mortem inspection.
+
+### Worked example: `status.spider.stuckCause`
+
+When Spider's engine fails for a writ, it transitions the writ to `stuck` (a phase change) *and* records the diagnostic cause in its sub-slot (an observation):
+
+```typescript
+// In Spider's engine-failure handler:
+await clerk.transition(writ.id, 'stuck', { resolution: 'Engine "implement-loop" failed' });
+await clerk.setWritStatus(writ.id, 'spider', {
+  stuckCause: 'engine-failed',
+  lastRig: rig.id,
+  failedEngine: 'implement-loop',
+});
+
+// Later, a human or tool reads the slot to triage:
+const writ = await clerk.show(writId);
+const spiderStatus = (writ.status ?? {})['spider'] as
+  | { stuckCause?: string; lastRig?: string; failedEngine?: string }
+  | undefined;
+
+if (spiderStatus?.stuckCause === 'engine-failed') {
+  console.log(`Stuck in rig ${spiderStatus.lastRig} at engine ${spiderStatus.failedEngine}`);
+}
+```
+
+The phase (`stuck`) is the authoritative lifecycle state — queries, cascades, and the phase machine all reason from it. The observation (`status.spider.stuckCause`) is diagnostic context that survives alongside the phase without becoming part of the state machine itself.
 
 ---
 
@@ -276,7 +338,7 @@ The Clerk contributes books, tools, and pages to the guild:
 
 | Book | Indexes | Contents |
 |---|---|---|
-| `writs` | `status`, `type`, `createdAt`, `parentId`, `[status, type]`, `[status, createdAt]`, `[parentId, status]` | Writ documents |
+| `writs` | `phase`, `type`, `createdAt`, `parentId`, `[phase, type]`, `[phase, createdAt]`, `[parentId, phase]` | Writ documents |
 | `links` | `sourceId`, `targetId`, `label`, `[sourceId, label]`, `[targetId, label]` | Writ relationship links |
 
 ### Tools
@@ -285,8 +347,8 @@ The Clerk contributes books, tools, and pages to the guild:
 |---|---|---|
 | `commission-post` | `clerk:write` | Post a new commission (create a writ, optionally as child) |
 | `writ-show` | `clerk:read` | Show full detail for a writ (includes parent/children context) |
-| `writ-list` | `clerk:read` | List writs with optional filters (status, type, parentId) |
-| `writ-edit` | `clerk:write` | Edit a writ (title/body any status; type/codex draft only) |
+| `writ-list` | `clerk:read` | List writs with optional filters (phase, type, parentId) |
+| `writ-edit` | `clerk:write` | Edit a writ (title/body any phase; type/codex draft only) |
 | `writ-complete` | `clerk:write` | Complete a writ (open → completed) |
 | `writ-fail` | `clerk:write` | Fail a writ (open/stuck → failed) |
 | `writ-cancel` | `clerk:write` | Cancel a writ (new/open/stuck → cancelled) |
@@ -302,12 +364,12 @@ The Clerk contributes books, tools, and pages to the guild:
 ## Key Types
 
 ```typescript
-type WritStatus = 'new' | 'open' | 'stuck' | 'completed' | 'failed' | 'cancelled';
+type WritPhase = 'new' | 'open' | 'stuck' | 'completed' | 'failed' | 'cancelled';
 
 interface WritDoc {
   id: string;           // ULID-like, prefixed "w-"
   type: string;         // declared or built-in type
-  status: WritStatus;
+  phase: WritPhase;     // Clerk-owned lifecycle state
   title: string;
   body: string;
   codex?: string;       // target codex name
@@ -316,6 +378,7 @@ interface WritDoc {
   updatedAt: string;    // ISO timestamp, updated on every mutation
   resolvedAt?: string;  // ISO timestamp, set on any terminal transition
   resolution?: string;  // summary of how the writ resolved
+  status?: Record<string, unknown>; // plugin-owned observation slot (keyed by plugin id)
 }
 
 interface PostCommissionRequest {
@@ -335,7 +398,7 @@ interface EditWritRequest {
 }
 
 interface WritFilters {
-  status?: WritStatus | WritStatus[];
+  phase?: WritPhase | WritPhase[];
   type?: string;
   parentId?: string;    // filter to children of this parent
   limit?: number;

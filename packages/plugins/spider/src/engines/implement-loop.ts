@@ -37,7 +37,7 @@ const implementLoopEngine: EngineDesign = {
     const pieces = await clerk.list({
       parentId: writ.id,
       type: 'piece',
-      status: 'open',
+      phase: 'open',
       limit: 100,
     });
 

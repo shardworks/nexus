@@ -2,7 +2,7 @@
  * The Clerk — writ lifecycle management apparatus.
  *
  * The Clerk manages the lifecycle of writs: lightweight work orders that flow
- * through a fixed status machine (new → open → completed/failed/cancelled,
+ * through a fixed phase machine (new → open → completed/failed/cancelled,
  * with stuck as a non-terminal "needs attention" state off open).
  * Each writ has a type, a title, a body, and optional codex and resolution
  * fields.
@@ -25,7 +25,7 @@ import type {
   WritDoc,
   WritLinkDoc,
   WritLinks,
-  WritStatus,
+  WritPhase,
   WritTypeInfo,
   PostCommissionRequest,
   EditWritRequest,
@@ -78,16 +78,16 @@ const BUILTIN_TYPES = new Set(['mandate']);
 /**
  * Resolution string applied to non-terminal children that are cancelled by
  * the downward cascade when their parent transitions to a terminal failure
- * or cancellation status. Single source of truth — referenced by code,
+ * or cancellation phase. Single source of truth — referenced by code,
  * tests, and documentation. Modeled on `PIECE_EXECUTION_EPILOGUE` in the
  * Spider plugin.
  */
 export const CASCADE_PARENT_TERMINATION_RESOLUTION =
   'Automatically cancelled due to parent termination';
 
-// ── Status machine ───────────────────────────────────────────────────
+// ── Phase machine ────────────────────────────────────────────────────
 
-const ALLOWED_FROM: Record<WritStatus, WritStatus[]> = {
+const ALLOWED_FROM: Record<WritPhase, WritPhase[]> = {
   open: ['new', 'stuck'],
   stuck: ['open'],
   completed: ['open'],
@@ -96,12 +96,12 @@ const ALLOWED_FROM: Record<WritStatus, WritStatus[]> = {
   new: [],
 };
 
-const TERMINAL_STATUSES = new Set<WritStatus>(['completed', 'failed', 'cancelled']);
+const TERMINAL_PHASES = new Set<WritPhase>(['completed', 'failed', 'cancelled']);
 
 // ── Factory ──────────────────────────────────────────────────────────
 
-/** Parent statuses that allow adding children. */
-const CHILD_ALLOWED_PARENT_STATUSES = new Set<WritStatus>(['new', 'open', 'stuck']);
+/** Parent phases that allow adding children. */
+const CHILD_ALLOWED_PARENT_PHASES = new Set<WritPhase>(['new', 'open', 'stuck']);
 
 export function createClerk(): Plugin {
   let stacks: StacksApi;
@@ -156,12 +156,12 @@ export function createClerk(): Plugin {
 
   function buildWhereClause(filters?: WritFilters): WhereClause | undefined {
     const conditions: WhereClause = [];
-    if (filters?.status) {
-      const statuses = Array.isArray(filters.status) ? filters.status : [filters.status];
-      if (statuses.length === 1) {
-        conditions.push(['status', '=', statuses[0]!]);
-      } else if (statuses.length > 1) {
-        conditions.push(['status', 'IN', statuses]);
+    if (filters?.phase) {
+      const phases = Array.isArray(filters.phase) ? filters.phase : [filters.phase];
+      if (phases.length === 1) {
+        conditions.push(['phase', '=', phases[0]!]);
+      } else if (phases.length > 1) {
+        conditions.push(['phase', 'IN', phases]);
       }
     }
     if (filters?.type) {
@@ -303,14 +303,14 @@ export function createClerk(): Plugin {
         return stacks.transaction(async (tx) => {
           const txWrits = tx.book<WritDoc>('clerk', 'writs');
 
-          // Validate parent exists and is in an allowed status
+          // Validate parent exists and is in an allowed phase
           const parent = await txWrits.get(request.parentId!);
           if (!parent) {
             throw new Error(`Parent writ "${request.parentId}" not found.`);
           }
-          if (!CHILD_ALLOWED_PARENT_STATUSES.has(parent.status)) {
+          if (!CHILD_ALLOWED_PARENT_PHASES.has(parent.phase)) {
             throw new Error(
-              `Cannot add children to writ "${request.parentId}": status is "${parent.status}", expected one of: ${[...CHILD_ALLOWED_PARENT_STATUSES].join(', ')}.`,
+              `Cannot add children to writ "${request.parentId}": phase is "${parent.phase}", expected one of: ${[...CHILD_ALLOWED_PARENT_PHASES].join(', ')}.`,
             );
           }
 
@@ -327,7 +327,7 @@ export function createClerk(): Plugin {
           const writ: WritDoc = {
             id: childId,
             type,
-            status: request.draft === true ? 'new' : 'open',
+            phase: request.draft === true ? 'new' : 'open',
             title: request.title,
             body: request.body,
             ...(codex !== undefined ? { codex } : {}),
@@ -345,7 +345,7 @@ export function createClerk(): Plugin {
       const writ: WritDoc = {
         id: childId,
         type,
-        status: request.draft === true ? 'new' : 'open',
+        phase: request.draft === true ? 'new' : 'open',
         title: request.title,
         body: request.body,
         ...(codex !== undefined ? { codex } : {}),
@@ -507,15 +507,15 @@ export function createClerk(): Plugin {
         throw new Error(`Writ "${request.id}" not found.`);
       }
       // Type and codex can only be changed while the writ is still a draft
-      if (writ.status !== 'new') {
+      if (writ.phase !== 'new') {
         if (request.type !== undefined) {
           throw new Error(
-            `Cannot change type on writ "${request.id}": status is "${writ.status}". Type can only be changed while the writ is in "new" status.`,
+            `Cannot change type on writ "${request.id}": phase is "${writ.phase}". Type can only be changed while the writ is in "new" phase.`,
           );
         }
         if (request.codex !== undefined) {
           throw new Error(
-            `Cannot change codex on writ "${request.id}": status is "${writ.status}". Codex can only be changed while the writ is in "new" status.`,
+            `Cannot change codex on writ "${request.id}": phase is "${writ.phase}". Codex can only be changed while the writ is in "new" phase.`,
           );
         }
       }
@@ -548,35 +548,65 @@ export function createClerk(): Plugin {
       return writs.patch(request.id, patch);
     },
 
-    async transition(id: string, to: WritStatus, fields?: Partial<WritDoc>): Promise<WritDoc> {
+    async transition(id: string, to: WritPhase, fields?: Partial<WritDoc>): Promise<WritDoc> {
       const writ = await writs.get(id);
       if (!writ) {
         throw new Error(`Writ "${id}" not found.`);
       }
 
       const allowedFrom = ALLOWED_FROM[to];
-      if (!allowedFrom.includes(writ.status)) {
+      if (!allowedFrom.includes(writ.phase)) {
         throw new Error(
-          `Cannot transition writ "${id}" to "${to}": status is "${writ.status}", expected one of: ${allowedFrom.join(', ')}.`,
+          `Cannot transition writ "${id}" to "${to}": phase is "${writ.phase}", expected one of: ${allowedFrom.join(', ')}.`,
         );
       }
 
       const now = new Date().toISOString();
-      const isTerminal = TERMINAL_STATUSES.has(to);
+      const isTerminal = TERMINAL_PHASES.has(to);
 
-      // Strip managed fields — callers cannot override id, status, or timestamps
-      // controlled by the status machine.
-      const { id: _id, status: _status, createdAt: _c, updatedAt: _u,
-        resolvedAt: _r, parentId: _p, ...safeFields } = (fields ?? {}) as WritDoc;
+      // Strip managed fields — callers cannot override id, phase, or
+      // timestamps controlled by the phase machine. The observation slot
+      // `status` is plugin-owned: callers must not set it via transition();
+      // use setWritStatus() instead.
+      const { id: _id, phase: _phase, createdAt: _c, updatedAt: _u,
+        resolvedAt: _r, parentId: _p, status: _s,
+        ...safeFields } = (fields ?? {}) as WritDoc;
 
       const patch: Partial<Omit<WritDoc, 'id'>> = {
-        status: to,
+        phase: to,
         updatedAt: now,
         ...(isTerminal ? { resolvedAt: now } : {}),
         ...safeFields,
       };
 
       return writs.patch(id, patch);
+    },
+
+    async setWritStatus(writId: string, pluginId: string, value: unknown): Promise<WritDoc> {
+      if (!writId) {
+        throw new Error('setWritStatus: writId is required.');
+      }
+      if (!pluginId) {
+        throw new Error('setWritStatus: pluginId is required.');
+      }
+
+      // Read-modify-write in a single transaction so we do not clobber
+      // sibling sub-slots written concurrently by other plugins.
+      return stacks.transaction(async (tx) => {
+        const txWrits = tx.book<WritDoc>('clerk', 'writs');
+        const existing = await txWrits.get(writId);
+        if (!existing) {
+          throw new Error(`Writ "${writId}" not found.`);
+        }
+
+        const prevStatus = (existing.status ?? {}) as Record<string, unknown>;
+        const nextStatus: Record<string, unknown> = { ...prevStatus, [pluginId]: value };
+
+        return txWrits.patch(writId, {
+          status: nextStatus,
+          updatedAt: new Date().toISOString(),
+        });
+      });
     },
   };
 
@@ -586,9 +616,9 @@ export function createClerk(): Plugin {
     if (!child.parentId) return;
 
     const parent = await writs.get(child.parentId);
-    if (!parent || (parent.status !== 'open' && parent.status !== 'stuck')) return;
+    if (!parent || (parent.phase !== 'open' && parent.phase !== 'stuck')) return;
 
-    if (child.status === 'failed') {
+    if (child.phase === 'failed') {
       const childResolution = child.resolution ?? 'unknown';
       await api.transition(parent.id, 'failed', {
         resolution: `Child "${child.id}" failed: ${childResolution}`,
@@ -600,19 +630,19 @@ export function createClerk(): Plugin {
     const children = await writs.find({ where: [['parentId', '=', parent.id]] });
     if (children.length === 0) return;
 
-    const nonTerminalChildren = children.filter((c) => !TERMINAL_STATUSES.has(c.status));
+    const nonTerminalChildren = children.filter((c) => !TERMINAL_PHASES.has(c.phase));
     if (nonTerminalChildren.length === 0) return;
 
     // When the parent reached `completed`, non-terminal children shouldn't
     // exist — their presence indicates an upstream bookkeeping gap (e.g. a
     // child-writ transition lost a race). Warn loudly rather than masking
     // the discrepancy by cancelling.
-    if (parent.status === 'completed') {
+    if (parent.phase === 'completed') {
       for (const child of nonTerminalChildren) {
         console.warn(
           `[clerk] Parent writ "${parent.id}" transitioned to "completed" but ` +
-            `child writ "${child.id}" is still in non-terminal status ` +
-            `"${child.status}". Leaving the child as-is; this indicates an ` +
+            `child writ "${child.id}" is still in non-terminal phase ` +
+            `"${child.phase}". Leaving the child as-is; this indicates an ` +
             `upstream bookkeeping gap that should be investigated.`,
         );
       }
@@ -653,7 +683,7 @@ export function createClerk(): Plugin {
       supportKit: {
         books: {
           writs: {
-            indexes: ['status', 'type', 'createdAt', 'parentId', ['status', 'type'], ['status', 'createdAt'], ['parentId', 'status']],
+            indexes: ['phase', 'type', 'createdAt', 'parentId', ['phase', 'type'], ['phase', 'createdAt'], ['parentId', 'phase']],
           },
           links: {
             indexes: ['sourceId', 'targetId', 'label', ['sourceId', 'label'], ['targetId', 'label']],
@@ -718,34 +748,78 @@ export function createClerk(): Plugin {
           const writ = event.entry as WritDoc;
           const prev = event.prev as WritDoc;
 
-          // Only act on status changes
-          if (writ.status === prev.status) return;
+          // Only act on phase changes
+          if (writ.phase === prev.phase) return;
 
           // ── Upward cascade: child → parent ──
-          if (writ.parentId && TERMINAL_STATUSES.has(writ.status)) {
+          if (writ.parentId && TERMINAL_PHASES.has(writ.phase)) {
             await handleChildTerminal(writ);
           }
 
           // ── Downward cascade: parent → children ──
-          if (TERMINAL_STATUSES.has(writ.status)) {
+          if (TERMINAL_PHASES.has(writ.phase)) {
             await handleParentTerminal(writ);
           }
         }, { failOnError: true });
 
-        // ── One-shot migration: collapse legacy statuses to 'open' ──
+        // ── One-shot migration: rename `status` → `phase`, subsume legacy values ──
         // Safe to run inside start(): stacks only seals the CDC registry
         // at phase:started (after every apparatus has started), so these
         // writes don't lock out downstream apparatuses that register
         // watchers in their own start().
-        const legacyStatuses = ['ready', 'active', 'waiting'];
-        for (const oldStatus of legacyStatuses) {
-          const found = await writs.find({ where: [['status', '=', oldStatus]] });
-          for (const writ of found) {
-            await writs.patch(writ.id, {
-              status: 'open' as WritStatus,
-              updatedAt: new Date().toISOString(),
-            });
+        //
+        // Every pre-rename row carries its lifecycle value in `status`.
+        // Post-rename rows carry `phase` instead, and `status` becomes the
+        // plugin-owned observation slot. We iterate every row, compute a
+        // clean post-rename document, and `put()` it back — `patch()` can't
+        // remove a field, so the full rewrite is required.
+        //
+        // Legacy lifecycle values (`ready`, `active`, `waiting`) are
+        // collapsed into `open` along the way (this subsumes the older
+        // `legacyStatuses` migration). Any unrecognized value aborts
+        // startup — unknown phase is a data-integrity issue.
+        const LEGACY_COLLAPSE: Record<string, WritPhase> = {
+          ready: 'open',
+          active: 'open',
+          waiting: 'open',
+        };
+        const VALID_PHASES = new Set<WritPhase>([
+          'new', 'open', 'stuck', 'completed', 'failed', 'cancelled',
+        ]);
+
+        const allWrits = await writs.find({});
+        for (const row of allWrits) {
+          // Already migrated — skip (idempotent).
+          if (typeof (row as { phase?: unknown }).phase === 'string') continue;
+
+          const legacyStatus = (row as { status?: unknown }).status;
+          if (typeof legacyStatus !== 'string') {
+            throw new Error(
+              `[clerk] Migration: writ "${row.id}" has neither \`phase\` nor a string \`status\` field; cannot migrate (got ${legacyStatus === undefined ? 'undefined' : typeof legacyStatus}).`,
+            );
           }
+
+          let nextPhase: WritPhase;
+          if (LEGACY_COLLAPSE[legacyStatus]) {
+            nextPhase = LEGACY_COLLAPSE[legacyStatus];
+          } else if (VALID_PHASES.has(legacyStatus as WritPhase)) {
+            nextPhase = legacyStatus as WritPhase;
+          } else {
+            throw new Error(
+              `[clerk] Migration: writ "${row.id}" has unrecognized status value "${legacyStatus}". Expected one of: ${[...VALID_PHASES].join(', ')} (or legacy: ${Object.keys(LEGACY_COLLAPSE).join(', ')}).`,
+            );
+          }
+
+          // Build a clean post-rename document — no `status` key, `phase`
+          // set. `updatedAt` is preserved exactly as stored (this is a
+          // storage-format change, not a logical edit).
+          const migrated: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(row)) {
+            if (k === 'status') continue;
+            migrated[k] = v;
+          }
+          migrated.phase = nextPhase;
+          await writs.put(migrated as WritDoc);
         }
 
         // ── One-shot migration: normalize link rows ──────────────────

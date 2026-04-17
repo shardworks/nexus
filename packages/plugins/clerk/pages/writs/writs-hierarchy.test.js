@@ -3,7 +3,7 @@
  *
  * Extracts and tests the pure logic behind:
  * - sortedFilteredWrits — hierarchical ordering, toggle, search
- * - statusBadge — waiting status
+ * - phaseBadge — phase → badge-class mapping
  * - Toggle button state
  * - Children table rendering in detail view
  * - Parent link in detail view
@@ -77,7 +77,7 @@ function createElement(tag) {
 
 // ── Extracted logic (mirrors index.html) ────────────────────────────
 
-function statusBadge(status) {
+function phaseBadge(phase) {
   const map = {
     new: 'badge badge--draft',
     open: 'badge badge--active',
@@ -86,8 +86,8 @@ function statusBadge(status) {
     failed: 'badge badge--error',
     cancelled: 'badge badge--warning',
   };
-  const cls = map[status] ?? 'badge';
-  return `<span class="${cls}">${status}</span>`;
+  const cls = map[phase] ?? 'badge';
+  return `<span class="${cls}">${phase}</span>`;
 }
 
 function escHtml(s) {
@@ -107,11 +107,11 @@ function compareVal(a, b, col) {
 }
 
 function rowActions(w) {
-  const isTerminal = ['completed', 'failed', 'cancelled'].includes(w.status);
-      const isStuck = w.status === 'stuck';
+  const isTerminal = ['completed', 'failed', 'cancelled'].includes(w.phase);
+      const isStuck = w.phase === 'stuck';
   if (isTerminal) return '';
   const btns = [];
-  if (w.status === 'new') {
+  if (w.phase === 'new') {
     btns.push(`<button class="btn btn--primary row-action-btn" style="padding:0.15rem 0.5rem;font-size:0.8rem" data-action="row-publish" data-id="${w.id}">Start</button>`);
   }
   btns.push(`<button class="btn btn--danger row-action-btn" style="padding:0.15rem 0.5rem;font-size:0.8rem" data-action="row-cancel" data-id="${w.id}">Cancel</button>`);
@@ -160,9 +160,9 @@ function sortedFilteredWrits(writs, childrenMap, showChildren, searchText, sortC
  * Returns the full HTML string, same as the index.html renderDetail.
  */
 function renderDetail(writ) {
-  const isTerminal = ['completed', 'failed', 'cancelled'].includes(writ.status);
-  const isStuck = writ.status === 'stuck';
-  const isDraft = writ.status === 'new';
+  const isTerminal = ['completed', 'failed', 'cancelled'].includes(writ.phase);
+  const isStuck = writ.phase === 'stuck';
+  const isDraft = writ.phase === 'new';
   let html = '';
 
   // Edit form
@@ -184,7 +184,7 @@ function renderDetail(writ) {
   html += `<div class="detail-section"><h4>Details</h4><dl class="detail-grid">`;
   if (writ.codex) html += `<dt>Codex</dt><dd>${escHtml(writ.codex)}</dd>`;
   if (writ.parent) {
-    html += `<dt>Parent</dt><dd><a href="?writ=${encodeURIComponent(writ.parent.id)}" style="color:var(--blue,#7aa2f7);text-decoration:underline;cursor:pointer">${escHtml(writ.parent.title)}</a> ${statusBadge(writ.parent.status)}</dd>`;
+    html += `<dt>Parent</dt><dd><a href="?writ=${encodeURIComponent(writ.parent.id)}" style="color:var(--blue,#7aa2f7);text-decoration:underline;cursor:pointer">${escHtml(writ.parent.title)}</a> ${phaseBadge(writ.parent.phase)}</dd>`;
   }
   html += `<dt>Created</dt><dd></dd>`;
   html += `</dl></div>`;
@@ -195,7 +195,7 @@ function renderDetail(writ) {
   }
 
   // Repost
-  if (writ.status === 'failed' || writ.status === 'cancelled') {
+  if (writ.phase === 'failed' || writ.phase === 'cancelled') {
     html += `<div class="detail-section"><button class="btn" data-action="repost" data-id="${writ.id}">Repost</button></div>`;
   }
 
@@ -210,18 +210,18 @@ function renderDetail(writ) {
 
     if (writ.children?.summary) {
       html += `<div style="margin-bottom:0.5rem">`;
-      for (const [status, count] of Object.entries(writ.children.summary)) {
-        html += statusBadge(status) + ` <span style="margin-right:0.75rem">${count}</span>`;
+      for (const [phase, count] of Object.entries(writ.children.summary)) {
+        html += phaseBadge(phase) + ` <span style="margin-right:0.75rem">${count}</span>`;
       }
       html += `</div>`;
     }
 
     html += `<table class="data-table"><thead><tr>`;
-    html += `<th>Status</th><th>Title</th><th>Type</th><th>ID</th><th>Actions</th>`;
+    html += `<th>Phase</th><th>Title</th><th>Type</th><th>ID</th><th>Actions</th>`;
     html += `</tr></thead><tbody>`;
     for (const child of childItems) {
       html += `<tr class="writ-row child-detail-row" data-child-id="${child.id}" style="cursor:pointer">`;
-      html += `<td>${statusBadge(child.status)}</td>`;
+      html += `<td>${phaseBadge(child.phase)}</td>`;
       html += `<td>${escHtml(child.title ?? '')}</td>`;
       html += `<td>${escHtml(child.type ?? '')}</td>`;
       html += `<td><code>${child.id}</code></td>`;
@@ -237,11 +237,11 @@ function renderDetail(writ) {
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe('sortedFilteredWrits — hierarchy ordering', () => {
-  const rootA = { id: 'a', title: 'Alpha Root', type: 'mandate', status: 'open', createdAt: '2025-01-01' };
-  const rootB = { id: 'b', title: 'Beta Root', type: 'mandate', status: 'open', createdAt: '2025-01-02' };
-  const childA1 = { id: 'a1', title: 'Alpha Child 1', type: 'task', status: 'open', parentId: 'a', createdAt: '2025-01-03' };
-  const childA2 = { id: 'a2', title: 'Alpha Child 2', type: 'task', status: 'open', parentId: 'a', createdAt: '2025-01-04' };
-  const childB1 = { id: 'b1', title: 'Beta Child 1', type: 'task', status: 'open', parentId: 'b', createdAt: '2025-01-05' };
+  const rootA = { id: 'a', title: 'Alpha Root', type: 'mandate', phase: 'open', createdAt: '2025-01-01' };
+  const rootB = { id: 'b', title: 'Beta Root', type: 'mandate', phase: 'open', createdAt: '2025-01-02' };
+  const childA1 = { id: 'a1', title: 'Alpha Child 1', type: 'task', phase: 'open', parentId: 'a', createdAt: '2025-01-03' };
+  const childA2 = { id: 'a2', title: 'Alpha Child 2', type: 'task', phase: 'open', parentId: 'a', createdAt: '2025-01-04' };
+  const childB1 = { id: 'b1', title: 'Beta Child 1', type: 'task', phase: 'open', parentId: 'b', createdAt: '2025-01-05' };
 
   it('happy path — children interleaved beneath parents', () => {
     const writs = [rootA, rootB];
@@ -343,19 +343,19 @@ describe('sortedFilteredWrits — hierarchy ordering', () => {
   });
 });
 
-describe('statusBadge — open status', () => {
+describe('phaseBadge — phase → class mapping', () => {
   it('maps open to badge badge--active', () => {
-    const result = statusBadge('open');
+    const result = phaseBadge('open');
     assert.equal(result, '<span class="badge badge--active">open</span>');
   });
 
   it('maps cancelled to badge badge--warning', () => {
-    const result = statusBadge('cancelled');
+    const result = phaseBadge('cancelled');
     assert.equal(result, '<span class="badge badge--warning">cancelled</span>');
   });
 
-  it('maps unknown status to plain badge', () => {
-    const result = statusBadge('unknown');
+  it('maps unknown phase to plain badge', () => {
+    const result = phaseBadge('unknown');
     assert.equal(result, '<span class="badge">unknown</span>');
   });
 });
@@ -405,12 +405,12 @@ describe('Children table rendering in detail view', () => {
     const writ = {
       id: 'parent-1',
       title: 'Parent Writ',
-      status: 'open',
+      phase: 'open',
       body: 'body text',
       _fullChildren: [
-        { id: 'c1', title: 'Child 1', type: 'task', status: 'open', createdAt: '2025-01-01' },
-        { id: 'c2', title: 'Child 2', type: 'task', status: 'completed', createdAt: '2025-01-02' },
-        { id: 'c3', title: 'Child 3', type: 'bug', status: 'new', createdAt: '2025-01-03' },
+        { id: 'c1', title: 'Child 1', type: 'task', phase: 'open', createdAt: '2025-01-01' },
+        { id: 'c2', title: 'Child 2', type: 'task', phase: 'completed', createdAt: '2025-01-02' },
+        { id: 'c3', title: 'Child 3', type: 'bug', phase: 'new', createdAt: '2025-01-03' },
       ],
       children: {
         summary: { active: 1, completed: 1, new: 1 },
@@ -427,8 +427,8 @@ describe('Children table rendering in detail view', () => {
     const rowMatches = html.match(/child-detail-row/g);
     assert.equal(rowMatches.length, 3, 'Should have 3 child rows');
 
-    // Should have Status, Title, Type, ID, Actions columns (no Created)
-    assert.ok(html.includes('<th>Status</th><th>Title</th><th>Type</th><th>ID</th><th>Actions</th>'));
+    // Should have Phase, Title, Type, ID, Actions columns (no Created)
+    assert.ok(html.includes('<th>Phase</th><th>Title</th><th>Type</th><th>ID</th><th>Actions</th>'));
 
     // Verify child data appears
     assert.ok(html.includes('Child 1'));
@@ -443,7 +443,7 @@ describe('Children table rendering in detail view', () => {
     const writ = {
       id: 'parent-2',
       title: 'No Children',
-      status: 'open',
+      phase: 'open',
       body: '',
       children: { summary: {}, items: [] },
     };
@@ -457,12 +457,12 @@ describe('Children table rendering in detail view', () => {
     const writ = {
       id: 'parent-3',
       title: 'Parent',
-      status: 'open',
+      phase: 'open',
       body: '',
       _fullChildren: [
-        { id: 'c-early', title: 'Early', type: 'task', status: 'open', createdAt: '2025-01-01' },
-        { id: 'c-late', title: 'Late', type: 'task', status: 'open', createdAt: '2025-01-10' },
-        { id: 'c-mid', title: 'Mid', type: 'task', status: 'open', createdAt: '2025-01-05' },
+        { id: 'c-early', title: 'Early', type: 'task', phase: 'open', createdAt: '2025-01-01' },
+        { id: 'c-late', title: 'Late', type: 'task', phase: 'open', createdAt: '2025-01-10' },
+        { id: 'c-mid', title: 'Mid', type: 'task', phase: 'open', createdAt: '2025-01-05' },
       ],
       children: { summary: {}, items: [] },
     };
@@ -480,13 +480,13 @@ describe('Children table rendering in detail view', () => {
 });
 
 describe('Parent link in detail view', () => {
-  it('renders parent row with link and status badge when parent exists', () => {
+  it('renders parent row with link and phase badge when parent exists', () => {
     const writ = {
       id: 'child-w',
       title: 'Child Writ',
-      status: 'open',
+      phase: 'open',
       body: '',
-      parent: { id: 'w-parent', title: 'Parent Writ', status: 'open' },
+      parent: { id: 'w-parent', title: 'Parent Writ', phase: 'open' },
     };
 
     const html = renderDetail(writ);
@@ -496,15 +496,15 @@ describe('Parent link in detail view', () => {
     // Should contain link to parent
     assert.ok(html.includes('href="?writ=w-parent"'), 'Parent link should use ?writ= param');
     assert.ok(html.includes('Parent Writ'), 'Parent title should appear');
-    // Should have status badge for parent
-    assert.ok(html.includes('badge badge--active'), 'Parent status badge should appear');
+    // Should have phase badge for parent
+    assert.ok(html.includes('badge badge--active'), 'Parent phase badge should appear');
   });
 
   it('does not render parent row when parent is null', () => {
     const writ = {
       id: 'root-w',
       title: 'Root Writ',
-      status: 'open',
+      phase: 'open',
       body: '',
       parent: null,
     };
@@ -517,7 +517,7 @@ describe('Parent link in detail view', () => {
     const writ = {
       id: 'root-w2',
       title: 'Root Writ 2',
-      status: 'open',
+      phase: 'open',
       body: '',
     };
 
@@ -529,9 +529,9 @@ describe('Parent link in detail view', () => {
     const writ = {
       id: 'child-w2',
       title: 'Child',
-      status: 'open',
+      phase: 'open',
       body: '',
-      parent: { id: 'w-parent with spaces', title: 'Parent', status: 'open' },
+      parent: { id: 'w-parent with spaces', title: 'Parent', phase: 'open' },
     };
 
     const html = renderDetail(writ);

@@ -151,7 +151,7 @@ function buildFixture(
   apparatusMap.set('stacks', stacks);
 
   memBackend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
-    indexes: ['status', 'type', 'createdAt', 'parentId', ['status', 'type'], ['status', 'createdAt'], ['parentId', 'status']],
+    indexes: ['phase', 'type', 'createdAt', 'parentId', ['phase', 'type'], ['phase', 'createdAt'], ['parentId', 'phase']],
   });
   memBackend.ensureBook({ ownerId: 'clerk', book: 'links' }, {
     indexes: ['sourceId', 'targetId', 'type', ['sourceId', 'type'], ['targetId', 'type']],
@@ -421,7 +421,7 @@ describe('implement-loop engine', () => {
 
     // Check the piece writ was transitioned to completed
     const updatedPiece = await clerk.show(piece.id);
-    assert.equal(updatedPiece.status, 'completed');
+    assert.equal(updatedPiece.phase, 'completed');
   });
 
   it('piece writ stays open on session failure — collect() is not called', async () => {
@@ -453,7 +453,7 @@ describe('implement-loop engine', () => {
 
     // The piece writ stays 'open' because collect() was never called.
     const updatedPiece = await clerk.show(piece.id);
-    assert.equal(updatedPiece.status, 'open',
+    assert.equal(updatedPiece.phase, 'open',
       'Piece writ stays open — failEngine bypasses collect, so no transition occurs');
   });
 
@@ -501,7 +501,7 @@ describe('implement-loop engine', () => {
     assert.equal(r4?.action, 'engine-completed', 'Dynamic piece session should complete');
 
     const updatedDynPiece = await clerk.show(dynPiece.id);
-    assert.equal(updatedDynPiece.status, 'completed', 'Dynamic piece should be marked completed');
+    assert.equal(updatedDynPiece.phase, 'completed', 'Dynamic piece should be marked completed');
   });
 
   it('dynamically added pieces delay seal via graftTail', async () => {
@@ -690,9 +690,9 @@ describe('piece-session collect() — transition error classification', () => {
       `expected no [piece-session] warnings for already-terminal transition error, got: ${JSON.stringify(pieceSessionWarnings)}`,
     );
 
-    // The piece writ status is unchanged — collect() did not flip cancelled → completed.
+    // The piece writ phase is unchanged — collect() did not flip cancelled → completed.
     const observedPiece = await clerk.show(piece.id);
-    assert.equal(observedPiece.status, 'cancelled',
+    assert.equal(observedPiece.phase, 'cancelled',
       'piece writ should remain cancelled after collect()');
 
     // (c) yields include the observed piece writ status.
@@ -756,7 +756,7 @@ describe('piece-session collect() — transition error classification', () => {
 
     // The piece writ stays open — the transition call never succeeded.
     const observedPiece = await clerk.show(piece.id);
-    assert.equal(observedPiece.status, 'open',
+    assert.equal(observedPiece.phase, 'open',
       'piece writ should remain open because transition never succeeded');
 
     // (c) yields still include the observed piece writ status.

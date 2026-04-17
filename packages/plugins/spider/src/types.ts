@@ -249,7 +249,7 @@ export interface RigTemplateInfo {
  * condition has cleared. Contributed via kit/supportKit `blockTypes`.
  */
 export interface BlockType {
-  /** Unique identifier (e.g. 'writ-status', 'scheduled-time'). */
+  /** Unique identifier (e.g. 'writ-phase', 'scheduled-time'). */
   id: string;
   /**
    * Check whether the blocking condition has been resolved.

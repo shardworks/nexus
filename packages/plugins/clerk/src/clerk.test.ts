@@ -136,7 +136,7 @@ async function setupCore(options: SetupOptions = {}, clerkCtx?: StartupContext):
 
   // Ensure books exist
   memBackend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
-    indexes: ['status', 'type', 'createdAt', 'parentId', ['status', 'type'], ['status', 'createdAt'], ['parentId', 'status']],
+    indexes: ['phase', 'type', 'createdAt', 'parentId', ['phase', 'type'], ['phase', 'createdAt'], ['parentId', 'phase']],
   });
   memBackend.ensureBook({ ownerId: 'clerk', book: 'links' }, {
     indexes: ['sourceId', 'targetId', 'label', ['sourceId', 'label'], ['targetId', 'label']],
@@ -193,7 +193,7 @@ describe('Clerk', () => {
       assert.equal(writ.type, 'mandate');
       assert.equal(writ.title, 'Fix the bug');
       assert.equal(writ.body, 'Details here');
-      assert.equal(writ.status, 'open');
+      assert.equal(writ.phase, 'open');
       assert.ok(writ.createdAt);
       assert.ok(writ.updatedAt);
       assert.equal(writ.resolvedAt, undefined);
@@ -268,18 +268,18 @@ describe('Clerk', () => {
 
     it('creates a writ in new (draft) status when draft: true', async () => {
       const writ = await clerk.post({ title: 'Draft writ', body: 'Details', draft: true });
-      assert.equal(writ.status, 'new');
+      assert.equal(writ.phase, 'new');
       assert.equal(writ.resolvedAt, undefined);
     });
 
     it('creates a writ in open status when draft: false (explicit)', async () => {
       const writ = await clerk.post({ title: 'Explicit open', body: 'Body', draft: false });
-      assert.equal(writ.status, 'open');
+      assert.equal(writ.phase, 'open');
     });
 
     it('creates a writ in open status when draft is omitted (backward compat)', async () => {
       const writ = await clerk.post({ title: 'Default open', body: 'Body' });
-      assert.equal(writ.status, 'open');
+      assert.equal(writ.phase, 'open');
     });
   });
 
@@ -301,7 +301,7 @@ describe('Clerk', () => {
 
       assert.equal(fetched.id, posted.id);
       assert.equal(fetched.title, 'Show me');
-      assert.equal(fetched.status, 'open');
+      assert.equal(fetched.phase, 'open');
     });
   });
 
@@ -341,7 +341,7 @@ describe('Clerk', () => {
       await writs.put({
         id: 'w-ambigxx-aaaa1111aaaa1111',
         type: 'mandate',
-        status: 'open',
+        phase: 'open',
         title: 'A',
         body: '',
         createdAt: now,
@@ -350,7 +350,7 @@ describe('Clerk', () => {
       await writs.put({
         id: 'w-ambigxx-bbbb2222bbbb2222',
         type: 'mandate',
-        status: 'open',
+        phase: 'open',
         title: 'B',
         body: '',
         createdAt: now,
@@ -383,8 +383,8 @@ describe('Clerk', () => {
       const w1 = await clerk.post({ title: 'Open writ', body: 'Body' });
       const w2 = await clerk.post({ title: 'New writ', body: 'Body', draft: true });
 
-      const openWrits = await clerk.list({ status: 'open' });
-      const newWrits = await clerk.list({ status: 'new' });
+      const openWrits = await clerk.list({ phase: 'open' });
+      const newWrits = await clerk.list({ phase: 'new' });
 
       assert.equal(openWrits.length, 1);
       assert.equal(openWrits[0]!.id, w1.id);
@@ -447,7 +447,7 @@ describe('Clerk', () => {
 
     it('returns an empty array when no writs match filters', async () => {
       await clerk.post({ title: 'One open writ', body: 'Body' });
-      const completed = await clerk.list({ status: 'completed' });
+      const completed = await clerk.list({ phase: 'completed' });
       assert.equal(completed.length, 0);
     });
 
@@ -455,13 +455,13 @@ describe('Clerk', () => {
       await clerk.post({ title: 'Draft writ', body: 'Body', draft: true });
       await clerk.post({ title: 'Open writ', body: 'Body' });
 
-      const newWrits = await clerk.list({ status: 'new' });
-      const openWrits = await clerk.list({ status: 'open' });
+      const newWrits = await clerk.list({ phase: 'new' });
+      const openWrits = await clerk.list({ phase: 'open' });
 
       assert.equal(newWrits.length, 1);
-      assert.equal(newWrits[0]!.status, 'new');
+      assert.equal(newWrits[0]!.phase, 'new');
       assert.equal(openWrits.length, 1);
-      assert.equal(openWrits[0]!.status, 'open');
+      assert.equal(openWrits[0]!.phase, 'open');
     });
 
     it('filters by multiple statuses (OR)', async () => {
@@ -470,9 +470,9 @@ describe('Clerk', () => {
       const w3 = await clerk.post({ title: 'Completed writ', body: 'Body' });
       await clerk.transition(w3.id, 'completed');
 
-      const result = await clerk.list({ status: ['open', 'new'] });
+      const result = await clerk.list({ phase: ['open', 'new'] });
       assert.equal(result.length, 2);
-      const statuses = new Set(result.map((w) => w.status));
+      const statuses = new Set(result.map((w) => w.phase));
       assert.ok(statuses.has('open'));
       assert.ok(statuses.has('new'));
       assert.ok(!statuses.has('completed'));
@@ -483,18 +483,18 @@ describe('Clerk', () => {
       await clerk.transition(writ.id, 'stuck');
       await clerk.post({ title: 'Open writ', body: 'Body' });
 
-      const result = await clerk.list({ status: 'stuck' });
+      const result = await clerk.list({ phase: 'stuck' });
       assert.equal(result.length, 1);
-      assert.equal(result[0]!.status, 'stuck');
+      assert.equal(result[0]!.phase, 'stuck');
     });
 
     it('single-element status array behaves like a scalar filter', async () => {
       await clerk.post({ title: 'Open writ', body: 'Body' });
       const w2 = await clerk.post({ title: 'New writ', body: 'Body', draft: true });
 
-      const result = await clerk.list({ status: ['open'] });
+      const result = await clerk.list({ phase: ['open'] });
       assert.equal(result.length, 1);
-      assert.equal(result[0]!.status, 'open');
+      assert.equal(result[0]!.phase, 'open');
     });
   });
 
@@ -517,8 +517,8 @@ describe('Clerk', () => {
       const w = await clerk.post({ title: 'Writ', body: 'Body' });
       await clerk.transition(w.id, 'completed');
 
-      assert.equal(await clerk.count({ status: 'completed' }), 1);
-      assert.equal(await clerk.count({ status: 'open' }), 0);
+      assert.equal(await clerk.count({ phase: 'completed' }), 1);
+      assert.equal(await clerk.count({ phase: 'open' }), 0);
     });
 
     it('filters by type', async () => {
@@ -595,21 +595,21 @@ describe('Clerk', () => {
     it('preserves status as new', async () => {
       const writ = await clerk.post({ title: 'Title', body: 'Body', draft: true });
       const edited = await clerk.edit({ id: writ.id, title: 'Updated' });
-      assert.equal(edited.status, 'new');
+      assert.equal(edited.phase, 'new');
     });
 
     it('allows editing title of a writ in open status', async () => {
       const writ = await clerk.post({ title: 'Title', body: 'Body' }); // open
       const edited = await clerk.edit({ id: writ.id, title: 'Changed' });
       assert.equal(edited.title, 'Changed');
-      assert.equal(edited.status, 'open');
+      assert.equal(edited.phase, 'open');
     });
 
     it('allows editing body of an open writ', async () => {
       const writ = await clerk.post({ title: 'Title', body: 'Body' });
       const edited = await clerk.edit({ id: writ.id, body: 'New body' });
       assert.equal(edited.body, 'New body');
-      assert.equal(edited.status, 'open');
+      assert.equal(edited.phase, 'open');
     });
 
     it('allows editing title of a completed writ', async () => {
@@ -617,14 +617,14 @@ describe('Clerk', () => {
       await clerk.transition(writ.id, 'completed', { resolution: 'Done' });
       const edited = await clerk.edit({ id: writ.id, title: 'Changed' });
       assert.equal(edited.title, 'Changed');
-      assert.equal(edited.status, 'completed');
+      assert.equal(edited.phase, 'completed');
     });
 
     it('rejects changing type on a non-draft writ', async () => {
       const writ = await clerk.post({ title: 'Title', body: 'Body' }); // open
       await assert.rejects(
         () => clerk.edit({ id: writ.id, type: 'errand' }),
-        /Cannot change type.*status is "open"/,
+        /Cannot change type.*phase is "open"/,
       );
     });
 
@@ -632,7 +632,7 @@ describe('Clerk', () => {
       const writ = await clerk.post({ title: 'Title', body: 'Body' }); // open
       await assert.rejects(
         () => clerk.edit({ id: writ.id, codex: 'gamma' }),
-        /Cannot change codex.*status is "open"/,
+        /Cannot change codex.*phase is "open"/,
       );
     });
 
@@ -667,10 +667,10 @@ describe('Clerk', () => {
 
     it('publishes a new (draft) writ to open status', async () => {
       const writ = await clerk.post({ title: 'Draft writ', body: 'Body', draft: true });
-      assert.equal(writ.status, 'new');
+      assert.equal(writ.phase, 'new');
 
       const published = await clerk.transition(writ.id, 'open');
-      assert.equal(published.status, 'open');
+      assert.equal(published.phase, 'open');
       assert.equal(published.resolvedAt, undefined);
     });
 
@@ -708,7 +708,7 @@ describe('Clerk', () => {
       const writ = await clerk.post({ title: 'Complete me', body: 'Body' });
       const completed = await clerk.transition(writ.id, 'completed', { resolution: 'All done' });
 
-      assert.equal(completed.status, 'completed');
+      assert.equal(completed.phase, 'completed');
       assert.ok(completed.resolvedAt);
       assert.equal(completed.resolution, 'All done');
     });
@@ -739,7 +739,7 @@ describe('Clerk', () => {
       const writ = await clerk.post({ title: 'Fail me', body: 'Body' });
       const failed = await clerk.transition(writ.id, 'failed', { resolution: 'Ran out of time' });
 
-      assert.equal(failed.status, 'failed');
+      assert.equal(failed.phase, 'failed');
       assert.ok(failed.resolvedAt);
       assert.equal(failed.resolution, 'Ran out of time');
     });
@@ -779,7 +779,7 @@ describe('Clerk', () => {
       const writ = await clerk.post({ title: 'Cancel me (new)', body: 'Body', draft: true });
       const cancelled = await clerk.transition(writ.id, 'cancelled');
 
-      assert.equal(cancelled.status, 'cancelled');
+      assert.equal(cancelled.phase, 'cancelled');
       assert.ok(cancelled.resolvedAt);
     });
 
@@ -787,7 +787,7 @@ describe('Clerk', () => {
       const writ = await clerk.post({ title: 'Cancel me (open)', body: 'Body' });
       const cancelled = await clerk.transition(writ.id, 'cancelled');
 
-      assert.equal(cancelled.status, 'cancelled');
+      assert.equal(cancelled.phase, 'cancelled');
       assert.ok(cancelled.resolvedAt);
     });
 
@@ -837,7 +837,7 @@ describe('Clerk', () => {
       const writ = await clerk.post({ title: 'Stuck writ', body: 'Body' });
       const stuck = await clerk.transition(writ.id, 'stuck', { resolution: 'Engine failure' });
 
-      assert.equal(stuck.status, 'stuck');
+      assert.equal(stuck.phase, 'stuck');
       // stuck is non-terminal — no resolvedAt
       assert.equal(stuck.resolvedAt, undefined);
       assert.equal(stuck.resolution, 'Engine failure');
@@ -894,7 +894,7 @@ describe('Clerk', () => {
       const writ = await clerk.post({ title: 'Recoverable', body: 'Body' });
       await clerk.transition(writ.id, 'stuck');
       const reopened = await clerk.transition(writ.id, 'open');
-      assert.equal(reopened.status, 'open');
+      assert.equal(reopened.phase, 'open');
       assert.equal(reopened.resolvedAt, undefined);
     });
 
@@ -902,7 +902,7 @@ describe('Clerk', () => {
       const writ = await clerk.post({ title: 'Abandoned', body: 'Body' });
       await clerk.transition(writ.id, 'stuck');
       const failed = await clerk.transition(writ.id, 'failed', { resolution: 'Giving up' });
-      assert.equal(failed.status, 'failed');
+      assert.equal(failed.phase, 'failed');
       assert.ok(failed.resolvedAt);
       assert.equal(failed.resolution, 'Giving up');
     });
@@ -911,7 +911,7 @@ describe('Clerk', () => {
       const writ = await clerk.post({ title: 'Withdrawn', body: 'Body' });
       await clerk.transition(writ.id, 'stuck');
       const cancelled = await clerk.transition(writ.id, 'cancelled', { resolution: 'No longer needed' });
-      assert.equal(cancelled.status, 'cancelled');
+      assert.equal(cancelled.phase, 'cancelled');
       assert.ok(cancelled.resolvedAt);
     });
 
@@ -941,42 +941,42 @@ describe('Clerk', () => {
 
     it('happy path: open → completed', async () => {
       const writ = await clerk.post({ title: 'Full lifecycle', body: 'Do it all' });
-      assert.equal(writ.status, 'open');
+      assert.equal(writ.phase, 'open');
 
       const done = await clerk.transition(writ.id, 'completed', { resolution: 'All finished' });
-      assert.equal(done.status, 'completed');
+      assert.equal(done.phase, 'completed');
       assert.ok(done.resolvedAt);
       assert.equal(done.resolution, 'All finished');
 
       const persisted = await clerk.show(writ.id);
-      assert.equal(persisted.status, 'completed');
+      assert.equal(persisted.phase, 'completed');
     });
 
     it('failure path: open → failed', async () => {
       const writ = await clerk.post({ title: 'Will fail', body: 'Body' });
       const failed = await clerk.transition(writ.id, 'failed', { resolution: 'Something broke' });
 
-      assert.equal(failed.status, 'failed');
+      assert.equal(failed.phase, 'failed');
       assert.equal(failed.resolution, 'Something broke');
 
       const persisted = await clerk.show(writ.id);
-      assert.equal(persisted.status, 'failed');
+      assert.equal(persisted.phase, 'failed');
     });
 
     it('cancellation path: open → cancelled', async () => {
       const writ = await clerk.post({ title: 'Cancelled early', body: 'Body' });
       const cancelled = await clerk.transition(writ.id, 'cancelled');
-      assert.equal(cancelled.status, 'cancelled');
+      assert.equal(cancelled.phase, 'cancelled');
     });
 
     it('stuck path: open → stuck → failed', async () => {
       const writ = await clerk.post({ title: 'Stuck then failed', body: 'Body' });
       const stuck = await clerk.transition(writ.id, 'stuck', { resolution: 'Engine failure' });
-      assert.equal(stuck.status, 'stuck');
+      assert.equal(stuck.phase, 'stuck');
       assert.equal(stuck.resolvedAt, undefined, 'stuck is non-terminal');
 
       const failed = await clerk.transition(writ.id, 'failed', { resolution: 'Abandoned' });
-      assert.equal(failed.status, 'failed');
+      assert.equal(failed.phase, 'failed');
       assert.ok(failed.resolvedAt);
     });
 
@@ -985,7 +985,7 @@ describe('Clerk', () => {
       await clerk.transition(writ.id, 'stuck');
       await clerk.transition(writ.id, 'open');
       const completed = await clerk.transition(writ.id, 'completed', { resolution: 'Recovered and done' });
-      assert.equal(completed.status, 'completed');
+      assert.equal(completed.phase, 'completed');
       assert.ok(completed.resolvedAt);
     });
 
@@ -1006,18 +1006,120 @@ describe('Clerk', () => {
       const done = await clerk.transition(writ.id, 'completed', {
         resolution: 'Legit resolution',
         id: 'w-evil',
-        status: 'open' as const,
+        phase: 'open' as const,
         createdAt: '1999-01-01T00:00:00Z',
         updatedAt: '1999-01-01T00:00:00Z',
         resolvedAt: '1999-01-01T00:00:00Z',
       });
 
       assert.equal(done.id, writ.id);
-      assert.equal(done.status, 'completed');
+      assert.equal(done.phase, 'completed');
       assert.notEqual(done.createdAt, '1999-01-01T00:00:00Z');
       assert.notEqual(done.updatedAt, '1999-01-01T00:00:00Z');
       assert.notEqual(done.resolvedAt, '1999-01-01T00:00:00Z');
       assert.equal(done.resolution, 'Legit resolution');
+    });
+  });
+
+  // ── setWritStatus() — plugin-owned observation slot ───────────────
+
+  describe('setWritStatus()', () => {
+    beforeEach(async () => { await setup(); });
+
+    it('returns an empty status slot for a freshly created writ', async () => {
+      const writ = await clerk.post({ title: 'No slot yet', body: 'Body' });
+      assert.equal(writ.status, undefined, 'new writs have no status slot by default');
+    });
+
+    it('writes a sub-slot under the provided pluginId', async () => {
+      const writ = await clerk.post({ title: 'Observed', body: 'Body' });
+      const updated = await clerk.setWritStatus(writ.id, 'spider', { stuckCause: 'await-graft' });
+
+      assert.ok(updated.status, 'status slot should exist after setWritStatus');
+      assert.deepEqual(updated.status!['spider'], { stuckCause: 'await-graft' });
+    });
+
+    it('disjoint sub-slot writes from different plugins do not clobber each other', async () => {
+      const writ = await clerk.post({ title: 'Two observers', body: 'Body' });
+
+      await clerk.setWritStatus(writ.id, 'spider', { stuckCause: 'engine-failed' });
+      const afterSecond = await clerk.setWritStatus(writ.id, 'ratchet', { progress: 0.5 });
+
+      assert.deepEqual(afterSecond.status!['spider'], { stuckCause: 'engine-failed' });
+      assert.deepEqual(afterSecond.status!['ratchet'], { progress: 0.5 });
+    });
+
+    it('overwrites its own sub-slot but preserves sibling sub-slots', async () => {
+      const writ = await clerk.post({ title: 'Own overwrite', body: 'Body' });
+
+      await clerk.setWritStatus(writ.id, 'spider', { stuckCause: 'first' });
+      await clerk.setWritStatus(writ.id, 'ratchet', { progress: 0.1 });
+      const updated = await clerk.setWritStatus(writ.id, 'spider', { stuckCause: 'second' });
+
+      assert.deepEqual(updated.status!['spider'], { stuckCause: 'second' });
+      assert.deepEqual(updated.status!['ratchet'], { progress: 0.1 });
+    });
+
+    it('survives terminal transitions — slot is not cleared on completed/failed/cancelled', async () => {
+      const writ = await clerk.post({ title: 'Terminal survivor', body: 'Body' });
+      await clerk.setWritStatus(writ.id, 'spider', { lastRig: 'rig-1' });
+
+      const done = await clerk.transition(writ.id, 'completed', { resolution: 'ok' });
+      assert.deepEqual(done.status!['spider'], { lastRig: 'rig-1' },
+        'observation slot survives transition to a terminal phase');
+
+      const fetched = await clerk.show(writ.id);
+      assert.deepEqual(fetched.status!['spider'], { lastRig: 'rig-1' });
+    });
+
+    it('transition() ignores any caller-supplied status field (the slot is plugin-owned)', async () => {
+      const writ = await clerk.post({ title: 'Strip status', body: 'Body' });
+      await clerk.setWritStatus(writ.id, 'spider', { stuckCause: 'unchanged' });
+
+      const done = await clerk.transition(writ.id, 'completed', {
+        resolution: 'done',
+        // Attempt to smuggle a new status slot through transition()
+        status: { spider: { stuckCause: 'smuggled' } } as unknown as never,
+      });
+
+      assert.deepEqual(done.status!['spider'], { stuckCause: 'unchanged' },
+        'transition() must not overwrite the observation slot');
+    });
+
+    it('throws when writId is missing', async () => {
+      await assert.rejects(
+        () => clerk.setWritStatus('', 'spider', {}),
+        /writId is required/,
+      );
+    });
+
+    it('throws when pluginId is missing', async () => {
+      const writ = await clerk.post({ title: 'No plugin', body: 'Body' });
+      await assert.rejects(
+        () => clerk.setWritStatus(writ.id, '', {}),
+        /pluginId is required/,
+      );
+    });
+
+    it('throws when the writ does not exist', async () => {
+      await assert.rejects(
+        () => clerk.setWritStatus('w-missing-xxxx', 'spider', {}),
+        /not found/,
+      );
+    });
+
+    it('supports an arbitrary JSON-compatible value in the sub-slot', async () => {
+      const writ = await clerk.post({ title: 'Any value', body: 'Body' });
+
+      // Strings, arrays, numbers, nested objects — all valid.
+      const stringValue = await clerk.setWritStatus(writ.id, 'a', 'just-a-string');
+      assert.equal(stringValue.status!['a'], 'just-a-string');
+
+      const arrayValue = await clerk.setWritStatus(writ.id, 'b', [1, 2, 3]);
+      assert.deepEqual(arrayValue.status!['b'], [1, 2, 3]);
+
+      const nested = await clerk.setWritStatus(writ.id, 'c', { nested: { deep: true } });
+      assert.deepEqual(nested.status!['c'], { nested: { deep: true } });
     });
   });
 
@@ -2571,27 +2673,27 @@ describe('Parent/child relationships', () => {
 
       assert.equal(child.parentId, parent.id);
       assert.ok(child.id.startsWith('w-'));
-      assert.equal(child.status, 'open');
+      assert.equal(child.phase, 'open');
     });
 
     it('parent stays in open when child is added', async () => {
       const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      assert.equal(parent.status, 'open');
+      assert.equal(parent.phase, 'open');
 
       await clerk.post({ title: 'Child', body: 'Body', parentId: parent.id });
 
       const updated = await clerk.show(parent.id);
-      assert.equal(updated.status, 'open');
+      assert.equal(updated.phase, 'open');
     });
 
     it('parent stays in new when child is added', async () => {
       const parent = await clerk.post({ title: 'Draft parent', body: 'Body', draft: true });
-      assert.equal(parent.status, 'new');
+      assert.equal(parent.phase, 'new');
 
       await clerk.post({ title: 'Child', body: 'Body', parentId: parent.id });
 
       const updated = await clerk.show(parent.id);
-      assert.equal(updated.status, 'new');
+      assert.equal(updated.phase, 'new');
     });
 
     it('parent stays in open when a second child is added', async () => {
@@ -2599,12 +2701,12 @@ describe('Parent/child relationships', () => {
       await clerk.post({ title: 'Child 1', body: 'Body', parentId: parent.id });
 
       const midState = await clerk.show(parent.id);
-      assert.equal(midState.status, 'open');
+      assert.equal(midState.phase, 'open');
 
       await clerk.post({ title: 'Child 2', body: 'Body', parentId: parent.id });
 
       const endState = await clerk.show(parent.id);
-      assert.equal(endState.status, 'open');
+      assert.equal(endState.phase, 'open');
     });
 
     it('creates root writ without parentId', async () => {
@@ -2709,7 +2811,7 @@ describe('Parent/child relationships', () => {
       await clerk.transition(child.id, 'failed', { resolution: 'Broke' });
 
       const updated = await clerk.show(parent.id);
-      assert.equal(updated.status, 'failed');
+      assert.equal(updated.phase, 'failed');
       assert.ok(updated.resolution?.includes('Child'));
       assert.ok(updated.resolution?.includes('Broke'));
     });
@@ -2722,7 +2824,7 @@ describe('Parent/child relationships', () => {
       await clerk.transition(child.id, 'failed', { resolution: 'Broke too' });
 
       const updated = await clerk.show(parent.id);
-      assert.equal(updated.status, 'failed');
+      assert.equal(updated.phase, 'failed');
       assert.ok(updated.resolution?.includes('Child'));
     });
 
@@ -2733,7 +2835,7 @@ describe('Parent/child relationships', () => {
       await clerk.transition(child.id, 'failed', { resolution: 'Broke' });
 
       const updated = await clerk.show(parent.id);
-      assert.equal(updated.status, 'new');
+      assert.equal(updated.phase, 'new');
     });
 
     it('parent stays open when child completes', async () => {
@@ -2743,7 +2845,7 @@ describe('Parent/child relationships', () => {
       await clerk.transition(child.id, 'completed', { resolution: 'Done' });
 
       const updated = await clerk.show(parent.id);
-      assert.equal(updated.status, 'open');
+      assert.equal(updated.phase, 'open');
     });
 
     it('parent stays open when all children complete', async () => {
@@ -2755,7 +2857,7 @@ describe('Parent/child relationships', () => {
       await clerk.transition(c2.id, 'completed', { resolution: 'Done' });
 
       const updated = await clerk.show(parent.id);
-      assert.equal(updated.status, 'open');
+      assert.equal(updated.phase, 'open');
     });
 
     it('two children: first completes, second fails → parent transitions to failed', async () => {
@@ -2767,7 +2869,7 @@ describe('Parent/child relationships', () => {
       await clerk.transition(c2.id, 'failed', { resolution: 'Broke' });
 
       const updated = await clerk.show(parent.id);
-      assert.equal(updated.status, 'failed');
+      assert.equal(updated.phase, 'failed');
     });
   });
 
@@ -2785,15 +2887,15 @@ describe('Parent/child relationships', () => {
       await clerk.transition(c1.id, 'failed', { resolution: 'Broke' });
 
       const updatedParent = await clerk.show(parent.id);
-      assert.equal(updatedParent.status, 'failed');
+      assert.equal(updatedParent.phase, 'failed');
       assert.ok(updatedParent.resolution?.includes(`Child "${c1.id}" failed: Broke`));
 
       const updatedC2 = await clerk.show(c2.id);
-      assert.equal(updatedC2.status, 'cancelled');
+      assert.equal(updatedC2.phase, 'cancelled');
       assert.equal(updatedC2.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
 
       const updatedC3 = await clerk.show(c3.id);
-      assert.equal(updatedC3.status, 'cancelled');
+      assert.equal(updatedC3.phase, 'cancelled');
       assert.equal(updatedC3.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
     });
 
@@ -2804,7 +2906,7 @@ describe('Parent/child relationships', () => {
       await clerk.transition(child.id, 'failed', { resolution: 'Error occurred' });
 
       const updated = await clerk.show(parent.id);
-      assert.equal(updated.status, 'failed');
+      assert.equal(updated.phase, 'failed');
       assert.ok(updated.resolution?.includes('Error occurred'));
     });
 
@@ -2816,13 +2918,13 @@ describe('Parent/child relationships', () => {
       await clerk.transition(child.id, 'failed', { resolution: 'Leaf failed' });
 
       const updatedChild = await clerk.show(child.id);
-      assert.equal(updatedChild.status, 'failed');
+      assert.equal(updatedChild.phase, 'failed');
 
       const updatedParent = await clerk.show(parent.id);
-      assert.equal(updatedParent.status, 'failed');
+      assert.equal(updatedParent.phase, 'failed');
 
       const updatedGP = await clerk.show(grandparent.id);
-      assert.equal(updatedGP.status, 'failed');
+      assert.equal(updatedGP.phase, 'failed');
     });
 
     it('uses "unknown" when child has no resolution', async () => {
@@ -2850,11 +2952,11 @@ describe('Parent/child relationships', () => {
       await clerk.transition(parent.id, 'cancelled');
 
       const updatedC1 = await clerk.show(c1.id);
-      assert.equal(updatedC1.status, 'cancelled');
+      assert.equal(updatedC1.phase, 'cancelled');
       assert.equal(updatedC1.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
 
       const updatedC2 = await clerk.show(c2.id);
-      assert.equal(updatedC2.status, 'cancelled');
+      assert.equal(updatedC2.phase, 'cancelled');
     });
 
     it('does not cancel already-terminal children', async () => {
@@ -2869,10 +2971,10 @@ describe('Parent/child relationships', () => {
       await clerk.transition(parent.id, 'cancelled');
 
       const updatedC1 = await clerk.show(c1.id);
-      assert.equal(updatedC1.status, 'completed'); // already terminal, unchanged
+      assert.equal(updatedC1.phase, 'completed'); // already terminal, unchanged
 
       const updatedC2 = await clerk.show(c2.id);
-      assert.equal(updatedC2.status, 'cancelled');
+      assert.equal(updatedC2.phase, 'cancelled');
     });
 
     it('cancels non-terminal children when parent is failed directly', async () => {
@@ -2884,11 +2986,11 @@ describe('Parent/child relationships', () => {
       await clerk.transition(parent.id, 'failed', { resolution: 'Parent-level failure' });
 
       const updatedC1 = await clerk.show(c1.id);
-      assert.equal(updatedC1.status, 'cancelled');
+      assert.equal(updatedC1.phase, 'cancelled');
       assert.equal(updatedC1.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
 
       const updatedC2 = await clerk.show(c2.id);
-      assert.equal(updatedC2.status, 'cancelled');
+      assert.equal(updatedC2.phase, 'cancelled');
       assert.equal(updatedC2.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
     });
   });
@@ -2915,11 +3017,11 @@ describe('Parent/child relationships', () => {
 
         // Children must remain non-terminal — the cascade must not mask the gap.
         const updatedC1 = await clerk.show(c1.id);
-        assert.equal(updatedC1.status, 'open');
+        assert.equal(updatedC1.phase, 'open');
         assert.equal(updatedC1.resolution, undefined);
 
         const updatedC2 = await clerk.show(c2.id);
-        assert.equal(updatedC2.status, 'open');
+        assert.equal(updatedC2.phase, 'open');
         assert.equal(updatedC2.resolution, undefined);
 
         // A warning must be emitted referencing each non-terminal child so the
@@ -2950,7 +3052,7 @@ describe('Parent/child relationships', () => {
         await clerk.transition(parent.id, 'completed', { resolution: 'All done' });
 
         const updatedC1 = await clerk.show(c1.id);
-        assert.equal(updatedC1.status, 'completed');
+        assert.equal(updatedC1.phase, 'completed');
 
         assert.ok(
           !warnings.some((w) => w.includes('non-terminal')),
@@ -2977,9 +3079,9 @@ describe('Parent/child relationships', () => {
         await clerk.transition(parent.id, 'completed', { resolution: 'Parent done' });
 
         // Terminal child stays terminal; non-terminal children stay non-terminal.
-        assert.equal((await clerk.show(openChild.id)).status, 'open');
-        assert.equal((await clerk.show(stuckChild.id)).status, 'stuck');
-        assert.equal((await clerk.show(doneChild.id)).status, 'completed');
+        assert.equal((await clerk.show(openChild.id)).phase, 'open');
+        assert.equal((await clerk.show(stuckChild.id)).phase, 'stuck');
+        assert.equal((await clerk.show(doneChild.id)).phase, 'completed');
 
         // Cascade must have warned for both non-terminal children, but not the terminal one.
         assert.ok(
@@ -3007,20 +3109,20 @@ describe('Parent/child relationships', () => {
 
     it('parent flows: open → completed (children do not change parent status)', async () => {
       const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      assert.equal(parent.status, 'open');
+      assert.equal(parent.phase, 'open');
 
       const child = await clerk.post({ title: 'Child', body: 'B', parentId: parent.id });
       const p1 = await clerk.show(parent.id);
-      assert.equal(p1.status, 'open');
+      assert.equal(p1.phase, 'open');
 
       await clerk.transition(child.id, 'completed', { resolution: 'Done' });
 
       const p2 = await clerk.show(parent.id);
-      assert.equal(p2.status, 'open');
+      assert.equal(p2.phase, 'open');
 
       await clerk.transition(parent.id, 'completed', { resolution: 'All done' });
       const p3 = await clerk.show(parent.id);
-      assert.equal(p3.status, 'completed');
+      assert.equal(p3.phase, 'completed');
     });
 
     it('children already terminal are not cancelled when parent completes normally', async () => {
@@ -3035,7 +3137,7 @@ describe('Parent/child relationships', () => {
 
       // Child should still be completed
       const updatedChild = await clerk.show(child.id);
-      assert.equal(updatedChild.status, 'completed');
+      assert.equal(updatedChild.phase, 'completed');
     });
   });
 
@@ -3085,7 +3187,7 @@ describe('Parent/child relationships', () => {
       const child = await clerk.post({ title: 'Child', body: 'B', parentId: parent.id });
 
       const result = await writShow.handler({ id: child.id });
-      assert.deepEqual(result.parent, { id: parent.id, title: 'Parent', status: 'open' });
+      assert.deepEqual(result.parent, { id: parent.id, title: 'Parent', phase: 'open' });
       assert.deepEqual(result.children, { summary: {}, items: [] });
     });
 
@@ -3114,14 +3216,14 @@ describe('Parent/child relationships', () => {
   // ── Book indexes ──────────────────────────────────────────────────
 
   describe('book indexes', () => {
-    it('writs book indexes include parentId and [parentId, status]', async () => {
+    it('writs book indexes include parentId and [parentId, phase]', async () => {
       const plugin = await setupCore();
       const apparatus = (plugin as { apparatus: { supportKit: { books: Record<string, { indexes: unknown[] }> } } }).apparatus;
       const indexes = apparatus.supportKit.books.writs.indexes;
       assert.ok(indexes.includes('parentId'), 'indexes should include parentId');
       assert.ok(
-        indexes.some((i: unknown) => Array.isArray(i) && i[0] === 'parentId' && i[1] === 'status'),
-        'indexes should include [parentId, status]',
+        indexes.some((i: unknown) => Array.isArray(i) && i[0] === 'parentId' && i[1] === 'phase'),
+        'indexes should include [parentId, phase]',
       );
     });
   });
@@ -3207,12 +3309,12 @@ describe('piece-add tool', () => {
       files: 'src/app.ts',
       verify: 'pnpm test',
       done: 'Tests pass',
-    }) as { id: string; type: string; title: string; body: string; parentId: string; status: string };
+    }) as { id: string; type: string; title: string; body: string; parentId: string; phase: string };
 
     assert.equal(piece.type, 'piece');
     assert.equal(piece.title, 'First task');
     assert.equal(piece.parentId, mandate.id);
-    assert.equal(piece.status, 'open');
+    assert.equal(piece.phase, 'open');
     assert.ok(piece.body.includes('<task id='));
     assert.ok(piece.body.includes('<name>First task</name>'));
     assert.ok(piece.body.includes('<action>Do the first thing</action>'));

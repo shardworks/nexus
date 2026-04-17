@@ -8,9 +8,9 @@ export default tool({
   description: 'List writs with optional filters',
   instructions:
     'Returns writ summaries ordered by createdAt descending (newest first). ' +
-    'Filter by status or type to narrow results.',
+    'Filter by phase or type to narrow results.',
   params: {
-    status: z
+    phase: z
       .union([
         z.enum(['new', 'open', 'stuck', 'completed', 'failed', 'cancelled']),
         z
@@ -18,7 +18,7 @@ export default tool({
           .min(1),
       ])
       .optional()
-      .describe('Filter by writ status (repeatable — pass multiple to match any)'),
+      .describe('Filter by writ phase (repeatable — pass multiple to match any)'),
     type: z
       .union([z.string(), z.array(z.string()).min(1)])
       .optional()
@@ -31,7 +31,7 @@ export default tool({
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
     return clerk.list({
-      status: params.status,
+      phase: params.phase,
       type: params.type,
       parentId: params.parentId,
       limit: params.limit,

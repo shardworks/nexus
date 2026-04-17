@@ -209,7 +209,7 @@ describe('block-types tool', () => {
 
   it('delegates to spider.listBlockTypes()', async () => {
     const types: BlockTypeInfo[] = [
-      { id: 'writ-status', pluginId: 'spider' },
+      { id: 'writ-phase', pluginId: 'spider' },
       { id: 'scheduled-time', pluginId: 'spider', pollIntervalMs: 60000 },
     ];
     setGuild(makeGuild({ spiderBlockTypes: types }));
@@ -246,7 +246,7 @@ describe('GET /api/spider/config route', () => {
       { id: 'draft', pluginId: 'spider', hasCollect: false },
     ];
     const types: BlockTypeInfo[] = [
-      { id: 'writ-status', pluginId: 'spider' },
+      { id: 'writ-phase', pluginId: 'spider' },
     ];
     const templates: RigTemplateInfo[] = [
       {

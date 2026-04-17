@@ -1,8 +1,8 @@
 /**
- * Built-in block type: writ-status.
+ * Built-in block type: writ-phase.
  *
- * Blocks until a specific writ reaches a target status.
- * Condition: { writId: string; targetStatus: string }
+ * Blocks until a specific writ reaches a target phase.
+ * Condition: { writId: string; targetPhase: string }
  */
 
 import { z } from 'zod';
@@ -13,28 +13,28 @@ import type { BlockType, CheckResult } from '../types.ts';
 
 const conditionSchema = z.object({
   writId: z.string(),
-  targetStatus: z.string(),
+  targetPhase: z.string(),
 });
 
-const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL_PHASES = new Set(['completed', 'failed', 'cancelled']);
 
-const writStatusBlockType: BlockType = {
-  id: 'writ-status',
+const writPhaseBlockType: BlockType = {
+  id: 'writ-phase',
   conditionSchema,
   pollIntervalMs: 10_000,
   async check(condition: unknown): Promise<CheckResult> {
-    const { writId, targetStatus } = conditionSchema.parse(condition);
+    const { writId, targetPhase } = conditionSchema.parse(condition);
     const stacks = guild().apparatus<StacksApi>('stacks');
     const writsBook = stacks.readBook<WritDoc>('clerk', 'writs');
     const results = await writsBook.find({ where: [['id', '=', writId]], limit: 1 });
     if (results.length === 0) return { status: 'failed', reason: 'Writ not found' };
     const writ = results[0];
-    if (writ.status === targetStatus) return { status: 'cleared' };
-    if (TERMINAL_STATUSES.has(writ.status)) {
-      return { status: 'failed', reason: `Writ reached terminal status "${writ.status}" instead of "${targetStatus}"` };
+    if (writ.phase === targetPhase) return { status: 'cleared' };
+    if (TERMINAL_PHASES.has(writ.phase)) {
+      return { status: 'failed', reason: `Writ reached terminal phase "${writ.phase}" instead of "${targetPhase}"` };
     }
     return { status: 'pending' };
   },
 };
 
-export default writStatusBlockType;
+export default writPhaseBlockType;

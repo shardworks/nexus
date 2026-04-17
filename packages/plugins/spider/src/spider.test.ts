@@ -241,7 +241,7 @@ function buildFixture(
 
   // Manually ensure all books the Spider and Clerk need
   memBackend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
-    indexes: ['status', 'type', 'createdAt', 'parentId', ['status', 'type'], ['status', 'createdAt'], ['parentId', 'status']],
+    indexes: ['phase', 'type', 'createdAt', 'parentId', ['phase', 'type'], ['phase', 'createdAt'], ['parentId', 'phase']],
   });
   memBackend.ensureBook({ ownerId: 'spider', book: 'rigs' }, {
     indexes: ['status', 'writId', ['status', 'writId'], 'createdAt'],
@@ -406,7 +406,7 @@ describe('Spider', () => {
     it('spawns a rig for an open writ', async () => {
       const { clerk, spider, stacks } = fix;
       const writ = await postWrit(clerk);
-      assert.equal(writ.status, 'open');
+      assert.equal(writ.phase, 'open');
 
       const result = await spider.crawl();
       assert.ok(result !== null, 'expected a walk result');
@@ -421,7 +421,7 @@ describe('Spider', () => {
 
       // Writ should still be open
       const updatedWrit = await clerk.show(writ.id);
-      assert.equal(updatedWrit.status, 'open');
+      assert.equal(updatedWrit.phase, 'open');
     });
 
     it('does not spawn a second rig for a writ that already has one', async () => {
@@ -788,7 +788,7 @@ describe('Spider', () => {
       }
 
       const failedWrit = await clerk.show(writ.id);
-      assert.equal(failedWrit.status, 'stuck', 'writ should transition to stuck via CDC');
+      assert.equal(failedWrit.phase, 'stuck', 'writ should transition to stuck via CDC');
     });
 
     it('ImplementYields contain sessionId and sessionStatus from the session record', async () => {
@@ -1015,7 +1015,7 @@ describe('Spider', () => {
 
       await spider.crawl(); // spawn
       const activeWrit = await clerk.show(writ.id);
-      assert.equal(activeWrit.status, 'open');
+      assert.equal(activeWrit.phase, 'open');
 
       // Inject bad design to trigger failure
       const book = rigsBook(stacks);
@@ -1043,7 +1043,7 @@ describe('Spider', () => {
       }
 
       const failedWrit = await clerk.show(writ.id);
-      assert.equal(failedWrit.status, 'stuck');
+      assert.equal(failedWrit.phase, 'stuck');
     });
   });
 
@@ -1211,7 +1211,7 @@ describe('Spider', () => {
 
       // CDC should have fired — writ should now be completed
       const finalWrit = await clerk.show(writ.id);
-      assert.equal(finalWrit.status, 'completed');
+      assert.equal(finalWrit.phase, 'completed');
 
       const [finalRig] = await book.list();
       assert.equal(finalRig.status, 'completed');
@@ -1283,7 +1283,7 @@ describe('Spider', () => {
 
       // CDC should have fired — writ should now be completed
       const finalWrit = await clerk.show(writ.id);
-      assert.equal(finalWrit.status, 'completed', 'writ should transition to completed via CDC');
+      assert.equal(finalWrit.phase, 'completed', 'writ should transition to completed via CDC');
 
       const [finalRig] = await book.list();
       assert.equal(finalRig.status, 'completed');
@@ -2124,7 +2124,7 @@ describe('Spider — template dispatch', () => {
 
     // Writ should still be in 'open' — dispatch was skipped, not failed.
     const writ = await clerk.show(posted.id);
-    assert.equal(writ.status, 'open');
+    assert.equal(writ.phase, 'open');
   });
 
   it('dispatches a mandate writ via the fixture auto-mapping convenience', async () => {
@@ -2155,7 +2155,7 @@ describe('Spider — template dispatch', () => {
     assert.equal(rigs.length, 0);
 
     const writ = await clerk.show(posted.id);
-    assert.equal(writ.status, 'open');
+    assert.equal(writ.phase, 'open');
   });
 });
 
@@ -2715,7 +2715,7 @@ describe('Spider — CDC resolution fallback', () => {
 
     // CDC should have fired
     const finalWrit = await clerk.show(writ.id);
-    assert.equal(finalWrit.status, 'completed');
+    assert.equal(finalWrit.phase, 'completed');
     assert.equal(finalWrit.resolution, JSON.stringify(customYields));
   });
 
@@ -2821,7 +2821,7 @@ describe('Spider — CDC resolution fallback', () => {
 
     // CDC should fall through to seal engine (backwards compat path)
     const finalWrit = await clerk.show(writ.id);
-    assert.equal(finalWrit.status, 'completed');
+    assert.equal(finalWrit.phase, 'completed');
     assert.equal(finalWrit.resolution, JSON.stringify(sealYields), 'should fall back to seal engine yields');
   });
 });
@@ -2908,7 +2908,7 @@ describe('Spider — full pipeline integration', () => {
 
     // CDC: writ transitions to completed using step2's yields (resolutionEngineId: 'step2')
     const finalWrit = await clerk.show(writ.id);
-    assert.equal(finalWrit.status, 'completed');
+    assert.equal(finalWrit.phase, 'completed');
     assert.equal(finalWrit.resolution, JSON.stringify(step2Yields), 'resolution uses step2 yields via resolutionEngineId');
   });
 
@@ -2967,7 +2967,7 @@ describe('Spider — full pipeline integration', () => {
 
     // CDC: writ transitions to completed using review's yields (no seal engine present)
     const finalWrit = await clerk.show(writ.id);
-    assert.equal(finalWrit.status, 'completed');
+    assert.equal(finalWrit.phase, 'completed');
     assert.equal(finalWrit.resolution, JSON.stringify(reviewYields), 'resolution uses review yields via resolutionEngineId');
   });
 });
@@ -3256,7 +3256,7 @@ describe('Spider tools — handler delegation', () => {
 //
 // Uses buildBlockingFixture() — an extended fixture that gives Spider a
 // real StartupContext with Wire-phase kit entries. Spider's own supportKit
-// block types (writ-status, scheduled-time, book-updated) are delivered
+// block types (writ-phase, scheduled-time, book-updated) are delivered
 // via ctx.kits('blockTypes') during start(), along with any custom block
 // types passed as extra kit entries to the fixture.
 // ──────────────────────────────────────────────────────────────────────
@@ -3392,7 +3392,7 @@ describe('Spider — engine blocking on external conditions', () => {
     apparatusMap.set('stacks', stacks);
 
     memBackend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
-      indexes: ['status', 'type', 'createdAt', ['status', 'type'], ['status', 'createdAt']],
+      indexes: ['phase', 'type', 'createdAt', ['phase', 'type'], ['phase', 'createdAt']],
     });
     memBackend.ensureBook({ ownerId: 'spider', book: 'rigs' }, {
       indexes: ['status', 'writId', ['status', 'writId'], 'createdAt'],
@@ -3575,7 +3575,7 @@ describe('Spider — engine blocking on external conditions', () => {
   describe('Block type registry', () => {
     it('getBlockType returns the three built-in block types after startup (V3, R6)', () => {
       const { spider } = buildBlockingFixture();
-      assert.ok(spider.getBlockType('writ-status') !== undefined, 'writ-status should be registered');
+      assert.ok(spider.getBlockType('writ-phase') !== undefined, 'writ-phase should be registered');
       assert.ok(spider.getBlockType('scheduled-time') !== undefined, 'scheduled-time should be registered');
       assert.ok(spider.getBlockType('book-updated') !== undefined, 'book-updated should be registered');
     });
@@ -3601,15 +3601,15 @@ describe('Spider — engine blocking on external conditions', () => {
       assert.ok(Array.isArray(result), 'listBlockTypes should return an array');
 
       const ids = result.map((bt) => bt.id);
-      assert.ok(ids.includes('writ-status'), 'writ-status should be in list');
+      assert.ok(ids.includes('writ-phase'), 'writ-phase should be in list');
       assert.ok(ids.includes('scheduled-time'), 'scheduled-time should be in list');
       assert.ok(ids.includes('book-updated'), 'book-updated should be in list');
       assert.ok(ids.includes('patron-input'), 'patron-input should be in list');
 
-      const writStatus = result.find((bt) => bt.id === 'writ-status');
-      assert.ok(writStatus, 'writ-status should be found');
+      const writStatus = result.find((bt) => bt.id === 'writ-phase');
+      assert.ok(writStatus, 'writ-phase should be found');
       assert.equal(typeof writStatus.pluginId, 'string', 'pluginId should be a string');
-      assert.equal(writStatus.pollIntervalMs, 10_000, 'writ-status should have 10s poll interval');
+      assert.equal(writStatus.pollIntervalMs, 10_000, 'writ-phase should have 10s poll interval');
 
       const scheduledTime = result.find((bt) => bt.id === 'scheduled-time');
       assert.ok(scheduledTime, 'scheduled-time should be found');
@@ -4410,7 +4410,7 @@ describe('Spider — engine blocking on external conditions', () => {
       // Writ should remain 'open' — CDC ignores 'blocked' status
       const currentWrit = await fix.clerk.show(writ.id);
       assert.equal(
-        currentWrit.status,
+        currentWrit.phase,
         'open',
         'writ should remain open when rig is blocked; CDC must not fire for blocked status',
       );
@@ -4764,21 +4764,21 @@ describe('Spider — engine blocking on external conditions', () => {
     });
   });
 
-  // ── writ-status checker additional cases (R12–R16) ─────────────────────
+  // ── writ-phase checker additional cases (R12–R16) ─────────────────────
 
-  describe('writ-status checker — additional failure cases', () => {
+  describe('writ-phase checker — additional failure cases', () => {
     it('returns failed with terminal-mismatch reason when writ is failed but target is completed', async () => {
       const fix = buildBlockingFixture();
       const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.clerk.transition(writ.id, 'failed');
 
-      const blockType = fix.spider.getBlockType('writ-status');
+      const blockType = fix.spider.getBlockType('writ-phase');
       assert.ok(blockType !== undefined);
 
-      const result = await blockType.check({ writId: writ.id, targetStatus: 'completed' });
+      const result = await blockType.check({ writId: writ.id, targetPhase: 'completed' });
       assert.deepEqual(result, {
         status: 'failed',
-        reason: 'Writ reached terminal status "failed" instead of "completed"',
+        reason: 'Writ reached terminal phase "failed" instead of "completed"',
       });
     });
 
@@ -4787,10 +4787,10 @@ describe('Spider — engine blocking on external conditions', () => {
       const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.clerk.transition(writ.id, 'failed');
 
-      const blockType = fix.spider.getBlockType('writ-status');
+      const blockType = fix.spider.getBlockType('writ-phase');
       assert.ok(blockType !== undefined);
 
-      const result = await blockType.check({ writId: writ.id, targetStatus: 'failed' });
+      const result = await blockType.check({ writId: writ.id, targetPhase: 'failed' });
       assert.deepEqual(result, { status: 'cleared' }, 'target match takes priority over terminal-mismatch');
     });
 
@@ -4799,13 +4799,13 @@ describe('Spider — engine blocking on external conditions', () => {
       const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
       await fix.clerk.transition(writ.id, 'cancelled');
 
-      const blockType = fix.spider.getBlockType('writ-status');
+      const blockType = fix.spider.getBlockType('writ-phase');
       assert.ok(blockType !== undefined);
 
-      const result = await blockType.check({ writId: writ.id, targetStatus: 'completed' });
+      const result = await blockType.check({ writId: writ.id, targetPhase: 'completed' });
       assert.deepEqual(result, {
         status: 'failed',
-        reason: 'Writ reached terminal status "cancelled" instead of "completed"',
+        reason: 'Writ reached terminal phase "cancelled" instead of "completed"',
       });
     });
 
@@ -4814,10 +4814,10 @@ describe('Spider — engine blocking on external conditions', () => {
       const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
       // writ starts at 'open' status, which is neither completed nor a terminal mismatch for 'completed' target
 
-      const blockType = fix.spider.getBlockType('writ-status');
+      const blockType = fix.spider.getBlockType('writ-phase');
       assert.ok(blockType !== undefined);
 
-      const result = await blockType.check({ writId: writ.id, targetStatus: 'completed' });
+      const result = await blockType.check({ writId: writ.id, targetPhase: 'completed' });
       assert.deepEqual(result, { status: 'pending' }, 'non-terminal non-target status should return pending');
     });
   });
@@ -4826,17 +4826,17 @@ describe('Spider — engine blocking on external conditions', () => {
 
   describe('Built-in block types', () => {
 
-    // ── writ-status (R23, V16) ───────────────────────────────────────────
+    // ── writ-phase (R23, V16) ───────────────────────────────────────────
 
-    describe('writ-status block type (R23, V16)', () => {
+    describe('writ-phase block type (R23, V16)', () => {
       it('checker returns pending when writ is not at target status', async () => {
         const fix = buildBlockingFixture();
         const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
 
-        const blockType = fix.spider.getBlockType('writ-status');
-        assert.ok(blockType !== undefined, 'writ-status block type should be registered');
+        const blockType = fix.spider.getBlockType('writ-phase');
+        assert.ok(blockType !== undefined, 'writ-phase block type should be registered');
 
-        const result = await blockType.check({ writId: writ.id, targetStatus: 'completed' });
+        const result = await blockType.check({ writId: writ.id, targetPhase: 'completed' });
         assert.deepEqual(result, { status: 'pending' }, 'checker should return pending when writ is not completed');
       });
 
@@ -4845,27 +4845,27 @@ describe('Spider — engine blocking on external conditions', () => {
         const writ = await fix.clerk.post({ title: 'Writ', body: 'Body' });
         await fix.clerk.transition(writ.id, 'completed', { resolution: 'done' });
 
-        const blockType = fix.spider.getBlockType('writ-status');
+        const blockType = fix.spider.getBlockType('writ-phase');
         assert.ok(blockType !== undefined);
 
-        const result = await blockType.check({ writId: writ.id, targetStatus: 'completed' });
+        const result = await blockType.check({ writId: writ.id, targetPhase: 'completed' });
         assert.deepEqual(result, { status: 'cleared' }, 'checker should return cleared when writ is completed');
       });
 
       it('checker returns failed when writ does not exist', async () => {
         const fix = buildBlockingFixture();
-        const blockType = fix.spider.getBlockType('writ-status');
+        const blockType = fix.spider.getBlockType('writ-phase');
         assert.ok(blockType !== undefined);
 
-        const result = await blockType.check({ writId: 'nonexistent-writ-99', targetStatus: 'completed' });
+        const result = await blockType.check({ writId: 'nonexistent-writ-99', targetPhase: 'completed' });
         assert.deepEqual(result, { status: 'failed', reason: 'Writ not found' }, 'checker should return failed when writ not found');
       });
 
-      it('writ-status has pollIntervalMs of 10000 (R23)', () => {
+      it('writ-phase has pollIntervalMs of 10000 (R23)', () => {
         const fix = buildBlockingFixture();
-        const blockType = fix.spider.getBlockType('writ-status');
+        const blockType = fix.spider.getBlockType('writ-phase');
         assert.ok(blockType !== undefined);
-        assert.equal(blockType.pollIntervalMs, 10_000, 'writ-status should have 10s poll interval');
+        assert.equal(blockType.pollIntervalMs, 10_000, 'writ-phase should have 10s poll interval');
       });
     });
 
@@ -5222,7 +5222,7 @@ describe('Kit contributions — rig templates and mappings', () => {
       const rig = await fix.spider.forWrit(writ.id);
       assert.equal(rig, null);
       const shown = await fix.clerk.show(writ.id);
-      assert.equal(shown.status, 'open');
+      assert.equal(shown.phase, 'open');
     });
   });
 
@@ -5385,7 +5385,7 @@ describe('Kit contributions — rig templates and mappings', () => {
       // Opt-in dispatch: unmapped writ types are inert — crawl skips them.
       assert.equal(result, null);
       const writ = await fix.clerk.show(posted.id);
-      assert.equal(writ.status, 'open');
+      assert.equal(writ.phase, 'open');
     });
   });
 });
@@ -5817,7 +5817,7 @@ describe('${yields.*} reference support', () => {
       apparatusMap.set('stacks', stacks);
 
       memBackend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
-        indexes: ['status', 'type', 'createdAt', ['status', 'type'], ['status', 'createdAt']],
+        indexes: ['phase', 'type', 'createdAt', ['phase', 'type'], ['phase', 'createdAt']],
       });
       memBackend.ensureBook({ ownerId: 'spider', book: 'rigs' }, {
         indexes: ['status', 'writId', ['status', 'writId'], 'createdAt'],
@@ -6830,7 +6830,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       );
       // writ should be completed (one completed engine)
       const finalWrit = await clerk.show(writ.id);
-      assert.equal(finalWrit.status, 'completed');
+      assert.equal(finalWrit.phase, 'completed');
     });
   });
 
@@ -7016,7 +7016,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       assert.equal(rig.status, 'completed');
       assert.ok(results.some((r) => r?.action === 'rig-completed'), 'rig-completed result expected');
       const finalWrit = await clerk.show(writ.id);
-      assert.equal(finalWrit.status, 'completed');
+      assert.equal(finalWrit.phase, 'completed');
     });
 
     it('does NOT complete the rig when all engines are skipped (no completed engine)', async () => {
@@ -7521,7 +7521,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       assert.equal((r3 as { outcome: string }).outcome, 'completed');
 
       const finalWrit = await clerk.show(writ.id);
-      assert.equal(finalWrit.status, 'completed');
+      assert.equal(finalWrit.phase, 'completed');
     });
 
     it('graft is processed in a separate crawl step after engine-completed', async () => {
@@ -7933,7 +7933,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       apparatusMap.set('stacks', stacks);
 
       memBackend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
-        indexes: ['status', 'type', 'createdAt', ['status', 'type'], ['status', 'createdAt']],
+        indexes: ['phase', 'type', 'createdAt', ['phase', 'type'], ['phase', 'createdAt']],
       });
       memBackend.ensureBook({ ownerId: 'spider', book: 'rigs' }, {
         indexes: ['status', 'writId', ['status', 'writId'], 'createdAt'],
@@ -8008,7 +8008,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       assert.equal((r5 as { outcome: string }).outcome, 'completed');
 
       const finalWrit = await clerk.show(writ.id);
-      assert.equal(finalWrit.status, 'completed');
+      assert.equal(finalWrit.phase, 'completed');
     });
   });
 
@@ -8480,7 +8480,7 @@ describe('Spider — rig cancellation', () => {
     await book.patch(rigId, { status: 'cancelled' });
 
     const updatedWrit = await clerk.show(writ.id);
-    assert.equal(updatedWrit.status, 'cancelled', 'writ should transition to cancelled');
+    assert.equal(updatedWrit.phase, 'cancelled', 'writ should transition to cancelled');
   });
 
   // Test 11: CDC handler cancelled without error message uses fallback
@@ -8504,7 +8504,7 @@ describe('Spider — rig cancellation', () => {
     await book.patch(rigId, { status: 'cancelled' });
 
     const updatedWrit = await clerk.show(writ.id);
-    assert.equal(updatedWrit.status, 'cancelled', 'writ should transition to cancelled');
+    assert.equal(updatedWrit.phase, 'cancelled', 'writ should transition to cancelled');
   });
 
   // ── Rig cancel with already-terminal writ ─────────────────────────────
@@ -8539,7 +8539,7 @@ describe('Spider — rig cancellation', () => {
 
     // Writ should remain cancelled (not re-transitioned)
     const updatedWrit = await clerk.show(writ.id);
-    assert.equal(updatedWrit.status, 'cancelled', 'writ should still be cancelled');
+    assert.equal(updatedWrit.phase, 'cancelled', 'writ should still be cancelled');
   });
 
   // Test 13: Cancel rig whose writ is already completed
@@ -8568,7 +8568,7 @@ describe('Spider — rig cancellation', () => {
 
     // Writ should remain completed (not re-transitioned)
     const updatedWrit = await clerk.show(writ.id);
-    assert.equal(updatedWrit.status, 'completed', 'writ should still be completed');
+    assert.equal(updatedWrit.phase, 'completed', 'writ should still be completed');
   });
 
   // Test 14: Cancel rig whose writ is already failed
@@ -8597,7 +8597,7 @@ describe('Spider — rig cancellation', () => {
 
     // Writ should remain failed (not re-transitioned)
     const updatedWrit = await clerk.show(writ.id);
-    assert.equal(updatedWrit.status, 'failed', 'writ should still be failed');
+    assert.equal(updatedWrit.phase, 'failed', 'writ should still be failed');
   });
 
   // Test 15: Cancel rig with open writ — both transition (regression guard)
@@ -8623,7 +8623,7 @@ describe('Spider — rig cancellation', () => {
     assert.equal(cancelledRig.status, 'cancelled', 'rig should be cancelled');
 
     const updatedWrit = await clerk.show(writ.id);
-    assert.equal(updatedWrit.status, 'cancelled', 'writ should also be cancelled');
+    assert.equal(updatedWrit.phase, 'cancelled', 'writ should also be cancelled');
   });
 
   // Test 16: Cancel rig with mixed engine statuses — preserves completed engines
@@ -9190,7 +9190,7 @@ describe('Spider — writ→rig cascade', () => {
     await clerk.transition(writ.id, 'cancelled');
 
     const updatedWrit = await clerk.show(writ.id);
-    assert.equal(updatedWrit.status, 'cancelled');
+    assert.equal(updatedWrit.phase, 'cancelled');
   });
 
   // V3 [R1, R4]: Cancel writ when rig is already terminal
@@ -9208,7 +9208,7 @@ describe('Spider — writ→rig cascade', () => {
     // Now cancel the writ — the cascade should be a no-op for the rig
     // The writ may already be cancelled by the rig→writ CDC, but if not:
     const currentWrit = await clerk.show(writ.id);
-    if (currentWrit.status !== 'cancelled') {
+    if (currentWrit.phase !== 'cancelled') {
       await clerk.transition(writ.id, 'cancelled');
     }
 
@@ -9227,7 +9227,7 @@ describe('Spider — writ→rig cascade', () => {
 
     // Both should be terminal
     const updatedWrit = await clerk.show(writ.id);
-    assert.equal(updatedWrit.status, 'cancelled', 'writ should be cancelled');
+    assert.equal(updatedWrit.phase, 'cancelled', 'writ should be cancelled');
 
     const book = rigsBook(stacks);
     const updatedRig = await book.get(rig.id);
@@ -9248,7 +9248,7 @@ describe('Spider — writ→rig cascade', () => {
     assert.equal(updatedRig?.status, 'cancelled', 'rig should be cancelled');
 
     const updatedWrit = await clerk.show(writ.id);
-    assert.equal(updatedWrit.status, 'cancelled', 'writ should be cancelled via rig→writ CDC');
+    assert.equal(updatedWrit.phase, 'cancelled', 'writ should be cancelled via rig→writ CDC');
   });
 
   // V5 [R5]: Cancel rig whose writ is already terminal (existing bug fix)
@@ -9262,7 +9262,7 @@ describe('Spider — writ→rig cascade', () => {
 
     // Directly patch the writ to a terminal state (simulating out-of-band cancellation)
     const writsBook = stacks.book<WritDoc>('clerk', 'writs');
-    await writsBook.patch(writ.id, { status: 'cancelled', resolvedAt: new Date().toISOString() });
+    await writsBook.patch(writ.id, { phase: 'cancelled', resolvedAt: new Date().toISOString() });
 
     // Cancel the rig — should succeed because the guard skips clerk.transition()
     const cancelledRig = await spider.cancel(rig.id);
@@ -9289,7 +9289,7 @@ describe('Spider — writ→rig cascade', () => {
 
     // The rig→writ CDC should have completed the writ
     const updatedWrit = await clerk.show(writ.id);
-    assert.equal(updatedWrit.status, 'completed', 'writ should be completed via rig→writ CDC');
+    assert.equal(updatedWrit.phase, 'completed', 'writ should be completed via rig→writ CDC');
 
     // Both should be terminal and stable — no errors
     const updatedRig = await book.get(rig.id);
@@ -9372,7 +9372,7 @@ describe('Spider — writ→rig cascade', () => {
 
     // Directly patch the writ to completed
     const writsBookHandle = stacks.book<WritDoc>('clerk', 'writs');
-    await writsBookHandle.patch(writ.id, { status: 'completed', resolvedAt: new Date().toISOString() });
+    await writsBookHandle.patch(writ.id, { phase: 'completed', resolvedAt: new Date().toISOString() });
 
     // Cancel the rig — should succeed because the guard skips clerk.transition()
     const cancelledRig = await spider.cancel(rig.id);
@@ -9380,7 +9380,7 @@ describe('Spider — writ→rig cascade', () => {
 
     // Writ should remain completed
     const updatedWrit = await clerk.show(writ.id);
-    assert.equal(updatedWrit.status, 'completed', 'writ should remain completed');
+    assert.equal(updatedWrit.phase, 'completed', 'writ should remain completed');
   });
 
   // [R1]: Cascade with already-terminal rig is idempotent
@@ -9409,7 +9409,7 @@ describe('Spider — writ→rig cascade', () => {
     const updatedRig = await book.get(rigId);
     assert.equal(updatedRig?.status, 'cancelled', 'rig should remain cancelled');
     const updatedWrit = await clerk.show(writ.id);
-    assert.equal(updatedWrit.status, 'cancelled', 'writ should be cancelled');
+    assert.equal(updatedWrit.phase, 'cancelled', 'writ should be cancelled');
   });
 
   // V7 [R7]: Parent/child cascade — parent writ cancelled cascades to child's rig
@@ -9418,17 +9418,17 @@ describe('Spider — writ→rig cascade', () => {
 
     // Create parent writ as a draft ('new') so the spider won't pick it up
     // for dispatch. Under the new vocabulary the spider only dispatches
-    // writs in 'open' status; a draft parent keeps its own rig out of the
+    // writs in 'open' phase; a draft parent keeps its own rig out of the
     // picture so this test exercises only the parent→child cascade path.
     const parentWrit = await clerk.post({ title: 'Parent writ', body: 'parent', draft: true });
-    assert.equal(parentWrit.status, 'new', 'parent should be a draft');
+    assert.equal(parentWrit.phase, 'new', 'parent should be a draft');
 
     // Create child writ — parent does not auto-transition (R5); child is 'open'
     const childWrit = await clerk.post({ title: 'Child writ', body: 'child', parentId: parentWrit.id });
-    assert.equal(childWrit.status, 'open', 'child should be open');
+    assert.equal(childWrit.phase, 'open', 'child should be open');
 
     const parentAfterChild = await clerk.show(parentWrit.id);
-    assert.equal(parentAfterChild.status, 'new', 'parent should remain new after child added');
+    assert.equal(parentAfterChild.phase, 'new', 'parent should remain new after child added');
 
     // Spawn rig for child (parent is new, so spider skips it)
     await spider.crawl(); // spawns child rig
@@ -9443,7 +9443,7 @@ describe('Spider — writ→rig cascade', () => {
 
     // Child writ should be cancelled (by clerk's parent→child cascade)
     const updatedChildWrit = await clerk.show(childWrit.id);
-    assert.equal(updatedChildWrit.status, 'cancelled', 'child writ should be cancelled');
+    assert.equal(updatedChildWrit.phase, 'cancelled', 'child writ should be cancelled');
 
     // Child rig should be cancelled (by spider's writ→rig CDC)
     const updatedChildRig = await book.get(childRig.id);
@@ -9492,8 +9492,8 @@ describe('Spider — writ→rig cascade', () => {
     // Both children cancelled
     const updatedChild1 = await clerk.show(child1.id);
     const updatedChild2 = await clerk.show(child2.id);
-    assert.equal(updatedChild1.status, 'cancelled', 'child1 writ should be cancelled');
-    assert.equal(updatedChild2.status, 'cancelled', 'child2 writ should be cancelled');
+    assert.equal(updatedChild1.phase, 'cancelled', 'child1 writ should be cancelled');
+    assert.equal(updatedChild2.phase, 'cancelled', 'child2 writ should be cancelled');
 
     // Both child rigs cancelled
     const updatedRig1 = await book.get(child1RigId);

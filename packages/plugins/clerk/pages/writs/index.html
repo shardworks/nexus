@@ -54,13 +54,13 @@
     <button class="btn btn--primary" id="btn-new-writ">New Writ</button>
     <button class="btn" id="btn-refresh">Refresh</button>
     <span style="display:inline-flex;gap:0.4rem;flex-wrap:wrap;align-items:center">
-      <span style="font-size:0.875rem;opacity:0.6">Status:</span>
-      <button class="btn filter-btn active-filter" data-status="">All</button>
-      <button class="btn filter-btn" data-status="new">new</button>
-      <button class="btn filter-btn" data-status="open">open</button>
-      <button class="btn filter-btn" data-status="completed">completed</button>
-      <button class="btn filter-btn" data-status="failed">failed</button>
-      <button class="btn filter-btn" data-status="cancelled">cancelled</button>
+      <span style="font-size:0.875rem;opacity:0.6">Phase:</span>
+      <button class="btn filter-btn active-filter" data-phase="">All</button>
+      <button class="btn filter-btn" data-phase="new">new</button>
+      <button class="btn filter-btn" data-phase="open">open</button>
+      <button class="btn filter-btn" data-phase="completed">completed</button>
+      <button class="btn filter-btn" data-phase="failed">failed</button>
+      <button class="btn filter-btn" data-phase="cancelled">cancelled</button>
     </span>
     <span id="type-filter-bar" style="display:inline-flex;gap:0.4rem;flex-wrap:wrap;align-items:center">
       <span style="font-size:0.875rem;opacity:0.6">Type:</span>
@@ -94,7 +94,7 @@
     </div>
     <div class="form-row" style="flex-direction:row;align-items:center;gap:0.5rem">
       <input type="checkbox" id="post-draft-checkbox" style="width:auto;accent-color:var(--blue,#7aa2f7)">
-      <label for="post-draft-checkbox" style="opacity:1;cursor:pointer">Draft — hold in <em>new</em> status, do not enter queue yet</label>
+      <label for="post-draft-checkbox" style="opacity:1;cursor:pointer">Draft — hold in <em>new</em> phase, do not enter queue yet</label>
     </div>
     <button class="btn btn--primary" id="post-submit-btn">Post Writ</button>
     <div id="post-error" class="error-msg" style="display:none"></div>
@@ -105,7 +105,7 @@
   <table class="data-table" id="writ-table">
     <thead>
       <tr>
-        <th class="th-sortable" data-col="status">Status <span class="sort-ind" data-col="status"></span></th>
+        <th class="th-sortable" data-col="phase">Phase <span class="sort-ind" data-col="phase"></span></th>
         <th class="th-sortable" data-col="title">Title <span class="sort-ind" data-col="title"></span></th>
         <th class="th-sortable" data-col="type">Type <span class="sort-ind" data-col="type"></span></th>
         <th class="th-sortable" data-col="id">ID <span class="sort-ind" data-col="id"></span></th>
@@ -142,7 +142,7 @@
     // ── State ──────────────────────────────────────────────────────────
     let writs = [];          // root writs only (no parentId)
     let offset = 0;
-    let currentStatus = '';  // '' = all
+    let currentPhase = '';   // '' = all
     let currentType = new Set();  // Set<string> — empty = no types selected (empty state)
     let searchText = '';
     let sortCol = 'createdAt';
@@ -164,7 +164,7 @@
       return json;
     }
 
-    function statusBadge(status) {
+    function phaseBadge(phase) {
       const map = {
         new: 'badge badge--draft',
         open: 'badge badge--active',
@@ -173,8 +173,8 @@
         failed: 'badge badge--error',
         cancelled: 'badge badge--warning',
       };
-      const cls = map[status] ?? 'badge';
-      return `<span class="${cls}">${status}</span>`;
+      const cls = map[phase] ?? 'badge';
+      return `<span class="${cls}">${phase}</span>`;
     }
 
     function fmtDate(iso) {
@@ -238,11 +238,11 @@
 
     /** Returns the HTML for the context-aware Actions cell for a writ row. */
     function rowActions(w) {
-      const isTerminal = ['completed', 'failed', 'cancelled'].includes(w.status);
-      const isStuck = w.status === 'stuck';
+      const isTerminal = ['completed', 'failed', 'cancelled'].includes(w.phase);
+      const isStuck = w.phase === 'stuck';
       if (isTerminal) return '';
       const btns = [];
-      if (w.status === 'new') {
+      if (w.phase === 'new') {
         btns.push(`<button class="btn btn--primary row-action-btn" style="padding:0.15rem 0.5rem;font-size:0.8rem" data-action="row-publish" data-id="${w.id}">Start</button>`);
       }
       btns.push(`<button class="btn btn--danger row-action-btn" style="padding:0.15rem 0.5rem;font-size:0.8rem" data-action="row-cancel" data-id="${w.id}">Cancel</button>`);
@@ -264,7 +264,7 @@
         const writ = await api('GET', `/api/writ/show?id=${encodeURIComponent(id)}`);
         const idx = writs.findIndex(w => w.id === id);
         if (idx >= 0) writs[idx] = writ;
-        updateRowStatus(id);
+        updateRowPhase(id);
         updateRowActions(id);
         // Refresh detail view if open
         if (document.getElementById('writ-detail-view').style.display !== 'none') {
@@ -311,7 +311,7 @@
         tr.className = 'writ-row' + (isChild ? ' child-row' : '');
         tr.dataset.id = w.id;
         tr.innerHTML =
-          '<td>' + statusBadge(w.status) + '</td>' +
+          '<td>' + phaseBadge(w.phase) + '</td>' +
           '<td' + (isChild ? ' style="padding-left:2rem"' : '') + '>' + escHtml(w.title ?? '') + '</td>' +
           '<td>' + (w.type ?? '') + '</td>' +
           '<td class="id-cell"><code>' + w.id + '</code> <button class="btn copy-id-btn" data-copy-id="' + w.id + '" style="padding:0.1rem 0.3rem;font-size:0.7rem;cursor:pointer">📋</button></td>' +
@@ -374,8 +374,8 @@
     // ── Detail row ─────────────────────────────────────────────────────
 
     function renderDetail(writ) {
-      const isTerminal = ['completed', 'failed', 'cancelled'].includes(writ.status);
-      const isDraft = writ.status === 'new';
+      const isTerminal = ['completed', 'failed', 'cancelled'].includes(writ.phase);
+      const isDraft = writ.phase === 'new';
       let html = '';
 
       // Edit form — title and body are always editable; type and codex only for drafts
@@ -401,7 +401,7 @@
       html += `<div class="detail-section"><h4>Details</h4><dl class="detail-grid">`;
       if (writ.codex) html += `<dt>Codex</dt><dd>${escHtml(writ.codex)}</dd>`;
       if (writ.parent) {
-        html += `<dt>Parent</dt><dd><a href="?writ=${encodeURIComponent(writ.parent.id)}" style="color:var(--blue,#7aa2f7);text-decoration:underline;cursor:pointer">${escHtml(writ.parent.title)}</a> ${statusBadge(writ.parent.status)}</dd>`;
+        html += `<dt>Parent</dt><dd><a href="?writ=${encodeURIComponent(writ.parent.id)}" style="color:var(--blue,#7aa2f7);text-decoration:underline;cursor:pointer">${escHtml(writ.parent.title)}</a> ${phaseBadge(writ.parent.phase)}</dd>`;
       }
       html += `<dt>Created</dt><dd>${fmtDate(writ.createdAt)}</dd>`;
       html += `<dt>Updated</dt><dd>${fmtDate(writ.updatedAt)}</dd>`;
@@ -412,14 +412,14 @@
       // Transition actions
       if (!isTerminal) {
         html += `<div class="detail-section action-buttons" id="actions-${writ.id}">`;
-        if (writ.status === 'new') {
+        if (writ.phase === 'new') {
           html += `<button class="btn btn--primary" data-action="publish" data-id="${writ.id}">Start (Publish)</button>`;
           html += `<button class="btn btn--danger" data-action="cancel" data-id="${writ.id}">Cancel</button>`;
-        } else if (writ.status === 'open') {
+        } else if (writ.phase === 'open') {
           html += `<button class="btn btn--success" data-action="complete" data-id="${writ.id}">Complete</button>`;
           html += `<button class="btn btn--danger" data-action="fail" data-id="${writ.id}">Fail</button>`;
           html += `<button class="btn btn--danger" data-action="cancel" data-id="${writ.id}">Cancel</button>`;
-        } else if (writ.status === 'stuck') {
+        } else if (writ.phase === 'stuck') {
           html += `<button class="btn btn--danger" data-action="fail" data-id="${writ.id}">Fail</button>`;
           html += `<button class="btn btn--danger" data-action="cancel" data-id="${writ.id}">Cancel</button>`;
         }
@@ -429,7 +429,7 @@
       }
 
       // Repost for failed/cancelled
-      if (writ.status === 'failed' || writ.status === 'cancelled') {
+      if (writ.phase === 'failed' || writ.phase === 'cancelled') {
         html += `<div class="detail-section"><button class="btn" data-action="repost" data-id="${writ.id}">Repost</button></div>`;
       }
 
@@ -447,19 +447,19 @@
         // Summary badges
         if (writ.children?.summary) {
           html += `<div style="margin-bottom:0.5rem">`;
-          for (const [status, count] of Object.entries(writ.children.summary)) {
-            html += statusBadge(status) + ` <span style="margin-right:0.75rem">${count}</span>`;
+          for (const [phase, count] of Object.entries(writ.children.summary)) {
+            html += phaseBadge(phase) + ` <span style="margin-right:0.75rem">${count}</span>`;
           }
           html += `</div>`;
         }
 
-        // Children table: Status, Title, Type, ID, Actions
+        // Children table: Phase, Title, Type, ID, Actions
         html += `<table class="data-table"><thead><tr>`;
-        html += `<th>Status</th><th>Title</th><th>Type</th><th>ID</th><th>Actions</th>`;
+        html += `<th>Phase</th><th>Title</th><th>Type</th><th>ID</th><th>Actions</th>`;
         html += `</tr></thead><tbody>`;
         for (const child of childItems) {
           html += `<tr class="writ-row child-detail-row" data-child-id="${child.id}" style="cursor:pointer">`;
-          html += `<td>${statusBadge(child.status)}</td>`;
+          html += `<td>${phaseBadge(child.phase)}</td>`;
           html += `<td>${escHtml(child.title ?? '')}</td>`;
           html += `<td>${escHtml(child.type ?? '')}</td>`;
           html += `<td><code>${child.id}</code></td>`;
@@ -513,7 +513,7 @@
 
     function wireDetailEvents(container, writ) {
       // Populate edit dropdowns for draft writs
-      if (writ.status === 'new') {
+      if (writ.phase === 'new') {
         populateEditDropdowns(writ);
       }
 
@@ -672,7 +672,7 @@
       try {
         await api('POST', '/api/writ/publish', { id });
         await refreshDetail(id);
-        updateRowStatus(id);
+        updateRowPhase(id);
         updateRowActions(id);
       } catch (e) {
         showError(errEl, e.message);
@@ -730,7 +730,7 @@
           else if (action === 'complete') await api('POST', '/api/writ/complete', body);
           else if (action === 'fail') await api('POST', '/api/writ/fail', body);
           await refreshDetail(id);
-          updateRowStatus(id);
+          updateRowPhase(id);
           updateRowActions(id);
           area.innerHTML = '';
         } catch (e) {
@@ -806,18 +806,18 @@
       }
 
       // Also refresh the list view row
-      updateRowStatus(id);
+      updateRowPhase(id);
       updateRowActions(id);
     }
 
-    function updateRowStatus(id) {
+    function updateRowPhase(id) {
       const writ = writs.find(w => w.id === id);
       if (!writ) return;
       const row = document.querySelector(`tr.writ-row[data-id="${id}"]`);
       if (!row) return;
-      // Update status badge cell (1st column, index 0)
+      // Update phase badge cell (1st column, index 0)
       const cells = row.querySelectorAll('td');
-      if (cells[0]) cells[0].innerHTML = statusBadge(writ.status);
+      if (cells[0]) cells[0].innerHTML = phaseBadge(writ.phase);
     }
 
     // ── Detail view ──────────────────────────────────────────────────
@@ -886,7 +886,7 @@
       }
 
       const params = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) });
-      if (currentStatus) params.set('status', currentStatus);
+      if (currentPhase) params.set('phase', currentPhase);
       if (currentType.size === 0) {
         // No types selected — show empty state without hitting the API
         if (replace) { writs = []; }
@@ -1175,10 +1175,10 @@
 
     // ── Filter / sort ───────────────────────────────────────────────────
 
-    function setActiveFilter(status) {
-      currentStatus = status;
+    function setActiveFilter(phase) {
+      currentPhase = phase;
       document.querySelectorAll('.filter-btn').forEach(btn => {
-        btn.classList.toggle('active-filter', btn.dataset.status === status);
+        btn.classList.toggle('active-filter', btn.dataset.phase === phase);
       });
       loadWrits(true);
     }
@@ -1247,7 +1247,7 @@
     document.getElementById('load-more-btn').addEventListener('click', () => loadWrits(false));
 
     document.querySelectorAll('.filter-btn').forEach(btn => {
-      btn.addEventListener('click', () => setActiveFilter(btn.dataset.status));
+      btn.addEventListener('click', () => setActiveFilter(btn.dataset.phase));
     });
 
     document.getElementById('search-input').addEventListener('input', e => {

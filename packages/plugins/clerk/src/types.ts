@@ -4,7 +4,7 @@
  * All types exported from @shardworks/clerk-apparatus.
  */
 
-// ── Writ status ──────────────────────────────────────────────────────
+// ── Writ phase ───────────────────────────────────────────────────────
 
 /**
  * A writ's position in its lifecycle.
@@ -23,7 +23,7 @@
  * completed, failed, cancelled are terminal — no further transitions.
  * stuck is non-terminal — it represents a "needs attention" state.
  */
-export type WritStatus = 'new' | 'open' | 'stuck' | 'completed' | 'failed' | 'cancelled';
+export type WritPhase = 'new' | 'open' | 'stuck' | 'completed' | 'failed' | 'cancelled';
 
 // ── Documents ────────────────────────────────────────────────────────
 
@@ -37,8 +37,21 @@ export interface WritDoc {
   id: string;
   /** Writ type — must be a type declared in guild config, or a built-in type. */
   type: string;
-  /** Current lifecycle status. */
-  status: WritStatus;
+  /** Current lifecycle phase (Clerk-owned; spec side of the spec/status split). */
+  phase: WritPhase;
+  /**
+   * Plugin-owned observation slot (status side of the spec/status split).
+   *
+   * The observation slot is a plugin-keyed map: each top-level key is a
+   * plugin id, and the value is an arbitrary shape that plugin publishes
+   * for post-hoc observation. Ownership is convention-only — plugin `X`
+   * writes only to `status[X]`. Writers must go through
+   * `ClerkApi.setWritStatus()` to avoid clobbering sibling sub-slots.
+   * Readers access `writ.status?.[pluginId]` directly.
+   *
+   * The slot survives terminal phase transitions.
+   */
+  status?: Record<string, unknown>;
   /** Short human-readable title. */
   title: string;
   /** Detail text. */
@@ -112,8 +125,8 @@ export interface PostCommissionRequest {
  * Filters for listing writs.
  */
 export interface WritFilters {
-  /** Filter by status. Accepts a single status or an array of statuses (OR). */
-  status?: WritStatus | WritStatus[];
+  /** Filter by phase. Accepts a single phase or an array of phases (OR). */
+  phase?: WritPhase | WritPhase[];
   /** Filter by writ type. Accepts a single type or an array of types (OR). */
   type?: string | string[];
   /** Filter to children of this parent writ. */
@@ -305,10 +318,29 @@ export interface ClerkApi {
   count(filters?: WritFilters): Promise<number>;
 
   /**
-   * Transition a writ to a new status, optionally setting additional fields.
+   * Transition a writ to a new phase, optionally setting additional fields.
    * Validates that the transition is legal.
    */
-  transition(id: string, to: WritStatus, fields?: Partial<WritDoc>): Promise<WritDoc>;
+  transition(id: string, to: WritPhase, fields?: Partial<WritDoc>): Promise<WritDoc>;
+
+  /**
+   * Write a plugin-owned sub-slot of the writ's observation `status` map.
+   *
+   * The slot is the "status" side of the spec/status split: plugins publish
+   * post-hoc observations here (stuck causes, gate state, provenance, …)
+   * without polluting the Clerk-owned `phase` state machine.
+   *
+   * The call is a transactional read-modify-write — the sub-slot keyed by
+   * `pluginId` is replaced with `value`, but sibling sub-slots owned by
+   * other plugins are preserved. Writes emit CDC update events like any
+   * other field change, and survive terminal phase transitions.
+   *
+   * Ownership is convention-only: plugin `X` writes only `status[X]`.
+   * There is no runtime guard.
+   *
+   * Returns the updated writ document.
+   */
+  setWritStatus(writId: string, pluginId: string, value: unknown): Promise<WritDoc>;
 
   /**
    * Create a typed directional link from one writ to another.

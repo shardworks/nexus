@@ -8,7 +8,7 @@ export default tool({
   description: 'Fail a writ, transitioning it from open or stuck to failed',
   instructions:
     'Marks the writ as failed. Record a resolution explaining why it failed. ' +
-    'Writs in open or stuck status can be failed. ' +
+    'Writs in open or stuck phase can be failed. ' +
     'If the writ has non-terminal children, they will be automatically cancelled. ' +
     'Returns the updated writ.',
   params: {

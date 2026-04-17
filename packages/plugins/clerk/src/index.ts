@@ -2,7 +2,7 @@
  * @shardworks/clerk-apparatus — The Clerk.
  *
  * Writ lifecycle management: post commissions, complete or fail writs, and
- * cancel them at any pre-terminal stage. Writs flow through a fixed status
+ * cancel them at any pre-terminal stage. Writs flow through a fixed phase
  * machine (new → open → completed/failed/cancelled) and are persisted in
  * The Stacks.
  *
@@ -20,7 +20,7 @@ export {
   type WritDoc,
   type WritLinkDoc,
   type WritLinks,
-  type WritStatus,
+  type WritPhase,
   type PostCommissionRequest,
   type EditWritRequest,
   type WritFilters,

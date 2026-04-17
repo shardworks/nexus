@@ -411,9 +411,9 @@ A parent writ is cancelled. The cascade handler cancels all non-terminal childre
 const stacks = guild().apparatus<StacksApi>('stacks')
 
 stacks.watch<Writ>('nexus-ledger', 'writs', async (event) => {
-  // Only respond to status changes to 'cancelled'
+  // Only respond to phase changes to 'cancelled'
   if (event.type !== 'update') return
-  if (event.entry.status !== 'cancelled' || event.prev.status === 'cancelled') return
+  if (event.entry.phase !== 'cancelled' || event.prev.phase === 'cancelled') return
 
   // Normal guild() access — the Stacks transparently routes these
   // operations through the active transaction via AsyncLocalStorage.
@@ -425,11 +425,11 @@ stacks.watch<Writ>('nexus-ledger', 'writs', async (event) => {
   })
 
   for (const child of children) {
-    if (child.status !== 'completed' && child.status !== 'cancelled') {
+    if (child.phase !== 'completed' && child.phase !== 'cancelled') {
       // This put() joins the open transaction. It also invokes Phase 1
       // handlers for this child — including this same cascade handler
       // recursively for grandchildren. All within one transaction.
-      await writs.put({ ...child, status: 'cancelled' })
+      await writs.put({ ...child, phase: 'cancelled' })
     }
   }
 })
@@ -601,8 +601,8 @@ Explicit enumeration of all conceivable use cases. The "status" column is the de
 > await stacks.transaction(async (tx) => {
 >   const writs = tx.book<Writ>('nexus-ledger', 'writs')
 >   const writ = await writs.get(id)
->   if (writ && writ.status === 'active') {
->     await writs.put({ ...writ, status: 'paused' })
+>   if (writ && writ.phase === 'active') {
+>     await writs.put({ ...writ, phase: 'paused' })
 >   }
 > })
 > ```
