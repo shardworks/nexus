@@ -2083,17 +2083,20 @@ describe('Spider — template dispatch', () => {
     // configuration — the Spider's crawl loop skips it and the writ remains
     // in `open` status. This is the substrate for any writ type that should
     // be tracked in the books without being executed.
+    //
+    // Note: we post a `triage` writ (declared here with no mapping) rather
+    // than a `mandate`, because Spider's own supportKit now contributes a
+    // plugin-default `mandate → default` mapping. An unmapped custom writ
+    // type is the cleanest way to exercise the "no dispatch" branch.
     const fix = buildFixture({
       spider: {
         rigTemplates: { hotfix: { engines: [{ id: 'x', designId: 'seal', givens: {} }] } },
-        // Note: no rigTemplateMappings. The buildFixture auto-mapping helper
-        // only injects mandate→default when a 'default' template exists,
-        // which it does not here, so 'mandate' is genuinely unmapped.
       },
+      clerk: { writTypes: [{ name: 'triage' }] },
     });
     const { clerk, spider, stacks } = fix;
 
-    const posted = await clerk.post({ title: 'Mandate writ', body: 'test' }); // defaults to 'mandate'
+    const posted = await clerk.post({ title: 'Triage writ', body: 'test', type: 'triage' });
     const result = await spider.crawl();
     assert.equal(result, null, 'crawl should return null — no writ was dispatched');
 
@@ -2121,11 +2124,18 @@ describe('Spider — template dispatch', () => {
 
   it('leaves a writ in open when no rigTemplates are configured at all', async () => {
     // Override the fixture's default rigTemplates injection by setting rigTemplates to undefined.
-    // With no templates and no mappings, an un-mapped writ type is inert — dispatch is skipped.
-    const fix = buildFixture({ spider: { rigTemplates: undefined } });
+    // With no templates and no mappings for this writ type, an un-mapped
+    // writ is inert — dispatch is skipped. We use a custom `triage` type
+    // instead of `mandate` because Spider's supportKit now contributes a
+    // plugin-default `mandate → default` mapping that would otherwise
+    // dispatch.
+    const fix = buildFixture({
+      spider: { rigTemplates: undefined },
+      clerk: { writTypes: [{ name: 'triage' }] },
+    });
     const { clerk, spider, stacks } = fix;
 
-    const posted = await clerk.post({ title: 'Test writ', body: 'test' });
+    const posted = await clerk.post({ title: 'Test writ', body: 'test', type: 'triage' });
     const result = await spider.crawl();
     assert.equal(result, null);
 
@@ -5376,6 +5386,49 @@ describe('Kit contributions — rig templates and mappings', () => {
       assert.equal(result, null);
       const writ = await fix.clerk.show(posted.id);
       assert.equal(writ.phase, 'open');
+    });
+  });
+
+  // Zero-config mandate dispatch — confirms the plan-and-ship commission's D3
+  // outcome: operators who only declare `spider.variables` (role,
+  // buildCommand, testCommand) get the canonical draft → implement → review
+  // → revise → seal pipeline purely from Spider's plugin-contributed
+  // supportKit. If this test ever regresses, it means Spider's supportKit
+  // stopped contributing either the `default` rigTemplate or the
+  // `mandate → default` mapping, and every zero-config guild would break.
+  describe('Zero-config mandate dispatch (plugin-default template + mapping)', () => {
+    it('dispatches mandate writs using Spider supportKit defaults when no config templates or mappings exist', async () => {
+      // Override the fixture's STANDARD_TEMPLATE config injection — we want
+      // the plugin-default rigTemplate to be the only source. rigTemplateMappings
+      // is omitted entirely so Spider's own kit mapping (mandate → default)
+      // has to take effect.
+      const fix = buildFixture({
+        spider: {
+          rigTemplates: undefined,
+          variables: { role: 'tester', buildCommand: 'noop-build', testCommand: 'noop-test' },
+        },
+      });
+
+      const writ = await fix.clerk.post({ title: 'Zero-config mandate', body: 'Body', type: 'mandate' });
+      const result = await fix.spider.crawl();
+      assert.equal(result?.action, 'rig-spawned', 'mandate writ should dispatch via plugin-default template');
+
+      const rig = await fix.spider.forWrit(writ.id);
+      assert.ok(rig, 'rig should be created for the mandate writ');
+      const engineIds = rig!.engines.map(e => e.id);
+      assert.deepEqual(
+        engineIds,
+        ['draft', 'implement', 'review', 'revise', 'seal'],
+        'plugin-default rig should materialize the canonical 5-engine draft → seal pipeline',
+      );
+
+      // Confirm the plugin default is listed in the registry under its
+      // qualified kit name with spider provenance (i.e. it was not supplied
+      // by the guild config).
+      const templates = fix.spider.listTemplates();
+      const defaultTemplate = templates.find(t => t.name === 'spider.default');
+      assert.ok(defaultTemplate, 'spider.default template should be registered by Spider supportKit');
+      assert.equal(defaultTemplate!.source, 'spider', 'default template should be contributed by the spider plugin, not guild config');
     });
   });
 });

@@ -792,12 +792,32 @@ class RigTemplateRegistry {
   readonly templates = new Map<string, RigTemplate>();
   /** Config writ-type-to-template-name mappings */
   readonly configMappings = new Map<string, string>();
-  /** Kit-contributed mappings (first-registered wins) */
-  readonly kitMappings = new Map<string, string>();
+  /**
+   * Kit-contributed mappings (first-registered wins). Each entry records
+   * the contributing pluginId so the registry can fall back from an
+   * unqualified templateName to the kit's own qualified `${pluginId}.${name}`
+   * when no config-level template has claimed the unqualified slot.
+   */
+  readonly kitMappings = new Map<string, { templateName: string; pluginId: string }>();
   /** Config-declared template names (for override checking) */
   private configTemplateNames = new Set<string>();
   /** designId → pluginId that contributed it */
   private designSourceMap = new Map<string, string>();
+
+  /**
+   * Resolve the actual template name stored in `templates` for a kit
+   * mapping entry. Prefer the literal value (so config-level overrides
+   * with the same name win); otherwise fall back to the kit's own
+   * qualified name. Returns undefined when neither form resolves.
+   */
+  private resolveKitMappedName(entry: { templateName: string; pluginId: string }): string | undefined {
+    if (this.templates.has(entry.templateName)) return entry.templateName;
+    if (!entry.templateName.includes('.')) {
+      const qualified = `${entry.pluginId}.${entry.templateName}`;
+      if (this.templates.has(qualified)) return qualified;
+    }
+    return undefined;
+  }
 
   /**
    * Build the designId → pluginId map from all engine KitEntries.
@@ -1097,7 +1117,7 @@ class RigTemplateRegistry {
         continue;
       }
 
-      this.kitMappings.set(writType, templateName);
+      this.kitMappings.set(writType, { templateName, pluginId });
     }
   }
 
@@ -1115,11 +1135,13 @@ class RigTemplateRegistry {
       }
     }
 
-    // Kit mappings — warn and remove on dangling
-    for (const [writType, templateName] of [...this.kitMappings]) {
-      if (!this.templates.has(templateName)) {
+    // Kit mappings — warn and remove on dangling. An unqualified templateName
+    // is considered resolved if either the bare name or the kit's own
+    // `${pluginId}.${templateName}` exists in the template registry.
+    for (const [writType, entry] of [...this.kitMappings]) {
+      if (this.resolveKitMappedName(entry) === undefined) {
         console.warn(
-          `[spider] Kit mapping "${writType}" → "${templateName}": template not found — removed`
+          `[spider] Kit mapping "${writType}" → "${entry.templateName}": template not found — removed`
         );
         this.kitMappings.delete(writType);
       }
@@ -1131,10 +1153,10 @@ class RigTemplateRegistry {
    * Since deferred validation already ran, validate immediately.
    */
   validateIncrementalMappings(): void {
-    for (const [writType, templateName] of [...this.kitMappings]) {
-      if (!this.templates.has(templateName)) {
+    for (const [writType, entry] of [...this.kitMappings]) {
+      if (this.resolveKitMappedName(entry) === undefined) {
         console.warn(
-          `[spider] Kit mapping "${writType}" → "${templateName}": template not found — removed`
+          `[spider] Kit mapping "${writType}" → "${entry.templateName}": template not found — removed`
         );
         this.kitMappings.delete(writType);
       }
@@ -1161,11 +1183,17 @@ class RigTemplateRegistry {
       // Config points to nonexistent template — validated at startup, should not happen at runtime
     }
 
-    // Step 2: Kit mapping for this specific writ type
+    // Step 2: Kit mapping for this specific writ type. Unqualified
+    // templateName values resolve against the bare name first (so a
+    // config-level template of the same name wins), then fall back to the
+    // kit's own `${pluginId}.${templateName}` qualified form.
     const kitMapped = this.kitMappings.get(writType);
     if (kitMapped !== undefined) {
-      const t = this.templates.get(kitMapped);
-      if (t) return t;
+      const resolved = this.resolveKitMappedName(kitMapped);
+      if (resolved !== undefined) {
+        const t = this.templates.get(resolved);
+        if (t) return t;
+      }
     }
 
     // No explicit mapping — writ type is inert by configuration, skip dispatch.
@@ -1197,8 +1225,11 @@ class RigTemplateRegistry {
    */
   listTemplateMappings(): Record<string, string> {
     const result: Record<string, string> = {};
-    for (const [writType, templateName] of this.kitMappings) {
-      result[writType] = templateName;
+    for (const [writType, entry] of this.kitMappings) {
+      // Report the resolved template name so callers can look it up
+      // directly in listTemplates() without re-implementing the
+      // bare-name-to-qualified-name fallback.
+      result[writType] = this.resolveKitMappedName(entry) ?? entry.templateName;
     }
     for (const [writType, templateName] of this.configMappings) {
       result[writType] = templateName;
@@ -2372,6 +2403,10 @@ export function createSpider(): Plugin {
           default: defaultRigTemplate,
         },
         rigTemplateMappings: {
+          // Unqualified reference — resolved via the registry's
+          // config-overrides-kit fallback. If the guild declares its own
+          // config-level `default` template, that value wins; otherwise the
+          // registry falls back to Spider's own kit-qualified `spider.default`.
           mandate: 'default',
         },
         pages: [
