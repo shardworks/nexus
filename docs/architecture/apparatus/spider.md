@@ -785,18 +785,27 @@ These are known directions the Spider and its data model will grow. None are in 
 {
   "spider": {
     "pollIntervalMs": 5000,
-    "buildCommand": "pnpm build",
-    "testCommand": "pnpm test",
     "variables": {
-      "role": "artificer"
+      "role": "artificer",
+      "buildCommand": "pnpm -w build",
+      "testCommand": "pnpm -w test"
     }
   }
 }
 ```
 
-All fields optional. `pollIntervalMs` defaults to `5000`. `buildCommand` and `testCommand` are run by the review engine before launching the reviewer; omitted means those mechanical checks are skipped (reviewer anima still does spec-vs-diff assessment).
+All fields optional. `pollIntervalMs` defaults to `5000`. `buildCommand` and `testCommand` are referenced from `variables` by the plugin-default rig template's `review` engine; omitted means those mechanical checks are skipped (reviewer anima still does spec-vs-diff assessment).
 
 The `variables` dict contains user-defined values available in rig template givens via `${vars.<path>}`. For example, `"${vars.role}"` in a template givens entry resolves to `variables.role` at rig spawn time.
+
+### Plugin-default template and mapping
+
+The Spider's apparatus contributes a plugin-level rig template and mapping via its own supportKit:
+
+- `rigTemplates: { default: <draft → implement → review → revise → seal> }`
+- `rigTemplateMappings: { mandate: 'default' }`
+
+Guilds do **not** need to declare these in `guild.json` — they are always present. `spider.rigTemplates` and `spider.rigTemplateMappings` in config are overlays: a config-level template of the same name wins over the plugin default, and a config-level mapping for the same writ type wins over the kit mapping. Kit mapping lookup resolves an unqualified templateName against the bare name first (so config overrides work) and falls back to the contributing kit's qualified `${pluginId}.${templateName}` when no config entry claims the bare name.
 
 ### Givens Template Expressions
 

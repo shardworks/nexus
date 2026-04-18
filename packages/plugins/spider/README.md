@@ -125,7 +125,21 @@ Return the merged effective writ-type → template-name mapping. Config mappings
 
 ## Configuration
 
-The Spider reads its config from `guild.json["spider"]`:
+The Spider reads its config from `guild.json["spider"]`. Zero-config works out of the box for mandate dispatch — Spider's apparatus contributes a plugin-default rig template (`default`: draft → implement → review → revise → seal) and a default mapping (`mandate → default`) via its own supportKit. A minimal guild only needs to declare `spider.variables` so the default template can interpolate role / build command / test command:
+
+```json
+{
+  "spider": {
+    "variables": {
+      "role": "artificer",
+      "buildCommand": "pnpm -w build",
+      "testCommand": "pnpm -w test"
+    }
+  }
+}
+```
+
+Guilds that need a custom pipeline can override the plugin defaults by declaring their own `rigTemplates` and/or `rigTemplateMappings`:
 
 ```json
 {
@@ -166,14 +180,16 @@ The Spider reads its config from `guild.json["spider"]`:
 }
 ```
 
+A config-level template named `default` overrides the plugin-contributed `spider.default` for the `mandate → default` lookup: the registry resolves the kit mapping against the bare name first, then falls back to `${pluginId}.${templateName}` when the bare name is not claimed.
+
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `pollIntervalMs` | `number` | `5000` | Polling interval for the `crawl-continual` tool (ms). |
 | `buildCommand` | `string` | — | Build command forwarded to quick engines. |
 | `testCommand` | `string` | — | Test command forwarded to quick engines. |
-| `variables` | `Record<string, unknown>` | — | Named values available in rig template givens via `${vars.<path>}`. |
-| `rigTemplates` | `Record<string, RigTemplate>` | — | Named rig template definitions. |
-| `rigTemplateMappings` | `Record<string, string>` | — | Writ type → template name. `'default'` is the fallback. |
+| `variables` | `Record<string, unknown>` | — | Named values available in rig template givens via `${vars.<path>}`. The plugin-default template requires `role`, `buildCommand`, and `testCommand`. |
+| `rigTemplates` | `Record<string, RigTemplate>` | plugin default `default` (draft → seal) | Named rig template definitions. Config-level entries override plugin-contributed templates of the same name. |
+| `rigTemplateMappings` | `Record<string, string>` | plugin default `{ mandate: 'default' }` | Writ type → template name. Config-level entries override plugin-contributed mappings for the same writ type. |
 | `maxConcurrentEngines` | `number` | `3` | Maximum number of engines running concurrently across all rigs. When the limit is reached, runnable engines stay in `pending` and new rigs are not spawned until a slot frees. |
 | `maxConcurrentEnginesPerRig` | `number` | `1` | Maximum number of engines running concurrently within a single rig. Prevents race conditions with rig-local resources. |
 

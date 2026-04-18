@@ -1,18 +1,18 @@
 # The Astrolabe — API Contract
 
-Status: **Draft**
+Status: **Implemented**
 
-Package: `@shardworks/astrolabe` · Plugin id: `astrolabe`
-
-> **⚠️ Future state.** The Astrolabe is not yet implemented. This document captures the design as a target for implementation commissions. Several prerequisites must land in the Spider first: the `anima-session` built-in engine, givens inline string interpolation, and the `QuestionSpec.details` field.
+Package: `@shardworks/astrolabe-apparatus` · Plugin id: `astrolabe`
 
 ---
 
 ## Purpose
 
-The Astrolabe refines minimal briefs from the patron into detailed work specifications. When the patron commissions work — often as little as a sentence or two — the Astrolabe takes that raw intent and produces a structured spec: an inventory of the relevant codebase, analytical observations, scoped decisions, and concrete requirements. The final output is a `mandate` writ posted to the Clerk — ready for the Spider to build an implementation rig.
+The Astrolabe refines minimal briefs from the patron into detailed work specifications, then carries the brief through implementation on the same writ. When the patron commissions work — often as little as a sentence or two — the Astrolabe takes that raw intent and produces a structured spec: an inventory of the relevant codebase, analytical observations, scoped decisions, and concrete requirements. By default (`astrolabe.plan-and-ship` rig) the same rig then hands the written spec directly to a Spider `implement` engine on the brief's own codex, runs review / revise, and seals. The brief writ reaches `completed` only when the final seal completes.
 
-The Astrolabe does **not** execute implementation work (that's the implementation rig's domain). It does **not** modify the original commission writ. It maintains its own books for planning artifacts (inventory, observations, decisions, specs) and provides tools for the animas that staff its engines to read and write those artifacts. The planning flow terminates by posting a new mandate writ — the Astrolabe's output *is* a commission.
+The Astrolabe maintains its own books for planning artifacts (inventory, observations, decisions, specs) and provides tools for the animas that staff its engines to read and write those artifacts.
+
+> **Legacy flow.** The Astrolabe also still ships two planning-only rig templates (`astrolabe.two-phase-planning` and `astrolabe.three-phase-planning`) that terminate at a `spec-publish` engine which posts a new `mandate` writ. Those templates are reachable via explicit `spider.rigTemplateMappings.brief` override in `guild.json` and are preserved for backward compatibility.
 
 ---
 
@@ -38,9 +38,9 @@ The Astrolabe is primarily a kit contributor — installing it extends the guild
 
 Contributed to the **Clerk** via `writTypes`. A `brief` is the patron's raw request — a sentence, a paragraph, a rough idea. Posting a `brief` triggers the planning rig rather than an implementation rig.
 
-### Rig Template
+### Rig Template (`astrolabe.plan-and-ship`)
 
-Contributed to the **Spider** via `rigTemplates`, with a `rigTemplateMapping` from `brief` → the planning template. The template defines the engine pipeline:
+Contributed to the **Spider** via `rigTemplates`, with a `rigTemplateMapping` from `brief` → `astrolabe.plan-and-ship`. A single combined rig carries the brief through planning and implementation on the same writ:
 
 ```
 brief writ posted
@@ -50,56 +50,66 @@ brief writ posted
   │     → yields { planId }
   │
   ├─ 2. Draft (draft, clockwork) — opens a draft binding on the brief's codex
+  │     → shared by both the planning animas and the implement engine
   │     → yields { path, codexName, branch, ... }
   │
-  ├─ 3. Reader (anima-session) — inventories the codebase against the brief
+  ├─ 3. Reader-analyst (anima-session) — single pass: inventory + scope +
+  │     decisions + observations
   │     → launched in draft worktree (cwd from upstream draft yields)
   │     → receives planId via ${yields.plan-init.planId}
-  │     → writes inventory to the plans book via astrolabe tools
+  │     → writes artifacts to the plans book via astrolabe tools
   │     → yields { conversationId }
   │
   ├─ 4. Inventory checkpoint (astrolabe.inventory-check, clockwork)
-  │     → validates inventory was produced in the plans book
-  │     → transitions plan status: 'reading' → 'analyzing'
+  │     → validates inventory was produced; transitions 'reading' → 'analyzing'
   │
-  ├─ 5. Analyst (anima-session) — produces scope, decisions, observations
-  │     → resumes reader's conversation via ${yields.reader.conversationId}
-  │     → receives planId via ${yields.plan-init.planId}
-  │     → writes analysis artifacts to the plans book via astrolabe tools
-  │     → yields { conversationId }
-  │
-  ├─ 6. Patron review (astrolabe.decision-review, clockwork)
-  │     → reads decisions from the plans book
-  │     → filters out decisions the analyst has already pre-decided
-  │       (`selected` set by the analyst — see the razor policy in the
-  │       sage instruction files); these are auto-accepted and excluded
-  │       from the InputRequestDoc entirely
-  │     → creates an InputRequestDoc with each reviewable decision as a
-  │       ChoiceQuestionSpec; pre-fills answers with analyst recommendations
+  ├─ 5. Patron review (astrolabe.decision-review, clockwork)
+  │     → pre-decided decisions (`selected` set by the analyst) are auto-accepted
+  │       and excluded from the InputRequestDoc
   │     → fast-paths to 'writing' when no reviewable decisions remain
-  │       (regardless of whether scope items exist) — scope items are
-  │       implicitly auto-accepted in that case
-  │     → otherwise blocks on patron-input until patron completes the request
-  │     → on resume: reads completed InputRequestDoc, reconciles patron
-  │       answers back into PlanDoc.decisions (selected / patronOverride)
-  │     → validates all decisions resolved and scope is consistent
+  │     → otherwise blocks on patron-input; on resume reconciles answers back
+  │       into PlanDoc.decisions (selected / patronOverride)
   │
-  ├─ 7. Spec-writer (anima-session) — synthesizes inventory + decisions
-  │     → resumes the analyst's conversation via ${yields.analyst.conversationId}
-  │     → receives planId via ${yields.plan-init.planId}
-  │     → posts the generated writ to the Clerk
-  │     → links generated writ back to the brief writ
+  ├─ 6. Spec-writer (anima-session) — synthesizes the spec into the plan
+  │     → resumes the analyst's conversation via ${yields.reader-analyst.conversationId}
+  │     → writes the spec into PlanDoc.spec (does NOT post a writ)
   │
-  ├─ 8. Seal (seal, clockwork, abandon: true) — abandons the draft binding
-  │     → planning rigs don't produce inscriptions to merge
+  ├─ 7. Plan finalize (astrolabe.plan-finalize, clockwork)
+  │     → transitions plan status 'writing' → 'completed'
+  │     → yields { spec } — the written specification, passed directly to the
+  │       implement engine via ${yields.plan-finalize.spec}
   │
-  └─ done — the generated writ triggers an implementation rig via the
-           Spider's normal template lookup
+  ├─ 8. Implement (implement, quick) — runs the implementation session
+  │     → receives the spec as its prompt via the optional `prompt` given
+  │       (overrides the default behaviour of using writ.body)
+  │     → runs inside the same draft worktree opened in step 2
+  │
+  ├─ 9. Review (review, quick) — reviewer anima + mechanical checks
+  │     → runs ${vars.buildCommand} and ${vars.testCommand}
+  │
+  ├─ 10. Revise (revise, quick, skipped when review passes)
+  │     → addresses review findings
+  │
+  └─ 11. Seal (seal, clockwork) — seals the draft binding and merges
+          → brief writ reaches `completed` here
 ```
 
-All three `anima-session` engines use the Spider's built-in engine design, configured with the same role (`astrolabe.sage`) but different prompts. Conversation chaining is wired through the rig template's givens using `${yields.<engineId>.conversationId}` references, which the Spider resolves at engine start time from upstream yields.
+The two `anima-session` engines (reader-analyst and spec-writer) use the Spider's built-in engine design, configured with Astrolabe's sage roles. Conversation chaining is wired through `${yields.<engineId>.conversationId}` references that the Spider resolves at engine start time.
 
-The patron review engine (step 4) is clockwork — it deterministically creates the `InputRequestDoc` from the plan's decisions, blocks, and reconciles answers on resume. This keeps the `anima-session` engines pure (no blocking logic) and makes the patron interaction point explicit in the rig graph.
+The patron review engine is clockwork — it deterministically creates the `InputRequestDoc` from the plan's decisions, blocks, and reconciles answers on resume. This keeps the `anima-session` engines pure (no blocking logic) and makes the patron interaction point explicit in the rig graph.
+
+The `plan-finalize` engine is the seam between planning and implementation: it completes the plan, and its `spec` yield is wired into the downstream `implement` engine's `prompt` given. No `mandate` writ is posted by this rig.
+
+#### Legacy planning-only templates
+
+Two additional templates remain registered for backward compatibility:
+
+| Template | Engines |
+|---|---|
+| `astrolabe.two-phase-planning` | plan-init → draft → reader-analyst → inventory-check → decision-review → spec-writer → spec-publish → seal |
+| `astrolabe.three-phase-planning` | plan-init → draft → reader → inventory-check → analyst → decision-review → spec-writer → spec-publish → seal |
+
+Both terminate at a `spec-publish` engine that posts a new `mandate` writ to the Clerk and seal the brief's rig with `abandon: true`. They are reachable via an explicit `spider.rigTemplateMappings.brief` override in `guild.json`.
 
 ### Role: `astrolabe.sage`
 

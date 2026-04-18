@@ -1,6 +1,6 @@
 # `@shardworks/astrolabe-apparatus`
 
-The Astrolabe transforms patron briefs into structured work specifications. It drives a multi-stage planning pipeline — inventory, analysis, patron review, and specification writing — using a sequence of clockwork engines and anima sessions. It sits between the Clerk (writ lifecycle) and the Spider (rig execution), contributing kit pieces to both.
+The Astrolabe transforms patron briefs into structured work specifications and carries them through implementation. A single combined rig (`astrolabe.plan-and-ship`) runs the planning pipeline — inventory, analysis, patron review, specification writing — and then continues into draft → implement → review → revise → seal on the same brief writ. The brief reaches `completed` only after the final seal engine finishes. It sits between the Clerk (writ lifecycle) and the Spider (rig execution), contributing kit pieces to both.
 
 ---
 
@@ -129,32 +129,36 @@ The Astrolabe declares one book in Stacks:
 | `astrolabe.plan-init` | Creates a PlanDoc from the brief writ; validates codex presence |
 | `astrolabe.inventory-check` | Validates that the reader produced a non-empty inventory |
 | `astrolabe.decision-review` | Two-pass engine: blocks for patron review, then reconciles answers. Decisions with `selected` already pre-set by the analyst are auto-accepted — they are excluded from the InputRequestDoc, and if nothing remains reviewable the engine fast-paths to `writing` without opening the gate. |
-| `astrolabe.spec-publish` | Publishes the generated specification as a new writ. Posts the spec body verbatim — any `<task-manifest>` block is preserved and is not fanned out into child `piece` writs. |
+| `astrolabe.plan-finalize` | Transitions the plan to `completed` and yields the written `spec` downstream. Does not post any writ. Used inside `plan-and-ship` to hand the spec off to the implement engine on the same brief rig. |
+| `astrolabe.spec-publish` | Publishes the generated specification as a new mandate writ. Used only by the legacy two-phase / three-phase rigs that split planning from implementation across two writs. |
 
 ### Rig Templates (contributed to Spider)
 
 | Template | Mapped Writ Type | Engines |
 |---|---|---|
-| `astrolabe.two-phase-planning` | `brief` (default) | plan-init → draft → reader-analyst → inventory-check → decision-review → spec-writer → spec-publish → seal |
-| `astrolabe.three-phase-planning` | — | plan-init → draft → reader → inventory-check → analyst → decision-review → spec-writer → spec-publish → seal |
+| `astrolabe.plan-and-ship` | `brief` (default) | plan-init → draft → reader-analyst → inventory-check → decision-review → spec-writer → plan-finalize → implement → review → revise → seal |
+| `astrolabe.two-phase-planning` | — (opt-in) | plan-init → draft → reader-analyst → inventory-check → decision-review → spec-writer → spec-publish → seal |
+| `astrolabe.three-phase-planning` | — (opt-in) | plan-init → draft → reader → inventory-check → analyst → decision-review → spec-writer → spec-publish → seal |
 
-The `resolutionEngine` is `spec-writer` for both templates — the rig's completion summary comes from the specification writer session.
+The `resolutionEngine` is `seal` for `plan-and-ship` (brief completes when implementation seals) and `spec-writer` for the two legacy planning-only templates (where the brief's rig terminates at spec-writer and a follow-up mandate writ carries the implementation separately).
 
 #### Rig Template Selection
 
-The `brief` writ type maps to `astrolabe.two-phase-planning` by default. The two-phase template merges the reader and analyst into a single `reader-analyst` anima session that produces inventory, scope, decisions, and observations in one pass.
+The `brief` writ type maps to `astrolabe.plan-and-ship` by default. This single combined rig carries the brief through planning and implementation on one writ — the `plan-finalize` engine hands the written spec directly to the downstream `implement` engine via `${yields.plan-finalize.spec}`, and no separate mandate writ is posted. The brief reaches `completed` only when the final seal engine completes.
 
-To use the three-phase template instead (separate reader and analyst sessions), add a rig template mapping override in `guild.json`:
+To use a legacy planning-only template (which posts a separate mandate writ and ends the brief's lifecycle at spec-writer), add a rig template mapping override in `guild.json`:
 
 ```json
 {
   "spider": {
     "rigTemplateMappings": {
-      "brief": "astrolabe.three-phase-planning"
+      "brief": "astrolabe.two-phase-planning"
     }
   }
 }
 ```
+
+Substitute `astrolabe.three-phase-planning` for the split reader / analyst variant.
 
 ### Tools
 
