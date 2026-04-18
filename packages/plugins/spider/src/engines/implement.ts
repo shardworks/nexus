@@ -1,11 +1,21 @@
 /**
  * Implement engine — quick (Animator-backed).
  *
- * Summons an anima to do the commissioned work. Wraps the writ body with
- * task-manifest-aware execution instructions, then calls animator.summon()
- * with the draft worktree as the working directory. Returns
- * `{ status: 'launched', sessionId }` so the Spider's collect step can poll
- * for completion on subsequent walks.
+ * Summons an anima to do the commissioned work. Wraps the writ body (or
+ * the optional `prompt` override given) with task-manifest-aware execution
+ * instructions, then calls animator.summon() with the draft worktree as
+ * the working directory. Returns `{ status: 'launched', sessionId }` so the
+ * Spider's collect step can poll for completion on subsequent walks.
+ *
+ * Givens:
+ *   - writ      (required) — the WritDoc for this rig.
+ *   - role      (required) — the anima role to summon.
+ *   - prompt    (optional) — a prompt string that replaces `writ.body` as
+ *                            the body of the execution prompt. The
+ *                            EXECUTION_EPILOGUE is still appended. Used by
+ *                            the combined plan-and-ship rig to hand the
+ *                            planning spec to the implementing anima;
+ *                            absent on the vanilla mandate path.
  */
 
 import { guild } from '@shardworks/nexus-core';
@@ -39,7 +49,15 @@ const implementEngine: EngineDesign = {
     const writ = givens.writ as WritDoc;
     const draft = context.upstream['draft'] as DraftYields;
 
-    const prompt = `${writ.body}\n${EXECUTION_EPILOGUE}`;
+    // The `prompt` given, when supplied by the rig template, overrides
+    // `writ.body` as the execution body. The EXECUTION_EPILOGUE is appended
+    // either way so task-manifest-aware execution instructions travel with
+    // both paths. When `prompt` is omitted the engine's behaviour is
+    // byte-identical to the pre-refactor version.
+    const body = typeof givens.prompt === 'string' && givens.prompt.length > 0
+      ? givens.prompt
+      : writ.body;
+    const prompt = `${body}\n${EXECUTION_EPILOGUE}`;
 
     const handle = animator.summon({
       role: givens.role as string,
