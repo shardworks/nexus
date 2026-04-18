@@ -94,6 +94,8 @@ import {
 
 import { spiderRoutes } from './oculus-routes.ts';
 
+import { defaultRigTemplate } from './default-template.ts';
+
 import {
   interpolateTemplate,
   extractExpressions,
@@ -2365,6 +2367,12 @@ export function createSpider(): Plugin {
           'scheduled-time': scheduledTimeBlockType,
           'book-updated':   bookUpdatedBlockType,
           'patron-input':   patronInputBlockType,
+        },
+        rigTemplates: {
+          default: defaultRigTemplate,
+        },
+        rigTemplateMappings: {
+          mandate: 'default',
         },
         pages: [
           { id: 'spider', title: 'Spider', dir: 'src/static' },

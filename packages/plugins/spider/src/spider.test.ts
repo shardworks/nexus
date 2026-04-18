@@ -5287,7 +5287,14 @@ describe('Kit contributions — rig templates and mappings', () => {
           supportKit,
         },
       };
-      const fix = buildFixture({}, { status: 'completed' }, { apparatuses: [app] });
+      // Config override: Spider's plugin-default supplies its own mandate → default
+      // kit mapping, and kit-vs-kit precedence is first-registered-wins. Tests that
+      // want a specific kit-contributed template to win declare a config override.
+      const fix = buildFixture(
+        { spider: { rigTemplateMappings: { mandate: 'quality-tools.audit' } } },
+        { status: 'completed' },
+        { apparatuses: [app] },
+      );
 
       const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'mandate' });
       const result = await fix.spider.crawl();
@@ -5313,7 +5320,12 @@ describe('Kit contributions — rig templates and mappings', () => {
         },
       };
 
-      const fix = buildFixture({}, { status: 'completed' }, { apparatuses: [lateApp] });
+      // Config override for the same reason as the sibling test above.
+      const fix = buildFixture(
+        { spider: { rigTemplateMappings: { mandate: 'late-app.audit' } } },
+        { status: 'completed' },
+        { apparatuses: [lateApp] },
+      );
 
       const writ = await fix.clerk.post({ title: 'Late test', body: 'Body', type: 'mandate' });
       const result = await fix.spider.crawl();
