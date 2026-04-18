@@ -143,38 +143,12 @@ function buildFixture(
     ...(guildConfig.spider ?? {}),
   };
 
-  // Convenience: if the merged rigTemplates contains a 'default' template
-  // and neither the test config nor any extra kit has provided an explicit
-  // mapping for 'mandate', auto-add { mandate: 'default' }. Preserves
-  // pre-refactor test behavior where an un-mapped 'mandate' writ would fall
-  // through to the 'default' template via the old catch-all lookup. Dispatch
-  // is now strictly opt-in; tests that need to exercise the "no mapping =
-  // skip" path should either omit the 'default' template or pass an explicit
-  // empty rigTemplateMappings.
-  const configHasMandateMapping = !!(
-    mergedSpider as { rigTemplateMappings?: Record<string, string> }
-  ).rigTemplateMappings?.mandate;
-  const kitHasMandateMapping = (extra.kits ?? []).some((k) => {
-    const kitBody = (k as { kit?: Record<string, unknown> }).kit;
-    const mappings = kitBody?.rigTemplateMappings as Record<string, string> | undefined;
-    return !!mappings?.mandate;
-  });
-  const apparatusHasMandateMapping = (extra.apparatuses ?? []).some((a) => {
-    const sk = (a as { apparatus?: { supportKit?: Record<string, unknown> } }).apparatus?.supportKit;
-    const mappings = sk?.rigTemplateMappings as Record<string, string> | undefined;
-    return !!mappings?.mandate;
-  });
-  if (
-    mergedSpider.rigTemplates?.default &&
-    !configHasMandateMapping &&
-    !kitHasMandateMapping &&
-    !apparatusHasMandateMapping
-  ) {
-    (mergedSpider as { rigTemplateMappings?: Record<string, string> }).rigTemplateMappings = {
-      ...((mergedSpider as { rigTemplateMappings?: Record<string, string> }).rigTemplateMappings ?? {}),
-      mandate: 'default',
-    };
-  }
+  // Note: the fixture no longer auto-injects { mandate: 'default' } into
+  // rigTemplateMappings. Spider's own supportKit now contributes that
+  // mapping as a plugin-level default, so tests that post mandate writs
+  // against the STANDARD_TEMPLATE get the same dispatch behaviour without
+  // test-fixture machinery. Tests that exercise a non-default mapping
+  // declare their own config override explicitly.
 
   const fakeGuildConfig: GuildConfig = {
     name: 'test-guild',
