@@ -28,6 +28,7 @@ import {
   createInventoryCheckEngine,
   createDecisionReviewEngine,
   createSpecPublishEngine,
+  createPlanFinalizeEngine,
 } from './engines/index.ts';
 
 import { twoPhaseRigTemplate } from './two-phase-planning.ts';
@@ -50,6 +51,7 @@ export function createAstrolabe(): Plugin {
   const inventoryCheckEngine = createInventoryCheckEngine(() => plansBook);
   const decisionReviewEngine = createDecisionReviewEngine(() => plansBook);
   const specPublishEngine = createSpecPublishEngine(() => plansBook);
+  const planFinalizeEngine = createPlanFinalizeEngine(() => plansBook);
 
   // ── API ────────────────────────────────────────────────────────
 
@@ -278,6 +280,7 @@ export function createAstrolabe(): Plugin {
           'astrolabe.inventory-check': inventoryCheckEngine,
           'astrolabe.decision-review': decisionReviewEngine,
           'astrolabe.spec-publish': specPublishEngine,
+          'astrolabe.plan-finalize': planFinalizeEngine,
         },
 
         rigTemplates: {
