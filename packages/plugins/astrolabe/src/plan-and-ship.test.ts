@@ -71,8 +71,8 @@ describe('astrolabe.plan-and-ship rig template — shape and wiring', () => {
     assert.ok(template, 'plan-and-ship template must exist');
   });
 
-  it('has 11 engines', () => {
-    assert.equal(template.engines.length, 11);
+  it('has 12 engines', () => {
+    assert.equal(template.engines.length, 12);
   });
 
   it('engine sequence matches the commission spec', () => {
@@ -83,6 +83,7 @@ describe('astrolabe.plan-and-ship rig template — shape and wiring', () => {
         'draft',
         'reader-analyst',
         'inventory-check',
+        'patron-anima',
         'decision-review',
         'spec-writer',
         'plan-finalize',
@@ -91,6 +92,25 @@ describe('astrolabe.plan-and-ship rig template — shape and wiring', () => {
         'revise',
         'seal',
       ],
+    );
+  });
+
+  it('patron-anima sits between inventory-check and decision-review', () => {
+    // Anchors the commission's non-negotiable pipeline position for the
+    // Patron Anima: it pre-fills reviewable decisions on the PlanDoc so
+    // `decision-review` auto-skips them via the existing analyst-pre-
+    // decides fast path.
+    const pa = template.engines.find(e => e.id === 'patron-anima');
+    assert.ok(pa, 'patron-anima engine must exist');
+    assert.equal(pa.designId, 'astrolabe.patron-anima');
+    assert.deepEqual(pa.upstream, ['inventory-check']);
+    assert.equal(pa.givens?.planId, '${yields.plan-init.planId}');
+
+    const dr = template.engines.find(e => e.id === 'decision-review');
+    assert.ok(dr, 'decision-review engine must exist');
+    assert.deepEqual(
+      dr.upstream, ['patron-anima'],
+      'decision-review must sit downstream of patron-anima so the anima\'s fills reach the reconcile pass',
     );
   });
 
@@ -394,6 +414,7 @@ describe('no mandate-posting engine appears in astrolabe.plan-and-ship', () => {
     const allowed = new Set([
       'astrolabe.plan-init',
       'astrolabe.inventory-check',
+      'astrolabe.patron-anima',
       'astrolabe.decision-review',
       'astrolabe.plan-finalize',
       'anima-session',

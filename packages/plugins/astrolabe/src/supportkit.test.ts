@@ -40,8 +40,8 @@ describe('Astrolabe supportKit shape', () => {
     assert.deepEqual(apparatus.requires, ['stacks', 'clerk']);
   });
 
-  it('declares recommends: spider, loom, fabricator, oculus, ratchet', () => {
-    assert.deepEqual(apparatus.recommends, ['spider', 'loom', 'fabricator', 'oculus', 'ratchet']);
+  it('declares recommends: spider, loom, fabricator, oculus, ratchet, animator', () => {
+    assert.deepEqual(apparatus.recommends, ['spider', 'loom', 'fabricator', 'oculus', 'ratchet', 'animator']);
   });
 
   it('does not declare consumes', () => {
@@ -128,23 +128,29 @@ describe('Astrolabe supportKit shape', () => {
 
   // ── R7: engines ────────────────────────────────────────────────────
 
-  it('contributes all four engine designs', () => {
+  it('contributes all engine designs', () => {
     const kit = getKit(plugin);
     const engines = kit.engines as Record<string, { id: string; run: unknown }>;
     assert.ok(engines?.['astrolabe.plan-init'], 'plan-init engine must exist');
     assert.ok(engines?.['astrolabe.inventory-check'], 'inventory-check engine must exist');
+    assert.ok(engines?.['astrolabe.patron-anima'], 'patron-anima engine must exist');
     assert.ok(engines?.['astrolabe.decision-review'], 'decision-review engine must exist');
     assert.ok(engines?.['astrolabe.spec-publish'], 'spec-publish engine must exist');
+    assert.ok(engines?.['astrolabe.plan-finalize'], 'plan-finalize engine must exist');
 
     assert.equal(engines['astrolabe.plan-init'].id, 'astrolabe.plan-init');
     assert.equal(engines['astrolabe.inventory-check'].id, 'astrolabe.inventory-check');
+    assert.equal(engines['astrolabe.patron-anima'].id, 'astrolabe.patron-anima');
     assert.equal(engines['astrolabe.decision-review'].id, 'astrolabe.decision-review');
     assert.equal(engines['astrolabe.spec-publish'].id, 'astrolabe.spec-publish');
+    assert.equal(engines['astrolabe.plan-finalize'].id, 'astrolabe.plan-finalize');
 
     assert.equal(typeof engines['astrolabe.plan-init'].run, 'function');
     assert.equal(typeof engines['astrolabe.inventory-check'].run, 'function');
+    assert.equal(typeof engines['astrolabe.patron-anima'].run, 'function');
     assert.equal(typeof engines['astrolabe.decision-review'].run, 'function');
     assert.equal(typeof engines['astrolabe.spec-publish'].run, 'function');
+    assert.equal(typeof engines['astrolabe.plan-finalize'].run, 'function');
   });
 
   // ── R8: rigTemplates and rigTemplateMappings ───────────────────────
@@ -202,7 +208,7 @@ describe('Astrolabe supportKit shape', () => {
     assert.equal(rigTemplates['three-phase-planning'].resolutionEngine, 'spec-writer');
   });
 
-  it('contributes plan-and-ship rig template with 11 engines', () => {
+  it('contributes plan-and-ship rig template with 12 engines', () => {
     const kit = getKit(plugin);
     const rigTemplates = kit.rigTemplates as Record<string, {
       engines: Array<{ id: string; designId: string }>;
@@ -211,7 +217,7 @@ describe('Astrolabe supportKit shape', () => {
     assert.ok(rigTemplates?.['plan-and-ship'], 'plan-and-ship template must exist');
 
     const templateEngines = rigTemplates['plan-and-ship'].engines;
-    assert.equal(templateEngines.length, 11);
+    assert.equal(templateEngines.length, 12);
 
     const engineIds = templateEngines.map(e => e.id);
     assert.deepEqual(engineIds, [
@@ -219,6 +225,7 @@ describe('Astrolabe supportKit shape', () => {
       'draft',
       'reader-analyst',
       'inventory-check',
+      'patron-anima',
       'decision-review',
       'spec-writer',
       'plan-finalize',

@@ -9,8 +9,15 @@
  * dependency gating for downstream writs.
  *
  * Stages: plan-init → draft → reader-analyst → inventory-check →
- *         decision-review → spec-writer → plan-finalize → implement →
- *         review → revise → seal.
+ *         patron-anima → decision-review → spec-writer → plan-finalize →
+ *         implement → review → revise → seal.
+ *
+ * `patron-anima` consults a configured Patron Anima to pre-fill
+ * decisions on behalf of the patron. When `astrolabe.patronRole` is
+ * unset or empty, the engine no-ops and `decision-review` proceeds as
+ * it did before the engine existed. The `cwd` given is the shared draft
+ * worktree so the anima can inspect the codebase if its role instructions
+ * allow it.
  *
  * The `draft` engine is shared across both phases (D6 in the commission
  * spec): every downstream engine reads the same `upstream['draft']`
@@ -56,9 +63,19 @@ export const planAndShipRigTemplate: RigTemplate = {
       givens: { planId: '${yields.plan-init.planId}' },
     },
     {
+      id: 'patron-anima',
+      designId: 'astrolabe.patron-anima',
+      upstream: ['inventory-check'],
+      givens: {
+        planId: '${yields.plan-init.planId}',
+        cwd: '${yields.draft.path}',
+        writ: '${writ}',
+      },
+    },
+    {
       id: 'decision-review',
       designId: 'astrolabe.decision-review',
-      upstream: ['inventory-check'],
+      upstream: ['patron-anima'],
       givens: { planId: '${yields.plan-init.planId}' },
     },
     {

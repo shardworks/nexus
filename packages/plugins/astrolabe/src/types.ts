@@ -59,6 +59,41 @@ export interface Decision {
   rationale?: string;
   selected?: string;
   patronOverride?: string;
+  /**
+   * Patron Anima emission for this decision, if the patron-anima engine
+   * touched it. Records the anima's verdict, selection, confidence, and
+   * short rationale. Kept distinct from analyst fields so override-rate ×
+   * confidence can be measured as a first-class planner-quality signal.
+   */
+  patron?: PatronEmission;
+}
+
+/**
+ * A Patron Anima's emission for a single decision.
+ *
+ * - `verdict: 'confirm'` — the anima accepts the analyst's recommendation.
+ * - `verdict: 'override'` — the anima picks a different option than the
+ *   recommendation.
+ * - `verdict: 'fill-in'` — no analyst recommendation existed; the anima
+ *   supplies one.
+ *
+ * `selection` must be one of the decision's offered option keys — the
+ * anima cannot emit custom / free-text selections. (The human patron
+ * retains that escape hatch via `decision-review`'s `allowCustom` input.)
+ *
+ * `confidence` is calibrated structurally against the patron role's
+ * principles list: one principle applies cleanly → `'high'`; multiple
+ * principles conflict → `'med'`; no principle applies → `'low'`.
+ *
+ * `rationale` is a short free-text note — which principle (or conflict)
+ * produced the verdict. Optional so the engine can accept minimal well-
+ * formed emissions.
+ */
+export interface PatronEmission {
+  verdict: 'confirm' | 'override' | 'fill-in';
+  selection: string;
+  confidence: 'low' | 'med' | 'high';
+  rationale?: string;
 }
 
 // ── Filters ──────────────────────────────────────────────────────────
@@ -79,6 +114,15 @@ export interface PlanFilters {
 export interface AstrolabeConfig {
   /** The writ type posted by the spec-writer engine. Default: 'mandate'. */
   generatedWritType?: string;
+  /**
+   * Qualified role name of the Patron Anima consulted by the
+   * `astrolabe.patron-anima` engine before `decision-review`. When unset
+   * or empty, the engine no-ops and `decision-review` proceeds as it
+   * does without the anima stage. There is no framework default — every
+   * patron's taste is unique, so a shared default would represent no
+   * patron's taste.
+   */
+  patronRole?: string;
 }
 
 declare module '@shardworks/nexus-core' {

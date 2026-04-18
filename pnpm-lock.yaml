@@ -83,6 +83,9 @@ importers:
 
   packages/plugins/astrolabe:
     dependencies:
+      '@shardworks/animator-apparatus':
+        specifier: workspace:*
+        version: link:../animator
       '@shardworks/clerk-apparatus':
         specifier: workspace:*
         version: link:../clerk

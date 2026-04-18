@@ -27,6 +27,7 @@
     "@shardworks/spider-apparatus": "workspace:*",
     "@shardworks/fabricator-apparatus": "workspace:*",
     "@shardworks/loom-apparatus": "workspace:*",
+    "@shardworks/animator-apparatus": "workspace:*",
     "zod": "4.3.6"
   },
   "devDependencies": {

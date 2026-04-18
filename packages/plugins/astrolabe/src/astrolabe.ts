@@ -26,6 +26,7 @@ import type {
 import {
   createPlanInitEngine,
   createInventoryCheckEngine,
+  createPatronAnimaEngine,
   createDecisionReviewEngine,
   createSpecPublishEngine,
   createPlanFinalizeEngine,
@@ -50,6 +51,7 @@ export function createAstrolabe(): Plugin {
 
   const planInitEngine = createPlanInitEngine(() => plansBook);
   const inventoryCheckEngine = createInventoryCheckEngine(() => plansBook);
+  const patronAnimaEngine = createPatronAnimaEngine(() => plansBook);
   const decisionReviewEngine = createDecisionReviewEngine(() => plansBook);
   const specPublishEngine = createSpecPublishEngine(() => plansBook);
   const planFinalizeEngine = createPlanFinalizeEngine(() => plansBook);
@@ -241,7 +243,7 @@ export function createAstrolabe(): Plugin {
   return {
     apparatus: {
       requires: ['stacks', 'clerk'],
-      recommends: ['spider', 'loom', 'fabricator', 'oculus', 'ratchet'],
+      recommends: ['spider', 'loom', 'fabricator', 'oculus', 'ratchet', 'animator'],
 
       supportKit: {
         books: {
@@ -279,6 +281,7 @@ export function createAstrolabe(): Plugin {
         engines: {
           'astrolabe.plan-init': planInitEngine,
           'astrolabe.inventory-check': inventoryCheckEngine,
+          'astrolabe.patron-anima': patronAnimaEngine,
           'astrolabe.decision-review': decisionReviewEngine,
           'astrolabe.spec-publish': specPublishEngine,
           'astrolabe.plan-finalize': planFinalizeEngine,
