@@ -16,20 +16,27 @@
   var currentStatusFilter = '';
   var writLookup = {};
   var sessionPollTimer = null;
-  var sessionEventSource = null;
   var selectedTemplateName = null;
   var rigListPollTimer = null;
   var currentRigPollTimer = null;
 
-  // SSE lifecycle state — decoupled from the rig-detail render path.
-  // streamSessionId tracks which sessionId the active EventSource was opened
-  // for, so we can dedupe re-opens across rig polls and only re-open when the
-  // tracked id actually changes (engine switch or pending → running).
-  var streamSessionId = null;
-  // streamDone is hoisted out of showEngineDetail so the EventSource error
-  // handler (which fires asynchronously after a clean close) can still see
-  // that the stream ended normally and skip the spurious "disconnected" badge.
-  var streamDone = false;
+  // Session transcript polling state.
+  // transcriptPollSessionId tracks the sessionId the current 2 s polling
+  // loop is bound to. startSessionTranscriptPoll dedupes against this so
+  // repeat calls with the same id are no-ops (letting updateEngineDetail
+  // call it every rig poll without tearing down the timer). Cleared by
+  // stopSessionTranscriptPoll. Nothing else should touch it.
+  var transcriptPollSessionId = null;
+  var TRANSCRIPT_POLL_INTERVAL = 2000;
+
+  // Elapsed ticker — for a running engine, we refresh the Elapsed field
+  // locally every second so the UI has a visible live pulse without
+  // needing a server roundtrip per tick. Set up by updateEngineDetail
+  // when it sees a running engine; torn down on transition, engine
+  // switch, and rig-switch.
+  var elapsedTimer = null;
+  var elapsedTimerStartedAt = null;  // ISO string of the engine the timer is running for
+  var ELAPSED_TICK_INTERVAL = 1000;
 
   // Tracks engines for which the per-session cost has already been fetched.
   // Reset when navigating to a new rig. Used to gate the cost fetch so each
@@ -144,14 +151,120 @@
     }
   }
 
-  function stopSessionStream() {
-    if (sessionEventSource !== null) {
-      sessionEventSource.close();
-      sessionEventSource = null;
+  // ── Session transcript polling ─────────────────────────────────────────
+
+  /**
+   * Fetch the transcript snapshot for sessionId and render it into the
+   * textarea, preserving scroll pin-to-bottom. Updates the spinner badge
+   * based on the returned sessionStatus. Stops polling on terminal.
+   */
+  function fetchAndRenderTranscript(sessionId) {
+    fetch('/api/spider/session-transcript?sessionId=' + encodeURIComponent(sessionId))
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        // Bail if polling has been retargeted to a different session.
+        if (transcriptPollSessionId !== sessionId) return;
+        var ta = document.getElementById('session-log');
+        if (ta) {
+          // Preserve scroll position if the user has scrolled away from
+          // the bottom; otherwise stick to the tail.
+          var atBottom =
+            ta.scrollTop + ta.clientHeight >= ta.scrollHeight - 4;
+          ta.value = renderTranscript(res.messages || []);
+          if (atBottom) {
+            ta.scrollTop = ta.scrollHeight;
+          }
+        }
+        var status = res && res.sessionStatus;
+        var terminal = status && status !== 'running' && status !== 'pending';
+        var spinnerEl = document.getElementById('session-log-spinner');
+        if (terminal) {
+          stopSessionTranscriptPoll();
+          if (spinnerEl) spinnerEl.style.display = 'none';
+        } else if (spinnerEl) {
+          spinnerEl.className = 'badge badge--active';
+          spinnerEl.textContent = 'polling\u2026';
+          spinnerEl.style.display = '';
+        }
+      })
+      .catch(function () { /* ignore transient errors, keep polling */ });
+  }
+
+  /**
+   * Start (or retarget) the transcript polling loop for the given
+   * sessionId. Safe to call every rig poll — if the sessionId matches
+   * the one we're already polling, this is a no-op. Passing null closes
+   * any active poll and hides the session-log UI.
+   */
+  function startSessionTranscriptPoll(sessionId) {
+    if (sessionId === transcriptPollSessionId) return;
+
+    stopSessionTranscriptPoll();
+
+    if (!sessionId) {
+      var sectionEmpty = document.getElementById('session-log-section');
+      if (sectionEmpty) sectionEmpty.style.display = 'none';
+      return;
     }
-    streamSessionId = null;
-    streamDone = false;
+
+    transcriptPollSessionId = sessionId;
+
+    var sessionLogSection = document.getElementById('session-log-section');
+    var sessionLogSpinner = document.getElementById('session-log-spinner');
+    var sessionLogTextarea = document.getElementById('session-log');
+
+    if (sessionLogSection) sessionLogSection.style.display = '';
+    if (sessionLogTextarea) sessionLogTextarea.value = '';
+
+    if (sessionLogSpinner) {
+      sessionLogSpinner.className = 'badge badge--active';
+      sessionLogSpinner.textContent = 'polling\u2026';
+      sessionLogSpinner.style.display = '';
+    }
+
+    // Fire immediately so the user sees transcript content without
+    // waiting for the first interval tick.
+    fetchAndRenderTranscript(sessionId);
+    sessionPollTimer = setInterval(function () {
+      fetchAndRenderTranscript(sessionId);
+    }, TRANSCRIPT_POLL_INTERVAL);
+  }
+
+  function stopSessionTranscriptPoll() {
+    transcriptPollSessionId = null;
     stopSessionPoll();
+  }
+
+  // ── Elapsed ticker ─────────────────────────────────────────────────────
+
+  /**
+   * Start a 1 s ticker that refreshes the #ed-elapsed text using
+   * formatElapsed(startedAt, now). Safe to call repeatedly — if the
+   * ticker is already running for the same startedAt, no-op. Passing a
+   * different startedAt restarts the ticker so the displayed value
+   * comes from the correct engine's start time.
+   */
+  function startElapsedTimer(startedAt) {
+    if (!startedAt) { stopElapsedTimer(); return; }
+    if (elapsedTimer !== null && elapsedTimerStartedAt === startedAt) return;
+
+    stopElapsedTimer();
+    elapsedTimerStartedAt = startedAt;
+    var tick = function () {
+      var el = document.getElementById('ed-elapsed');
+      if (!el) return;
+      el.innerHTML = esc(formatElapsed(startedAt, new Date().toISOString()));
+    };
+    tick();
+    elapsedTimer = setInterval(tick, ELAPSED_TICK_INTERVAL);
+  }
+
+  function stopElapsedTimer() {
+    if (elapsedTimer !== null) {
+      clearInterval(elapsedTimer);
+      elapsedTimer = null;
+    }
+    elapsedTimerStartedAt = null;
   }
 
   // ── Rig polling helpers ────────────────────────────────────────────────
@@ -376,7 +489,8 @@
     currentRig = rig;
     selectedEngineId = null;
 
-    stopSessionStream();
+    stopSessionTranscriptPoll();
+    stopElapsedTimer();
     stopCurrentRigPoll();
 
     // Reset per-rig caches so the new rig's engines refetch cost cleanly
@@ -762,15 +876,20 @@
     setText('ed-started-at', formatDate(engine.startedAt) || '\u2014');
     setText('ed-completed-at', formatDate(engine.completedAt) || '\u2014');
 
-    // Elapsed (only shown for completed-with-times or running-with-start)
+    // Elapsed (only shown for completed-with-times or running-with-start).
+    // For completed engines we write the final elapsed once and tear down
+    // the ticker. For running engines we start a 1 s ticker that keeps
+    // #ed-elapsed fresh locally without a server roundtrip per tick.
     var showElapsed = false;
     if (engine.status === 'completed' && engine.startedAt && engine.completedAt) {
+      stopElapsedTimer();
       setHtml('ed-elapsed', esc(formatElapsed(engine.startedAt, engine.completedAt)));
       showElapsed = true;
     } else if (engine.status === 'running' && engine.startedAt) {
-      setHtml('ed-elapsed', '<span class="elapsed-running">running\u2026</span>');
+      startElapsedTimer(engine.startedAt);
       showElapsed = true;
     } else {
+      stopElapsedTimer();
       setHtml('ed-elapsed', '');
     }
     setRowDisplay('ed-elapsed-dt', 'ed-elapsed', showElapsed);
@@ -865,6 +984,12 @@
     }
     engineStatusByEngineId[engine.id] = engine.status;
 
+    // Transcript polling target is driven off the current engine's
+    // sessionId. The dedupe inside startSessionTranscriptPoll makes it
+    // safe to call every rig poll — the loop is only torn down and
+    // rebuilt when the sessionId actually changes (or becomes null).
+    startSessionTranscriptPoll(engine.sessionId || null);
+
     // Pipeline-node selection class (kept in sync without a full re-render).
     var nodes = document.querySelectorAll('#pipeline .pipeline-node');
     for (var i = 0; i < nodes.length; i++) {
@@ -907,9 +1032,11 @@
 
   /**
    * Click-path entry: build the skeleton (if needed), populate it via
-   * updateEngineDetail, ensure the SSE stream points at the engine's
-   * sessionId, and reveal the panel. Does not do per-poll work — the
-   * 2 s rig poll calls updateEngineDetail directly via fetchCurrentRigQuiet.
+   * updateEngineDetail, and reveal the panel. updateEngineDetail is
+   * responsible for driving transcript polling and the elapsed ticker,
+   * so no additional lifecycle work is needed here. The 2 s rig poll
+   * calls updateEngineDetail directly via fetchCurrentRigQuiet, which
+   * keeps the transcript loop alive without any click-path glue.
    */
   function showEngineDetail(engine) {
     var engineChanged = selectedEngineId !== engine.id;
@@ -934,177 +1061,13 @@
     }
 
     updateEngineDetail(engine);
-
-    // SSE lifecycle is decoupled from rendering. ensureSessionStream
-    // reopens only when the tracked sessionId actually changes.
-    ensureSessionStream(engine.sessionId || null);
-  }
-
-  // ── SSE session stream lifecycle (decoupled from rendering) ────────────
-
-  /**
-   * Open the session stream for the given sessionId iff different from
-   * the one currently tracked. Called from both the click path and the
-   * poll path's updateEngineDetail; rig-data polls themselves do NOT call
-   * this — only an engine-selection change or a status-change that
-   * produces a new sessionId triggers a reopen.
-   */
-  function ensureSessionStream(sessionId) {
-    if (sessionId === streamSessionId) return;
-    if (!sessionId) {
-      // Selected engine has no session — close any open stream and hide UI.
-      stopSessionStream();
-      var sectionEmpty = document.getElementById('session-log-section');
-      if (sectionEmpty) sectionEmpty.style.display = 'none';
-      return;
-    }
-    openSessionStream(sessionId);
-  }
-
-  function openSessionStream(sessionId) {
-    stopSessionStream();
-    streamSessionId = sessionId;
-    streamDone = false;
-
-    var sessionLogSection = document.getElementById('session-log-section');
-    var sessionLogSpinner = document.getElementById('session-log-spinner');
-    var sessionLogTextarea = document.getElementById('session-log');
-
-    if (sessionLogSection) sessionLogSection.style.display = '';
-    if (sessionLogTextarea) sessionLogTextarea.value = '';
-
-    if (sessionLogSpinner) {
-      sessionLogSpinner.className = 'badge badge--active';
-      sessionLogSpinner.textContent = 'connecting\u2026';
-      sessionLogSpinner.style.display = '';
-    }
-
-    sessionEventSource = new EventSource(
-      '/api/spider/session-stream?sessionId=' + encodeURIComponent(sessionId)
-    );
-
-    sessionEventSource.addEventListener('chunk', function (e) {
-      var chunk;
-      try { chunk = JSON.parse(e.data); } catch (err) { return; }
-      var ta = document.getElementById('session-log');
-      if (!ta) return;
-      // Capture pin-to-bottom state BEFORE mutating; restore only if pinned.
-      var atBottom = ta.scrollTop + ta.clientHeight >= ta.scrollHeight - 4;
-      if (chunk.type === 'text') {
-        ta.value += chunk.text;
-      } else if (chunk.type === 'tool_use') {
-        ta.value += '\n[tool: ' + chunk.tool + ']\n';
-      } else if (chunk.type === 'tool_result') {
-        ta.value += '[result: ' + chunk.tool + ']\n';
-      }
-      if (atBottom) {
-        ta.scrollTop = ta.scrollHeight;
-      }
-      var spinner = document.getElementById('session-log-spinner');
-      if (spinner) {
-        spinner.className = 'badge badge--active';
-        spinner.textContent = 'connected';
-      }
-    });
-
-    sessionEventSource.addEventListener('transcript', function (e) {
-      var data;
-      try { data = JSON.parse(e.data); } catch (err) { return; }
-      var ta = document.getElementById('session-log');
-      if (!ta) return;
-      // Capture pin-to-bottom state BEFORE replacing value; restore only if pinned.
-      var atBottom = ta.scrollTop + ta.clientHeight >= ta.scrollHeight - 4;
-      ta.value = renderTranscript(data.messages || []);
-      if (atBottom) {
-        ta.scrollTop = ta.scrollHeight;
-      }
-    });
-
-    sessionEventSource.addEventListener('done', function (e) {
-      var data;
-      try { data = JSON.parse(e.data); } catch (err) { data = {}; }
-      // Mark stream as intentionally done before closing to prevent the
-      // onerror handler from showing a spurious "disconnected" badge.
-      streamDone = true;
-      var pollSessionId = streamSessionId;
-      stopSessionStream();
-      var spinner = document.getElementById('session-log-spinner');
-      if (spinner) {
-        spinner.style.display = 'none';
-      }
-      // If the server has no live in-process stream (e.g. detached sessions
-      // where the babysitter is in another process, or after a guild
-      // restart), fall back to polling the transcript endpoint until the
-      // session reaches a terminal status.
-      if (data.noStream && pollSessionId) {
-        var fetchTranscript = function () {
-          fetch('/api/spider/session-transcript?sessionId=' + encodeURIComponent(pollSessionId))
-            .then(function (r) { return r.json(); })
-            .then(function (res) {
-              var ta = document.getElementById('session-log');
-              if (ta) {
-                // Preserve scroll position if the user has scrolled away
-                // from the bottom; otherwise stick to the tail.
-                var atBottom =
-                  ta.scrollTop + ta.clientHeight >= ta.scrollHeight - 4;
-                ta.value = renderTranscript(res.messages || []);
-                if (atBottom) {
-                  ta.scrollTop = ta.scrollHeight;
-                }
-              }
-              var status = res && res.sessionStatus;
-              var terminal = status && status !== 'running' && status !== 'pending';
-              var spinnerEl = document.getElementById('session-log-spinner');
-              if (terminal) {
-                stopSessionPoll();
-                if (spinnerEl) spinnerEl.style.display = 'none';
-              } else if (spinnerEl) {
-                spinnerEl.className = 'badge badge--active';
-                spinnerEl.textContent = 'polling\u2026';
-                spinnerEl.style.display = '';
-              }
-            })
-            .catch(function () { /* ignore transient errors, keep polling */ });
-        };
-        fetchTranscript();
-        stopSessionPoll();
-        sessionPollTimer = setInterval(fetchTranscript, 2000);
-      }
-    });
-
-    sessionEventSource.addEventListener('error', function (e) {
-      if (streamDone) return;
-      var data;
-      try { data = JSON.parse(/** @type {MessageEvent} */(e).data || '{}'); } catch (err) { data = {}; }
-      var spinner = document.getElementById('session-log-spinner');
-      if (spinner) {
-        spinner.className = 'badge badge--error';
-        spinner.textContent = data.error ? 'error: ' + data.error : 'error';
-        spinner.style.display = '';
-      }
-      stopSessionStream();
-    });
-
-    sessionEventSource.onerror = function () {
-      // Network-level error (browser fires this on connection failure / premature close).
-      // Skip if the stream completed normally — the connection close is expected.
-      if (streamDone) return;
-      if (sessionEventSource) {
-        stopSessionStream();
-        var spinner = document.getElementById('session-log-spinner');
-        if (spinner && spinner.style.display !== 'none') {
-          spinner.className = 'badge badge--error';
-          spinner.textContent = 'disconnected';
-          spinner.style.display = '';
-        }
-      }
-    };
   }
 
   // ── Back to list ───────────────────────────────────────────────────────
 
   function backToList() {
-    stopSessionStream();
+    stopSessionTranscriptPoll();
+    stopElapsedTimer();
     stopCurrentRigPoll();
     currentRig = null;
     selectedEngineId = null;

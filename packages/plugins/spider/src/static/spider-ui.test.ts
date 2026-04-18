@@ -490,122 +490,296 @@ describe('spider.js engine-detail stable-skeleton + updater', () => {
   });
 });
 
-// ── SSE stream lifecycle decoupled from rig polling ─────────────────────
+// ── SSE removal regression guard ────────────────────────────────────────
 
-describe('spider.js SSE lifecycle decoupling', () => {
-  it('declares streamSessionId in module scope', () => {
-    assert.match(
-      spiderJs,
-      /var streamSessionId\s*=\s*null/,
-      'should track streamSessionId in module scope',
-    );
-  });
+describe('spider.js SSE removal', () => {
+  // The SSE path was removed because animator.subscribeToSession does not
+  // work across processes (detached sessions return null). The UI now
+  // polls /api/spider/session-transcript uniformly for all sessions.
+  // These guards keep the SSE code from creeping back in.
 
-  it('declares streamDone in module scope (hoisted out of showEngineDetail)', () => {
-    // The streamDone flag must survive the function boundary so the SSE
-    // error handler can still reference it after stopSessionStream nulls
-    // out the EventSource reference.
-    assert.match(
-      spiderJs,
-      /^\s*var streamDone\s*=\s*false;?\s*$/m,
-      'should declare streamDone in module scope',
-    );
-  });
-
-  it('defines ensureSessionStream that compares against streamSessionId', () => {
-    assert.match(
-      spiderJs,
-      /function ensureSessionStream\(/,
-      'should define ensureSessionStream',
-    );
-    const ensureBlock = spiderJs.match(
-      /function ensureSessionStream[\s\S]*?(?=\n  function )/,
-    );
-    assert.ok(ensureBlock, 'should find ensureSessionStream body');
-    assert.match(
-      ensureBlock[0],
-      /streamSessionId/,
-      'ensureSessionStream should compare against streamSessionId',
-    );
-  });
-
-  it('showEngineDetail calls ensureSessionStream (not raw EventSource)', () => {
-    const showBlock = spiderJs.match(
-      /function showEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
-    );
-    assert.ok(showBlock, 'should find showEngineDetail');
-    assert.match(
-      showBlock[0],
-      /ensureSessionStream\(/,
-      'click path should go through ensureSessionStream',
-    );
+  it('has no EventSource constructor in the UI code', () => {
     assert.doesNotMatch(
-      showBlock[0],
-      /new EventSource/,
-      'click path should not directly construct EventSource (delegated to openSessionStream)',
+      spiderJs,
+      /new\s+EventSource/,
+      'UI should not construct EventSource (SSE was removed)',
     );
   });
 
-  it('stopSessionStream clears streamSessionId so re-opens dedupe correctly', () => {
-    const stopBlock = spiderJs.match(
-      /function stopSessionStream\(\)[\s\S]*?(?=\n  function )/,
-    );
-    assert.ok(stopBlock, 'should find stopSessionStream');
-    assert.match(
-      stopBlock[0],
-      /streamSessionId\s*=\s*null/,
-      'stopSessionStream should null out streamSessionId',
+  it('does not define streamSessionId or streamDone state', () => {
+    assert.doesNotMatch(spiderJs, /\bstreamSessionId\b/, 'streamSessionId should not exist');
+    assert.doesNotMatch(spiderJs, /\bstreamDone\b/, 'streamDone should not exist');
+  });
+
+  it('does not define ensureSessionStream / openSessionStream / stopSessionStream', () => {
+    assert.doesNotMatch(spiderJs, /function\s+ensureSessionStream/, 'ensureSessionStream removed');
+    assert.doesNotMatch(spiderJs, /function\s+openSessionStream/, 'openSessionStream removed');
+    assert.doesNotMatch(spiderJs, /function\s+stopSessionStream/, 'stopSessionStream removed');
+  });
+
+  it('does not reference /api/spider/session-stream', () => {
+    assert.doesNotMatch(
+      spiderJs,
+      /\/api\/spider\/session-stream/,
+      'UI should not reference the SSE endpoint',
     );
   });
 });
 
-// ── Transcript scroll preservation on all write paths ───────────────────
+// ── Session transcript polling ──────────────────────────────────────────
 
-describe('spider.js transcript scroll preservation', () => {
-  it('SSE chunk handler captures atBottom before mutating textarea', () => {
-    const chunkBlock = spiderJs.match(
-      /addEventListener\('chunk',\s*function[\s\S]*?\}\);/,
-    );
-    assert.ok(chunkBlock, 'should find chunk handler');
+describe('spider.js session transcript polling', () => {
+  it('declares transcriptPollSessionId in module scope', () => {
     assert.match(
-      chunkBlock[0],
-      /var atBottom\s*=/,
-      'chunk handler should capture atBottom before mutation',
-    );
-    assert.match(
-      chunkBlock[0],
-      /if\s*\(atBottom\)/,
-      'chunk handler should restore scroll only when atBottom was true',
+      spiderJs,
+      /var transcriptPollSessionId\s*=\s*null/,
+      'should track transcriptPollSessionId in module scope',
     );
   });
 
-  it('SSE transcript handler captures atBottom before replacing textarea value', () => {
-    const transcriptBlock = spiderJs.match(
-      /addEventListener\('transcript',\s*function[\s\S]*?\}\);/,
-    );
-    assert.ok(transcriptBlock, 'should find transcript handler');
+  it('declares TRANSCRIPT_POLL_INTERVAL at 2000 ms', () => {
     assert.match(
-      transcriptBlock[0],
-      /var atBottom\s*=/,
-      'transcript handler should capture atBottom before mutation',
-    );
-    assert.match(
-      transcriptBlock[0],
-      /if\s*\(atBottom\)/,
-      'transcript handler should restore scroll only when atBottom was true',
+      spiderJs,
+      /var TRANSCRIPT_POLL_INTERVAL\s*=\s*2000/,
+      'should set the polling interval to 2000 ms',
     );
   });
 
-  it('noStream polling fallback also uses the atBottom pattern', () => {
-    // The noStream path's atBottom guard predates this fix and must remain.
-    const doneBlock = spiderJs.match(
-      /addEventListener\('done',\s*function[\s\S]*?if \(data\.noStream[\s\S]*?\}\);\s*$/m,
-    );
-    assert.ok(doneBlock, 'should find done handler with noStream branch');
+  it('defines startSessionTranscriptPoll that dedupes on sessionId', () => {
     assert.match(
-      doneBlock[0],
+      spiderJs,
+      /function startSessionTranscriptPoll\(/,
+      'should define startSessionTranscriptPoll',
+    );
+    const startBlock = spiderJs.match(
+      /function startSessionTranscriptPoll[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(startBlock, 'should find startSessionTranscriptPoll body');
+    assert.match(
+      startBlock[0],
+      /sessionId\s*===\s*transcriptPollSessionId/,
+      'startSessionTranscriptPoll should early-return when id is unchanged',
+    );
+  });
+
+  it('defines stopSessionTranscriptPoll that clears transcriptPollSessionId', () => {
+    assert.match(
+      spiderJs,
+      /function stopSessionTranscriptPoll\(/,
+      'should define stopSessionTranscriptPoll',
+    );
+    const stopBlock = spiderJs.match(
+      /function stopSessionTranscriptPoll[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(stopBlock, 'should find stopSessionTranscriptPoll body');
+    assert.match(
+      stopBlock[0],
+      /transcriptPollSessionId\s*=\s*null/,
+      'stopSessionTranscriptPoll should null out transcriptPollSessionId',
+    );
+    assert.match(
+      stopBlock[0],
+      /stopSessionPoll\(/,
+      'stopSessionTranscriptPoll should clear the underlying timer',
+    );
+  });
+
+  it('defines fetchAndRenderTranscript that calls /api/spider/session-transcript', () => {
+    assert.match(
+      spiderJs,
+      /function fetchAndRenderTranscript\(/,
+      'should define fetchAndRenderTranscript',
+    );
+    const fetchBlock = spiderJs.match(
+      /function fetchAndRenderTranscript[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(fetchBlock, 'should find fetchAndRenderTranscript body');
+    assert.match(
+      fetchBlock[0],
+      /\/api\/spider\/session-transcript\?sessionId=/,
+      'fetchAndRenderTranscript should hit the transcript endpoint',
+    );
+  });
+
+  it('fetchAndRenderTranscript stops polling on terminal session status', () => {
+    const fetchBlock = spiderJs.match(
+      /function fetchAndRenderTranscript[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(fetchBlock, 'should find fetchAndRenderTranscript body');
+    assert.match(
+      fetchBlock[0],
+      /stopSessionTranscriptPoll\(/,
+      'should tear down polling when the session reaches a terminal status',
+    );
+  });
+
+  it('fetchAndRenderTranscript captures atBottom before replacing textarea value', () => {
+    const fetchBlock = spiderJs.match(
+      /function fetchAndRenderTranscript[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(fetchBlock, 'should find fetchAndRenderTranscript body');
+    assert.match(
+      fetchBlock[0],
       /var atBottom\s*=/,
-      'noStream fallback should retain its atBottom capture',
+      'should capture atBottom before mutating the textarea',
+    );
+    assert.match(
+      fetchBlock[0],
+      /if\s*\(atBottom\)/,
+      'should restore scroll only when atBottom was true',
+    );
+  });
+
+  it('updateEngineDetail drives transcript polling via startSessionTranscriptPoll', () => {
+    const updaterBlock = spiderJs.match(
+      /function updateEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(updaterBlock, 'should find updateEngineDetail');
+    assert.match(
+      updaterBlock[0],
+      /startSessionTranscriptPoll\(/,
+      'updateEngineDetail should call startSessionTranscriptPoll every rig poll (dedup handles no-ops)',
+    );
+  });
+
+  it('navigating away stops transcript polling', () => {
+    const backBlock = spiderJs.match(
+      /function backToList\(\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(backBlock, 'should find backToList');
+    assert.match(
+      backBlock[0],
+      /stopSessionTranscriptPoll\(/,
+      'backToList should stop transcript polling',
+    );
+    const showRigBlock = spiderJs.match(
+      /function showRigDetail\(rig\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(showRigBlock, 'should find showRigDetail');
+    assert.match(
+      showRigBlock[0],
+      /stopSessionTranscriptPoll\(/,
+      'showRigDetail should stop any prior transcript poll before switching rigs',
+    );
+  });
+});
+
+// ── Elapsed ticker ──────────────────────────────────────────────────────
+
+describe('spider.js elapsed ticker', () => {
+  it('declares elapsedTimer and elapsedTimerStartedAt in module scope', () => {
+    assert.match(
+      spiderJs,
+      /var elapsedTimer\s*=\s*null/,
+      'should declare elapsedTimer state',
+    );
+    assert.match(
+      spiderJs,
+      /var elapsedTimerStartedAt\s*=\s*null/,
+      'should declare elapsedTimerStartedAt state',
+    );
+  });
+
+  it('declares ELAPSED_TICK_INTERVAL at 1000 ms', () => {
+    assert.match(
+      spiderJs,
+      /var ELAPSED_TICK_INTERVAL\s*=\s*1000/,
+      'elapsed ticker should tick every 1000 ms',
+    );
+  });
+
+  it('defines startElapsedTimer that dedupes on startedAt', () => {
+    assert.match(
+      spiderJs,
+      /function startElapsedTimer\(/,
+      'should define startElapsedTimer',
+    );
+    const startBlock = spiderJs.match(
+      /function startElapsedTimer[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(startBlock, 'should find startElapsedTimer body');
+    assert.match(
+      startBlock[0],
+      /elapsedTimerStartedAt\s*===\s*startedAt/,
+      'startElapsedTimer should early-return when startedAt is unchanged',
+    );
+    assert.match(
+      startBlock[0],
+      /formatElapsed\(startedAt,\s*new Date\(\)\.toISOString\(\)\)/,
+      'startElapsedTimer tick should call formatElapsed with now()',
+    );
+  });
+
+  it('defines stopElapsedTimer that clears the interval', () => {
+    assert.match(
+      spiderJs,
+      /function stopElapsedTimer\(/,
+      'should define stopElapsedTimer',
+    );
+    const stopBlock = spiderJs.match(
+      /function stopElapsedTimer[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(stopBlock, 'should find stopElapsedTimer body');
+    assert.match(
+      stopBlock[0],
+      /clearInterval\(elapsedTimer\)/,
+      'stopElapsedTimer should clear the interval',
+    );
+  });
+
+  it('updateEngineDetail starts the ticker for running engines with a startedAt', () => {
+    const updaterBlock = spiderJs.match(
+      /function updateEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(updaterBlock, 'should find updateEngineDetail');
+    assert.match(
+      updaterBlock[0],
+      /engine\.status\s*===\s*'running'\s*&&\s*engine\.startedAt[\s\S]*?startElapsedTimer\(/,
+      'updateEngineDetail should start the elapsed ticker for running engines',
+    );
+  });
+
+  it('updateEngineDetail stops the ticker when engine completes', () => {
+    const updaterBlock = spiderJs.match(
+      /function updateEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(updaterBlock, 'should find updateEngineDetail');
+    assert.match(
+      updaterBlock[0],
+      /engine\.status\s*===\s*'completed'[\s\S]*?stopElapsedTimer\(/,
+      'updateEngineDetail should stop the elapsed ticker on completion',
+    );
+  });
+
+  it('static "running…" placeholder is replaced by the live ticker', () => {
+    // The old implementation wrote a literal "running…" span. Now the
+    // ticker writes a live elapsed value every second. Regression guard
+    // against re-introducing the static placeholder.
+    assert.doesNotMatch(
+      spiderJs,
+      /<span class="elapsed-running">running\\u2026<\/span>/,
+      'static "running…" placeholder should be gone',
+    );
+  });
+
+  it('navigating away stops the elapsed ticker', () => {
+    const backBlock = spiderJs.match(
+      /function backToList\(\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(backBlock, 'should find backToList');
+    assert.match(
+      backBlock[0],
+      /stopElapsedTimer\(/,
+      'backToList should stop the elapsed ticker',
+    );
+    const showRigBlock = spiderJs.match(
+      /function showRigDetail\(rig\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(showRigBlock, 'should find showRigDetail');
+    assert.match(
+      showRigBlock[0],
+      /stopElapsedTimer\(/,
+      'showRigDetail should stop any prior ticker before switching rigs',
     );
   });
 });
