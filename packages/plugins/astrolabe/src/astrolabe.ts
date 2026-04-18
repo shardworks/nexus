@@ -33,6 +33,7 @@ import {
 
 import { twoPhaseRigTemplate } from './two-phase-planning.ts';
 import { threePhaseRigTemplate } from './three-phase-planning.ts';
+import { planAndShipRigTemplate } from './plan-and-ship.ts';
 
 // ── Config resolver ──────────────────────────────────────────────────
 
@@ -286,10 +287,11 @@ export function createAstrolabe(): Plugin {
         rigTemplates: {
           'two-phase-planning': twoPhaseRigTemplate,
           'three-phase-planning': threePhaseRigTemplate,
+          'plan-and-ship': planAndShipRigTemplate,
         },
 
         rigTemplateMappings: {
-          brief: 'astrolabe.two-phase-planning',
+          brief: 'astrolabe.plan-and-ship',
         },
 
         tools: [

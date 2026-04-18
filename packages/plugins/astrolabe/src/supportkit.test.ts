@@ -202,10 +202,39 @@ describe('Astrolabe supportKit shape', () => {
     assert.equal(rigTemplates['three-phase-planning'].resolutionEngine, 'spec-writer');
   });
 
-  it('maps brief to astrolabe.two-phase-planning', () => {
+  it('contributes plan-and-ship rig template with 11 engines', () => {
+    const kit = getKit(plugin);
+    const rigTemplates = kit.rigTemplates as Record<string, {
+      engines: Array<{ id: string; designId: string }>;
+      resolutionEngine?: string;
+    }>;
+    assert.ok(rigTemplates?.['plan-and-ship'], 'plan-and-ship template must exist');
+
+    const templateEngines = rigTemplates['plan-and-ship'].engines;
+    assert.equal(templateEngines.length, 11);
+
+    const engineIds = templateEngines.map(e => e.id);
+    assert.deepEqual(engineIds, [
+      'plan-init',
+      'draft',
+      'reader-analyst',
+      'inventory-check',
+      'decision-review',
+      'spec-writer',
+      'plan-finalize',
+      'implement',
+      'review',
+      'revise',
+      'seal',
+    ]);
+
+    assert.equal(rigTemplates['plan-and-ship'].resolutionEngine, 'seal');
+  });
+
+  it('maps brief to astrolabe.plan-and-ship', () => {
     const kit = getKit(plugin);
     const mappings = kit.rigTemplateMappings as Record<string, string>;
-    assert.equal(mappings?.brief, 'astrolabe.two-phase-planning');
+    assert.equal(mappings?.brief, 'astrolabe.plan-and-ship');
   });
 
   // ── R9: tools ──────────────────────────────────────────────────────
