@@ -280,14 +280,14 @@ List plans, optionally filtered by status or codex.
 ```json
 {
   "astrolabe": {
-    "generatedWritType": "mandate"
+    "patronRole": "my-plugin.patron"
   }
 }
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `generatedWritType` | `string` | `"mandate"` | The writ type posted by the spec-writer engine. Configurable per guild so the output can feed into a different pipeline (e.g. a `reviewed-mandate` type with an additional review step). |
+| `patronRole` | `string` | `""` (unset) | Qualified role name of the Patron Anima consulted before decision-review. When unset or empty, the `patron-anima` engine no-ops and decision-review behaves exactly as it did before the engine existed. |
 
 ---
 

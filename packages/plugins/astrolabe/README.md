@@ -64,7 +64,7 @@ interface PlanDoc {
   scope?: ScopeItem[];  // What's in and what's out
   decisions?: Decision[]; // Architectural/design decisions with options
   spec?: string;        // The generated specification (implementation brief + task manifest)
-  generatedWritId?: string; // ID of the generated mandate/configured writ type
+  generatedWritId?: string; // ID of the generated mandate
   createdAt: string;
   updatedAt: string;
 }
@@ -88,7 +88,6 @@ Add an `astrolabe` section to `guild.json` to configure behaviour:
 ```json
 {
   "astrolabe": {
-    "generatedWritType": "mandate",
     "patronRole": "my-plugin.patron"
   }
 }
@@ -96,7 +95,6 @@ Add an `astrolabe` section to `guild.json` to configure behaviour:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `generatedWritType` | `string` | `"mandate"` | Writ type posted by the spec-writer engine |
 | `patronRole` | `string` | `""` (unset) | Qualified role name of the Patron Anima consulted before decision-review. When unset or empty, the `patron-anima` engine no-ops and decision-review behaves exactly as it did before the engine existed. |
 
 ## Support Kit

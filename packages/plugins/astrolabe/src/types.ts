@@ -35,7 +35,7 @@ export interface PlanDoc {
   // ── Spec-writer output ──────────────────────────────────────
   /** The generated specification. */
   spec?: string;
-  /** The writ ID of the generated mandate (or configured type). */
+  /** The writ ID of the generated mandate. */
   generatedWritId?: string;
 
   createdAt: string;
@@ -112,8 +112,6 @@ export interface PlanFilters {
 // ── Configuration ────────────────────────────────────────────────────
 
 export interface AstrolabeConfig {
-  /** The writ type posted by the spec-writer engine. Default: 'mandate'. */
-  generatedWritType?: string;
   /**
    * Qualified role name of the Patron Anima consulted by the
    * `astrolabe.patron-anima` engine before `decision-review`. When unset

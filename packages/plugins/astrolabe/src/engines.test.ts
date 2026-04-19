@@ -1268,55 +1268,6 @@ describe('spec-publish engine', () => {
     assert.ok(updatedPlan?.updatedAt);
   });
 
-  it('uses custom generatedWritType from guild config', async () => {
-    const postCalls: unknown[] = [];
-    mockClerkPost = async (params) => {
-      postCalls.push(params);
-      return { id: 'writ-custom-001', title: 'T' };
-    };
-    mockClerkLink = async () => {};
-
-    // Override guild with custom astrolabe config
-    const apparatusMap2 = new Map<string, unknown>();
-    apparatusMap2.set('stacks', stacks);
-    apparatusMap2.set('clerk', mockClerkApi);
-
-    const customGuildConfig: GuildConfig & { astrolabe?: { generatedWritType?: string } } = {
-      name: 'test-guild',
-      nexus: '0.0.0',
-      plugins: [],
-      settings: { model: 'sonnet' },
-      astrolabe: { generatedWritType: 'reviewed-mandate' },
-    };
-
-    const customGuild: Guild = {
-      home: '/tmp/fake-guild',
-      apparatus<T>(name: string): T {
-        const a = apparatusMap2.get(name);
-        if (!a) throw new Error(`Apparatus "${name}" not installed`);
-        return a as T;
-      },
-      config<T>(_pluginId: string): T { return {} as T; },
-      writeConfig() {},
-      guildConfig() { return customGuildConfig as GuildConfig; },
-      kits: () => [],
-      apparatuses: () => [],
-      failedPlugins: () => [],
-      startupWarnings() { return []; },
-    };
-    setGuild(customGuild);
-
-    const plan = makePlan({ id: 'w-custom-001', codex: 'c', status: 'writing', spec: '# Spec' });
-    await plansBook.put(plan);
-
-    const engine = createSpecPublishEngine(() => plansBook);
-    await engine.run({ planId: plan.id }, buildCtx());
-
-    assert.equal(postCalls.length, 1);
-    const posted = postCalls[0] as { type: string };
-    assert.equal(posted.type, 'reviewed-mandate');
-  });
-
   it('throws when plan not found', async () => {
     const engine = createSpecPublishEngine(() => plansBook);
 

@@ -58,12 +58,9 @@ export function createSpecPublishEngine(getPlansBook: () => Book<PlanDoc>): Engi
       // Read the brief writ for its title
       const briefWrit = await clerk.show(planId);
 
-      // Resolve generated writ type from config
-      const generatedWritType = guild().guildConfig().astrolabe?.generatedWritType ?? 'mandate';
-
       // Post the mandate with the full spec verbatim (task-manifest included if present).
       const generatedWrit = await clerk.post({
-        type: generatedWritType,
+        type: 'mandate',
         title: briefWrit.title,
         body: plan.spec,
         codex: plan.codex,
