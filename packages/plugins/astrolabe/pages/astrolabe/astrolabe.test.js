@@ -10,6 +10,12 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const astrolabeJs = readFileSync(resolve(__dirname, 'astrolabe.js'), 'utf-8');
 
 // ── Extracted pure functions (identical to astrolabe.js) ─────────────
 
@@ -420,5 +426,36 @@ describe('renderDecisionsTable()', () => {
     assert.ok(html.includes('&lt;xss&gt;'));
     assert.ok(html.includes('&lt;script&gt;'));
     assert.ok(!html.includes('<script>'));
+  });
+});
+
+describe('astrolabe.js plan-detail writ cross-link URL', () => {
+  // Regression guard: the plan-detail brief-writ and mandate-writ anchors
+  // historically targeted '/pages/clerk/?writ=…', but no plugin registers
+  // a page with id 'clerk' — the Clerk's writs page is registered with id
+  // 'writs' and served at '/pages/writs/'. That produced a bare 404 on
+  // every click. Pin the canonical URL shape and forbid the broken one.
+
+  it('writ deep-links target the canonical Clerk writs page path', () => {
+    assert.match(
+      astrolabeJs,
+      /\/pages\/writs\/\?writ=/,
+      'writ deep-links must target /pages/writs/?writ=',
+    );
+    assert.doesNotMatch(
+      astrolabeJs,
+      /\/pages\/clerk\/\?writ=/,
+      'writ deep-links must NOT target the broken /pages/clerk/?writ= path',
+    );
+  });
+
+  it('both plan-detail writ anchors (brief and mandate) use the canonical path', () => {
+    // The plan-detail view emits two writ anchors: the brief-writ link and
+    // the (optional) mandate-writ link. Both must use the canonical shape.
+    var matches = astrolabeJs.match(/\/pages\/writs\/\?writ=/g) || [];
+    assert.ok(
+      matches.length >= 2,
+      'expected at least 2 canonical /pages/writs/?writ= links (brief + mandate), found ' + matches.length,
+    );
   });
 });

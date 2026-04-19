@@ -14,7 +14,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test 'src/**/*.test.ts'",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test 'src/**/*.test.ts' 'pages/**/*.test.js'",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {

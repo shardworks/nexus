@@ -69,6 +69,25 @@ describe('spider.js rig list row HTML', () => {
       'writ-title cell must not be rendered as plain (non-linked) text',
     );
   });
+
+  it('writ deep-links target the canonical Clerk writs page path', () => {
+    // Regression guard: historically, writ-id anchors in the rig view and
+    // rig-list row targeted '/pages/clerk/?writ=…', but no plugin registers
+    // a page with id 'clerk' — the Clerk's writs page is registered with id
+    // 'writs' and served at '/pages/writs/'. That produced a bare 404 on
+    // every click. Pin the canonical URL shape, matching the Ratchet
+    // linkDispatch helper, and forbid the broken one.
+    assert.match(
+      spiderJs,
+      /\/pages\/writs\/\?writ=/,
+      'writ deep-links must target /pages/writs/?writ=',
+    );
+    assert.doesNotMatch(
+      spiderJs,
+      /\/pages\/clerk\/\?writ=/,
+      'writ deep-links must NOT target the broken /pages/clerk/?writ= path',
+    );
+  });
 });
 
 // ── Cancellation UI ──────────────────────────────────────────────────────

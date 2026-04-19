@@ -307,10 +307,10 @@
     detailTitle.textContent = 'Plan: ' + plan.id;
 
     // Metadata card
-    var briefLink = '<a href="/pages/clerk/?writ=' + encodeURIComponent(plan.id) + '">' + esc(plan.id) + '</a>';
+    var briefLink = '<a href="/pages/writs/?writ=' + encodeURIComponent(plan.id) + '">' + esc(plan.id) + '</a>';
     var mandateHtml = '';
     if (plan.generatedWritId) {
-      mandateHtml = '<dt>Mandate Writ</dt><dd><a href="/pages/clerk/?writ=' +
+      mandateHtml = '<dt>Mandate Writ</dt><dd><a href="/pages/writs/?writ=' +
         encodeURIComponent(plan.generatedWritId) + '">' + esc(plan.generatedWritId) + '</a></dd>';
     }
 

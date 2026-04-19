@@ -352,7 +352,7 @@
           metaTable.innerHTML =
             '<tbody>' +
             '<tr><th>ID</th><td>' + esc(rig.id) + '</td></tr>' +
-            '<tr><th>Writ</th><td><a href="/pages/clerk/?writ=' + esc(rig.writId) + '">' + esc(rig.writId) + '</a></td></tr>' +
+            '<tr><th>Writ</th><td><a href="/pages/writs/?writ=' + esc(rig.writId) + '">' + esc(rig.writId) + '</a></td></tr>' +
             '<tr><th>Status</th><td>' + badgeHtml(rig.status) + '</td></tr>' +
             '<tr><th>Created</th><td>' + esc(formatDate(rig.createdAt)) + '</td></tr>' +
             '</tbody>';
@@ -462,7 +462,7 @@
         '<td><a class="rig-link" href="#" data-rig-id="' + esc(rig.id) + '">' + esc(writTitle) + '</a></td>' +
         '<td>' + esc(engineSummary(rig.engines)) + '</td>' +
         '<td><a class="rig-link" href="#" data-rig-id="' + esc(rig.id) + '">' + esc(rig.id) + '</a></td>' +
-        '<td><a href="/pages/clerk/?writ=' + esc(rig.writId) + '">' + esc(rig.writId) + '</a></td>' +
+        '<td><a href="/pages/writs/?writ=' + esc(rig.writId) + '">' + esc(rig.writId) + '</a></td>' +
         '<td>' + esc(formatDate(rig.createdAt)) + '</td>' +
         '</tr>';
     });
@@ -507,7 +507,7 @@
     metaTable.innerHTML =
       '<tbody>' +
       '<tr><th>ID</th><td>' + esc(rig.id) + '</td></tr>' +
-      '<tr><th>Writ</th><td><a href="/pages/clerk/?writ=' + esc(rig.writId) + '">' + esc(rig.writId) + '</a></td></tr>' +
+      '<tr><th>Writ</th><td><a href="/pages/writs/?writ=' + esc(rig.writId) + '">' + esc(rig.writId) + '</a></td></tr>' +
       '<tr><th>Status</th><td>' + badgeHtml(rig.status) + '</td></tr>' +
       '<tr><th>Created</th><td>' + esc(formatDate(rig.createdAt)) + '</td></tr>' +
       '</tbody>';
