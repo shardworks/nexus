@@ -107,6 +107,61 @@ export interface RigDoc {
   resolutionEngineId?: string;
 }
 
+// ── Rig view (UI-facing read shape) ───────────────────────────────────
+
+/**
+ * Aggregated cost summary for a rig — sum across all engines that have a
+ * sessionId. Absent when no engines have reported any cost data yet.
+ *
+ * Token counts are optional because not every provider/session reports
+ * token usage. When tokenUsage is absent on every contributing session,
+ * `inputTokens` / `outputTokens` will be undefined; the UI uses this to
+ * decide whether to render the `(N input, M output)` parenthetical.
+ */
+export interface RigCostSummary {
+  /** Total cost in USD across all sessions. */
+  costUsd: number;
+  /** Sum of input tokens across all sessions that reported tokenUsage. Undefined if no session reported. */
+  inputTokens?: number;
+  /** Sum of output tokens across all sessions that reported tokenUsage. Undefined if no session reported. */
+  outputTokens?: number;
+}
+
+/**
+ * Per-engine cost snapshot. Same shape as the rig-level `RigCostSummary`.
+ * Present in the `engineCosts` map for every engine that has a sessionId
+ * (regardless of engine status) — the value may be all-zero when the
+ * session has not reported cost yet.
+ */
+export interface EngineCostSummary {
+  /** Cost in USD from the engine's session, or 0 if not reported. */
+  costUsd: number;
+  /** Input tokens if reported. */
+  inputTokens?: number;
+  /** Output tokens if reported. */
+  outputTokens?: number;
+}
+
+/**
+ * UI-facing rig view — the persisted `RigDoc` enriched with derived fields
+ * that the Spider dashboard needs. Returned from the rig API read path
+ * (rig-list / rig-show). The persisted `RigDoc` shape is unchanged.
+ *
+ * - `costSummary` is the rig-level aggregate (sum across all engines with
+ *   a sessionId). Omitted when no engine has a sessionId.
+ * - `engineCosts` maps engineId → per-engine cost snapshot. Contains an
+ *   entry for every engine with a sessionId. Omitted when no engine has
+ *   a sessionId.
+ *
+ * Both derived fields are read-only reports — they are never persisted.
+ */
+export interface RigView extends RigDoc {
+  /** Rig-level cost aggregate (sum across all engine sessions). */
+  costSummary?: RigCostSummary;
+  /** Per-engine cost snapshot keyed by engine id. */
+  engineCosts?: Record<string, EngineCostSummary>;
+}
+
 // ── Rig filters ───────────────────────────────────────────────────────
 
 /**

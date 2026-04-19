@@ -1,18 +1,26 @@
 /**
  * rig-list tool — list rigs with optional filters.
+ *
+ * The returned shape is `RigView[]` — the persisted RigDoc plus a
+ * derived `costSummary` and per-engine `engineCosts` map (see ../rig-view.ts).
+ * Callers that only need the persisted RigDoc fields can ignore the extras.
  */
 
 import { z } from 'zod';
 import { guild } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
-import type { SpiderApi, RigStatus } from '../types.ts';
+import type { StacksApi } from '@shardworks/stacks-apparatus';
+import type { SpiderApi, RigStatus, RigView } from '../types.ts';
+import { enrichRigViews } from '../rig-view.ts';
 
 export default tool({
   name: 'rig-list',
   description: 'List rigs with optional filters',
   instructions:
     'Returns rigs ordered by createdAt descending (newest first). ' +
-    'Optionally filter by status and control pagination with limit and offset.',
+    'Optionally filter by status and control pagination with limit and offset. ' +
+    'Each entry includes an aggregated costSummary and engineCosts map derived ' +
+    'from the animator sessions book — useful for dashboards; safe to ignore.',
   params: {
     status: z
       .enum(['running', 'stuck', 'completed', 'failed', 'blocked'])
@@ -28,12 +36,15 @@ export default tool({
       .describe('Number of results to skip.'),
   },
   permission: 'read',
-  handler: async (params) => {
-    const spider = guild().apparatus<SpiderApi>('spider');
-    return spider.list({
+  handler: async (params): Promise<RigView[]> => {
+    const g = guild();
+    const spider = g.apparatus<SpiderApi>('spider');
+    const stacks = g.apparatus<StacksApi>('stacks');
+    const rigs = await spider.list({
       status: params.status as RigStatus | undefined,
       limit: params.limit,
       offset: params.offset,
     });
+    return enrichRigViews(rigs, stacks);
   },
 });
