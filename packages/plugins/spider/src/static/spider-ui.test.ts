@@ -440,6 +440,9 @@ describe('spider.js engine-detail stable-skeleton + updater', () => {
 
   it('skeleton declares stable id containers for the value-bearing fields', () => {
     // Spot-check a representative subset of the stable-id contract.
+    // Per T6/D14 the three old cost rows (ed-cost-input / ed-cost-output /
+    // ed-cost-usd) were collapsed into a single `ed-cost` row driven by
+    // the enriched rig view — so we only assert the single new id.
     const expectedIds = [
       'ed-status',
       'ed-design-id',
@@ -450,9 +453,7 @@ describe('spider.js engine-detail stable-skeleton + updater', () => {
       'ed-error',
       'ed-session-id',
       'ed-block-type',
-      'ed-cost-input',
-      'ed-cost-output',
-      'ed-cost-usd',
+      'ed-cost',
       'ed-givens-code',
       'ed-yields-code',
       'ed-cancel-container',
@@ -464,6 +465,47 @@ describe('spider.js engine-detail stable-skeleton + updater', () => {
         `skeleton should define a stable id container for ${id}`,
       );
     }
+  });
+
+  it('no longer declares the legacy three-row cost skeleton', () => {
+    // T6 / D14 regression guard. The engine-detail panel now uses a single
+    // #ed-cost row; the old ed-cost-input/output/usd trio must not return.
+    for (const legacyId of ['ed-cost-input', 'ed-cost-output', 'ed-cost-usd']) {
+      assert.doesNotMatch(
+        spiderJs,
+        new RegExp(`id="${legacyId}"`),
+        `legacy cost id ${legacyId} must not exist in the skeleton`,
+      );
+    }
+  });
+
+  it('engine-detail single cost row is fed from currentRig.engineCosts[engine.id]', () => {
+    // T6 / D18: no per-engine /api/session/show fetch; the cost value for
+    // the selected engine is read straight off the enriched rig payload.
+    const updaterBlock = spiderJs.match(
+      /function updateEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(updaterBlock, 'should find updateEngineDetail');
+    assert.match(
+      updaterBlock[0],
+      /currentRig\.engineCosts\s*\)\s*\?\s*currentRig\.engineCosts\[engine\.id\]/,
+      'cost read should come from currentRig.engineCosts[engine.id]',
+    );
+    assert.match(
+      updaterBlock[0],
+      /setText\(['"]ed-cost['"]\s*,\s*formatCostWithTokens\(/,
+      'engine-detail cost row should render via formatCostWithTokens()',
+    );
+    assert.match(
+      updaterBlock[0],
+      /setRowDisplay\(['"]ed-cost-dt['"]\s*,\s*['"]ed-cost['"]\s*,\s*true\)/,
+      'engine-detail cost row should show when engineCosts entry exists',
+    );
+    assert.match(
+      updaterBlock[0],
+      /setRowDisplay\(['"]ed-cost-dt['"]\s*,\s*['"]ed-cost['"]\s*,\s*false\)/,
+      'engine-detail cost row should hide when engineCosts entry is absent (non-anima)',
+    );
   });
 
   it('the old #cost-placeholder insertAdjacentHTML trick is gone', () => {
@@ -661,15 +703,19 @@ describe('spider.js session transcript polling', () => {
     );
   });
 
-  it('navigating away stops transcript polling', () => {
+  it('navigating away stops transcript polling via resetSessionLog', () => {
+    // T7: the canonical tear-down is now resetSessionLog(), which wraps
+    // stopSessionTranscriptPoll(). Both backToList and showRigDetail route
+    // through that helper so the textarea + spinner state is cleared
+    // alongside the poll.
     const backBlock = spiderJs.match(
       /function backToList\(\)[\s\S]*?(?=\n  function )/,
     );
     assert.ok(backBlock, 'should find backToList');
     assert.match(
       backBlock[0],
-      /stopSessionTranscriptPoll\(/,
-      'backToList should stop transcript polling',
+      /resetSessionLog\(/,
+      'backToList should tear down transcript state via resetSessionLog',
     );
     const showRigBlock = spiderJs.match(
       /function showRigDetail\(rig\)[\s\S]*?(?=\n  function )/,
@@ -677,8 +723,8 @@ describe('spider.js session transcript polling', () => {
     assert.ok(showRigBlock, 'should find showRigDetail');
     assert.match(
       showRigBlock[0],
-      /stopSessionTranscriptPoll\(/,
-      'showRigDetail should stop any prior transcript poll before switching rigs',
+      /resetSessionLog\(/,
+      'showRigDetail should tear down any prior transcript state via resetSessionLog',
     );
   });
 });
@@ -854,62 +900,387 @@ describe('spider.js pipeline keyed update', () => {
   });
 });
 
-// ── Cost fetch gated on transition to completed ─────────────────────────
+// ── Server-supplied cost (no per-engine fetch) ──────────────────────────
 
-describe('spider.js session cost fetch gating', () => {
-  it('declares costFetchedFor cache in module scope', () => {
-    assert.match(
-      spiderJs,
-      /var costFetchedFor\s*=\s*\{\}/,
-      'should declare costFetchedFor cache to gate the cost fetch',
-    );
-  });
+describe('spider.js server-supplied engine cost', () => {
+  // T6 / D18: the client no longer fetches /api/session/show or maintains
+  // a costFetchedFor cache — cost data arrives on the rig payload itself
+  // via RigView.engineCosts (populated server-side by enrichRigView).
+  // These guards prevent the old client-side fetch pattern from returning.
 
-  it('cost fetch is not fired unconditionally on every render', () => {
-    // Locate the call to /api/session/show — it must be inside a guarded
-    // helper, not directly inside updateEngineDetail's per-render path.
-    const updaterBlock = spiderJs.match(
-      /function updateEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
-    );
-    assert.ok(updaterBlock, 'should find updateEngineDetail');
+  it('no longer declares a costFetchedFor cache', () => {
     assert.doesNotMatch(
-      updaterBlock[0],
-      /fetch\(['"]\/api\/session\/show/,
-      'updateEngineDetail should not call /api/session/show directly',
-    );
-    assert.match(
-      updaterBlock[0],
-      /costFetchedFor\[engine\.id\]/,
-      'updateEngineDetail should consult costFetchedFor before requesting cost',
+      spiderJs,
+      /costFetchedFor/,
+      'costFetchedFor cache must not exist — cost comes from the rig payload',
     );
   });
 
-  it('cost fetch helper exists and targets /api/session/show', () => {
+  it('no longer defines a fetchSessionCost helper', () => {
+    assert.doesNotMatch(
+      spiderJs,
+      /function\s+fetchSessionCost\b/,
+      'fetchSessionCost helper was removed with the per-engine fetch',
+    );
+  });
+
+  it('UI never calls /api/session/show for cost', () => {
+    assert.doesNotMatch(
+      spiderJs,
+      /\/api\/session\/show/,
+      'UI should not hit /api/session/show — cost is aggregated server-side',
+    );
+  });
+
+  it('no engineStatusByEngineId transition tracker for cost-fetch gating', () => {
+    assert.doesNotMatch(
+      spiderJs,
+      /engineStatusByEngineId/,
+      'legacy per-engine status tracker for cost gating should be gone',
+    );
+  });
+});
+
+// ── Cost / token formatting helpers ─────────────────────────────────────
+
+describe('spider.js cost/token formatting helpers', () => {
+  // T3 / D6 / D7: a single source of truth for cost + token rendering,
+  // always using the explicit 'en-US' locale so grouping is stable.
+
+  it('defines formatTokenCount using toLocaleString(en-US)', () => {
     assert.match(
       spiderJs,
-      /function fetchSessionCost\(/,
-      'should define a dedicated fetchSessionCost helper',
+      /function formatTokenCount\(n\)/,
+      'should define formatTokenCount helper',
     );
-    const helperBlock = spiderJs.match(
-      /function fetchSessionCost\([\s\S]*?(?=\n  function )/,
+    const block = spiderJs.match(
+      /function formatTokenCount[\s\S]*?(?=\n  function )/,
     );
-    assert.ok(helperBlock, 'should find fetchSessionCost body');
+    assert.ok(block, 'should find formatTokenCount body');
     assert.match(
-      helperBlock[0],
-      /\/api\/session\/show\?id=/,
-      'fetchSessionCost should call the session show endpoint',
+      block[0],
+      /toLocaleString\(['"]en-US['"]\)/,
+      'formatTokenCount should pass "en-US" locale explicitly',
     );
   });
 
-  it('updateEngineDetail tracks engine status across polls to detect transition', () => {
+  it('defines formatCostUsd that always emits $x.yy (2 decimals)', () => {
+    assert.match(
+      spiderJs,
+      /function formatCostUsd\(costUsd\)/,
+      'should define formatCostUsd helper',
+    );
+    const block = spiderJs.match(
+      /function formatCostUsd[\s\S]*?(?=\n\s*\/\*\*|\n  function )/,
+    );
+    assert.ok(block, 'should find formatCostUsd body');
+    assert.match(
+      block[0],
+      /toFixed\(2\)/,
+      'formatCostUsd should format to two decimal places',
+    );
+    assert.match(
+      block[0],
+      /['"]\$['"]\s*\+/,
+      'formatCostUsd should prefix with "$"',
+    );
+  });
+
+  it('defines formatCostWithTokens that omits parenthetical when tokens absent', () => {
+    assert.match(
+      spiderJs,
+      /function formatCostWithTokens\(costUsd, inputTokens, outputTokens\)/,
+      'should define formatCostWithTokens helper',
+    );
+    const block = spiderJs.match(
+      /function formatCostWithTokens[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find formatCostWithTokens body');
+    assert.match(
+      block[0],
+      /inputTokens\s*===\s*undefined\s*\|\|\s*outputTokens\s*===\s*undefined/,
+      'formatCostWithTokens should detect absent tokens and skip parenthetical',
+    );
+    assert.match(
+      block[0],
+      /formatTokenCount\(inputTokens\)[\s\S]*?input[\s\S]*?formatTokenCount\(outputTokens\)[\s\S]*?output/,
+      'formatCostWithTokens should render "(N input, M output)" via formatTokenCount',
+    );
+  });
+});
+
+// ── Rig list Cost column ────────────────────────────────────────────────
+
+describe('spider.js rig-list Cost column', () => {
+  // T5 / D7: the rig-list table has a dedicated Cost column, rendered
+  // immediately to the left of Engines, sourced from rig.costSummary.
+  // The Cost column always renders — showing $0.00 when no sessions have
+  // reported cost yet.
+
+  it('index.html declares a Cost <th> between Writ Title and Engines', () => {
+    assert.match(
+      indexHtml,
+      /<th>Writ Title<\/th>\s*<th>Cost<\/th>\s*<th>Engines<\/th>/,
+      'index.html should place <th>Cost</th> between Writ Title and Engines',
+    );
+  });
+
+  it('row template emits a cost cell between writ-title and engines cells', () => {
+    const rowTemplateMatch = spiderJs.match(
+      /var rows = filtered\.map\(function \(rig\) \{[\s\S]*?\.join\(''\)/,
+    );
+    assert.ok(rowTemplateMatch, 'should find the row template block');
+    const rowTemplate = rowTemplateMatch[0];
+    // esc(writTitle) must come before esc(formatCostUsd(costUsd))
+    // which must come before esc(engineSummary(rig.engines))
+    const writIdx = rowTemplate.indexOf('esc(writTitle)');
+    const costIdx = rowTemplate.indexOf('formatCostUsd(costUsd)');
+    const enginesIdx = rowTemplate.indexOf('engineSummary(rig.engines)');
+    assert.ok(writIdx >= 0, 'row template should include writ title cell');
+    assert.ok(costIdx >= 0, 'row template should include cost cell');
+    assert.ok(enginesIdx >= 0, 'row template should include engines cell');
+    assert.ok(
+      writIdx < costIdx && costIdx < enginesIdx,
+      'cost cell must sit between writ-title and engines cells',
+    );
+  });
+
+  it('row template falls back to 0 when costSummary is absent (renders $0.00)', () => {
+    const rowTemplateMatch = spiderJs.match(
+      /var rows = filtered\.map\(function \(rig\) \{[\s\S]*?\.join\(''\)/,
+    );
+    assert.ok(rowTemplateMatch, 'should find the row template block');
+    const rowTemplate = rowTemplateMatch[0];
+    assert.match(
+      rowTemplate,
+      /rig\.costSummary[\s\S]*?costUsd[\s\S]*?:\s*0/,
+      'row template should default costUsd to 0 when costSummary is missing',
+    );
+  });
+});
+
+// ── Rig-meta stable-id skeleton ─────────────────────────────────────────
+
+describe('spider.js rig-meta stable-id skeleton', () => {
+  // T4 / D9 / D10: the rig detail meta table is built once via
+  // buildRigMetaSkeleton() with stable ids per cell; every rig poll (and
+  // the 1 s elapsed ticker) writes text into those cells via
+  // updateRigMeta(). This avoids wholesale innerHTML rebuilds while the
+  // user reads the panel.
+
+  it('defines buildRigMetaSkeleton()', () => {
+    assert.match(
+      spiderJs,
+      /function buildRigMetaSkeleton\(/,
+      'should define buildRigMetaSkeleton',
+    );
+  });
+
+  it('defines updateRigMeta(rig)', () => {
+    assert.match(
+      spiderJs,
+      /function updateRigMeta\(rig\)/,
+      'should define updateRigMeta',
+    );
+  });
+
+  it('skeleton declares stable id cells including Completed Engines, Elapsed, Cost', () => {
+    const expectedIds = [
+      'rig-meta-id',
+      'rig-meta-writ',
+      'rig-meta-status',
+      'rig-meta-created',
+      'rig-meta-engine-count',
+      'rig-elapsed',
+      'rig-meta-cost',
+    ];
+    for (const id of expectedIds) {
+      assert.match(
+        spiderJs,
+        new RegExp(`id="${id}"`),
+        `rig-meta skeleton should declare stable id ${id}`,
+      );
+    }
+  });
+
+  it('showRigDetail wires up skeleton + update + rig-elapsed ticker', () => {
+    const showRigBlock = spiderJs.match(
+      /function showRigDetail\(rig\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(showRigBlock, 'should find showRigDetail');
+    assert.match(
+      showRigBlock[0],
+      /buildRigMetaSkeleton\(\)/,
+      'showRigDetail should build the stable-id skeleton once',
+    );
+    assert.match(
+      showRigBlock[0],
+      /updateRigMeta\(rig\)/,
+      'showRigDetail should populate the skeleton via updateRigMeta',
+    );
+    assert.match(
+      showRigBlock[0],
+      /startRigElapsedTimer\(rig\.createdAt\)/,
+      'showRigDetail should start the rig-elapsed ticker for non-terminal rigs',
+    );
+  });
+
+  it('updateRigMeta writes cost via formatCostWithTokens', () => {
+    const block = spiderJs.match(
+      /function updateRigMeta\(rig\)[\s\S]*?(?=\n  function |\n  \/\/)/,
+    );
+    assert.ok(block, 'should find updateRigMeta body');
+    assert.match(
+      block[0],
+      /setText\(['"]rig-meta-cost['"]\s*,\s*formatCostWithTokens\(/,
+      'updateRigMeta should render cost via the shared formatter',
+    );
+    assert.match(
+      block[0],
+      /rig\.costSummary/,
+      'updateRigMeta should source cost from rig.costSummary',
+    );
+  });
+
+  it('rig-elapsed ticker lifecycle is separate from the engine ticker', () => {
+    assert.match(
+      spiderJs,
+      /var rigElapsedTimer\s*=\s*null/,
+      'should declare rigElapsedTimer module state',
+    );
+    assert.match(
+      spiderJs,
+      /function startRigElapsedTimer\(/,
+      'should define startRigElapsedTimer',
+    );
+    assert.match(
+      spiderJs,
+      /function stopRigElapsedTimer\(/,
+      'should define stopRigElapsedTimer',
+    );
+    const backBlock = spiderJs.match(
+      /function backToList\(\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(backBlock, 'should find backToList');
+    assert.match(
+      backBlock[0],
+      /stopRigElapsedTimer\(/,
+      'backToList should stop the rig-elapsed ticker',
+    );
+  });
+});
+
+// ── Session-log lifecycle (T7 / D5 / D19) ───────────────────────────────
+
+describe('spider.js session-log lifecycle', () => {
+  // T7: an explicit resetSessionLog() helper owns every reset point
+  // (engine switch, rig switch, back-to-list) so stale transcripts never
+  // leak across contexts and the section stays hidden for non-anima engines.
+
+  it('defines resetSessionLog helper', () => {
+    assert.match(
+      spiderJs,
+      /function resetSessionLog\(\)/,
+      'should define a dedicated resetSessionLog helper',
+    );
+  });
+
+  it('resetSessionLog hides the section, clears the textarea, stops the poll', () => {
+    const block = spiderJs.match(
+      /function resetSessionLog\(\)[\s\S]*?(?=\n  \/\/|\n  function )/,
+    );
+    assert.ok(block, 'should find resetSessionLog body');
+    assert.match(
+      block[0],
+      /stopSessionTranscriptPoll\(/,
+      'resetSessionLog should stop any active transcript poll',
+    );
+    assert.match(
+      block[0],
+      /session-log-section[\s\S]*?display\s*=\s*['"]none['"]/,
+      'resetSessionLog should hide #session-log-section',
+    );
+    assert.match(
+      block[0],
+      /session-log['"][\s\S]*?value\s*=\s*['"]{2}/,
+      'resetSessionLog should clear the #session-log textarea value',
+    );
+  });
+
+  it('showEngineDetail calls resetSessionLog on engine switch (before render)', () => {
+    const block = spiderJs.match(
+      /function showEngineDetail\(engine\)[\s\S]*?(?=\n  \/\/|\n  function )/,
+    );
+    assert.ok(block, 'should find showEngineDetail body');
+    // The reset must happen before the skeleton/render work, guarded on
+    // engineChanged so same-engine re-clicks don't nuke the live poll.
+    assert.match(
+      block[0],
+      /engineChanged[\s\S]*?resetSessionLog\(/,
+      'showEngineDetail should gate resetSessionLog on engineChanged',
+    );
+    // Ensure the reset precedes the skeleton build / updateEngineDetail call.
+    const resetIdx = block[0].indexOf('resetSessionLog(');
+    const skeletonIdx = block[0].indexOf('buildEngineDetailSkeleton(');
+    const updateIdx = block[0].indexOf('updateEngineDetail(');
+    assert.ok(resetIdx >= 0, 'reset call should be present');
+    assert.ok(skeletonIdx > resetIdx, 'reset must come before skeleton build');
+    assert.ok(updateIdx > resetIdx, 'reset must come before updateEngineDetail');
+  });
+
+  it('showRigDetail calls resetSessionLog before any render or poll start', () => {
+    const block = spiderJs.match(
+      /function showRigDetail\(rig\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find showRigDetail body');
+    assert.match(
+      block[0],
+      /resetSessionLog\(/,
+      'showRigDetail should call resetSessionLog',
+    );
+    // Reset must precede buildRigMetaSkeleton / updateRigMeta / startCurrentRigPoll.
+    const resetIdx = block[0].indexOf('resetSessionLog(');
+    const skelIdx = block[0].indexOf('buildRigMetaSkeleton(');
+    const pollIdx = block[0].indexOf('startCurrentRigPoll(');
+    assert.ok(resetIdx >= 0, 'resetSessionLog call should exist');
+    assert.ok(skelIdx > resetIdx, 'reset must come before rig-meta skeleton build');
+    assert.ok(pollIdx > resetIdx, 'reset must come before rig poll start');
+  });
+
+  it('backToList calls resetSessionLog', () => {
+    const block = spiderJs.match(
+      /function backToList\(\)[\s\S]*?(?=\n  \/\/|\n  function )/,
+    );
+    assert.ok(block, 'should find backToList body');
+    assert.match(
+      block[0],
+      /resetSessionLog\(/,
+      'backToList should reset the session-log surface on navigation',
+    );
+  });
+
+  it('transcript polling is driven off engine.sessionId (anima gating)', () => {
+    // D4 / D19: engines without a sessionId are non-anima; the session
+    // log stays hidden. updateEngineDetail funnels the sessionId-or-null
+    // into startSessionTranscriptPoll, which hides the section for null.
     const updaterBlock = spiderJs.match(
       /function updateEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
     );
     assert.ok(updaterBlock, 'should find updateEngineDetail');
     assert.match(
       updaterBlock[0],
-      /engineStatusByEngineId/,
-      'updateEngineDetail should record engine status to detect transitions',
+      /startSessionTranscriptPoll\(engine\.sessionId\s*\|\|\s*null\)/,
+      'updateEngineDetail should pass engine.sessionId || null so non-anima engines hide the log',
+    );
+
+    const startPollBlock = spiderJs.match(
+      /function startSessionTranscriptPoll\([\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(startPollBlock, 'should find startSessionTranscriptPoll body');
+    assert.match(
+      startPollBlock[0],
+      /if\s*\(!sessionId\)[\s\S]*?display\s*=\s*['"]none['"]/,
+      'startSessionTranscriptPoll should hide the section when sessionId is null',
     );
   });
 });

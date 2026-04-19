@@ -317,12 +317,21 @@ The Spider contributes books, tools, engines, and a role for rig inspection and 
 
 | Tool | Permission | Description |
 |---|---|---|
-| `rig-list` | `read` | List rigs with optional status/limit filters |
-| `rig-show` | `read` | Show full detail for a rig by id |
+| `rig-list` | `read` | List rigs with optional status/limit filters (returns enriched `RigView[]`) |
+| `rig-show` | `read` | Show full detail for a rig by id (returns enriched `RigView`) |
 | `rig-resume` | `write` | Manually clear a block on a specific engine |
 | `rig-cancel` | `write` | Cancel a running, blocked, or stuck rig |
 | `crawl` | `write` | Execute a single crawl step |
 | `crawl-continual` | `write` | Poll `crawl()` in a loop until no work remains |
+
+#### Rig view enrichment
+
+`rig-list` and `rig-show` return `RigView` — the persisted `RigDoc` plus two derived fields aggregated from the animator sessions book:
+
+- `costSummary?: { costUsd, inputTokens?, outputTokens? }` — totals across every engine session in the rig. Absent when no engine has a `sessionId`; `inputTokens`/`outputTokens` are absent when no session reported token usage.
+- `engineCosts?: Record<engineId, { costUsd, inputTokens?, outputTokens? }>` — per-engine cost entries. Only engines with a `sessionId` (i.e. anima engines) get an entry — clockwork and skipped engines are omitted. Engines whose sessions can't be resolved contribute zero.
+
+The enrichment happens in the tool layer. `SpiderApi.list()` and `SpiderApi.show()` still return the persisted `RigDoc` shape for internal callers that don't need cost data.
 
 ### Engines
 
@@ -365,6 +374,9 @@ import type {
   SpiderApi,
   SpiderConfig,
   RigDoc,
+  RigView,
+  RigCostSummary,
+  EngineCostSummary,
   RigTemplate,
   RigTemplateEngine,
   RigTemplateInfo,

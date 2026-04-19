@@ -38,13 +38,11 @@
   var elapsedTimerStartedAt = null;  // ISO string of the engine the timer is running for
   var ELAPSED_TICK_INTERVAL = 1000;
 
-  // Tracks engines for which the per-session cost has already been fetched.
-  // Reset when navigating to a new rig. Used to gate the cost fetch so each
-  // engine's /api/session/show is requested at most once.
-  var costFetchedFor = {};
-  // Tracks the engine's status from the previous tick so the poll updater
-  // can detect a transition into 'completed' and trigger the cost fetch.
-  var engineStatusByEngineId = {};
+  // Rig-level elapsed ticker — a sibling of the engine elapsed ticker. Runs
+  // while a running/non-terminal rig is being viewed; stopped on rig switch,
+  // back-to-list, or transition to a terminal status.
+  var rigElapsedTimer = null;
+  var rigElapsedTimerStartedAt = null;
 
   var RIG_POLL_INTERVAL = 2000;
 
@@ -93,6 +91,40 @@
     if (!engines || engines.length === 0) return '0/0';
     var completed = engines.filter(function (e) { return e.status === 'completed'; }).length;
     return completed + '/' + engines.length + ' completed';
+  }
+
+  // ── Cost / token formatting ────────────────────────────────────────────
+
+  // Single source of truth for grouping conventions. Always pass 'en-US'
+  // explicitly so the comma separator is consistent regardless of viewer
+  // locale.
+  function formatTokenCount(n) {
+    return Number(n).toLocaleString('en-US');
+  }
+
+  /**
+   * Format a cost value as `$x.yy`. Used for the rig-list Cost column
+   * and any other surface that shows cost without tokens.
+   */
+  function formatCostUsd(costUsd) {
+    var n = Number(costUsd);
+    if (!isFinite(n)) n = 0;
+    return '$' + n.toFixed(2);
+  }
+
+  /**
+   * Format a cost + tokens triplet as `$x.yy (N input, M output)` with
+   * thousands-separator grouping. When either token count is absent
+   * (undefined), the parenthetical is omitted entirely — matching the
+   * brief's rule that we never render `(0 input, 0 output)` when no
+   * anima session has reported usage.
+   */
+  function formatCostWithTokens(costUsd, inputTokens, outputTokens) {
+    var cost = formatCostUsd(costUsd);
+    if (inputTokens === undefined || outputTokens === undefined) {
+      return cost;
+    }
+    return cost + ' (' + formatTokenCount(inputTokens) + ' input, ' + formatTokenCount(outputTokens) + ' output)';
   }
 
   function formatElapsed(startedAt, completedAt) {
@@ -149,6 +181,29 @@
       clearInterval(sessionPollTimer);
       sessionPollTimer = null;
     }
+  }
+
+  /**
+   * Reset the session-log surface to a clean slate (T7 / D5):
+   *  - hide `#session-log-section`
+   *  - clear the `#session-log` textarea value
+   *  - null out the in-memory transcript poll state
+   *
+   * Called as the first step of every engine switch, rig switch, and
+   * back-to-list — before any render or poll start. This is the single
+   * code path that owns session-log lifecycle; all other mutations of
+   * #session-log-section visibility or #session-log value must route
+   * through `startSessionTranscriptPoll` (which calls into this reset
+   * via stopSessionTranscriptPoll in its stop-path).
+   */
+  function resetSessionLog() {
+    stopSessionTranscriptPoll();
+    var section = document.getElementById('session-log-section');
+    if (section) section.style.display = 'none';
+    var ta = document.getElementById('session-log');
+    if (ta) ta.value = '';
+    var spinner = document.getElementById('session-log-spinner');
+    if (spinner) spinner.style.display = 'none';
   }
 
   // ── Session transcript polling ─────────────────────────────────────────
@@ -267,6 +322,68 @@
     elapsedTimerStartedAt = null;
   }
 
+  // ── Rig-level elapsed ticker ───────────────────────────────────────────
+
+  /**
+   * Start a 1 s ticker that refreshes the #rig-elapsed text with the
+   * running elapsed from `startedAt` (rig.createdAt) to now. Managed
+   * alongside — but separately from — the engine elapsed ticker, because
+   * the rig-level ticker's lifecycle spans the whole detail view while
+   * the engine ticker is bound to engine selection.
+   */
+  function startRigElapsedTimer(startedAt) {
+    if (!startedAt) { stopRigElapsedTimer(); return; }
+    if (rigElapsedTimer !== null && rigElapsedTimerStartedAt === startedAt) return;
+
+    stopRigElapsedTimer();
+    rigElapsedTimerStartedAt = startedAt;
+    var tick = function () {
+      var el = document.getElementById('rig-elapsed');
+      if (!el) return;
+      el.textContent = formatElapsed(startedAt, new Date().toISOString());
+    };
+    tick();
+    rigElapsedTimer = setInterval(tick, ELAPSED_TICK_INTERVAL);
+  }
+
+  function stopRigElapsedTimer() {
+    if (rigElapsedTimer !== null) {
+      clearInterval(rigElapsedTimer);
+      rigElapsedTimer = null;
+    }
+    rigElapsedTimerStartedAt = null;
+  }
+
+  function isRigTerminal(rig) {
+    return rig && (rig.status === 'completed' || rig.status === 'failed' || rig.status === 'cancelled' || rig.status === 'stuck');
+  }
+
+  /**
+   * End time for the rig, used in formatElapsed for terminal rigs. Picks
+   * the maximum engine.completedAt — falling back to rig.createdAt for
+   * degenerate terminal rigs whose engines never completed (D3).
+   */
+  function rigEndTime(rig) {
+    var maxCompletedAt = null;
+    var engines = rig.engines || [];
+    for (var i = 0; i < engines.length; i++) {
+      var ca = engines[i].completedAt;
+      if (ca && (maxCompletedAt === null || ca > maxCompletedAt)) {
+        maxCompletedAt = ca;
+      }
+    }
+    return maxCompletedAt || rig.createdAt;
+  }
+
+  function countCompletedEngines(engines) {
+    var count = 0;
+    var list = engines || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].status === 'completed') count++;
+    }
+    return count;
+  }
+
   // ── Rig polling helpers ────────────────────────────────────────────────
 
   function isRigInFlight(rig) {
@@ -346,16 +463,21 @@
         if (!currentRig || currentRig.id !== rig.id) return; // navigated away
         currentRig = rig;
 
-        // Update the meta table
-        var metaTable = document.getElementById('detail-meta');
-        if (metaTable) {
-          metaTable.innerHTML =
-            '<tbody>' +
-            '<tr><th>ID</th><td>' + esc(rig.id) + '</td></tr>' +
-            '<tr><th>Writ</th><td><a href="/pages/writs/?writ=' + esc(rig.writId) + '">' + esc(rig.writId) + '</a></td></tr>' +
-            '<tr><th>Status</th><td>' + badgeHtml(rig.status) + '</td></tr>' +
-            '<tr><th>Created</th><td>' + esc(formatDate(rig.createdAt)) + '</td></tr>' +
-            '</tbody>';
+        // Update the meta table via stable-id skeleton writes only — never
+        // rebuild the innerHTML (that would flicker and tear down any
+        // liveness signals).
+        updateRigMeta(rig);
+
+        // Stop the rig elapsed ticker when the rig reaches a terminal
+        // status; the last ticked value stays as the final elapsed.
+        if (isRigTerminal(rig)) {
+          stopRigElapsedTimer();
+          // Write the final elapsed in case no tick has happened since the
+          // terminal transition.
+          var rigElapsedEl = document.getElementById('rig-elapsed');
+          if (rigElapsedEl) {
+            rigElapsedEl.textContent = formatElapsed(rig.createdAt, rigEndTime(rig));
+          }
         }
 
         // Re-render pipeline using keyed in-place update (no flicker).
@@ -457,9 +579,13 @@
 
     var rows = filtered.map(function (rig) {
       var writTitle = (writLookup[rig.writId] && writLookup[rig.writId].title) || '\u2014';
+      // D7/D11: render $0.00 when no cost data exists. Server populates
+      // costSummary from the animator sessions book for every rig.
+      var costUsd = (rig.costSummary && typeof rig.costSummary.costUsd === 'number') ? rig.costSummary.costUsd : 0;
       return '<tr>' +
         '<td>' + badgeHtml(rig.status) + '</td>' +
         '<td><a class="rig-link" href="#" data-rig-id="' + esc(rig.id) + '">' + esc(writTitle) + '</a></td>' +
+        '<td>' + esc(formatCostUsd(costUsd)) + '</td>' +
         '<td>' + esc(engineSummary(rig.engines)) + '</td>' +
         '<td><a class="rig-link" href="#" data-rig-id="' + esc(rig.id) + '">' + esc(rig.id) + '</a></td>' +
         '<td><a href="/pages/writs/?writ=' + esc(rig.writId) + '">' + esc(rig.writId) + '</a></td>' +
@@ -483,34 +609,99 @@
     }
   }
 
+  // ── Rig meta skeleton + updater ────────────────────────────────────────
+
+  /**
+   * Build the stable-id skeleton for the rig meta table exactly once per
+   * rig-detail entry. Subsequent polls (updateRigMeta) and the 1 s rig
+   * elapsed ticker write text into these stable nodes — never rebuilding
+   * the markup, which would flicker and force a reset-flash at the 2 s
+   * boundary.
+   *
+   * Mirrors the `buildEngineDetailSkeleton` pattern.
+   */
+  function buildRigMetaSkeleton() {
+    var metaTable = document.getElementById('detail-meta');
+    if (!metaTable) return;
+
+    var html = '<tbody>';
+    html += '<tr><th>ID</th><td id="rig-meta-id"></td></tr>';
+    html += '<tr><th>Writ</th><td id="rig-meta-writ"></td></tr>';
+    html += '<tr><th>Status</th><td id="rig-meta-status"></td></tr>';
+    html += '<tr><th>Created</th><td id="rig-meta-created"></td></tr>';
+    html += '<tr><th>Completed Engines</th><td id="rig-meta-engine-count"></td></tr>';
+    html += '<tr><th>Elapsed</th><td id="rig-elapsed"></td></tr>';
+    html += '<tr><th>Cost</th><td id="rig-meta-cost"></td></tr>';
+    html += '</tbody>';
+    metaTable.innerHTML = html;
+  }
+
+  /**
+   * Write rig meta values into the stable skeleton. Safe to call on every
+   * rig poll — only the value cells are mutated.
+   */
+  function updateRigMeta(rig) {
+    if (!rig) return;
+    setText('rig-meta-id', rig.id);
+    setHtml('rig-meta-writ', '<a href="/pages/writs/?writ=' + esc(rig.writId) + '">' + esc(rig.writId) + '</a>');
+    setHtml('rig-meta-status', badgeHtml(rig.status));
+    setText('rig-meta-created', formatDate(rig.createdAt));
+
+    var engines = rig.engines || [];
+    var completed = countCompletedEngines(engines);
+    setText('rig-meta-engine-count', completed + ' of ' + engines.length);
+
+    // Elapsed — for non-terminal rigs, the ticker keeps this fresh. For
+    // terminal rigs, write the final value here (the ticker is stopped).
+    var elapsedEl = document.getElementById('rig-elapsed');
+    if (elapsedEl) {
+      if (isRigTerminal(rig)) {
+        elapsedEl.textContent = formatElapsed(rig.createdAt, rigEndTime(rig));
+      } else if (!rigElapsedTimer) {
+        // No ticker running — paint an initial value so the cell isn't
+        // blank until the first tick.
+        elapsedEl.textContent = formatElapsed(rig.createdAt, new Date().toISOString());
+      }
+    }
+
+    // Cost — D7: always render $0.00 when no data exists; omit
+    // parenthetical when token totals are absent.
+    var summary = rig.costSummary;
+    var costUsd = summary ? summary.costUsd : 0;
+    var inputTokens = summary ? summary.inputTokens : undefined;
+    var outputTokens = summary ? summary.outputTokens : undefined;
+    setText('rig-meta-cost', formatCostWithTokens(costUsd, inputTokens, outputTokens));
+  }
+
   // ── Show rig detail ────────────────────────────────────────────────────
 
   function showRigDetail(rig) {
     currentRig = rig;
     selectedEngineId = null;
 
-    stopSessionTranscriptPoll();
+    // Reset the session-log surface BEFORE any render (T7): hides the
+    // section, clears the textarea, and nulls transcript state.
+    resetSessionLog();
     stopElapsedTimer();
+    stopRigElapsedTimer();
     stopCurrentRigPoll();
-
-    // Reset per-rig caches so the new rig's engines refetch cost cleanly
-    // and status transitions are tracked from a clean slate.
-    costFetchedFor = {};
-    engineStatusByEngineId = {};
 
     document.getElementById('rig-list-view').style.display = 'none';
     document.getElementById('rig-detail-view').style.display = '';
 
     document.getElementById('detail-title').textContent = 'Rig: ' + rig.id;
 
-    var metaTable = document.getElementById('detail-meta');
-    metaTable.innerHTML =
-      '<tbody>' +
-      '<tr><th>ID</th><td>' + esc(rig.id) + '</td></tr>' +
-      '<tr><th>Writ</th><td><a href="/pages/writs/?writ=' + esc(rig.writId) + '">' + esc(rig.writId) + '</a></td></tr>' +
-      '<tr><th>Status</th><td>' + badgeHtml(rig.status) + '</td></tr>' +
-      '<tr><th>Created</th><td>' + esc(formatDate(rig.createdAt)) + '</td></tr>' +
-      '</tbody>';
+    // Build the stable-id skeleton for the rig meta table once on detail
+    // entry. Every subsequent poll / tick writes text into these stable
+    // nodes via updateRigMeta.
+    buildRigMetaSkeleton();
+    updateRigMeta(rig);
+
+    // Start the rig-level elapsed ticker for non-terminal rigs. Terminal
+    // rigs show final static values (no ticking — per D16).
+    if (!isRigTerminal(rig)) {
+      startRigElapsedTimer(rig.createdAt);
+    }
 
     // Fetch and display writ details
     var writDetailsCard = document.getElementById('writ-details-card');
@@ -532,9 +723,8 @@
         if (card) card.style.display = 'none';
       });
 
-    // Hide session log section
-    var sessionLogSection = document.getElementById('session-log-section');
-    if (sessionLogSection) sessionLogSection.style.display = 'none';
+    // Session-log surface reset is already owned by resetSessionLog()
+    // above — do not redundantly hide the section here.
 
     // Switching rigs: clear pipeline so any reused-id collisions can't reuse
     // stale click handlers from a previous rig's nodes. The keyed-update
@@ -763,13 +953,12 @@
     html += '<dt id="ed-block-condition-dt" style="display:none">Block Condition</dt>';
     html += '<dd id="ed-block-condition" style="display:none">';
     html += '<pre id="ed-block-condition-pre" style="margin:0;font-size:11px"></pre></dd>';
-    // Explicit cost-row containers replace the old #cost-placeholder trick.
-    html += '<dt id="ed-cost-input-dt" style="display:none">Input Tokens</dt>';
-    html += '<dd id="ed-cost-input" style="display:none"></dd>';
-    html += '<dt id="ed-cost-output-dt" style="display:none">Output Tokens</dt>';
-    html += '<dd id="ed-cost-output" style="display:none"></dd>';
-    html += '<dt id="ed-cost-usd-dt" style="display:none">Cost (USD)</dt>';
-    html += '<dd id="ed-cost-usd" style="display:none"></dd>';
+    // Cost row — single combined format (`$x.yy (N input, M output)`).
+    // Shown only for engines whose rig-show payload reports a per-engine
+    // cost entry (anima engines — i.e. engines with a sessionId). Hidden
+    // for clockwork engines.
+    html += '<dt id="ed-cost-dt" style="display:none">Cost</dt>';
+    html += '<dd id="ed-cost" style="display:none"></dd>';
     html += '</dl>';
 
     // Stable <details> nodes — open/closed state and <pre> scroll inside
@@ -841,9 +1030,8 @@
 
   /**
    * Update only the value text of the existing engine-detail field
-   * containers. Does not touch the SSE stream, does not re-fetch the
-   * writ, and does not unconditionally re-fetch session cost — cost
-   * fetch is gated on a transition into 'completed' (see costFetchedFor).
+   * containers. Does not touch the writ fetch. Cost is read from the
+   * enriched rig-show payload — no per-engine fetch is triggered here.
    *
    * MUST be safe to call on every rig poll: any mutation that would
    * disturb <details> open state, <pre> scroll, or the cancel-button
@@ -968,21 +1156,18 @@
       yieldsDetails.style.display = 'none';
     }
 
-    // Cost fetch — gated on a transition to 'completed' status. We use
-    // costFetchedFor as the canonical guard so each engine's cost is
-    // requested at most once. The previous-status check expresses the
-    // "transition" intent and avoids re-firing once we've already fetched.
-    var prevStatus = engineStatusByEngineId[engine.id];
-    if (
-      engine.sessionId &&
-      engine.status === 'completed' &&
-      !costFetchedFor[engine.id] &&
-      (prevStatus === undefined || prevStatus !== 'completed')
-    ) {
-      costFetchedFor[engine.id] = true;
-      fetchSessionCost(engine.id, engine.sessionId);
+    // Cost — read from the enriched rig-show payload. Shown only when the
+    // rig view includes a per-engine cost entry for this engine (which
+    // means the engine has a sessionId — i.e. is an anima engine).
+    // Updates on the 2 s rig poll cadence without any per-engine fetch.
+    var engineCost = (currentRig && currentRig.engineCosts) ? currentRig.engineCosts[engine.id] : undefined;
+    if (engineCost) {
+      setText('ed-cost', formatCostWithTokens(engineCost.costUsd, engineCost.inputTokens, engineCost.outputTokens));
+      setRowDisplay('ed-cost-dt', 'ed-cost', true);
+    } else {
+      setText('ed-cost', '');
+      setRowDisplay('ed-cost-dt', 'ed-cost', false);
     }
-    engineStatusByEngineId[engine.id] = engine.status;
 
     // Transcript polling target is driven off the current engine's
     // sessionId. The dedupe inside startSessionTranscriptPoll makes it
@@ -1002,32 +1187,6 @@
     }
   }
 
-  function fetchSessionCost(engineId, sessionId) {
-    fetch('/api/session/show?id=' + encodeURIComponent(sessionId))
-      .then(function (r) { return r.json(); })
-      .then(function (session) {
-        // Bail out if the user has navigated away from this engine.
-        if (selectedEngineId !== engineId) return;
-        applyCostUpdate(session);
-      })
-      .catch(function () { /* ignore */ });
-  }
-
-  function applyCostUpdate(session) {
-    var hasInput = session && session.tokenUsage && session.tokenUsage.inputTokens != null;
-    var hasOutput = session && session.tokenUsage && session.tokenUsage.outputTokens != null;
-    var hasCost = session && session.costUsd != null;
-
-    if (hasInput) setText('ed-cost-input', String(session.tokenUsage.inputTokens));
-    setRowDisplay('ed-cost-input-dt', 'ed-cost-input', !!hasInput);
-
-    if (hasOutput) setText('ed-cost-output', String(session.tokenUsage.outputTokens));
-    setRowDisplay('ed-cost-output-dt', 'ed-cost-output', !!hasOutput);
-
-    if (hasCost) setText('ed-cost-usd', '$' + Number(session.costUsd).toFixed(4));
-    setRowDisplay('ed-cost-usd-dt', 'ed-cost-usd', !!hasCost);
-  }
-
   // ── Show engine detail (click path) ────────────────────────────────────
 
   /**
@@ -1041,6 +1200,15 @@
   function showEngineDetail(engine) {
     var engineChanged = selectedEngineId !== engine.id;
     selectedEngineId = engine.id;
+
+    // Reset the session-log surface BEFORE any render (T7) when actually
+    // switching to a different engine. A same-engine click is a no-op
+    // re-render and must not disturb the in-flight transcript poll —
+    // startSessionTranscriptPoll's dedupe inside updateEngineDetail keeps
+    // the existing loop alive in that case.
+    if (engineChanged) {
+      resetSessionLog();
+    }
 
     var panel = document.getElementById('engine-detail');
     var title = document.getElementById('engine-detail-title');
@@ -1066,13 +1234,16 @@
   // ── Back to list ───────────────────────────────────────────────────────
 
   function backToList() {
-    stopSessionTranscriptPoll();
+    // T7: explicit session-log reset on back-to-list. resetSessionLog
+    // itself calls stopSessionTranscriptPoll and clears the textarea
+    // so the list → detail → list → detail cycle never leaks a stale
+    // transcript across rigs.
+    resetSessionLog();
     stopElapsedTimer();
+    stopRigElapsedTimer();
     stopCurrentRigPoll();
     currentRig = null;
     selectedEngineId = null;
-    costFetchedFor = {};
-    engineStatusByEngineId = {};
     document.getElementById('rig-detail-view').style.display = 'none';
     document.getElementById('rig-list-view').style.display = '';
   }
