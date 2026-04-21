@@ -29,7 +29,7 @@ import { createClerk } from '@shardworks/clerk-apparatus';
 import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 
 import { createClockworksRetry } from './clockworks-retry.ts';
-import { MAX_RETRY_ATTEMPTS, type ClockworksRetryApi } from './types.ts';
+import { MAX_RETRY_ATTEMPTS, type ClockworksRetryApi, type SpiderWritStatus } from './types.ts';
 
 // ── Test bootstrap ────────────────────────────────────────────────────
 
@@ -77,7 +77,7 @@ interface Fixture {
   /** Add a rig row for a given writ; returns the rig id. */
   seedRig: (writId: string, status?: RigRow['status']) => Promise<string>;
   /** Helper: transition a writ straight to stuck via the Clerk API. */
-  transitionToStuck: (writId: string, spiderSubSlot?: unknown) => Promise<WritDoc>;
+  transitionToStuck: (writId: string, spiderStatus?: SpiderWritStatus) => Promise<WritDoc>;
   /** Number of rigs whose writId matches. */
   rigCount: (writId: string) => Promise<number>;
 }
@@ -165,11 +165,11 @@ async function buildFixture(): Promise<Fixture> {
 
   async function transitionToStuck(
     writId: string,
-    spiderSubSlot?: unknown,
+    spiderStatus?: SpiderWritStatus,
   ): Promise<WritDoc> {
     const writ = await clerk.transition(writId, 'stuck', { resolution: 'test stuck' });
-    if (spiderSubSlot !== undefined) {
-      await clerk.setWritStatus(writId, 'spider', spiderSubSlot);
+    if (spiderStatus !== undefined) {
+      await clerk.setWritStatus(writId, 'spider', spiderStatus);
     }
     return writ;
   }
@@ -182,20 +182,33 @@ async function buildFixture(): Promise<Fixture> {
 }
 
 /**
- * Set the spider sub-slot BEFORE entering stuck. The retry clockwork
- * fires on the transition *into* stuck, so the substrate must be in
- * place at that moment. This helper is what tests use to bring a writ
- * from `open` to `stuck` with a specific `status.spider.stuck` payload.
+ * Drive a writ from `open` to `stuck` with a `status.spider` payload,
+ * mirroring production's `failEngine` atomicity.
+ *
+ * Production (Spider's `failEngine`) wraps the rig patch and the writ
+ * status-slot write in a single outer `stacks.transaction()` so the
+ * rigs → writs CDC cascade and the status-slot write coalesce into one
+ * Phase 2 event carrying phase-and-status together (see
+ * `packages/plugins/spider/src/spider.ts`). This helper mirrors that
+ * atomicity: both the phase transition and the status-slot write happen
+ * inside the same transaction, so the retry clockwork's Phase 2
+ * observer sees exactly one update event with the final phase and the
+ * final status — the same shape it sees in production.
+ *
+ * Tests that want to drive the retry clockwork's trigger condition
+ * directly (without standing up Spider) use this helper. The
+ * cross-plugin integration test boots the real Spider and drives
+ * through `failEngine` instead.
  */
 async function stuckWith(
   fix: Fixture,
   writId: string,
-  spiderSubSlot: unknown,
+  spiderStatus: SpiderWritStatus,
 ): Promise<void> {
-  // The order matters: setWritStatus populates status.spider first, then
-  // the transition to stuck fires the CDC event the clockwork observes.
-  await fix.clerk.setWritStatus(writId, 'spider', spiderSubSlot);
-  await fix.clerk.transition(writId, 'stuck', { resolution: 'test stuck' });
+  await fix.stacks.transaction(async () => {
+    await fix.clerk.transition(writId, 'stuck', { resolution: 'test stuck' });
+    await fix.clerk.setWritStatus(writId, 'spider', spiderStatus);
+  });
 }
 
 async function postOpenWrit(fix: Fixture): Promise<WritDoc> {
@@ -222,13 +235,17 @@ describe('Clockworks-Retry — retryable flag and cap enforcement', () => {
     });
   });
 
-  describe('trigger condition: status.spider.stuck.retryable === true', () => {
+  describe('trigger condition: status.spider.retryable === true', () => {
     it('requeues (stuck → open) when retryable is true and rigs.length === 1', async () => {
       const writ = await postOpenWrit(fix);
       await fix.seedRig(writ.id, 'stuck');
       assert.equal(await fix.rigCount(writ.id), 1);
 
-      await stuckWith(fix, writ.id, { stuck: { retryable: true, cause: 'engine-failure' } });
+      await stuckWith(fix, writ.id, {
+        stuckCause: 'engine-failure',
+        retryable: true,
+        detail: 'session crashed',
+      });
 
       // Phase 2 handler fires after commit — in the in-memory backend that
       // is already synchronous. Re-read the writ and assert it was
@@ -241,7 +258,11 @@ describe('Clockworks-Retry — retryable flag and cap enforcement', () => {
       const writ = await postOpenWrit(fix);
       await fix.seedRig(writ.id, 'stuck');
 
-      await stuckWith(fix, writ.id, { stuck: { retryable: false, cause: 'engine-failure' } });
+      await stuckWith(fix, writ.id, {
+        stuckCause: 'engine-failure',
+        retryable: false,
+        detail: 'invalid graft',
+      });
 
       const after = await fix.clerk.show(writ.id);
       assert.equal(after.phase, 'stuck', 'writ should stay stuck');
@@ -251,9 +272,9 @@ describe('Clockworks-Retry — retryable flag and cap enforcement', () => {
       const writ = await postOpenWrit(fix);
       await fix.seedRig(writ.id, 'stuck');
 
-      // Populate status.spider but WITHOUT `stuck.retryable` (a pre-Slice-A
+      // Populate status.spider but WITHOUT `retryable` (a pre-Slice-A
       // writ, or a code path that does not set the retry substrate).
-      await stuckWith(fix, writ.id, { stuck: { cause: 'engine-failure' } });
+      await stuckWith(fix, writ.id, { stuckCause: 'engine-failure' });
 
       const after = await fix.clerk.show(writ.id);
       assert.equal(after.phase, 'stuck', 'writ should stay stuck');
@@ -276,9 +297,9 @@ describe('Clockworks-Retry — retryable flag and cap enforcement', () => {
       const writ = await postOpenWrit(fix);
       await fix.seedRig(writ.id, 'stuck');
 
-      // The gating path writes status.spider = { stuckCause: 'failed-blocker', ... }
-      // directly on the spider sub-slot — NOT under .stuck. The retry
-      // clockwork must not key on stuckCause.
+      // The gating path writes stuckCause/blockerIds/observedAt on the
+      // spider sub-slot, but NEVER sets `retryable`. The retry clockwork
+      // must not key on stuckCause.
       await stuckWith(fix, writ.id, {
         stuckCause: 'failed-blocker',
         blockerIds: ['w-blocker'],
@@ -303,22 +324,23 @@ describe('Clockworks-Retry — retryable flag and cap enforcement', () => {
       assert.equal(after.phase, 'stuck', 'cycle-stuck writ stays stuck');
     });
 
-    it('ignores dependency sub-slot even if stuck.retryable is set alongside it', async () => {
-      // Defensive: even if a rogue writer populates both the gating slot
-      // and the retry sub-slot, the retry clockwork only looks at
-      // status.spider.stuck.retryable — the presence of stuckCause is not
-      // a signal to ignore. This test confirms the observer is additive:
-      // it fires whenever the retry substrate says so, regardless of
-      // other sub-fields under status.spider.
+    it('ignores stuckCause when retryable is also set (retryable drives requeue)', async () => {
+      // Defensive: even if a rogue writer populates a dependency-style
+      // stuckCause alongside `retryable: true`, the retry clockwork only
+      // looks at `retryable` — the presence of stuckCause is not a signal
+      // to ignore. This test confirms the observer is additive: it fires
+      // whenever the retry substrate says so, regardless of other fields
+      // under status.spider.
       const writ = await postOpenWrit(fix);
       await fix.seedRig(writ.id, 'stuck');
 
       await stuckWith(fix, writ.id, {
-        // Dependency-style slot
+        // Dependency-style fields
         stuckCause: 'failed-blocker',
         blockerIds: ['w-blocker'],
         // ...and, orthogonally, the retry substrate
-        stuck: { retryable: true, cause: 'engine-failure' },
+        retryable: true,
+        detail: 'engine-failure on top of blocker',
       });
 
       const after = await fix.clerk.show(writ.id);
@@ -334,7 +356,11 @@ describe('Clockworks-Retry — retryable flag and cap enforcement', () => {
       await fix.seedRig(writ.id, 'stuck');
       assert.equal(await fix.rigCount(writ.id), MAX_RETRY_ATTEMPTS);
 
-      await stuckWith(fix, writ.id, { stuck: { retryable: true, cause: 'engine-failure' } });
+      await stuckWith(fix, writ.id, {
+        stuckCause: 'engine-failure',
+        retryable: true,
+        detail: 'session crashed',
+      });
 
       const after = await fix.clerk.show(writ.id);
       assert.equal(after.phase, 'stuck', 'writ stays stuck at cap');
@@ -346,7 +372,11 @@ describe('Clockworks-Retry — retryable flag and cap enforcement', () => {
       await fix.seedRig(writ.id, 'stuck');
       await fix.seedRig(writ.id, 'stuck');
 
-      await stuckWith(fix, writ.id, { stuck: { retryable: true, cause: 'engine-failure' } });
+      await stuckWith(fix, writ.id, {
+        stuckCause: 'engine-failure',
+        retryable: true,
+        detail: 'session crashed',
+      });
 
       const after = await fix.clerk.show(writ.id);
       assert.equal(after.phase, 'stuck');
@@ -361,7 +391,11 @@ describe('Clockworks-Retry — retryable flag and cap enforcement', () => {
       await fix.seedRig(writB.id, 'stuck');
       await fix.seedRig(writA.id, 'stuck');
 
-      await stuckWith(fix, writA.id, { stuck: { retryable: true, cause: 'engine-failure' } });
+      await stuckWith(fix, writA.id, {
+        stuckCause: 'engine-failure',
+        retryable: true,
+        detail: 'session crashed',
+      });
 
       const after = await fix.clerk.show(writA.id);
       assert.equal(after.phase, 'open', 'writ A requeued — other writs\' rigs are not counted');
@@ -373,7 +407,11 @@ describe('Clockworks-Retry — retryable flag and cap enforcement', () => {
       const writ = await postOpenWrit(fix);
       // Attempt 1: rig seeded, stuck fires with retryable=true.
       await fix.seedRig(writ.id, 'stuck');
-      await stuckWith(fix, writ.id, { stuck: { retryable: true, cause: 'engine-failure' } });
+      await stuckWith(fix, writ.id, {
+        stuckCause: 'engine-failure',
+        retryable: true,
+        detail: 'session crashed',
+      });
       assert.equal((await fix.clerk.show(writ.id)).phase, 'open', 'first requeue succeeds');
 
       // Simulate Spider spawning attempt 2: rigs.length is now 2.
@@ -381,7 +419,11 @@ describe('Clockworks-Retry — retryable flag and cap enforcement', () => {
       assert.equal(await fix.rigCount(writ.id), MAX_RETRY_ATTEMPTS);
 
       // Attempt 2 fails: stuck fires again. Cap is reached — no requeue.
-      await stuckWith(fix, writ.id, { stuck: { retryable: true, cause: 'engine-failure' } });
+      await stuckWith(fix, writ.id, {
+        stuckCause: 'engine-failure',
+        retryable: true,
+        detail: 'session crashed again',
+      });
       assert.equal(
         (await fix.clerk.show(writ.id)).phase,
         'stuck',
@@ -395,10 +437,14 @@ describe('Clockworks-Retry — retryable flag and cap enforcement', () => {
       const writ = await postOpenWrit(fix);
       await fix.seedRig(writ.id, 'stuck');
 
-      await stuckWith(fix, writ.id, { stuck: { retryable: true, cause: 'engine-failure' } });
+      await stuckWith(fix, writ.id, {
+        stuckCause: 'engine-failure',
+        retryable: true,
+        detail: 'session crashed',
+      });
       assert.equal((await fix.clerk.show(writ.id)).phase, 'open');
 
-      // Simulate a stuck-sub-slot rewrite (e.g. Spider's gating path
+      // Simulate a stuck-slot rewrite (e.g. Spider's gating path
       // rewriting status.spider while the writ is already stuck). The
       // writ is currently open, so first move it back to stuck via a
       // rig, then rewrite status while stuck — the rewrite should NOT
@@ -409,9 +455,13 @@ describe('Clockworks-Retry — retryable flag and cap enforcement', () => {
       assert.equal((await fix.clerk.show(writ.id)).phase, 'stuck');
 
       // Now rewrite status.spider WHILE already stuck — no phase change.
-      await fix.clerk.setWritStatus(writ.id, 'spider', {
-        stuck: { retryable: true, cause: 'engine-failure', observedAt: 'later' },
-      });
+      const nextStatus: SpiderWritStatus = {
+        stuckCause: 'engine-failure',
+        retryable: true,
+        detail: 'session crashed again',
+        observedAt: 'later',
+      };
+      await fix.clerk.setWritStatus(writ.id, 'spider', nextStatus);
       assert.equal(
         (await fix.clerk.show(writ.id)).phase,
         'stuck',
@@ -422,7 +472,11 @@ describe('Clockworks-Retry — retryable flag and cap enforcement', () => {
     it('does not fire on terminal transitions (stuck → failed)', async () => {
       const writ = await postOpenWrit(fix);
       await fix.seedRig(writ.id, 'stuck');
-      await stuckWith(fix, writ.id, { stuck: { retryable: true, cause: 'engine-failure' } });
+      await stuckWith(fix, writ.id, {
+        stuckCause: 'engine-failure',
+        retryable: true,
+        detail: 'session crashed',
+      });
       assert.equal((await fix.clerk.show(writ.id)).phase, 'open');
 
       // Stuck → failed is a terminal transition; irrelevant to retry.
@@ -444,7 +498,11 @@ describe('Clockworks-Retry — retryable flag and cap enforcement', () => {
       const writ = await postOpenWrit(fix);
       assert.equal(await fix.rigCount(writ.id), 0);
 
-      await stuckWith(fix, writ.id, { stuck: { retryable: true, cause: 'engine-failure' } });
+      await stuckWith(fix, writ.id, {
+        stuckCause: 'engine-failure',
+        retryable: true,
+        detail: 'session crashed',
+      });
 
       assert.equal((await fix.clerk.show(writ.id)).phase, 'open');
     });
