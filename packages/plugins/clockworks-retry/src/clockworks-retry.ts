@@ -1,12 +1,13 @@
 /**
  * The Clockworks-Retry apparatus — the autonomous-hopper retry primitive.
  *
- * Observes stuck writs carrying `retryable: true` on their
- * `status.spider.stuck` sub-slot and transitions them `stuck → open`,
- * causing Spider to spawn the next rig attempt. Bounded by a single
- * global cap of N=2 attempts, counted as the number of rigs already
- * attached to the writ (multi-rig-lite — one writ accumulates multiple
- * rigs over successive attempts).
+ * Observes stuck writs carrying `retryable: true` on their `status.spider`
+ * sub-slot (the flag lives directly on the slot, alongside `stuckCause`,
+ * `detail`, `observedAt`, and `blockerIds`) and transitions them
+ * `stuck → open`, causing Spider to spawn the next rig attempt. Bounded
+ * by a single global cap of N=2 attempts, counted as the number of rigs
+ * already attached to the writ (multi-rig-lite — one writ accumulates
+ * multiple rigs over successive attempts).
  *
  * This keeps Spider's core logic unaware of retry policy — retry is a
  * policy observer layered on top of Spider's substrate, not a concern
@@ -14,8 +15,8 @@
  * without touching Spider.
  *
  * Hard precondition: the sibling commission that introduces the
- * `retryable` flag must populate `writ.status.spider.stuck.retryable`
- * on engine-failure stucks. Without that flag, the clockwork's trigger
+ * `retryable` flag must populate `writ.status.spider.retryable` on
+ * engine-failure stucks. Without that flag, the clockwork's trigger
  * condition is never met and this binding is safely inert.
  *
  * Non-negotiable decisions (see commission c-mo814q):
@@ -40,6 +41,7 @@ import type { Plugin, StartupContext } from '@shardworks/nexus-core';
 import { guild } from '@shardworks/nexus-core';
 import type { StacksApi, BookEntry, ReadOnlyBook } from '@shardworks/stacks-apparatus';
 import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
+import type { SpiderWritStatus } from '@shardworks/spider-apparatus';
 
 import { MAX_RETRY_ATTEMPTS, type ClockworksRetryApi } from './types.ts';
 
@@ -111,22 +113,19 @@ export function createClockworksRetry(): Plugin {
             if (writ.phase !== 'stuck') return;
             if (prev.phase === 'stuck') return;
 
-            // Trigger condition: status.spider.stuck.retryable === true.
+            // Trigger condition: status.spider.retryable === true.
             //
             // Missing field / non-true values / wrong shapes are all
             // fail-safe no-ops — the writ stays stuck for human
             // attention. This is how we ignore:
             //   - dependency stucks (failed-blocker, cycle): those
-            //     live on status.spider.stuckCause (a sibling field),
-            //     not status.spider.stuck.retryable.
+            //     live on the same slot but only set stuckCause /
+            //     blockerIds / observedAt — never retryable.
             //   - pre-Slice-A writs that never get the flag written.
             //   - code paths that transition to stuck without setting
             //     the retry observability substrate.
-            const spiderStatus = writ.status?.spider as
-              | { stuck?: { retryable?: unknown } }
-              | undefined;
-            const retryable = spiderStatus?.stuck?.retryable;
-            if (retryable !== true) return;
+            const spiderStatus = writ.status?.spider as SpiderWritStatus | undefined;
+            if (spiderStatus?.retryable !== true) return;
 
             // Count attempts as rigs-with-this-writId. The commission
             // deliberately uses `rigs.length` as the natural counter —
@@ -142,12 +141,6 @@ export function createClockworksRetry(): Plugin {
             // record of *why* the stuck happened), and preserving it
             // lets surfaces like the patron UI still render the
             // most recent stuck cause alongside the attempt counter.
-            //
-            // Guard against concurrent transitions: re-read the writ
-            // inside the handler's own context and no-op if something
-            // else has already moved it (e.g. a patron-driven cancel
-            // firing between the CDC dispatch and this transition
-            // write).
             await clerk.transition(writ.id, 'open');
           },
           { failOnError: false },
