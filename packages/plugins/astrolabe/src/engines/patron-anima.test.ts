@@ -17,11 +17,20 @@
  *   - unknown option key in selection → dropped
  *   - emission that is an object wrapper (`{ verdicts: [...] }`) → accepted
  *   - buildPatronPrompt includes analyst recommendation + rationale
+ *   - buildPatronPrompt carries the tailored operational discipline:
+ *     one-option-per-decision, principle-structural confidence calibration,
+ *     abstain-by-omission, explicit out-of-lane prohibition on codebase
+ *     audit, three-verdict worked example with abstained entry absent
+ *   - buildPatronPrompt pulls static content from the packaged markdown
+ *     file rather than assembling it inline
  *   - extractJsonBlock picks the last fenced block
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { setGuild, clearGuild } from '@shardworks/nexus-core';
 import type { Guild, GuildConfig, StartupContext } from '@shardworks/nexus-core';
@@ -415,7 +424,12 @@ describe('patron-anima engine — run/collect with verdicts', () => {
     assert.equal(d1?.patron?.confidence, 'med');
   });
 
-  it('low-confidence confirm still applies the recommendation — high-confirm-low-confidence is the diagnostic signal', async () => {
+  it('low-confidence emissions are still applied (defensive parser leniency — the prompt tells the anima to abstain instead)', async () => {
+    // Under the tailored operational discipline, the anima is instructed to
+    // abstain (omit) on `low` calibration rather than emit it. The parser,
+    // however, still accepts `low` as a valid value — this test locks in
+    // that defensive leniency so a stray low emission from a mis-behaving
+    // anima is applied rather than silently dropped.
     const engine = createPatronAnimaEngine(() => plansBook);
     const decisions: Decision[] = [
       {
@@ -433,7 +447,7 @@ describe('patron-anima engine — run/collect with verdicts', () => {
       '```json\n' +
       JSON.stringify([
         { id: 'D1', verdict: 'confirm', selection: 'A', confidence: 'low',
-          rationale: 'No principle applied — defaulting to confirm.' },
+          rationale: 'Stray low-confidence emission.' },
       ]) +
       '\n```';
 
@@ -918,5 +932,215 @@ describe('patron-anima — pure helpers', () => {
     const emission = result.get('D1');
     assert.ok(emission);
     assert.equal(emission.rationale, undefined);
+  });
+});
+
+// ── Operational-prompt discipline framings ───────────────────────────
+
+/**
+ * The tailored operational prompt is the unit of value shipped by this
+ * commission. These assertions pin each discipline framing to the rendered
+ * prompt so future edits to the markdown can't silently drop one. They also
+ * verify the static content is loaded from the packaged markdown file (not
+ * reassembled in TypeScript) and that the output-contract example spans
+ * the three verdicts plus an explicit abstain-by-omission worked example.
+ */
+describe('buildPatronPrompt — tailored operational discipline', () => {
+  const sampleDecisions: Decision[] = [
+    {
+      id: 'D1',
+      scope: [],
+      question: 'Which pattern?',
+      options: { A: 'Strategy', B: 'Observer' },
+      recommendation: 'A',
+      rationale: 'Simpler',
+    },
+  ];
+
+  // The markdown prompt is hard-wrapped, so assertions that need to span a
+  // line break use a helper that normalises whitespace before matching.
+  const oneLine = (s: string): string => s.replace(/\s+/g, ' ');
+
+  it('carries the one-option-per-decision constraint', () => {
+    const prompt = oneLine(buildPatronPrompt(sampleDecisions));
+    // Each decision offers a fixed set of option keys; selection must be one of them.
+    assert.match(
+      prompt,
+      /one of the offered option keys/i,
+      'prompt must forbid custom / free-text answers',
+    );
+    assert.match(
+      prompt,
+      /no custom answers/i,
+      'prompt must name the custom-answer failure mode explicitly',
+    );
+  });
+
+  it('encodes abstain-by-omission — no placeholder verdict, decision simply absent', () => {
+    const prompt = oneLine(buildPatronPrompt(sampleDecisions));
+    assert.match(prompt, /abstain/i, 'prompt must name the abstain mode');
+    assert.match(
+      prompt,
+      /leave the decision out of your emission array entirely/i,
+      'prompt must instruct omission as the abstain mechanism',
+    );
+    // Must not slip back into the old "default to confirm at low" framing.
+    assert.doesNotMatch(
+      prompt,
+      /default(ing)? to (`?confirm`?|confirm) at (`?low`?|low)/i,
+      'prompt must not carry the old default-to-confirm-at-low framing',
+    );
+    // Must explicitly reject placeholder verdicts / low-confidence confirms as substitutes for abstain.
+    assert.match(
+      prompt,
+      /do not emit a placeholder verdict/i,
+      'prompt must forbid placeholder verdicts as abstain substitutes',
+    );
+    assert.match(
+      prompt,
+      /do not emit a low-confidence confirm/i,
+      'prompt must forbid low-confidence-confirm as an abstain substitute',
+    );
+  });
+
+  it('carries the explicit out-of-lane prohibition on codebase audit', () => {
+    const prompt = oneLine(buildPatronPrompt(sampleDecisions));
+    assert.match(prompt, /out of lane/i, 'prompt must have a named out-of-lane section');
+    assert.match(prompt, /do not read files/i, 'prompt must forbid file reads');
+    assert.match(prompt, /grep/i, 'prompt must forbid grep specifically');
+    assert.match(
+      prompt,
+      /do not audit the codebase/i,
+      'prompt must forbid codebase audit explicitly',
+    );
+    assert.match(
+      prompt,
+      /do not probe implementation feasibility/i,
+      'prompt must forbid implementation-feasibility probing',
+    );
+    assert.match(
+      prompt,
+      /do not second-guess the analyst/i,
+      'prompt must forbid re-doing the analyst\'s framing work',
+    );
+  });
+
+  it('calibrates confidence structurally — one principle fires = high, multiple conflict = med, none speaks = abstain', () => {
+    const prompt = oneLine(buildPatronPrompt(sampleDecisions));
+    // Calibration is structural, not content-aware.
+    assert.match(
+      prompt,
+      /confidence is \*?\*?structural\*?\*?/i,
+      'prompt must frame confidence as structural',
+    );
+    // Reject content-aware calibration drift explicitly.
+    assert.match(
+      prompt,
+      /not from how familiar the domain feels/i,
+      'prompt must reject domain-familiarity as a confidence source',
+    );
+    // The three calibrations and their structural meanings.
+    assert.match(
+      prompt,
+      /`high`.{0,80}(one principle|single principle).{0,80}fires? cleanly/i,
+      'high calibration must be: one principle fires cleanly',
+    );
+    assert.match(
+      prompt,
+      /`med`.{0,160}(multiple|more than one) principles? speak.{0,80}conflict/i,
+      'med calibration must be: multiple principles conflict',
+    );
+    assert.match(
+      prompt,
+      /`low`.{0,80}no principle speaks/i,
+      'low calibration description must be: no principle speaks (and therefore abstain)',
+    );
+  });
+
+  it('output-contract example spans all three verdicts (confirm / override / fill-in)', () => {
+    const prompt = buildPatronPrompt(sampleDecisions);
+    // There must be a worked example.
+    assert.match(prompt, /worked example/i);
+    // Find the fenced JSON example block — the example emission array.
+    const fenceMatch = /```json\n([\s\S]+?)\n```/g.exec(prompt);
+    assert.ok(fenceMatch, 'prompt must contain at least one fenced JSON example block');
+    const exampleBlock = fenceMatch[1];
+    assert.match(exampleBlock, /"verdict"\s*:\s*"confirm"/, 'example must include a confirm entry');
+    assert.match(exampleBlock, /"verdict"\s*:\s*"override"/, 'example must include an override entry');
+    assert.match(exampleBlock, /"verdict"\s*:\s*"fill-in"/, 'example must include a fill-in entry');
+    // Sanity: the example array should parse as exactly three entries.
+    const parsed = JSON.parse(exampleBlock) as Array<{ verdict: string }>;
+    assert.equal(parsed.length, 3, 'example emission array must have exactly three entries');
+  });
+
+  it('output-contract example demonstrates abstain-by-omission with a named, absent decision', () => {
+    const prompt = buildPatronPrompt(sampleDecisions);
+    const flat = oneLine(prompt);
+    const fenceMatch = /```json\n([\s\S]+?)\n```/g.exec(prompt);
+    assert.ok(fenceMatch);
+    const exampleBlock = fenceMatch[1];
+    const parsed = JSON.parse(exampleBlock) as Array<{ id: string }>;
+    const exampleIds = parsed.map(e => e.id);
+    // The example prose names four decisions (EX-1 through EX-4); one is abstained.
+    const namedIds = ['EX-1', 'EX-2', 'EX-3', 'EX-4'];
+    for (const id of namedIds) {
+      assert.match(prompt, new RegExp(id), `example prose should reference ${id} explicitly`);
+    }
+    const missingFromArray = namedIds.filter(id => !exampleIds.includes(id));
+    assert.equal(
+      missingFromArray.length,
+      1,
+      'exactly one of the four example decisions must be absent from the emission array (the abstain case)',
+    );
+    // And the prose must point at that absence as the abstain signal.
+    assert.match(
+      flat,
+      new RegExp(`${missingFromArray[0]}.{0,40}absent`, 'i'),
+      'the abstained decision\'s absence from the array must be called out in prose',
+    );
+  });
+
+  it('does not mention pre-empted decisions (belt-and-suspenders: the engine filters them before the prompt is composed)', () => {
+    const prompt = buildPatronPrompt(sampleDecisions);
+    assert.doesNotMatch(
+      prompt,
+      /pre-?empt/i,
+      'prompt must not instruct the anima about pre-empted decisions — they are filtered upstream',
+    );
+  });
+
+  it('loads its static content from the packaged markdown file, not from TypeScript string fragments', () => {
+    // The markdown must be part of the plugin's published distribution.
+    const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+
+    const pkgJson = JSON.parse(readFileSync(resolve(pkgRoot, 'package.json'), 'utf-8')) as {
+      files?: string[];
+    };
+    assert.ok(Array.isArray(pkgJson.files), 'package.json must declare a files list');
+    assert.ok(
+      pkgJson.files!.includes('patron-anima-prompt.md'),
+      'patron-anima-prompt.md must be packaged in the plugin distribution',
+    );
+
+    // The distinctive operational-prompt language must live in the markdown
+    // file, not in the engine's TypeScript. (Spot-check a distinctive phrase.)
+    const md = readFileSync(resolve(pkgRoot, 'patron-anima-prompt.md'), 'utf-8');
+    assert.match(
+      md,
+      /leave the decision out of your emission array entirely/i,
+      'abstain-by-omission language must live in the markdown file',
+    );
+    assert.match(
+      md,
+      /out of lane/i,
+      'out-of-lane section heading must live in the markdown file',
+    );
+
+    const engineSrc = readFileSync(resolve(pkgRoot, 'src/engines/patron-anima.ts'), 'utf-8');
+    assert.doesNotMatch(
+      engineSrc,
+      /leave the decision out of your emission array entirely/i,
+      'abstain-by-omission prose must not be embedded inline in patron-anima.ts',
+    );
   });
 });

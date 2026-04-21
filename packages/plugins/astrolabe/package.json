@@ -40,6 +40,7 @@
     "sage-analyst.md",
     "sage-writer.md",
     "sage-reading-analyst.md",
+    "patron-anima-prompt.md",
     "pages"
   ],
   "publishConfig": {

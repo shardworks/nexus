@@ -63,40 +63,53 @@ brief writ posted
   ├─ 4. Inventory checkpoint (astrolabe.inventory-check, clockwork)
   │     → validates inventory was produced; transitions 'reading' → 'analyzing'
   │
-  ├─ 5. Patron review (astrolabe.decision-review, clockwork)
-  │     → pre-decided decisions (`selected` set by the analyst) are auto-accepted
-  │       and excluded from the InputRequestDoc
+  ├─ 5. Patron anima pre-fill (astrolabe.patron-anima, clockwork; no-op when
+  │     `astrolabe.patronRole` is unset)
+  │     → consults the configured patron role under a tailored operational
+  │       prompt (see `patron-anima-prompt.md`) that encodes the engine's
+  │       mode discipline: one option per decision, principle-structural
+  │       confidence calibration, abstain-by-omission, and an out-of-lane
+  │       prohibition on codebase audit
+  │     → applies each confidently-resolved verdict to Decision.selected (and
+  │       records the full verdict on Decision.patron); abstained decisions
+  │       are left unfilled for decision-review to surface
+  │
+  ├─ 6. Patron review (astrolabe.decision-review, clockwork)
+  │     → pre-decided decisions (`selected` set by the analyst or the patron
+  │       anima) are auto-accepted and excluded from the InputRequestDoc
   │     → fast-paths to 'writing' when no reviewable decisions remain
   │     → otherwise blocks on patron-input; on resume reconciles answers back
   │       into PlanDoc.decisions (selected / patronOverride)
   │
-  ├─ 6. Spec-writer (anima-session) — synthesizes the spec into the plan
+  ├─ 7. Spec-writer (anima-session) — synthesizes the spec into the plan
   │     → resumes the analyst's conversation via ${yields.reader-analyst.conversationId}
   │     → writes the spec into PlanDoc.spec (does NOT post a writ)
   │
-  ├─ 7. Plan finalize (astrolabe.plan-finalize, clockwork)
+  ├─ 8. Plan finalize (astrolabe.plan-finalize, clockwork)
   │     → transitions plan status 'writing' → 'completed'
   │     → yields { spec } — the written specification, passed directly to the
   │       implement engine via ${yields.plan-finalize.spec}
   │
-  ├─ 8. Implement (implement, quick) — runs the implementation session
+  ├─ 9. Implement (implement, quick) — runs the implementation session
   │     → receives the spec as its prompt via the optional `prompt` given
   │       (overrides the default behaviour of using writ.body)
   │     → runs inside the same draft worktree opened in step 2
   │
-  ├─ 9. Review (review, quick) — reviewer anima + mechanical checks
+  ├─ 10. Review (review, quick) — reviewer anima + mechanical checks
   │     → runs ${vars.buildCommand} and ${vars.testCommand}
   │
-  ├─ 10. Revise (revise, quick, skipped when review passes)
+  ├─ 11. Revise (revise, quick, skipped when review passes)
   │     → addresses review findings
   │
-  └─ 11. Seal (seal, clockwork) — seals the draft binding and merges
+  └─ 12. Seal (seal, clockwork) — seals the draft binding and merges
           → brief writ reaches `completed` here
 ```
 
 The two `anima-session` engines (reader-analyst and spec-writer) use the Spider's built-in engine design, configured with Astrolabe's sage roles. Conversation chaining is wired through `${yields.<engineId>.conversationId}` references that the Spider resolves at engine start time.
 
 The patron review engine is clockwork — it deterministically creates the `InputRequestDoc` from the plan's decisions, blocks, and reconciles answers on resume. This keeps the `anima-session` engines pure (no blocking logic) and makes the patron interaction point explicit in the rig graph.
+
+The patron-anima engine (stage 5) consults a configured patron role under a tailored operational prompt and pre-fills decisions the anima can confidently resolve on the patron's behalf, leaving the rest for decision-review to surface to the patron. The operational prompt — packaged with the plugin as `patron-anima-prompt.md` and loaded by the engine at startup — governs how the anima acts in a single run: it constrains `selection` to one of each decision's offered option keys, calibrates confidence structurally (one principle fires cleanly = `high`; multiple principles conflict = `med`; no principle speaks = abstain by omission), forbids emitting a low-confidence placeholder when abstaining is the right move, and explicitly forecloses the anima treating its worktree `cwd` as an invitation to audit the codebase. The patron's *taste* (principles) continues to live in the role's system prompt; the operational prompt supplies the complementary mode discipline for this single engine run.
 
 The `plan-finalize` engine is the seam between planning and implementation: it completes the plan, and its `spec` yield is wired into the downstream `implement` engine's `prompt` given. No `mandate` writ is posted by this rig.
 
@@ -119,11 +132,12 @@ The sage role carries permissions to read/write the Astrolabe's books, create pa
 
 ### Clockwork Engine Designs
 
-The Astrolabe contributes three clockwork engine designs to the Fabricator:
+The Astrolabe contributes four clockwork engine designs to the Fabricator:
 
 - **`astrolabe.plan-init`** — creates a `PlanDoc` in the plans book, keyed by the brief writ ID. Sets initial status to `reading`. Yields `{ planId }` so downstream engines can reference the plan via `${yields.plan-init.planId}` in their givens/prompts.
 - **`astrolabe.inventory-check`** — reads the plans book, validates that an inventory document exists for the current plan. On success, transitions the plan status from `'reading'` to `'analyzing'`, marking the reading phase complete and enabling the analyst stage and subsequent `decision-review` engine to proceed. Fails the engine if no inventory is found.
-- **`astrolabe.decision-review`** — the patron interaction engine. On first run: reads decisions from the plans book and partitions them into pre-decided decisions (where the analyst already set `selected` per the razor policy) and reviewable decisions (where `selected` is unset). Pre-decided decisions are auto-accepted and skipped entirely — they produce no `questions[id]` or `answers[id]` entry in the `InputRequestDoc`. If no reviewable decisions remain, the engine fast-paths to `'writing'` without opening the patron-review gate, regardless of whether scope items exist (scope items are implicitly auto-accepted). Otherwise the engine maps each reviewable decision to a `ChoiceQuestionSpec`, pre-fills answers with analyst recommendations, writes the request to the Spider's `input-requests` book, and returns `{ status: 'blocked', blockType: 'patron-input', condition: { requestId } }`. On re-run after block clears (detected via `priorBlock` in context): reads the completed `InputRequestDoc`, reconciles patron answers back into `PlanDoc.decisions` (setting `selected` and `patronOverride` fields), validates all decisions are resolved and scope is consistent, and completes normally. Pre-decided decisions flow through reconcile unchanged — the analyst-set `selected` is preserved and the invariant (exactly one of `selected` / `patronOverride`) still holds. Yields `{ decisionSummary }` — a human-readable string summarizing all decisions and the patron's selections, for injection into the spec-writer's prompt via inline interpolation. The decision summary renders auto-decided and patron-confirmed decisions identically.
+- **`astrolabe.patron-anima`** — consults a configured patron anima to pre-fill decisions on the patron's behalf before `decision-review` opens. When `astrolabe.patronRole` is unset (or when no reviewable decisions remain), the engine no-ops. Otherwise it launches a single-pass anima session under the configured role, supplying a tailored operational prompt that encodes the engine's mode discipline: one option per decision (selection must be one of the offered keys), principle-structural confidence calibration (`high`/`med`), abstain-by-omission (decisions the anima cannot confidently resolve are absent from the emission array rather than carried as low-confidence placeholders), and an explicit out-of-lane prohibition on codebase audit work (no file reads, grep, or implementation-feasibility probing). The engine parses a single fenced JSON emission, validates each verdict against the decision's offered option keys and the confirm/override/fill-in internal consistency rules, applies each valid verdict to `Decision.selected`, and records the full emission — selection, confidence, and optional rationale — on `Decision.patron`. Unparseable emissions, invalid verdicts, and abstained decisions are left unfilled so they flow through to `decision-review` in the normal path. The engine does not retry. The static portion of the operational prompt is checked in as `patron-anima-prompt.md`, packaged with the plugin alongside the sage role files; per-decision content (ids, questions, options, optional analyst recommendation) is interpolated by the engine at prompt-build time.
+- **`astrolabe.decision-review`** — the patron interaction engine. On first run: reads decisions from the plans book and partitions them into pre-decided decisions (where the analyst or the patron anima already set `selected`) and reviewable decisions (where `selected` is unset). Pre-decided decisions are auto-accepted and skipped entirely — they produce no `questions[id]` or `answers[id]` entry in the `InputRequestDoc`. If no reviewable decisions remain, the engine fast-paths to `'writing'` without opening the patron-review gate, regardless of whether scope items exist (scope items are implicitly auto-accepted). Otherwise the engine maps each reviewable decision to a `ChoiceQuestionSpec`, pre-fills answers with analyst recommendations, writes the request to the Spider's `input-requests` book, and returns `{ status: 'blocked', blockType: 'patron-input', condition: { requestId } }`. On re-run after block clears (detected via `priorBlock` in context): reads the completed `InputRequestDoc`, reconciles patron answers back into `PlanDoc.decisions` (setting `selected` and `patronOverride` fields), validates all decisions are resolved and scope is consistent, and completes normally. Pre-decided decisions flow through reconcile unchanged — the analyst-set or anima-set `selected` is preserved and the invariant (exactly one of `selected` / `patronOverride`) still holds. Yields `{ decisionSummary }` — a human-readable string summarizing all decisions and the patron's selections, for injection into the spec-writer's prompt via inline interpolation. The decision summary renders auto-decided and patron-confirmed decisions identically.
 
 ---
 
@@ -287,7 +301,7 @@ List plans, optionally filtered by status or codex.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `patronRole` | `string` | `""` (unset) | Qualified role name of the Patron Anima consulted before decision-review. When unset or empty, the `patron-anima` engine no-ops and decision-review behaves exactly as it did before the engine existed. |
+| `patronRole` | `string` | `""` (unset) | Qualified role name of the Patron Anima consulted before decision-review. When set, the `patron-anima` engine launches an anima in this role under a tailored operational prompt (`patron-anima-prompt.md`) that encodes the engine's mode discipline — one option per decision, principle-structural confidence calibration, abstain-by-omission, and an out-of-lane prohibition on codebase audit — so the anima pre-fills decisions it can confidently resolve and leaves the rest for decision-review. When unset or empty, the engine no-ops and decision-review behaves exactly as it did before the engine existed. |
 
 ---
 

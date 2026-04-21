@@ -7,6 +7,33 @@
  * `selected` value — `decision-review` then auto-skips it via the existing
  * "analyst pre-decides → patron-input omitted" semantics.
  *
+ * Operational discipline (the tailored work prompt):
+ *   The anima runs under a checked-in operational prompt — the static
+ *   portions live in `patron-anima-prompt.md` (packaged alongside the
+ *   plugin) and are loaded at startup; per-decision content (ids,
+ *   questions, options, analyst recommendations) is interpolated in this
+ *   module at build time. The prompt encodes the engine's mode discipline,
+ *   which is structurally distinct from the anima's taste (which lives in
+ *   the role's system prompt):
+ *
+ *     - One option per decision. `selection` must be one of the offered
+ *       option keys — no custom answers, no free-text, no multi-select.
+ *     - Principle-structural confidence. `high` = a single principle from
+ *       the role fires cleanly; `med` = multiple principles conflict and
+ *       the anima resolves the conflict; `low` = no principle speaks,
+ *       which is the abstain case.
+ *     - Abstain by omission. A decision that would resolve to `low` —
+ *       or that the anima cannot confidently resolve at all — is
+ *       **absent** from the emission array entirely. There is no
+ *       sentinel, no placeholder, no low-confidence confirm fallback.
+ *       The engine treats a missing verdict as "unfilled" and flows it
+ *       through to `decision-review` in the normal path.
+ *     - Out-of-lane prohibition. The draft worktree `cwd` passed to the
+ *       anima permits filesystem access, but the prompt explicitly
+ *       forbids file reads, grep, codebase audit, and second-guessing
+ *       the analyst's framing. The anima's entire input is the role's
+ *       principles plus the decisions listed in the prompt.
+ *
  * Config:
  *   guild.json["astrolabe"]["patronRole"]
  *     Qualified role name for the Patron Anima (e.g. 'guild.patron').
@@ -28,23 +55,30 @@
  *     - `id`         — the decision id
  *     - `verdict`    — 'confirm' | 'override' | 'fill-in'
  *     - `selection`  — one of the decision's offered option keys
- *     - `confidence` — 'low' | 'med' | 'high'
+ *     - `confidence` — 'high' | 'med' (`low` means abstain → omit)
  *     - `rationale`  — short free-text note (optional)
+ *   Decisions the anima abstains on are absent from the array — the
+ *   engine and the parser treat absence as "unfilled, surface to patron."
  *
  * Exhaustiveness:
  *   Single pass. Any decision not carrying a well-formed verdict —
- *   because the anima omitted it, emitted malformed JSON, picked an
- *   unknown option, or the session failed entirely — is left unfilled
- *   on the PlanDoc and flows to `decision-review` in the normal flow.
- *   The engine does not retry.
+ *   because the anima abstained (omitted it), emitted malformed JSON,
+ *   picked an unknown option, or the session failed entirely — is left
+ *   unfilled on the PlanDoc and flows to `decision-review` in the
+ *   normal flow. The engine does not retry.
  *
- * Self-uncertainty:
- *   A `confirm` at `confidence: 'low'` is the expected encoding for
- *   "anima doesn't know patron well enough on this surface." It still
- *   applies the analyst's recommendation; the high-confirm / low-
- *   confidence signal is the diagnostic substrate for override-rate
- *   × confidence, not an escalation trigger.
+ * Defensive parser leniency:
+ *   The parser still accepts `confidence: 'low'` as a valid value for
+ *   schema-stability reasons — if a stray low-confidence verdict reaches
+ *   the engine, it is applied rather than dropped. The operational
+ *   prompt instructs the anima to abstain rather than emit `low`, but
+ *   the schema and parser do not depend on that instruction being
+ *   followed. This is defensive leniency, not a supported emission path.
  */
+
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { guild } from '@shardworks/nexus-core';
 import type { EngineDesign, EngineRunContext, EngineRunResult } from '@shardworks/fabricator-apparatus';
@@ -55,6 +89,26 @@ import type { WritDoc } from '@shardworks/clerk-apparatus';
 import { resolveAstrolabeConfig } from '../astrolabe.ts';
 import type { Decision, PatronEmission, PlanDoc } from '../types.ts';
 
+// ── Prompt template ──────────────────────────────────────────────────
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+/**
+ * The static portion of the patron-anima operational prompt, loaded at module
+ * load time from the checked-in markdown file packaged alongside this plugin.
+ * The sentinel `{{DECISIONS}}` is replaced by the per-decision listing at
+ * prompt-build time. The markdown file lives at the package root so it is
+ * reachable via the same relative path from both `src/engines/` (source
+ * mode) and `dist/engines/` (published distribution).
+ */
+const PROMPT_TEMPLATE: string = readFileSync(
+  resolve(__dirname, '../../patron-anima-prompt.md'),
+  'utf-8',
+);
+
+const DECISIONS_PLACEHOLDER = '{{DECISIONS}}';
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /** Reviewable = not yet pre-decided by the analyst. Mirrors decision-review. */
@@ -63,86 +117,50 @@ function reviewableDecisions(plan: PlanDoc): Decision[] {
 }
 
 /**
- * Assemble the patron prompt from the reviewable decisions. Each decision
- * is rendered with its question, optional context, options, and optional
- * analyst recommendation / rationale. The anima is instructed to return a
- * single fenced JSON block with one verdict per decision.
+ * Assemble the patron work prompt from the reviewable decisions.
+ *
+ * The static portion (preamble, mode discipline, out-of-lane prohibition,
+ * output contract, worked example) lives in `patron-anima-prompt.md` and is
+ * loaded into `PROMPT_TEMPLATE` at module load. This function renders each
+ * reviewable decision — question, optional context, options, optional
+ * analyst recommendation / rationale — and substitutes the listing into
+ * the template's `{{DECISIONS}}` placeholder.
  */
 export function buildPatronPrompt(decisions: Decision[]): string {
-  const parts: string[] = [
-    '# Patron Decision Review',
-    '',
-    'You are the patron anima. The analyst has surfaced the following',
-    'decisions. For each one, emit a structured verdict in the patron\'s',
-    'voice so the planning pipeline can proceed without a human block.',
-    '',
-    '## Decisions',
-    '',
-  ];
+  const lines: string[] = [];
 
   for (const decision of decisions) {
-    parts.push(`### ${decision.id}: ${decision.question}`);
+    lines.push(`### ${decision.id}: ${decision.question}`);
     if (decision.context) {
-      parts.push('');
-      parts.push(`Context: ${decision.context}`);
+      lines.push('');
+      lines.push(`Context: ${decision.context}`);
     }
-    parts.push('');
-    parts.push('Options:');
+    lines.push('');
+    lines.push('Options:');
     for (const [key, label] of Object.entries(decision.options)) {
-      parts.push(`- \`${key}\` — ${label}`);
+      lines.push(`- \`${key}\` — ${label}`);
     }
     if (decision.recommendation) {
-      parts.push('');
+      lines.push('');
       const recLabel = decision.options[decision.recommendation] ?? decision.recommendation;
-      parts.push(
+      lines.push(
         `Analyst recommendation: \`${decision.recommendation}\` (${recLabel})`,
       );
       if (decision.rationale) {
-        parts.push(`Analyst rationale: ${decision.rationale}`);
+        lines.push(`Analyst rationale: ${decision.rationale}`);
       }
     } else {
-      parts.push('');
-      parts.push('Analyst recommendation: (none — you must fill in)');
+      lines.push('');
+      lines.push('Analyst recommendation: (none — you must fill in)');
     }
-    parts.push('');
+    lines.push('');
   }
 
-  parts.push('## Output contract');
-  parts.push('');
-  parts.push(
-    'Respond with a single fenced JSON block containing an array of',
-    'verdict objects — one per decision, keyed by decision id. Do not',
-    'emit prose outside the fenced block; anything outside is ignored.',
-    '',
-    'Each verdict object MUST have these fields:',
-    '',
-    '- `id`         — the decision id (copy from above)',
-    '- `verdict`    — one of `confirm` | `override` | `fill-in`',
-    '  - `confirm`  — you accept the analyst\'s recommendation',
-    '  - `override` — you pick a different option than the recommendation',
-    '  - `fill-in`  — no analyst recommendation existed; you supply one',
-    '- `selection`  — the option key you are selecting (MUST be one of the',
-    '  offered option keys above — no custom / free-text answers)',
-    '- `confidence` — one of `low` | `med` | `high`, calibrated against the',
-    '  patron role\'s principles list:',
-    '  - `high` — exactly one principle applies cleanly',
-    '  - `med`  — multiple principles conflict (note the conflict in rationale)',
-    '  - `low`  — no principle applies (default to `confirm` at `low` rather',
-    '    than abstaining or improvising — leaving decisions unfilled is the',
-    '    fallback path when you genuinely cannot answer)',
-    '- `rationale` — short free-text note (≤ 1 sentence) citing which',
-    '  principle (or conflict) produced this verdict',
-    '',
-    'Example:',
-    '',
-    '```json',
-    '[',
-    '  { "id": "D1", "verdict": "confirm", "selection": "A", "confidence": "high", "rationale": "Matches simplicity principle." }',
-    ']',
-    '```',
-  );
+  // Drop the trailing blank line so the substitution sits cleanly in the
+  // template's final section.
+  const decisionsBlock = lines.join('\n').replace(/\n+$/, '');
 
-  return parts.join('\n');
+  return PROMPT_TEMPLATE.replace(DECISIONS_PLACEHOLDER, decisionsBlock);
 }
 
 /** Extract the last fenced JSON block from an anima's output. Returns null if none. */
