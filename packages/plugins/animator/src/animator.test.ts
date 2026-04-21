@@ -1401,4 +1401,86 @@ describe('Animator', () => {
       await handle.result;
     });
   });
+
+  describe('getSessionCosts()', () => {
+    beforeEach(() => {
+      setup();
+    });
+
+    async function seedSessionDoc(
+      id: string,
+      costUsd: number | undefined,
+      tokenUsage: { inputTokens: number; outputTokens: number } | undefined,
+    ): Promise<void> {
+      const book = stacks.book<SessionDoc>('animator', 'sessions');
+      const doc: SessionDoc = {
+        id,
+        status: 'completed',
+        provider: 'fake',
+        startedAt: new Date().toISOString(),
+        ...(costUsd !== undefined ? { costUsd } : {}),
+        ...(tokenUsage ? { tokenUsage } : {}),
+      };
+      await book.put(doc);
+    }
+
+    it('returns a per-id entry for each seeded session (happy path)', async () => {
+      await seedSessionDoc('ses-1', 0.10, { inputTokens: 100, outputTokens: 50 });
+      await seedSessionDoc('ses-2', 0.25, { inputTokens: 300, outputTokens: 150 });
+
+      const result = await animator.getSessionCosts(['ses-1', 'ses-2']);
+      assert.equal(result.size, 2);
+      assert.deepEqual(result.get('ses-1'), {
+        costUsd: 0.10,
+        inputTokens: 100,
+        outputTokens: 50,
+      });
+      assert.deepEqual(result.get('ses-2'), {
+        costUsd: 0.25,
+        inputTokens: 300,
+        outputTokens: 150,
+      });
+    });
+
+    it('omits missing session ids from the returned Map (D6)', async () => {
+      const result = await animator.getSessionCosts(['ses-does-not-exist']);
+      assert.equal(result.size, 0);
+      assert.equal(result.has('ses-does-not-exist'), false);
+    });
+
+    it('returns a partial map when inputs mix present and absent ids', async () => {
+      await seedSessionDoc('ses-present', 0.05, { inputTokens: 40, outputTokens: 10 });
+
+      const result = await animator.getSessionCosts(['ses-present', 'ses-absent']);
+      assert.equal(result.size, 1);
+      assert.ok(result.has('ses-present'));
+      assert.equal(result.has('ses-absent'), false);
+      assert.equal(result.get('ses-present')?.costUsd, 0.05);
+    });
+
+    it('returns a cost-only entry when the session has no tokenUsage', async () => {
+      await seedSessionDoc('ses-cost-only', 0.42, undefined);
+
+      const result = await animator.getSessionCosts(['ses-cost-only']);
+      const entry = result.get('ses-cost-only');
+      assert.ok(entry);
+      assert.equal(entry!.costUsd, 0.42);
+      assert.equal(entry!.inputTokens, undefined);
+      assert.equal(entry!.outputTokens, undefined);
+    });
+
+    it('returns costUsd: 0 when the session exists but has no reported cost', async () => {
+      await seedSessionDoc('ses-no-cost', undefined, undefined);
+
+      const result = await animator.getSessionCosts(['ses-no-cost']);
+      const entry = result.get('ses-no-cost');
+      assert.ok(entry);
+      assert.equal(entry!.costUsd, 0);
+    });
+
+    it('returns an empty Map for empty input without touching the book', async () => {
+      const result = await animator.getSessionCosts([]);
+      assert.equal(result.size, 0);
+    });
+  });
 });

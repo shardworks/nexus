@@ -110,6 +110,29 @@ export interface TokenUsage {
   cacheWriteTokens?: number;
 }
 
+// ── Bulk session cost lookup ─────────────────────────────────────────
+
+/**
+ * Per-session cost snapshot returned by AnimatorApi.getSessionCosts().
+ *
+ * A projection of the cost/token fields on SessionDoc — sufficient for
+ * bulk cost aggregation (rig-level totals, per-engine breakdowns) without
+ * forcing the caller to reach into the sessions book directly. Consumers
+ * that need other session fields should look them up via SessionDoc.
+ */
+export interface SessionCost {
+  /**
+   * Cost in USD as reported by the session. Zero when the session exists
+   * but has not reported a cost (e.g. still running, or the provider did
+   * not record one).
+   */
+  costUsd: number;
+  /** Input tokens from the session's tokenUsage, if the provider reported it. */
+  inputTokens?: number;
+  /** Output tokens from the session's tokenUsage, if the provider reported it. */
+  outputTokens?: number;
+}
+
 // ── Summon request ──────────────────────────────────────────────────
 
 export interface SummonRequest {
@@ -237,6 +260,24 @@ export interface AnimatorApi {
    * patching and sending the kill signal.
    */
   cancel(sessionId: string, options?: { reason?: string }): Promise<SessionDoc>;
+
+  /**
+   * Bulk per-session cost/token lookup — the first read-side helper on
+   * AnimatorApi. Resolves cost and token-usage snapshots for the given
+   * session ids in a single round-trip against the sessions book.
+   *
+   * Returns a Map keyed by session id. Session ids not present in the
+   * sessions book are omitted from the returned Map — callers decide
+   * whether that means "zero contribution" (as Spider's rig-view does) or
+   * something else.
+   *
+   * Empty input returns an empty Map without touching The Stacks.
+   *
+   * Intended for UI-facing aggregators that compose rig-level totals or
+   * per-engine breakdowns. The shape is deliberately minimal: callers that
+   * need other SessionDoc fields should look them up separately.
+   */
+  getSessionCosts(sessionIds: string[]): Promise<Map<string, SessionCost>>;
 }
 
 // ── Session provider interface ───────────────────────────────────────

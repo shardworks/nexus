@@ -4,6 +4,7 @@ The Animator brings animas to life. It is the guild's session apparatus — the 
 
 - **`summon()`** — the high-level "make an anima do a thing" call. Passes the role to The Loom for identity composition, then launches a session with the work prompt. This is what the summon relay, the CLI, and most callers use.
 - **`animate()`** — the low-level call for callers that compose their own `AnimaWeave` (e.g. The Parlour for multi-turn conversations).
+- **`getSessionCosts()`** — bulk per-session cost/token lookup for read-side consumers. First read-side helper on `AnimatorApi`; used by Spider's rig-view aggregator to compose rig-level totals and per-engine breakdowns without reaching into the `sessions` book directly.
 
 Both methods return an `AnimateHandle` synchronously — a `{ chunks, result }` pair. The `result` promise resolves when the session completes. The `chunks` async iterable yields output as the session runs when `streaming: true` is set; otherwise it completes immediately with no items.
 
@@ -127,6 +128,22 @@ console.log(doc.error);   // 'Cost overrun'
 
 **Cross-process:** the `cancelHandle` field on `SessionDoc` stores a tagged cancel handle for cross-process cancellation (e.g. `{ kind: 'local-pgid', pgid: number }` for local process groups). This allows any process with Stacks access to cancel a session launched by another process.
 
+### `getSessionCosts(sessionIds): Promise<Map<string, SessionCost>>`
+
+Bulk per-session cost/token lookup. Resolves cost and token-usage snapshots for the given session ids in a single round-trip against the sessions book. Intended for UI-facing aggregators that compose rig-level totals or per-engine breakdowns.
+
+```typescript
+const costs = await animator.getSessionCosts(['ses-a', 'ses-b', 'ses-missing']);
+costs.get('ses-a');        // { costUsd: 0.15, inputTokens: 1000, outputTokens: 200 }
+costs.get('ses-missing');  // undefined — ids not present in the book are omitted
+```
+
+**Missing ids:** session ids not present in the sessions book are omitted from the returned Map. Callers decide whether that means "zero contribution" (Spider's rig-view does) or something else.
+
+**Empty input:** returns an empty Map without touching The Stacks.
+
+**Shape:** deliberately minimal — `costUsd` (zero when the session exists but has not reported cost), plus optional `inputTokens` / `outputTokens` when the provider reported token usage. Consumers that need other `SessionDoc` fields should look them up separately.
+
 ### Types
 
 ```typescript
@@ -176,6 +193,12 @@ type SessionChunk =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; tool: string }
   | { type: 'tool_result'; tool: string };
+
+interface SessionCost {
+  costUsd: number;               // Zero when the session exists but has not reported cost
+  inputTokens?: number;          // From the session's tokenUsage, if reported
+  outputTokens?: number;         // From the session's tokenUsage, if reported
+}
 ```
 
 ## Configuration
@@ -309,6 +332,7 @@ import {
   type SessionResult,
   type SessionChunk,
   type TokenUsage,
+  type SessionCost,
   type AnimatorSessionProvider,
   type SessionProviderConfig,
   type SessionProviderResult,

@@ -7,6 +7,12 @@
  *  - sum costUsd and tokenUsage across all engine sessions
  *  - omit the parenthetical token totals when no session reported tokenUsage
  *  - include engines in non-terminal statuses whose sessions are mid-flight (D17)
+ *
+ * The aggregator now asks AnimatorApi.getSessionCosts() for cost snapshots
+ * rather than reading the animator/sessions book directly. These tests keep
+ * the storage path real end-to-end: they seed SessionDocs into the animator
+ * sessions book, then start a real Animator apparatus whose getSessionCosts
+ * reads the same book — no AnimatorApi stub.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -15,20 +21,13 @@ import assert from 'node:assert/strict';
 import { createStacksApparatus } from '@shardworks/stacks-apparatus';
 import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
-import type { SessionDoc } from '@shardworks/animator-apparatus';
+import type { AnimatorApi, SessionDoc } from '@shardworks/animator-apparatus';
+import { createAnimator } from '@shardworks/animator-apparatus';
 import { setGuild, clearGuild } from '@shardworks/nexus-core';
 import type { Guild, GuildConfig, KitEntry } from '@shardworks/nexus-core';
 
 import type { RigDoc } from './types.ts';
 import { enrichRigView, enrichRigViews } from './rig-view.ts';
-
-function makeStacks(memBackend: MemoryBackend): StacksApi {
-  const stacksPlugin = createStacksApparatus(memBackend);
-  if (!('apparatus' in stacksPlugin)) throw new Error('stacks must be apparatus');
-  const noopCtx = { on: () => {}, kits: () => [] as KitEntry[] };
-  stacksPlugin.apparatus.start(noopCtx as never);
-  return stacksPlugin.apparatus.provides as StacksApi;
-}
 
 function writeSession(
   stacks: StacksApi,
@@ -52,9 +51,24 @@ describe('rig-view aggregator', () => {
   let stacks: StacksApi;
 
   beforeEach(() => {
+    const memBackend = new MemoryBackend();
+    // Seed the books the animator/stacks apparatuses expect.
+    memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, {
+      indexes: ['startedAt', 'status', 'conversationId', 'provider'],
+    });
+    memBackend.ensureBook({ ownerId: 'animator', book: 'transcripts' }, {
+      indexes: ['sessionId'],
+    });
+    memBackend.ensureBook({ ownerId: 'animator', book: 'state' }, {});
+
+    const apparatuses = new Map<string, unknown>();
     const fakeGuild: Guild = {
-      home: '/tmp/test',
-      apparatus<T>(): T { return null as T; },
+      home: '/tmp/rig-view-test',
+      apparatus<T>(name: string): T {
+        const api = apparatuses.get(name);
+        if (!api) throw new Error(`Apparatus "${name}" not installed`);
+        return api as T;
+      },
       config<T>(): T { return {} as T; },
       writeConfig() {},
       guildConfig() { return { name: 't', nexus: '0.0.0', plugins: [] } as GuildConfig; },
@@ -62,15 +76,23 @@ describe('rig-view aggregator', () => {
       apparatuses() { return []; },
       startupWarnings() { return []; },
     };
+    // Must set guild before starting apparatuses that call guild() in start().
     setGuild(fakeGuild);
 
-    const memBackend = new MemoryBackend();
-    // enrichRigView reads the animator/sessions book via readBook, which
-    // requires the book to exist in the backend before the read.
-    memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, {
-      indexes: ['startedAt', 'status'],
-    });
-    stacks = makeStacks(memBackend);
+    const noopCtx = { on: () => {}, kits: () => [] as KitEntry[] };
+
+    const stacksPlugin = createStacksApparatus(memBackend);
+    if (!('apparatus' in stacksPlugin)) throw new Error('stacks must be apparatus');
+    stacksPlugin.apparatus.start(noopCtx as never);
+    stacks = stacksPlugin.apparatus.provides as StacksApi;
+    apparatuses.set('stacks', stacks);
+
+    // Start a real Animator apparatus so enrichRigView can resolve it from
+    // the guild and call getSessionCosts against the same backend.
+    const animatorPlugin = createAnimator();
+    if (!('apparatus' in animatorPlugin)) throw new Error('animator must be apparatus');
+    animatorPlugin.apparatus.start(noopCtx as never);
+    apparatuses.set('animator', animatorPlugin.apparatus.provides as AnimatorApi);
   });
 
   afterEach(() => {
@@ -89,7 +111,7 @@ describe('rig-view aggregator', () => {
       ],
     };
 
-    const view = await enrichRigView(rig, stacks);
+    const view = await enrichRigView(rig);
     assert.equal(view.costSummary, undefined, 'costSummary should be absent');
     assert.equal(view.engineCosts, undefined, 'engineCosts should be absent');
     assert.equal(view.id, 'rig-1');
@@ -112,7 +134,7 @@ describe('rig-view aggregator', () => {
       ],
     };
 
-    const view = await enrichRigView(rig, stacks);
+    const view = await enrichRigView(rig);
     assert.ok(view.costSummary, 'costSummary should be present');
     assert.equal(view.costSummary?.costUsd, 0.4);
     assert.equal(view.costSummary?.inputTokens, 3000);
@@ -139,7 +161,7 @@ describe('rig-view aggregator', () => {
       ],
     };
 
-    const view = await enrichRigView(rig, stacks);
+    const view = await enrichRigView(rig);
     assert.equal(view.costSummary?.costUsd, 0.10);
     assert.equal(view.costSummary?.inputTokens, undefined);
     assert.equal(view.costSummary?.outputTokens, undefined);
@@ -157,7 +179,7 @@ describe('rig-view aggregator', () => {
       ],
     };
 
-    const view = await enrichRigView(rig, stacks);
+    const view = await enrichRigView(rig);
     assert.equal(view.costSummary?.costUsd, 0);
     assert.equal(view.engineCosts?.anim.costUsd, 0);
   });
@@ -175,7 +197,7 @@ describe('rig-view aggregator', () => {
       ],
     };
 
-    const view = await enrichRigView(rig, stacks);
+    const view = await enrichRigView(rig);
     assert.equal(view.costSummary?.costUsd, 0.05);
     assert.equal(view.engineCosts?.anim.costUsd, 0.05);
   });
@@ -202,7 +224,7 @@ describe('rig-view aggregator', () => {
       },
     ];
 
-    const views = await enrichRigViews(rigs, stacks);
+    const views = await enrichRigViews(rigs);
     assert.equal(views.length, 2);
     assert.equal(views[0].costSummary?.costUsd, 0.5);
     assert.equal(views[1].costSummary, undefined);

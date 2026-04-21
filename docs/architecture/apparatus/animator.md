@@ -14,6 +14,7 @@ The Animator brings animas to life. It is the guild's session apparatus — the 
 
 - **`summon()`** — the high-level "make an anima do a thing" call. Composes context via The Loom, launches a session, records the result. This is what the summon relay, the CLI, and most callers use.
 - **`animate()`** — the low-level call for callers that compose their own `AnimaWeave` (e.g. The Parlour for multi-turn conversations).
+- **`getSessionCosts()`** — the first read-side helper on `AnimatorApi`. Bulk lookup of per-session cost and token snapshots, keyed by session id. Used by Spider's rig-view cost aggregation so UI-facing callers don't have to reach into the Animator's `sessions` book directly.
 
 Both methods return an `AnimateHandle` synchronously — a `{ sessionId, chunks, result }` triple. The `sessionId` is available immediately, before the session completes — callers that only need to know the session was launched can return without awaiting. The `result` promise resolves when the session completes. The `chunks` async iterable yields output when `streaming: true` is set; otherwise it completes immediately with no items. There is no separate streaming method — the `streaming` flag on the request controls the behavior, and the return shape is always the same.
 
@@ -119,6 +120,28 @@ interface AnimatorApi {
    * When streaming is disabled (default), `chunks` completes immediately.
    */
   animate(request: AnimateRequest): AnimateHandle
+
+  /**
+   * Bulk per-session cost/token lookup — the first read-side helper on
+   * AnimatorApi. Resolves cost and token-usage snapshots for the given
+   * session ids in a single round-trip against the sessions book.
+   *
+   * Used by Spider's rig-view cost aggregation (rig-level totals and
+   * per-engine breakdowns). Session ids not present in the book are
+   * omitted from the returned Map — callers decide whether that means
+   * "zero contribution" or something else. Empty input returns an empty
+   * Map without touching The Stacks.
+   */
+  getSessionCosts(sessionIds: string[]): Promise<Map<string, SessionCost>>
+}
+
+interface SessionCost {
+  /** Cost in USD. Zero when the session exists but has not reported a cost. */
+  costUsd: number
+  /** Input tokens from the session's tokenUsage, if the provider reported it. */
+  inputTokens?: number
+  /** Output tokens from the session's tokenUsage, if the provider reported it. */
+  outputTokens?: number
 }
 
 /** The return value from animate() and summon(). */

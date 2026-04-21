@@ -22,6 +22,7 @@ import type {
   SummonRequest,
   SessionResult,
   SessionChunk,
+  SessionCost,
   SessionDoc,
   TranscriptDoc,
   TranscriptMessage,
@@ -385,6 +386,32 @@ export function createAnimator(): Plugin {
       const broadcaster = activeSessions.get(sessionId);
       if (!broadcaster) return null;
       return broadcaster.subscribe();
+    },
+
+    async getSessionCosts(sessionIds: string[]): Promise<Map<string, SessionCost>> {
+      const result = new Map<string, SessionCost>();
+      if (sessionIds.length === 0) return result;
+
+      // Single bulk query against the sessions book — avoids the per-id
+      // round-trip pattern that the previous rig-view path used. Sessions
+      // not present in the book are silently omitted (D6): `find` simply
+      // returns fewer rows than were requested.
+      const docs = await sessions.find({
+        where: [['id', 'IN', sessionIds]],
+      });
+
+      for (const doc of docs) {
+        const entry: SessionCost = { costUsd: doc.costUsd ?? 0 };
+        if (doc.tokenUsage?.inputTokens !== undefined) {
+          entry.inputTokens = doc.tokenUsage.inputTokens;
+        }
+        if (doc.tokenUsage?.outputTokens !== undefined) {
+          entry.outputTokens = doc.tokenUsage.outputTokens;
+        }
+        result.set(doc.id, entry);
+      }
+
+      return result;
     },
 
     async cancel(sessionId: string, options?: { reason?: string }): Promise<SessionDoc> {

@@ -20,6 +20,7 @@ export {
   type SessionResult,
   type SessionChunk,
   type TokenUsage,
+  type SessionCost,
   type SessionDoc,
   type AnimatorConfig,
   // Provider types (for implementors)

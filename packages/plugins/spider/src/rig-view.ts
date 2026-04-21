@@ -1,6 +1,6 @@
 /**
  * Rig view aggregator — builds the UI-facing RigView from a persisted
- * RigDoc by joining against the animator/sessions book.
+ * RigDoc by joining against the Animator's per-session cost snapshot.
  *
  * Read-only. Pure derived fields; never persisted.
  *
@@ -11,10 +11,14 @@
  *   zeros; sessions that are missing from the book are skipped silently.
  * - tokenUsage fields are optional: when no contributing session has
  *   tokenUsage, the aggregate inputTokens/outputTokens are omitted.
+ *
+ * The cost data comes from AnimatorApi.getSessionCosts — the Animator owns
+ * the shape of cost answers, so consumers like this aggregator do not reach
+ * into the sessions book directly.
  */
 
-import type { StacksApi } from '@shardworks/stacks-apparatus';
-import type { SessionDoc } from '@shardworks/animator-apparatus';
+import { guild } from '@shardworks/nexus-core';
+import type { AnimatorApi } from '@shardworks/animator-apparatus';
 import type {
   RigDoc,
   RigView,
@@ -23,14 +27,12 @@ import type {
 } from './types.ts';
 
 /**
- * Build a RigView for a single rig by reading every engine's session doc
- * (if any) from the animator/sessions book and summing cost + token usage.
+ * Build a RigView for a single rig by asking the Animator for cost/token
+ * snapshots of every engine's session (if any) and summing across them.
  *
  * Does not mutate the rig. Safe to call on every read.
  */
-export async function enrichRigView(rig: RigDoc, stacks: StacksApi): Promise<RigView> {
-  const sessionsBook = stacks.readBook<SessionDoc>('animator', 'sessions');
-
+export async function enrichRigView(rig: RigDoc): Promise<RigView> {
   // Collect (engineId, sessionId) pairs to look up.
   const pairs: Array<{ engineId: string; sessionId: string }> = [];
   for (const engine of rig.engines || []) {
@@ -44,10 +46,13 @@ export async function enrichRigView(rig: RigDoc, stacks: StacksApi): Promise<Rig
     return { ...rig };
   }
 
-  // Fetch all sessions concurrently.
-  const sessions = await Promise.all(
-    pairs.map((p) => sessionsBook.get(p.sessionId).catch(() => null)),
-  );
+  // Resolve the Animator via the same apparatus-resolution mechanism
+  // Spider's engines use elsewhere, and fetch cost snapshots in a single
+  // bulk call. Missing ids are silently omitted from the returned Map
+  // (see AnimatorApi.getSessionCosts), which preserves the "missing = zero
+  // contribution" semantic this aggregator has always had.
+  const animator = guild().apparatus<AnimatorApi>('animator');
+  const costs = await animator.getSessionCosts(pairs.map((p) => p.sessionId));
 
   const engineCosts: Record<string, EngineCostSummary> = {};
   let totalCostUsd = 0;
@@ -55,13 +60,12 @@ export async function enrichRigView(rig: RigDoc, stacks: StacksApi): Promise<Rig
   let totalOutputTokens = 0;
   let anyTokenUsage = false;
 
-  for (let i = 0; i < pairs.length; i++) {
-    const { engineId } = pairs[i];
-    const session = sessions[i];
+  for (const { engineId, sessionId } of pairs) {
+    const cost = costs.get(sessionId);
 
-    const costUsd = session?.costUsd ?? 0;
-    const inputTokens = session?.tokenUsage?.inputTokens;
-    const outputTokens = session?.tokenUsage?.outputTokens;
+    const costUsd = cost?.costUsd ?? 0;
+    const inputTokens = cost?.inputTokens;
+    const outputTokens = cost?.outputTokens;
 
     const engineCost: EngineCostSummary = { costUsd };
     if (inputTokens !== undefined) engineCost.inputTokens = inputTokens;
@@ -95,6 +99,6 @@ export async function enrichRigView(rig: RigDoc, stacks: StacksApi): Promise<Rig
 /**
  * Enrich an array of rigs in parallel.
  */
-export async function enrichRigViews(rigs: RigDoc[], stacks: StacksApi): Promise<RigView[]> {
-  return Promise.all(rigs.map((r) => enrichRigView(r, stacks)));
+export async function enrichRigViews(rigs: RigDoc[]): Promise<RigView[]> {
+  return Promise.all(rigs.map((r) => enrichRigView(r)));
 }

@@ -9,7 +9,6 @@
 import { z } from 'zod';
 import { guild } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
-import type { StacksApi } from '@shardworks/stacks-apparatus';
 import type { SpiderApi, RigStatus, RigView } from '../types.ts';
 import { enrichRigViews } from '../rig-view.ts';
 
@@ -39,12 +38,11 @@ export default tool({
   handler: async (params): Promise<RigView[]> => {
     const g = guild();
     const spider = g.apparatus<SpiderApi>('spider');
-    const stacks = g.apparatus<StacksApi>('stacks');
     const rigs = await spider.list({
       status: params.status as RigStatus | undefined,
       limit: params.limit,
       offset: params.offset,
     });
-    return enrichRigViews(rigs, stacks);
+    return enrichRigViews(rigs);
   },
 });
