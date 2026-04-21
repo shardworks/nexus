@@ -2,23 +2,16 @@
  * Clockworks-retry public types.
  *
  * All types exported from @shardworks/clockworks-retry-apparatus.
+ *
+ * The substrate this clockwork reads — the plugin-owned `status.spider`
+ * sub-slot on a writ — is authoritatively typed by the producer. We
+ * re-export that type here so consumers of the retry apparatus have a
+ * single import path for the shape the clockwork keys on, and so the
+ * retry clockwork itself keys on the producer's type rather than a
+ * duplicated local declaration.
  */
 
-/**
- * Shape of the `status.spider.stuck` sub-object the retry clockwork reads.
- *
- * Populated by the sibling commission that introduces the `retryable` flag
- * — the observability substrate the clockwork keys on. Absent (or with
- * `retryable !== true`) means the stuck transition is not a retry candidate.
- */
-export interface RetryableStuckStatus {
-  /** Whether this stuck transition is a retry candidate. */
-  retryable?: boolean;
-  /** Optional stuck-cause identifier (e.g. 'engine-failure'). */
-  cause?: string;
-  /** ISO timestamp recorded at the moment the stuck transition was taken. */
-  observedAt?: string;
-}
+export type { SpiderWritStatus } from '@shardworks/spider-apparatus';
 
 /**
  * Runtime API exposed by the retry clockwork apparatus.

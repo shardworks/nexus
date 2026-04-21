@@ -22,12 +22,12 @@
   },
   "dependencies": {
     "@shardworks/clerk-apparatus": "workspace:*",
+    "@shardworks/spider-apparatus": "workspace:*",
     "@shardworks/stacks-apparatus": "workspace:*"
   },
   "devDependencies": {
     "@shardworks/fabricator-apparatus": "workspace:*",
     "@shardworks/nexus-core": "workspace:*",
-    "@shardworks/spider-apparatus": "workspace:*",
     "@types/node": "25.5.0"
   },
   "files": [

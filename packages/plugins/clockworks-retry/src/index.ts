@@ -1,6 +1,6 @@
 export {
   type ClockworksRetryApi,
-  type RetryableStuckStatus,
+  type SpiderWritStatus,
   MAX_RETRY_ATTEMPTS,
 } from './types.ts';
 

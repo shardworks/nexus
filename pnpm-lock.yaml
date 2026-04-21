@@ -170,6 +170,9 @@ importers:
       '@shardworks/clerk-apparatus':
         specifier: workspace:*
         version: link:../clerk
+      '@shardworks/spider-apparatus':
+        specifier: workspace:*
+        version: link:../spider
       '@shardworks/stacks-apparatus':
         specifier: workspace:*
         version: link:../stacks
@@ -180,9 +183,6 @@ importers:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../../framework/core
-      '@shardworks/spider-apparatus':
-        specifier: workspace:*
-        version: link:../spider
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0

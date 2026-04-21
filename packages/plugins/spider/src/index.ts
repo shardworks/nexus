@@ -49,6 +49,19 @@ export type {
 
 export type { SpiderKit } from './spider.ts';
 
+// ── Named factory export ──────────────────────────────────────────────
+
+/**
+ * Create a fresh Spider apparatus plugin instance.
+ *
+ * Exposed so downstream test fixtures can instantiate a dedicated Spider
+ * per-test without touching the module-level singleton produced by the
+ * default export. Production callers should continue to use the default
+ * export; this named export is for tests and harnesses that build their
+ * own Guild out of a shared MemoryBackend/Stacks/Clerk substrate.
+ */
+export { createSpider } from './spider.ts';
+
 // ── Default export: the apparatus plugin ──────────────────────────────
 
 export default createSpider();
