@@ -1241,6 +1241,7 @@ class RigTemplateRegistry {
 // ── Apparatus factory ──────────────────────────────────────────────────
 
 export function createSpider(): Plugin {
+  let stacks: StacksApi;
   let rigsBook: Book<RigDoc>;
   let inputRequestsBook: Book<InputRequestDoc>;
   let sessionsBook: ReadOnlyBook<SessionDoc>;
@@ -1289,10 +1290,28 @@ export function createSpider(): Plugin {
    *
    * Alongside the rig patch, `failEngine` writes the writ's `status.spider`
    * sub-slot with `stuckCause: 'engine-failure'`, `retryable`, and `detail`
-   * so downstream retry clockwork can branch on that payload without
-   * reaching back into engine metadata. The rig → writ CDC handler still
-   * performs the phase transition; this just publishes the observability
-   * payload on top of it.
+   * so downstream retry clockwork can branch on that payload.
+   *
+   * Both writes — the rig patch (which cascades to the writ phase transition
+   * via the rigs → writs CDC Phase 1 handler) and the writ status-slot write
+   * — are performed inside a single outer stacks transaction. Per the stacks
+   * contract:
+   *
+   *   - Nested `runTransaction` calls flatten into the outer tx via the
+   *     `activeTx` check (see stacks-core.ts), so `setWritStatus`'s own
+   *     transaction joins this one rather than opening a second.
+   *   - Phase 2 CDC events are coalesced per `ref:docId` per transaction
+   *     (see cdc.ts `coalesceEvents`), so a Phase 2 observer of the writs
+   *     book sees exactly one `update` event per writ carrying both the
+   *     phase transition AND the new status payload — never one event with
+   *     phase disagreeing with status.
+   *
+   * This atomicity is load-bearing for the retry clockwork: its trigger
+   * condition reads `writ.status.spider.retryable` on the very Phase 2 event
+   * that carries the stuck phase transition. If the two writes landed in
+   * separate transactions, the retry clockwork would observe the phase
+   * transition first with an empty status slot and ignore the writ, and the
+   * later status-only update would be filtered out by its stuck→stuck guard.
    */
   async function failEngine(
     rig: RigDoc,
@@ -1310,23 +1329,26 @@ export function createSpider(): Plugin {
       }
       return e;
     });
-    await rigsBook.patch(rig.id, {
-      engines: updatedEngines,
-      status: 'stuck',
-    });
 
-    // Publish the observability payload to the writ's status.spider sub-slot.
-    // The rig → writ CDC handler handles the phase transition itself; this
-    // write lands independently so the stuckCause + retryable + detail are
-    // available whether or not the CDC has run yet, and whatever ordering
-    // the scheduler picks. Slot writes survive terminal phase transitions.
     const status: SpiderWritStatus = {
       stuckCause: 'engine-failure',
       retryable: opts.retryable,
       detail: opts.detail,
       observedAt: now,
     };
-    await clerk.setWritStatus(rig.writId, 'spider', status);
+
+    await stacks.transaction(async () => {
+      await rigsBook.patch(rig.id, {
+        engines: updatedEngines,
+        status: 'stuck',
+      });
+
+      // Publish the observability payload to the writ's status.spider
+      // sub-slot. Coalesces with the writ phase transition (fired by the
+      // rigs → writs CDC Phase 1 handler above) into a single Phase 2
+      // event so downstream observers see phase and status atomically.
+      await clerk.setWritStatus(rig.writId, 'spider', status);
+    });
   }
 
   /**
@@ -2571,7 +2593,7 @@ export function createSpider(): Plugin {
         const g = guild();
         spiderConfig = g.guildConfig().spider ?? {};
 
-        const stacks = g.apparatus<StacksApi>('stacks');
+        stacks = g.apparatus<StacksApi>('stacks');
         clerk = g.apparatus<ClerkApi>('clerk');
         fabricator = g.apparatus<FabricatorApi>('fabricator');
         animator = g.apparatus<AnimatorApi>('animator');
