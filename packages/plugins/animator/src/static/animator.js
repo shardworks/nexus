@@ -49,10 +49,11 @@
     return h + 'h ' + m + 'm ' + s + 's';
   }
 
-  function formatCost(costUsd) {
-    if (costUsd == null) return '-';
-    return '$' + Number(costUsd).toFixed(4);
-  }
+  // Cost and token formatting routes through the shared
+  // window.NexusFormat namespace (served by oculus and auto-injected
+  // into every dashboard page, so it is defined before this IIFE
+  // runs). No local redefinitions — the shared namespace is the single
+  // source of truth for $x.yy precision and en-US token grouping.
 
   function renderTranscript(messages) {
     if (!messages || !messages.length) return '(no transcript)';
@@ -143,15 +144,15 @@
       if (s.costUsd != null) {
         var tooltipLines = [];
         if (s.tokenUsage) {
-          if (s.tokenUsage.inputTokens != null) tooltipLines.push('Input: ' + s.tokenUsage.inputTokens);
-          if (s.tokenUsage.outputTokens != null) tooltipLines.push('Output: ' + s.tokenUsage.outputTokens);
-          if (s.tokenUsage.cacheReadTokens != null) tooltipLines.push('Cache Read: ' + s.tokenUsage.cacheReadTokens);
-          if (s.tokenUsage.cacheWriteTokens != null) tooltipLines.push('Cache Write: ' + s.tokenUsage.cacheWriteTokens);
+          if (s.tokenUsage.inputTokens != null) tooltipLines.push('Input: ' + window.NexusFormat.formatTokenCount(s.tokenUsage.inputTokens));
+          if (s.tokenUsage.outputTokens != null) tooltipLines.push('Output: ' + window.NexusFormat.formatTokenCount(s.tokenUsage.outputTokens));
+          if (s.tokenUsage.cacheReadTokens != null) tooltipLines.push('Cache Read: ' + window.NexusFormat.formatTokenCount(s.tokenUsage.cacheReadTokens));
+          if (s.tokenUsage.cacheWriteTokens != null) tooltipLines.push('Cache Write: ' + window.NexusFormat.formatTokenCount(s.tokenUsage.cacheWriteTokens));
         }
         var tooltipHtml = tooltipLines.length
           ? '<span class="cost-tooltip">' + esc(tooltipLines.join(' | ')) + '</span>'
           : '';
-        costHtml = '<span class="cost-cell">' + esc(formatCost(s.costUsd)) + tooltipHtml + '</span>';
+        costHtml = '<span class="cost-cell">' + esc(window.NexusFormat.formatCostUsd(s.costUsd)) + tooltipHtml + '</span>';
       }
 
       // Cancel button for running sessions
@@ -234,14 +235,14 @@
       rows += '<tr><td>Ended</td><td>' + esc(formatDate(session.endedAt)) + '</td></tr>';
       rows += '<tr><td>Duration</td><td>' + esc(formatDuration(session.durationMs)) + '</td></tr>';
       if (session.costUsd != null) {
-        rows += '<tr><td>Cost (USD)</td><td>' + esc(formatCost(session.costUsd)) + '</td></tr>';
+        rows += '<tr><td>Cost (USD)</td><td>' + esc(window.NexusFormat.formatCostUsd(session.costUsd)) + '</td></tr>';
       }
       if (session.tokenUsage) {
         var tu = session.tokenUsage;
-        if (tu.inputTokens != null) rows += '<tr><td>Input Tokens</td><td>' + esc(String(tu.inputTokens)) + '</td></tr>';
-        if (tu.outputTokens != null) rows += '<tr><td>Output Tokens</td><td>' + esc(String(tu.outputTokens)) + '</td></tr>';
-        if (tu.cacheReadTokens != null) rows += '<tr><td>Cache Read Tokens</td><td>' + esc(String(tu.cacheReadTokens)) + '</td></tr>';
-        if (tu.cacheWriteTokens != null) rows += '<tr><td>Cache Write Tokens</td><td>' + esc(String(tu.cacheWriteTokens)) + '</td></tr>';
+        if (tu.inputTokens != null) rows += '<tr><td>Input Tokens</td><td>' + esc(window.NexusFormat.formatTokenCount(tu.inputTokens)) + '</td></tr>';
+        if (tu.outputTokens != null) rows += '<tr><td>Output Tokens</td><td>' + esc(window.NexusFormat.formatTokenCount(tu.outputTokens)) + '</td></tr>';
+        if (tu.cacheReadTokens != null) rows += '<tr><td>Cache Read Tokens</td><td>' + esc(window.NexusFormat.formatTokenCount(tu.cacheReadTokens)) + '</td></tr>';
+        if (tu.cacheWriteTokens != null) rows += '<tr><td>Cache Write Tokens</td><td>' + esc(window.NexusFormat.formatTokenCount(tu.cacheWriteTokens)) + '</td></tr>';
       }
       if (session.metadata) {
         var meta = session.metadata;
