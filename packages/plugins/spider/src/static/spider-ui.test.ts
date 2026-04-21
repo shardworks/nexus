@@ -20,53 +20,81 @@ const indexHtml = readFileSync(resolve(__dirname, 'index.html'), 'utf-8');
 // ── Rig list row structure ──────────────────────────────────────────────
 
 describe('spider.js rig list row HTML', () => {
+  // After the keyed in-place refactor, rig rows are assembled by
+  // createRigRow via document.createElement rather than an HTML template.
+  // These assertions pin the same invariants against the new function
+  // body: both writ-title and rig-id cells are built as rig-link anchors,
+  // and the writ-title cell is never a plain <td> of text.
+  const createRigRowMatch = spiderJs.match(
+    /function createRigRow\(rig\)[\s\S]*?return tr;\s*\}/,
+  );
+  const createRigRowBody = createRigRowMatch ? createRigRowMatch[0] : '';
+
   it('renders the writ-title cell as a rig-link anchor', () => {
-    // The row template should contain a <td> with a rig-link anchor for the
-    // writ title (the second <td> in each row).  We match the template
-    // fragment that builds the writ-title cell.
-    const writTitleCellPattern =
-      /<td><a class="rig-link" href="#" data-rig-id="[^"]*"\s*>\s*'\s*\+\s*esc\(writTitle\)/;
+    // createRigRow builds a dedicated anchor for the writ title with
+    // class 'rig-link' and copies data-rig-id across to it.
+    assert.ok(createRigRowBody, 'should find createRigRow body');
     assert.match(
-      spiderJs,
-      writTitleCellPattern,
-      'writ-title cell should be a clickable rig-link anchor',
+      createRigRowBody,
+      /writTitleAnchor\s*=\s*document\.createElement\(['"]a['"]\)/,
+      'writ-title cell should be built around a dedicated anchor element',
+    );
+    assert.match(
+      createRigRowBody,
+      /writTitleAnchor\.className\s*=\s*['"]rig-link['"]/,
+      'writ-title anchor should carry the rig-link class',
+    );
+    assert.match(
+      createRigRowBody,
+      /writTitleAnchor\.setAttribute\(['"]data-rig-id['"]\s*,\s*rig\.id\)/,
+      'writ-title anchor should carry data-rig-id for click routing',
     );
   });
 
   it('renders the rig-id cell as a rig-link anchor', () => {
-    const rigIdCellPattern =
-      /<td><a class="rig-link" href="#" data-rig-id="[^"]*"\s*>\s*'\s*\+\s*esc\(rig\.id\)/;
+    assert.ok(createRigRowBody, 'should find createRigRow body');
     assert.match(
-      spiderJs,
-      rigIdCellPattern,
-      'rig-id cell should be a clickable rig-link anchor',
+      createRigRowBody,
+      /rigIdAnchor\s*=\s*document\.createElement\(['"]a['"]\)/,
+      'rig-id cell should be built around a dedicated anchor element',
+    );
+    assert.match(
+      createRigRowBody,
+      /rigIdAnchor\.className\s*=\s*['"]rig-link['"]/,
+      'rig-id anchor should carry the rig-link class',
+    );
+    assert.match(
+      createRigRowBody,
+      /rigIdAnchor\.textContent\s*=\s*rig\.id/,
+      'rig-id anchor should show rig.id as its visible text',
     );
   });
 
   it('writ-title and rig-id cells share the same rig-link class', () => {
-    // Both cells must use the same class so the click handler wires them
-    // identically.  Count rig-link anchors in the row template.
-    const rowTemplateMatch = spiderJs.match(
-      /var rows = filtered\.map\(function \(rig\) \{[\s\S]*?\.join\(''\)/,
-    );
-    assert.ok(rowTemplateMatch, 'should find the row template block');
-    const rowTemplate = rowTemplateMatch[0];
-
-    const rigLinkCount = (rowTemplate.match(/class="rig-link"/g) || []).length;
+    // Both cells must use the same class so the click-wiring treats them
+    // identically.  Count rig-link references inside createRigRow.
+    assert.ok(createRigRowBody, 'should find createRigRow body');
+    const rigLinkCount = (createRigRowBody.match(/['"]rig-link['"]/g) || []).length;
     assert.ok(
       rigLinkCount >= 2,
-      `expected at least 2 rig-link anchors in the row template, found ${rigLinkCount}`,
+      `expected at least 2 rig-link anchors in createRigRow, found ${rigLinkCount}`,
     );
   });
 
   it('writ-title cell is NOT rendered as plain text', () => {
-    // Regression guard: the old pattern was just  '<td>' + esc(writTitle) + '</td>'
-    // with no anchor.  Ensure that pattern no longer exists.
+    // Regression guard: the writ-title cell must always be an anchor, not
+    // a plain text <td>. We forbid both the legacy string-template shape
+    // and any plain assignment of the writ title onto a <td>'s textContent.
     const plainTitlePattern = /'<td>'\s*\+\s*esc\(writTitle\)\s*\+\s*'<\/td>'/;
     assert.doesNotMatch(
       spiderJs,
       plainTitlePattern,
       'writ-title cell must not be rendered as plain (non-linked) text',
+    );
+    assert.doesNotMatch(
+      spiderJs,
+      /writTitleTd\.textContent\s*=\s*writTitle/,
+      'writ-title text must never be written directly onto the td',
     );
   });
 
@@ -900,6 +928,70 @@ describe('spider.js pipeline keyed update', () => {
   });
 });
 
+// ── Rig-list renderer keyed in-place update ─────────────────────────────
+
+describe('spider.js rig-list keyed update', () => {
+  // Mirrors the pipeline keyed-update block: a fast-path / slow-path
+  // update strategy for the rig-tbody, keyed by data-rig-id on each <tr>.
+  // The three mutating <td>s carry per-cell class hooks so updateRigRow
+  // can patch them without positional selectors.
+
+  it('createRigRow sets data-rig-id on the <tr>', () => {
+    const block = spiderJs.match(
+      /function createRigRow\(rig\)[\s\S]*?return tr;\s*\}/,
+    );
+    assert.ok(block, 'should find createRigRow');
+    assert.match(
+      block[0],
+      /tr\.setAttribute\(['"]data-rig-id['"]\s*,\s*rig\.id\)/,
+      'createRigRow should index the row by data-rig-id on the <tr>',
+    );
+  });
+
+  it('renderRigList has a fast path that patches in place when order is unchanged', () => {
+    const block = spiderJs.match(
+      /function renderRigList\([\s\S]*?(?=\n  \/\/|\n  function )/,
+    );
+    assert.ok(block, 'should find renderRigList');
+    assert.match(
+      block[0],
+      /getAttribute\(['"]data-rig-id['"]\)/,
+      'renderRigList should key existing rows by data-rig-id',
+    );
+    assert.match(
+      block[0],
+      /orderUnchanged/,
+      'renderRigList should compute an orderUnchanged flag for the fast path',
+    );
+    assert.match(
+      block[0],
+      /updateRigRow\(/,
+      'renderRigList should reach into updateRigRow for in-place patches',
+    );
+  });
+
+  it('exposes updateRigRow(row, rig) for in-place cell updates', () => {
+    assert.match(
+      spiderJs,
+      /function updateRigRow\(row, rig\)/,
+      'should define updateRigRow(row, rig) helper for in-place row updates',
+    );
+  });
+
+  it('rig-row cells carry per-cell class hooks for status, cost, and engines', () => {
+    // Without class hooks, the keyed-update path would have to fall back
+    // to positional selectors inside the row — brittle and inconsistent
+    // with the pipeline pattern.
+    for (const cls of ['rig-row-status', 'rig-row-cost', 'rig-row-engines']) {
+      assert.match(
+        spiderJs,
+        new RegExp(`['"]${cls}['"]`),
+        `createRigRow/updateRigRow should reference the ${cls} class hook`,
+      );
+    }
+  });
+});
+
 // ── Server-supplied cost (no per-engine fetch) ──────────────────────────
 
 describe('spider.js server-supplied engine cost', () => {
@@ -1015,7 +1107,9 @@ describe('spider.js rig-list Cost column', () => {
   // T5 / D7: the rig-list table has a dedicated Cost column, rendered
   // immediately to the left of Engines, sourced from rig.costSummary.
   // The Cost column always renders — showing $0.00 when no sessions have
-  // reported cost yet.
+  // reported cost yet. After the keyed in-place refactor, the Cost cell
+  // is structurally built in createRigRow and the $0.00 fallback lives
+  // inside updateRigRow.
 
   it('index.html declares a Cost <th> between Writ Title and Engines', () => {
     assert.match(
@@ -1026,19 +1120,20 @@ describe('spider.js rig-list Cost column', () => {
   });
 
   it('row template emits a cost cell between writ-title and engines cells', () => {
-    const rowTemplateMatch = spiderJs.match(
-      /var rows = filtered\.map\(function \(rig\) \{[\s\S]*?\.join\(''\)/,
+    // createRigRow appends cells to the <tr> in DOM order, so we pin the
+    // ordering invariant by checking that the writ-title cell is appended
+    // before the cost cell, which is appended before the engines cell.
+    const createRigRowMatch = spiderJs.match(
+      /function createRigRow\(rig\)[\s\S]*?return tr;\s*\}/,
     );
-    assert.ok(rowTemplateMatch, 'should find the row template block');
-    const rowTemplate = rowTemplateMatch[0];
-    // esc(writTitle) must come before esc(formatCostUsd(costUsd))
-    // which must come before esc(engineSummary(rig.engines))
-    const writIdx = rowTemplate.indexOf('esc(writTitle)');
-    const costIdx = rowTemplate.indexOf('formatCostUsd(costUsd)');
-    const enginesIdx = rowTemplate.indexOf('engineSummary(rig.engines)');
-    assert.ok(writIdx >= 0, 'row template should include writ title cell');
-    assert.ok(costIdx >= 0, 'row template should include cost cell');
-    assert.ok(enginesIdx >= 0, 'row template should include engines cell');
+    assert.ok(createRigRowMatch, 'should find createRigRow body');
+    const body = createRigRowMatch[0];
+    const writIdx = body.indexOf('tr.appendChild(writTitleTd)');
+    const costIdx = body.indexOf('tr.appendChild(costTd)');
+    const enginesIdx = body.indexOf('tr.appendChild(enginesTd)');
+    assert.ok(writIdx >= 0, 'createRigRow should append a writ-title cell');
+    assert.ok(costIdx >= 0, 'createRigRow should append a cost cell');
+    assert.ok(enginesIdx >= 0, 'createRigRow should append an engines cell');
     assert.ok(
       writIdx < costIdx && costIdx < enginesIdx,
       'cost cell must sit between writ-title and engines cells',
@@ -1046,15 +1141,23 @@ describe('spider.js rig-list Cost column', () => {
   });
 
   it('row template falls back to 0 when costSummary is absent (renders $0.00)', () => {
-    const rowTemplateMatch = spiderJs.match(
-      /var rows = filtered\.map\(function \(rig\) \{[\s\S]*?\.join\(''\)/,
+    // The $0.00 fallback now lives in updateRigRow — the cost cell's
+    // textContent is always derived via formatCostUsd, defaulting costUsd
+    // to 0 when costSummary is missing or costUsd is not a number.
+    const updateRigRowMatch = spiderJs.match(
+      /function updateRigRow\(row, rig\)[\s\S]*?(?=\n  \}\n\n  \/\/|\n  function )/,
     );
-    assert.ok(rowTemplateMatch, 'should find the row template block');
-    const rowTemplate = rowTemplateMatch[0];
+    assert.ok(updateRigRowMatch, 'should find updateRigRow body');
+    const body = updateRigRowMatch[0];
     assert.match(
-      rowTemplate,
+      body,
       /rig\.costSummary[\s\S]*?costUsd[\s\S]*?:\s*0/,
-      'row template should default costUsd to 0 when costSummary is missing',
+      'updateRigRow should default costUsd to 0 when costSummary is missing',
+    );
+    assert.match(
+      body,
+      /formatCostUsd\(costUsd\)/,
+      'updateRigRow should render the cell via formatCostUsd',
     );
   });
 });

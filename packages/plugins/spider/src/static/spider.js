@@ -577,35 +577,174 @@
     if (empty) empty.style.display = 'none';
     if (table) table.style.display = '';
 
-    var rows = filtered.map(function (rig) {
-      var writTitle = (writLookup[rig.writId] && writLookup[rig.writId].title) || '\u2014';
-      // D7/D11: render $0.00 when no cost data exists. Server populates
-      // costSummary from the animator sessions book for every rig.
-      var costUsd = (rig.costSummary && typeof rig.costSummary.costUsd === 'number') ? rig.costSummary.costUsd : 0;
-      return '<tr>' +
-        '<td>' + badgeHtml(rig.status) + '</td>' +
-        '<td><a class="rig-link" href="#" data-rig-id="' + esc(rig.id) + '">' + esc(writTitle) + '</a></td>' +
-        '<td>' + esc(formatCostUsd(costUsd)) + '</td>' +
-        '<td>' + esc(engineSummary(rig.engines)) + '</td>' +
-        '<td><a class="rig-link" href="#" data-rig-id="' + esc(rig.id) + '">' + esc(rig.id) + '</a></td>' +
-        '<td><a href="/pages/writs/?writ=' + esc(rig.writId) + '">' + esc(rig.writId) + '</a></td>' +
-        '<td>' + esc(formatDate(rig.createdAt)) + '</td>' +
-        '</tr>';
+    // Index existing row children by rig id (mirrors renderPipelineInto).
+    var existingRows = {};
+    var existingList = tbody.children;
+    for (var i = 0; i < existingList.length; i++) {
+      var existingId = existingList[i].getAttribute('data-rig-id');
+      if (existingId) existingRows[existingId] = existingList[i];
+    }
+
+    // Fast path: same rig set in the same order. Patch each row in place
+    // without touching the parent's child list — the common case during
+    // the 2 s poll when nothing has been added or removed.
+    var orderUnchanged =
+      existingList.length === filtered.length &&
+      filtered.every(function (rig, idx) {
+        return existingList[idx].getAttribute('data-rig-id') === rig.id;
+      });
+
+    if (orderUnchanged) {
+      for (var f = 0; f < filtered.length; f++) {
+        updateRigRow(existingList[f], filtered[f]);
+      }
+      return;
+    }
+
+    // Slow path: rig set or order changed. Detach every row (without
+    // `innerHTML = ''`, which would drop the nodes we want to reuse),
+    // then re-append matched rows via createRigRow / updateRigRow in the
+    // new filtered order. Rows for rig ids not in the incoming list are
+    // simply not re-attached and fall out of scope.
+    while (tbody.firstChild) {
+      tbody.removeChild(tbody.firstChild);
+    }
+
+    filtered.forEach(function (rig) {
+      var row = existingRows[rig.id];
+      if (!row) {
+        row = createRigRow(rig);
+      }
+      updateRigRow(row, rig);
+      tbody.appendChild(row);
     });
+  }
 
-    tbody.innerHTML = rows.join('');
+  // ── Rig-row construction + in-place update ─────────────────────────────
 
-    // Wire rig-link clicks
-    var links = tbody.querySelectorAll('.rig-link');
-    for (var i = 0; i < links.length; i++) {
-      (function (link) {
-        link.addEventListener('click', function (e) {
-          e.preventDefault();
-          var rigId = link.getAttribute('data-rig-id');
-          var rig = rigs.find(function (r) { return r.id === rigId; });
-          if (rig) showRigDetail(rig);
-        });
-      })(links[i]);
+  /**
+   * Build a new <tr> for the given rig. Modeled one-for-one on
+   * createPipelineNode: data-rig-id on the outer node (D3), per-cell class
+   * hooks on the mutating <td>s (D4), and rig-link click handlers wired
+   * once per anchor with a closure over rig.id (D5/D6). The live rig is
+   * resolved inside the handler via rigs.find so reused rows pick up the
+   * latest payload without needing their listeners re-attached.
+   */
+  function createRigRow(rig) {
+    var tr = document.createElement('tr');
+    tr.setAttribute('data-rig-id', rig.id);
+
+    // Cell 1: Status. A stable <span class="badge"> child is patched in
+    // place by updateRigRow — the className toggles the variant, the
+    // textContent is the status word.
+    var statusTd = document.createElement('td');
+    statusTd.className = 'rig-row-status';
+    var statusBadge = document.createElement('span');
+    statusBadge.className = 'badge';
+    statusTd.appendChild(statusBadge);
+    tr.appendChild(statusTd);
+
+    // Cell 2: Writ title (rig-link anchor). Writ title text is written by
+    // updateRigRow on every poll (D9) so writLookup refreshes are visible.
+    var writTitleTd = document.createElement('td');
+    var writTitleAnchor = document.createElement('a');
+    writTitleAnchor.className = 'rig-link';
+    writTitleAnchor.href = '#';
+    writTitleAnchor.setAttribute('data-rig-id', rig.id);
+    writTitleAnchor.addEventListener('click', function (e) {
+      e.preventDefault();
+      var live = rigs.find(function (r) { return r.id === rig.id; });
+      if (live) showRigDetail(live);
+    });
+    writTitleTd.appendChild(writTitleAnchor);
+    tr.appendChild(writTitleTd);
+
+    // Cell 3: Cost.
+    var costTd = document.createElement('td');
+    costTd.className = 'rig-row-cost';
+    tr.appendChild(costTd);
+
+    // Cell 4: Engines.
+    var enginesTd = document.createElement('td');
+    enginesTd.className = 'rig-row-engines';
+    tr.appendChild(enginesTd);
+
+    // Cell 5: Rig id (rig-link anchor). The id text never changes for a
+    // given row, so it's written once at create time.
+    var rigIdTd = document.createElement('td');
+    var rigIdAnchor = document.createElement('a');
+    rigIdAnchor.className = 'rig-link';
+    rigIdAnchor.href = '#';
+    rigIdAnchor.setAttribute('data-rig-id', rig.id);
+    rigIdAnchor.textContent = rig.id;
+    rigIdAnchor.addEventListener('click', function (e) {
+      e.preventDefault();
+      var live = rigs.find(function (r) { return r.id === rig.id; });
+      if (live) showRigDetail(live);
+    });
+    rigIdTd.appendChild(rigIdAnchor);
+    tr.appendChild(rigIdTd);
+
+    // Cell 6: Writ deep-link to the Clerk writs page. Stable per row.
+    var writIdTd = document.createElement('td');
+    var writIdAnchor = document.createElement('a');
+    writIdAnchor.href = '/pages/writs/?writ=' + encodeURIComponent(rig.writId || '');
+    writIdAnchor.textContent = rig.writId || '';
+    writIdTd.appendChild(writIdAnchor);
+    tr.appendChild(writIdTd);
+
+    // Cell 7: Created timestamp (stable per row).
+    var createdTd = document.createElement('td');
+    createdTd.textContent = formatDate(rig.createdAt);
+    tr.appendChild(createdTd);
+
+    return tr;
+  }
+
+  /**
+   * Patch the mutating cells of an existing rig row in place. Safe to
+   * call on every 2 s poll — writes only happen when values actually
+   * changed, mirroring the idempotent-write pattern used by setText /
+   * updatePipelineNode. Cells touched: status (badge class + text), writ
+   * title (anchor textContent — re-read from writLookup each call per
+   * D9), cost, engines.
+   */
+  function updateRigRow(row, rig) {
+    // Status badge — class + text, both idempotent.
+    var statusTd = row.querySelector('.rig-row-status');
+    if (statusTd) {
+      var badgeEl = statusTd.querySelector('.badge');
+      if (badgeEl) {
+        var bc = badgeClass(rig.status);
+        var nextClass = bc ? 'badge ' + bc : 'badge';
+        if (badgeEl.className !== nextClass) badgeEl.className = nextClass;
+        if (badgeEl.textContent !== rig.status) badgeEl.textContent = rig.status;
+      }
+    }
+
+    // Writ title — re-read from writLookup on every call (D9). The
+    // writ-title anchor is the first .rig-link in the row; the rig-id
+    // anchor appears later and is not touched here.
+    var writTitle = (writLookup[rig.writId] && writLookup[rig.writId].title) || '\u2014';
+    var writTitleAnchor = row.querySelector('.rig-link');
+    if (writTitleAnchor && writTitleAnchor.textContent !== writTitle) {
+      writTitleAnchor.textContent = writTitle;
+    }
+
+    // Cost — D7/D11 fallback to 0 when costSummary is absent so the cell
+    // always renders $0.00 rather than blank.
+    var costTd = row.querySelector('.rig-row-cost');
+    if (costTd) {
+      var costUsd = (rig.costSummary && typeof rig.costSummary.costUsd === 'number') ? rig.costSummary.costUsd : 0;
+      var costText = formatCostUsd(costUsd);
+      if (costTd.textContent !== costText) costTd.textContent = costText;
+    }
+
+    // Engine summary.
+    var enginesTd = row.querySelector('.rig-row-engines');
+    if (enginesTd) {
+      var enginesText = engineSummary(rig.engines);
+      if (enginesTd.textContent !== enginesText) enginesTd.textContent = enginesText;
     }
   }
 
