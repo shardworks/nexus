@@ -407,10 +407,10 @@ function updateCostCard() {
 
   costDetails.innerHTML = `
     <div>
-      <span class="badge">IN: ${totalInput.toLocaleString()}</span>
-      <span class="badge">OUT: ${totalOutput.toLocaleString()}</span>
+      <span class="badge">IN: ${window.NexusFormat.formatTokenCount(totalInput)}</span>
+      <span class="badge">OUT: ${window.NexusFormat.formatTokenCount(totalOutput)}</span>
     </div>
-    <div class="cost-usd">$${totalCost.toFixed(4)}</div>
+    <div class="cost-usd">${window.NexusFormat.formatCostUsd(totalCost)}</div>
   `;
 
   costCard.classList.remove('hidden');
