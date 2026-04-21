@@ -2087,12 +2087,24 @@ export function createSpider(): Plugin {
     });
 
     for (const writ of openWrits) {
-      // Check for existing rig
-      const existing = await rigsBook.find({
-        where: [['writId', '=', writ.id]],
-        limit: 1,
-      });
-      if (existing.length > 0) continue;
+      // Check for an active rig. A writ may legitimately carry multiple
+      // rigs across its lifetime (multi-rig-lite retry: one writ
+      // accumulates multiple rigs over successive attempts; see
+      // `c-mo56pq2k`). The invariant we still uphold is "no two rigs
+      // for the same writ are active at the same time" — terminal or
+      // stuck rigs don't block a new dispatch, because a stuck rig is
+      // precisely the signal that the prior attempt reached its
+      // non-terminal "needs attention" state and the writ may have
+      // since been returned to `open` for a retry.
+      //
+      // Active statuses: 'running' and 'blocked'. Everything else
+      // ('stuck', 'completed', 'failed', 'cancelled') is inert for
+      // dispatch purposes.
+      const activeForWrit = await rigsBook.count([
+        ['writId', '=', writ.id],
+        ['status', 'IN', ['running', 'blocked']],
+      ]);
+      if (activeForWrit > 0) continue;
 
       // Gate on outbound spider.follows links before dispatch. Evaluation
       // produces one of four outcomes — see `evaluateGate`. The walk also
@@ -2224,7 +2236,15 @@ export function createSpider(): Plugin {
     },
 
     async forWrit(writId: string): Promise<RigDoc | null> {
-      const results = await rigsBook.find({ where: [['writId', '=', writId]], limit: 1 });
+      // Return the newest rig for this writ. With multi-rig-lite retry
+      // a writ may accumulate multiple rigs across successive attempts
+      // (see `c-mo56pq2k`); callers consistently want the current rig,
+      // not an arbitrary prior attempt.
+      const results = await rigsBook.find({
+        where: [['writId', '=', writId]],
+        orderBy: ['createdAt', 'desc'],
+        limit: 1,
+      });
       return results[0] ?? null;
     },
 

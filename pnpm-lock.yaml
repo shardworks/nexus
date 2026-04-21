@@ -165,6 +165,28 @@ importers:
         specifier: 25.5.0
         version: 25.5.0
 
+  packages/plugins/clockworks-retry:
+    dependencies:
+      '@shardworks/clerk-apparatus':
+        specifier: workspace:*
+        version: link:../clerk
+      '@shardworks/stacks-apparatus':
+        specifier: workspace:*
+        version: link:../stacks
+    devDependencies:
+      '@shardworks/fabricator-apparatus':
+        specifier: workspace:*
+        version: link:../fabricator
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
+      '@shardworks/spider-apparatus':
+        specifier: workspace:*
+        version: link:../spider
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
   packages/plugins/codexes:
     dependencies:
       '@shardworks/tools-apparatus':
