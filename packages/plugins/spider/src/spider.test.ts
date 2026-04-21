@@ -9944,17 +9944,21 @@ describe('Spider — spider.follows gate', () => {
       assert.ok(!status || !status.stuckCause, 'stuckCause should be cleared');
     });
 
-    it('does not touch writs stuck by the engine-cascade path (no status.spider slot)', async () => {
+    it('does not touch writs stuck without a status.spider slot', async () => {
       const { clerk, spider, stacks } = fix;
-      // Cause an engine-cascade stuck by failing a rig. Spawn, then mark
-      // the rig as stuck with a failed engine — the CDC handler transitions
-      // the writ to `stuck` with only a `resolution`, no `status.spider`.
+      // Simulate an operator-style stuck: someone patches the rig into
+      // stuck status directly, bypassing failEngine. The CDC handler still
+      // transitions the writ to `stuck`, but no status.spider sub-slot is
+      // ever written for this writ. autoUnstick must ignore it.
       await postWrit(clerk, 'OrdinaryWrit');
       await spider.crawl(); // spawn
       const book = rigsBook(stacks);
       const [rig] = await book.list();
 
-      // Inject a failed engine and mark rig as stuck.
+      // Inject a failed engine and mark rig as stuck — note: this is a
+      // direct rigsBook.patch, not a failEngine() call, so it does NOT
+      // publish status.spider. This asserts the "no slot = not ours"
+      // contract autoUnstick relies on.
       const brokenEngines = rig.engines.map((e: EngineInstance) =>
         e.id === 'draft' ? { ...e, status: 'failed' as const, error: 'boom' } : e,
       );
@@ -9963,20 +9967,20 @@ describe('Spider — spider.follows gate', () => {
       // Give CDC a tick.
       const writs = await clerk.list({ phase: 'stuck' });
       const stuckWrit = writs[0];
-      assert.ok(stuckWrit, 'writ should be stuck via engine-cascade');
-      assert.equal(stuckWrit.status?.spider, undefined, 'engine-cascade stuck must not write status.spider');
+      assert.ok(stuckWrit, 'writ should be stuck via the direct rig patch');
+      assert.equal(stuckWrit.status?.spider, undefined, 'direct rig patch must not publish status.spider');
 
       // Run a bunch of crawls — autoUnstick must NEVER flip this writ.
       for (let i = 0; i < 5; i++) {
         const r = await spider.crawl();
         if (!r) break;
         if (r.action === 'writ-unstuck') {
-          assert.notEqual((r as { writId: string }).writId, stuckWrit.id, 'engine-cascade stuck must not be auto-unstuck');
+          assert.notEqual((r as { writId: string }).writId, stuckWrit.id, 'slot-less stuck must not be auto-unstuck');
         }
       }
 
       const finalWrit = await clerk.show(stuckWrit.id);
-      assert.equal(finalWrit.phase, 'stuck', 'engine-cascade writ should remain stuck');
+      assert.equal(finalWrit.phase, 'stuck', 'slot-less stuck writ should remain stuck');
       assert.equal(finalWrit.status?.spider, undefined, 'status.spider should still be absent');
     });
   });
@@ -10039,6 +10043,330 @@ describe('Spider — spider.follows gate', () => {
       const aStatus = aFinal.status?.spider as Record<string, unknown> | undefined;
       assert.equal(aStatus?.stuckCause, 'failed-blocker');
       assert.deepEqual(aStatus?.blockerIds, [b.id]);
+    });
+  });
+
+  // ── engine-failure stuck-cause payload ─────────────────────────────
+  //
+  // Every `failEngine` call site classifies its failure as retryable
+  // (transient — a fresh attempt may succeed) or non-retryable
+  // (definitional — the same code would reproduce the same failure) and
+  // writes a freeform `detail` string to the writ's `status.spider`
+  // sub-slot. These tests verify the payload shape for representative
+  // paths and confirm that the dependency-recovery causes
+  // (failed-blocker / cycle) remain untouched.
+  describe('engine-failure stuck cause payload', () => {
+    it('session crash classifies retryable:true with a detail describing the session status', async () => {
+      // Drive the STANDARD_TEMPLATE far enough to launch the implement
+      // engine as a quick engine with a failed session outcome. The
+      // implement engine is a quick engine that launches an Animator
+      // session; with a pre-failed session outcome, tryCollect will find
+      // the terminal-failed session and route through the session-crash
+      // branch of failEngine.
+      const fix = buildFixture(
+        {},
+        { status: 'failed', error: 'Process exited with code 1' },
+      );
+      const { clerk, spider, stacks } = fix;
+      const writ = await postWrit(clerk, 'SessionCrash');
+      await spider.crawl(); // spawn
+
+      // Complete the draft engine out-of-band so implement becomes
+      // runnable without dragging codexes into the fixture.
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      await book.patch(rig.id, {
+        engines: rig.engines.map((e: EngineInstance) =>
+          e.id === 'draft'
+            ? { ...e, status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/wt', baseSha: 'sha' } }
+            : e,
+        ),
+      });
+
+      // Drive crawls until the writ is stuck.
+      for (let i = 0; i < 10; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        const w = await clerk.show(writ.id);
+        if (w.phase === 'stuck') break;
+      }
+
+      const final = await clerk.show(writ.id);
+      assert.equal(final.phase, 'stuck');
+      const status = final.status?.spider as Record<string, unknown> | undefined;
+      assert.ok(status, 'status.spider must be populated for engine-failure stucks');
+      assert.equal(status!.stuckCause, 'engine-failure');
+      assert.equal(status!.retryable, true, 'session crashes are transient — retryable:true');
+      assert.equal(typeof status!.detail, 'string');
+      assert.ok((status!.detail as string).includes('Session failed') || (status!.detail as string).includes('Process exited with code 1'),
+        `detail should describe the session crash, got: ${status!.detail}`);
+      assert.ok(typeof status!.observedAt === 'string', 'observedAt should be set');
+    });
+
+    it('graft validation failure classifies retryable:false with a detail describing the validation error', async () => {
+      const template: RigTemplate = {
+        engines: [
+          { id: 'grafter', designId: 'bad-grafter', givens: {} },
+        ],
+      };
+      const fix = buildFixture(
+        { spider: { rigTemplates: { default: template } } },
+        { status: 'completed' },
+        {
+          customEngines: {
+            'bad-grafter': {
+              id: 'bad-grafter',
+              async run() {
+                return {
+                  status: 'completed' as const,
+                  yields: { ok: true },
+                  // Duplicate id — graft validation rejects this at the
+                  // processGrafts phase, which takes the rig to stuck via
+                  // the retryable:false path (definitional).
+                  graft: [{ id: 'grafter', designId: 'bad-grafter', upstream: [] }],
+                };
+              },
+            },
+          },
+        },
+      );
+      const { clerk, spider } = fix;
+      const writ = await clerk.post({ title: 'graft invalid', body: 'body' });
+
+      for (let i = 0; i < 10; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        const w = await clerk.show(writ.id);
+        if (w.phase === 'stuck') break;
+      }
+
+      const final = await clerk.show(writ.id);
+      assert.equal(final.phase, 'stuck');
+      const status = final.status?.spider as Record<string, unknown> | undefined;
+      assert.ok(status, 'status.spider must be populated for engine-failure stucks');
+      assert.equal(status!.stuckCause, 'engine-failure');
+      assert.equal(status!.retryable, false, 'graft validation is definitional — retryable:false');
+      assert.ok(typeof status!.detail === 'string' && (status!.detail as string).length > 0);
+      assert.ok((status!.detail as string).toLowerCase().includes('graft'),
+        `detail should mention the graft failure, got: ${status!.detail}`);
+    });
+
+    it('engine run() throw classifies retryable:true', async () => {
+      const template: RigTemplate = {
+        engines: [
+          { id: 'thrower', designId: 'throwing-engine', givens: {} },
+        ],
+      };
+      const fix = buildFixture(
+        { spider: { rigTemplates: { default: template } } },
+        { status: 'completed' },
+        {
+          customEngines: {
+            'throwing-engine': {
+              id: 'throwing-engine',
+              async run() {
+                throw new Error('kaboom');
+              },
+            },
+          },
+        },
+      );
+      const { clerk, spider } = fix;
+      const writ = await clerk.post({ title: 'thrower', body: 'body' });
+
+      for (let i = 0; i < 10; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        const w = await clerk.show(writ.id);
+        if (w.phase === 'stuck') break;
+      }
+
+      const final = await clerk.show(writ.id);
+      assert.equal(final.phase, 'stuck');
+      const status = final.status?.spider as Record<string, unknown> | undefined;
+      assert.ok(status);
+      assert.equal(status!.stuckCause, 'engine-failure');
+      assert.equal(status!.retryable, true);
+      assert.ok((status!.detail as string).includes('kaboom'),
+        `detail should include the thrown error message, got: ${status!.detail}`);
+    });
+
+    it('unknown block type classifies retryable:false', async () => {
+      const template: RigTemplate = {
+        engines: [
+          { id: 'blocker-engine', designId: 'bad-block-engine', givens: {} },
+        ],
+      };
+      const fix = buildFixture(
+        { spider: { rigTemplates: { default: template } } },
+        { status: 'completed' },
+        {
+          customEngines: {
+            'bad-block-engine': {
+              id: 'bad-block-engine',
+              async run() {
+                return {
+                  status: 'blocked' as const,
+                  blockType: 'does-not-exist',
+                  condition: {},
+                };
+              },
+            },
+          },
+        },
+      );
+      const { clerk, spider } = fix;
+      const writ = await clerk.post({ title: 'bad-block', body: 'body' });
+
+      for (let i = 0; i < 10; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        const w = await clerk.show(writ.id);
+        if (w.phase === 'stuck') break;
+      }
+
+      const final = await clerk.show(writ.id);
+      assert.equal(final.phase, 'stuck');
+      const status = final.status?.spider as Record<string, unknown> | undefined;
+      assert.ok(status);
+      assert.equal(status!.stuckCause, 'engine-failure');
+      assert.equal(status!.retryable, false, 'unknown block type is definitional — retryable:false');
+      assert.ok((status!.detail as string).includes('does-not-exist'));
+    });
+
+    it('non-JSON-serializable engine yields classifies retryable:false', async () => {
+      const template: RigTemplate = {
+        engines: [
+          { id: 'bad-yields', designId: 'nonserializable-engine', givens: {} },
+        ],
+      };
+      const fix = buildFixture(
+        { spider: { rigTemplates: { default: template } } },
+        { status: 'completed' },
+        {
+          customEngines: {
+            'nonserializable-engine': {
+              id: 'nonserializable-engine',
+              async run() {
+                // Circular reference — JSON.stringify throws TypeError,
+                // so isJsonSerializable returns false.
+                const yields: Record<string, unknown> = {};
+                yields.self = yields;
+                return { status: 'completed' as const, yields };
+              },
+            },
+          },
+        },
+      );
+      const { clerk, spider } = fix;
+      const writ = await clerk.post({ title: 'nonserializable', body: 'body' });
+
+      for (let i = 0; i < 10; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        const w = await clerk.show(writ.id);
+        if (w.phase === 'stuck') break;
+      }
+
+      const final = await clerk.show(writ.id);
+      assert.equal(final.phase, 'stuck');
+      const status = final.status?.spider as Record<string, unknown> | undefined;
+      assert.ok(status);
+      assert.equal(status!.stuckCause, 'engine-failure');
+      assert.equal(status!.retryable, false);
+      assert.ok((status!.detail as string).toLowerCase().includes('json'));
+    });
+
+    it('failed-blocker stuck carries no retryable or detail fields', async () => {
+      const { clerk, spider } = fix;
+      const blocker = await postWrit(clerk, 'Blocker');
+      const dependent = await postWrit(clerk, 'Dependent');
+      await clerk.link(dependent.id, blocker.id, 'depends on', 'spider.follows');
+      await clerk.transition(blocker.id, 'failed', { resolution: 'boom' });
+
+      for (let i = 0; i < 6; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        if (r.action === 'gated' && (r as { writId: string }).writId === dependent.id) break;
+      }
+
+      const w = await clerk.show(dependent.id);
+      const status = w.status?.spider as Record<string, unknown> | undefined;
+      assert.ok(status, 'status.spider should be set for failed-blocker stucks');
+      assert.equal(status!.stuckCause, 'failed-blocker');
+      assert.equal(status!.retryable, undefined, 'failed-blocker stucks must not carry retryable');
+      assert.equal(status!.detail, undefined, 'failed-blocker stucks must not carry detail');
+    });
+
+    it('cycle stuck carries no retryable or detail fields', async () => {
+      const { clerk, spider } = fix;
+      const a = await postWrit(clerk, 'A');
+      const b = await postWrit(clerk, 'B');
+      await clerk.link(a.id, b.id, 'depends on', 'spider.follows');
+      await clerk.link(b.id, a.id, 'depends on', 'spider.follows');
+
+      for (let i = 0; i < 6; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        if (r.action === 'gated') break;
+      }
+
+      const w = await clerk.show(a.id);
+      const status = w.status?.spider as Record<string, unknown> | undefined;
+      assert.ok(status, 'status.spider should be set for cycle stucks');
+      assert.equal(status!.stuckCause, 'cycle');
+      assert.equal(status!.retryable, undefined, 'cycle stucks must not carry retryable');
+      assert.equal(status!.detail, undefined, 'cycle stucks must not carry detail');
+    });
+
+    it('autoUnstick leaves engine-failure stucks alone', async () => {
+      // Set up an engine-failure stuck via a throwing engine so we get
+      // the real cause='engine-failure' status slot.
+      const template: RigTemplate = {
+        engines: [
+          { id: 'thrower', designId: 'throw-once', givens: {} },
+        ],
+      };
+      const fix = buildFixture(
+        { spider: { rigTemplates: { default: template } } },
+        { status: 'completed' },
+        {
+          customEngines: {
+            'throw-once': {
+              id: 'throw-once',
+              async run() { throw new Error('permanent'); },
+            },
+          },
+        },
+      );
+      const { clerk, spider } = fix;
+      const writ = await clerk.post({ title: 'thrower', body: 'body' });
+
+      for (let i = 0; i < 10; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        const w = await clerk.show(writ.id);
+        if (w.phase === 'stuck') break;
+      }
+      const before = await clerk.show(writ.id);
+      assert.equal(before.phase, 'stuck');
+      assert.equal((before.status?.spider as Record<string, unknown>).stuckCause, 'engine-failure');
+
+      // Run many more crawls — autoUnstick must not touch this writ.
+      for (let i = 0; i < 8; i++) {
+        const r = await spider.crawl();
+        if (!r) break;
+        if (r.action === 'writ-unstuck') {
+          assert.notEqual((r as { writId: string }).writId, writ.id,
+            'autoUnstick must not release engine-failure stucks in this commission');
+        }
+      }
+
+      const after = await clerk.show(writ.id);
+      assert.equal(after.phase, 'stuck', 'engine-failure writ should stay stuck');
+      const afterStatus = after.status?.spider as Record<string, unknown> | undefined;
+      assert.equal(afterStatus?.stuckCause, 'engine-failure', 'status.spider should retain the engine-failure cause');
+      assert.equal(afterStatus?.retryable, true, 'retryable should be preserved');
     });
   });
 });

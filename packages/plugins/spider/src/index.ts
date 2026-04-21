@@ -43,6 +43,8 @@ export type {
   QuestionSpec,
   ChoiceAnswer,
   AnswerValue,
+  SpiderStuckCause,
+  SpiderWritStatus,
 } from './types.ts';
 
 export type { SpiderKit } from './spider.ts';

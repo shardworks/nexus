@@ -1275,11 +1275,30 @@ export function createSpider(): Plugin {
    * The failed engine itself transitions to `failed`; pending/blocked engines
    * are cancelled. The rig enters `stuck` — a non-terminal "needs attention"
    * state that preserves the obligation for future retry.
+   *
+   * The caller must classify the failure at the call site:
+   *   - `retryable: true`  — transient failure (session crash, engine threw
+   *                          an unexpected error) that a retry might clear.
+   *   - `retryable: false` — definitional failure (invalid graft, unknown
+   *                          design/block type, bad schema, non-serializable
+   *                          yields) that would reproduce on retry.
+   *   - `detail`           — human-readable freeform description of the
+   *                          specific failure. Surfaces to the patron UI
+   *                          and analytics; sub-taxonomy lives here rather
+   *                          than in a growing enum.
+   *
+   * Alongside the rig patch, `failEngine` writes the writ's `status.spider`
+   * sub-slot with `stuckCause: 'engine-failure'`, `retryable`, and `detail`
+   * so downstream retry clockwork can branch on that payload without
+   * reaching back into engine metadata. The rig → writ CDC handler still
+   * performs the phase transition; this just publishes the observability
+   * payload on top of it.
    */
   async function failEngine(
     rig: RigDoc,
     engineId: string,
     errorMessage: string,
+    opts: { retryable: boolean; detail: string },
   ): Promise<void> {
     const now = new Date().toISOString();
     const updatedEngines = rig.engines.map((e) => {
@@ -1295,6 +1314,19 @@ export function createSpider(): Plugin {
       engines: updatedEngines,
       status: 'stuck',
     });
+
+    // Publish the observability payload to the writ's status.spider sub-slot.
+    // The rig → writ CDC handler handles the phase transition itself; this
+    // write lands independently so the stuckCause + retryable + detail are
+    // available whether or not the CDC has run yet, and whatever ordering
+    // the scheduler picks. Slot writes survive terminal phase transitions.
+    const status: SpiderWritStatus = {
+      stuckCause: 'engine-failure',
+      retryable: opts.retryable,
+      detail: opts.detail,
+      observedAt: now,
+    };
+    await clerk.setWritStatus(rig.writId, 'spider', status);
   }
 
   /**
@@ -1368,7 +1400,13 @@ export function createSpider(): Plugin {
         const now = new Date().toISOString();
 
         if (session.status === 'failed' || session.status === 'timeout') {
-          await failEngine(rig, engine.id, session.error ?? `Session ${session.status}`);
+          // Session-side terminal failure (crash / timeout) — transient by
+          // nature: the next attempt runs a fresh session so `retryable: true`.
+          const sessionDetail = session.error ?? `Session ${session.status}`;
+          await failEngine(rig, engine.id, sessionDetail, {
+            retryable: true,
+            detail: `Session ${session.status}: ${sessionDetail}`,
+          });
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
         }
 
@@ -1395,8 +1433,16 @@ export function createSpider(): Plugin {
           try {
             collectResult = await design.collect(engine.sessionId!, givens, context);
           } catch (err) {
+            // Engine's collect() threw. Treat as transient per spec: a
+            // fresh session may produce output that the collector accepts.
+            // Engines that want to signal a definitional contract failure
+            // should surface it via non-serializable-yields or graft
+            // validation errors, which are classified retryable:false.
             const errorMessage = err instanceof Error ? err.message : String(err);
-            await failEngine(rig, engine.id, errorMessage);
+            await failEngine(rig, engine.id, errorMessage, {
+              retryable: true,
+              detail: `Engine "${engine.id}" collect() threw: ${errorMessage}`,
+            });
             return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
           }
           // Check for SpiderCollectResult shape (duck-typing)
@@ -1423,7 +1469,13 @@ export function createSpider(): Plugin {
         }
 
         if (!isJsonSerializable(yields)) {
-          await failEngine(rig, engine.id, 'Session yields are not JSON-serializable');
+          // Definitional — the engine's collect() wiring returned a value
+          // that cannot round-trip through JSON. A retry would produce the
+          // same shape from the same code path.
+          await failEngine(rig, engine.id, 'Session yields are not JSON-serializable', {
+            retryable: false,
+            detail: `Engine "${engine.id}" collect() produced non-JSON-serializable yields`,
+          });
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
         }
 
@@ -1485,7 +1537,12 @@ export function createSpider(): Plugin {
     const maxEngines = spiderConfig.maxEnginesPerRig ?? 50;
     const validationError = validateGraft(rig, graft, fabricator, maxEngines);
     if (validationError !== null) {
-      await failEngine(rig, engineId, `Graft validation failed: ${validationError}`);
+      // Definitional — the graft the engine produced is structurally
+      // invalid; the same engine code would emit the same bad graft again.
+      await failEngine(rig, engineId, `Graft validation failed: ${validationError}`, {
+        retryable: false,
+        detail: `Graft validation failed in engine "${engineId}": ${validationError}`,
+      });
       return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
     }
 
@@ -1508,7 +1565,16 @@ export function createSpider(): Plugin {
     if (graftTail) {
       const graftedIds = new Set(graftedInstances.map((e) => e.id));
       if (!graftedIds.has(graftTail)) {
-        await failEngine(rig, engineId, `Graft validation failed: graftTail "${graftTail}" is not a grafted engine id`);
+        // Definitional — graftTail must name one of the grafted engines.
+        await failEngine(
+          rig,
+          engineId,
+          `Graft validation failed: graftTail "${graftTail}" is not a grafted engine id`,
+          {
+            retryable: false,
+            detail: `Graft validation failed in engine "${engineId}": graftTail "${graftTail}" is not a grafted engine id`,
+          },
+        );
         return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
       }
       updatedEngines = updatedEngines.map((e) => {
@@ -1574,7 +1640,13 @@ export function createSpider(): Plugin {
           const message = result.reason
             ? `Block "${engine.block.type}" failed: ${result.reason}`
             : `Block "${engine.block.type}" failed permanently`;
-          await failEngine(rig, engine.id, message);
+          // Definitional — the block type declared the condition is
+          // permanently unresolvable. Retrying the engine would just
+          // re-enter the same block and fail again.
+          await failEngine(rig, engine.id, message, {
+            retryable: false,
+            detail: message,
+          });
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
         }
 
@@ -1680,7 +1752,13 @@ export function createSpider(): Plugin {
 
       const design = fabricator.getEngineDesign(pending.designId);
       if (!design) {
-        await failEngine(rig, pending.id, `No engine design found for "${pending.designId}"`);
+        // Definitional — the rig template referenced a designId that is
+        // not present in the Fabricator registry. No amount of retrying
+        // the engine will make the design appear.
+        await failEngine(rig, pending.id, `No engine design found for "${pending.designId}"`, {
+          retryable: false,
+          detail: `Engine "${pending.id}" references unknown design "${pending.designId}"`,
+        });
         return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
       }
 
@@ -1729,7 +1807,12 @@ export function createSpider(): Plugin {
           // Look up the block type
           const blockType = blockTypeRegistry.get(blockTypeId);
           if (!blockType) {
-            await failEngine(updatedRig, pending.id, `Unknown block type: "${blockTypeId}"`);
+            // Definitional — the engine asked to block on a type the
+            // registry does not know. Retrying would fail the same lookup.
+            await failEngine(updatedRig, pending.id, `Unknown block type: "${blockTypeId}"`, {
+              retryable: false,
+              detail: `Engine "${pending.id}" requested unknown block type "${blockTypeId}"`,
+            });
             return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
           }
 
@@ -1738,10 +1821,16 @@ export function createSpider(): Plugin {
             blockType.conditionSchema.parse(condition);
           } catch (zodErr) {
             const zodMessage = zodErr instanceof Error ? zodErr.message : String(zodErr);
+            // Definitional — the engine produced a block condition that
+            // does not satisfy the block type's schema.
             await failEngine(
               updatedRig,
               pending.id,
               `Block type "${blockTypeId}" rejected condition: ${zodMessage}`,
+              {
+                retryable: false,
+                detail: `Engine "${pending.id}" produced invalid condition for block type "${blockTypeId}": ${zodMessage}`,
+              },
             );
             return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
           }
@@ -1773,7 +1862,13 @@ export function createSpider(): Plugin {
         // Clockwork engine — validate and store yields
         const { yields } = engineResult;
         if (!isJsonSerializable(yields)) {
-          await failEngine(updatedRig, pending.id, 'Engine yields are not JSON-serializable');
+          // Definitional — the clockwork engine's run() returned a value
+          // that cannot round-trip through JSON. Retrying would produce
+          // the same shape from the same code path.
+          await failEngine(updatedRig, pending.id, 'Engine yields are not JSON-serializable', {
+            retryable: false,
+            detail: `Engine "${pending.id}" run() produced non-JSON-serializable yields`,
+          });
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
         }
 
@@ -1817,8 +1912,14 @@ export function createSpider(): Plugin {
 
         return { action: 'engine-completed', rigId: rig.id, engineId: pending.id };
       } catch (err) {
+        // Engine's run() threw. Treat as transient per spec: "engine threw
+        // an unexpected error" is exactly the failure class a retry is
+        // meant to address.
         const errorMessage = err instanceof Error ? err.message : String(err);
-        await failEngine(rig, pending.id, errorMessage);
+        await failEngine(rig, pending.id, errorMessage, {
+          retryable: true,
+          detail: `Engine "${pending.id}" run() threw: ${errorMessage}`,
+        });
         return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
       }
     }
@@ -1988,8 +2089,14 @@ export function createSpider(): Plugin {
    *
    * Re-evaluate every writ Spider previously stuck through the gating
    * path. Writs without `status.spider?.stuckCause` are skipped entirely
-   * — the engine-cascade stuck path never writes that slot, so this is
-   * how we avoid touching those (D20 / D5).
+   * — that signals an operator-stuck writ Spider never touched.
+   *
+   * Only dependency-recovery causes (`failed-blocker`, `cycle`) participate
+   * here. The engine-cascade cause (`engine-failure`) is written by
+   * `failEngine` for observability and retry-clockwork consumption — it is
+   * a different recovery axis (attempt-shaped, not graph-shaped), so this
+   * loop skips it and leaves those writs stuck until retry clockwork
+   * (a separate commission) acts on them.
    *
    * Release conditions (D15):
    *   - `failed-blocker`: every recorded blocker id is now in a
@@ -2013,7 +2120,11 @@ export function createSpider(): Plugin {
     for (const writ of stuckWrits) {
       const spiderStatus = writ.status?.spider as SpiderWritStatus | undefined;
       const cause = spiderStatus?.stuckCause;
-      if (!cause) continue; // engine-cascade stuck or operator stuck — not ours
+      if (!cause) continue; // operator-stuck — not ours
+
+      // Only the dependency-recovery causes participate here. `engine-failure`
+      // is left for the retry clockwork to act on (or not).
+      if (cause !== 'failed-blocker' && cause !== 'cycle') continue;
 
       const blockerIds = spiderStatus?.blockerIds ?? [];
 

@@ -732,10 +732,13 @@ When any engine fails (throws, or a quick engine's session has `status: 'failed'
 1. The engine is marked `status: 'failed'` with the error (detected during "collect completed engines" for quick engines, or directly during execution for clockwork engines)
 2. All engines in the rig with `status === 'pending'` or `'blocked'` are set to `status: 'cancelled'` — they will never run. Engines already in `'running'`, `'completed'`, or `'failed'` are left untouched. Cancelled engines do **not** receive `completedAt` or `error` — cancellation is a consequence, not a failure.
 3. The rig is marked `status: 'stuck'` (same transaction as steps 1 and 2) — a non-terminal "needs attention" state
-4. CDC fires on the rig status change → handler calls Clerk API to transition the writ to `stuck`
-5. The draft is **not** abandoned — preserved for patron inspection
+4. An observability payload is written to the writ's `status.spider` sub-slot alongside the rig patch: `{ stuckCause: 'engine-failure', retryable: boolean, detail: string, observedAt: string }`. Classification is made at the `failEngine` call site — `retryable: true` for transient failures (session crashes, engine throws), `retryable: false` for definitional failures (graft validation, unknown design/block type, non-JSON-serializable yields). The `detail` string is a freeform human-readable description; sub-taxonomy of engine failures lives there rather than in a growing enum. The retry clockwork (separate commission) is the sole load-bearing consumer of `retryable`.
+5. CDC fires on the rig status change → handler calls Clerk API to transition the writ to `stuck`
+6. The draft is **not** abandoned — preserved for patron inspection
 
 `stuck` is non-terminal: the obligation survives. A stuck rig stays stuck for its lifetime; recovery happens by spawning a new rig (future multi-rig work). The `stuck → failed` and `stuck → cancelled` transitions exist for explicit abandonment. No `stuck → running` — a stuck rig is never resurrected.
+
+`autoUnstick` only acts on the dependency-recovery causes (`failed-blocker`, `cycle`). `engine-failure` stucks are left for the retry clockwork; operator-stuck writs with no `status.spider` slot are left alone.
 
 Quick engine "failure" definition: if the Animator session completes with `status: 'failed'`, the engine fails. If the session completes with `status: 'completed'`, the engine succeeds — even if the anima's work is incomplete (that's the review engine's job to catch, not the Spider's).
 

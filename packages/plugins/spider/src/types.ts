@@ -687,7 +687,7 @@ export interface SpiderCollectResult {
 // ── status.spider sub-slot shape ────────────────────────────────────────
 
 /**
- * The reason a writ is stuck in Spider's gating machinery.
+ * The reason a writ is stuck as recorded in its `status.spider` sub-slot.
  *
  * - 'failed-blocker' — at least one outbound `spider.follows` blocker
  *                      reached `failed`; the dependent was cascaded to
@@ -695,34 +695,58 @@ export interface SpiderCollectResult {
  * - 'cycle'          — a back-edge was discovered in the `spider.follows`
  *                      graph during gate evaluation; every cycle member is
  *                      stuck with this cause.
+ * - 'engine-failure' — the rig transitioned to stuck through a `failEngine`
+ *                      call: session crashes, engine throws, graft
+ *                      validation failures, unknown designs/block types,
+ *                      non-JSON-serializable yields, and any other
+ *                      engine-side failure path. Sub-taxonomy lives in the
+ *                      `detail` string, not in the enum.
  */
-export type SpiderStuckCause = 'failed-blocker' | 'cycle';
+export type SpiderStuckCause = 'failed-blocker' | 'cycle' | 'engine-failure';
 
 /**
  * Shape of the plugin-owned `status.spider` sub-slot as written by the
- * Spider's gating paths.
+ * Spider's stuck paths.
  *
  * The slot is absent (not the empty object) on writs Spider has never
- * touched. It is **also** absent on writs that reached `stuck` via the
- * pre-existing engine-cascade path (rig → writ CDC handler) — absence is
- * the load-bearing signal that tells `autoUnstick` not to revisit those
- * writs.
+ * touched. For engine-cascade stuck transitions it is populated by
+ * `failEngine` with `stuckCause: 'engine-failure'` plus a `retryable`
+ * boolean and freeform `detail` string so downstream retry clockwork and
+ * UIs can make per-failure decisions. For dependency-recovery stucks
+ * (`failed-blocker` / `cycle`), only `stuckCause`, `blockerIds`, and
+ * `observedAt` are written — those do not participate in retry policy.
  *
  * The slot is written only on stuck transitions and cleared on
  * auto-unstick. Nothing is written while a writ is gated-but-not-stuck.
  */
 export interface SpiderWritStatus {
-  /** Present only while the writ is stuck for a gating reason. */
+  /** Present only while the writ is stuck for a reason Spider recorded. */
   stuckCause?: SpiderStuckCause;
   /**
-   * The blockers responsible for the stuck transition. For
-   * `failed-blocker`, these are the outbound `spider.follows` targets that
-   * reached `failed`. For `cycle`, these are the members of the detected
-   * cycle (typically including the dependent itself).
+   * For gating-path stucks, the blockers responsible for the transition.
+   * For `failed-blocker`, these are the outbound `spider.follows` targets
+   * that reached `failed`. For `cycle`, these are the members of the
+   * detected cycle (typically including the dependent itself).
+   * Not set for `engine-failure` stucks.
    */
   blockerIds?: string[];
   /** ISO timestamp recorded at the moment the stuck transition was taken. */
   observedAt?: string;
+  /**
+   * Retry signal written only for `engine-failure` stucks. `true` for
+   * transient failures (session crash, engine threw an unexpected error);
+   * `false` for definitional failures (invalid graft, unknown design,
+   * unknown block type, malformed brief). The retry clockwork — a
+   * dependent commission — is the sole load-bearing consumer.
+   */
+  retryable?: boolean;
+  /**
+   * Freeform human-readable failure description written only for
+   * `engine-failure` stucks. Consumed by the patron UI and lab analytics.
+   * Not structured, not an enum — sub-taxonomy of engine failures lives
+   * here, not in `stuckCause`.
+   */
+  detail?: string;
 }
 
 // Augment GuildConfig so `guild().guildConfig().spider` is typed.

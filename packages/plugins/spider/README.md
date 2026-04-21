@@ -65,7 +65,18 @@ Spider contributes a `spider.follows` link kind and consults outbound `spider.fo
 - If the full transitive `spider.follows` walk from the writ visits a cycle — the writ is cascaded to `stuck` with `stuckCause: 'cycle'` and the cycle members as blockers. The resolution text is `Detected spider.follows cycle: <id> → <id> → … → <id>`.
 - Only when every direct outbound target is in a terminal-success state (`completed`, or `cancelled`) does the writ proceed to rig spawn.
 
-Before `trySpawn`, each crawl tick runs an `autoUnstick` pass that re-evaluates every writ whose `status.spider.stuckCause` is set by this plugin. When the recorded cause resolves (all `failed-blocker` ids are now `completed`/`cancelled`, or any `cycle` member has moved out of `open`/`stuck`), the writ is returned to `open` and emits a `'writ-unstuck'` result. Engine-cascade `stuck` writs (no `status.spider` slot present — the legacy path that writes only `resolution`) are left untouched.
+Before `trySpawn`, each crawl tick runs an `autoUnstick` pass that re-evaluates every writ whose `status.spider.stuckCause` is one of the dependency-recovery causes (`failed-blocker` or `cycle`). When the recorded cause resolves (all `failed-blocker` ids are now `completed`/`cancelled`, or any `cycle` member has moved out of `open`/`stuck`), the writ is returned to `open` and emits a `'writ-unstuck'` result. Writs stuck with other causes — including `engine-failure` writs (see below) and operator-stuck writs with no `status.spider` slot — are left alone; their recovery is owned by a separate retry clockwork, not by `autoUnstick`.
+
+### Engine-failure stuck payload
+
+When an engine failure takes a rig to `stuck` via the `failEngine` path (session crash, engine throw, graft validation failure, unknown design, unknown block type, invalid block condition, non-JSON-serializable yields), Spider publishes an observability payload to the writ's `status.spider` sub-slot alongside the standard rig → writ CDC transition:
+
+- `stuckCause: 'engine-failure'` — the single bucket for every engine-cascade failure. Sub-taxonomy lives in `detail`, not in the enum.
+- `retryable: boolean` — classified at the `failEngine` call site. `true` for transient failures (session crashes, engine threw an unexpected error) where a fresh attempt may succeed. `false` for definitional failures (invalid graft, unknown design/block type, bad schema, non-JSON-serializable yields) where the same code would reproduce the same failure.
+- `detail: string` — freeform human-readable description of the specific failure. Surfaces to the patron UI and analytics, and is the designated place for case-by-case context.
+- `observedAt: string` — ISO timestamp of the transition.
+
+The `retryable` flag is informational in this plugin — nothing here acts on it. The retry clockwork (a separate commission) is the sole load-bearing consumer. Dependency-recovery stucks (`failed-blocker` / `cycle`) do not write `retryable` or `detail`; they carry `blockerIds` instead and are serviced by `autoUnstick`.
 
 ### `show(id): Promise<RigDoc>`
 
