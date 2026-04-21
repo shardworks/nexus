@@ -1,6 +1,6 @@
 # `@shardworks/clockworks-retry-apparatus`
 
-The Clockworks-Retry apparatus — the autonomous-hopper retry primitive. It observes stuck writs carrying `retryable: true` on their `status.spider.stuck` sub-slot and transitions them `stuck → open`, causing Spider to spawn the next rig attempt. Retries are bounded by a single global cap of **2 attempts**, counted as the number of rigs already attached to the writ (multi-rig-lite — one writ accumulates multiple rigs over successive attempts).
+The Clockworks-Retry apparatus — the autonomous-hopper retry primitive. It observes stuck writs carrying `retryable: true` on their `status.spider` sub-slot and transitions them `stuck → open`, causing Spider to spawn the next rig attempt. Retries are bounded by a single global cap of **2 attempts**, counted as the number of rigs already attached to the writ (multi-rig-lite — one writ accumulates multiple rigs over successive attempts).
 
 This apparatus keeps Spider's core logic unaware of retry policy. Retry is a post-commit observer layered on top of Spider's substrate, not a concern Spider itself knows about, so retry policy can evolve (or be swapped entirely) without touching Spider.
 
@@ -53,22 +53,25 @@ import { MAX_RETRY_ATTEMPTS } from '@shardworks/clockworks-retry-apparatus';
 // MAX_RETRY_ATTEMPTS === 2
 ```
 
-### `RetryableStuckStatus`
+### `SpiderWritStatus`
 
-The shape of the `status.spider.stuck` sub-object the apparatus reads:
+The shape of the `status.spider` sub-object the apparatus reads, re-exported from `@shardworks/spider-apparatus` so producer (Spider's `failEngine`) and reader (this clockwork) share a single canonical type:
 
 ```typescript
-export interface RetryableStuckStatus {
-  /** Whether this stuck transition is a retry candidate. */
-  retryable?: boolean;
-  /** Optional stuck-cause identifier (e.g. 'engine-failure'). */
-  cause?: string;
-  /** ISO timestamp recorded at the moment the stuck transition was taken. */
-  observedAt?: string;
-}
+import type { SpiderWritStatus } from '@shardworks/clockworks-retry-apparatus';
+
+// Populated by Spider's failEngine path on engine-failure stucks:
+//   { stuckCause: 'engine-failure', retryable: true,  detail: '...' }
+//   { stuckCause: 'engine-failure', retryable: false, detail: '...' }
+//
+// Populated by Spider's gating path on dependency stucks:
+//   { stuckCause: 'failed-blocker', blockerIds: [...], observedAt: '...' }
+//   { stuckCause: 'cycle',          blockerIds: [...], observedAt: '...' }
 ```
 
-This type is re-exported for the benefit of the producer side (Spider's engine-failure path) and for diagnostic surfaces. Consumers of the apparatus never need to construct it directly — the apparatus only reads.
+All fields are flat on `status.spider` — there is no nested `status.spider.stuck` sub-object. The apparatus keys only on `status.spider.retryable`, so dependency stucks (which never carry `retryable`) cannot accidentally trigger a requeue. See `@shardworks/spider-apparatus` for the full field list.
+
+Consumers of the apparatus never need to construct this type directly — the apparatus only reads. It is re-exported for diagnostic surfaces that want to display stuck metadata alongside the attempt counter.
 
 ---
 
@@ -76,7 +79,7 @@ This type is re-exported for the benefit of the producer side (Spider's engine-f
 
 The apparatus registers a Phase 2 (post-commit) CDC watcher on the `clerk/writs` book. On every `update` event where the writ enters `stuck` (i.e. `prev.phase !== 'stuck' && writ.phase === 'stuck'`), it evaluates:
 
-1. Is `status.spider.stuck.retryable === true`? If not, no-op.
+1. Is `status.spider.retryable === true`? If not, no-op.
 2. Is `rigs.length < MAX_RETRY_ATTEMPTS` for this writ? If not, no-op.
 3. Otherwise, `clerk.transition(writ.id, 'open')` — Spider picks this up on its next crawl and spawns a fresh rig as a sibling child of the writ.
 
@@ -88,12 +91,12 @@ The apparatus is intentionally narrow:
 
 | Stuck category | Decision | Where handled |
 |---|---|---|
-| `retryable: true` on `status.spider.stuck` | Requeued up to the cap | This apparatus |
-| `retryable: false` on `status.spider.stuck` | Stays stuck — definitional failure | Human attention |
+| `retryable: true` on `status.spider` | Requeued up to the cap | This apparatus |
+| `retryable: false` on `status.spider` | Stays stuck — definitional failure | Human attention |
 | Missing `retryable` field | Stays stuck — fail-safe | Human attention |
-| Dependency stucks (`failed-blocker`, `cycle`) | Ignored — live on `status.spider.stuckCause` (a sibling slot) | Spider's `autoUnstick` |
+| Dependency stucks (`failed-blocker`, `cycle`) | Ignored — populate the same `status.spider` slot with `stuckCause` + `blockerIds` but never `retryable` | Spider's `autoUnstick` |
 
-The `status.spider.stuck.retryable` path is distinct from the existing `status.spider.stuckCause` path. The apparatus keys only on the nested `stuck.retryable` field, so dependency stucks never accidentally trigger a requeue.
+Dependency stucks and engine-failure stucks share the same flat `status.spider` slot — they are distinguished by which fields are populated. The apparatus keys only on `retryable` (never on `stuckCause`), so dependency stucks never accidentally trigger a requeue.
 
 ### Rig counting
 
@@ -109,7 +112,7 @@ The apparatus has no user-facing configuration. The cap is a compile-time consta
 
 ## Preconditions
 
-The apparatus relies on the producer side (Spider's engine-failure path) to populate `writ.status.spider.stuck.retryable` on engine-failure stucks. Without that flag, the clockwork's trigger condition is never met and the apparatus is safely inert — no spurious requeues, no missed writs held past the cap.
+The apparatus relies on the producer side (Spider's `failEngine` path) to populate `writ.status.spider.retryable` on engine-failure stucks. `failEngine` writes the rig patch and the writ's `status.spider` slot inside a single transaction, so both land in the same Phase 2 CDC event — the watcher observes a stuck entry whose status slot is already fully populated. Without the `retryable` flag, the clockwork's trigger condition is never met and the apparatus is safely inert — no spurious requeues, no missed writs held past the cap.
 
 The apparatus issues its requeue from Phase 2 deliberately:
 

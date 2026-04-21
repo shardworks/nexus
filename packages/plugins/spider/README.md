@@ -78,6 +78,8 @@ When an engine failure takes a rig to `stuck` via the `failEngine` path (session
 
 The `retryable` flag is informational in this plugin — nothing here acts on it. The retry clockwork (a separate commission) is the sole load-bearing consumer. Dependency-recovery stucks (`failed-blocker` / `cycle`) do not write `retryable` or `detail`; they carry `blockerIds` instead and are serviced by `autoUnstick`.
 
+`failEngine` writes the rig patch (`status: 'stuck'`) and the writ's `status.spider` payload inside a single `stacks.transaction`. Both land in the same post-commit event batch, so any Phase 2 observer (the retry clockwork in particular) sees a writ stuck transition whose status slot is already fully populated. Producers must not split these two writes across transactions — that would expose a window where a stuck observer reads a slot with stale data.
+
 ### `show(id): Promise<RigDoc>`
 
 Show a rig by ID. Throws if not found.
