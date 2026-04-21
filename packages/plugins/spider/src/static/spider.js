@@ -359,11 +359,20 @@
   }
 
   /**
-   * End time for the rig, used in formatElapsed for terminal rigs. Picks
-   * the maximum engine.completedAt — falling back to rig.createdAt for
-   * degenerate terminal rigs whose engines never completed (D3).
+   * End time for the rig, used in formatElapsed for terminal rigs.
+   *
+   * Read order:
+   *   1. rig.terminalAt — the authoritative terminal-event timestamp,
+   *      written by the Spider the first time the rig enters a terminal
+   *      status.
+   *   2. max(engine.completedAt) — legacy fallback for rigs persisted
+   *      before terminalAt existed and for non-terminal rigs being
+   *      surfaced through this helper.
+   *   3. rig.createdAt — last-resort fallback for degenerate terminal
+   *      rigs whose engines never completed (D3).
    */
   function rigEndTime(rig) {
+    if (rig.terminalAt) return rig.terminalAt;
     var maxCompletedAt = null;
     var engines = rig.engines || [];
     for (var i = 0; i < engines.length; i++) {

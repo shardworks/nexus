@@ -339,6 +339,19 @@ async function postWrit(clerk: ClerkApi, title = 'Test writ', codex?: string): P
   return clerk.post({ title, body: 'Test body', codex });
 }
 
+/**
+ * Assert that a rig's terminalAt field is a valid ISO timestamp. Used by
+ * rig terminal-transition tests to pin the invariant that any rig reaching
+ * a terminal status also records the terminal-event timestamp.
+ */
+function assertTerminalAt(rig: { terminalAt?: string } | null | undefined, msg = 'rig.terminalAt should be a valid ISO timestamp'): void {
+  assert.ok(rig, 'rig should be defined for terminalAt check');
+  assert.ok(
+    typeof rig!.terminalAt === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(rig!.terminalAt),
+    `${msg} (got: ${JSON.stringify(rig!.terminalAt)})`,
+  );
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────
 
 describe('Spider', () => {
@@ -583,6 +596,7 @@ describe('Spider', () => {
 
       const [updated] = await book.list();
       assert.equal(updated.status, 'stuck');
+      assertTerminalAt(updated);
       const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
       assert.equal(draft?.status, 'failed');
       assert.ok(draft?.error?.includes('nonexistent-engine'));
@@ -633,6 +647,7 @@ describe('Spider', () => {
 
       const [updated] = await book.list();
       assert.equal(updated.status, 'stuck');
+      assertTerminalAt(updated);
       const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
       assert.equal(draft?.status, 'failed');
       assert.ok(draft?.error !== undefined && draft.error.length > 0, `expected engine to have an error, got: ${draft?.error}`);
@@ -750,6 +765,7 @@ describe('Spider', () => {
 
       const [updatedRig] = await book.list();
       assert.equal(updatedRig.status, 'stuck', 'rig should be stuck');
+      assertTerminalAt(updatedRig);
       const impl = updatedRig.engines.find((e: EngineInstance) => e.id === 'implement');
       assert.equal(impl?.status, 'failed', 'implement engine should be failed');
 
@@ -885,6 +901,7 @@ describe('Spider', () => {
 
       const [updated] = await book.list();
       assert.equal(updated.status, 'stuck');
+      assertTerminalAt(updated);
       const impl = updated.engines.find((e: EngineInstance) => e.id === 'implement');
       assert.equal(impl?.status, 'failed');
 
@@ -1008,6 +1025,7 @@ describe('Spider', () => {
 
       const [updatedRig] = await book.list();
       assert.equal(updatedRig.status, 'stuck');
+      assertTerminalAt(updatedRig);
 
       const failedDraft = updatedRig.engines.find((e: EngineInstance) => e.id === 'draft');
       assert.equal(failedDraft?.status, 'failed', 'draft engine should be failed');
@@ -1265,6 +1283,7 @@ describe('Spider', () => {
 
       const [finalRig] = await book.list();
       assert.equal(finalRig.status, 'completed');
+      assertTerminalAt(finalRig);
     });
   });
 
@@ -3710,6 +3729,7 @@ describe('Spider — engine blocking on external conditions', () => {
 
       const [rig] = await fix.spider.list();
       assert.equal(rig.status, 'stuck');
+      assertTerminalAt(rig);
       const engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
       assert.ok(engine?.error?.includes('Unknown block type'), `expected error to include "Unknown block type", got: ${engine?.error}`);
       assert.ok(engine?.error?.includes('does-not-exist'), `expected error to include block type name, got: ${engine?.error}`);
@@ -4353,6 +4373,7 @@ describe('Spider — engine blocking on external conditions', () => {
       const updatedRig = await book.get(rigId);
       assert.ok(updatedRig !== null, 'rig should still exist');
       assert.equal(updatedRig!.status, 'stuck', 'rig should be stuck');
+      assertTerminalAt(updatedRig);
 
       const engBlocked = updatedRig!.engines.find((e: EngineInstance) => e.id === 'eng-blocked');
       const engPending = updatedRig!.engines.find((e: EngineInstance) => e.id === 'eng-pending');
@@ -4588,6 +4609,7 @@ describe('Spider — engine blocking on external conditions', () => {
 
       const [rig] = await fix.spider.list();
       assert.equal(rig.status, 'stuck');
+      assertTerminalAt(rig);
       const engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
       assert.ok(engine !== undefined);
       assert.equal(engine.status, 'failed');
@@ -4674,6 +4696,7 @@ describe('Spider — engine blocking on external conditions', () => {
 
       const [rig] = await fix.spider.list();
       assert.equal(rig.status, 'stuck');
+      assertTerminalAt(rig);
       const engineA = rig.engines.find((e: EngineInstance) => e.id === 'a');
       const engineB = rig.engines.find((e: EngineInstance) => e.id === 'b');
       assert.equal(engineA?.status, 'failed');
@@ -4710,6 +4733,7 @@ describe('Spider — engine blocking on external conditions', () => {
 
       [rig] = await fix.spider.list();
       assert.equal(rig.status, 'stuck');
+      assertTerminalAt(rig);
       // Engine is now failed; the block record should be gone (failEngine cleared it)
       engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
       assert.equal(engine?.status, 'failed');
@@ -4747,6 +4771,7 @@ describe('Spider — engine blocking on external conditions', () => {
 
       [rig] = await fix.spider.list();
       assert.equal(rig.status, 'stuck', 'rig should transition from blocked to stuck');
+      assertTerminalAt(rig);
       const engine = rig.engines.find((e: EngineInstance) => e.id === 'sole');
       assert.ok(engine?.error?.includes('gone'), `expected error to include "gone", got: ${engine?.error}`);
     });
@@ -6912,6 +6937,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
         'should have engine-skipped or rig-completed result',
       );
       assert.equal(rig.status, 'completed');
+      assertTerminalAt(rig);
     });
 
     it('runs the falsy branch and skips the truthy branch when review fails', async () => {
@@ -6941,6 +6967,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'seal')?.status, 'skipped', 'seal should be skipped when passed=false');
       assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'revise')?.status, 'completed', 'revise should run when passed=false');
       assert.equal(rig.status, 'completed');
+      assertTerminalAt(rig);
     });
 
     it('supports curly-brace when syntax: ${yields.review.passed}', async () => {
@@ -7026,6 +7053,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'B')?.status, 'skipped');
       assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'C')?.status, 'completed');
       assert.equal(rig.status, 'completed');
+      assertTerminalAt(rig);
     });
   });
 
@@ -7057,6 +7085,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
 
       const [rig] = await rigsBook(stacks).list();
       assert.equal(rig.status, 'completed');
+      assertTerminalAt(rig);
       assert.ok(results.some((r) => r?.action === 'rig-completed'), 'rig-completed result expected');
       const finalWrit = await clerk.show(writ.id);
       assert.equal(finalWrit.phase, 'completed');
@@ -7122,6 +7151,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       // A is completed, B is skipped — rig should complete (A is completed)
       const [rig] = await rigsBook(stacks).list();
       assert.equal(rig.status, 'completed', 'rig should complete because A completed');
+      assertTerminalAt(rig);
 
       // Verify the all-skipped case: manually patch a rig with all skipped
       // Create a rig where engines are all skipped - the CDC handler (status change to
@@ -7339,6 +7369,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'B')?.status, 'skipped', 'B should remain skipped');
       assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'C')?.status, 'failed', 'C should be failed');
       assert.equal(rig.status, 'stuck');
+      assertTerminalAt(rig);
       assert.equal(bRan, false, 'B should not have run');
     });
   });
@@ -7646,6 +7677,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
 
       const [rig] = await rigsBook(stacks).list();
       assert.equal(rig.status, 'stuck');
+      assertTerminalAt(rig);
       const failedEngine = rig.engines.find((e: EngineInstance) => e.id === 'bad-grafter');
       assert.ok(failedEngine?.error?.includes('Duplicate engine id'), 'error should mention duplicate engine id');
     });
@@ -7772,6 +7804,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       assert.equal((r as { outcome: string }).outcome, 'stuck');
       const [rig] = await rigsBook(stacks).list();
       assert.equal(rig.status, 'stuck');
+      assertTerminalAt(rig);
     });
   });
 
@@ -8091,6 +8124,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'review-2')?.status, 'skipped');
       assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'seal')?.status, 'completed');
       assert.equal(rig.status, 'completed');
+      assertTerminalAt(rig);
     });
 
     it('review-1 fails, review-2 passes → revise-1 and review-2 run → seal runs', async () => {
@@ -8126,6 +8160,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'review-2')?.status, 'completed');
       assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'seal')?.status, 'completed');
       assert.equal(rig.status, 'completed');
+      assertTerminalAt(rig);
     });
   });
 
@@ -8206,6 +8241,7 @@ describe('Spider — rig cancellation', () => {
     const cancelledRig = await spider.cancel(rig.id);
 
     assert.equal(cancelledRig.status, 'cancelled', 'rig should be cancelled');
+    assertTerminalAt(cancelledRig);
 
     // Animator.cancel should have been called
     assert.equal(cancelCalls.length, 1, 'should have called animator.cancel once');
@@ -8283,6 +8319,7 @@ describe('Spider — rig cancellation', () => {
     const cancelledRig = await spider.cancel(rigId);
 
     assert.equal(cancelledRig.status, 'cancelled');
+    assertTerminalAt(cancelledRig);
     const engBlocked = cancelledRig.engines.find((e: EngineInstance) => e.id === 'eng-blocked');
     assert.equal(engBlocked?.status, 'cancelled', 'blocked engine should be cancelled');
     assert.equal(engBlocked?.block, undefined, 'block should be cleared');
@@ -8433,6 +8470,7 @@ describe('Spider — rig cancellation', () => {
 
     const updatedRig = await book.get(rigId);
     assert.equal(updatedRig?.status, 'cancelled');
+    assertTerminalAt(updatedRig);
     const engRunning = updatedRig?.engines.find((e: EngineInstance) => e.id === 'eng-running');
     assert.equal(engRunning?.status, 'cancelled', 'running engine should be cancelled');
     assert.equal(engRunning?.error, 'User cancelled', 'error from session should be preserved');
@@ -8575,6 +8613,7 @@ describe('Spider — rig cancellation', () => {
     const cancelledRig = await spider.cancel(rigId);
 
     assert.equal(cancelledRig.status, 'cancelled', 'rig should be cancelled');
+    assertTerminalAt(cancelledRig);
     const engRunning = cancelledRig.engines.find((e: EngineInstance) => e.id === 'eng-running');
     assert.equal(engRunning?.status, 'cancelled', 'running engine should be cancelled');
     const engPending = cancelledRig.engines.find((e: EngineInstance) => e.id === 'eng-pending');
@@ -8608,6 +8647,7 @@ describe('Spider — rig cancellation', () => {
     const cancelledRig = await spider.cancel(rigId);
 
     assert.equal(cancelledRig.status, 'cancelled', 'rig should be cancelled');
+    assertTerminalAt(cancelledRig);
 
     // Writ should remain completed (not re-transitioned)
     const updatedWrit = await clerk.show(writ.id);
@@ -8637,6 +8677,7 @@ describe('Spider — rig cancellation', () => {
     const cancelledRig = await spider.cancel(rigId);
 
     assert.equal(cancelledRig.status, 'cancelled', 'rig should be cancelled');
+    assertTerminalAt(cancelledRig);
 
     // Writ should remain failed (not re-transitioned)
     const updatedWrit = await clerk.show(writ.id);
@@ -8664,6 +8705,7 @@ describe('Spider — rig cancellation', () => {
     const cancelledRig = await spider.cancel(rigId);
 
     assert.equal(cancelledRig.status, 'cancelled', 'rig should be cancelled');
+    assertTerminalAt(cancelledRig);
 
     const updatedWrit = await clerk.show(writ.id);
     assert.equal(updatedWrit.phase, 'cancelled', 'writ should also be cancelled');
@@ -8695,6 +8737,7 @@ describe('Spider — rig cancellation', () => {
     const cancelledRig = await spider.cancel(rigId);
 
     assert.equal(cancelledRig.status, 'cancelled', 'rig should be cancelled');
+    assertTerminalAt(cancelledRig);
 
     const engCompleted = cancelledRig.engines.find((e: EngineInstance) => e.id === 'eng-completed');
     assert.equal(engCompleted?.status, 'completed', 'completed engine should be preserved');
@@ -8706,6 +8749,41 @@ describe('Spider — rig cancellation', () => {
       const eng = cancelledRig.engines.find((e: EngineInstance) => e.id === id);
       assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
     }
+  });
+
+  // Keep-first: terminalAt pins the FIRST terminal transition. A rig that
+  // goes running → stuck → cancelled (via SpiderApi.cancel's stuck-rig arm)
+  // must retain the terminalAt recorded at `stuck`, not overwrite it on the
+  // later cancellation.
+  it('terminalAt uses keep-first semantics — stuck → cancelled preserves original timestamp', async () => {
+    const { stacks, spider, clerk } = fix;
+    const writ = await postWrit(clerk);
+
+    const book = rigsBook(stacks);
+    const rigId = generateId('rig', 4);
+    const stuckAt = '2025-01-01T00:00:00.000Z';
+    await book.put({
+      id: rigId,
+      writId: writ.id,
+      status: 'stuck',
+      engines: [
+        { id: 'eng-failed', designId: 'dummy', status: 'failed', upstream: [], givensSpec: {}, error: 'boom', completedAt: stuckAt },
+      ],
+      createdAt: stuckAt,
+      terminalAt: stuckAt, // simulates the terminalAt written when the rig first entered `stuck`
+    });
+
+    // Cancel the stuck rig. The stuck-rig arm of SpiderApi.cancel must preserve
+    // the existing terminalAt rather than overwrite it with "now".
+    const cancelledRig = await spider.cancel(rigId);
+
+    assert.equal(cancelledRig.status, 'cancelled', 'rig should be cancelled');
+    assertTerminalAt(cancelledRig);
+    assert.equal(
+      cancelledRig.terminalAt,
+      stuckAt,
+      'terminalAt must not be overwritten on subsequent terminal transition (keep-first)',
+    );
   });
 
   // ── Concurrent engine throttle ────────────────────────────────────────
@@ -9205,6 +9283,7 @@ describe('Spider — writ→rig cascade', () => {
     const book = rigsBook(stacks);
     const updatedRig = await book.get(rig.id);
     assert.equal(updatedRig?.status, 'cancelled', 'rig should be cancelled after writ cancellation');
+    assertTerminalAt(updatedRig);
 
     // Animator.cancel should have been called for the running session
     assert.ok(cancelCalls.length >= 1, 'animator.cancel should have been called');
@@ -9247,6 +9326,8 @@ describe('Spider — writ→rig cascade', () => {
     const book = rigsBook(stacks);
     const cancelledRig = await book.get(rig.id);
     assert.equal(cancelledRig?.status, 'cancelled', 'rig should already be cancelled');
+    assertTerminalAt(cancelledRig);
+    const originalTerminalAt = cancelledRig!.terminalAt;
 
     // Now cancel the writ — the cascade should be a no-op for the rig
     // The writ may already be cancelled by the rig→writ CDC, but if not:
@@ -9255,9 +9336,15 @@ describe('Spider — writ→rig cascade', () => {
       await clerk.transition(writ.id, 'cancelled');
     }
 
-    // Rig should still be cancelled (unchanged)
+    // Rig should still be cancelled (unchanged) and terminalAt should be kept
+    // from the first terminal transition (keep-first semantics).
     const rigAfter = await book.get(rig.id);
     assert.equal(rigAfter?.status, 'cancelled', 'rig should remain cancelled');
+    assert.equal(
+      rigAfter?.terminalAt,
+      originalTerminalAt,
+      'terminalAt should not be overwritten on idempotent cancel (keep-first)',
+    );
   });
 
   // V4 [R5, R6]: Circular cascade — writ cancelled first
@@ -9275,6 +9362,7 @@ describe('Spider — writ→rig cascade', () => {
     const book = rigsBook(stacks);
     const updatedRig = await book.get(rig.id);
     assert.equal(updatedRig?.status, 'cancelled', 'rig should be cancelled');
+    assertTerminalAt(updatedRig);
   });
 
   // V4 complement: Circular cascade — rig cancelled first
@@ -9289,6 +9377,7 @@ describe('Spider — writ→rig cascade', () => {
     const book = rigsBook(stacks);
     const updatedRig = await book.get(rig.id);
     assert.equal(updatedRig?.status, 'cancelled', 'rig should be cancelled');
+    assertTerminalAt(updatedRig);
 
     const updatedWrit = await clerk.show(writ.id);
     assert.equal(updatedWrit.phase, 'cancelled', 'writ should be cancelled via rig→writ CDC');
@@ -9310,6 +9399,7 @@ describe('Spider — writ→rig cascade', () => {
     // Cancel the rig — should succeed because the guard skips clerk.transition()
     const cancelledRig = await spider.cancel(rig.id);
     assert.equal(cancelledRig.status, 'cancelled', 'rig cancellation should succeed');
+    assertTerminalAt(cancelledRig);
   });
 
   // V8 [R1, R4]: Completed writ with completed rig (no-op)
@@ -9370,6 +9460,7 @@ describe('Spider — writ→rig cascade', () => {
 
     const updatedRig = await book.get(rigId);
     assert.equal(updatedRig?.status, 'cancelled', 'blocked rig should be cancelled');
+    assertTerminalAt(updatedRig);
 
     // Engines should be cancelled
     const engBlocked = updatedRig!.engines.find((e: EngineInstance) => e.id === 'eng-blocked');
@@ -9420,6 +9511,7 @@ describe('Spider — writ→rig cascade', () => {
     // Cancel the rig — should succeed because the guard skips clerk.transition()
     const cancelledRig = await spider.cancel(rig.id);
     assert.equal(cancelledRig.status, 'cancelled', 'rig cancellation should succeed');
+    assertTerminalAt(cancelledRig);
 
     // Writ should remain completed
     const updatedWrit = await clerk.show(writ.id);
@@ -9491,6 +9583,7 @@ describe('Spider — writ→rig cascade', () => {
     // Child rig should be cancelled (by spider's writ→rig CDC)
     const updatedChildRig = await book.get(childRig.id);
     assert.equal(updatedChildRig?.status, 'cancelled', 'child rig should be cancelled');
+    assertTerminalAt(updatedChildRig);
   });
 
   // [R8, R9]: Parent cancel cascades to multiple child rigs with correct reason
@@ -9543,6 +9636,8 @@ describe('Spider — writ→rig cascade', () => {
     const updatedRig2 = await book.get(child2RigId);
     assert.equal(updatedRig1?.status, 'cancelled', 'child1 rig should be cancelled');
     assert.equal(updatedRig2?.status, 'cancelled', 'child2 rig should be cancelled');
+    assertTerminalAt(updatedRig1);
+    assertTerminalAt(updatedRig2);
 
     // Verify cancel reasons contain respective child writ IDs
     const rig1Engine = updatedRig1!.engines.find((e: EngineInstance) => e.status === 'cancelled' && e.error);

@@ -103,6 +103,15 @@ export interface RigDoc {
   engines: EngineInstance[];
   /** ISO timestamp when the rig was created. */
   createdAt: string;
+  /**
+   * ISO timestamp recorded the first time the rig enters a terminal status
+   * (`completed`, `failed`, `cancelled`, or `stuck`). Keep-first semantics:
+   * subsequent terminal transitions (e.g. `stuck → cancelled`) do NOT
+   * overwrite this value — it pins the moment the rig first stopped making
+   * forward progress. Absent on rigs that predate this field; the dashboard
+   * falls back to `max(engine.completedAt)` for those.
+   */
+  terminalAt?: string;
   /** Engine id whose yields provide the resolution summary. Set at spawn time. */
   resolutionEngineId?: string;
 }

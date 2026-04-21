@@ -120,6 +120,12 @@ Idempotent: returns the rig unchanged if already in a terminal state (`'complete
 const rig = await spider.cancel('rig-abc', { reason: 'No longer needed' });
 ```
 
+### Rig terminal timestamp (`terminalAt`)
+
+Every rig terminal-status transition (`completed`, `failed`, `cancelled`, `stuck`) writes a `terminalAt` ISO timestamp on the rig in the same patch. The field uses **keep-first** semantics: once set, subsequent terminal transitions (e.g. `stuck → cancelled`) do **not** overwrite it. This pins the moment the rig first stopped making forward progress, which is the meaningful signal for elapsed-time and end-time displays — they need a stable anchor, not the timestamp of the most recent status flip.
+
+Every rig-terminal code path (`failEngine`, `cancelEngine`, the `tryCollect` completion arm, the `tryRun` when-skipped and clockwork-completion arms, and both `SpiderApi.cancel` terminal arms) routes through a single `terminalAtPatch(rig)` helper that returns `{}` when `rig.terminalAt` is already set. Rigs persisted before this field existed simply omit it; the dashboard falls back to `max(engine.completedAt)` and finally to `rig.createdAt`.
+
 ### `getBlockType(id): BlockType | undefined`
 
 Look up a registered block type by ID.

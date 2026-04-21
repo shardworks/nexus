@@ -1313,6 +1313,22 @@ export function createSpider(): Plugin {
    * transition first with an empty status slot and ignore the writ, and the
    * later status-only update would be filtered out by its stuck→stuck guard.
    */
+  /**
+   * Build a patch fragment that sets `terminalAt` to the current ISO
+   * timestamp when the rig does not already have one. Returns an empty
+   * object when the rig's `terminalAt` is already set.
+   *
+   * Keep-first semantics: the first terminal transition pins `terminalAt`;
+   * subsequent terminal transitions (e.g. a `stuck` rig being `cancelled`)
+   * must NOT overwrite the original value. This helper is the single
+   * source of truth for that rule — every rig-level patch that writes a
+   * terminal `status` value should spread its result into the patch.
+   */
+  function terminalAtPatch(rig: RigDoc): { terminalAt?: string } {
+    if (rig.terminalAt !== undefined) return {};
+    return { terminalAt: new Date().toISOString() };
+  }
+
   async function failEngine(
     rig: RigDoc,
     engineId: string,
@@ -1341,6 +1357,7 @@ export function createSpider(): Plugin {
       await rigsBook.patch(rig.id, {
         engines: updatedEngines,
         status: 'stuck',
+        ...terminalAtPatch(rig),
       });
 
       // Publish the observability payload to the writ's status.spider
@@ -1374,6 +1391,7 @@ export function createSpider(): Plugin {
     await rigsBook.patch(rig.id, {
       engines: updatedEngines,
       status: 'cancelled',
+      ...terminalAtPatch(rig),
     });
   }
 
@@ -1518,7 +1536,7 @@ export function createSpider(): Plugin {
         }
 
         if (isRigComplete(updatedEngines)) {
-          await rigsBook.patch(rig.id, { engines: updatedEngines, status: 'completed' });
+          await rigsBook.patch(rig.id, { engines: updatedEngines, status: 'completed', ...terminalAtPatch(rig) });
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'completed' };
         }
 
@@ -1753,7 +1771,7 @@ export function createSpider(): Plugin {
           const cascaded = cascadeSkip(mutableEngines, upstream);
 
           if (isRigComplete(mutableEngines)) {
-            await rigsBook.patch(rig.id, { engines: mutableEngines, status: 'completed' });
+            await rigsBook.patch(rig.id, { engines: mutableEngines, status: 'completed', ...terminalAtPatch(rig) });
             return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'completed' };
           }
 
@@ -1923,6 +1941,7 @@ export function createSpider(): Plugin {
           await rigsBook.patch(rig.id, {
             engines: completedEngines,
             status: 'completed',
+            ...terminalAtPatch(rig),
           });
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'completed' };
         }
@@ -2422,7 +2441,7 @@ export function createSpider(): Plugin {
 
       // Stuck rigs have no active engines — just mark cancelled directly.
       if (rig.status === 'stuck') {
-        await rigsBook.patch(rig.id, { status: 'cancelled' });
+        await rigsBook.patch(rig.id, { status: 'cancelled', ...terminalAtPatch(rig) });
         await rejectPendingInputRequests(rig.id);
         return api.show(rigId);
       }
@@ -2468,7 +2487,7 @@ export function createSpider(): Plugin {
         await cancelEngine(rig, targetEngineId, options?.reason);
       } else {
         // No active engines — just mark rig cancelled
-        await rigsBook.patch(rig.id, { status: 'cancelled' });
+        await rigsBook.patch(rig.id, { status: 'cancelled', ...terminalAtPatch(rig) });
       }
 
       // Reject pending input requests

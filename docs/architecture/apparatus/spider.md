@@ -123,12 +123,16 @@ The `crawl-continual` loop: call `crawl()`, sleep `pollIntervalMs` (default 5000
 interface Rig {
   id: string
   writId: string
-  status: 'running' | 'completed' | 'failed'
+  status: 'running' | 'completed' | 'failed' | 'stuck' | 'cancelled' | 'blocked'
   engines: EngineInstance[]
+  createdAt: string       // ISO-8601, written at rig spawn
+  terminalAt?: string     // ISO-8601, written the FIRST time the rig enters a terminal status
 }
 ```
 
 Stored in the Stacks `rigs` book. One rig per writ. The Spider reads and updates rigs via normal Stacks `put()`/`patch()` operations.
+
+**`terminalAt` — keep-first terminal timestamp.** The Spider writes `terminalAt` in the same transaction as every rig terminal-status transition (`completed`, `failed`, `cancelled`, `stuck`), routed through a single `terminalAtPatch(rig)` helper. The helper returns `{}` if `rig.terminalAt` is already set, pinning the moment the rig first stopped making forward progress. This matters for paths like `stuck → cancelled`: the final state is cancelled, but the rig effectively ended at the stuck transition, and downstream observers (the dashboard's end-time display, the timeseries view) need the earlier timestamp so elapsed-time readings don't jump on each subsequent transition. Rigs persisted before `terminalAt` existed simply omit the field; consumers fall back to `max(engine.completedAt)` and finally to `rig.createdAt`.
 
 ### Engine Instance
 

@@ -1387,3 +1387,41 @@ describe('spider.js session-log lifecycle', () => {
     );
   });
 });
+
+// ── Rig end-time read order ──────────────────────────────────────────────
+
+describe('spider.js rigEndTime read order', () => {
+  it('rigEndTime prefers rig.terminalAt over engine.completedAt', () => {
+    // The helper must consult rig.terminalAt FIRST and return it verbatim
+    // when present. Only when terminalAt is absent should it fall back to
+    // max(engine.completedAt), and finally to rig.createdAt. This ordering
+    // is load-bearing for the dashboard's elapsed/end-time display — a
+    // regression here reintroduces the bug where the timestamp shown in
+    // the UI drifts with every engine.completedAt update.
+    const rigEndTimeBlock = spiderJs.match(
+      /function rigEndTime\(rig\)\s*\{[\s\S]*?\n  \}/,
+    );
+    assert.ok(rigEndTimeBlock, 'should find rigEndTime function body');
+    const body = rigEndTimeBlock[0];
+
+    // First statement in the body (after the function declaration) must be
+    // the terminalAt short-circuit.
+    assert.match(
+      body,
+      /^function rigEndTime\(rig\)\s*\{\s*if\s*\(rig\.terminalAt\)\s*return\s+rig\.terminalAt\s*;/,
+      'rigEndTime must short-circuit on rig.terminalAt before falling back',
+    );
+
+    // Sanity: the fallbacks still exist in the body.
+    assert.match(
+      body,
+      /engines\s*=\s*rig\.engines/,
+      'rigEndTime must retain the engines fallback path',
+    );
+    assert.match(
+      body,
+      /maxCompletedAt\s*\|\|\s*rig\.createdAt/,
+      'rigEndTime must retain the createdAt final fallback',
+    );
+  });
+});
