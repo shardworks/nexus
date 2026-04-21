@@ -94,38 +94,11 @@
   }
 
   // ── Cost / token formatting ────────────────────────────────────────────
-
-  // Single source of truth for grouping conventions. Always pass 'en-US'
-  // explicitly so the comma separator is consistent regardless of viewer
-  // locale.
-  function formatTokenCount(n) {
-    return Number(n).toLocaleString('en-US');
-  }
-
-  /**
-   * Format a cost value as `$x.yy`. Used for the rig-list Cost column
-   * and any other surface that shows cost without tokens.
-   */
-  function formatCostUsd(costUsd) {
-    var n = Number(costUsd);
-    if (!isFinite(n)) n = 0;
-    return '$' + n.toFixed(2);
-  }
-
-  /**
-   * Format a cost + tokens triplet as `$x.yy (N input, M output)` with
-   * thousands-separator grouping. When either token count is absent
-   * (undefined), the parenthetical is omitted entirely — matching the
-   * brief's rule that we never render `(0 input, 0 output)` when no
-   * anima session has reported usage.
-   */
-  function formatCostWithTokens(costUsd, inputTokens, outputTokens) {
-    var cost = formatCostUsd(costUsd);
-    if (inputTokens === undefined || outputTokens === undefined) {
-      return cost;
-    }
-    return cost + ' (' + formatTokenCount(inputTokens) + ' input, ' + formatTokenCount(outputTokens) + ' output)';
-  }
+  //
+  // Cost and token formatting routes through the shared window.NexusFormat
+  // namespace (served by oculus and auto-injected into every dashboard
+  // page, so it is defined before this IIFE runs). The namespace is the
+  // single source of truth — no local redefinitions here.
 
   function formatElapsed(startedAt, completedAt) {
     var diffMs = new Date(completedAt) - new Date(startedAt);
@@ -745,7 +718,7 @@
     var costTd = row.querySelector('.rig-row-cost');
     if (costTd) {
       var costUsd = (rig.costSummary && typeof rig.costSummary.costUsd === 'number') ? rig.costSummary.costUsd : 0;
-      var costText = formatCostUsd(costUsd);
+      var costText = window.NexusFormat.formatCostUsd(costUsd);
       if (costTd.textContent !== costText) costTd.textContent = costText;
     }
 
@@ -818,7 +791,7 @@
     var costUsd = summary ? summary.costUsd : 0;
     var inputTokens = summary ? summary.inputTokens : undefined;
     var outputTokens = summary ? summary.outputTokens : undefined;
-    setText('rig-meta-cost', formatCostWithTokens(costUsd, inputTokens, outputTokens));
+    setText('rig-meta-cost', window.NexusFormat.formatCostWithTokens(costUsd, inputTokens, outputTokens));
   }
 
   // ── Show rig detail ────────────────────────────────────────────────────
@@ -1310,7 +1283,7 @@
     // Updates on the 2 s rig poll cadence without any per-engine fetch.
     var engineCost = (currentRig && currentRig.engineCosts) ? currentRig.engineCosts[engine.id] : undefined;
     if (engineCost) {
-      setText('ed-cost', formatCostWithTokens(engineCost.costUsd, engineCost.inputTokens, engineCost.outputTokens));
+      setText('ed-cost', window.NexusFormat.formatCostWithTokens(engineCost.costUsd, engineCost.inputTokens, engineCost.outputTokens));
       setRowDisplay('ed-cost-dt', 'ed-cost', true);
     } else {
       setText('ed-cost', '');

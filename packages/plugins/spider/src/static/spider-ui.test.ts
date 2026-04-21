@@ -521,8 +521,8 @@ describe('spider.js engine-detail stable-skeleton + updater', () => {
     );
     assert.match(
       updaterBlock[0],
-      /setText\(['"]ed-cost['"]\s*,\s*formatCostWithTokens\(/,
-      'engine-detail cost row should render via formatCostWithTokens()',
+      /setText\(['"]ed-cost['"]\s*,\s*window\.NexusFormat\.formatCostWithTokens\(/,
+      'engine-detail cost row should render via window.NexusFormat.formatCostWithTokens()',
     );
     assert.match(
       updaterBlock[0],
@@ -1033,70 +1033,48 @@ describe('spider.js server-supplied engine cost', () => {
   });
 });
 
-// ── Cost / token formatting helpers ─────────────────────────────────────
+// ── Cost / token formatting via shared namespace ────────────────────────
 
-describe('spider.js cost/token formatting helpers', () => {
-  // T3 / D6 / D7: a single source of truth for cost + token rendering,
-  // always using the explicit 'en-US' locale so grouping is stable.
+describe('spider.js cost/token formatting delegates to window.NexusFormat', () => {
+  // Spider no longer defines its own cost/token helpers. The shared
+  // formatter lives in oculus's static asset (nexus-format.js) and is
+  // auto-injected into the dashboard <head> before this IIFE runs, so
+  // every dashboard in the guild uses the same precision and locale.
 
-  it('defines formatTokenCount using toLocaleString(en-US)', () => {
-    assert.match(
+  it('does not redefine formatTokenCount locally', () => {
+    assert.doesNotMatch(
       spiderJs,
-      /function formatTokenCount\(n\)/,
-      'should define formatTokenCount helper',
-    );
-    const block = spiderJs.match(
-      /function formatTokenCount[\s\S]*?(?=\n  function )/,
-    );
-    assert.ok(block, 'should find formatTokenCount body');
-    assert.match(
-      block[0],
-      /toLocaleString\(['"]en-US['"]\)/,
-      'formatTokenCount should pass "en-US" locale explicitly',
+      /function formatTokenCount\(/,
+      'spider.js must not redeclare formatTokenCount — use window.NexusFormat.formatTokenCount',
     );
   });
 
-  it('defines formatCostUsd that always emits $x.yy (2 decimals)', () => {
-    assert.match(
+  it('does not redefine formatCostUsd locally', () => {
+    assert.doesNotMatch(
       spiderJs,
-      /function formatCostUsd\(costUsd\)/,
-      'should define formatCostUsd helper',
-    );
-    const block = spiderJs.match(
-      /function formatCostUsd[\s\S]*?(?=\n\s*\/\*\*|\n  function )/,
-    );
-    assert.ok(block, 'should find formatCostUsd body');
-    assert.match(
-      block[0],
-      /toFixed\(2\)/,
-      'formatCostUsd should format to two decimal places',
-    );
-    assert.match(
-      block[0],
-      /['"]\$['"]\s*\+/,
-      'formatCostUsd should prefix with "$"',
+      /function formatCostUsd\(/,
+      'spider.js must not redeclare formatCostUsd — use window.NexusFormat.formatCostUsd',
     );
   });
 
-  it('defines formatCostWithTokens that omits parenthetical when tokens absent', () => {
+  it('does not redefine formatCostWithTokens locally', () => {
+    assert.doesNotMatch(
+      spiderJs,
+      /function formatCostWithTokens\(/,
+      'spider.js must not redeclare formatCostWithTokens — use window.NexusFormat.formatCostWithTokens',
+    );
+  });
+
+  it('calls into window.NexusFormat for cost rendering', () => {
     assert.match(
       spiderJs,
-      /function formatCostWithTokens\(costUsd, inputTokens, outputTokens\)/,
-      'should define formatCostWithTokens helper',
-    );
-    const block = spiderJs.match(
-      /function formatCostWithTokens[\s\S]*?(?=\n  function )/,
-    );
-    assert.ok(block, 'should find formatCostWithTokens body');
-    assert.match(
-      block[0],
-      /inputTokens\s*===\s*undefined\s*\|\|\s*outputTokens\s*===\s*undefined/,
-      'formatCostWithTokens should detect absent tokens and skip parenthetical',
+      /window\.NexusFormat\.formatCostUsd\(/,
+      'spider.js should route cost rendering through window.NexusFormat.formatCostUsd',
     );
     assert.match(
-      block[0],
-      /formatTokenCount\(inputTokens\)[\s\S]*?input[\s\S]*?formatTokenCount\(outputTokens\)[\s\S]*?output/,
-      'formatCostWithTokens should render "(N input, M output)" via formatTokenCount',
+      spiderJs,
+      /window\.NexusFormat\.formatCostWithTokens\(/,
+      'spider.js should route cost+tokens rendering through window.NexusFormat.formatCostWithTokens',
     );
   });
 });
@@ -1228,14 +1206,14 @@ describe('spider.js rig-meta stable-id skeleton', () => {
     );
   });
 
-  it('updateRigMeta writes cost via formatCostWithTokens', () => {
+  it('updateRigMeta writes cost via window.NexusFormat.formatCostWithTokens', () => {
     const block = spiderJs.match(
       /function updateRigMeta\(rig\)[\s\S]*?(?=\n  function |\n  \/\/)/,
     );
     assert.ok(block, 'should find updateRigMeta body');
     assert.match(
       block[0],
-      /setText\(['"]rig-meta-cost['"]\s*,\s*formatCostWithTokens\(/,
+      /setText\(['"]rig-meta-cost['"]\s*,\s*window\.NexusFormat\.formatCostWithTokens\(/,
       'updateRigMeta should render cost via the shared formatter',
     );
     assert.match(
