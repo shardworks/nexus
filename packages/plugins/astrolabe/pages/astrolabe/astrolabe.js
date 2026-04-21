@@ -444,17 +444,17 @@
 
       rows += '<tr>' +
         '<td>' + esc(r.engineId) + '</td>' +
-        '<td>' + inputTokens.toLocaleString() + '</td>' +
-        '<td>' + outputTokens.toLocaleString() + '</td>' +
-        '<td>$' + cost.toFixed(4) + '</td>' +
+        '<td>' + window.NexusFormat.formatTokenCount(inputTokens) + '</td>' +
+        '<td>' + window.NexusFormat.formatTokenCount(outputTokens) + '</td>' +
+        '<td>' + window.NexusFormat.formatCostUsd(cost) + '</td>' +
         '</tr>';
     }
 
     rows += '<tr class="cost-total">' +
       '<td><strong>Total</strong></td>' +
-      '<td><strong>' + totalInput.toLocaleString() + '</strong></td>' +
-      '<td><strong>' + totalOutput.toLocaleString() + '</strong></td>' +
-      '<td><strong>$' + totalCost.toFixed(4) + '</strong></td>' +
+      '<td><strong>' + window.NexusFormat.formatTokenCount(totalInput) + '</strong></td>' +
+      '<td><strong>' + window.NexusFormat.formatTokenCount(totalOutput) + '</strong></td>' +
+      '<td><strong>' + window.NexusFormat.formatCostUsd(totalCost) + '</strong></td>' +
       '</tr>';
 
     el.innerHTML =

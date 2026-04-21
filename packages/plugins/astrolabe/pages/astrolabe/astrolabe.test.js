@@ -459,3 +459,78 @@ describe('astrolabe.js plan-detail writ cross-link URL', () => {
     );
   });
 });
+
+// ── Cost table routes through shared formatter ───────────────────────
+
+describe('astrolabe.js cost table delegates to window.NexusFormat', () => {
+  // The renderCostTable helper formerly rendered cost via
+  // `'$' + cost.toFixed(4)` and token counts via bare `.toLocaleString()`
+  // (no locale argument). This drifted from every other dashboard's
+  // two-decimal cost and US-locale token grouping. All cost/token
+  // rendering must now route through the shared window.NexusFormat
+  // namespace served by oculus.
+
+  it('contains no toFixed(4) drift (legacy precision)', () => {
+    assert.doesNotMatch(
+      astrolabeJs,
+      /toFixed\(4\)/,
+      'astrolabe.js must not use toFixed(4) — shared formatter enforces $x.yy',
+    );
+  });
+
+  it('contains no bare .toLocaleString() calls on token counts', () => {
+    // formatDate uses toLocaleString() on a Date instance — that is fine.
+    // But no numeric .toLocaleString() call should remain, because every
+    // locale-formatted integer must route through the shared namespace
+    // which pins 'en-US' grouping.
+    var numericLocaleMatches =
+      astrolabeJs.match(/\b(?:input|output|cost|total)\w*\.toLocaleString\(/gi) || [];
+    assert.equal(
+      numericLocaleMatches.length,
+      0,
+      'numeric *.toLocaleString() calls must be replaced with window.NexusFormat.formatTokenCount',
+    );
+  });
+
+  it('renders per-row cost via window.NexusFormat.formatCostUsd', () => {
+    assert.match(
+      astrolabeJs,
+      /window\.NexusFormat\.formatCostUsd\(cost\)/,
+      'per-row cost cell should render via the shared formatter',
+    );
+  });
+
+  it('renders total cost via window.NexusFormat.formatCostUsd', () => {
+    assert.match(
+      astrolabeJs,
+      /window\.NexusFormat\.formatCostUsd\(totalCost\)/,
+      'total cost cell should render via the shared formatter',
+    );
+  });
+
+  it('renders per-row token counts via window.NexusFormat.formatTokenCount', () => {
+    assert.match(
+      astrolabeJs,
+      /window\.NexusFormat\.formatTokenCount\(inputTokens\)/,
+      'per-row input token cell should render via the shared formatter',
+    );
+    assert.match(
+      astrolabeJs,
+      /window\.NexusFormat\.formatTokenCount\(outputTokens\)/,
+      'per-row output token cell should render via the shared formatter',
+    );
+  });
+
+  it('renders total token counts via window.NexusFormat.formatTokenCount', () => {
+    assert.match(
+      astrolabeJs,
+      /window\.NexusFormat\.formatTokenCount\(totalInput\)/,
+      'total input token cell should render via the shared formatter',
+    );
+    assert.match(
+      astrolabeJs,
+      /window\.NexusFormat\.formatTokenCount\(totalOutput\)/,
+      'total output token cell should render via the shared formatter',
+    );
+  });
+});
