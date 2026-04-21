@@ -421,6 +421,97 @@ describe('injectChrome', () => {
     assert.ok(result.includes('<link rel="stylesheet"'));
     assert.ok(result.includes('<nav>NAV</nav>'));
   });
+
+  // ── Shared formatter script injection ─────────────────────────────
+
+  it('injects a <script src> tag into <head> when scriptPath is provided', () => {
+    const html = '<html><head><title>Test</title></head><body><p>Hi</p></body></html>';
+    const result = injectChrome(
+      html,
+      '/static/style.css',
+      '<nav>NAV</nav>',
+      '/static/nexus-format.js',
+    );
+    assert.ok(
+      result.includes('<script src="/static/nexus-format.js"></script>'),
+      'formatter script tag should be present',
+    );
+    // Script tag must live in <head>, strictly before </head>.
+    const scriptIdx = result.indexOf('<script src="/static/nexus-format.js">');
+    const headCloseIdx = result.indexOf('</head>');
+    assert.ok(scriptIdx >= 0, 'script should be injected');
+    assert.ok(scriptIdx < headCloseIdx, 'script must appear before </head>');
+  });
+
+  it('does not inject a script tag when scriptPath is omitted', () => {
+    const html = '<html><head><title>Test</title></head><body></body></html>';
+    const result = injectChrome(html, '/static/style.css', '<nav>NAV</nav>');
+    assert.ok(!result.includes('<script'), 'no script tag when scriptPath is absent');
+  });
+
+  it('injects script tag on the head-only control path', () => {
+    // Head present, no body tag — stylesheet and script still land in <head>.
+    const html = '<html><head><title>Test</title></head></html>';
+    const result = injectChrome(
+      html,
+      '/static/style.css',
+      '<nav>NAV</nav>',
+      '/static/nexus-format.js',
+    );
+    assert.ok(result.includes('<link rel="stylesheet"'));
+    assert.ok(result.includes('<script src="/static/nexus-format.js"></script>'));
+    const scriptIdx = result.indexOf('<script src="/static/nexus-format.js">');
+    const headCloseIdx = result.indexOf('</head>');
+    assert.ok(scriptIdx < headCloseIdx);
+  });
+
+  it('injects script tag with body attributes present', () => {
+    const html = '<html><HEAD><TITLE>Test</TITLE></HEAD><BODY class="main"></BODY></html>';
+    const result = injectChrome(
+      html,
+      '/static/style.css',
+      '<nav>NAV</nav>',
+      '/static/nexus-format.js',
+    );
+    assert.ok(result.includes('<script src="/static/nexus-format.js"></script>'));
+    const scriptIdx = result.indexOf('<script src="/static/nexus-format.js">');
+    const headCloseIdx = result.search(/<\/HEAD>/i);
+    assert.ok(scriptIdx < headCloseIdx);
+  });
+
+  it('injects script tag on the both-empty control path', () => {
+    const html = '<html><head></head><body></body></html>';
+    const result = injectChrome(
+      html,
+      '/static/style.css',
+      '<nav>NAV</nav>',
+      '/static/nexus-format.js',
+    );
+    assert.ok(result.includes('<link rel="stylesheet"'));
+    assert.ok(result.includes('<script src="/static/nexus-format.js"></script>'));
+    const scriptIdx = result.indexOf('<script src="/static/nexus-format.js">');
+    const headCloseIdx = result.indexOf('</head>');
+    assert.ok(scriptIdx < headCloseIdx);
+  });
+
+  it('stylesheet and script tags both precede any dashboard script placed at end-of-body', () => {
+    const html =
+      '<html><head><title>Test</title></head><body><script src="dashboard.js"></script></body></html>';
+    const result = injectChrome(
+      html,
+      '/static/style.css',
+      '<nav>NAV</nav>',
+      '/static/nexus-format.js',
+    );
+    const sharedScriptIdx = result.indexOf('<script src="/static/nexus-format.js">');
+    const dashboardScriptIdx = result.indexOf('<script src="dashboard.js">');
+    assert.ok(sharedScriptIdx >= 0, 'shared formatter script is present');
+    assert.ok(dashboardScriptIdx >= 0, 'dashboard script is preserved');
+    assert.ok(
+      sharedScriptIdx < dashboardScriptIdx,
+      'shared formatter must be injected before the dashboard script so window.NexusFormat is defined when the dashboard IIFE runs',
+    );
+  });
 });
 
 // ── Integration tests: server lifecycle ──────────────────────────────
@@ -547,9 +638,15 @@ describe('Oculus page serving', () => {
     assert.equal(res.status, 200);
     const text = await res.text();
     assert.ok(text.includes('<link rel="stylesheet" href="/static/style.css">'));
+    assert.ok(text.includes('<script src="/static/nexus-format.js"></script>'));
     assert.ok(text.includes('<nav id="oculus-nav">'));
     assert.ok(text.includes('<a href="/">Guild</a>'));
     assert.ok(text.includes('/pages/my-page/'));
+    // The shared formatter script must resolve before dashboard scripts
+    // execute, so it lives in <head> — not at end-of-body.
+    const scriptIdx = text.indexOf('<script src="/static/nexus-format.js">');
+    const headCloseIdx = text.indexOf('</head>');
+    assert.ok(scriptIdx >= 0 && scriptIdx < headCloseIdx, 'formatter script must be in <head>');
   });
 
   it('serves index.html at explicit /index.html path with injection', async () => {
@@ -557,6 +654,7 @@ describe('Oculus page serving', () => {
     assert.equal(res.status, 200);
     const text = await res.text();
     assert.ok(text.includes('<link rel="stylesheet" href="/static/style.css">'));
+    assert.ok(text.includes('<script src="/static/nexus-format.js"></script>'));
     assert.ok(text.includes('<nav id="oculus-nav">'));
   });
 

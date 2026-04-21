@@ -148,6 +148,7 @@ export function injectChrome(
   html: string,
   stylesheetPath: string,
   navHtml: string,
+  scriptPath?: string,
 ): string {
   // Check for </head> case-insensitively
   const headCloseMatch = html.match(/<\/head>/i);
@@ -158,13 +159,19 @@ export function injectChrome(
 
   let result = html;
 
-  // Insert stylesheet link before </head>
+  // Build the bundle to inject before </head>: stylesheet link plus an
+  // optional shared-formatter script tag. The script is injected in
+  // <head> (not end-of-body) so that window.NexusFormat is defined
+  // before any dashboard IIFE — which always lives at end-of-<body> —
+  // executes. This makes the shared namespace available to every
+  // dashboard by construction.
   if (headCloseMatch && headCloseMatch.index !== undefined) {
     const idx = headCloseMatch.index;
-    result =
-      result.slice(0, idx) +
-      `<link rel="stylesheet" href="${stylesheetPath}">` +
-      result.slice(idx);
+    let headInsert = `<link rel="stylesheet" href="${stylesheetPath}">`;
+    if (scriptPath) {
+      headInsert += `<script src="${scriptPath}"></script>`;
+    }
+    result = result.slice(0, idx) + headInsert + result.slice(idx);
   }
 
   // Insert nav after <body...>
@@ -385,6 +392,7 @@ export function createOculus(): Plugin {
                   html,
                   "/static/style.css",
                   navHtml,
+                  "/static/nexus-format.js",
                 );
                 return new Response(injected, {
                   headers: { "Content-Type": "text/html; charset=utf-8" },
