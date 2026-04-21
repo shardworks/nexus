@@ -68,7 +68,17 @@ Configure the Oculus in `guild.json` under the `oculus` key:
 
 ### `pages`
 
-Plugins contribute pages as static asset directories. Each page gets a URL at `/pages/{id}/` with automatic chrome injection (navigation bar, stylesheet).
+Plugins contribute pages as static asset directories. Each page gets a URL at `/pages/{id}/` with automatic chrome injection (navigation bar, shared stylesheet, and shared cost/token formatter).
+
+The chrome injection includes `/static/nexus-format.js`, which exposes `window.NexusFormat` to every contributed page. Dashboards should use the shared helpers rather than implementing their own:
+
+| Helper | Behavior |
+|--------|----------|
+| `window.NexusFormat.formatCostUsd(n)` | Formats a USD cost as `$x.yy` (two decimals). Non-finite input falls back to `$0.00`. |
+| `window.NexusFormat.formatTokenCount(n)` | Formats a token count with US-locale comma grouping (e.g. `1,234,567`). |
+| `window.NexusFormat.formatCostWithTokens(c, i, o)` | Renders `$x.yy (I input, O output)`; omits the parenthetical when either token count is `undefined`. |
+
+Using the shared helpers keeps cost and token precision consistent across every plugin's dashboard.
 
 ```typescript
 interface PageContribution {
@@ -111,7 +121,7 @@ Starts the Oculus web dashboard and blocks until interrupted (SIGINT/SIGTERM). O
 | `/` | GET | Guild home page — identity, warnings, plugins, config |
 | `/api/_status` | GET | JSON status of the guild (name, version, plugins, config) |
 | `/api/_tools` | GET | JSON index of all patron-callable tools with routes and params |
-| `/static/*` | GET | Static assets (stylesheets) |
+| `/static/*` | GET | Static assets (stylesheets, shared `nexus-format.js` helper) |
 | `/pages/{id}/*` | GET | Contributed page assets |
 
 Guild tools are automatically mapped to REST routes based on their name and permission level.
