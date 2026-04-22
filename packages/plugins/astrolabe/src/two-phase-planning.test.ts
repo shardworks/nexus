@@ -72,14 +72,23 @@ describe('two-phase-planning rig template', () => {
 
   // ── reader-analyst stage ──────────────────────────────────────────
 
-  it('reader-analyst uses anima-session designId', () => {
+  it('reader-analyst uses astrolabe.reader-analyst designId', () => {
+    // The reader-analyst slot is driven by the astrolabe-owned
+    // astrolabe.reader-analyst engine, not the generic anima-session
+    // engine — the engine chooses the primer variant at run time from
+    // live guild config.
     const ra = template.engines.find(e => e.id === 'reader-analyst');
-    assert.equal(ra?.designId, 'anima-session');
+    assert.equal(ra?.designId, 'astrolabe.reader-analyst');
   });
 
-  it('reader-analyst uses astrolabe.sage-reading-analyst role', () => {
+  it('reader-analyst has no hardcoded role given', () => {
+    // The astrolabe.reader-analyst engine chooses the primer role itself
+    // (sage-primer-attended vs sage-primer-solo) by reading
+    // astrolabe.patronRole at engine-run time. Hardcoding a role in the
+    // rig would defeat that — assert it is absent.
     const ra = template.engines.find(e => e.id === 'reader-analyst');
-    assert.equal(ra?.givens?.role, 'astrolabe.sage-reading-analyst');
+    assert.equal(ra?.givens?.role, undefined,
+      'reader-analyst must not have a hardcoded role given — the engine resolves it');
   });
 
   it('reader-analyst prompt contains planId interpolation', () => {
@@ -171,6 +180,10 @@ describe('two-phase-planning rig template', () => {
     const threePhase = rigTemplates['three-phase-planning'];
     assert.ok(threePhase, 'three-phase-planning template must exist');
 
+    // reader-analyst is intentionally excluded from the shared set: the
+    // two-phase rig uses the astrolabe.reader-analyst engine (primer-
+    // variant-aware), while three-phase-planning keeps its split
+    // reader / analyst stages on the generic anima-session engine.
     const shared = ['plan-init', 'draft', 'inventory-check', 'decision-review', 'spec-publish', 'seal'];
     for (const id of shared) {
       const two = template.engines.find(e => e.id === id);

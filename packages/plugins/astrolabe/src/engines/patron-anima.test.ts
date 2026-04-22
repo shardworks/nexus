@@ -4,9 +4,13 @@
  * Covers:
  *   - skip-when-unset: no `astrolabe.patronRole` configured → no-op
  *   - fast-path: no reviewable decisions → no-op (no anima call)
- *   - happy path: anima confirms the analyst recommendation
+ *   - happy path: anima confirms the primer recommendation
  *   - override path: anima picks a different option; `selected` tracks it
- *   - fill-in path: no analyst recommendation; anima supplies one
+ *   - fill-in path: no primer recommendation; anima supplies one
+ *   - first-class `low`-confirm path: no principle speaks → confirm the
+ *     primer at `low` (D5)
+ *   - narrow abstention: anima omits a decision on irresolvable principle
+ *     conflict → that decision flows through unfilled (D6)
  *   - partial emission: some decisions missing from the anima's response
  *     are left unfilled (for decision-review to catch)
  *   - malformed / missing JSON → all reviewable decisions left unfilled
@@ -16,11 +20,13 @@
  *   - `override` verdict whose selection matches recommendation → dropped
  *   - unknown option key in selection → dropped
  *   - emission that is an object wrapper (`{ verdicts: [...] }`) → accepted
- *   - buildPatronPrompt includes analyst recommendation + rationale
+ *   - buildPatronPrompt includes primer recommendation + rationale
  *   - buildPatronPrompt carries the tailored operational discipline:
- *     one-option-per-decision, principle-structural confidence calibration,
- *     abstain-by-omission, explicit out-of-lane prohibition on codebase
- *     audit, three-verdict worked example with abstained entry absent
+ *     one-option-per-decision, principle-structural confidence calibration
+ *     with `low`-confirm as a first-class emission path, narrow abstention
+ *     by omission reserved for irresolvable principle conflict and broken
+ *     decision frame only, explicit out-of-lane prohibition on codebase
+ *     audit, worked example with four emitted verdicts plus one absent id
  *   - buildPatronPrompt pulls static content from the packaged markdown
  *     file rather than assembling it inline
  *   - extractJsonBlock picks the last fenced block
@@ -281,7 +287,7 @@ describe('patron-anima engine — no reviewable decisions', () => {
     assert.equal(fakeAnimator.summonCalls.length, 0);
   });
 
-  it('no-ops when every decision is already pre-decided by the analyst', async () => {
+  it('no-ops when every decision is already pre-decided by the primer', async () => {
     const engine = createPatronAnimaEngine(() => plansBook);
     const decisions: Decision[] = [
       { id: 'D1', scope: [], question: 'Q?', options: { A: 'A' }, selected: 'A' },
@@ -306,7 +312,7 @@ describe('patron-anima engine — run/collect with verdicts', () => {
   beforeEach(() => { setup({ patronRole: 'guild.patron' }); });
   afterEach(() => { clearGuild(); });
 
-  it('confirm: applies analyst recommendation and records patron emission', async () => {
+  it('confirm: applies primer recommendation and records patron emission', async () => {
     const engine = createPatronAnimaEngine(() => plansBook);
     const decisions: Decision[] = [
       {
@@ -358,7 +364,7 @@ describe('patron-anima engine — run/collect with verdicts', () => {
     assert.equal(d1?.patron?.rationale, 'Matches simplicity principle.');
   });
 
-  it('override: applies anima selection, not the analyst recommendation', async () => {
+  it('override: applies anima selection, not the primer recommendation', async () => {
     const engine = createPatronAnimaEngine(() => plansBook);
     const decisions: Decision[] = [
       {
@@ -391,7 +397,7 @@ describe('patron-anima engine — run/collect with verdicts', () => {
     assert.equal(d1?.patron?.selection, 'B');
   });
 
-  it('fill-in: supplies selection when there is no analyst recommendation', async () => {
+  it('fill-in: supplies selection when there is no primer recommendation', async () => {
     const engine = createPatronAnimaEngine(() => plansBook);
     const decisions: Decision[] = [
       {
@@ -424,12 +430,13 @@ describe('patron-anima engine — run/collect with verdicts', () => {
     assert.equal(d1?.patron?.confidence, 'med');
   });
 
-  it('low-confidence emissions are still applied (defensive parser leniency — the prompt tells the anima to abstain instead)', async () => {
-    // Under the tailored operational discipline, the anima is instructed to
-    // abstain (omit) on `low` calibration rather than emit it. The parser,
-    // however, still accepts `low` as a valid value — this test locks in
-    // that defensive leniency so a stray low emission from a mis-behaving
-    // anima is applied rather than silently dropped.
+  it('low-confidence confirm is applied as a first-class emission path (principle-absence → confirm the primer)', async () => {
+    // `low` confidence is a first-class supported emission: it means "no
+    // principle from the role speaks to this decision, so the primer's
+    // recommendation stands." The anima confirms and records confidence
+    // as `low`, and the engine writes both through to `Decision.selected`
+    // and `Decision.patron`. This is the D5 behaviour: `low` is not
+    // defensive leniency and is not reserved for abstention.
     const engine = createPatronAnimaEngine(() => plansBook);
     const decisions: Decision[] = [
       {
@@ -447,7 +454,7 @@ describe('patron-anima engine — run/collect with verdicts', () => {
       '```json\n' +
       JSON.stringify([
         { id: 'D1', verdict: 'confirm', selection: 'A', confidence: 'low',
-          rationale: 'Stray low-confidence emission.' },
+          rationale: 'No principle speaks — confirming the primer.' },
       ]) +
       '\n```';
 
@@ -461,6 +468,40 @@ describe('patron-anima engine — run/collect with verdicts', () => {
     assert.equal(d1?.selected, 'A');
     assert.equal(d1?.patron?.confidence, 'low');
     assert.equal(d1?.patron?.verdict, 'confirm');
+    assert.equal(d1?.patron?.rationale, 'No principle speaks — confirming the primer.');
+  });
+
+  it('narrow abstention (decision omitted) leaves the decision unfilled — irresolvable principle conflict case', async () => {
+    // The anima abstains on D1 (irresolvable principle conflict) by
+    // omitting it from the emission array, and confirms D2 at high.
+    // D1 flows through to decision-review unfilled; D2 is applied.
+    const engine = createPatronAnimaEngine(() => plansBook);
+    const decisions: Decision[] = [
+      { id: 'D1', scope: [], question: 'Hard conflict?', options: { A: 'A', B: 'B' }, recommendation: 'A' },
+      { id: 'D2', scope: [], question: 'Clean?', options: { X: 'X', Y: 'Y' }, recommendation: 'X' },
+    ];
+    const plan = makePlan({ decisions });
+    await plansBook.put(plan);
+
+    fakeAnimator.nextOutput =
+      '```json\n' +
+      JSON.stringify([
+        { id: 'D2', verdict: 'confirm', selection: 'X', confidence: 'high' },
+      ]) +
+      '\n```';
+
+    const givens = { planId: plan.id, cwd: '/tmp/draft' };
+    const runResult = await engine.run(givens, buildCtx());
+    const launched = runResult as { status: 'launched'; sessionId: string };
+    const collected = await engine.collect!(launched.sessionId, givens, buildCtx());
+    const yields = collected as { touchedDecisionIds: string[] };
+
+    assert.deepEqual(yields.touchedDecisionIds, ['D2']);
+    const updated = await plansBook.get(plan.id);
+    assert.equal(updated?.decisions?.[0].selected, undefined,
+      'D1 (narrow abstention) must remain unfilled for decision-review to surface');
+    assert.equal(updated?.decisions?.[0].patron, undefined);
+    assert.equal(updated?.decisions?.[1].selected, 'X');
   });
 });
 
@@ -598,7 +639,7 @@ describe('patron-anima engine — verdict validation', () => {
   beforeEach(() => { setup({ patronRole: 'guild.patron' }); });
   afterEach(() => { clearGuild(); });
 
-  it('confirm that does not match the analyst recommendation is dropped', async () => {
+  it('confirm that does not match the primer recommendation is dropped', async () => {
     const engine = createPatronAnimaEngine(() => plansBook);
     const decisions: Decision[] = [
       {
@@ -828,7 +869,7 @@ describe('patron-anima engine — error paths', () => {
 // ── Pure helpers ─────────────────────────────────────────────────────
 
 describe('patron-anima — pure helpers', () => {
-  it('buildPatronPrompt includes question, options, and analyst recommendation', () => {
+  it('buildPatronPrompt includes question, options, and primer recommendation', () => {
     const decisions: Decision[] = [
       {
         id: 'D1',
@@ -846,7 +887,7 @@ describe('patron-anima — pure helpers', () => {
     assert.ok(prompt.includes('Chosen in the spec writer'));
     assert.ok(prompt.includes('Strategy'));
     assert.ok(prompt.includes('Observer'));
-    assert.ok(prompt.includes('Analyst recommendation'));
+    assert.ok(prompt.includes('Primer recommendation'));
     assert.ok(prompt.includes('Simpler'));
     // Calibration guidance plumbed through.
     assert.ok(prompt.includes('confidence'));
@@ -855,7 +896,7 @@ describe('patron-anima — pure helpers', () => {
     assert.ok(prompt.includes('fill-in'));
   });
 
-  it('buildPatronPrompt notes absence of analyst recommendation', () => {
+  it('buildPatronPrompt notes absence of primer recommendation', () => {
     const decisions: Decision[] = [
       {
         id: 'D1',
@@ -903,7 +944,7 @@ describe('patron-anima — pure helpers', () => {
     assert.equal(result.get('D1')?.selection, 'A');
   });
 
-  it('parseEmission drops override verdict lacking an analyst recommendation', () => {
+  it('parseEmission drops override verdict lacking a primer recommendation', () => {
     const decisions: Decision[] = [
       { id: 'D1', scope: [], question: 'Q?', options: { A: 'A', B: 'B' } },
       // no recommendation, so `override` is meaningless
@@ -976,30 +1017,36 @@ describe('buildPatronPrompt — tailored operational discipline', () => {
     );
   });
 
-  it('encodes abstain-by-omission — no placeholder verdict, decision simply absent', () => {
+  it('encodes narrow abstention — reserved for irresolvable principle conflict and broken decision frame only', () => {
     const prompt = oneLine(buildPatronPrompt(sampleDecisions));
     assert.match(prompt, /abstain/i, 'prompt must name the abstain mode');
     assert.match(
       prompt,
-      /leave the decision out of your emission array entirely/i,
+      /(leaving|leave) (it|the decision) out of (your|the) emission array entirely/i,
       'prompt must instruct omission as the abstain mechanism',
     );
-    // Must not slip back into the old "default to confirm at low" framing.
-    assert.doesNotMatch(
+    // The two — and only two — case names must appear verbatim in the prompt.
+    assert.match(
       prompt,
-      /default(ing)? to (`?confirm`?|confirm) at (`?low`?|low)/i,
-      'prompt must not carry the old default-to-confirm-at-low framing',
+      /irresolvable principle conflict/i,
+      'prompt must name the "irresolvable principle conflict" abstention case verbatim',
     );
-    // Must explicitly reject placeholder verdicts / low-confidence confirms as substitutes for abstain.
+    assert.match(
+      prompt,
+      /broken decision frame/i,
+      'prompt must name the "broken decision frame" abstention case verbatim',
+    );
+    // Placeholder verdicts still forbidden as a substitute for narrow abstention.
     assert.match(
       prompt,
       /do not emit a placeholder verdict/i,
       'prompt must forbid placeholder verdicts as abstain substitutes',
     );
-    assert.match(
+    // And the old "low = abstain" framing must not reappear.
+    assert.doesNotMatch(
       prompt,
-      /do not emit a low-confidence confirm/i,
-      'prompt must forbid low-confidence-confirm as an abstain substitute',
+      /`?low`? (means|is|calibration means|=) abstain/i,
+      'prompt must not carry the old "low means abstain" framing',
     );
   });
 
@@ -1020,12 +1067,12 @@ describe('buildPatronPrompt — tailored operational discipline', () => {
     );
     assert.match(
       prompt,
-      /do not second-guess the analyst/i,
-      'prompt must forbid re-doing the analyst\'s framing work',
+      /do not second-guess the primer/i,
+      'prompt must forbid re-doing the primer\'s framing work',
     );
   });
 
-  it('calibrates confidence structurally — one principle fires = high, multiple conflict = med, none speaks = abstain', () => {
+  it('calibrates confidence structurally — one principle fires = high, multiple conflict = med, none speaks = low-confirm', () => {
     const prompt = oneLine(buildPatronPrompt(sampleDecisions));
     // Calibration is structural, not content-aware.
     assert.match(
@@ -1047,17 +1094,24 @@ describe('buildPatronPrompt — tailored operational discipline', () => {
     );
     assert.match(
       prompt,
-      /`med`.{0,160}(multiple|more than one) principles? speak.{0,80}conflict/i,
+      /`med`.{0,200}(multiple|more than one) principles? speak.{0,100}conflict/i,
       'med calibration must be: multiple principles conflict',
+    );
+    // `low` is a first-class emission path — principle-absence means
+    // "confirm the primer at low," not "abstain."
+    assert.match(
+      prompt,
+      /`low`.{0,200}no principle speaks/i,
+      'low calibration description must be: no principle speaks',
     );
     assert.match(
       prompt,
-      /`low`.{0,80}no principle speaks/i,
-      'low calibration description must be: no principle speaks (and therefore abstain)',
+      /(confirm the primer|confirming the primer).{0,200}(low|with `low`)/i,
+      'low calibration must describe confirming the primer (first-class low-confirm path)',
     );
   });
 
-  it('output-contract example spans all three verdicts (confirm / override / fill-in)', () => {
+  it('output-contract example spans all three verdicts plus a first-class low-confirm entry', () => {
     const prompt = buildPatronPrompt(sampleDecisions);
     // There must be a worked example.
     assert.match(prompt, /worked example/i);
@@ -1068,12 +1122,19 @@ describe('buildPatronPrompt — tailored operational discipline', () => {
     assert.match(exampleBlock, /"verdict"\s*:\s*"confirm"/, 'example must include a confirm entry');
     assert.match(exampleBlock, /"verdict"\s*:\s*"override"/, 'example must include an override entry');
     assert.match(exampleBlock, /"verdict"\s*:\s*"fill-in"/, 'example must include a fill-in entry');
-    // Sanity: the example array should parse as exactly three entries.
-    const parsed = JSON.parse(exampleBlock) as Array<{ verdict: string }>;
-    assert.equal(parsed.length, 3, 'example emission array must have exactly three entries');
+    // Sanity: the example array must parse as exactly four entries — three
+    // verdicts plus a first-class low-confirm (D13).
+    const parsed = JSON.parse(exampleBlock) as Array<{ verdict: string; confidence: string }>;
+    assert.equal(parsed.length, 4,
+      'example emission array must have exactly four entries: confirm-high, override-high, fill-in-med, confirm-low');
+    // And one of those must be a low-confidence confirm — the first-class
+    // principle-absence path (D5).
+    const lowConfirm = parsed.find(e => e.verdict === 'confirm' && e.confidence === 'low');
+    assert.ok(lowConfirm,
+      'example must include a low-confidence confirm entry — first-class principle-absence path');
   });
 
-  it('output-contract example demonstrates abstain-by-omission with a named, absent decision', () => {
+  it('output-contract example demonstrates narrow abstention with five named ids and exactly one absent', () => {
     const prompt = buildPatronPrompt(sampleDecisions);
     const flat = oneLine(prompt);
     const fenceMatch = /```json\n([\s\S]+?)\n```/g.exec(prompt);
@@ -1081,8 +1142,9 @@ describe('buildPatronPrompt — tailored operational discipline', () => {
     const exampleBlock = fenceMatch[1];
     const parsed = JSON.parse(exampleBlock) as Array<{ id: string }>;
     const exampleIds = parsed.map(e => e.id);
-    // The example prose names four decisions (EX-1 through EX-4); one is abstained.
-    const namedIds = ['EX-1', 'EX-2', 'EX-3', 'EX-4'];
+    // The example prose names five decisions (EX-1 through EX-5); exactly
+    // one is abstained (D13: five ids, four emitted verdicts, one absent).
+    const namedIds = ['EX-1', 'EX-2', 'EX-3', 'EX-4', 'EX-5'];
     for (const id of namedIds) {
       assert.match(prompt, new RegExp(id), `example prose should reference ${id} explicitly`);
     }
@@ -1090,12 +1152,12 @@ describe('buildPatronPrompt — tailored operational discipline', () => {
     assert.equal(
       missingFromArray.length,
       1,
-      'exactly one of the four example decisions must be absent from the emission array (the abstain case)',
+      'exactly one of the five example decisions must be absent from the emission array (the narrow-abstention case)',
     );
     // And the prose must point at that absence as the abstain signal.
     assert.match(
       flat,
-      new RegExp(`${missingFromArray[0]}.{0,40}absent`, 'i'),
+      new RegExp(`${missingFromArray[0]}.{0,80}absent`, 'i'),
       'the abstained decision\'s absence from the array must be called out in prose',
     );
   });
@@ -1125,22 +1187,35 @@ describe('buildPatronPrompt — tailored operational discipline', () => {
     // The distinctive operational-prompt language must live in the markdown
     // file, not in the engine's TypeScript. (Spot-check a distinctive phrase.)
     const md = readFileSync(resolve(pkgRoot, 'patron-anima-prompt.md'), 'utf-8');
+    // Normalise whitespace so the regex works across the file's hard-wrapped
+    // line breaks.
+    const mdOneLine = md.replace(/\s+/g, ' ');
     assert.match(
-      md,
-      /leave the decision out of your emission array entirely/i,
-      'abstain-by-omission language must live in the markdown file',
+      mdOneLine,
+      /(leaving|leave) (it|the decision) out of (your|the) emission array entirely/i,
+      'narrow-abstention omission language must live in the markdown file',
     );
     assert.match(
       md,
       /out of lane/i,
       'out-of-lane section heading must live in the markdown file',
     );
+    assert.match(
+      md,
+      /irresolvable principle conflict/i,
+      'the narrow-abstention case name must live in the markdown file verbatim',
+    );
+    assert.match(
+      md,
+      /broken decision frame/i,
+      'the narrow-abstention case name must live in the markdown file verbatim',
+    );
 
     const engineSrc = readFileSync(resolve(pkgRoot, 'src/engines/patron-anima.ts'), 'utf-8');
     assert.doesNotMatch(
       engineSrc,
-      /leave the decision out of your emission array entirely/i,
-      'abstain-by-omission prose must not be embedded inline in patron-anima.ts',
+      /(leaving|leave) (it|the decision) out of (your|the) emission array entirely/i,
+      'narrow-abstention prose must not be embedded inline in patron-anima.ts',
     );
   });
 });

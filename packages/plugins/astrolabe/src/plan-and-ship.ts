@@ -12,9 +12,17 @@
  *         patron-anima → decision-review → spec-writer → plan-finalize →
  *         implement → review → revise → seal.
  *
- * `patron-anima` consults a configured Patron Anima to pre-fill
- * decisions on behalf of the patron. When `astrolabe.patronRole` is
- * unset or empty, the engine no-ops and `decision-review` proceeds as
+ * The `reader-analyst` slot uses the astrolabe-owned
+ * `astrolabe.reader-analyst` engine, which selects the primer role at
+ * engine-run time from live guild config: `sage-primer-attended` when
+ * `astrolabe.patronRole` is non-empty (every decision gets pre-filled so
+ * the downstream patron-anima principle-checks them all), `sage-primer-
+ * solo` otherwise (the primer carries the razor itself and only leaves
+ * razor-matched decisions unset for the patron).
+ *
+ * `patron-anima` consults a configured Patron Anima to pre-fill or
+ * confirm decisions on behalf of the patron. When `astrolabe.patronRole`
+ * is unset or empty, the engine no-ops and `decision-review` proceeds as
  * it did before the engine existed. The `cwd` given is the shared draft
  * worktree so the anima can inspect the codebase if its role instructions
  * allow it.
@@ -46,10 +54,9 @@ export const planAndShipRigTemplate: RigTemplate = {
     },
     {
       id: 'reader-analyst',
-      designId: 'anima-session',
+      designId: 'astrolabe.reader-analyst',
       upstream: ['draft'],
       givens: {
-        role: 'astrolabe.sage-reading-analyst',
         prompt: 'Plan ID: ${yields.plan-init.planId}',
         cwd: '${yields.draft.path}',
         writ: '${writ}',

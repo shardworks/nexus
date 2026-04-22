@@ -74,30 +74,30 @@ describe('Astrolabe supportKit shape', () => {
 
   // ── R6: roles ──────────────────────────────────────────────────────
 
-  it('contributes sage-reader role with correct permissions', () => {
+  it('contributes sage-primer-reader role with correct permissions', () => {
     const kit = getKit(plugin);
     const roles = kit.roles as Record<string, {
       permissions: string[];
       strict?: boolean;
       instructionsFile?: string;
     }>;
-    assert.ok(roles?.['sage-reader'], 'sage-reader role must exist');
-    assert.deepEqual(roles['sage-reader'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read']);
-    assert.equal(roles['sage-reader'].strict, true);
-    assert.equal(roles['sage-reader'].instructionsFile, 'sage-reader.md');
+    assert.ok(roles?.['sage-primer-reader'], 'sage-primer-reader role must exist');
+    assert.deepEqual(roles['sage-primer-reader'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read']);
+    assert.equal(roles['sage-primer-reader'].strict, true);
+    assert.equal(roles['sage-primer-reader'].instructionsFile, 'sage-primer-reader.md');
   });
 
-  it('contributes sage-analyst role with correct permissions', () => {
+  it('contributes sage-primer-scoping role with correct permissions', () => {
     const kit = getKit(plugin);
     const roles = kit.roles as Record<string, {
       permissions: string[];
       strict?: boolean;
       instructionsFile?: string;
     }>;
-    assert.ok(roles?.['sage-analyst'], 'sage-analyst role must exist');
-    assert.deepEqual(roles['sage-analyst'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read']);
-    assert.equal(roles['sage-analyst'].strict, true);
-    assert.equal(roles['sage-analyst'].instructionsFile, 'sage-analyst.md');
+    assert.ok(roles?.['sage-primer-scoping'], 'sage-primer-scoping role must exist');
+    assert.deepEqual(roles['sage-primer-scoping'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read']);
+    assert.equal(roles['sage-primer-scoping'].strict, true);
+    assert.equal(roles['sage-primer-scoping'].instructionsFile, 'sage-primer-scoping.md');
   });
 
   it('contributes sage-writer role with correct permissions', () => {
@@ -113,17 +113,41 @@ describe('Astrolabe supportKit shape', () => {
     assert.equal(roles['sage-writer'].instructionsFile, 'sage-writer.md');
   });
 
-  it('contributes sage-reading-analyst role with correct permissions', () => {
+  it('contributes sage-primer-solo role with correct permissions', () => {
     const kit = getKit(plugin);
     const roles = kit.roles as Record<string, {
       permissions: string[];
       strict?: boolean;
       instructionsFile?: string;
     }>;
-    assert.ok(roles?.['sage-reading-analyst'], 'sage-reading-analyst role must exist');
-    assert.deepEqual(roles['sage-reading-analyst'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read']);
-    assert.equal(roles['sage-reading-analyst'].strict, true);
-    assert.equal(roles['sage-reading-analyst'].instructionsFile, 'sage-reading-analyst.md');
+    assert.ok(roles?.['sage-primer-solo'], 'sage-primer-solo role must exist');
+    assert.deepEqual(roles['sage-primer-solo'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read']);
+    assert.equal(roles['sage-primer-solo'].strict, true);
+    assert.equal(roles['sage-primer-solo'].instructionsFile, 'sage-primer-solo.md');
+  });
+
+  it('contributes sage-primer-attended role with correct permissions', () => {
+    const kit = getKit(plugin);
+    const roles = kit.roles as Record<string, {
+      permissions: string[];
+      strict?: boolean;
+      instructionsFile?: string;
+    }>;
+    assert.ok(roles?.['sage-primer-attended'], 'sage-primer-attended role must exist');
+    assert.deepEqual(roles['sage-primer-attended'].permissions, ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read']);
+    assert.equal(roles['sage-primer-attended'].strict, true);
+    assert.equal(roles['sage-primer-attended'].instructionsFile, 'sage-primer-attended.md');
+  });
+
+  it('does not contribute the legacy sage-reading-analyst / sage-analyst / sage-reader roles', () => {
+    const kit = getKit(plugin);
+    const roles = kit.roles as Record<string, unknown>;
+    assert.equal(roles['sage-reading-analyst'], undefined,
+      'sage-reading-analyst is retired in favour of sage-primer-solo / sage-primer-attended');
+    assert.equal(roles['sage-analyst'], undefined,
+      'sage-analyst is retired — scoping primer is now sage-primer-scoping');
+    assert.equal(roles['sage-reader'], undefined,
+      'sage-reader is retired — reader primer is now sage-primer-reader');
   });
 
   // ── R7: engines ────────────────────────────────────────────────────
@@ -137,6 +161,7 @@ describe('Astrolabe supportKit shape', () => {
     assert.ok(engines?.['astrolabe.decision-review'], 'decision-review engine must exist');
     assert.ok(engines?.['astrolabe.spec-publish'], 'spec-publish engine must exist');
     assert.ok(engines?.['astrolabe.plan-finalize'], 'plan-finalize engine must exist');
+    assert.ok(engines?.['astrolabe.reader-analyst'], 'reader-analyst engine must exist');
 
     assert.equal(engines['astrolabe.plan-init'].id, 'astrolabe.plan-init');
     assert.equal(engines['astrolabe.inventory-check'].id, 'astrolabe.inventory-check');
@@ -144,6 +169,7 @@ describe('Astrolabe supportKit shape', () => {
     assert.equal(engines['astrolabe.decision-review'].id, 'astrolabe.decision-review');
     assert.equal(engines['astrolabe.spec-publish'].id, 'astrolabe.spec-publish');
     assert.equal(engines['astrolabe.plan-finalize'].id, 'astrolabe.plan-finalize');
+    assert.equal(engines['astrolabe.reader-analyst'].id, 'astrolabe.reader-analyst');
 
     assert.equal(typeof engines['astrolabe.plan-init'].run, 'function');
     assert.equal(typeof engines['astrolabe.inventory-check'].run, 'function');
@@ -151,6 +177,7 @@ describe('Astrolabe supportKit shape', () => {
     assert.equal(typeof engines['astrolabe.decision-review'].run, 'function');
     assert.equal(typeof engines['astrolabe.spec-publish'].run, 'function');
     assert.equal(typeof engines['astrolabe.plan-finalize'].run, 'function');
+    assert.equal(typeof engines['astrolabe.reader-analyst'].run, 'function');
   });
 
   // ── R8: rigTemplates and rigTemplateMappings ───────────────────────
@@ -358,12 +385,18 @@ describe('Astrolabe supportKit shape', () => {
     }
   });
 
-  it('all four roles resolve all expected tools after bare-level normalization', () => {
+  it('all five sage roles resolve all expected tools after bare-level normalization', () => {
     const kit = getKit(plugin);
     const tools = kit.tools as Array<{ name: string; permission?: string }>;
     const roles = kit.roles as Record<string, { permissions: string[]; strict?: boolean }>;
 
-    const roleNames = ['sage-reader', 'sage-analyst', 'sage-writer', 'sage-reading-analyst'];
+    const roleNames = [
+      'sage-primer-reader',
+      'sage-primer-scoping',
+      'sage-writer',
+      'sage-primer-solo',
+      'sage-primer-attended',
+    ];
     for (const roleName of roleNames) {
       const role = roles[roleName];
       assert.ok(role, `${roleName} role must exist`);

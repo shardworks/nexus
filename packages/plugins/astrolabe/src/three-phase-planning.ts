@@ -1,8 +1,11 @@
 /**
  * Three-phase planning rig template.
  *
- * Separates reading and analysis into distinct anima-session stages:
- * reader (inventory) and analyst (scope, decisions, observations).
+ * Separates reading and scoping into distinct anima-session stages:
+ * the `reader` primer (inventory) and the `analyst` primer (scope,
+ * decisions, observations). The `analyst` slot id is preserved for
+ * backward compatibility with downstream yield references even though
+ * the role it summons is now `sage-primer-scoping`.
  * Stages: plan-init → draft → reader → inventory-check → analyst →
  * decision-review → spec-writer → spec-publish → seal.
  */
@@ -28,7 +31,7 @@ export const threePhaseRigTemplate: RigTemplate = {
       designId: 'anima-session',
       upstream: ['draft'],
       givens: {
-        role: 'astrolabe.sage-reader',
+        role: 'astrolabe.sage-primer-reader',
         prompt: 'Plan ID: ${yields.plan-init.planId}',
         cwd: '${yields.draft.path}',
         writ: '${writ}',
@@ -46,7 +49,7 @@ export const threePhaseRigTemplate: RigTemplate = {
       designId: 'anima-session',
       upstream: ['inventory-check'],
       givens: {
-        role: 'astrolabe.sage-analyst',
+        role: 'astrolabe.sage-primer-scoping',
         prompt: 'Plan ID: ${yields.plan-init.planId}',
         cwd: '${yields.draft.path}',
         writ: '${writ}',

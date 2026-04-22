@@ -1,10 +1,15 @@
 /**
  * Two-phase planning rig template.
  *
- * Merges the reader and analyst stages into a single `reader-analyst`
- * anima-session, producing inventory, scope, decisions, and observations
- * in one pass. Stages: plan-init → draft → reader-analyst →
- * inventory-check → decision-review → spec-writer → spec-publish → seal.
+ * Merges the reader and scoping-primer stages into a single
+ * `reader-analyst` slot, driven by the astrolabe-owned
+ * `astrolabe.reader-analyst` engine. The engine selects between the
+ * solo and attended primer variants at run time from live guild config:
+ * `sage-primer-attended` when `astrolabe.patronRole` is non-empty,
+ * `sage-primer-solo` otherwise. One pass produces inventory, scope,
+ * decisions, and observations. Stages: plan-init → draft →
+ * reader-analyst → inventory-check → decision-review → spec-writer →
+ * spec-publish → seal.
  */
 
 import type { RigTemplate } from '@shardworks/spider-apparatus';
@@ -25,10 +30,9 @@ export const twoPhaseRigTemplate: RigTemplate = {
     },
     {
       id: 'reader-analyst',
-      designId: 'anima-session',
+      designId: 'astrolabe.reader-analyst',
       upstream: ['draft'],
       givens: {
-        role: 'astrolabe.sage-reading-analyst',
         prompt: 'Plan ID: ${yields.plan-init.planId}',
         cwd: '${yields.draft.path}',
         writ: '${writ}',

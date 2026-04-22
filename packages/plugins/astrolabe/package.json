@@ -36,10 +36,11 @@
   },
   "files": [
     "dist",
-    "sage-reader.md",
-    "sage-analyst.md",
+    "sage-primer-reader.md",
+    "sage-primer-scoping.md",
     "sage-writer.md",
-    "sage-reading-analyst.md",
+    "sage-primer-solo.md",
+    "sage-primer-attended.md",
     "patron-anima-prompt.md",
     "pages"
   ],

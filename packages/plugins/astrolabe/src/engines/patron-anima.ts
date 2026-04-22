@@ -2,16 +2,18 @@
  * patron-anima clockwork engine.
  *
  * Between `inventory-check` and `decision-review`, consults a configured
- * Patron Anima to pre-fill decisions on behalf of the patron. Any decision
- * the anima can confidently resolve is set on the PlanDoc with its
- * `selected` value — `decision-review` then auto-skips it via the existing
- * "analyst pre-decides → patron-input omitted" semantics.
+ * Patron Anima to principle-check every decision the primer produced. Any
+ * decision the anima confirms (including `low`-confidence confirms),
+ * overrides, or fills in is set on the PlanDoc with its `selection` value
+ * — `decision-review` then auto-skips it via the existing
+ * "primer pre-decides → patron-input omitted" semantics. The narrow
+ * abstention cases flow through unfilled for the patron to answer.
  *
  * Operational discipline (the tailored work prompt):
  *   The anima runs under a checked-in operational prompt — the static
  *   portions live in `patron-anima-prompt.md` (packaged alongside the
  *   plugin) and are loaded at startup; per-decision content (ids,
- *   questions, options, analyst recommendations) is interpolated in this
+ *   questions, options, primer recommendations) is interpolated in this
  *   module at build time. The prompt encodes the engine's mode discipline,
  *   which is structurally distinct from the anima's taste (which lives in
  *   the role's system prompt):
@@ -20,18 +22,25 @@
  *       option keys — no custom answers, no free-text, no multi-select.
  *     - Principle-structural confidence. `high` = a single principle from
  *       the role fires cleanly; `med` = multiple principles conflict and
- *       the anima resolves the conflict; `low` = no principle speaks,
- *       which is the abstain case.
- *     - Abstain by omission. A decision that would resolve to `low` —
- *       or that the anima cannot confidently resolve at all — is
- *       **absent** from the emission array entirely. There is no
- *       sentinel, no placeholder, no low-confidence confirm fallback.
- *       The engine treats a missing verdict as "unfilled" and flows it
+ *       the anima resolves the conflict; `low` = no principle speaks and
+ *       the anima confirms the primer's recommendation. `low` is a
+ *       first-class emission path, not a placeholder and not reserved for
+ *       abstention — principle-absence has the concrete meaning "no
+ *       principled basis to differ; confirm the primer."
+ *     - Narrow abstention by omission. The anima leaves a decision out of
+ *       its emission array only in two cases: *irresolvable principle
+ *       conflict* (multiple principles conflict and the anima cannot
+ *       resolve without inventing a principle hierarchy the patron has
+ *       not articulated) and *broken decision frame* (the question or
+ *       options are incoherent as posed, so no valid emission would be
+ *       faithful to the patron's intent). Every other case — including
+ *       principle-absence — resolves to a first-class emission. The
+ *       engine treats a missing verdict as "unfilled" and flows it
  *       through to `decision-review` in the normal path.
  *     - Out-of-lane prohibition. The draft worktree `cwd` passed to the
  *       anima permits filesystem access, but the prompt explicitly
  *       forbids file reads, grep, codebase audit, and second-guessing
- *       the analyst's framing. The anima's entire input is the role's
+ *       the primer's framing. The anima's entire input is the role's
  *       principles plus the decisions listed in the prompt.
  *
  * Config:
@@ -55,10 +64,12 @@
  *     - `id`         — the decision id
  *     - `verdict`    — 'confirm' | 'override' | 'fill-in'
  *     - `selection`  — one of the decision's offered option keys
- *     - `confidence` — 'high' | 'med' (`low` means abstain → omit)
+ *     - `confidence` — 'high' | 'med' | 'low' (`low` = confirm the
+ *                      primer on principle-absence; first-class emission)
  *     - `rationale`  — short free-text note (optional)
- *   Decisions the anima abstains on are absent from the array — the
- *   engine and the parser treat absence as "unfilled, surface to patron."
+ *   Decisions the anima abstains on — the two narrow cases above — are
+ *   absent from the array; the engine and parser treat absence as
+ *   "unfilled, surface to patron."
  *
  * Exhaustiveness:
  *   Single pass. Any decision not carrying a well-formed verdict —
@@ -66,14 +77,6 @@
  *   picked an unknown option, or the session failed entirely — is left
  *   unfilled on the PlanDoc and flows to `decision-review` in the
  *   normal flow. The engine does not retry.
- *
- * Defensive parser leniency:
- *   The parser still accepts `confidence: 'low'` as a valid value for
- *   schema-stability reasons — if a stray low-confidence verdict reaches
- *   the engine, it is applied rather than dropped. The operational
- *   prompt instructs the anima to abstain rather than emit `low`, but
- *   the schema and parser do not depend on that instruction being
- *   followed. This is defensive leniency, not a supported emission path.
  */
 
 import { readFileSync } from 'node:fs';
@@ -86,7 +89,7 @@ import type { Book } from '@shardworks/stacks-apparatus';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 import type { AnimatorApi, SessionDoc } from '@shardworks/animator-apparatus';
 import type { WritDoc } from '@shardworks/clerk-apparatus';
-import { resolveAstrolabeConfig } from '../astrolabe.ts';
+import { resolvePatronRole } from '../astrolabe.ts';
 import type { Decision, PatronEmission, PlanDoc } from '../types.ts';
 
 // ── Prompt template ──────────────────────────────────────────────────
@@ -111,7 +114,7 @@ const DECISIONS_PLACEHOLDER = '{{DECISIONS}}';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-/** Reviewable = not yet pre-decided by the analyst. Mirrors decision-review. */
+/** Reviewable = not yet pre-decided by the primer. Mirrors decision-review. */
 function reviewableDecisions(plan: PlanDoc): Decision[] {
   return (plan.decisions ?? []).filter(d => d.selected === undefined);
 }
@@ -123,7 +126,7 @@ function reviewableDecisions(plan: PlanDoc): Decision[] {
  * output contract, worked example) lives in `patron-anima-prompt.md` and is
  * loaded into `PROMPT_TEMPLATE` at module load. This function renders each
  * reviewable decision — question, optional context, options, optional
- * analyst recommendation / rationale — and substitutes the listing into
+ * primer recommendation / rationale — and substitutes the listing into
  * the template's `{{DECISIONS}}` placeholder.
  */
 export function buildPatronPrompt(decisions: Decision[]): string {
@@ -144,14 +147,14 @@ export function buildPatronPrompt(decisions: Decision[]): string {
       lines.push('');
       const recLabel = decision.options[decision.recommendation] ?? decision.recommendation;
       lines.push(
-        `Analyst recommendation: \`${decision.recommendation}\` (${recLabel})`,
+        `Primer recommendation: \`${decision.recommendation}\` (${recLabel})`,
       );
       if (decision.rationale) {
-        lines.push(`Analyst rationale: ${decision.rationale}`);
+        lines.push(`Primer rationale: ${decision.rationale}`);
       }
     } else {
       lines.push('');
-      lines.push('Analyst recommendation: (none — you must fill in)');
+      lines.push('Primer recommendation: (none — you must fill in)');
     }
     lines.push('');
   }
@@ -240,7 +243,7 @@ export function parseEmission(
     const confidence = raw.confidence;
     if (confidence !== 'low' && confidence !== 'med' && confidence !== 'high') continue;
 
-    // `confirm` must agree with the analyst's recommendation. If it doesn't,
+    // `confirm` must agree with the primer's recommendation. If it doesn't,
     // treat the verdict as malformed — don't silently relabel it. Defends
     // against a model that says "confirm" but picks a different option.
     if (verdict === 'confirm') {
@@ -249,7 +252,7 @@ export function parseEmission(
       }
     }
 
-    // `fill-in` requires there was no analyst recommendation.
+    // `fill-in` requires there was no primer recommendation.
     if (verdict === 'fill-in' && decision.recommendation) {
       // Accept but only if the selection genuinely differs — otherwise
       // relabelling a confirm as fill-in is a model quirk we tolerate.
@@ -298,14 +301,14 @@ export function createPatronAnimaEngine(getPlansBook: () => Book<PlanDoc>): Engi
       }
 
       // Skip-when-unset: no configured patron → no-op, decision-review
-      // proceeds as it does today.
-      const config = resolveAstrolabeConfig();
-      const role = typeof config.patronRole === 'string' ? config.patronRole.trim() : '';
-      if (role.length === 0) {
+      // proceeds as it does today. The trim-and-check is shared with the
+      // astrolabe.reader-analyst engine via `resolvePatronRole`.
+      const role = resolvePatronRole();
+      if (role === '') {
         return { status: 'completed', yields: {} };
       }
 
-      // Fast-path: nothing is reviewable → no-op. The analyst has already
+      // Fast-path: nothing is reviewable → no-op. The primer has already
       // pre-decided everything; there's nothing for the anima to weigh in on.
       const reviewable = reviewableDecisions(plan);
       if (reviewable.length === 0) {

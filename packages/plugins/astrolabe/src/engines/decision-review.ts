@@ -95,14 +95,14 @@ export function createDecisionReviewEngine(getPlansBook: () => Book<PlanDoc>): E
         const decisions = plan.decisions ?? [];
         const scopeItems = plan.scope ?? [];
 
-        // Reviewable decisions are those the analyst left for the patron by
-        // leaving `selected` unset. Pre-decided decisions (where the analyst
+        // Reviewable decisions are those the primer left for the patron by
+        // leaving `selected` unset. Pre-decided decisions (where the primer
         // already pre-filled `selected`) are auto-accepted — they skip the
         // InputRequestDoc entirely and flow through reconcile unchanged.
         const reviewableDecisions = decisions.filter(d => d.selected === undefined);
 
         // Fast-path: nothing is reviewable. Scope items are implicitly
-        // auto-accepted in that case — the analyst has settled everything.
+        // auto-accepted in that case — the primer has settled everything.
         if (reviewableDecisions.length === 0) {
           await book.patch(planId, {
             status: 'writing',

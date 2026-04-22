@@ -95,7 +95,7 @@ Add an `astrolabe` section to `guild.json` to configure behaviour:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `patronRole` | `string` | `""` (unset) | Qualified role name of the Patron Anima consulted before decision-review. When set, the `patron-anima` engine launches an anima in this role under a tailored operational prompt (see `patron-anima-prompt.md`) that encodes the engine's mode discipline — one option per decision, principle-structural confidence calibration, abstain-by-omission, and an out-of-lane prohibition on codebase audit work. The anima pre-fills decisions it can confidently resolve; the rest fall through to decision-review as usual. When unset or empty, the engine no-ops and decision-review behaves exactly as it did before the engine existed. |
+| `patronRole` | `string` | `""` (unset) | Qualified role name of the Patron Anima consulted before decision-review. When set (non-empty string), the `astrolabe.reader-analyst` engine selects the `sage-primer-attended` role (every decision is pre-filled so the patron-anima principle-checks them all) and the `patron-anima` engine launches an anima in the configured role under a tailored operational prompt (see `patron-anima-prompt.md`) that encodes the engine's mode discipline — one option per decision, principle-structural confidence calibration (`high`/`med`/`low`-confirm), narrow abstention reserved for irresolvable principle conflict or broken decision frame, and an out-of-lane prohibition on codebase audit work. When unset, empty, or whitespace-only, `astrolabe.reader-analyst` selects the `sage-primer-solo` role (the primer carries the razor itself) and the `patron-anima` engine no-ops; `decision-review` behaves exactly as it did before the engine existed. |
 
 ## Support Kit
 
@@ -117,10 +117,11 @@ The Astrolabe declares one book in Stacks:
 
 | Role | Qualified Name | Permissions | Strict | Used In |
 |---|---|---|---|---|
-| `sage-reader` | `astrolabe.sage-reader` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | three-phase reader stage |
-| `sage-analyst` | `astrolabe.sage-analyst` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | three-phase analyst stage |
-| `sage-writer` | `astrolabe.sage-writer` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | spec-writer stage (both templates) |
-| `sage-reading-analyst` | `astrolabe.sage-reading-analyst` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | two-phase reader-analyst stage |
+| `sage-primer-reader` | `astrolabe.sage-primer-reader` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | three-phase reader stage |
+| `sage-primer-scoping` | `astrolabe.sage-primer-scoping` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | three-phase scoping-primer stage (`analyst` slot id) |
+| `sage-writer` | `astrolabe.sage-writer` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | spec-writer stage (all templates) |
+| `sage-primer-solo` | `astrolabe.sage-primer-solo` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | `reader-analyst` slot in two-phase / plan-and-ship, when `astrolabe.patronRole` is unset — primer carries the razor itself |
+| `sage-primer-attended` | `astrolabe.sage-primer-attended` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | `reader-analyst` slot in two-phase / plan-and-ship, when `astrolabe.patronRole` is non-empty — primer pre-fills every decision, patron-anima principle-checks them all |
 
 ### Engines (contributed to Fabricator)
 
@@ -128,8 +129,9 @@ The Astrolabe declares one book in Stacks:
 |---|---|
 | `astrolabe.plan-init` | Creates a PlanDoc from the brief writ; validates codex presence |
 | `astrolabe.inventory-check` | Validates that the reader produced a non-empty inventory |
-| `astrolabe.patron-anima` | Consults a configured Patron Anima to pre-fill decisions on behalf of the patron, under a tailored operational prompt that encodes the engine's mode discipline — one option per decision, principle-structural confidence calibration, abstain-by-omission (decisions the anima cannot confidently resolve are absent from its emission, not emitted as low-confidence placeholders), and an explicit out-of-lane prohibition on codebase audit work. Reads the plan's reviewable decisions (those without `selected` already set), launches the configured `patronRole` via a single-pass anima session, parses a single structured emission, and applies each valid verdict to `Decision.selected` (plus records the full verdict — confirm / override / fill-in with selection, confidence, rationale — on `Decision.patron`). No-ops when `astrolabe.patronRole` is unset or empty, or when no reviewable decisions remain. Unparseable output, invalid verdicts, and abstained decisions are left unfilled — decision-review surfaces the remainder to the patron in the normal flow. |
-| `astrolabe.decision-review` | Two-pass engine: blocks for patron review, then reconciles answers. Decisions with `selected` already pre-set by the analyst or the patron anima are auto-accepted — they are excluded from the InputRequestDoc, and if nothing remains reviewable the engine fast-paths to `writing` without opening the gate. |
+| `astrolabe.reader-analyst` | Selects the primer role at engine-run time from live guild config: `sage-primer-attended` when `astrolabe.patronRole` is non-empty (every decision gets pre-filled so the downstream patron-anima principle-checks them all), `sage-primer-solo` otherwise (the primer carries the razor itself and only leaves razor-matched decisions unset for the patron). Mirrors the `anima-session` surface — same givens (`prompt`, `cwd`, `writ`, `metadata`) minus the `role` given, which the engine chooses. Run-time selection (per writ, not per guild startup) means the patron can reconfigure `astrolabe.patronRole` mid-experiment and the next brief behaves according to the live config. |
+| `astrolabe.patron-anima` | Consults a configured Patron Anima to principle-check every decision the primer produced, under a tailored operational prompt that encodes the engine's mode discipline — one option per decision, principle-structural confidence calibration (`high` = one principle fires cleanly; `med` = multiple principles conflict and the anima resolves; `low` = no principle speaks, confirm the primer), narrow abstention by omission reserved for *irresolvable principle conflict* and *broken decision frame* only, and an explicit out-of-lane prohibition on codebase audit work. Reads the plan's reviewable decisions (those without `selected` already set — empty when the attended primer ran, non-empty when the solo primer surfaced razor matches), launches the configured `patronRole` via a single-pass anima session, parses a single structured emission, and applies each valid verdict to `Decision.selected` (plus records the full verdict — confirm / override / fill-in with selection, confidence, rationale — on `Decision.patron`). No-ops when `astrolabe.patronRole` is unset or empty, or when no reviewable decisions remain. Unparseable output, invalid verdicts, and abstained decisions are left unfilled — decision-review surfaces the remainder to the patron in the normal flow. |
+| `astrolabe.decision-review` | Two-pass engine: blocks for patron review, then reconciles answers. Decisions with `selected` already pre-set by the primer or the patron anima are auto-accepted — they are excluded from the InputRequestDoc, and if nothing remains reviewable the engine fast-paths to `writing` without opening the gate. |
 | `astrolabe.plan-finalize` | Transitions the plan to `completed` and yields the written `spec` downstream. Does not post any writ. Used inside `plan-and-ship` to hand the spec off to the implement engine on the same brief rig. |
 | `astrolabe.spec-publish` | Publishes the generated specification as a new mandate writ. Used only by the legacy two-phase / three-phase rigs that split planning from implementation across two writs. |
 
@@ -145,7 +147,7 @@ The `resolutionEngine` is `seal` for `plan-and-ship` (brief completes when imple
 
 #### Rig Template Selection
 
-The `brief` writ type maps to `astrolabe.plan-and-ship` by default. This single combined rig carries the brief through planning and implementation on one writ — the `plan-finalize` engine hands the written spec directly to the downstream `implement` engine via `${yields.plan-finalize.spec}`, and no separate mandate writ is posted. The optional `patron-anima` stage between `inventory-check` and `decision-review` consults the configured `patronRole` under a tailored operational prompt (see `patron-anima-prompt.md` packaged with the plugin) whenever `astrolabe.patronRole` is set, pre-filling the decisions the anima can confidently resolve and letting decision-review fast-path past those items. Decisions the anima abstains on (or cannot cleanly resolve) are left unfilled and flow through to decision-review in the normal path. The brief reaches `completed` only when the final seal engine completes.
+The `brief` writ type maps to `astrolabe.plan-and-ship` by default. This single combined rig carries the brief through planning and implementation on one writ — the `plan-finalize` engine hands the written spec directly to the downstream `implement` engine via `${yields.plan-finalize.spec}`, and no separate mandate writ is posted. The `reader-analyst` slot is driven by the astrolabe-owned `astrolabe.reader-analyst` engine, which selects between the `sage-primer-attended` and `sage-primer-solo` roles at engine-run time from live guild config. The optional `patron-anima` stage between `inventory-check` and `decision-review` consults the configured `patronRole` under a tailored operational prompt (see `patron-anima-prompt.md` packaged with the plugin) whenever `astrolabe.patronRole` is set. The anima principle-checks every decision the primer produced and confirms (including first-class `low`-confidence confirms when no principle speaks), overrides, fills in, or abstains. Abstention is narrow — reserved for *irresolvable principle conflict* and *broken decision frame* only. Abstained decisions are left unfilled and flow through to decision-review in the normal path. The brief reaches `completed` only when the final seal engine completes.
 
 To use a legacy planning-only template (which posts a separate mandate writ and ends the brief's lifecycle at spec-writer), add a rig template mapping override in `guild.json`:
 
@@ -159,7 +161,7 @@ To use a legacy planning-only template (which posts a separate mandate writ and 
 }
 ```
 
-Substitute `astrolabe.three-phase-planning` for the split reader / analyst variant.
+Substitute `astrolabe.three-phase-planning` for the split reader / scoping-primer variant (the `analyst` slot id is preserved for backward compatibility; the role it summons is `sage-primer-scoping`).
 
 ### Tools
 
@@ -170,7 +172,7 @@ Substitute `astrolabe.three-phase-planning` for the split reader / analyst varia
 | `inventory-write` | `astrolabe:write` | Write or replace the codebase inventory |
 | `scope-write` | `astrolabe:write` | Write or replace the scope items array |
 | `decisions-write` | `astrolabe:write` | Write or replace the decisions array |
-| `observations-write` | `astrolabe:write` | Write or replace analyst observations |
+| `observations-write` | `astrolabe:write` | Write or replace primer observations |
 | `spec-write` | `astrolabe:write` | Write or replace the generated specification |
 
 Write tools only update their artifact field plus `updatedAt`. Status transitions are the exclusive responsibility of the clockwork engines.

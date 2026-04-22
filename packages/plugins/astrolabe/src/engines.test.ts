@@ -702,7 +702,7 @@ describe('decision-review engine', () => {
   // ── Invariant enforcement tests ──────────────────────────────────────
 
   it('custom override leaves selected absent (regression: dual-state bug)', async () => {
-    // Under the razor semantics an analyst-set `selected` means the decision
+    // Under the razor semantics an primer-set `selected` means the decision
     // is auto-accepted and never appears in the InputRequestDoc — so the
     // "stale pre-fill" scenario from the original regression can no longer
     // occur. What still matters is the reconcile branch that ensures
@@ -995,7 +995,7 @@ describe('decision-review engine', () => {
   // ── Analyst pre-decision / fast-path tests (razor + three defaults) ─
 
   it('fast-path: all decisions pre-decided with no scope — skips gate', async () => {
-    // D10(a): when the analyst has pre-filled `selected` on every decision
+    // D10(a): when the primer has pre-filled `selected` on every decision
     // and there are no scope items, the engine must skip the patron-review
     // gate entirely and transition straight to 'writing'.
     const engine = createDecisionReviewEngine(() => plansBook);
@@ -1006,7 +1006,7 @@ describe('decision-review engine', () => {
         question: 'Q1?',
         options: { A: 'A', B: 'B' },
         recommendation: 'A',
-        selected: 'A', // analyst pre-decided
+        selected: 'A', // primer pre-decided
       },
       {
         id: 'D2',
@@ -1014,7 +1014,7 @@ describe('decision-review engine', () => {
         question: 'Q2?',
         options: { X: 'X', Y: 'Y' },
         recommendation: 'Y',
-        selected: 'Y', // analyst pre-decided
+        selected: 'Y', // primer pre-decided
       },
     ];
 
@@ -1061,7 +1061,7 @@ describe('decision-review engine', () => {
         question: 'Pre-decided?',
         options: { X: 'X', Y: 'Y' },
         recommendation: 'X',
-        selected: 'X', // analyst pre-decided — should NOT appear in InputRequestDoc
+        selected: 'X', // primer pre-decided — should NOT appear in InputRequestDoc
       },
     ];
     const scope: ScopeItem[] = [
@@ -1122,7 +1122,7 @@ describe('decision-review engine', () => {
     const updated = await plansBook.get(plan.id);
     assert.equal(updated?.status, 'writing');
     assert.equal(updated?.decisions?.[0].selected, 'A');
-    // Scope inclusion flags are preserved exactly as the analyst set them
+    // Scope inclusion flags are preserved exactly as the primer set them
     assert.equal(updated?.scope?.[0].included, true);
     assert.equal(updated?.scope?.[1].included, false);
 
@@ -1134,9 +1134,9 @@ describe('decision-review engine', () => {
     assert.equal(reqs.length, 0);
   });
 
-  it('reconcile preserves analyst-set `selected` through the round trip', async () => {
+  it('reconcile preserves primer-set `selected` through the round trip', async () => {
     // D10(d): a mixed plan goes through first-pass (reviewable + pre-decided)
-    // and reconcile; the pre-decided decision's analyst-set `selected`
+    // and reconcile; the pre-decided decision's primer-set `selected`
     // must survive reconcile untouched, while the reviewable decision's
     // patron answer lands correctly. The invariant check must pass.
     const engine = createDecisionReviewEngine(() => plansBook);
@@ -1155,7 +1155,7 @@ describe('decision-review engine', () => {
         question: 'Pre-decided?',
         options: { X: 'X', Y: 'Y' },
         recommendation: 'X',
-        selected: 'X', // analyst pre-decided
+        selected: 'X', // primer pre-decided
       },
     ];
 
@@ -1192,7 +1192,7 @@ describe('decision-review engine', () => {
     // D1: patron's selected answer landed
     assert.equal(finalPlan?.decisions?.[0].selected, 'B');
     assert.equal(finalPlan?.decisions?.[0].patronOverride, undefined);
-    // D2: analyst-set `selected` preserved unchanged
+    // D2: primer-set `selected` preserved unchanged
     assert.equal(finalPlan?.decisions?.[1].selected, 'X');
     assert.equal(finalPlan?.decisions?.[1].patronOverride, undefined);
 

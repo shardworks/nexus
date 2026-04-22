@@ -24,8 +24,8 @@ export interface PlanDoc {
   /** Codebase inventory: affected files, types, interfaces, patterns. */
   inventory?: string;
 
-  // ── Analyst output ──────────────────────────────────────────
-  /** Analyst observations: refactoring opportunities, risks, conventions. */
+  // ── Primer output ───────────────────────────────────────────
+  /** Primer observations: refactoring opportunities, risks, conventions. */
   observations?: string;
   /** Scope items: what's in and what's out. */
   scope?: ScopeItem[];
@@ -62,7 +62,7 @@ export interface Decision {
   /**
    * Patron Anima emission for this decision, if the patron-anima engine
    * touched it. Records the anima's verdict, selection, confidence, and
-   * short rationale. Kept distinct from analyst fields so override-rate ×
+   * short rationale. Kept distinct from primer fields so override-rate ×
    * confidence can be measured as a first-class planner-quality signal.
    */
   patron?: PatronEmission;
@@ -71,10 +71,10 @@ export interface Decision {
 /**
  * A Patron Anima's emission for a single decision.
  *
- * - `verdict: 'confirm'` — the anima accepts the analyst's recommendation.
+ * - `verdict: 'confirm'` — the anima accepts the primer's recommendation.
  * - `verdict: 'override'` — the anima picks a different option than the
  *   recommendation.
- * - `verdict: 'fill-in'` — no analyst recommendation existed; the anima
+ * - `verdict: 'fill-in'` — no primer recommendation existed; the anima
  *   supplies one.
  *
  * `selection` must be one of the decision's offered option keys — the
@@ -83,7 +83,12 @@ export interface Decision {
  *
  * `confidence` is calibrated structurally against the patron role's
  * principles list: one principle applies cleanly → `'high'`; multiple
- * principles conflict → `'med'`; no principle applies → `'low'`.
+ * principles conflict (and the anima resolves the conflict) → `'med'`;
+ * no principle applies → `'low'`. A `'low'` verdict is always `'confirm'`
+ * — principle-absence is the first-class signal for "no principled basis
+ * to differ from the primer." Abstention (narrow: irresolvable principle
+ * conflict or broken decision frame) is encoded as absence from the
+ * emission array, not as a `PatronEmission`.
  *
  * `rationale` is a short free-text note — which principle (or conflict)
  * produced the verdict. Optional so the engine can accept minimal well-

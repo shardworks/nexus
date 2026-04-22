@@ -4,7 +4,7 @@
  * Validates that the reader stage produced a non-empty inventory on the PlanDoc.
  * Throws if the plan is missing or has no inventory content.
  * On success, transitions the plan status from 'reading' to 'analyzing' so the
- * analyst stage and subsequent decision-review engine can proceed.
+ * scoping-primer stage and subsequent decision-review engine can proceed.
  */
 
 import type { EngineDesign, EngineRunContext, EngineRunResult } from '@shardworks/fabricator-apparatus';

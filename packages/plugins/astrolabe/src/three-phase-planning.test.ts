@@ -73,9 +73,9 @@ describe('three-phase-planning rig template', () => {
 
   // ── reader stage ──────────────────────────────────────────────────
 
-  it('reader uses astrolabe.sage-reader role', () => {
+  it('reader uses astrolabe.sage-primer-reader role', () => {
     const reader = template.engines.find(e => e.id === 'reader');
-    assert.equal(reader?.givens?.role, 'astrolabe.sage-reader');
+    assert.equal(reader?.givens?.role, 'astrolabe.sage-primer-reader');
   });
 
   it('reader prompt contains planId interpolation', () => {
@@ -110,9 +110,9 @@ describe('three-phase-planning rig template', () => {
 
   // ── analyst stage ─────────────────────────────────────────────────
 
-  it('analyst uses astrolabe.sage-analyst role', () => {
+  it('analyst slot uses astrolabe.sage-primer-scoping role (analyst slot id preserved for backward compatibility)', () => {
     const analyst = template.engines.find(e => e.id === 'analyst');
-    assert.equal(analyst?.givens?.role, 'astrolabe.sage-analyst');
+    assert.equal(analyst?.givens?.role, 'astrolabe.sage-primer-scoping');
   });
 
   it('analyst prompt contains planId interpolation', () => {

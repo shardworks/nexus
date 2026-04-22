@@ -30,6 +30,7 @@ import {
   createDecisionReviewEngine,
   createSpecPublishEngine,
   createPlanFinalizeEngine,
+  createReaderAnalystEngine,
 } from './engines/index.ts';
 
 import { twoPhaseRigTemplate } from './two-phase-planning.ts';
@@ -40,6 +41,20 @@ import { planAndShipRigTemplate } from './plan-and-ship.ts';
 
 function resolveAstrolabeConfig(): AstrolabeConfig {
   return guild().guildConfig().astrolabe ?? {};
+}
+
+/**
+ * Resolves the configured Patron Anima role name to a trimmed string, or
+ * returns the empty string when unset / whitespace-only. Callers branch on
+ * `=== ''` to distinguish the "no patron configured" case from the normal
+ * one. Shared by `astrolabe.patron-anima` (skip-when-unset no-op) and
+ * `astrolabe.reader-analyst` (selects between the solo and attended primer
+ * variants at engine-run time). Keeping the trim-and-check logic in one
+ * place avoids silent drift between the two call sites.
+ */
+function resolvePatronRole(): string {
+  const config = resolveAstrolabeConfig();
+  return typeof config.patronRole === 'string' ? config.patronRole.trim() : '';
 }
 
 // ── Factory ──────────────────────────────────────────────────────────
@@ -55,6 +70,7 @@ export function createAstrolabe(): Plugin {
   const decisionReviewEngine = createDecisionReviewEngine(() => plansBook);
   const specPublishEngine = createSpecPublishEngine(() => plansBook);
   const planFinalizeEngine = createPlanFinalizeEngine(() => plansBook);
+  const readerAnalystEngine = createReaderAnalystEngine();
 
   // ── API ────────────────────────────────────────────────────────
 
@@ -208,7 +224,7 @@ export function createAstrolabe(): Plugin {
 
   const observationsWriteTool = tool({
     name: 'observations-write',
-    description: 'Write analyst observations for a plan',
+    description: 'Write primer observations for a plan',
     instructions:
       'Writes or replaces the observations field. The observations should be a markdown ' +
       'document noting refactoring opportunities, risks, and conventions.',
@@ -256,25 +272,30 @@ export function createAstrolabe(): Plugin {
         ],
 
         roles: {
-          'sage-reader': {
+          'sage-primer-reader': {
             permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read'],
             strict: true,
-            instructionsFile: 'sage-reader.md',
+            instructionsFile: 'sage-primer-reader.md',
           },
-          'sage-analyst': {
+          'sage-primer-scoping': {
             permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read'],
             strict: true,
-            instructionsFile: 'sage-analyst.md',
+            instructionsFile: 'sage-primer-scoping.md',
           },
           'sage-writer': {
             permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read'],
             strict: true,
             instructionsFile: 'sage-writer.md',
           },
-          'sage-reading-analyst': {
+          'sage-primer-solo': {
             permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read'],
             strict: true,
-            instructionsFile: 'sage-reading-analyst.md',
+            instructionsFile: 'sage-primer-solo.md',
+          },
+          'sage-primer-attended': {
+            permissions: ['astrolabe:read', 'astrolabe:write', 'clerk:read', 'ratchet:read'],
+            strict: true,
+            instructionsFile: 'sage-primer-attended.md',
           },
         } satisfies Record<string, KitRoleDefinition>,
 
@@ -285,6 +306,7 @@ export function createAstrolabe(): Plugin {
           'astrolabe.decision-review': decisionReviewEngine,
           'astrolabe.spec-publish': specPublishEngine,
           'astrolabe.plan-finalize': planFinalizeEngine,
+          'astrolabe.reader-analyst': readerAnalystEngine,
         },
 
         rigTemplates: {
@@ -322,5 +344,5 @@ export function createAstrolabe(): Plugin {
   };
 }
 
-// Export resolveAstrolabeConfig for external use (lazy config access)
-export { resolveAstrolabeConfig };
+// Export resolveAstrolabeConfig / resolvePatronRole for external use (lazy config access)
+export { resolveAstrolabeConfig, resolvePatronRole };

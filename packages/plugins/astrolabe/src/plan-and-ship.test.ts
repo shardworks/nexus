@@ -98,7 +98,7 @@ describe('astrolabe.plan-and-ship rig template — shape and wiring', () => {
   it('patron-anima sits between inventory-check and decision-review', () => {
     // Anchors the commission's non-negotiable pipeline position for the
     // Patron Anima: it pre-fills reviewable decisions on the PlanDoc so
-    // `decision-review` auto-skips them via the existing analyst-pre-
+    // `decision-review` auto-skips them via the existing primer-pre-
     // decides fast path.
     const pa = template.engines.find(e => e.id === 'patron-anima');
     assert.ok(pa, 'patron-anima engine must exist');
@@ -408,12 +408,15 @@ describe('no mandate-posting engine appears in astrolabe.plan-and-ship', () => {
 
   it('every designId in the combined rig is either a known planning engine or a Spider engine', () => {
     // Whitelist: astrolabe's own planning engines (all are clerk-read-only
-    // or clerk-unused) + anima-session (read-only) + the five Spider
-    // engines (draft, implement, review, revise, seal — none of which
-    // call clerk.post per the Spider codebase).
+    // or clerk-unused), including the astrolabe-owned reader-analyst that
+    // replaces the generic anima-session for that slot + the spec-writer's
+    // anima-session (read-only) + the five Spider engines (draft,
+    // implement, review, revise, seal — none of which call clerk.post
+    // per the Spider codebase).
     const allowed = new Set([
       'astrolabe.plan-init',
       'astrolabe.inventory-check',
+      'astrolabe.reader-analyst',
       'astrolabe.patron-anima',
       'astrolabe.decision-review',
       'astrolabe.plan-finalize',
