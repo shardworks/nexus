@@ -235,6 +235,73 @@
       el.style.display = 'none';
     }
 
+    // ── Descendant tree helpers ────────────────────────────────────────
+
+    /**
+     * WritTree node shape: { writ: WritDoc, children: WritTreeNode[] }.
+     *
+     * Recursively fetches descendants of `rootId` via /api/writ/list, producing a
+     * tree of `WritTreeNode` entries. Guards against cycles with `visited` and
+     * bounds recursion at `maxDepth` (default 10) to keep the UI responsive on
+     * pathological data. Children at each level are sorted by createdAt ascending
+     * (oldest first), matching fetchChildrenForRoots behavior.
+     *
+     * Returns `WritTreeNode[]` — the direct children of `rootId`, each with their
+     * own nested `children` list.
+     */
+    async function buildDescendantTree(rootId, maxDepth = 10, visited = null) {
+      if (visited === null) visited = new Set();
+      if (maxDepth <= 0) return [];
+      if (visited.has(rootId)) return [];
+      visited.add(rootId);
+
+      let children;
+      try {
+        children = await api('GET',
+          '/api/writ/list?parentId=' + encodeURIComponent(rootId) + '&limit=1000');
+      } catch (e) {
+        console.error('Failed to fetch children for ' + rootId, e);
+        return [];
+      }
+
+      children.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
+
+      // Fetch grandchildren in parallel for each child
+      const nodes = await Promise.all(children.map(async (child) => {
+        const subChildren = await buildDescendantTree(child.id, maxDepth - 1, visited);
+        return { writ: child, children: subChildren };
+      }));
+      return nodes;
+    }
+
+    /**
+     * Flattens a WritTree forest into a depth-first list of `{ writ, depth }`.
+     * `depth` is 0-based — direct children of the root get depth 0, their
+     * children get depth 1, etc. Order preserves the pre-order traversal
+     * of the tree (parent before children, children in createdAt order).
+     */
+    function flattenTree(nodes, depth = 0, acc = null) {
+      if (acc === null) acc = [];
+      for (const node of nodes) {
+        acc.push({ writ: node.writ, depth });
+        if (node.children && node.children.length > 0) {
+          flattenTree(node.children, depth + 1, acc);
+        }
+      }
+      return acc;
+    }
+
+    /**
+     * Returns inline style for indenting a depth-aware row's title cell.
+     * Depth 0 is the first indent step, matching the existing child-row
+     * padding-left: 2rem in the main list; each additional depth adds
+     * 1.5rem so nested descendants are visually distinguishable.
+     */
+    function depthIndentStyle(depth) {
+      const rem = 2 + depth * 1.5;
+      return `padding-left:${rem}rem`;
+    }
+
     // ── Row actions ────────────────────────────────────────────────────
 
     /** Returns the HTML for the context-aware Actions cell for a writ row. */
@@ -439,13 +506,27 @@
       html += renderLinksSection(writ);
       html += `</div>`;
 
-      // Children
-      const childItems = writ._fullChildren ?? writ.children?.items ?? [];
-      if (childItems.length > 0) {
+      // Children — deep descendant rendering
+      //
+      // Prefer the descendant tree populated by showWritDetail / refreshDetail
+      // (writ._descendantTree: WritTreeNode[]). If the tree hasn't been populated
+      // yet (older code path or fetch failure), fall back to the flat children
+      // list shape so we still render something. The summary-badges block is
+      // driven by writ.children.summary, which is the direct-child summary
+      // returned by writ-show — it intentionally covers depth 1 only.
+      let rows;
+      if (writ._descendantTree && writ._descendantTree.length > 0) {
+        rows = flattenTree(writ._descendantTree);
+      } else {
+        const childItems = writ._fullChildren ?? writ.children?.items ?? [];
+        rows = childItems.map(c => ({ writ: c, depth: 0 }));
+      }
+
+      if (rows.length > 0) {
         html += `<div class="detail-section">`;
         html += `<h4>Children</h4>`;
 
-        // Summary badges
+        // Summary badges — direct children only, per writ-show contract.
         if (writ.children?.summary) {
           html += `<div style="margin-bottom:0.5rem">`;
           for (const [phase, count] of Object.entries(writ.children.summary)) {
@@ -454,14 +535,14 @@
           html += `</div>`;
         }
 
-        // Children table: Phase, Title, Type, ID, Actions
+        // Children table: Phase, Title, Type, ID, Actions — rows indent by depth.
         html += `<table class="data-table"><thead><tr>`;
         html += `<th>Phase</th><th>Title</th><th>Type</th><th>ID</th><th>Actions</th>`;
         html += `</tr></thead><tbody>`;
-        for (const child of childItems) {
-          html += `<tr class="writ-row child-detail-row" data-child-id="${child.id}" style="cursor:pointer">`;
+        for (const { writ: child, depth } of rows) {
+          html += `<tr class="writ-row child-detail-row" data-child-id="${child.id}" data-depth="${depth}" style="cursor:pointer">`;
           html += `<td>${phaseBadge(child.phase)}</td>`;
-          html += `<td>${escHtml(child.title ?? '')}</td>`;
+          html += `<td style="${depthIndentStyle(depth)}">${escHtml(child.title ?? '')}</td>`;
           html += `<td>${escHtml(child.type ?? '')}</td>`;
           html += `<td><code>${child.id}</code></td>`;
           html += `<td class="row-actions" style="white-space:nowrap">${rowActions(child)}</td>`;
@@ -800,14 +881,13 @@
       const idx = writs.findIndex(w => w.id === id);
       if (idx >= 0) writs[idx] = writ;
 
-      // Fetch full children if needed
+      // Fetch full descendant tree if there are any children.
       if (writ.children && writ.children.items.length > 0) {
         try {
-          const fullChildren = await api('GET',
-            '/api/writ/list?parentId=' + encodeURIComponent(id) + '&limit=1000');
-          fullChildren.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
-          writ._fullChildren = fullChildren;
-        } catch (e) { writ._fullChildren = null; }
+          writ._descendantTree = await buildDescendantTree(id);
+        } catch (e) {
+          writ._descendantTree = null;
+        }
       }
 
       // Re-render detail content
@@ -847,15 +927,14 @@
       const idx = writs.findIndex(w => w.id === id);
       if (idx >= 0) writs[idx] = writ;
 
-      // Fetch full children data for the detail children table
+      // Fetch full descendant tree for the detail children table. The detail
+      // view renders deep descendants (not just direct children) so clicking
+      // into a writ does not collapse visible depth back to 1.
       if (writ.children && writ.children.items.length > 0) {
         try {
-          const fullChildren = await api('GET',
-            '/api/writ/list?parentId=' + encodeURIComponent(id) + '&limit=1000');
-          fullChildren.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
-          writ._fullChildren = fullChildren;
+          writ._descendantTree = await buildDescendantTree(id);
         } catch (e) {
-          writ._fullChildren = null;
+          writ._descendantTree = null;
         }
       }
 

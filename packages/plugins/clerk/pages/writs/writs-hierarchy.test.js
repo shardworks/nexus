@@ -156,6 +156,27 @@ function sortedFilteredWrits(writs, childrenMap, showChildren, searchText, sortC
 }
 
 /**
+ * Flattens a WritTree forest into a depth-first list of `{ writ, depth }`.
+ * Mirrors the flattenTree helper in index.html.
+ */
+function flattenTree(nodes, depth = 0, acc = null) {
+  if (acc === null) acc = [];
+  for (const node of nodes) {
+    acc.push({ writ: node.writ, depth });
+    if (node.children && node.children.length > 0) {
+      flattenTree(node.children, depth + 1, acc);
+    }
+  }
+  return acc;
+}
+
+/** Mirrors depthIndentStyle in index.html. */
+function depthIndentStyle(depth) {
+  const rem = 2 + depth * 1.5;
+  return `padding-left:${rem}rem`;
+}
+
+/**
  * Extracted renderDetail logic for parent link and children table.
  * Returns the full HTML string, same as the index.html renderDetail.
  */
@@ -202,9 +223,16 @@ function renderDetail(writ) {
   // Links (simplified)
   html += `<div class="detail-section" id="links-section-${writ.id}"><h4>Links</h4></div>`;
 
-  // Children
-  const childItems = writ._fullChildren ?? writ.children?.items ?? [];
-  if (childItems.length > 0) {
+  // Children — deep descendant rendering.
+  let rows;
+  if (writ._descendantTree && writ._descendantTree.length > 0) {
+    rows = flattenTree(writ._descendantTree);
+  } else {
+    const childItems = writ._fullChildren ?? writ.children?.items ?? [];
+    rows = childItems.map(c => ({ writ: c, depth: 0 }));
+  }
+
+  if (rows.length > 0) {
     html += `<div class="detail-section">`;
     html += `<h4>Children</h4>`;
 
@@ -219,10 +247,10 @@ function renderDetail(writ) {
     html += `<table class="data-table"><thead><tr>`;
     html += `<th>Phase</th><th>Title</th><th>Type</th><th>ID</th><th>Actions</th>`;
     html += `</tr></thead><tbody>`;
-    for (const child of childItems) {
-      html += `<tr class="writ-row child-detail-row" data-child-id="${child.id}" style="cursor:pointer">`;
+    for (const { writ: child, depth } of rows) {
+      html += `<tr class="writ-row child-detail-row" data-child-id="${child.id}" data-depth="${depth}" style="cursor:pointer">`;
       html += `<td>${phaseBadge(child.phase)}</td>`;
-      html += `<td>${escHtml(child.title ?? '')}</td>`;
+      html += `<td style="${depthIndentStyle(depth)}">${escHtml(child.title ?? '')}</td>`;
       html += `<td>${escHtml(child.type ?? '')}</td>`;
       html += `<td><code>${child.id}</code></td>`;
       html += `<td class="row-actions" style="white-space:nowrap">${rowActions(child)}</td>`;
@@ -536,5 +564,239 @@ describe('Parent link in detail view', () => {
 
     const html = renderDetail(writ);
     assert.ok(html.includes('href="?writ=w-parent%20with%20spaces"'), 'Parent id should be URL-encoded');
+  });
+});
+
+describe('flattenTree — depth-first pre-order traversal', () => {
+  it('flattens a single-level forest at depth 0', () => {
+    const nodes = [
+      { writ: { id: 'a', title: 'A' }, children: [] },
+      { writ: { id: 'b', title: 'B' }, children: [] },
+    ];
+    const rows = flattenTree(nodes);
+    assert.deepEqual(rows, [
+      { writ: { id: 'a', title: 'A' }, depth: 0 },
+      { writ: { id: 'b', title: 'B' }, depth: 0 },
+    ]);
+  });
+
+  it('flattens a two-level tree — children follow parent with depth+1', () => {
+    const nodes = [
+      {
+        writ: { id: 'a' },
+        children: [
+          { writ: { id: 'a1' }, children: [] },
+          { writ: { id: 'a2' }, children: [] },
+        ],
+      },
+      { writ: { id: 'b' }, children: [] },
+    ];
+    const rows = flattenTree(nodes);
+    assert.deepEqual(rows.map(r => [r.writ.id, r.depth]), [
+      ['a', 0],
+      ['a1', 1],
+      ['a2', 1],
+      ['b', 0],
+    ]);
+  });
+
+  it('flattens a three-level tree preserving depth per level', () => {
+    const nodes = [
+      {
+        writ: { id: 'a' },
+        children: [
+          {
+            writ: { id: 'a1' },
+            children: [
+              { writ: { id: 'a1x' }, children: [] },
+              { writ: { id: 'a1y' }, children: [] },
+            ],
+          },
+          { writ: { id: 'a2' }, children: [] },
+        ],
+      },
+    ];
+    const rows = flattenTree(nodes);
+    assert.deepEqual(rows.map(r => [r.writ.id, r.depth]), [
+      ['a', 0],
+      ['a1', 1],
+      ['a1x', 2],
+      ['a1y', 2],
+      ['a2', 1],
+    ]);
+  });
+
+  it('empty forest returns empty', () => {
+    assert.deepEqual(flattenTree([]), []);
+  });
+
+  it('accepts an explicit start depth (for sub-tree rendering)', () => {
+    const nodes = [
+      { writ: { id: 'x' }, children: [{ writ: { id: 'xx' }, children: [] }] },
+    ];
+    const rows = flattenTree(nodes, 5);
+    assert.deepEqual(rows.map(r => [r.writ.id, r.depth]), [
+      ['x', 5],
+      ['xx', 6],
+    ]);
+  });
+});
+
+describe('depthIndentStyle — depth → padding-left mapping', () => {
+  it('depth 0 matches the existing 2rem main-list indent', () => {
+    assert.equal(depthIndentStyle(0), 'padding-left:2rem');
+  });
+
+  it('depth 1 adds 1.5rem', () => {
+    assert.equal(depthIndentStyle(1), 'padding-left:3.5rem');
+  });
+
+  it('depth 2 adds another 1.5rem', () => {
+    assert.equal(depthIndentStyle(2), 'padding-left:5rem');
+  });
+});
+
+describe('Deep descendant rendering in detail view', () => {
+  it('renders all descendants when _descendantTree is populated', () => {
+    const writ = {
+      id: 'parent-1',
+      title: 'Parent',
+      phase: 'open',
+      body: '',
+      children: {
+        summary: { open: 1 },
+        items: [{ id: 'c1', title: 'Child 1', phase: 'open' }],
+      },
+      _descendantTree: [
+        {
+          writ: { id: 'c1', title: 'Child 1', type: 'task', phase: 'open' },
+          children: [
+            {
+              writ: { id: 'g1', title: 'Grandchild 1', type: 'task', phase: 'open' },
+              children: [
+                {
+                  writ: { id: 'gg1', title: 'Great-grandchild', type: 'task', phase: 'open' },
+                  children: [],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const html = renderDetail(writ);
+
+    // All three descendants appear as rows
+    assert.ok(html.includes('data-child-id="c1"'), 'Direct child row present');
+    assert.ok(html.includes('data-child-id="g1"'), 'Grandchild row present');
+    assert.ok(html.includes('data-child-id="gg1"'), 'Great-grandchild row present');
+    // Pre-order: parent appears before child
+    assert.ok(html.indexOf('data-child-id="c1"') < html.indexOf('data-child-id="g1"'));
+    assert.ok(html.indexOf('data-child-id="g1"') < html.indexOf('data-child-id="gg1"'));
+  });
+
+  it('rows carry depth data attribute and depth-based indent', () => {
+    const writ = {
+      id: 'p',
+      title: 'P',
+      phase: 'open',
+      body: '',
+      children: { summary: {}, items: [{ id: 'c', title: 'C', phase: 'open' }] },
+      _descendantTree: [
+        {
+          writ: { id: 'c', title: 'Child', type: 'task', phase: 'open' },
+          children: [
+            { writ: { id: 'g', title: 'Grand', type: 'task', phase: 'open' }, children: [] },
+          ],
+        },
+      ],
+    };
+
+    const html = renderDetail(writ);
+    assert.ok(html.includes('data-child-id="c" data-depth="0"'), 'Direct child has depth 0');
+    assert.ok(html.includes('data-child-id="g" data-depth="1"'), 'Grandchild has depth 1');
+    assert.ok(html.includes('style="padding-left:2rem"'), 'Depth 0 title cell indents 2rem');
+    assert.ok(html.includes('style="padding-left:3.5rem"'), 'Depth 1 title cell indents 3.5rem');
+  });
+
+  it('falls back to flat children when _descendantTree is missing', () => {
+    const writ = {
+      id: 'p',
+      title: 'P',
+      phase: 'open',
+      body: '',
+      _fullChildren: [
+        { id: 'c1', title: 'Child 1', type: 'task', phase: 'open' },
+        { id: 'c2', title: 'Child 2', type: 'task', phase: 'open' },
+      ],
+      children: { summary: { open: 2 }, items: [] },
+    };
+
+    const html = renderDetail(writ);
+    assert.ok(html.includes('data-child-id="c1" data-depth="0"'));
+    assert.ok(html.includes('data-child-id="c2" data-depth="0"'));
+  });
+
+  it('summary badges reflect direct children only (writ.children.summary)', () => {
+    const writ = {
+      id: 'p',
+      title: 'P',
+      phase: 'open',
+      body: '',
+      children: {
+        // Direct-child summary from writ-show: 2 open direct children.
+        // Grandchildren are NOT counted here by design.
+        summary: { open: 2 },
+        items: [
+          { id: 'c1', title: 'C1', phase: 'open' },
+          { id: 'c2', title: 'C2', phase: 'open' },
+        ],
+      },
+      _descendantTree: [
+        {
+          writ: { id: 'c1', title: 'C1', type: 'task', phase: 'open' },
+          children: [
+            { writ: { id: 'g1', title: 'G1', type: 'task', phase: 'completed' }, children: [] },
+          ],
+        },
+        { writ: { id: 'c2', title: 'C2', type: 'task', phase: 'open' }, children: [] },
+      ],
+    };
+
+    const html = renderDetail(writ);
+    // Summary badges section shows "open 2" — not the grandchild's completed phase.
+    const summaryOpenMatch = html.match(/badge badge--active">open<\/span>\s*<span[^>]*>2</);
+    assert.ok(summaryOpenMatch, 'Summary shows 2 open direct children');
+    assert.ok(!html.match(/badge badge--success">completed<\/span>\s*<span[^>]*>1</),
+      'Summary does NOT count the grandchild');
+    // But the table still renders the grandchild row.
+    assert.ok(html.includes('data-child-id="g1"'), 'Grandchild row is present in the table');
+  });
+
+  it('preserves rowActions on every depth row', () => {
+    const writ = {
+      id: 'p',
+      title: 'P',
+      phase: 'open',
+      body: '',
+      children: { summary: {}, items: [{ id: 'c', title: 'C', phase: 'new' }] },
+      _descendantTree: [
+        {
+          writ: { id: 'c', title: 'C', type: 'task', phase: 'new' },
+          children: [
+            { writ: { id: 'g', title: 'G', type: 'task', phase: 'open' }, children: [] },
+          ],
+        },
+      ],
+    };
+
+    const html = renderDetail(writ);
+    // Depth 0 (new phase) gets Start + Cancel
+    assert.ok(html.match(/data-action="row-publish"[^>]*data-id="c"/));
+    assert.ok(html.match(/data-action="row-cancel"[^>]*data-id="c"/));
+    // Depth 1 (open phase) gets Cancel only
+    assert.ok(html.match(/data-action="row-cancel"[^>]*data-id="g"/));
+    assert.ok(!html.match(/data-action="row-publish"[^>]*data-id="g"/));
   });
 });
