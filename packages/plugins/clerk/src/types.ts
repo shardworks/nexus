@@ -145,6 +145,51 @@ export interface WritFilters {
   offset?: number;
 }
 
+// ── Tree shapes ──────────────────────────────────────────────────────
+
+/**
+ * A nested writ-and-children tree node, returned by `ClerkApi.tree()`.
+ *
+ * The shape is the writ document plus a recursively-typed `children` array
+ * of further `WritTree` nodes. Mirrors ratchet's `ClickTree` so the same
+ * mental model and rendering idioms apply across apparatus.
+ */
+export interface WritTree {
+  /** The writ document at this node. */
+  writ: WritDoc;
+  /** Direct children, each shaped as a `WritTree`. */
+  children: WritTree[];
+}
+
+/**
+ * Parameters for `ClerkApi.tree()`.
+ *
+ * - `rootId` switches between forest mode (omit) and subtree mode
+ *   (single root). In subtree mode the returned array always has at most
+ *   one element.
+ * - `phase` and `type` apply prune semantics: any node failing the filter
+ *   is dropped along with its entire subtree.
+ * - `depth` caps recursion. The node at depth = `depth` is included but its
+ *   children are not. `depth: 0` returns roots only.
+ * - `rootLimit` and `rootOffset` page across the *root* layer of forest
+ *   mode (preserves the page's `Load more` UX). They are ignored when
+ *   `rootId` is supplied.
+ */
+export interface WritTreeParams {
+  /** Restrict to the subtree rooted at this writ id. */
+  rootId?: string;
+  /** Filter by writ phase (single or OR-list); prunes non-matching subtrees. */
+  phase?: WritPhase | WritPhase[];
+  /** Filter by writ type (single or OR-list); prunes non-matching subtrees. */
+  type?: string | string[];
+  /** Maximum recursion depth (0 = roots only). Node at the cap is included. */
+  depth?: number;
+  /** Root-slice limit for forest mode (default: unbounded). */
+  rootLimit?: number;
+  /** Root-slice offset for forest mode (default: 0). */
+  rootOffset?: number;
+}
+
 // ── Configuration ───────────────────────────────────────────────
 
 /**
@@ -324,6 +369,18 @@ export interface ClerkApi {
    * Count writs matching optional filters.
    */
   count(filters?: WritFilters): Promise<number>;
+
+  /**
+   * Walk the writ hierarchy and return a forest (or a single subtree when
+   * `rootId` is provided). Mirrors ratchet's `tree()` precedent.
+   *
+   * Filters apply with prune semantics: a node failing `phase` or `type`
+   * is excluded together with its entire subtree. The `depth` cap halts
+   * recursion below — the node at the cap is still included, but no
+   * descendants of it are walked. `rootLimit` / `rootOffset` page across
+   * the root layer of forest mode and are ignored when `rootId` is given.
+   */
+  tree(params?: WritTreeParams): Promise<WritTree[]>;
 
   /**
    * Transition a writ to a new phase, optionally setting additional fields.

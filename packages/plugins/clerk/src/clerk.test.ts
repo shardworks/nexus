@@ -22,6 +22,7 @@ import type { ClerkKit } from './clerk.ts';
 import type { ClerkApi, ClerkConfig, WritDoc, WritLinkDoc, LinkKindDoc } from './types.ts';
 import type { WritLinks } from './index.ts';
 import writShow from './tools/writ-show.ts';
+import writTree from './tools/writ-tree.ts';
 import writEdit from './tools/writ-edit.ts';
 import writLink from './tools/writ-link.ts';
 import writUnlink from './tools/writ-unlink.ts';
@@ -528,6 +529,169 @@ describe('Clerk', () => {
 
       assert.equal(await clerk.count({ type: 'mandate' }), 1);
       assert.equal(await clerk.count({ type: 'errand' }), 1);
+    });
+  });
+
+  // ── tree() ────────────────────────────────────────────────────────
+
+  describe('tree()', () => {
+    beforeEach(async () => {
+      await setup({
+        clerkConfig: {
+          writTypes: [
+            { name: 'errand', description: 'A small errand' },
+            { name: 'task', description: 'A task' },
+          ],
+        },
+      });
+    });
+
+    it('returns a forest of all roots in createdAt asc order', async () => {
+      const a = await clerk.post({ title: 'Root A', body: 'Body' });
+      const b = await clerk.post({ title: 'Root B', body: 'Body' });
+      await clerk.post({ title: 'Child of A', body: 'Body', parentId: a.id });
+
+      const forest = await clerk.tree();
+      assert.equal(forest.length, 2);
+      // Sorted by createdAt asc — A then B (post order matches creation order).
+      assert.equal(forest[0].writ.id, a.id);
+      assert.equal(forest[1].writ.id, b.id);
+      assert.equal(forest[0].children.length, 1);
+      assert.equal(forest[1].children.length, 0);
+    });
+
+    it('returns a single subtree when rootId is supplied', async () => {
+      const root = await clerk.post({ title: 'Root', body: 'Body' });
+      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: root.id });
+      await clerk.post({ title: 'Grandchild', body: 'Body', parentId: child.id });
+
+      const forest = await clerk.tree({ rootId: root.id });
+      assert.equal(forest.length, 1);
+      assert.equal(forest[0].writ.id, root.id);
+      assert.equal(forest[0].children.length, 1);
+      assert.equal(forest[0].children[0].writ.id, child.id);
+      assert.equal(forest[0].children[0].children.length, 1);
+    });
+
+    it('returns an empty array when rootId does not exist', async () => {
+      const forest = await clerk.tree({ rootId: 'w-nonexistent' });
+      assert.deepEqual(forest, []);
+    });
+
+    it('filters by phase with prune semantics', async () => {
+      const root = await clerk.post({ title: 'Root', body: 'Body' });
+      const open = await clerk.post({ title: 'Open child', body: 'Body', parentId: root.id });
+      const completed = await clerk.post({ title: 'Completed child', body: 'Body', parentId: root.id });
+      // Add the grandchild *before* transitioning its parent — the post
+      // path rejects parents in terminal phases.
+      const grand = await clerk.post({ title: 'Grand of completed', body: 'Body', parentId: completed.id });
+      // Transition the completed child after grand exists. `completed` does
+      // not auto-cancel non-terminal children — `handleParentTerminal` only
+      // warns when reaching `completed` with non-terminal children.
+      await clerk.transition(completed.id, 'completed');
+
+      const forest = await clerk.tree({ phase: 'open' });
+      assert.equal(forest.length, 1);
+      assert.equal(forest[0].writ.id, root.id);
+      // Only `open` child remains; the `completed` subtree is pruned even
+      // though grand itself is open.
+      assert.equal(forest[0].children.length, 1);
+      assert.equal(forest[0].children[0].writ.id, open.id);
+      // grand should not appear anywhere.
+      const ids = JSON.stringify(forest);
+      assert.ok(!ids.includes(grand.id));
+    });
+
+    it('filters by multiple phases (OR)', async () => {
+      // No parents — the cascade machinery only cares about parent/child
+      // failures, so flat roots keep this test clean.
+      const a = await clerk.post({ title: 'A', body: 'Body' });
+      const b = await clerk.post({ title: 'B', body: 'Body' });
+      const c = await clerk.post({ title: 'C (open)', body: 'Body' });
+      await clerk.transition(a.id, 'completed');
+      await clerk.transition(b.id, 'failed', { resolution: 'nope' });
+
+      const forest = await clerk.tree({ phase: ['completed', 'failed'] });
+      const ids = forest.map((t) => t.writ.id).sort();
+      assert.deepEqual(ids, [a.id, b.id].sort());
+      // c remains open and is pruned.
+      assert.ok(!ids.includes(c.id));
+    });
+
+    it('filters by type with prune semantics', async () => {
+      const root = await clerk.post({ title: 'Root', body: 'Body', type: 'mandate' });
+      const errand = await clerk.post({ title: 'Errand', body: 'Body', type: 'errand', parentId: root.id });
+      await clerk.post({ title: 'Task', body: 'Body', type: 'task', parentId: root.id });
+
+      const forest = await clerk.tree({ type: ['mandate', 'errand'] });
+      assert.equal(forest.length, 1);
+      assert.equal(forest[0].children.length, 1);
+      assert.equal(forest[0].children[0].writ.id, errand.id);
+    });
+
+    it('caps depth — node at depth N included, descendants pruned', async () => {
+      const root = await clerk.post({ title: 'Root', body: 'Body' });
+      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: root.id });
+      await clerk.post({ title: 'Grand', body: 'Body', parentId: child.id });
+
+      const forest = await clerk.tree({ depth: 1 });
+      assert.equal(forest.length, 1);
+      assert.equal(forest[0].children.length, 1);
+      // Grandchild dropped — depth 1 means root (0) + children (1).
+      assert.equal(forest[0].children[0].children.length, 0);
+    });
+
+    it('depth 0 returns roots only', async () => {
+      const root = await clerk.post({ title: 'Root', body: 'Body' });
+      await clerk.post({ title: 'Child', body: 'Body', parentId: root.id });
+
+      const forest = await clerk.tree({ depth: 0 });
+      assert.equal(forest.length, 1);
+      assert.equal(forest[0].writ.id, root.id);
+      assert.equal(forest[0].children.length, 0);
+    });
+
+    it('children are returned in createdAt asc order under each parent', async () => {
+      const root = await clerk.post({ title: 'Root', body: 'Body' });
+      const c1 = await clerk.post({ title: 'C1', body: 'Body', parentId: root.id });
+      const c2 = await clerk.post({ title: 'C2', body: 'Body', parentId: root.id });
+      const c3 = await clerk.post({ title: 'C3', body: 'Body', parentId: root.id });
+
+      const forest = await clerk.tree({ rootId: root.id });
+      assert.deepEqual(
+        forest[0].children.map((c) => c.writ.id),
+        [c1.id, c2.id, c3.id],
+      );
+    });
+
+    it('rootLimit and rootOffset slice the root layer', async () => {
+      const r1 = await clerk.post({ title: 'R1', body: 'Body' });
+      const r2 = await clerk.post({ title: 'R2', body: 'Body' });
+      const r3 = await clerk.post({ title: 'R3', body: 'Body' });
+      // Each root has a child to verify children are still expanded under the slice.
+      await clerk.post({ title: 'R1c', body: 'Body', parentId: r1.id });
+
+      const page1 = await clerk.tree({ rootLimit: 2, rootOffset: 0 });
+      assert.deepEqual(page1.map((t) => t.writ.id), [r1.id, r2.id]);
+      assert.equal(page1[0].children.length, 1);
+
+      const page2 = await clerk.tree({ rootLimit: 2, rootOffset: 2 });
+      assert.deepEqual(page2.map((t) => t.writ.id), [r3.id]);
+    });
+
+    it('rootLimit and rootOffset are ignored when rootId is set', async () => {
+      const root = await clerk.post({ title: 'Root', body: 'Body' });
+      await clerk.post({ title: 'C', body: 'Body', parentId: root.id });
+
+      const forest = await clerk.tree({ rootId: root.id, rootLimit: 0, rootOffset: 99 });
+      assert.equal(forest.length, 1);
+      assert.equal(forest[0].writ.id, root.id);
+      assert.equal(forest[0].children.length, 1);
+    });
+
+    it('returns an empty array when no roots exist', async () => {
+      const forest = await clerk.tree();
+      assert.deepEqual(forest, []);
     });
   });
 
@@ -2254,6 +2418,73 @@ describe('Clerk', () => {
       assert.equal(result.links.outbound.length, 0);
       assert.equal(result.links.inbound.length, 1);
       assert.equal(result.links.inbound[0]!.sourceId, w1.id);
+    });
+  });
+
+  // ── writ-tree tool handler ────────────────────────────────────────
+
+  describe('writ-tree tool handler (via guild apparatus)', () => {
+    beforeEach(async () => { await setup(); });
+
+    it('returns the structured forest in json format', async () => {
+      const root = await clerk.post({ title: 'Root', body: 'Body' });
+      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: root.id });
+
+      const forest = await writTree.handler({ format: 'json' }) as Array<{ writ: WritDoc; children: unknown[] }>;
+      assert.equal(forest.length, 1);
+      assert.equal(forest[0].writ.id, root.id);
+      assert.equal(forest[0].children.length, 1);
+      assert.equal((forest[0].children[0] as { writ: WritDoc }).writ.id, child.id);
+    });
+
+    it('returns a placeholder string when no writs exist (text format)', async () => {
+      const result = await writTree.handler({ format: 'text' }) as string;
+      assert.equal(typeof result, 'string');
+      assert.match(result, /No writs found/);
+    });
+
+    it('returns a filter-aware placeholder when filters match nothing (text format)', async () => {
+      await clerk.post({ title: 'Root', body: 'Body' });
+      const result = await writTree.handler({ format: 'text', phase: 'completed' }) as string;
+      assert.match(result, /No writs match the given filters/);
+    });
+
+    it('renders the box-drawing tree in text format', async () => {
+      const root = await clerk.post({ title: 'Root', body: 'Body' });
+      await clerk.post({ title: 'Child', body: 'Body', parentId: root.id });
+
+      const result = await writTree.handler({ format: 'text' }) as string;
+      // Box-drawing connector for the only child.
+      assert.match(result, /└──/);
+      assert.match(result, /Root/);
+      assert.match(result, /Child/);
+    });
+
+    it('honors --root-id with prefix resolution', async () => {
+      const root = await clerk.post({ title: 'Solo', body: 'Body' });
+      // Use a prefix of the id to verify resolveId is called.
+      const prefix = root.id.slice(0, 12);
+      const forest = await writTree.handler({ format: 'json', rootId: prefix }) as Array<{ writ: WritDoc }>;
+      assert.equal(forest.length, 1);
+      assert.equal(forest[0].writ.id, root.id);
+    });
+
+    it('honors --depth and --type filters', async () => {
+      await setup({
+        clerkConfig: { writTypes: [{ name: 'task', description: 't' }] },
+      });
+      const root = await clerk.post({ title: 'Root', body: 'Body', type: 'mandate' });
+      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: root.id, type: 'task' });
+      await clerk.post({ title: 'Grand', body: 'Body', parentId: child.id, type: 'task' });
+
+      const depth1 = await writTree.handler({ format: 'json', depth: 1 }) as Array<{ children: unknown[] }>;
+      assert.equal(depth1.length, 1);
+      assert.equal(depth1[0].children.length, 1);
+      assert.equal((depth1[0].children[0] as { children: unknown[] }).children.length, 0);
+
+      const onlyMandate = await writTree.handler({ format: 'json', type: 'mandate' }) as Array<{ children: unknown[] }>;
+      assert.equal(onlyMandate.length, 1);
+      assert.equal(onlyMandate[0].children.length, 0);
     });
   });
 

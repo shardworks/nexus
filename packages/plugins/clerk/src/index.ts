@@ -27,6 +27,8 @@ export {
   type WritTypeInfo,
   type KindEntry,
   type LinkKindDoc,
+  type WritTree,
+  type WritTreeParams,
 } from './types.ts';
 
 export { createClerk, CASCADE_PARENT_TERMINATION_RESOLUTION, BUILTIN_WRIT_TYPE } from './clerk.ts';

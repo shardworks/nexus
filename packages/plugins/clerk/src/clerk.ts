@@ -33,6 +33,8 @@ import type {
   WritTypeEntry,
   KindEntry,
   LinkKindDoc,
+  WritTree,
+  WritTreeParams,
 } from './types.ts';
 
 import {
@@ -40,6 +42,7 @@ import {
   pieceAdd,
   writShow,
   writList,
+  writTree,
   writEdit,
   writComplete,
   writFail,
@@ -302,6 +305,59 @@ export function createClerk(): Plugin {
     }
   }
 
+  // ── Tree walker ──────────────────────────────────────────────────
+
+  /**
+   * Build a single `WritTree` rooted at `writId`. Returns null when the node
+   * (or its subtree, after filters) is fully pruned. Mirrors ratchet's
+   * `buildTree()`.
+   *
+   * Children are queried via the `parentId` index and recursed in
+   * `createdAt asc` order so the visual order is stable across
+   * sorts/filters at the page layer.
+   */
+  async function buildTree(
+    writId: string,
+    options?: {
+      phaseSet?: Set<WritPhase>;
+      typeSet?: Set<string>;
+      depth?: number;
+      currentDepth?: number;
+    },
+  ): Promise<WritTree | null> {
+    const writ = await writs.get(writId);
+    if (!writ) return null;
+
+    const phaseSet = options?.phaseSet;
+    const typeSet = options?.typeSet;
+    const maxDepth = options?.depth;
+    const currentDepth = options?.currentDepth ?? 0;
+
+    // Prune: drop the node and its subtree when it fails any filter.
+    if (phaseSet && !phaseSet.has(writ.phase)) return null;
+    if (typeSet && !typeSet.has(writ.type)) return null;
+
+    // Depth cap: include the node at the cap, but stop recursing.
+    if (maxDepth !== undefined && currentDepth >= maxDepth) {
+      return { writ, children: [] };
+    }
+
+    const children = await writs.find({ where: [['parentId', '=', writId]] });
+    children.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+    const childTrees: WritTree[] = [];
+    for (const child of children) {
+      const childTree = await buildTree(child.id, {
+        phaseSet,
+        typeSet,
+        depth: maxDepth,
+        currentDepth: currentDepth + 1,
+      });
+      if (childTree) childTrees.push(childTree);
+    }
+    return { writ, children: childTrees };
+  }
+
   // ── API ──────────────────────────────────────────────────────────
 
   const api: ClerkApi = {
@@ -419,6 +475,44 @@ export function createClerk(): Plugin {
     async count(filters?: WritFilters): Promise<number> {
       const where = buildWhereClause(filters);
       return writs.count(where);
+    },
+
+    async tree(params?: WritTreeParams): Promise<WritTree[]> {
+      const phaseSet = params?.phase
+        ? new Set(Array.isArray(params.phase) ? params.phase : [params.phase])
+        : undefined;
+      const typeSet = params?.type
+        ? new Set(Array.isArray(params.type) ? params.type : [params.type])
+        : undefined;
+      const opts = { phaseSet, typeSet, depth: params?.depth };
+
+      // Subtree mode — single root, root-slice params ignored.
+      if (params?.rootId) {
+        const tree = await buildTree(params.rootId, opts);
+        return tree ? [tree] : [];
+      }
+
+      // Forest mode — find all roots (no parentId), then page across them.
+      // We can't query parentId = undefined reliably across backends (some
+      // store missing fields differently), so fetch and filter.
+      const all = await writs.find({
+        orderBy: ['createdAt', 'desc'],
+        limit: 100000,
+      });
+      const rootDocs = all.filter((w) => !w.parentId);
+
+      const rootOffset = params?.rootOffset ?? 0;
+      const rootLimit = params?.rootLimit;
+      const slicedRoots = rootLimit !== undefined
+        ? rootDocs.slice(rootOffset, rootOffset + rootLimit)
+        : rootDocs.slice(rootOffset);
+
+      const forest: WritTree[] = [];
+      for (const root of slicedRoots) {
+        const tree = await buildTree(root.id, opts);
+        if (tree) forest.push(tree);
+      }
+      return forest;
     },
 
     async link(
@@ -729,6 +823,7 @@ export function createClerk(): Plugin {
           pieceAdd,
           writShow,
           writList,
+          writTree,
           writEdit,
           writComplete,
           writFail,

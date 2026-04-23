@@ -82,6 +82,32 @@ const children = await clerk.list({ parentId: parent.id });
 | `limit` | `number` | Maximum results (default: 20) |
 | `offset` | `number` | Number of results to skip |
 
+### `tree(params?): Promise<WritTree[]>`
+
+Walk the writ hierarchy and return a forest (an array of `{ writ, children }` nodes). When `rootId` is provided the walk is scoped to that single subtree and the array has at most one entry.
+
+```typescript
+// Forest of all roots, all phases, fully expanded.
+const forest = await clerk.tree();
+
+// Subtree rooted at a specific writ, capped at depth 8.
+const sub = await clerk.tree({ rootId: root.id, depth: 8 });
+
+// First page of roots, fully expanded, filtered by phase.
+const page = await clerk.tree({ phase: ['open', 'stuck'], rootLimit: 100, rootOffset: 0 });
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `rootId` | `string` | Restrict to the subtree rooted at this writ id (optional) |
+| `phase` | `WritPhase \| WritPhase[]` | Filter by phase with **prune semantics** — a non-matching node is dropped together with its entire subtree |
+| `type` | `string \| string[]` | Filter by writ type with prune semantics |
+| `depth` | `number` | Maximum recursion depth (0 = roots only). Node at the cap is included; its children are not. |
+| `rootLimit` | `number` | Maximum number of roots in forest mode (ignored with `rootId`) |
+| `rootOffset` | `number` | Skip this many roots in forest mode (ignored with `rootId`) |
+
+Children are walked in `createdAt asc` order under each parent so the visual order is stable across filters and sorts. Each node is fully-populated `WritDoc` plus a recursively-typed `children` array.
+
 ### `count(filters?): Promise<number>`
 
 Count writs matching optional filters. Accepts the same filters as `list()` (except `limit` and `offset`).
@@ -354,6 +380,7 @@ The Clerk contributes books, tools, and pages to the guild:
 | `commission-post` | `clerk:write` | Post a new commission (create a writ, optionally as child) |
 | `writ-show` | `clerk:read` | Show full detail for a writ (includes parent/children context) |
 | `writ-list` | `clerk:read` | List writs with optional filters (phase, type, parentId) |
+| `writ-tree` | `clerk:read` | Render the writ hierarchy as a depth-aware tree (forest or single subtree); supports `phase` / `type` filters with prune semantics and a `depth` cap. Output is a box-drawing ASCII tree by default (`--format text`) or the structured `WritTree[]` forest (`--format json`). |
 | `writ-edit` | `clerk:write` | Edit a writ (title/body any phase; type/codex draft only) |
 | `writ-complete` | `clerk:write` | Complete a writ (open → completed) |
 | `writ-fail` | `clerk:write` | Fail a writ (open/stuck → failed) |
@@ -409,6 +436,21 @@ interface WritFilters {
   parentId?: string;    // filter to children of this parent
   limit?: number;
   offset?: number;
+}
+
+// Returned by tree(): a writ plus a recursively-typed children array.
+interface WritTree {
+  writ: WritDoc;
+  children: WritTree[];
+}
+
+interface WritTreeParams {
+  rootId?: string;                  // restrict to a single subtree
+  phase?: WritPhase | WritPhase[];  // prune-semantics filter
+  type?: string | string[];         // prune-semantics filter
+  depth?: number;                   // 0 = roots only; node at cap included
+  rootLimit?: number;               // forest mode: page across roots
+  rootOffset?: number;              // forest mode: skip this many roots
 }
 
 interface WritTypeInfo {
