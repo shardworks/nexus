@@ -60,4 +60,4 @@ export {
   guildConfigPath,
 } from './guild-config.ts';
 
-export { generateId } from './id.ts';
+export { generateId, shortId } from './id.ts';

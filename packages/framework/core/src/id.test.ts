@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateId } from './id.ts';
+import { generateId, shortId } from './id.ts';
 
 describe('generateId', () => {
   it('returns a string matching {prefix}-{base36_ts}-{hex_random}', () => {
@@ -39,5 +39,30 @@ describe('generateId', () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     const second = generateId('x');
     assert.ok(second > first, `expected "${second}" > "${first}"`);
+  });
+});
+
+describe('shortId', () => {
+  it('returns the first two segments of a well-formed three-segment id', () => {
+    assert.equal(shortId('w-abc123-deadbeef'), 'w-abc123');
+  });
+
+  it('returns a single-token id unchanged', () => {
+    assert.equal(shortId('solo'), 'solo');
+  });
+
+  it('returns the empty string for an empty input', () => {
+    assert.equal(shortId(''), '');
+  });
+
+  it('returns the empty-then-empty pair for a lone hyphen', () => {
+    assert.equal(shortId('-'), '-');
+  });
+
+  it('round-trips as the shape resolveId() accepts as a unique prefix', () => {
+    const full = generateId('w');
+    const short = shortId(full);
+    assert.ok(full.startsWith(short + '-'), `expected "${full}" to start with "${short}-"`);
+    assert.equal(short.split('-').length, 2);
   });
 });

@@ -17,3 +17,20 @@ export function generateId(prefix: string, randomByteCount: number = 6): string 
   const rand = crypto.randomBytes(randomByteCount).toString('hex');
   return `${prefix}-${ts}-${rand}`;
 }
+
+/**
+ * Produce the short-id form of a generated ID: the `{prefix}-{base36ts}`
+ * segment.
+ *
+ * This is the inverse-display counterpart to {@link generateId} — it drops
+ * the random suffix and surfaces the collision-prone-but-human-readable
+ * prefix form. Apparatus `resolveId()` implementations (e.g. `ClerkApi`,
+ * `RatchetApi`) accept this form as a unique prefix lookup, so it is the
+ * natural shape for CLI output, tree renderings, and pulse-context
+ * payloads.
+ *
+ * @param id  A full ID (typically produced by {@link generateId}).
+ */
+export function shortId(id: string): string {
+  return id.split('-').slice(0, 2).join('-');
+}
