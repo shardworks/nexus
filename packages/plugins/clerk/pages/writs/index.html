@@ -655,8 +655,9 @@
       // (writ._descendantTree: WritTreeNode[]). If the tree hasn't been populated
       // yet (older code path or fetch failure), fall back to the flat children
       // list shape so we still render something. The summary-badges block is
-      // driven by writ.children.summary, which is the direct-child summary
-      // returned by writ-show — it intentionally covers depth 1 only.
+      // driven by writ.children.summary, which writ-show now populates with
+      // subtree-wide (descendant) phase counts — grandchildren and deeper
+      // contribute, matching the depth of the descendant table rendered below.
       let rows;
       if (writ._descendantTree && writ._descendantTree.length > 0) {
         rows = flattenTree(writ._descendantTree);
@@ -669,8 +670,11 @@
         html += `<div class="detail-section">`;
         html += `<h4>Children</h4>`;
 
-        // Summary badges — direct children only, per writ-show contract.
+        // Summary badges — phase counts span the entire descendant subtree
+        // (the writ itself is excluded). The preceding label makes the scope
+        // of the tallies visible at a glance without reading the tool docs.
         if (writ.children?.summary) {
+          html += `<div class="detail-label" style="margin-bottom:0.25rem;font-size:0.85rem;color:var(--muted,#9aa5ce)">Descendants</div>`;
           html += `<div style="margin-bottom:0.5rem">`;
           for (const [phase, count] of Object.entries(writ.children.summary)) {
             html += phaseBadge(phase) + ` <span style="margin-right:0.75rem">${count}</span>`;

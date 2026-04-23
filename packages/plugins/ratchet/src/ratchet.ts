@@ -509,6 +509,27 @@ export function createRatchet(): Plugin {
       ]);
       return { outbound, inbound };
     },
+
+    async countDescendantsByStatus(clickId: string): Promise<Record<ClickStatus, number>> {
+      // Validate the root exists up front for a clear error on unknown ids.
+      const root = await clicks.get(clickId);
+      if (!root) throw new Error(`Click "${clickId}" not found.`);
+
+      // Reuse the existing collectDescendantIds traversal machinery rather
+      // than writing a third walker — one fetch path per apparatus. The
+      // helper's first element is the root itself (by convention — see
+      // ClickFilters.rootId), so slice(1) drops it to return descendants only.
+      const allIds = await collectDescendantIds(clickId);
+      const descendantIds = allIds.slice(1);
+
+      const counts: Record<ClickStatus, number> = {} as Record<ClickStatus, number>;
+      for (const id of descendantIds) {
+        const doc = await clicks.get(id);
+        if (!doc) continue;
+        counts[doc.status] = (counts[doc.status] ?? 0) + 1;
+      }
+      return counts;
+    },
   };
 
   // ── Plugin ────────────────────────────────────────────────────────

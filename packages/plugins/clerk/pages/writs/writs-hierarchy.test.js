@@ -281,6 +281,7 @@ function renderDetail(writ) {
     html += `<h4>Children</h4>`;
 
     if (writ.children?.summary) {
+      html += `<div class="detail-label" style="margin-bottom:0.25rem;font-size:0.85rem;color:var(--muted,#9aa5ce)">Descendants</div>`;
       html += `<div style="margin-bottom:0.5rem">`;
       for (const [phase, count] of Object.entries(writ.children.summary)) {
         html += phaseBadge(phase) + ` <span style="margin-right:0.75rem">${count}</span>`;
@@ -933,16 +934,17 @@ describe('Deep descendant rendering in detail view', () => {
     assert.ok(html.includes('data-child-id="c2" data-depth="0"'));
   });
 
-  it('summary badges reflect direct children only (writ.children.summary)', () => {
+  it('summary badges reflect the full descendant subtree (writ.children.summary)', () => {
     const writ = {
       id: 'p',
       title: 'P',
       phase: 'open',
       body: '',
       children: {
-        // Direct-child summary from writ-show: 2 open direct children.
-        // Grandchildren are NOT counted here by design.
-        summary: { open: 2 },
+        // Subtree-wide summary from writ-show: 2 open direct children + 1
+        // completed grandchild all contribute. Counts cover every descendant,
+        // not just depth 1.
+        summary: { open: 2, completed: 1 },
         items: [
           { id: 'c1', title: 'C1', phase: 'open' },
           { id: 'c2', title: 'C2', phase: 'open' },
@@ -960,13 +962,17 @@ describe('Deep descendant rendering in detail view', () => {
     };
 
     const html = renderDetail(writ);
-    // Summary badges section shows "open 2" — not the grandchild's completed phase.
+    // Summary now counts the whole subtree — 2 open direct children and the
+    // 1 completed grandchild are both reflected in the badges.
     const summaryOpenMatch = html.match(/badge badge--active">open<\/span>\s*<span[^>]*>2</);
-    assert.ok(summaryOpenMatch, 'Summary shows 2 open direct children');
-    assert.ok(!html.match(/badge badge--success">completed<\/span>\s*<span[^>]*>1</),
-      'Summary does NOT count the grandchild');
-    // But the table still renders the grandchild row.
+    assert.ok(summaryOpenMatch, 'Summary shows 2 open writs in the subtree');
+    const summaryCompletedMatch = html.match(/badge badge--success">completed<\/span>\s*<span[^>]*>1</);
+    assert.ok(summaryCompletedMatch, 'Summary counts the completed grandchild');
+    // The table continues to render the grandchild row alongside the direct children.
     assert.ok(html.includes('data-child-id="g1"'), 'Grandchild row is present in the table');
+    // A "Descendants" label introduces the badge strip so the subtree-wide
+    // scope of the counts is visible without reading the tool docs.
+    assert.ok(html.includes('>Descendants<'), 'Descendants label precedes the summary badges');
   });
 
   it('preserves rowActions on every depth row', () => {

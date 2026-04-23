@@ -8,7 +8,10 @@ export default tool({
   description: 'Show full detail for a writ',
   instructions:
     'Returns the complete writ record including its current phase, timestamps, body text, ' +
-    'resolution, parent context, and children summary.',
+    'resolution, parent context, and children. The `children.summary` field is a ' +
+    'phase-keyed count of the entire descendant subtree beneath this writ (grandchildren ' +
+    'and deeper included; the writ itself is excluded). The `children.items` list stays ' +
+    'scoped to direct children only.',
   params: {
     id: z.string().describe('Writ id'),
   },
@@ -16,9 +19,10 @@ export default tool({
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
     const resolvedId = await clerk.resolveId(params.id);
-    const [writ, links] = await Promise.all([
+    const [writ, links, summary] = await Promise.all([
       clerk.show(resolvedId),
       clerk.links(resolvedId),
+      clerk.countDescendantsByPhase(resolvedId),
     ]);
 
     // Parent context
@@ -28,12 +32,11 @@ export default tool({
       parent = { id: parentWrit.id, title: parentWrit.title, phase: parentWrit.phase };
     }
 
-    // Children context
+    // Direct-children list — `items` stays direct-children-only. The subtree-wide
+    // phase tally lives in `summary` (computed via clerk.countDescendantsByPhase).
     const childWrits = await clerk.list({ parentId: writ.id, limit: 1000 });
-    const summary: Record<string, number> = {};
     const items: Array<{ id: string; title: string; phase: WritPhase }> = [];
     for (const child of childWrits) {
-      summary[child.phase] = (summary[child.phase] ?? 0) + 1;
       items.push({ id: child.id, title: child.title, phase: child.phase });
     }
 

@@ -388,6 +388,21 @@ export interface ClerkApi {
   tree(params?: WritTreeParams): Promise<WritTree[]>;
 
   /**
+   * Count all descendants of a writ grouped by phase.
+   *
+   * Walks the parent/child tree recursively beneath `writId`, tallying each
+   * descendant's phase. The root writ (the writ identified by `writId`) is
+   * excluded from the count — only its descendants contribute. The result is
+   * a plain object keyed by `WritPhase` with numeric values; phases with no
+   * matching descendants are simply absent.
+   *
+   * This is the traversal primitive behind `writ-show`'s `children.summary`
+   * field, and is also reusable by any future subtree-oriented tooling (e.g.
+   * a `writ-tree` apparatus). Throws if the writ does not exist.
+   */
+  countDescendantsByPhase(writId: string): Promise<Record<WritPhase, number>>;
+
+  /**
    * Transition a writ to a new phase, optionally setting additional fields.
    * Validates that the transition is legal.
    *

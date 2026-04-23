@@ -515,6 +515,31 @@ export function createClerk(): Plugin {
       return forest;
     },
 
+    async countDescendantsByPhase(writId: string): Promise<Record<WritPhase, number>> {
+      // Validate the root exists up front so callers get a clear error rather
+      // than a silent zero-count result for an invalid id.
+      const root = await writs.get(writId);
+      if (!root) {
+        throw new Error(`Writ "${writId}" not found.`);
+      }
+
+      const counts: Record<WritPhase, number> = {} as Record<WritPhase, number>;
+
+      // Per-level recursive walk, mirroring ratchet's buildTree / collectDescendantIds.
+      // Uses the existing `[parentId, phase]` composite index — no extra index needed.
+      // No depth cap, no cycle guard; we trust the parentId-immutability invariant.
+      async function walk(parentId: string): Promise<void> {
+        const children = await writs.find({ where: [['parentId', '=', parentId]] });
+        for (const child of children) {
+          counts[child.phase] = (counts[child.phase] ?? 0) + 1;
+          await walk(child.id);
+        }
+      }
+
+      await walk(writId);
+      return counts;
+    },
+
     async link(
       sourceId: string,
       targetId: string,

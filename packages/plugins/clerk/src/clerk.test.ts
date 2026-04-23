@@ -3713,6 +3713,59 @@ describe('Parent/child relationships', () => {
       assert.equal(result.parent, null);
       assert.deepEqual(result.children, { summary: {}, items: [] });
     });
+
+    it('children.summary counts the entire descendant subtree, not just direct children', async () => {
+      // Build a three-level tree:
+      //   root
+      //   ├─ c1 (open)       — direct child
+      //   │  ├─ g1 (open)    — grandchild
+      //   │  └─ g2 (stuck)   — grandchild
+      //   └─ c2 (open)       — direct child
+      const root = await clerk.post({ title: 'Root', body: 'Body' });
+      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: root.id });
+      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: root.id });
+      const g1 = await clerk.post({ title: 'G1', body: 'B', parentId: c1.id });
+      const g2 = await clerk.post({ title: 'G2', body: 'B', parentId: c1.id });
+      // Nudge g2 into stuck so phases diverge across the subtree.
+      await clerk.transition(g2.id, 'stuck');
+
+      const result = await writShow.handler({ id: root.id });
+
+      // Items stay direct-children-only — only c1 and c2 appear.
+      assert.equal(result.children.items.length, 2);
+      assert.ok(result.children.items.some((i: { id: string }) => i.id === c1.id));
+      assert.ok(result.children.items.some((i: { id: string }) => i.id === c2.id));
+      assert.ok(!result.children.items.some((i: { id: string }) => i.id === g1.id));
+
+      // Summary covers the whole subtree — grandchildren contribute.
+      // 3 open (c1, c2, g1) + 1 stuck (g2) = 4 descendants total.
+      assert.equal(result.children.summary['open'], 3);
+      assert.equal(result.children.summary['stuck'], 1);
+    });
+
+    it('ClerkApi.countDescendantsByPhase returns subtree-wide phase counts', async () => {
+      const root = await clerk.post({ title: 'Root', body: 'B' });
+      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: root.id });
+      const g1 = await clerk.post({ title: 'G1', body: 'B', parentId: c1.id });
+      await clerk.transition(g1.id, 'completed', { resolution: 'done' });
+
+      const counts = await clerk.countDescendantsByPhase(root.id);
+      assert.equal(counts['open'], 1);
+      assert.equal(counts['completed'], 1);
+    });
+
+    it('ClerkApi.countDescendantsByPhase returns empty object for leaf writs', async () => {
+      const leaf = await clerk.post({ title: 'Leaf', body: 'B' });
+      const counts = await clerk.countDescendantsByPhase(leaf.id);
+      assert.deepEqual(counts, {});
+    });
+
+    it('ClerkApi.countDescendantsByPhase throws on unknown id', async () => {
+      await assert.rejects(
+        () => clerk.countDescendantsByPhase('w-does-not-exist'),
+        /not found/,
+      );
+    });
   });
 
   // ── Book indexes ──────────────────────────────────────────────────

@@ -129,4 +129,19 @@ export interface RatchetApi {
   tree(params?: TreeParams): Promise<ClickTree[]>;
   resolveId(prefix: string): Promise<string>;
   links(clickId: string): Promise<ClickLinks>;
+
+  /**
+   * Count all descendants of a click grouped by status.
+   *
+   * Walks the parent/child tree recursively beneath `clickId`, tallying each
+   * descendant's status. The root click (the click identified by `clickId`)
+   * is excluded from the count — only its descendants contribute. The result
+   * is a plain object keyed by `ClickStatus` with numeric values; statuses
+   * with no matching descendants are simply absent.
+   *
+   * This is the traversal primitive behind `click-show`'s `children.summary`
+   * field. Mirrors the shape of `ClerkApi.countDescendantsByPhase`.
+   * Throws if the click does not exist.
+   */
+  countDescendantsByStatus(clickId: string): Promise<Record<ClickStatus, number>>;
 }

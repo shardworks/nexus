@@ -865,6 +865,63 @@ describe('Ratchet', () => {
       assert.strictEqual(links.outbound.length, 1);
     });
 
+    it('click-show summary counts the entire descendant subtree, not just direct children', async () => {
+      // Three-level tree:
+      //   root
+      //   ├─ c1 (live)       — direct child
+      //   │  ├─ g1 (live)    — grandchild
+      //   │  └─ g2 (parked)  — grandchild
+      //   └─ c2 (live)       — direct child
+      const root = await ratchet.create({ goal: 'Root' });
+      const c1 = await ratchet.create({ goal: 'C1', parentId: root.id });
+      const c2 = await ratchet.create({ goal: 'C2', parentId: root.id });
+      const g1 = await ratchet.create({ goal: 'G1', parentId: c1.id });
+      const g2 = await ratchet.create({ goal: 'G2', parentId: c1.id });
+      // Nudge g2 into parked so statuses diverge across the subtree.
+      await ratchet.park(g2.id);
+
+      const result = await clickShow.handler({ id: root.id }) as Record<string, unknown>;
+      const children = result.children as {
+        summary: Record<string, number>;
+        items: Array<{ id: string }>;
+      };
+
+      // Items stay direct-children-only — only c1 and c2 appear.
+      assert.strictEqual(children.items.length, 2);
+      assert.ok(children.items.some((i) => i.id === c1.id));
+      assert.ok(children.items.some((i) => i.id === c2.id));
+      assert.ok(!children.items.some((i) => i.id === g1.id));
+
+      // Summary covers the whole subtree — grandchildren contribute.
+      // 3 live (c1, c2, g1) + 1 parked (g2) = 4 descendants total.
+      assert.strictEqual(children.summary['live'], 3);
+      assert.strictEqual(children.summary['parked'], 1);
+    });
+
+    it('RatchetApi.countDescendantsByStatus returns subtree-wide status counts', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const c1 = await ratchet.create({ goal: 'C1', parentId: root.id });
+      const g1 = await ratchet.create({ goal: 'G1', parentId: c1.id });
+      await ratchet.conclude(g1.id, { conclusion: 'done' });
+
+      const counts = await ratchet.countDescendantsByStatus(root.id);
+      assert.strictEqual(counts['live'], 1);
+      assert.strictEqual(counts['concluded'], 1);
+    });
+
+    it('RatchetApi.countDescendantsByStatus returns empty object for leaf clicks', async () => {
+      const leaf = await ratchet.create({ goal: 'Leaf' });
+      const counts = await ratchet.countDescendantsByStatus(leaf.id);
+      assert.deepStrictEqual(counts, {});
+    });
+
+    it('RatchetApi.countDescendantsByStatus throws on unknown id', async () => {
+      await assert.rejects(
+        () => ratchet.countDescendantsByStatus('c-does-not-exist'),
+        /not found/,
+      );
+    });
+
     it('click-park resolves short ID', async () => {
       const click = await ratchet.create({ goal: 'Test' });
       const prefix = click.id.substring(0, 10);

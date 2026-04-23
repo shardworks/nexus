@@ -273,7 +273,7 @@ Create a new click.
 
 ### `click-show`
 
-Show a single click with its links and children summary.
+Show a single click with its links, parent context, and a children payload. `children.summary` tallies statuses across the entire descendant subtree (grandchildren and deeper included; the click itself is excluded), while `children.items` lists only direct children.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

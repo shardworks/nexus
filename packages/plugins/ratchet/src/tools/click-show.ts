@@ -8,7 +8,10 @@ export default tool({
   description: 'Show full detail for a click including links, parent, and children',
   instructions:
     'Returns the complete click record enriched with outbound/inbound links, ' +
-    'parent context, and children summary with status counts.',
+    'parent context, and children. The `children.summary` field is a status-keyed ' +
+    'count of the entire descendant subtree beneath this click (grandchildren and ' +
+    'deeper included; the click itself is excluded). The `children.items` list stays ' +
+    'scoped to direct children only.',
   params: {
     id: z.string().describe('Click ID or prefix'),
   },
@@ -16,9 +19,10 @@ export default tool({
   handler: async (params) => {
     const ratchet = guild().apparatus<RatchetApi>('ratchet');
     const resolvedId = await ratchet.resolveId(params.id);
-    const [click, links] = await Promise.all([
+    const [click, links, summary] = await Promise.all([
       ratchet.get(resolvedId),
       ratchet.links(resolvedId),
+      ratchet.countDescendantsByStatus(resolvedId),
     ]);
 
     // Parent context
@@ -28,12 +32,11 @@ export default tool({
       parent = { id: parentClick.id, goal: parentClick.goal, status: parentClick.status };
     }
 
-    // Children context
+    // Direct-children list — `items` stays direct-children-only. The subtree-wide
+    // status tally lives in `summary` (computed via ratchet.countDescendantsByStatus).
     const childClicks = await ratchet.list({ parentId: click.id, limit: 1000 });
-    const summary: Record<string, number> = {};
     const items: Array<{ id: string; goal: string; status: ClickStatus }> = [];
     for (const child of childClicks) {
-      summary[child.status] = (summary[child.status] ?? 0) + 1;
       items.push({ id: child.id, goal: child.goal, status: child.status });
     }
 

@@ -101,13 +101,13 @@ Permission: `clerk:write`
 
 ### `writ-show` tool
 
-Read a writ by id. Returns the full `WritDoc` including the current phase, parent context, and children summary.
+Read a writ by id. Returns the full `WritDoc` including the current phase, parent context, and a children payload: `summary` tallies phases across the entire descendant subtree beneath the writ (grandchildren and deeper included; the writ itself is excluded), while `items` lists only direct children.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | `string` | yes | Writ id |
 
-Returns: `WritDoc` enriched with `links`, `parent` (`{ id, title, phase }` or `null`), and `children` (`{ summary: Record<WritPhase, number>, items: Array<{ id, title, phase }> }`).
+Returns: `WritDoc` enriched with `links`, `parent` (`{ id, title, phase }` or `null`), and `children` (`{ summary: Record<WritPhase, number>, items: Array<{ id, title, phase }> }`). `summary` counts every descendant grouped by phase (the whole subtree, not just depth 1); `items` stays direct-children-only.
 
 Permission: `clerk:read`
 
