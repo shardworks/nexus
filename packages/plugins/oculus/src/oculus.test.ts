@@ -313,8 +313,8 @@ describe('parseQueryParams', () => {
     const shape = {
       type: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
     };
-    const result = parseQueryParams('http://localhost/api/writ/list?type=mandate&type=brief', shape);
-    assert.deepEqual(result.type, ['mandate', 'brief']);
+    const result = parseQueryParams('http://localhost/api/writ/list?type=mandate&type=bug', shape);
+    assert.deepEqual(result.type, ['mandate', 'bug']);
   });
 
   it('single param with array schema → parsed as string', () => {
