@@ -80,7 +80,7 @@ export interface ClerkKit {
  */
 export const BUILTIN_WRIT_TYPE = 'mandate';
 
-const BUILTIN_TYPES = new Set(['mandate']);
+const BUILTIN_TYPES = new Set([BUILTIN_WRIT_TYPE]);
 
 // ── Cascade resolution constants ─────────────────────────────────────
 
@@ -160,7 +160,7 @@ export function createClerk(): Plugin {
 
   function resolveDefaultType(): string {
     const config = resolveClerkConfig();
-    return config.defaultType ?? 'mandate';
+    return config.defaultType ?? BUILTIN_WRIT_TYPE;
   }
 
   function buildWhereClause(filters?: WritFilters): WhereClause | undefined {
