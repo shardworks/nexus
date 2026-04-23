@@ -208,7 +208,7 @@ A config-level template named `default` overrides the plugin-contributed `spider
 | `testCommand` | `string` | — | Test command forwarded to quick engines. |
 | `variables` | `Record<string, unknown>` | — | Named values available in rig template givens via `${vars.<path>}`. The plugin-default template requires `role`, `buildCommand`, and `testCommand`. |
 | `rigTemplates` | `Record<string, RigTemplate>` | plugin default `default` (draft → seal) | Named rig template definitions. Config-level entries override plugin-contributed templates of the same name. |
-| `rigTemplateMappings` | `Record<string, string>` | plugin default `{ mandate: 'default' }` | Writ type → template name. Config-level entries override plugin-contributed mappings for the same writ type. |
+| `rigTemplateMappings` | `Record<string, string>` | plugin default `{ mandate: 'default' }` | Writ type → template name. Config-level entries override plugin-contributed mappings for the same writ type. Two kits contributing a mapping for the same writ type is a hard error at guild startup; resolve by removing one kit mapping or by overriding here in config (config always wins). |
 | `maxConcurrentEngines` | `number` | `3` | Maximum number of engines running concurrently across all rigs. When the limit is reached, runnable engines stay in `pending` and new rigs are not spawned until a slot frees. |
 | `maxConcurrentEnginesPerRig` | `number` | `1` | Maximum number of engines running concurrently within a single rig. Prevents race conditions with rig-local resources. |
 
@@ -321,6 +321,18 @@ const myPlugin = {
 ```
 
 Config-defined templates and mappings override kit-contributed ones with the same name.
+
+### Kit-vs-kit collisions are a hard error
+
+Two kits contributing overlapping entries to a merge registry refuse to start the guild. The rule applies to every kit-merge site at registration time:
+
+- `rigTemplateMappings` — two kits mapping the same writ type (including Spider's own plugin-default `mandate → default`)
+- `blockTypes` — two kits contributing the same block-type id
+- Clerk `writTypes` — two kits contributing the same writ type
+- Fabricator `engines` — two kits contributing the same engine-design id
+
+When a collision is detected the guild fails to start with an error naming both contributing plugins and the conflicting key. Operators resolve by removing one of the kit contributions, or — for the Spider sites that support it — by declaring a config-level override in `guild.json["spider"]` (config always wins over any kit contribution, silently). The winner is never selected by kit load order.
+
 
 ## Support Kit
 

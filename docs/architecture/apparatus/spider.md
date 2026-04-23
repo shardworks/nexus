@@ -100,6 +100,8 @@ Each `crawl()` call does exactly one thing. The priority ordering:
 2. **Run a ready engine.** An engine is ready when `status === 'pending'` and all engines in its `upstream` array have `status === 'completed'`. Look up the `EngineDesign` by `designId` from the Fabricator. Assemble givens (from givensSpec) and context (with upstream yields), then call `design.run(givens, context)`. For clockwork engines (`status: 'completed'` result): store the yields on the engine instance, mark it completed, and check for rig completion (same as step 1). Returns `engine-completed` (or `rig-completed` if this was the terminal engine). For quick engines (`status: 'launched'` result): store the `sessionId`, mark the engine `running`. Returns `engine-started`. Completion is collected on subsequent crawl calls via step 1.
 3. **Spawn a rig.** If there's an open writ with no rig, look up its rig template via `rigTemplateMappings` (config or kit) for the writ's type. If a mapping exists, spawn the rig from the mapped template and return `rig-spawned`. If no mapping exists, skip the writ — dispatch is strictly opt-in per writ type, and unmapped types remain in `open` for non-dispatch handling.
 
+**Dispatch precedence is: config wins over kit; two kits are a hard error.** A config-level `rigTemplateMappings` entry always wins over any kit contribution for the same writ type. Two kits contributing a mapping for the same writ type is a guild-config hazard and fails the guild at startup — the error names both contributing plugins and the conflicting writ type. Operators resolve by removing one of the kit mappings or by overriding via `spider.rigTemplateMappings` in `guild.json`. The winner is never selected by kit load order. This same fail-loud rule applies framework-wide at every kit-vs-kit merge site — Clerk `writTypes`, Spider `blockTypes`, and Fabricator engine designs all refuse to start under a duplicate contribution with the same error shape.
+
 If nothing qualifies at any level, return null (the guild is idle or all work is blocked on running quick engines).
 
 ### Operational model
@@ -813,6 +815,8 @@ The Spider's apparatus contributes a plugin-level rig template and mapping via i
 - `rigTemplateMappings: { mandate: 'default' }`
 
 Guilds do **not** need to declare these in `guild.json` — they are always present. `spider.rigTemplates` and `spider.rigTemplateMappings` in config are overlays: a config-level template of the same name wins over the plugin default, and a config-level mapping for the same writ type wins over the kit mapping. Kit mapping lookup resolves an unqualified templateName against the bare name first (so config overrides work) and falls back to the contributing kit's qualified `${pluginId}.${templateName}` when no config entry claims the bare name.
+
+**Kit-vs-kit collisions are a hard error.** Two kits contributing a `rigTemplateMappings` entry for the same writ type — including Spider's own plugin-default `mandate → default` — refuse to start the guild; the startup error names both contributing plugins and the conflicting writ type. Operators resolve by removing one kit mapping or by declaring a config-level override in `spider.rigTemplateMappings` (which always wins, silently). The winner is never selected by kit load order. The same fail-loud rule applies to Clerk `writTypes`, Spider `blockTypes`, and Fabricator engine designs — the policy is framework-wide, not Spider-specific.
 
 ### Givens Template Expressions
 
