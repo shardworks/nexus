@@ -1106,15 +1106,25 @@ class RigTemplateRegistry {
         continue;
       }
 
-      // Config override: skip silently
+      // Config override: skip silently. Config-vs-kit precedence is unchanged;
+      // the kit-vs-kit collision rule below only fires when no config mapping
+      // claims the writ type.
       if (this.configMappings.has(writType)) continue;
 
-      // Duplicate kit mapping: first-registered wins
-      if (this.kitMappings.has(writType)) {
-        console.warn(
-          `[spider] Kit "${pluginId}" rigTemplateMappings.${writType}: mapping for "${writType}" already registered by another kit — skipped`
+      // Kit-vs-kit collision: throw at registration time. Two kits contributing
+      // a mapping for the same writ type is a guild-config hazard — operators
+      // resolve it by removing one of the contributions, or by overriding via
+      // guild config.
+      const existing = this.kitMappings.get(writType);
+      if (existing !== undefined) {
+        throw new Error(
+          `[spider] rigTemplateMappings: writ type "${writType}" is mapped by two kits ` +
+          `— kit "${existing.pluginId}" mapped it to "${existing.templateName}", and ` +
+          `kit "${pluginId}" attempted to map it to "${templateName}". ` +
+          `Two kits cannot contribute a mapping for the same writ type. ` +
+          `Resolve by removing one of the kit mappings, or by overriding via ` +
+          `guild config (spider.rigTemplateMappings).`
         );
-        continue;
       }
 
       this.kitMappings.set(writType, { templateName, pluginId });

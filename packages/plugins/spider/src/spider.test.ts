@@ -5018,13 +5018,17 @@ describe('Kit contributions — rig templates and mappings', () => {
 
   describe('V1 — kit template registered under qualified name', () => {
     it('registers kit template under pluginId.templateName', async () => {
+      // Uses a custom writ type so the kit mapping doesn't collide with
+      // Spider's plugin-default `mandate → default` kit mapping, which would
+      // otherwise be a kit-vs-kit collision and throw at startup.
       const kit = makeKit('quality-tools', {
+        writTypes: [{ name: 'audit' }],
         rigTemplates: { audit: SIMPLE_TEMPLATE },
-        rigTemplateMappings: { mandate: 'quality-tools.audit' },
+        rigTemplateMappings: { audit: 'quality-tools.audit' },
       });
       const fix = buildFixture({}, { status: 'completed' }, { kits: [kit] });
 
-      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'mandate' });
+      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'audit' });
       const result = await fix.spider.crawl();
       assert.equal(result?.action, 'rig-spawned');
 
@@ -5098,12 +5102,15 @@ describe('Kit contributions — rig templates and mappings', () => {
         });
         const goodKit = makeKit('quality-tools', {
           requires: ['fabricator'],
+          writTypes: [{ name: 'audit' }],
           rigTemplates: {
             audit: {
               engines: [{ id: 'step1', designId: 'custom-engine', givens: {} }],
             },
           },
-          rigTemplateMappings: { mandate: 'quality-tools.audit' },
+          // Custom writ type avoids kit-vs-kit collision with Spider's
+          // plugin-default `mandate → default` mapping.
+          rigTemplateMappings: { audit: 'quality-tools.audit' },
         });
         buildFixture({}, { status: 'completed' }, { kits: [customEngineKit, goodKit] });
         assert.ok(
@@ -5120,8 +5127,11 @@ describe('Kit contributions — rig templates and mappings', () => {
       try {
         const kit = makeKit('quality-tools', {
           // No requires — but uses built-in 'draft' engine
+          writTypes: [{ name: 'audit' }],
           rigTemplates: { audit: SIMPLE_TEMPLATE },
-          rigTemplateMappings: { mandate: 'quality-tools.audit' },
+          // Custom writ type avoids kit-vs-kit collision with Spider's
+          // plugin-default `mandate → default` mapping.
+          rigTemplateMappings: { audit: 'quality-tools.audit' },
         });
         buildFixture({}, { status: 'completed' }, { kits: [kit] });
         assert.ok(
@@ -5136,9 +5146,12 @@ describe('Kit contributions — rig templates and mappings', () => {
 
   describe('V4 — kit mapping routes writ type to template', () => {
     it('uses kit-contributed mapping when spawning', async () => {
+      // Custom writ type avoids kit-vs-kit collision with Spider's
+      // plugin-default `mandate → default` mapping.
       const kit = makeKit('quality-tools', {
+        writTypes: [{ name: 'audit' }],
         rigTemplates: { audit: SIMPLE_TEMPLATE },
-        rigTemplateMappings: { mandate: 'quality-tools.audit' },
+        rigTemplateMappings: { audit: 'quality-tools.audit' },
       });
       const fix = buildFixture(
         { spider: { variables: { role: 'artificer' } } },
@@ -5146,7 +5159,7 @@ describe('Kit contributions — rig templates and mappings', () => {
         { kits: [kit] }
       );
 
-      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'mandate' });
+      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'audit' });
       const result = await fix.spider.crawl();
       assert.equal(result?.action, 'rig-spawned');
       const rig = await fix.spider.forWrit(writ.id);
@@ -5182,25 +5195,35 @@ describe('Kit contributions — rig templates and mappings', () => {
       assert.equal(rig!.engines[0].id, 'config-engine');
     });
 
-    it('emits warning when two kits map same writ type (first wins)', () => {
-      const { warnings, restore } = captureWarnings();
-      try {
-        const kitA = makeKit('kit-a', {
-          rigTemplates: { tmpl: SIMPLE_TEMPLATE },
-          rigTemplateMappings: { mandate: 'kit-a.tmpl' },
-        });
-        const kitB = makeKit('kit-b', {
-          rigTemplates: { tmpl: SIMPLE_TEMPLATE },
-          rigTemplateMappings: { mandate: 'kit-b.tmpl' },
-        });
-        buildFixture({}, { status: 'completed' }, { kits: [kitA, kitB] });
-        assert.ok(
-          warnings.some(w => w.includes('kit-b') && w.includes('mandate')),
-          `Expected warning about kit-b duplicate mandate mapping, got: ${JSON.stringify(warnings)}`
-        );
-      } finally {
-        restore();
-      }
+    it('throws when two kits map the same writ type (kit-vs-kit collision is fatal)', () => {
+      // Use a custom writ type so the collision is strictly between the two
+      // test kits — Spider's plugin-default contributes `mandate`, and mixing
+      // that into this test would muddy which collision is under test. Only
+      // kit-a declares the writ type so the Clerk's writTypes registry does
+      // not also report a collision; the rigTemplateMappings throw is the
+      // one under test here.
+      const kitA = makeKit('kit-a', {
+        writTypes: [{ name: 'audit' }],
+        rigTemplates: { tmpl: SIMPLE_TEMPLATE },
+        rigTemplateMappings: { audit: 'kit-a.tmpl' },
+      });
+      const kitB = makeKit('kit-b', {
+        rigTemplates: { tmpl: SIMPLE_TEMPLATE },
+        rigTemplateMappings: { audit: 'kit-b.tmpl' },
+      });
+      assert.throws(
+        () => buildFixture({}, { status: 'completed' }, { kits: [kitA, kitB] }),
+        (err: Error) => {
+          // Error must name both contributing plugins and the conflicting writ type.
+          return (
+            /rigTemplateMappings/.test(err.message) &&
+            /audit/.test(err.message) &&
+            /kit-a/.test(err.message) &&
+            /kit-b/.test(err.message)
+          );
+        },
+        'kit-vs-kit mapping collision must throw and name both plugins + the writ type'
+      );
     });
   });
 
@@ -5251,8 +5274,12 @@ describe('Kit contributions — rig templates and mappings', () => {
       const { warnings, restore } = captureWarnings();
       try {
         const kit = makeKit('kit-a', {
+          // Custom writ type avoids kit-vs-kit collision with Spider's
+          // plugin-default `mandate → default` mapping — the dangling-mapping
+          // warn is the behavior under test here, not the collision throw.
+          writTypes: [{ name: 'audit' }],
           // No rigTemplates contributed, but mapping points to kit-a.nonexistent
-          rigTemplateMappings: { mandate: 'kit-a.nonexistent' },
+          rigTemplateMappings: { audit: 'kit-a.nonexistent' },
         });
         buildFixture({}, { status: 'completed' }, { kits: [kit] });
         assert.ok(
@@ -5387,15 +5414,18 @@ describe('Kit contributions — rig templates and mappings', () => {
 
   describe('Cross-kit mapping reference (test 14)', () => {
     it('kit B can reference a template contributed by kit A', async () => {
+      // Custom writ type avoids kit-vs-kit collision with Spider's
+      // plugin-default `mandate → default` mapping.
       const kitA = makeKit('kit-a', {
         rigTemplates: { pipeline: SIMPLE_TEMPLATE },
       });
       const kitB = makeKit('kit-b', {
-        rigTemplateMappings: { mandate: 'kit-a.pipeline' },
+        writTypes: [{ name: 'audit' }],
+        rigTemplateMappings: { audit: 'kit-a.pipeline' },
       });
       const fix = buildFixture({}, { status: 'completed' }, { kits: [kitA, kitB] });
 
-      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'mandate' });
+      const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'audit' });
       const result = await fix.spider.crawl();
       assert.equal(result?.action, 'rig-spawned');
       const rig = await fix.spider.forWrit(writ.id);
