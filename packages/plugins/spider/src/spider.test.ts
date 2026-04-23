@@ -10,7 +10,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { setGuild, clearGuild, generateId } from '@shardworks/nexus-core';
+import { setGuild, clearGuild, generateId, shortId } from '@shardworks/nexus-core';
 import type { Guild, GuildConfig, LoadedKit, LoadedApparatus, StartupContext, KitEntry } from '@shardworks/nexus-core';
 
 import { createStacksApparatus } from '@shardworks/stacks-apparatus';
@@ -10074,7 +10074,7 @@ describe('Spider — spider.follows gate', () => {
 
       const writAfter = await clerk.show(dependent.id);
       assert.equal(writAfter.phase, 'stuck');
-      const expectedShort = blocker.id.split('-').slice(0, 2).join('-');
+      const expectedShort = shortId(blocker.id);
       assert.equal(writAfter.resolution, `Blocked by failed dependency: ${expectedShort}`);
       const spiderStatus = writAfter.status?.spider as Record<string, unknown> | undefined;
       assert.ok(spiderStatus, 'status.spider should be populated');
@@ -10103,8 +10103,8 @@ describe('Spider — spider.follows gate', () => {
 
       const writAfter = await clerk.show(dep.id);
       assert.equal(writAfter.phase, 'stuck');
-      const short1 = b1.id.split('-').slice(0, 2).join('-');
-      const short2 = b2.id.split('-').slice(0, 2).join('-');
+      const short1 = shortId(b1.id);
+      const short2 = shortId(b2.id);
       assert.equal(
         writAfter.resolution,
         `Blocked by failed dependencies: ${short1}, ${short2}`,

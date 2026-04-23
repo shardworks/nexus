@@ -8,7 +8,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { setGuild, clearGuild } from '@shardworks/nexus-core';
+import { setGuild, clearGuild, shortId } from '@shardworks/nexus-core';
 import type { Guild, GuildConfig, StartupContext, KitEntry } from '@shardworks/nexus-core';
 import { createStacksApparatus } from '@shardworks/stacks-apparatus';
 import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
@@ -1236,8 +1236,8 @@ describe('Ratchet', () => {
       // Short ID form: `c-<base36ts>`, i.e. the first two hyphen-delimited segments.
       // Two clicks created in the same millisecond will share this prefix — the
       // random suffix is what disambiguates them — so lookups below go by goal text.
-      const rootShort = root.id.split('-').slice(0, 2).join('-');
-      const childShort = child.id.split('-').slice(0, 2).join('-');
+      const rootShort = shortId(root.id);
+      const childShort = shortId(child.id);
 
       assert.ok(rootShort.startsWith('c-'), 'short ID starts with click prefix');
       assert.ok(rootShort.length < root.id.length, 'short ID is shorter than full ID');
