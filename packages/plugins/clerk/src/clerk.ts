@@ -71,6 +71,15 @@ export interface ClerkKit {
 
 // ── Built-in writ types ──────────────────────────────────────────────
 
+/**
+ * Name of the one built-in writ type. Single source of truth — this value
+ * serves both as the sole member of `BUILTIN_TYPES` (the set of always-
+ * valid writ type names) and as the fallback returned by
+ * `resolveDefaultType()` when the guild config declares no `defaultType`.
+ * A future rename of the built-in type lands here in one place.
+ */
+export const BUILTIN_WRIT_TYPE = 'mandate';
+
 const BUILTIN_TYPES = new Set(['mandate']);
 
 // ── Cascade resolution constants ─────────────────────────────────────
