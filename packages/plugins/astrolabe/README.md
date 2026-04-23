@@ -64,7 +64,7 @@ interface PlanDoc {
   scope?: ScopeItem[];      // What's in and what's out
   decisions?: Decision[];   // Architectural/design decisions with options
   spec?: string;            // The generated specification (implementation brief + task manifest)
-  generatedWritId?: string; // ID of the generated mandate
+  generatedWritId?: string; // ID of a mandate produced by the retired spec-publish engine — may be present on historic plans; current rigs do not set this
   createdAt: string;
   updatedAt: string;
 }
@@ -128,11 +128,11 @@ The Astrolabe declares one book in Stacks:
 
 | Role | Qualified Name | Permissions | Strict | Used In |
 |---|---|---|---|---|
-| `sage-primer-reader` | `astrolabe.sage-primer-reader` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | three-phase reader stage |
-| `sage-primer-scoping` | `astrolabe.sage-primer-scoping` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | three-phase scoping-primer stage (`analyst` slot id) |
-| `sage-writer` | `astrolabe.sage-writer` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | spec-writer stage (all templates) |
-| `sage-primer-solo` | `astrolabe.sage-primer-solo` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | `reader-analyst` slot in two-phase / plan-and-ship, when `astrolabe.patronRole` is unset — primer carries the razor itself |
-| `sage-primer-attended` | `astrolabe.sage-primer-attended` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | `reader-analyst` slot in two-phase / plan-and-ship, when `astrolabe.patronRole` is non-empty — primer pre-fills every decision, patron-anima principle-checks them all |
+| `sage-primer-reader` | `astrolabe.sage-primer-reader` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | reserved — no current rig template summons this role |
+| `sage-primer-scoping` | `astrolabe.sage-primer-scoping` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | reserved — no current rig template summons this role |
+| `sage-writer` | `astrolabe.sage-writer` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | spec-writer stage |
+| `sage-primer-solo` | `astrolabe.sage-primer-solo` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | `reader-analyst` slot, when `astrolabe.patronRole` is unset — primer carries the razor itself |
+| `sage-primer-attended` | `astrolabe.sage-primer-attended` | `astrolabe:read`, `astrolabe:write`, `clerk:read`, `ratchet:read` | `true` | `reader-analyst` slot, when `astrolabe.patronRole` is non-empty — primer pre-fills every decision, patron-anima principle-checks them all |
 
 ### Engines (contributed to Fabricator)
 
@@ -144,36 +144,19 @@ The Astrolabe declares one book in Stacks:
 | `astrolabe.patron-anima` | Consults a configured Patron Anima to principle-check every decision the primer produced, under a tailored operational prompt that encodes the engine's mode discipline — one option per decision, principle-structural confidence calibration (`high` = one principle fires cleanly; `med` = multiple principles conflict and the anima resolves; `low` = no principle speaks, confirm the primer), narrow abstention by omission reserved for *irresolvable principle conflict* and *broken decision frame* only, and an explicit out-of-lane prohibition on codebase audit work. Reads the plan's reviewable decisions (those without `selected` already set — empty when the attended primer ran, non-empty when the solo primer surfaced razor matches), launches the configured `patronRole` via a single-pass anima session, parses a single structured emission, and applies each valid verdict to `Decision.selected` (plus records the full verdict — confirm / override / fill-in with selection, confidence, rationale — on `Decision.patron`). No-ops when `astrolabe.patronRole` is unset or empty, or when no reviewable decisions remain. Unparseable output, invalid verdicts, and abstained decisions are left unfilled — decision-review surfaces the remainder to the patron in the normal flow. |
 | `astrolabe.decision-review` | Two-pass engine: blocks for patron review, then reconciles answers. Decisions with `selected` already pre-set by the primer or the patron anima are auto-accepted — they are excluded from the InputRequestDoc, and if nothing remains reviewable the engine fast-paths to `writing` without opening the gate. |
 | `astrolabe.plan-finalize` | Transitions the plan to `completed` and yields the written `spec` downstream. Does not post any writ. Used inside `plan-and-ship` to hand the spec off to the implement engine on the same brief rig. |
-| `astrolabe.spec-publish` | Publishes the generated specification as a new mandate writ. Used only by the legacy two-phase / three-phase rigs that split planning from implementation across two writs. |
-| `astrolabe.observation-lift` | Walks `plan.observations` after the planning-terminator engine has transitioned the plan to `completed` and calls `clerk.post({ type: 'brief', title, body, codex, parentId, draft: true })` once per record. Each created writ enters `new` (draft) phase, invisible to the Spider until a curator publishes it. Silently no-ops when `observations` is empty, absent, or a legacy string; fails fast on the first `clerk.post` error. Does not mutate the plan — the parent-child relationship on the Clerk side is the sole audit trail. Wired unconditionally into all three rig templates. |
+| `astrolabe.observation-lift` | Walks `plan.observations` after `plan-finalize` has transitioned the plan to `completed` and calls `clerk.post({ type: 'brief', title, body, codex, parentId, draft: true })` once per record. Each created writ enters `new` (draft) phase, invisible to the Spider until a curator publishes it. Silently no-ops when `observations` is empty, absent, or a legacy string; fails fast on the first `clerk.post` error. Does not mutate the plan — the parent-child relationship on the Clerk side is the sole audit trail. Wired unconditionally into the plan-and-ship rig template. |
 
 ### Rig Templates (contributed to Spider)
 
 | Template | Mapped Writ Type | Engines |
 |---|---|---|
 | `astrolabe.plan-and-ship` | `brief` (default) | plan-init → draft → reader-analyst → inventory-check → patron-anima → decision-review → spec-writer → plan-finalize → observation-lift → implement → review → revise → seal |
-| `astrolabe.two-phase-planning` | — (opt-in) | plan-init → draft → reader-analyst → inventory-check → decision-review → spec-writer → spec-publish → observation-lift → seal |
-| `astrolabe.three-phase-planning` | — (opt-in) | plan-init → draft → reader → inventory-check → analyst → decision-review → spec-writer → spec-publish → observation-lift → seal |
 
-The `resolutionEngine` is `seal` for `plan-and-ship` (brief completes when implementation seals) and `spec-writer` for the two legacy planning-only templates (where the brief's rig terminates at spec-writer and a follow-up mandate writ carries the implementation separately).
+The `resolutionEngine` is `seal` — the brief writ reaches `completed` only after the final seal engine completes.
 
 #### Rig Template Selection
 
-The `brief` writ type maps to `astrolabe.plan-and-ship` by default. This single combined rig carries the brief through planning and implementation on one writ — the `plan-finalize` engine hands the written spec directly to the downstream `implement` engine via `${yields.plan-finalize.spec}`, and no separate mandate writ is posted. The `reader-analyst` slot is driven by the astrolabe-owned `astrolabe.reader-analyst` engine, which selects between the `sage-primer-attended` and `sage-primer-solo` roles at engine-run time from live guild config. The optional `patron-anima` stage between `inventory-check` and `decision-review` consults the configured `patronRole` under a tailored operational prompt (see `patron-anima-prompt.md` packaged with the plugin) whenever `astrolabe.patronRole` is set. The anima principle-checks every decision the primer produced and confirms (including first-class `low`-confidence confirms when no principle speaks), overrides, fills in, or abstains. Abstention is narrow — reserved for *irresolvable principle conflict* and *broken decision frame* only. Abstained decisions are left unfilled and flow through to decision-review in the normal path. The brief reaches `completed` only when the final seal engine completes.
-
-To use a legacy planning-only template (which posts a separate mandate writ and ends the brief's lifecycle at spec-writer), add a rig template mapping override in `guild.json`:
-
-```json
-{
-  "spider": {
-    "rigTemplateMappings": {
-      "brief": "astrolabe.two-phase-planning"
-    }
-  }
-}
-```
-
-Substitute `astrolabe.three-phase-planning` for the split reader / scoping-primer variant (the `analyst` slot id is preserved for backward compatibility; the role it summons is `sage-primer-scoping`).
+The `brief` writ type maps to `astrolabe.plan-and-ship` by default. This single combined rig carries the brief through planning and implementation on one writ — the `plan-finalize` engine hands the written spec directly to the downstream `implement` engine via `${yields.plan-finalize.spec}`, and no separate mandate writ is posted. The `reader-analyst` slot is driven by the astrolabe-owned `astrolabe.reader-analyst` engine, which selects between the `sage-primer-attended` and `sage-primer-solo` roles at engine-run time from live guild config. The optional `patron-anima` stage between `inventory-check` and `decision-review` consults the configured `patronRole` under a tailored operational prompt (see `patron-anima-prompt.md` packaged with the plugin) whenever `astrolabe.patronRole` is set. The anima principle-checks every decision the primer produced and confirms (including first-class `low`-confidence confirms when no principle speaks), overrides, fills in, or abstains. Abstention is narrow — reserved for *irresolvable principle conflict* and *broken decision frame* only. Abstained decisions are left unfilled and flow through to decision-review in the normal path.
 
 ### Tools
 

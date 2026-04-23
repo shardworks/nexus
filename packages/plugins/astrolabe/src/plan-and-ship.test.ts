@@ -1,22 +1,13 @@
 /**
  * Combined plan-and-ship rig template tests.
  *
- * The commission that introduces this rig asks for three end-to-end
- * scenarios: (1) a brief writ running the combined rig through seal,
- * (2) a second writ gated on the brief via blocked_by, and (3) the old
- * three-phase-planning rig still reachable via explicit mapping.
- *
- * Running the combined rig end-to-end would require a full scriptorium
- * mock (to satisfy draft/seal) plus anima-session drivers for every
- * planning stage. Spider's own test suite already covers the
- * draft → implement → review → revise → seal backbone end-to-end for
- * the 'mandate' path; Astrolabe's engines.test.ts covers the planning
- * engines' state-machine transitions in isolation. So these tests focus
- * on the structural invariants that the commission calls out as
- * acceptance signals: engine sequence, handoff wiring, absence of a
- * mandate-posting engine in the combined rig, and that the old
- * two/three-phase templates remain registered for operators who opt
- * back in via guild.json.
+ * These tests pin the structural invariants of the (now sole) planning
+ * rig `astrolabe.plan-and-ship`: engine sequence, handoff wiring, and
+ * the absence of any mandate-posting engine. The retired two-phase and
+ * three-phase planning rigs — and the `astrolabe.spec-publish` engine
+ * that only they used — have been removed from the registry; the
+ * negative assertions below guard against regressions that would
+ * silently re-register them.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -208,29 +199,17 @@ describe('astrolabe plugin-default brief mapping', () => {
     assert.equal(mappings.brief, 'astrolabe.plan-and-ship');
   });
 
-  it('leaves two-phase-planning and three-phase-planning registered for explicit opt-in', () => {
+  it('does not register the retired two-phase-planning or three-phase-planning templates', () => {
     const rigTemplates = kit.rigTemplates as Record<string, RigTemplateShape>;
-    assert.ok(rigTemplates['two-phase-planning'],
-      'two-phase-planning must remain registered (reachable via guild-config mapping override)');
-    assert.ok(rigTemplates['three-phase-planning'],
-      'three-phase-planning must remain registered (reachable via guild-config mapping override)');
-    // Confirm the old templates still produce a mandate — they include
-    // spec-publish, which is the engine that posts the mandate writ. After
-    // the observation-lift insertion between spec-publish and seal, the
-    // last engine before seal is observation-lift, so we look for spec-
-    // publish by designId rather than positional index.
-    for (const name of ['two-phase-planning', 'three-phase-planning'] as const) {
-      const tpl = rigTemplates[name];
-      const designIds = tpl.engines.map(e => e.designId);
-      const sp = designIds.indexOf('astrolabe.spec-publish');
-      const ol = designIds.indexOf('astrolabe.observation-lift');
-      const seal = designIds.indexOf('seal');
-      assert.ok(sp >= 0, `${name} must still include spec-publish (mandate post)`);
-      assert.ok(ol >= 0, `${name} must include observation-lift`);
-      assert.ok(seal >= 0, `${name} must end with seal`);
-      assert.ok(sp < ol && ol < seal,
-        `${name} must run spec-publish → observation-lift → seal in that order`);
-    }
+    assert.equal(rigTemplates['two-phase-planning'], undefined,
+      'two-phase-planning must be unregistered — the retirement commission removed it');
+    assert.equal(rigTemplates['three-phase-planning'], undefined,
+      'three-phase-planning must be unregistered — the retirement commission removed it');
+  });
+
+  it('plan-and-ship is the only rig template astrolabe contributes', () => {
+    const rigTemplates = kit.rigTemplates as Record<string, RigTemplateShape>;
+    assert.deepEqual(Object.keys(rigTemplates).sort(), ['plan-and-ship']);
   });
 });
 
@@ -412,16 +391,16 @@ describe('plan-finalize engine', () => {
 // ── Audit: no combined-rig engine can post a mandate ──────────────────
 
 describe('no mandate-posting engine appears in astrolabe.plan-and-ship', () => {
-  // This is the grep-style audit the commission's acceptance signal asks
-  // for. It is done structurally: enumerate the designIds in the combined
-  // rig, and confirm none of them is spec-publish (the only astrolabe
-  // engine that calls clerk.post) or any other known writ-posting engine.
+  // This is a grep-style audit: enumerate the designIds in the combined
+  // rig, and confirm none of them is the retired spec-publish engine (the
+  // only astrolabe engine that ever called clerk.post for a mandate) or
+  // any other unknown writ-posting engine.
   const plugin = createAstrolabe();
   const kit = getKit(plugin);
   const rigTemplates = kit.rigTemplates as Record<string, RigTemplateShape>;
   const template = rigTemplates['plan-and-ship'];
 
-  it('no engine in the combined rig uses the spec-publish designId', () => {
+  it('no engine in the combined rig uses the retired spec-publish designId', () => {
     const designIds = template.engines.map(e => e.designId);
     assert.ok(!designIds.includes('astrolabe.spec-publish'),
       `plan-and-ship uses designIds: ${designIds.join(', ')}`);

@@ -11,16 +11,16 @@
  *
  * Behavior:
  *   - Validates that the plan exists and its status is `completed`.
- *     (Placement inside each rig guarantees this — observation-lift
- *     runs after plan-finalize / spec-publish, which transition the
+ *     (Placement inside the plan-and-ship rig guarantees this —
+ *     observation-lift runs after plan-finalize, which transitions the
  *     plan to `completed`.)
  *   - Silently no-ops if `plan.observations` is not an array (legacy
  *     string-shaped plandocs) or is an empty array.
  *   - Otherwise, iterates the array in order and calls
  *     `clerk.post({ type: 'brief', title, body, codex, parentId, draft })`
  *     once per record. The brief writ must still be in a non-terminal
- *     phase at this point — in all three rigs the engine runs before
- *     seal, which is what finally transitions the brief to `completed`.
+ *     phase at this point — the engine runs before seal, which is what
+ *     finally transitions the brief to `completed`.
  *   - Fails fast on the first `clerk.post` error. Already-created
  *     drafts persist as `new`-status writs under the brief; they are
  *     invisible to the Spider until a curator publishes them.

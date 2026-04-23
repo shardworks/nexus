@@ -12,8 +12,6 @@ The Astrolabe refines minimal briefs from the patron into detailed work specific
 
 The Astrolabe maintains its own books for planning artifacts (inventory, observations, decisions, specs) and provides tools for the animas that staff its engines to read and write those artifacts.
 
-> **Legacy flow.** The Astrolabe also still ships two planning-only rig templates (`astrolabe.two-phase-planning` and `astrolabe.three-phase-planning`) that terminate at a `spec-publish` engine which posts a new `mandate` writ. Those templates are reachable via explicit `spider.rigTemplateMappings.brief` override in `guild.json` and are preserved for backward compatibility.
-
 ---
 
 ## Dependencies
@@ -131,28 +129,17 @@ The patron-anima engine (stage 5) consults a configured patron role under a tail
 
 The `plan-finalize` engine is the seam between planning and implementation: it completes the plan, and its `spec` yield is wired into the downstream `implement` engine's `prompt` given. No `mandate` writ is posted by this rig.
 
-The `observation-lift` engine runs immediately after `plan-finalize` (and after `spec-publish` in the legacy two-phase / three-phase rigs). Placement is deliberate: the plan has reached its final `completed` state so the observation records are stable, while the brief writ itself is still in `open` phase — Clerk rejects child-writ creation under a terminal parent, so this is the last safe window to attach children before the rig's seal stage transitions the brief. The engine walks `plan.observations` and calls `clerk.post({ type: 'brief', title, body, codex, parentId, draft: true })` once per record. Each created writ enters `new` (draft) phase, invisible to the Spider, ready for a curator (human or an overseer shipped separately) to promote to `open`. The engine is unconditional in all three rig templates — empty, absent, or legacy-string observations are handled internally with a silent no-op, so no `when:` guard is needed.
-
-#### Legacy planning-only templates
-
-Two additional templates remain registered for backward compatibility:
-
-| Template | Engines |
-|---|---|
-| `astrolabe.two-phase-planning` | plan-init → draft → reader-analyst → inventory-check → decision-review → spec-writer → spec-publish → observation-lift → seal |
-| `astrolabe.three-phase-planning` | plan-init → draft → reader → inventory-check → analyst → decision-review → spec-writer → spec-publish → observation-lift → seal |
-
-Both terminate at a `spec-publish` engine that posts a new `mandate` writ to the Clerk, run `observation-lift` so each recorded observation becomes a draft child writ under the brief, and then seal the brief's rig with `abandon: true`. They are reachable via an explicit `spider.rigTemplateMappings.brief` override in `guild.json`.
+The `observation-lift` engine runs immediately after `plan-finalize`. Placement is deliberate: the plan has reached its final `completed` state so the observation records are stable, while the brief writ itself is still in `open` phase — Clerk rejects child-writ creation under a terminal parent, so this is the last safe window to attach children before the rig's seal stage transitions the brief. The engine walks `plan.observations` and calls `clerk.post({ type: 'brief', title, body, codex, parentId, draft: true })` once per record. Each created writ enters `new` (draft) phase, invisible to the Spider, ready for a curator (human or an overseer shipped separately) to promote to `open`. The engine is unconditional — empty, absent, or legacy-string observations are handled internally with a silent no-op, so no `when:` guard is needed.
 
 ### Roles
 
 Several sage roles are contributed to the **Loom** via `roles`, each tailored to a pipeline stage:
 
-- **`astrolabe.sage-primer-reader`** — three-phase reader stage (pure inventory pass).
-- **`astrolabe.sage-primer-scoping`** — three-phase scoping-primer stage (scope, decisions, observations). Summoned from the `analyst` slot id (preserved for backward compatibility).
-- **`astrolabe.sage-primer-solo`** — combined reader + scoping primer for the two-phase and plan-and-ship rigs, used when `astrolabe.patronRole` is unset or empty. Carries the razor itself, leaving only razor-matched decisions unset for the patron.
-- **`astrolabe.sage-primer-attended`** — combined reader + scoping primer for the two-phase and plan-and-ship rigs, used when `astrolabe.patronRole` is non-empty. Pre-fills `selected` on every decision; the downstream patron-anima principle-checks each one and confirms, overrides, fills in, or narrowly abstains.
-- **`astrolabe.sage-writer`** — spec-writer stage (all three rigs).
+- **`astrolabe.sage-primer-reader`** — reserved. No current rig template summons this role; it remains registered so a guild can wire it into a custom rig template if desired.
+- **`astrolabe.sage-primer-scoping`** — reserved. No current rig template summons this role; it remains registered for the same reason as `sage-primer-reader`.
+- **`astrolabe.sage-primer-solo`** — combined reader + scoping primer for the plan-and-ship rig, used when `astrolabe.patronRole` is unset or empty. Carries the razor itself, leaving only razor-matched decisions unset for the patron.
+- **`astrolabe.sage-primer-attended`** — combined reader + scoping primer for the plan-and-ship rig, used when `astrolabe.patronRole` is non-empty. Pre-fills `selected` on every decision; the downstream patron-anima principle-checks each one and confirms, overrides, fills in, or narrowly abstains.
+- **`astrolabe.sage-writer`** — spec-writer stage.
 
 The `astrolabe.reader-analyst` engine selects between the two primer variants (solo / attended) at engine-run time by reading `astrolabe.patronRole` from live guild config. Sage roles carry permissions to read/write the Astrolabe's books, create patron-input requests, and post writs to the Clerk (for the final generated writ).
 
@@ -166,8 +153,7 @@ The Astrolabe contributes clockwork engine designs to the Fabricator:
 - **`astrolabe.patron-anima`** — consults a configured patron anima to principle-check every decision the primer produced, before `decision-review` opens. When `astrolabe.patronRole` is unset (or when no reviewable decisions remain — typical when the attended primer pre-filled everything and all of the anima's verdicts have been written back in a prior pass), the engine no-ops. Otherwise it launches a single-pass anima session under the configured role, supplying a tailored operational prompt that encodes the engine's mode discipline: one option per decision (selection must be one of the offered keys), principle-structural confidence calibration (`high` = one principle fires cleanly; `med` = multiple principles conflict and the anima resolves; `low` = no principle speaks and the anima confirms the primer), narrow abstention-by-omission reserved for *irresolvable principle conflict* and *broken decision frame* only, and an explicit out-of-lane prohibition on codebase audit work (no file reads, grep, or implementation-feasibility probing). The engine parses a single fenced JSON emission, validates each verdict against the decision's offered option keys and the confirm/override/fill-in internal consistency rules, applies each valid verdict to `Decision.selected`, and records the full emission — selection, confidence (`high`/`med`/`low`), and optional rationale — on `Decision.patron`. Unparseable emissions, invalid verdicts, and abstained decisions (the two narrow cases) are left unfilled so they flow through to `decision-review` in the normal path. The engine does not retry. The static portion of the operational prompt is checked in as `patron-anima-prompt.md`, packaged with the plugin alongside the sage role files; per-decision content (ids, questions, options, optional primer recommendation) is interpolated by the engine at prompt-build time.
 - **`astrolabe.decision-review`** — the patron interaction engine. On first run: reads decisions from the plans book and partitions them into pre-decided decisions (where the primer or the patron anima already set `selected`) and reviewable decisions (where `selected` is unset). Pre-decided decisions are auto-accepted and skipped entirely — they produce no `questions[id]` or `answers[id]` entry in the `InputRequestDoc`. If no reviewable decisions remain, the engine fast-paths to `'writing'` without opening the patron-review gate, regardless of whether scope items exist (scope items are implicitly auto-accepted). Otherwise the engine maps each reviewable decision to a `ChoiceQuestionSpec`, pre-fills answers with primer recommendations, writes the request to the Spider's `input-requests` book, and returns `{ status: 'blocked', blockType: 'patron-input', condition: { requestId } }`. On re-run after block clears (detected via `priorBlock` in context): reads the completed `InputRequestDoc`, reconciles patron answers back into `PlanDoc.decisions` (setting `selected` and `patronOverride` fields), validates all decisions are resolved and scope is consistent, and completes normally. Pre-decided decisions flow through reconcile unchanged — the primer-set or anima-set `selected` is preserved and the invariant (exactly one of `selected` / `patronOverride`) still holds. Yields `{ decisionSummary }` — a human-readable string summarizing all decisions and the patron's selections, for injection into the spec-writer's prompt via inline interpolation. The decision summary renders auto-decided and patron-confirmed decisions identically.
 - **`astrolabe.plan-finalize`** — planning-phase terminator for the combined plan-and-ship rig. Validates that `plan.spec` is a non-empty string, transitions `plan.status` from `'writing'` to `'completed'`, and yields `{ spec }` so the downstream `implement` engine can read the spec via `${yields.plan-finalize.spec}` without posting a mandate writ.
-- **`astrolabe.spec-publish`** — legacy planning-phase terminator. Posts `plan.spec` as a new `mandate` writ on the Clerk, creates a `refines` link from the mandate back to the originating brief, records `generatedWritId` on the plan, and transitions `plan.status` to `'completed'`. Used only by the legacy two-phase and three-phase rigs; the combined `plan-and-ship` rig uses `plan-finalize` instead.
-- **`astrolabe.observation-lift`** — child-writ fan-out stage. Reads the plan, validates its status is `'completed'` (placement after `plan-finalize` / `spec-publish` guarantees this), and walks `plan.observations`. If the field is not an array or is empty, the engine silently no-ops and yields `{ writIds: [] }`. Otherwise, for each `Observation` record it calls `clerk.post({ type: 'brief', title: observation.title, body: observation.body, codex: plan.codex, parentId: planId, draft: true })`, accumulating the created writ ids. Fails fast on the first `clerk.post` error — already-created drafts persist under the brief (invisible to the Spider until a curator publishes them). The engine never mutates the plan document; the parent-child relationship on the Clerk side is the sole audit trail. Yields `{ writIds }` — the ids of the draft child writs in the same order as the observation records. Wired unconditionally in all three rig templates (`plan-and-ship`, `two-phase-planning`, `three-phase-planning`) between the planning-terminator engine and `seal`.
+- **`astrolabe.observation-lift`** — child-writ fan-out stage. Reads the plan, validates its status is `'completed'` (placement after `plan-finalize` guarantees this), and walks `plan.observations`. If the field is not an array or is empty, the engine silently no-ops and yields `{ writIds: [] }`. Otherwise, for each `Observation` record it calls `clerk.post({ type: 'brief', title: observation.title, body: observation.body, codex: plan.codex, parentId: planId, draft: true })`, accumulating the created writ ids. Fails fast on the first `clerk.post` error — already-created drafts persist under the brief (invisible to the Spider until a curator publishes them). The engine never mutates the plan document; the parent-child relationship on the Clerk side is the sole audit trail. Yields `{ writIds }` — the ids of the draft child writs in the same order as the observation records. Wired unconditionally in the plan-and-ship rig between `plan-finalize` and `seal`.
 
 ---
 
@@ -210,7 +196,11 @@ interface PlanDoc {
   // ── Spec-writer output ────────────────────────────────────
   /** The generated specification. */
   spec?: string;   // markdown
-  /** The writ ID of the generated mandate (or configured type). */
+  /**
+   * Legacy: writ ID of a mandate produced by the retired `spec-publish`
+   * engine. Current rig templates do not set this field — it survives
+   * solely so historic plandocs continue to deserialise and render.
+   */
   generatedWritId?: string;
 
   createdAt: string;

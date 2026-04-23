@@ -155,21 +155,23 @@ describe('Astrolabe supportKit shape', () => {
   it('contributes all engine designs', () => {
     const kit = getKit(plugin);
     const engines = kit.engines as Record<string, { id: string; run: unknown }>;
-    assert.equal(Object.keys(engines).length, 8, 'must have exactly 8 engine designs');
+    assert.equal(Object.keys(engines).length, 7, 'must have exactly 7 engine designs');
     assert.ok(engines?.['astrolabe.plan-init'], 'plan-init engine must exist');
     assert.ok(engines?.['astrolabe.inventory-check'], 'inventory-check engine must exist');
     assert.ok(engines?.['astrolabe.patron-anima'], 'patron-anima engine must exist');
     assert.ok(engines?.['astrolabe.decision-review'], 'decision-review engine must exist');
-    assert.ok(engines?.['astrolabe.spec-publish'], 'spec-publish engine must exist');
     assert.ok(engines?.['astrolabe.plan-finalize'], 'plan-finalize engine must exist');
     assert.ok(engines?.['astrolabe.observation-lift'], 'observation-lift engine must exist');
     assert.ok(engines?.['astrolabe.reader-analyst'], 'reader-analyst engine must exist');
+
+    // Retired by the two/three-phase rig retirement commission.
+    assert.equal(engines['astrolabe.spec-publish'], undefined,
+      'spec-publish engine is retired and must not be registered');
 
     assert.equal(engines['astrolabe.plan-init'].id, 'astrolabe.plan-init');
     assert.equal(engines['astrolabe.inventory-check'].id, 'astrolabe.inventory-check');
     assert.equal(engines['astrolabe.patron-anima'].id, 'astrolabe.patron-anima');
     assert.equal(engines['astrolabe.decision-review'].id, 'astrolabe.decision-review');
-    assert.equal(engines['astrolabe.spec-publish'].id, 'astrolabe.spec-publish');
     assert.equal(engines['astrolabe.plan-finalize'].id, 'astrolabe.plan-finalize');
     assert.equal(engines['astrolabe.observation-lift'].id, 'astrolabe.observation-lift');
     assert.equal(engines['astrolabe.reader-analyst'].id, 'astrolabe.reader-analyst');
@@ -178,7 +180,6 @@ describe('Astrolabe supportKit shape', () => {
     assert.equal(typeof engines['astrolabe.inventory-check'].run, 'function');
     assert.equal(typeof engines['astrolabe.patron-anima'].run, 'function');
     assert.equal(typeof engines['astrolabe.decision-review'].run, 'function');
-    assert.equal(typeof engines['astrolabe.spec-publish'].run, 'function');
     assert.equal(typeof engines['astrolabe.plan-finalize'].run, 'function');
     assert.equal(typeof engines['astrolabe.observation-lift'].run, 'function');
     assert.equal(typeof engines['astrolabe.reader-analyst'].run, 'function');
@@ -186,59 +187,13 @@ describe('Astrolabe supportKit shape', () => {
 
   // ── R8: rigTemplates and rigTemplateMappings ───────────────────────
 
-  it('contributes two-phase-planning rig template with 9 engines', () => {
+  it('does not register the retired two-phase-planning or three-phase-planning templates', () => {
     const kit = getKit(plugin);
-    const rigTemplates = kit.rigTemplates as Record<string, {
-      engines: Array<{ id: string; designId: string }>;
-      resolutionEngine?: string;
-    }>;
-    assert.ok(rigTemplates?.['two-phase-planning'], 'two-phase-planning template must exist');
-
-    const templateEngines = rigTemplates['two-phase-planning'].engines;
-    assert.equal(templateEngines.length, 9);
-
-    const engineIds = templateEngines.map(e => e.id);
-    assert.deepEqual(engineIds, [
-      'plan-init',
-      'draft',
-      'reader-analyst',
-      'inventory-check',
-      'decision-review',
-      'spec-writer',
-      'spec-publish',
-      'observation-lift',
-      'seal',
-    ]);
-
-    assert.equal(rigTemplates['two-phase-planning'].resolutionEngine, 'spec-writer');
-  });
-
-  it('contributes three-phase-planning rig template with 10 engines', () => {
-    const kit = getKit(plugin);
-    const rigTemplates = kit.rigTemplates as Record<string, {
-      engines: Array<{ id: string; designId: string }>;
-      resolutionEngine?: string;
-    }>;
-    assert.ok(rigTemplates?.['three-phase-planning'], 'three-phase-planning template must exist');
-
-    const templateEngines = rigTemplates['three-phase-planning'].engines;
-    assert.equal(templateEngines.length, 10);
-
-    const engineIds = templateEngines.map(e => e.id);
-    assert.deepEqual(engineIds, [
-      'plan-init',
-      'draft',
-      'reader',
-      'inventory-check',
-      'analyst',
-      'decision-review',
-      'spec-writer',
-      'spec-publish',
-      'observation-lift',
-      'seal',
-    ]);
-
-    assert.equal(rigTemplates['three-phase-planning'].resolutionEngine, 'spec-writer');
+    const rigTemplates = kit.rigTemplates as Record<string, unknown>;
+    assert.equal(rigTemplates['two-phase-planning'], undefined,
+      'two-phase-planning template is retired and must not be registered');
+    assert.equal(rigTemplates['three-phase-planning'], undefined,
+      'three-phase-planning template is retired and must not be registered');
   });
 
   it('contributes plan-and-ship rig template with 13 engines', () => {
@@ -272,42 +227,37 @@ describe('Astrolabe supportKit shape', () => {
     assert.equal(rigTemplates['plan-and-ship'].resolutionEngine, 'seal');
   });
 
-  it('observation-lift appears exactly once in each rig template', () => {
+  it('observation-lift appears exactly once in the plan-and-ship rig template', () => {
     const kit = getKit(plugin);
     const rigTemplates = kit.rigTemplates as Record<string, {
       engines: Array<{ id: string; designId: string }>;
     }>;
-    for (const templateName of ['plan-and-ship', 'two-phase-planning', 'three-phase-planning']) {
-      const engines = rigTemplates[templateName].engines;
-      const count = engines.filter(e => e.designId === 'astrolabe.observation-lift').length;
-      assert.equal(
-        count,
-        1,
-        `${templateName} must list astrolabe.observation-lift exactly once (found ${count})`,
-      );
-    }
+    const engines = rigTemplates['plan-and-ship'].engines;
+    const count = engines.filter(e => e.designId === 'astrolabe.observation-lift').length;
+    assert.equal(
+      count,
+      1,
+      `plan-and-ship must list astrolabe.observation-lift exactly once (found ${count})`,
+    );
   });
 
   it('observation-lift placement preserves non-terminal brief writ phase', () => {
     // Clerk rejects child-writ creation under a terminal parent, so
-    // observation-lift must run before any engine that transitions the
-    // brief writ to `completed`. In plan-and-ship the terminal engine is
-    // `seal`; in two-phase and three-phase rigs it's also `seal`.
+    // observation-lift must run before the seal engine that transitions
+    // the brief writ to `completed`.
     const kit = getKit(plugin);
     const rigTemplates = kit.rigTemplates as Record<string, {
       engines: Array<{ id: string; designId: string }>;
     }>;
-    for (const templateName of ['plan-and-ship', 'two-phase-planning', 'three-phase-planning']) {
-      const engines = rigTemplates[templateName].engines;
-      const obsIdx = engines.findIndex(e => e.designId === 'astrolabe.observation-lift');
-      const sealIdx = engines.findIndex(e => e.designId === 'seal');
-      assert.ok(obsIdx >= 0, `${templateName} must include observation-lift`);
-      assert.ok(sealIdx >= 0, `${templateName} must include seal`);
-      assert.ok(
-        obsIdx < sealIdx,
-        `${templateName}: observation-lift (index ${obsIdx}) must run before seal (index ${sealIdx})`,
-      );
-    }
+    const engines = rigTemplates['plan-and-ship'].engines;
+    const obsIdx = engines.findIndex(e => e.designId === 'astrolabe.observation-lift');
+    const sealIdx = engines.findIndex(e => e.designId === 'seal');
+    assert.ok(obsIdx >= 0, 'plan-and-ship must include observation-lift');
+    assert.ok(sealIdx >= 0, 'plan-and-ship must include seal');
+    assert.ok(
+      obsIdx < sealIdx,
+      `plan-and-ship: observation-lift (index ${obsIdx}) must run before seal (index ${sealIdx})`,
+    );
   });
 
   it('maps brief to astrolabe.plan-and-ship', () => {
@@ -373,7 +323,7 @@ describe('Astrolabe supportKit shape', () => {
     }>;
     const animaEngines = ['reader-analyst', 'spec-writer'];
     for (const id of animaEngines) {
-      const eng = rigTemplates['two-phase-planning'].engines.find(e => e.id === id);
+      const eng = rigTemplates['plan-and-ship'].engines.find(e => e.id === id);
       assert.ok(eng, `Engine "${id}" must exist`);
       assert.ok(eng.givens?.writ, `Engine "${id}" must have writ given`);
       assert.ok(eng.givens?.prompt, `Engine "${id}" must have prompt given`);
@@ -388,38 +338,19 @@ describe('Astrolabe supportKit shape', () => {
     }
   });
 
-  it('no engine in either template has a conversationId given', () => {
+  it('no engine in plan-and-ship has a conversationId given', () => {
     const kit = getKit(plugin);
     const rigTemplates = kit.rigTemplates as Record<string, {
       engines: Array<{ id: string; givens?: Record<string, unknown> }>;
     }>;
 
-    for (const templateName of ['two-phase-planning', 'three-phase-planning']) {
-      const engines = rigTemplates[templateName].engines;
-      for (const eng of engines) {
-        assert.equal(
-          eng.givens?.conversationId, undefined,
-          `Engine "${eng.id}" in ${templateName} must not have conversationId`,
-        );
-      }
+    const engines = rigTemplates['plan-and-ship'].engines;
+    for (const eng of engines) {
+      assert.equal(
+        eng.givens?.conversationId, undefined,
+        `Engine "${eng.id}" in plan-and-ship must not have conversationId`,
+      );
     }
-  });
-
-  it('seal is the terminal engine in two-phase-planning, directly preceded by observation-lift', () => {
-    // Prior to the observation-lift insertion, seal was directly downstream
-    // of spec-publish. observation-lift now sits between them so each plan's
-    // observations are lifted into draft child writs before the brief writ
-    // reaches its terminal transition at seal.
-    const kit = getKit(plugin);
-    const rigTemplates = kit.rigTemplates as Record<string, {
-      engines: Array<{ id: string; designId: string; upstream?: string[] }>;
-    }>;
-    const seal = rigTemplates['two-phase-planning'].engines.find(e => e.id === 'seal');
-    assert.deepEqual(seal?.upstream, ['observation-lift']);
-    const observationLift = rigTemplates['two-phase-planning'].engines.find(
-      e => e.id === 'observation-lift',
-    );
-    assert.deepEqual(observationLift?.upstream, ['spec-publish']);
   });
 
   // ── Bare-level permission convention ──────────────────────────────

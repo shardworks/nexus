@@ -39,8 +39,7 @@
  * worktree. The `seal` engine runs without `abandon: true` — the seal is
  * real. `implement.givens.prompt` is wired to `${yields.plan-finalize.spec}`
  * so the implementing anima works from the planning spec instead of the
- * brief's raw body (the old path through spec-publish posting a mandate is
- * not used here).
+ * brief's raw body. No mandate writ is posted mid-rig.
  */
 
 import type { RigTemplate } from '@shardworks/spider-apparatus';

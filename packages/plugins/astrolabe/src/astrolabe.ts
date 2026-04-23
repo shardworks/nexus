@@ -13,7 +13,6 @@ import { guild } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
 import type { StacksApi, Book, WhereClause } from '@shardworks/stacks-apparatus';
 import type { KitRoleDefinition } from '@shardworks/loom-apparatus';
-import type { RigTemplate } from '@shardworks/spider-apparatus';
 import { z } from 'zod';
 
 import type {
@@ -28,14 +27,11 @@ import {
   createInventoryCheckEngine,
   createPatronAnimaEngine,
   createDecisionReviewEngine,
-  createSpecPublishEngine,
   createPlanFinalizeEngine,
   createObservationLiftEngine,
   createReaderAnalystEngine,
 } from './engines/index.ts';
 
-import { twoPhaseRigTemplate } from './two-phase-planning.ts';
-import { threePhaseRigTemplate } from './three-phase-planning.ts';
 import { planAndShipRigTemplate } from './plan-and-ship.ts';
 
 // ── Config resolver ──────────────────────────────────────────────────
@@ -69,7 +65,6 @@ export function createAstrolabe(): Plugin {
   const inventoryCheckEngine = createInventoryCheckEngine(() => plansBook);
   const patronAnimaEngine = createPatronAnimaEngine(() => plansBook);
   const decisionReviewEngine = createDecisionReviewEngine(() => plansBook);
-  const specPublishEngine = createSpecPublishEngine(() => plansBook);
   const planFinalizeEngine = createPlanFinalizeEngine(() => plansBook);
   const observationLiftEngine = createObservationLiftEngine(() => plansBook);
   const readerAnalystEngine = createReaderAnalystEngine();
@@ -318,15 +313,12 @@ export function createAstrolabe(): Plugin {
           'astrolabe.inventory-check': inventoryCheckEngine,
           'astrolabe.patron-anima': patronAnimaEngine,
           'astrolabe.decision-review': decisionReviewEngine,
-          'astrolabe.spec-publish': specPublishEngine,
           'astrolabe.plan-finalize': planFinalizeEngine,
           'astrolabe.observation-lift': observationLiftEngine,
           'astrolabe.reader-analyst': readerAnalystEngine,
         },
 
         rigTemplates: {
-          'two-phase-planning': twoPhaseRigTemplate,
-          'three-phase-planning': threePhaseRigTemplate,
           'plan-and-ship': planAndShipRigTemplate,
         },
 

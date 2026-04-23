@@ -1,13 +1,12 @@
 /**
  * plan-finalize clockwork engine.
  *
- * Planning-phase terminator for the combined plan-and-ship rig. Unlike
- * `spec-publish`, this engine does NOT post a mandate writ and does NOT
- * create any clerk links. It merely validates that the spec-writer stage
- * produced a spec, yields the spec verbatim for downstream engines
- * (specifically the `implement` engine, whose `prompt` given is wired to
- * `${yields.plan-finalize.spec}`), and transitions the plan's status from
- * `writing` to `completed`.
+ * Planning-phase terminator for the combined plan-and-ship rig. Does NOT
+ * post a mandate writ and does NOT create any clerk links. It merely
+ * validates that the spec-writer stage produced a spec, yields the spec
+ * verbatim for downstream engines (specifically the `implement` engine,
+ * whose `prompt` given is wired to `${yields.plan-finalize.spec}`), and
+ * transitions the plan's status from `writing` to `completed`.
  *
  * Preconditions:
  *   - plan.status must be 'writing'

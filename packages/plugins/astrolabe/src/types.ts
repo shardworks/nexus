@@ -42,7 +42,12 @@ export interface PlanDoc {
   // ── Spec-writer output ──────────────────────────────────────
   /** The generated specification. */
   spec?: string;
-  /** The writ ID of the generated mandate. */
+  /**
+   * Legacy: writ id of a mandate produced by the retired `spec-publish`
+   * engine. Current rig templates do not set this field — it survives
+   * solely so historic plandocs stored from before the retirement
+   * continue to deserialise and render correctly in the Astrolabe page.
+   */
   generatedWritId?: string;
 
   createdAt: string;
