@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isTerminalStuck, parseChildFailures, writShortId } from './predicates.ts';
+import { isTerminalStuck, parseChildFailures } from './predicates.ts';
 
 describe('isTerminalStuck', () => {
   it('treats every stuck as terminal when clockworks-retry is absent', () => {
@@ -52,12 +52,5 @@ describe('parseChildFailures', () => {
     const resolution =
       'Child "w-same-11" failed: one thing; Child "w-same-11" failed: another';
     assert.deepEqual(parseChildFailures(resolution), ['w-same-11']);
-  });
-});
-
-describe('writShortId', () => {
-  it('produces the two-segment short id', () => {
-    assert.equal(writShortId('w-abc123-deadbeef'), 'w-abc123');
-    assert.equal(writShortId('w-abc123'), 'w-abc123');
   });
 });

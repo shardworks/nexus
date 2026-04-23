@@ -90,14 +90,3 @@ export function parseChildFailures(resolution: string | undefined): string[] {
   }
   return ids;
 }
-
-/**
- * Produce the two-segment short id form for a writ id (`w-abc123`).
- *
- * Canonical form mirrors `ratchet/src/tools/click-tree.ts` and the copy
- * in Spider — replicated inline here to avoid adding either as a hard
- * dependency. A future commission tracks extracting a shared helper.
- */
-export function writShortId(id: string): string {
-  return id.split('-').slice(0, 2).join('-');
-}

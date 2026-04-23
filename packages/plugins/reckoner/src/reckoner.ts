@@ -25,7 +25,7 @@
  */
 
 import type { Plugin, StartupContext } from '@shardworks/nexus-core';
-import { guild } from '@shardworks/nexus-core';
+import { guild, shortId } from '@shardworks/nexus-core';
 import type { ReadOnlyBook, StacksApi } from '@shardworks/stacks-apparatus';
 import type { WritDoc } from '@shardworks/clerk-apparatus';
 import type { LatticeApi } from '@shardworks/lattice-apparatus';
@@ -35,7 +35,6 @@ import {
   type SpiderStuckStatus,
   isTerminalStuck,
   parseChildFailures,
-  writShortId,
 } from './predicates.ts';
 import {
   RECKONER_PLUGIN_ID,
@@ -120,7 +119,7 @@ export function createReckoner(): Plugin {
         async function emitStuck(writ: WritDoc): Promise<void> {
           const spiderStatus = writ.status?.spider as SpiderStuckStatus | undefined;
           const context: WritStuckContext = {
-            writShortId: writShortId(writ.id),
+            writShortId: shortId(writ.id),
             writPhase: 'stuck',
             writTitle: writ.title,
             writType: writ.type,
@@ -130,7 +129,7 @@ export function createReckoner(): Plugin {
           };
           const title = `Writ stuck: ${writ.title}`;
           const summaryParts: string[] = [
-            `${writShortId(writ.id)} ("${writ.title}") is stuck.`,
+            `${shortId(writ.id)} ("${writ.title}") is stuck.`,
           ];
           if (spiderStatus?.stuckCause) {
             summaryParts.push(`Cause: ${spiderStatus.stuckCause}.`);
@@ -141,7 +140,7 @@ export function createReckoner(): Plugin {
           const leafFailures = parseChildFailures(writ.resolution);
           if (leafFailures.length > 0) {
             summaryParts.push(
-              `Originated from child ${leafFailures.map(writShortId).join(', ')}.`,
+              `Originated from child ${leafFailures.map(shortId).join(', ')}.`,
             );
           }
           await lattice.emit({
@@ -159,17 +158,17 @@ export function createReckoner(): Plugin {
         async function emitFailed(writ: WritDoc): Promise<void> {
           const childFailures = parseChildFailures(writ.resolution);
           const context: WritFailedContext = {
-            writShortId: writShortId(writ.id),
+            writShortId: shortId(writ.id),
             writTitle: writ.title,
             writType: writ.type,
             ...(typeof writ.resolution === 'string' ? { resolution: writ.resolution } : {}),
             ...(childFailures.length > 0
-              ? { childFailures: childFailures.map(writShortId) }
+              ? { childFailures: childFailures.map(shortId) }
               : {}),
           };
           const title = `Writ failed: ${writ.title}`;
           const summaryParts: string[] = [
-            `${writShortId(writ.id)} ("${writ.title}") failed.`,
+            `${shortId(writ.id)} ("${writ.title}") failed.`,
           ];
           if (writ.resolution) {
             summaryParts.push(`Resolution: ${writ.resolution}`);
@@ -192,7 +191,7 @@ export function createReckoner(): Plugin {
             lastTerminalWritId: lastTerminal.id,
           };
           const title = 'Queue drained';
-          const summary = `Queue drained after ${writShortId(lastTerminal.id)} ("${lastTerminal.title}") reached a terminal state.`;
+          const summary = `Queue drained after ${shortId(lastTerminal.id)} ("${lastTerminal.title}") reached a terminal state.`;
           await lattice.emit({
             source: RECKONER_PLUGIN_ID,
             triggerType: TRIGGER_QUEUE_DRAINED,
