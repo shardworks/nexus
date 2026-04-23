@@ -174,6 +174,7 @@
     let offset = 0;
     let currentPhase = '';   // '' = all
     let currentType = new Set();  // Set<string> — empty = no types selected (empty state)
+    let knownTypes = [];          // string[] — names of types currently declared (builtins + config + kits)
     let searchText = '';
     let sortCol = 'createdAt';
     let sortDir = 'desc';
@@ -1167,8 +1168,16 @@
         document.getElementById('load-more-row').style.display = 'none';
         return;
       }
-      for (const t of currentType) {
-        params.append('type', t);
+      // When every currently-declared type is selected (the "All" state), omit
+      // the type filter entirely so the server returns writs of every type —
+      // including legacy/retired types no longer in `knownTypes`. Sending
+      // ?type=X for each declared type would silently hide writs whose type
+      // has been removed from guild config (e.g. after a type-collapse).
+      const allSelected = knownTypes.length > 0 && knownTypes.every(t => currentType.has(t));
+      if (!allSelected) {
+        for (const t of currentType) {
+          params.append('type', t);
+        }
       }
 
       let result;
@@ -1230,6 +1239,9 @@
         if (t.isDefault) { opt.selected = true; opt.dataset.isDefault = 'true'; }
         sel.appendChild(opt);
       }
+
+      // Stash declared type names for the "all selected → skip filter" check in loadWrits.
+      knownTypes = types.map(t => t.name);
 
       // Build type-filter buttons
       buildTypeFilterBar(types);
