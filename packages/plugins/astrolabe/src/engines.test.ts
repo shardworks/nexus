@@ -34,8 +34,22 @@ let memBackend: MemoryBackend;
 // Mutable clerk overrides — tests can swap these out per-scenario
 let mockClerkPost: (params: unknown) => Promise<{ id: string; title: string }> =
   async () => { throw new Error('clerk.post not implemented'); };
-let mockClerkLink: (sourceId: string, targetId: string, type: string) => Promise<void> =
-  async () => { throw new Error('clerk.link not implemented'); };
+let mockClerkLink: (
+  sourceId: string,
+  targetId: string,
+  label: string,
+  kind?: string,
+) => Promise<unknown> =
+  async () => ({});
+// Records every call to `clerk.link` so tests can assert on the full
+// 4-tuple — including the optional `kind` argument that the previous
+// 3-arg shim rendered unobservable.
+const mockClerkLinkCalls: Array<{
+  sourceId: string;
+  targetId: string;
+  label: string;
+  kind: string | undefined;
+}> = [];
 let mockClerkTransition: (id: string, to: string, fields?: unknown) => Promise<{ id: string }> =
   async () => { throw new Error('clerk.transition not implemented'); };
 
@@ -53,8 +67,15 @@ const mockClerkApi = {
   post: async (params: unknown) => mockClerkPost(params),
   list: async () => [],
   count: async () => 0,
-  link: async (sourceId: string, targetId: string, type: string) =>
-    mockClerkLink(sourceId, targetId, type),
+  link: async (
+    sourceId: string,
+    targetId: string,
+    label: string,
+    kind?: string,
+  ) => {
+    mockClerkLinkCalls.push({ sourceId, targetId, label, kind });
+    return mockClerkLink(sourceId, targetId, label, kind);
+  },
   links: async () => ({ outbound: [], inbound: [] }),
   unlink: async () => {},
   transition: async (id: string, to: string, fields?: unknown) =>
@@ -129,6 +150,12 @@ function setup() {
 
   // Register mock clerk
   apparatusMap.set('clerk', mockClerkApi);
+
+  // Reset call recorders so each test sees a clean slate.
+  mockClerkLinkCalls.length = 0;
+  // Default link mock no-ops; tests that need a specific behaviour
+  // (e.g. injected failures) override `mockClerkLink` directly.
+  mockClerkLink = async () => ({});
 }
 
 function makePlan(overrides: Partial<PlanDoc> = {}): PlanDoc {
@@ -1344,13 +1371,22 @@ describe('observation-lift engine', () => {
     });
     await plansBook.put(plan);
 
+    // Track post / link interleaving so we can assert per-record
+    // ordering (post then link, before the next iteration).
+    const callLog: Array<{ kind: 'post' | 'link'; arg: unknown }> = [];
+
     const postCalls: Array<Record<string, unknown>> = [];
     let counter = 0;
     mockClerkPost = async (params) => {
       const p = params as Record<string, unknown>;
       postCalls.push(p);
       counter += 1;
+      callLog.push({ kind: 'post', arg: p });
       return { id: `w-obs-child-${counter}`, title: p.title as string };
+    };
+    mockClerkLink = async (sourceId, targetId, label, kind) => {
+      callLog.push({ kind: 'link', arg: { sourceId, targetId, label, kind } });
+      return {};
     };
 
     const result = await engine.run({ planId: plan.id }, buildCtx());
@@ -1372,6 +1408,26 @@ describe('observation-lift engine', () => {
       assert.equal(call.draft, true);
     }
 
+    // One spider.follows dependency edge per posted writ, with the
+    // agreed direction (source = new draft, target = originating
+    // mandate), label `'depends on'`, and kind `'spider.follows'`.
+    assert.equal(mockClerkLinkCalls.length, 3);
+    for (let i = 0; i < observations.length; i++) {
+      const linkCall = mockClerkLinkCalls[i];
+      assert.equal(linkCall.sourceId, `w-obs-child-${i + 1}`);
+      assert.equal(linkCall.targetId, 'w-mandate-parent');
+      assert.equal(linkCall.label, 'depends on');
+      assert.equal(linkCall.kind, 'spider.follows');
+    }
+
+    // Per-record ordering: each iteration posts then links before the
+    // next iteration begins. With three observations we expect
+    // [post, link, post, link, post, link].
+    assert.deepEqual(
+      callLog.map((c) => c.kind),
+      ['post', 'link', 'post', 'link', 'post', 'link'],
+    );
+
     // The plandoc itself is not mutated — observations array unchanged,
     // no tracking field added.
     const after = await plansBook.get(plan.id);
@@ -1379,7 +1435,7 @@ describe('observation-lift engine', () => {
     assert.equal('observationWritIds' in (after ?? {}), false);
   });
 
-  it('fails fast on clerk.post error; previously-created drafts persist', async () => {
+  it('fails fast on clerk.post error; no link is attempted for the failed observation', async () => {
     const engine = createObservationLiftEngine(() => plansBook);
     const observations: Observation[] = [
       { id: 'obs-1', title: 'first', body: 'b1' },
@@ -1405,6 +1461,9 @@ describe('observation-lift engine', () => {
       }
       return { id: `w-created-${counter}`, title: p.title as string };
     };
+    // Default link mock no-ops — extending the original test to also
+    // assert "no link was attempted for the failed-post observation"
+    // (the third call is never reached because we fail fast).
 
     await assert.rejects(
       () => engine.run({ planId: plan.id }, buildCtx()),
@@ -1422,5 +1481,82 @@ describe('observation-lift engine', () => {
     assert.equal(postCalls.length, 2);
     assert.equal(postCalls[0].title, 'first');
     assert.equal(postCalls[1].title, 'second — explodes');
+
+    // Only the first observation's link was issued — the second
+    // observation's post threw before its link could be attempted, and
+    // the third observation never executed at all.
+    assert.equal(mockClerkLinkCalls.length, 1);
+    assert.equal(mockClerkLinkCalls[0].sourceId, 'w-created-1');
+    assert.equal(mockClerkLinkCalls[0].targetId, 'w-mandate-fail');
+    assert.equal(mockClerkLinkCalls[0].label, 'depends on');
+    assert.equal(mockClerkLinkCalls[0].kind, 'spider.follows');
+  });
+
+  it('fails fast on clerk.link error; preceding post+link pairs persist, current writ is posted but unlinked', async () => {
+    const engine = createObservationLiftEngine(() => plansBook);
+    const observations: Observation[] = [
+      { id: 'obs-1', title: 'first', body: 'b1' },
+      { id: 'obs-2', title: 'second — link explodes', body: 'b2' },
+      { id: 'obs-3', title: 'third — never reached', body: 'b3' },
+    ];
+
+    const plan = makePlan({
+      id: 'w-mandate-link-fail',
+      status: 'completed',
+      observations,
+    });
+    await plansBook.put(plan);
+
+    const postCalls: Array<Record<string, unknown>> = [];
+    let postCounter = 0;
+    mockClerkPost = async (params) => {
+      const p = params as Record<string, unknown>;
+      postCalls.push(p);
+      postCounter += 1;
+      return { id: `w-link-fail-${postCounter}`, title: p.title as string };
+    };
+
+    let linkCounter = 0;
+    mockClerkLink = async () => {
+      linkCounter += 1;
+      if (linkCounter === 2) {
+        throw new Error('simulated clerk.link failure');
+      }
+      return {};
+    };
+
+    await assert.rejects(
+      () => engine.run({ planId: plan.id }, buildCtx()),
+      (err: Error) => {
+        assert.ok(
+          err.message.includes('simulated clerk.link failure'),
+          `Expected propagation of the clerk.link error, got: ${err.message}`,
+        );
+        return true;
+      },
+    );
+
+    // Two posts went through — the first observation's post+link pair
+    // persists, and the second observation's post persists without its
+    // link (the failing call). The third observation never executed.
+    assert.equal(postCalls.length, 2);
+    assert.equal(postCalls[0].title, 'first');
+    assert.equal(postCalls[1].title, 'second — link explodes');
+
+    // Two link calls were attempted — the first succeeded, the second
+    // threw. The third observation was never reached.
+    assert.equal(mockClerkLinkCalls.length, 2);
+
+    // First observation: post+link pair fully persisted.
+    assert.equal(mockClerkLinkCalls[0].sourceId, 'w-link-fail-1');
+    assert.equal(mockClerkLinkCalls[0].targetId, 'w-mandate-link-fail');
+    assert.equal(mockClerkLinkCalls[0].label, 'depends on');
+    assert.equal(mockClerkLinkCalls[0].kind, 'spider.follows');
+
+    // Second observation: post persisted, link attempted (and threw).
+    assert.equal(mockClerkLinkCalls[1].sourceId, 'w-link-fail-2');
+    assert.equal(mockClerkLinkCalls[1].targetId, 'w-mandate-link-fail');
+    assert.equal(mockClerkLinkCalls[1].label, 'depends on');
+    assert.equal(mockClerkLinkCalls[1].kind, 'spider.follows');
   });
 });
