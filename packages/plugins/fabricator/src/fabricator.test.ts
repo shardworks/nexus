@@ -200,17 +200,28 @@ describe('Fabricator', () => {
       assert.equal(api.getEngineDesign('beta'), beta);
     });
 
-    it('last-write-wins for duplicate engine IDs across kits', () => {
+    it('throws when two kits contribute the same engine-design id (kit-vs-kit collision is fatal)', () => {
       const engine1 = mockEngine('draft');
       const engine2 = mockEngine('draft');
-      const { api } = startFabricator({
-        kits: [
-          mockKit('kit-1', { draft: engine1 }),
-          mockKit('kit-2', { draft: engine2 }),
-        ],
-      });
-
-      assert.equal(api.getEngineDesign('draft'), engine2);
+      assert.throws(
+        () =>
+          startFabricator({
+            kits: [
+              mockKit('kit-1', { draft: engine1 }),
+              mockKit('kit-2', { draft: engine2 }),
+            ],
+          }),
+        (err: Error) => {
+          // Error must name both contributing plugins and the conflicting engine-design id.
+          return (
+            /engines/.test(err.message) &&
+            /draft/.test(err.message) &&
+            /kit-1/.test(err.message) &&
+            /kit-2/.test(err.message)
+          );
+        },
+        'kit-vs-kit engine-design collision must throw and name both plugins + the engine id',
+      );
     });
 
     it('registers engines from apparatus supportKit (via Wire phase)', () => {
@@ -359,20 +370,30 @@ describe('Fabricator', () => {
       assert.equal(plain.hasCollect, false);
     });
 
-    it('second registration wins for duplicate ID (last-write-wins)', () => {
+    it('throws on duplicate engine-design id during startup (kit-vs-kit collision is fatal)', () => {
+      // Sibling of the throw-on-collision test in getEngineDesign() — pinned
+      // here to keep listEngineDesigns()'s contract aligned: duplicate ids
+      // never reach the list because startup refuses to complete.
       const engine1 = mockEngine('shared');
       const engine2 = mockEngine('shared');
-      const { api } = startFabricator({
-        kits: [
-          mockKit('plugin-1', { e: engine1 }),
-          mockKit('plugin-2', { e: engine2 }),
-        ],
-      });
-
-      const result = api.listEngineDesigns();
-      const shared = result.find((d) => d.id === 'shared');
-      assert.ok(shared, 'shared engine should be in list');
-      assert.equal(shared.pluginId, 'plugin-2');
+      assert.throws(
+        () =>
+          startFabricator({
+            kits: [
+              mockKit('plugin-1', { e: engine1 }),
+              mockKit('plugin-2', { e: engine2 }),
+            ],
+          }),
+        (err: Error) => {
+          return (
+            /engines/.test(err.message) &&
+            /shared/.test(err.message) &&
+            /plugin-1/.test(err.message) &&
+            /plugin-2/.test(err.message)
+          );
+        },
+        'duplicate engine-design id must throw at startup',
+      );
     });
   });
 });

@@ -137,10 +137,25 @@ class EngineRegistry {
     if (typeof rawEngines !== 'object' || rawEngines === null) return;
 
     for (const value of Object.values(rawEngines as Record<string, unknown>)) {
-      if (isEngineDesign(value)) {
-        this.designs.set(value.id, value);
-        this.provenance.set(value.id, pluginId);
+      if (!isEngineDesign(value)) continue;
+
+      // Kit-vs-kit collision: throw at registration time. Two kits contributing
+      // an engine design with the same id is a guild-config hazard — Spider
+      // keys engines by id and would silently bind to whichever kit happened
+      // to load last. Refuse to start instead.
+      const existingPlugin = this.provenance.get(value.id);
+      if (existingPlugin !== undefined) {
+        throw new Error(
+          `[fabricator] engines: engine design "${value.id}" is contributed by two kits ` +
+          `— kit "${existingPlugin}" already registered it, and ` +
+          `kit "${pluginId}" attempted to register it again. ` +
+          `Two kits cannot contribute the same engine design id. ` +
+          `Resolve by removing one of the kit contributions.`
+        );
       }
+
+      this.designs.set(value.id, value);
+      this.provenance.set(value.id, pluginId);
     }
   }
 

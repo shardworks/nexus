@@ -100,6 +100,53 @@ function buildCtx(kitEntries: KitEntry[] = []): {
 }
 
 /**
+ * Splice test-supplied custom engines into a copy of Spider's apparatus
+ * supportKit. Matching is by engine id — if `customEngines` contains an
+ * engine whose id matches one of Spider's built-in engines, that built-in is
+ * replaced rather than registered alongside (which would violate the
+ * Fabricator's kit-vs-kit uniqueness rule). Engines with new ids are
+ * appended. Returns the same apparatus object unmodified when there are no
+ * custom engines.
+ */
+function mergeCustomEnginesIntoSpider(
+  spiderApparatus: LoadedApparatus['apparatus'],
+  customEngines: Record<string, unknown> | undefined,
+): LoadedApparatus['apparatus'] {
+  if (!customEngines || Object.keys(customEngines).length === 0) {
+    return spiderApparatus;
+  }
+
+  const spiderSupportKit = (spiderApparatus as { supportKit?: Record<string, unknown> }).supportKit ?? {};
+  const spiderEngines = (spiderSupportKit.engines ?? {}) as Record<string, unknown>;
+
+  // Collect the ids of custom engines so we can filter Spider's built-ins.
+  const customIds = new Set<string>();
+  for (const val of Object.values(customEngines)) {
+    const id = (val as { id?: unknown }).id;
+    if (typeof id === 'string') customIds.add(id);
+  }
+
+  // Rebuild Spider's engine record, dropping any built-in whose id collides
+  // with a custom engine's id. The surviving built-ins are keyed by their
+  // original record key (which may or may not match the engine id).
+  const survivingBuiltins: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(spiderEngines)) {
+    const id = (value as { id?: unknown }).id;
+    if (typeof id !== 'string' || !customIds.has(id)) {
+      survivingBuiltins[key] = value;
+    }
+  }
+
+  return {
+    ...spiderApparatus,
+    supportKit: {
+      ...spiderSupportKit,
+      engines: { ...survivingBuiltins, ...customEngines },
+    },
+  } as LoadedApparatus['apparatus'];
+}
+
+/**
  * Full integration fixture: starts Stacks (memory), Clerk, Fabricator,
  * and Spider. Returns handles to each API plus mock animator controls.
  */
@@ -179,31 +226,22 @@ function buildFixture(
 
   setGuild(fakeGuild);
 
+  // Build Spider's LoadedApparatus, optionally splicing test-supplied custom
+  // engines into Spider's supportKit.engines by engine id. This preserves the
+  // decades-old test pattern of "stub out a Spider engine" while keeping the
+  // Fabricator's kit-vs-kit uniqueness invariant intact — a stub and Spider's
+  // real engine with the same id are never both registered. New engine ids
+  // (with no matching Spider built-in) are simply appended.
   const spiderAsLoaded: LoadedApparatus = {
     packageName: '@shardworks/spider-apparatus',
     id: 'spider',
     version: '0.0.0',
-    apparatus: spiderApparatus,
+    apparatus: mergeCustomEnginesIntoSpider(spiderApparatus, extra.customEngines),
   };
-
-  const customEngineApparatuses: LoadedApparatus[] = [];
-  if (extra.customEngines && Object.keys(extra.customEngines).length > 0) {
-    customEngineApparatuses.push({
-      packageName: '@test/custom-engines',
-      id: 'test-custom-engines',
-      version: '0.0.0',
-      apparatus: {
-        requires: [],
-        supportKit: { engines: extra.customEngines },
-        provides: {},
-        start() {},
-      },
-    });
-  }
 
   const fabricatorKitEntries = buildKitEntries(
     extra.kits ?? [],
-    [spiderAsLoaded, ...customEngineApparatuses, ...(extra.apparatuses ?? [])],
+    [spiderAsLoaded, ...(extra.apparatuses ?? [])],
   );
 
   const spiderKitEntries = buildKitEntries(
@@ -3350,27 +3388,16 @@ describe('Spider — engine blocking on external conditions', () => {
 
     setGuild(fakeGuild);
 
+    // Splice test-supplied custom engines into Spider's supportKit so stub
+    // engines overwrite the matching Spider built-ins instead of registering
+    // a second kit contribution under the same id (which the Fabricator
+    // rejects as a kit-vs-kit collision).
     const spiderAsLoaded: LoadedApparatus = {
       packageName: '@shardworks/spider-apparatus',
       id: 'spider',
       version: '0.0.0',
-      apparatus: spiderApparatus,
+      apparatus: mergeCustomEnginesIntoSpider(spiderApparatus, customEngines),
     };
-
-    const customEngineApparatuses: LoadedApparatus[] = [];
-    if (Object.keys(customEngines).length > 0) {
-      customEngineApparatuses.push({
-        packageName: '@test/custom-engines',
-        id: 'test-custom-engines',
-        version: '0.0.0',
-        apparatus: {
-          requires: [],
-          supportKit: { engines: customEngines },
-          provides: {},
-          start() {},
-        },
-      });
-    }
 
     const customBlockTypeApparatuses: LoadedApparatus[] = [];
     if (customBlockTypes && customBlockTypes.length > 0) {
@@ -3393,7 +3420,7 @@ describe('Spider — engine blocking on external conditions', () => {
 
     const fabricatorKitEntries = buildKitEntries(
       [],
-      [spiderAsLoaded, ...customEngineApparatuses],
+      [spiderAsLoaded],
     );
     const spiderKitEntries = buildKitEntries(
       [],
@@ -6022,31 +6049,18 @@ describe('${yields.*} reference support', () => {
 
       setGuild(fakeGuild);
 
+      // Splice test-supplied custom engines into Spider's supportKit — see
+      // mergeCustomEnginesIntoSpider for the kit-vs-kit uniqueness rationale.
       const spiderAsLoaded: LoadedApparatus = {
         packageName: '@shardworks/spider-apparatus',
         id: 'spider',
         version: '0.0.0',
-        apparatus: spiderApparatus,
+        apparatus: mergeCustomEnginesIntoSpider(spiderApparatus, customEngines),
       };
-
-      const customEngineApparatuses: LoadedApparatus[] = [];
-      if (Object.keys(customEngines).length > 0) {
-        customEngineApparatuses.push({
-          packageName: '@test/custom-engines',
-          id: 'test-custom-engines',
-          version: '0.0.0',
-          apparatus: {
-            requires: [],
-            supportKit: { engines: customEngines },
-            provides: {},
-            start() {},
-          },
-        });
-      }
 
       const fabricatorKitEntries = buildKitEntries(
         [],
-        [spiderAsLoaded, ...customEngineApparatuses],
+        [spiderAsLoaded],
       );
       const spiderKitEntries = buildKitEntries([], [spiderAsLoaded]);
 
