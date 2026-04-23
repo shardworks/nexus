@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { guild } from '@shardworks/nexus-core';
+import { guild, shortId } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
 import type { ClerkApi, WritPhase, WritTree } from '../types.ts';
 
@@ -16,16 +16,6 @@ const PHASE_INDICATORS: Record<WritPhase, string> = {
   failed: '✕',
   cancelled: '⊘',
 };
-
-/**
- * Short-id form for display: the `{prefix}-{base36ts}` segment of a writ id
- * (writ ids are minted as `w-{base36ts}-{hex}`). Matches click-tree's choice
- * to surface the form `resolveId()` already accepts.
- */
-function shortId(id: string): string {
-  const parts = id.split('-');
-  return parts.length >= 2 ? parts.slice(0, 2).join('-') : id;
-}
 
 /**
  * Render a forest of `WritTree` nodes as a text tree with box-drawing

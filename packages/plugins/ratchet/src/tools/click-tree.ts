@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { guild } from '@shardworks/nexus-core';
+import { guild, shortId } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
 import type { RatchetApi, ClickTree, ClickStatus } from '../types.ts';
 
@@ -9,16 +9,6 @@ const STATUS_INDICATORS: Record<ClickStatus, string> = {
   concluded: '○',
   dropped: '✕',
 };
-
-/**
- * Short ID form: the `{prefix}-{base36ts}` segment of a generated ID.
- * Clicks mint IDs as `c-{base36ts}-{hex}`, and `resolveId()` already accepts
- * this prefix form — so it is the ID shape the tree output should surface.
- */
-function shortId(id: string): string {
-  const parts = id.split('-');
-  return parts.length >= 2 ? parts.slice(0, 2).join('-') : id;
-}
 
 /**
  * Render a forest of ClickTree nodes as a text tree with box-drawing connectors.

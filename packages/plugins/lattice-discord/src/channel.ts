@@ -15,6 +15,7 @@
  * the boundary.
  */
 
+import { shortId } from '@shardworks/nexus-core';
 import type {
   DeliveryOutcome,
   LatticeChannel,
@@ -87,7 +88,7 @@ export function contextFields(pulse: PulseDoc): EmbedField[] {
   const fields: EmbedField[] = [];
   fields.push({ name: 'Trigger', value: pulse.triggerType, inline: true });
   if (pulse.writId) {
-    fields.push({ name: 'Writ', value: shortWritId(pulse.writId), inline: true });
+    fields.push({ name: 'Writ', value: shortId(pulse.writId), inline: true });
   }
   const ctx = pulse.context ?? {};
   if (pulse.triggerType === 'reckoner.writ-stuck') {
@@ -107,7 +108,7 @@ export function contextFields(pulse: PulseDoc): EmbedField[] {
   } else if (pulse.triggerType === 'reckoner.queue-drained') {
     if (typeof ctx.drainedAt === 'string') fields.push({ name: 'Drained at', value: ctx.drainedAt, inline: true });
     if (typeof ctx.lastTerminalWritId === 'string') {
-      fields.push({ name: 'Last terminal', value: shortWritId(ctx.lastTerminalWritId), inline: true });
+      fields.push({ name: 'Last terminal', value: shortId(ctx.lastTerminalWritId), inline: true });
     }
   } else {
     // Unknown trigger type — surface the raw context keys generically.
@@ -116,11 +117,6 @@ export function contextFields(pulse: PulseDoc): EmbedField[] {
     }
   }
   return fields;
-}
-
-/** Two-segment short id (`p-abc123` / `w-xyz789`). */
-function shortWritId(id: string): string {
-  return id.split('-').slice(0, 2).join('-');
 }
 
 function truncate(s: string, max: number): string {

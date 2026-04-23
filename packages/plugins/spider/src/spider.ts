@@ -27,7 +27,7 @@
  */
 
 import type { Plugin, StartupContext, KitEntry, LoadedKit, LoadedApparatus } from '@shardworks/nexus-core';
-import { guild, generateId } from '@shardworks/nexus-core';
+import { guild, generateId, shortId } from '@shardworks/nexus-core';
 import type { StacksApi, Book, ReadOnlyBook, WhereClause } from '@shardworks/stacks-apparatus';
 import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import type { FabricatorApi } from '@shardworks/fabricator-apparatus';
@@ -114,16 +114,6 @@ export interface SpiderKit {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
-
-/**
- * Produce the two-segment short id form of a writ id for human-readable
- * resolution text (e.g. `w-abc123`). Mirrors the canonical implementation
- * in `ratchet/src/tools/click-tree.ts`; replicated inline here to avoid a
- * Spider → Ratchet dependency for a three-line utility.
- */
-function shortId(id: string): string {
-  return id.split('-').slice(0, 2).join('-');
-}
 
 /**
  * Check whether a value is JSON-serializable.
