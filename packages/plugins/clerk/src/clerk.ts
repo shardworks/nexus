@@ -205,15 +205,29 @@ export function createClerk(): Plugin {
       }
       const name = (entry as WritTypeEntry).name;
 
-      // Config override: skip silently
+      // Config override: skip silently. Config-vs-kit precedence is unchanged;
+      // the kit-vs-kit collision rule below only fires when no config entry
+      // claims the writ type.
       if (configWritTypeNames.has(name)) continue;
 
-      // Duplicate kit contribution: first wins, warn
-      if (mergedWritTypes.has(name)) {
-        console.warn(
-          `[clerk] Kit "${pluginId}" writTypes: type "${name}" already registered by another kit — skipped`
+      const existing = mergedWritTypes.get(name);
+      if (existing !== undefined) {
+        // Built-in vs. kit: silently skip. A kit that re-declares a built-in
+        // writ type is redundant but harmless — the built-in is already valid.
+        if (existing.source === 'builtin') continue;
+
+        // Kit-vs-kit collision: throw at registration time. Two kits
+        // contributing the same writ type is a guild-config hazard — operators
+        // resolve by removing one contribution, or by overriding via guild
+        // config (clerk.writTypes).
+        throw new Error(
+          `[clerk] writTypes: writ type "${name}" is contributed by two kits ` +
+          `— kit "${existing.source}" already registered it, and ` +
+          `kit "${pluginId}" attempted to register it again. ` +
+          `Two kits cannot contribute the same writ type. ` +
+          `Resolve by removing one of the kit contributions, or by overriding ` +
+          `via guild config (clerk.writTypes).`
         );
-        continue;
       }
 
       mergedWritTypes.set(name, {

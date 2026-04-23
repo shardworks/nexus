@@ -2500,36 +2500,32 @@ describe('Clerk', () => {
         assert.equal(writ.type, 'quality-audit');
       });
 
-      it('warns when two kits contribute same writ type (first wins)', async () => {
-        const warnings: string[] = [];
-        const original = console.warn;
-        console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
-
-        try {
-          const kitA: LoadedKit = {
-            packageName: '@test/kit-a',
-            id: 'kit-a',
-            version: '0.0.0',
-            kit: { writTypes: [{ name: 'quality-audit' }] },
-          };
-          const kitB: LoadedKit = {
-            packageName: '@test/kit-b',
-            id: 'kit-b',
-            version: '0.0.0',
-            kit: { writTypes: [{ name: 'quality-audit' }] },
-          };
-          await setup({ extraKits: [kitA, kitB] });
-
-          assert.ok(
-            warnings.some(w => w.includes('kit-b') && w.includes('quality-audit')),
-            `Expected duplicate writ type warning, got: ${JSON.stringify(warnings)}`
-          );
-          // Posting still works (first kit won)
-          const writ = await clerk.post({ title: 'Audit', body: 'Run audit', type: 'quality-audit' });
-          assert.equal(writ.type, 'quality-audit');
-        } finally {
-          console.warn = original;
-        }
+      it('throws when two kits contribute the same writ type (kit-vs-kit collision is fatal)', async () => {
+        const kitA: LoadedKit = {
+          packageName: '@test/kit-a',
+          id: 'kit-a',
+          version: '0.0.0',
+          kit: { writTypes: [{ name: 'quality-audit' }] },
+        };
+        const kitB: LoadedKit = {
+          packageName: '@test/kit-b',
+          id: 'kit-b',
+          version: '0.0.0',
+          kit: { writTypes: [{ name: 'quality-audit' }] },
+        };
+        await assert.rejects(
+          () => setup({ extraKits: [kitA, kitB] }),
+          (err: Error) => {
+            // Error must name both contributing plugins and the conflicting writ type.
+            return (
+              /writTypes/.test(err.message) &&
+              /quality-audit/.test(err.message) &&
+              /kit-a/.test(err.message) &&
+              /kit-b/.test(err.message)
+            );
+          },
+          'kit-vs-kit writ-type collision must throw and name both plugins + the writ type',
+        );
       });
 
       it('built-in mandate type still works even if kit contributes it', async () => {
