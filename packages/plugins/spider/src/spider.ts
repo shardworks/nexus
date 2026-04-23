@@ -756,10 +756,25 @@ class BlockTypeRegistry {
     const raw = kit.blockTypes;
     if (typeof raw !== 'object' || raw === null) return;
     for (const value of Object.values(raw as Record<string, unknown>)) {
-      if (isBlockType(value)) {
-        this.types.set(value.id, value);
-        this.provenance.set(value.id, pluginId);
+      if (!isBlockType(value)) continue;
+
+      // Kit-vs-kit collision: throw at registration time. Two kits contributing
+      // a block type with the same id is a guild-config hazard — resolvers
+      // (and everything else that keys on the id) would silently bind to
+      // whichever kit happened to load last. Refuse to start instead.
+      const existingPlugin = this.provenance.get(value.id);
+      if (existingPlugin !== undefined) {
+        throw new Error(
+          `[spider] blockTypes: block type "${value.id}" is contributed by two kits ` +
+          `— kit "${existingPlugin}" already registered it, and ` +
+          `kit "${pluginId}" attempted to register it again. ` +
+          `Two kits cannot contribute the same block type id. ` +
+          `Resolve by removing one of the kit contributions.`
+        );
       }
+
+      this.types.set(value.id, value);
+      this.provenance.set(value.id, pluginId);
     }
   }
 

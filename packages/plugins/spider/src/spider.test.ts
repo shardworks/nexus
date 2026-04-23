@@ -3659,6 +3659,136 @@ describe('Spider — engine blocking on external conditions', () => {
       assert.ok(found, 'no-poll-type should be in list');
       assert.equal(found.pollIntervalMs, undefined, 'pollIntervalMs should be undefined when not set');
     });
+
+    it('throws when two kits contribute the same block-type id (kit-vs-kit collision is fatal)', () => {
+      // Two independent apparatuses both contribute a block type with id
+      // 'conflict-block'. With the fail-loud kit-vs-kit rule, this must
+      // refuse to start — silent last-wins would leave operators unable to
+      // predict which checker implementation runs.
+      const blockTypeA: BlockType = {
+        id: 'conflict-block',
+        conditionSchema: z.object({}),
+        async check(): Promise<CheckResult> { return { status: 'pending' }; },
+      };
+      const blockTypeB: BlockType = {
+        id: 'conflict-block',
+        conditionSchema: z.object({}),
+        async check(): Promise<CheckResult> { return { status: 'cleared' }; },
+      };
+
+      const memBackend = new MemoryBackend();
+      const stacksPlugin = createStacksApparatus(memBackend);
+      const clerkPlugin = createClerk();
+      const fabricatorPlugin = createFabricator();
+      const spiderPlugin = createSpider();
+
+      if (
+        !('apparatus' in stacksPlugin) ||
+        !('apparatus' in clerkPlugin) ||
+        !('apparatus' in fabricatorPlugin) ||
+        !('apparatus' in spiderPlugin)
+      ) {
+        throw new Error('plugins must be apparatuses');
+      }
+
+      const apparatusMap = new Map<string, unknown>();
+      const fakeGuildConfig: GuildConfig = {
+        name: 'test-guild',
+        nexus: '0.0.0',
+        plugins: [],
+        spider: {
+          rigTemplates: { default: STANDARD_TEMPLATE },
+          rigTemplateMappings: { mandate: 'default' },
+        },
+      };
+      const fakeGuild: Guild = {
+        home: '/tmp/test-guild',
+        apparatus<T>(name: string): T {
+          const api = apparatusMap.get(name);
+          if (!api) throw new Error(`Apparatus "${name}" not found`);
+          return api as T;
+        },
+        config<T>(_pluginId: string): T { return {} as T; },
+        writeConfig() {},
+        guildConfig() { return fakeGuildConfig; },
+        kits(): LoadedKit[] { return []; },
+        apparatuses(): LoadedApparatus[] { return []; },
+        startupWarnings() { return []; },
+      };
+      setGuild(fakeGuild);
+
+      const spiderAsLoaded: LoadedApparatus = {
+        packageName: '@shardworks/spider-apparatus',
+        id: 'spider',
+        version: '0.0.0',
+        apparatus: spiderPlugin.apparatus,
+      };
+      const kitA: LoadedApparatus = {
+        packageName: '@test/kit-a-blocks',
+        id: 'kit-a-blocks',
+        version: '0.0.0',
+        apparatus: {
+          requires: [],
+          supportKit: { blockTypes: { conflict: blockTypeA } },
+          provides: {},
+          start() {},
+        },
+      };
+      const kitB: LoadedApparatus = {
+        packageName: '@test/kit-b-blocks',
+        id: 'kit-b-blocks',
+        version: '0.0.0',
+        apparatus: {
+          requires: [],
+          supportKit: { blockTypes: { conflict: blockTypeB } },
+          provides: {},
+          start() {},
+        },
+      };
+
+      const fabricatorKitEntries = buildKitEntries([], [spiderAsLoaded]);
+      const spiderKitEntries = buildKitEntries([], [spiderAsLoaded, kitA, kitB]);
+
+      const noopCtx = { on: () => {}, kits: () => [] as KitEntry[] };
+      stacksPlugin.apparatus.start(noopCtx);
+      const stacks = stacksPlugin.apparatus.provides as StacksApi;
+      apparatusMap.set('stacks', stacks);
+
+      memBackend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
+        indexes: ['phase', 'type', 'createdAt', 'parentId'],
+      });
+      memBackend.ensureBook({ ownerId: 'clerk', book: 'links' }, {
+        indexes: ['sourceId', 'targetId', 'label'],
+      });
+      memBackend.ensureBook({ ownerId: 'spider', book: 'rigs' }, {
+        indexes: ['status', 'writId', 'createdAt'],
+      });
+
+      const { ctx: clerkCtx } = buildCtx(spiderKitEntries);
+      void clerkPlugin.apparatus.start(clerkCtx);
+      apparatusMap.set('clerk', clerkPlugin.apparatus.provides);
+
+      const { ctx: fabricatorCtx } = buildCtx(fabricatorKitEntries);
+      fabricatorPlugin.apparatus.start(fabricatorCtx);
+      apparatusMap.set('fabricator', fabricatorPlugin.apparatus.provides);
+
+      apparatusMap.set('animator', {});
+
+      const { ctx: spiderCtx } = buildCtx(spiderKitEntries);
+      assert.throws(
+        () => spiderPlugin.apparatus.start(spiderCtx),
+        (err: Error) => {
+          // Error must name both contributing plugins and the conflicting block-type id.
+          return (
+            /blockTypes/.test(err.message) &&
+            /conflict-block/.test(err.message) &&
+            /kit-a-blocks/.test(err.message) &&
+            /kit-b-blocks/.test(err.message)
+          );
+        },
+        'kit-vs-kit block-type collision must throw and name both plugins + the block-type id'
+      );
+    });
   });
 
   // ── Engine blocked result → blocked status and block record (V1, V2, R1–R3) ─
