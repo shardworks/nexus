@@ -546,18 +546,20 @@ describe('Clerk', () => {
       });
     });
 
-    it('returns a forest of all roots in createdAt asc order', async () => {
+    it('returns a forest of all roots with their direct + recursive children', async () => {
       const a = await clerk.post({ title: 'Root A', body: 'Body' });
       const b = await clerk.post({ title: 'Root B', body: 'Body' });
       await clerk.post({ title: 'Child of A', body: 'Body', parentId: a.id });
 
       const forest = await clerk.tree();
       assert.equal(forest.length, 2);
-      // Sorted by createdAt asc — A then B (post order matches creation order).
-      assert.equal(forest[0].writ.id, a.id);
-      assert.equal(forest[1].writ.id, b.id);
-      assert.equal(forest[0].children.length, 1);
-      assert.equal(forest[1].children.length, 0);
+      // Order is "newest root first" to match the existing list-page UX —
+      // tested explicitly below; here we verify presence + child shape.
+      const byId = new Map(forest.map((t) => [t.writ.id, t]));
+      assert.ok(byId.has(a.id));
+      assert.ok(byId.has(b.id));
+      assert.equal(byId.get(a.id).children.length, 1);
+      assert.equal(byId.get(b.id).children.length, 0);
     });
 
     it('returns a single subtree when rootId is supplied', async () => {
@@ -665,18 +667,38 @@ describe('Clerk', () => {
     });
 
     it('rootLimit and rootOffset slice the root layer', async () => {
-      const r1 = await clerk.post({ title: 'R1', body: 'Body' });
-      const r2 = await clerk.post({ title: 'R2', body: 'Body' });
+      // Sleep between posts so each root gets a distinct millisecond
+      // timestamp; otherwise multiple posts in a single ms can collide and
+      // the desc sort becomes implementation-defined.
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const r1 = await clerk.post({ title: 'R1', body: 'Body' }); await sleep(2);
+      const r2 = await clerk.post({ title: 'R2', body: 'Body' }); await sleep(2);
       const r3 = await clerk.post({ title: 'R3', body: 'Body' });
       // Each root has a child to verify children are still expanded under the slice.
       await clerk.post({ title: 'R1c', body: 'Body', parentId: r1.id });
 
+      // Roots are returned newest-first (createdAt desc) to match list().
       const page1 = await clerk.tree({ rootLimit: 2, rootOffset: 0 });
-      assert.deepEqual(page1.map((t) => t.writ.id), [r1.id, r2.id]);
-      assert.equal(page1[0].children.length, 1);
+      assert.deepEqual(page1.map((t) => t.writ.id), [r3.id, r2.id]);
+      // Children are still expanded under each root in the slice (r3 has none here,
+      // but its children property must be present and empty).
+      assert.equal(page1[0].children.length, 0);
+      assert.equal(page1[1].children.length, 0);
 
       const page2 = await clerk.tree({ rootLimit: 2, rootOffset: 2 });
-      assert.deepEqual(page2.map((t) => t.writ.id), [r3.id]);
+      assert.deepEqual(page2.map((t) => t.writ.id), [r1.id]);
+      // r1 has the one child we created above.
+      assert.equal(page2[0].children.length, 1);
+    });
+
+    it('roots are ordered createdAt desc (newest first), matching list()', async () => {
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const a = await clerk.post({ title: 'A', body: 'Body' }); await sleep(2);
+      const b = await clerk.post({ title: 'B', body: 'Body' }); await sleep(2);
+      const c = await clerk.post({ title: 'C', body: 'Body' });
+
+      const forest = await clerk.tree();
+      assert.deepEqual(forest.map((t) => t.writ.id), [c.id, b.id, a.id]);
     });
 
     it('rootLimit and rootOffset are ignored when rootId is set', async () => {

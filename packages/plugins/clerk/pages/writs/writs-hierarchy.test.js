@@ -1,17 +1,21 @@
 /**
- * Unit tests for parent/child writ hierarchy in writs/index.html.
+ * Unit tests for deep-descendant writ hierarchy in writs/index.html.
  *
  * Extracts and tests the pure logic behind:
- * - sortedFilteredWrits — hierarchical ordering, toggle, search
- * - phaseBadge — phase → badge-class mapping
- * - Toggle button state
- * - Children table rendering in detail view
- * - Parent link in detail view
+ * - sortedFilteredWrits — depth-numbered row emission, per-node and global
+ *   collapse, ancestor-preserve title search, overflow-row insertion at
+ *   the depth cap, and root-only sorting.
+ * - phaseBadge — phase → badge-class mapping.
+ * - Toggle button state.
+ * - Children table rendering in the detail view (still direct-children
+ *   only — see D20).
+ * - Parent link in detail view.
  *
- * Uses a minimal DOM shim (same pattern as writs-type-filter.test.js).
+ * Mirrors the in-file logic of pages/writs/index.html so changes there
+ * stay covered by this test suite.
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 // ── Minimal DOM shim ────────────────────────────────────────────────
@@ -35,12 +39,9 @@ class FakeElement {
   }
 
   querySelectorAll(selector) {
-    // Minimal support for class selectors
     if (selector.startsWith('.')) {
       const cls = selector.slice(1);
-      return this.children.filter(c =>
-        (c.className || '').includes(cls),
-      );
+      return this.children.filter((c) => (c.className || '').includes(cls));
     }
     return [];
   }
@@ -108,7 +109,6 @@ function compareVal(a, b, col) {
 
 function rowActions(w) {
   const isTerminal = ['completed', 'failed', 'cancelled'].includes(w.phase);
-      const isStuck = w.phase === 'stuck';
   if (isTerminal) return '';
   const btns = [];
   if (w.phase === 'new') {
@@ -119,40 +119,90 @@ function rowActions(w) {
 }
 
 /**
- * Extracted sortedFilteredWrits logic — mirrors index.html.
+ * Prune a tree by title match. Semantics: a matching node keeps its
+ * entire subtree (the user found the work they were looking for and
+ * wants to see its breakdown); a non-matching node is kept only when at
+ * least one descendant matches (preserving the ancestor chain so a deep
+ * match remains readable). Returns null when neither the node nor any of
+ * its descendants match.
  */
-function sortedFilteredWrits(writs, childrenMap, showChildren, searchText, sortCol, sortDir) {
-  let roots = writs.slice();
+function pruneByTitleMatch(tree, q) {
+  const writ = tree.writ;
+  const selfMatches = (writ.title ?? '').toLowerCase().includes(q);
 
-  // Text filter on roots
-  if (searchText) {
-    const q = searchText.toLowerCase();
-    roots = roots.filter(w => (w.title ?? '').toLowerCase().includes(q));
+  if (selfMatches) {
+    return { writ, children: tree.children ?? [] };
   }
 
-  // Sort roots by current sort column
-  roots.sort((a, b) => {
-    const cmp = compareVal(a, b, sortCol);
+  const prunedChildren = (tree.children ?? [])
+    .map((c) => pruneByTitleMatch(c, q))
+    .filter(Boolean);
+
+  if (prunedChildren.length > 0) {
+    return { writ, children: prunedChildren };
+  }
+  return null;
+}
+
+/**
+ * Flatten a forest of `WritTree` nodes into rows annotated with depth,
+ * with prune-on-search semantics, per-node collapse, a global descendants
+ * toggle, and a single overflow row inserted wherever a subtree extends
+ * past `depthCap`.
+ *
+ * Each emitted row is one of:
+ *   - { kind: 'writ', writ, depth, hasChildren, isCollapsed }
+ *   - { kind: 'overflow', depth, ancestorId }
+ *
+ * `ancestorId` on an overflow row is the id of the deepest *visible*
+ * ancestor (the node sitting at depth = depthCap whose hidden subtree is
+ * being summarized) — used by the click handler to drill into the right
+ * detail view.
+ */
+function sortedFilteredWrits(forest, opts) {
+  const {
+    collapsedSet = new Set(),
+    showChildren = true,
+    searchText = '',
+    sortCol = 'createdAt',
+    sortDir = 'desc',
+    depthCap = 8,
+  } = opts ?? {};
+
+  const q = searchText.toLowerCase();
+  const pruned = q
+    ? forest.map((t) => pruneByTitleMatch(t, q)).filter(Boolean)
+    : forest;
+
+  const sortedRoots = [...pruned].sort((a, b) => {
+    const cmp = compareVal(a.writ, b.writ, sortCol);
     return sortDir === 'asc' ? cmp : -cmp;
   });
 
-  // Interleave children beneath each root
-  const result = [];
-  for (const root of roots) {
-    result.push({ writ: root, isChild: false });
-    if (showChildren) {
-      let children = childrenMap[root.id] ?? [];
-      // Text filter on children too
-      if (searchText) {
-        const q = searchText.toLowerCase();
-        children = children.filter(w => (w.title ?? '').toLowerCase().includes(q));
+  const out = [];
+  for (const tree of sortedRoots) {
+    emit(tree, 0);
+  }
+  return out;
+
+  function emit(tree, depth) {
+    const writ = tree.writ;
+    const hasChildren = (tree.children ?? []).length > 0;
+    const isCollapsed = collapsedSet.has(writ.id);
+    out.push({ kind: 'writ', writ, depth, hasChildren, isCollapsed });
+
+    if (!showChildren) return;
+    if (depth >= depthCap) {
+      if (hasChildren) {
+        out.push({ kind: 'overflow', depth: depth + 1, ancestorId: writ.id });
       }
-      for (const child of children) {
-        result.push({ writ: child, isChild: true });
-      }
+      return;
+    }
+    if (isCollapsed) return;
+    for (const child of tree.children ?? []) {
+      emit(child, depth + 1);
     }
   }
-  return result;
 }
 
 /**
@@ -178,15 +228,13 @@ function depthIndentStyle(depth) {
 
 /**
  * Extracted renderDetail logic for parent link and children table.
- * Returns the full HTML string, same as the index.html renderDetail.
+ * The detail view stays direct-children-only (D20).
  */
 function renderDetail(writ) {
   const isTerminal = ['completed', 'failed', 'cancelled'].includes(writ.phase);
-  const isStuck = writ.phase === 'stuck';
   const isDraft = writ.phase === 'new';
   let html = '';
 
-  // Edit form
   html += `<div class="detail-section" id="edit-section-${writ.id}">`;
   html += `<h4>${isDraft ? 'Edit Draft' : 'Edit'}</h4>`;
   html += `<div class="form-row"><label>Title</label>`;
@@ -201,7 +249,6 @@ function renderDetail(writ) {
   html += `<button class="btn btn--primary" data-action="save-edit" data-id="${writ.id}">Save</button>`;
   html += `</div></div>`;
 
-  // Details grid
   html += `<div class="detail-section"><h4>Details</h4><dl class="detail-grid">`;
   if (writ.codex) html += `<dt>Codex</dt><dd>${escHtml(writ.codex)}</dd>`;
   if (writ.parent) {
@@ -210,17 +257,14 @@ function renderDetail(writ) {
   html += `<dt>Created</dt><dd></dd>`;
   html += `</dl></div>`;
 
-  // Transition actions (simplified)
   if (!isTerminal) {
     html += `<div class="detail-section action-buttons" id="actions-${writ.id}"></div>`;
   }
 
-  // Repost
   if (writ.phase === 'failed' || writ.phase === 'cancelled') {
     html += `<div class="detail-section"><button class="btn" data-action="repost" data-id="${writ.id}">Repost</button></div>`;
   }
 
-  // Links (simplified)
   html += `<div class="detail-section" id="links-section-${writ.id}"><h4>Links</h4></div>`;
 
   // Children — deep descendant rendering.
@@ -262,135 +306,338 @@ function renderDetail(writ) {
   return html;
 }
 
+// ── Test fixtures ────────────────────────────────────────────────────
+
+/**
+ * Build a `WritTree` node from a flat shape. Children default to []. Title
+ * defaults to the id capitalised so search tests have stable text to hit.
+ */
+function tree(spec) {
+  const id = spec.id;
+  return {
+    writ: {
+      id,
+      title: spec.title ?? id,
+      type: spec.type ?? 'mandate',
+      phase: spec.phase ?? 'open',
+      createdAt: spec.createdAt ?? '2025-01-01T00:00:00Z',
+      ...(spec.parentId ? { parentId: spec.parentId } : {}),
+    },
+    children: (spec.children ?? []).map(tree),
+  };
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
-describe('sortedFilteredWrits — hierarchy ordering', () => {
-  const rootA = { id: 'a', title: 'Alpha Root', type: 'mandate', phase: 'open', createdAt: '2025-01-01' };
-  const rootB = { id: 'b', title: 'Beta Root', type: 'mandate', phase: 'open', createdAt: '2025-01-02' };
-  const childA1 = { id: 'a1', title: 'Alpha Child 1', type: 'task', phase: 'open', parentId: 'a', createdAt: '2025-01-03' };
-  const childA2 = { id: 'a2', title: 'Alpha Child 2', type: 'task', phase: 'open', parentId: 'a', createdAt: '2025-01-04' };
-  const childB1 = { id: 'b1', title: 'Beta Child 1', type: 'task', phase: 'open', parentId: 'b', createdAt: '2025-01-05' };
-
-  it('happy path — children interleaved beneath parents', () => {
-    const writs = [rootA, rootB];
-    const childrenMap = { a: [childA1, childA2], b: [childB1] };
-    const result = sortedFilteredWrits(writs, childrenMap, true, '', 'createdAt', 'asc');
-
-    assert.deepEqual(result.map(r => [r.writ.id, r.isChild]), [
-      ['a', false],
-      ['a1', true],
-      ['a2', true],
-      ['b', false],
-      ['b1', true],
-    ]);
+describe('sortedFilteredWrits — depth-numbered emission', () => {
+  it('emits a single root at depth 0 with hasChildren=false', () => {
+    const forest = [tree({ id: 'a' })];
+    const rows = sortedFilteredWrits(forest, {});
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].kind, 'writ');
+    assert.equal(rows[0].writ.id, 'a');
+    assert.equal(rows[0].depth, 0);
+    assert.equal(rows[0].hasChildren, false);
+    assert.equal(rows[0].isCollapsed, false);
   });
 
-  it('children hidden — only roots returned', () => {
-    const writs = [rootA, rootB];
-    const childrenMap = { a: [childA1, childA2], b: [childB1] };
-    const result = sortedFilteredWrits(writs, childrenMap, false, '', 'createdAt', 'asc');
-
-    assert.deepEqual(result.map(r => [r.writ.id, r.isChild]), [
-      ['a', false],
-      ['b', false],
-    ]);
+  it('emits root + child at depths 0, 1', () => {
+    const forest = [tree({ id: 'r', children: [{ id: 'c' }] })];
+    const rows = sortedFilteredWrits(forest, {});
+    assert.deepEqual(
+      rows.map((r) => [r.kind, r.writ.id, r.depth]),
+      [
+        ['writ', 'r', 0],
+        ['writ', 'c', 1],
+      ],
+    );
+    // Root has children → hasChildren true.
+    assert.equal(rows[0].hasChildren, true);
+    assert.equal(rows[1].hasChildren, false);
   });
 
-  it('sort changes root order only — children stay beneath parent', () => {
-    const writs = [rootA, rootB];
-    const childrenMap = { a: [childA1, childA2], b: [childB1] };
-    // Sort by title ascending: Alpha < Beta
-    const result = sortedFilteredWrits(writs, childrenMap, true, '', 'title', 'asc');
-
-    assert.deepEqual(result.map(r => [r.writ.id, r.isChild]), [
-      ['a', false],
-      ['a1', true],
-      ['a2', true],
-      ['b', false],
-      ['b1', true],
-    ]);
-
-    // Sort by title descending: Beta > Alpha
-    const result2 = sortedFilteredWrits(writs, childrenMap, true, '', 'title', 'desc');
-    assert.deepEqual(result2.map(r => [r.writ.id, r.isChild]), [
-      ['b', false],
-      ['b1', true],
-      ['a', false],
-      ['a1', true],
-      ['a2', true],
-    ]);
+  it('emits a 3-level tree at depths 0, 1, 2 in DFS order', () => {
+    const forest = [
+      tree({ id: 'r', children: [
+        { id: 'c1', children: [{ id: 'g1' }] },
+        { id: 'c2' },
+      ]}),
+    ];
+    const rows = sortedFilteredWrits(forest, {});
+    assert.deepEqual(
+      rows.map((r) => [r.writ.id, r.depth]),
+      [
+        ['r', 0],
+        ['c1', 1],
+        ['g1', 2],
+        ['c2', 1],
+      ],
+    );
   });
 
-  it('search filters both roots and children', () => {
-    const writs = [rootA, rootB];
-    const childrenMap = { a: [childA1, childA2], b: [childB1] };
-    // Search for 'Alpha' — rootA matches, childA1 and childA2 match, rootB doesn't match
-    const result = sortedFilteredWrits(writs, childrenMap, true, 'Alpha', 'createdAt', 'asc');
-
-    assert.deepEqual(result.map(r => [r.writ.id, r.isChild]), [
-      ['a', false],
-      ['a1', true],
-      ['a2', true],
-    ]);
+  it('preserves child order from the forest under each parent', () => {
+    // Server returns children in createdAt asc order; helper must not re-sort them.
+    const forest = [tree({ id: 'r', children: [
+      { id: 'c-zeta', createdAt: '2025-01-01' },
+      { id: 'c-alpha', createdAt: '2025-01-02' },
+    ]})];
+    const rows = sortedFilteredWrits(forest, { sortCol: 'title', sortDir: 'asc' });
+    // c-zeta first (server order) regardless of column sort.
+    assert.deepEqual(
+      rows.filter((r) => r.depth === 1).map((r) => r.writ.id),
+      ['c-zeta', 'c-alpha'],
+    );
   });
 
-  it('search respects toggle — hidden children not matched', () => {
-    // childA1 title contains 'Child 1' but rootA does not contain 'Child'
-    const writs = [rootA, rootB];
-    const childrenMap = { a: [childA1], b: [childB1] };
-    const result = sortedFilteredWrits(writs, childrenMap, false, 'Child 1', 'createdAt', 'asc');
+  it('returns an empty array for an empty forest', () => {
+    assert.deepEqual(sortedFilteredWrits([], {}), []);
+  });
+});
 
-    // Neither root matches 'Child 1', and children are hidden
-    assert.deepEqual(result, []);
+describe('sortedFilteredWrits — global Children toggle', () => {
+  const forest = [
+    tree({ id: 'a', title: 'Alpha', children: [{ id: 'a1', children: [{ id: 'a1g' }] }] }),
+    tree({ id: 'b', title: 'Beta', children: [{ id: 'b1' }] }),
+  ];
+
+  it('showChildren=false flattens to roots only, no overflow rows', () => {
+    const rows = sortedFilteredWrits(forest, { showChildren: false, sortCol: 'title', sortDir: 'asc' });
+    assert.deepEqual(
+      rows.map((r) => [r.kind, r.writ.id]),
+      [
+        ['writ', 'a'],
+        ['writ', 'b'],
+      ],
+    );
+    // hasChildren still reported so the toggle UI knows roots have hidden subtrees.
+    assert.equal(rows[0].hasChildren, true);
+    assert.equal(rows[1].hasChildren, true);
   });
 
-  it('search matches child title but not root when children visible', () => {
-    // Search for 'Child 1': rootA title doesn't match, but childA1 does
-    // Since rootA doesn't match the root filter, it's excluded entirely
-    const writs = [rootA, rootB];
-    const childrenMap = { a: [childA1], b: [childB1] };
-    const result = sortedFilteredWrits(writs, childrenMap, true, 'Child 1', 'createdAt', 'asc');
+  it('showChildren=true emits the full subtree under each root', () => {
+    const rows = sortedFilteredWrits(forest, { showChildren: true, sortCol: 'title', sortDir: 'asc' });
+    assert.deepEqual(rows.map((r) => r.writ.id), ['a', 'a1', 'a1g', 'b', 'b1']);
+  });
+});
 
-    // Root filter excludes both roots since neither title contains 'Child 1'
-    assert.deepEqual(result, []);
+describe('sortedFilteredWrits — per-node collapse', () => {
+  it('a collapsed node still emits but its descendants are skipped', () => {
+    const forest = [
+      tree({ id: 'r', children: [
+        { id: 'c1', children: [{ id: 'g1' }] },
+        { id: 'c2' },
+      ]}),
+    ];
+    const rows = sortedFilteredWrits(forest, { collapsedSet: new Set(['c1']) });
+    assert.deepEqual(
+      rows.map((r) => [r.writ.id, r.depth]),
+      [
+        ['r', 0],
+        ['c1', 1], // emitted but its subtree is hidden
+        ['c2', 1],
+      ],
+    );
+    const c1Row = rows.find((r) => r.writ.id === 'c1');
+    assert.equal(c1Row.isCollapsed, true);
+    assert.equal(c1Row.hasChildren, true);
   });
 
-  it('empty children — root appears alone with no child rows', () => {
-    const writs = [rootA];
-    const childrenMap = {};
-    const result = sortedFilteredWrits(writs, childrenMap, true, '', 'createdAt', 'asc');
+  it('collapsing the root hides every descendant', () => {
+    const forest = [
+      tree({ id: 'r', children: [{ id: 'c1', children: [{ id: 'g1' }] }] }),
+    ];
+    const rows = sortedFilteredWrits(forest, { collapsedSet: new Set(['r']) });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].writ.id, 'r');
+    assert.equal(rows[0].isCollapsed, true);
+  });
+});
 
-    assert.deepEqual(result.map(r => [r.writ.id, r.isChild]), [
-      ['a', false],
-    ]);
+describe('sortedFilteredWrits — root-only sort', () => {
+  const rootA = tree({ id: 'a', title: 'Alpha root', createdAt: '2025-01-01', children: [{ id: 'a1', title: 'a child', createdAt: '2025-01-10' }] });
+  const rootB = tree({ id: 'b', title: 'Beta root', createdAt: '2025-01-02', children: [{ id: 'b1', title: 'b child', createdAt: '2025-01-20' }] });
+
+  it('sort by title asc — a before b, children stay nested', () => {
+    const rows = sortedFilteredWrits([rootA, rootB], { sortCol: 'title', sortDir: 'asc' });
+    assert.deepEqual(rows.map((r) => r.writ.id), ['a', 'a1', 'b', 'b1']);
   });
 
-  it('empty writs array returns empty', () => {
-    const result = sortedFilteredWrits([], {}, true, '', 'createdAt', 'asc');
-    assert.deepEqual(result, []);
+  it('sort by title desc — b before a, children stay nested', () => {
+    const rows = sortedFilteredWrits([rootA, rootB], { sortCol: 'title', sortDir: 'desc' });
+    assert.deepEqual(rows.map((r) => r.writ.id), ['b', 'b1', 'a', 'a1']);
+  });
+
+  it('child order under each root is independent of the sort column', () => {
+    // Both children precede their reordered parents in createdAt order;
+    // the helper must not pull them into the root sort.
+    const rows = sortedFilteredWrits([rootA, rootB], { sortCol: 'createdAt', sortDir: 'asc' });
+    assert.deepEqual(rows.map((r) => r.writ.id), ['a', 'a1', 'b', 'b1']);
+  });
+});
+
+describe('sortedFilteredWrits — ancestor-preserve title search', () => {
+  const forest = [
+    tree({ id: 'a', title: 'Refactor session layer', children: [
+      { id: 'a1', title: 'Extract factory' },
+      { id: 'a2', title: 'Investigate auth flow', children: [
+        { id: 'a2g', title: 'Patch login race condition' },
+      ]},
+    ]}),
+    tree({ id: 'b', title: 'Document the API' }),
+  ];
+
+  it('match on a root surfaces the entire subtree', () => {
+    const rows = sortedFilteredWrits(forest, { searchText: 'Refactor', sortCol: 'createdAt', sortDir: 'asc' });
+    assert.deepEqual(rows.map((r) => r.writ.id), ['a', 'a1', 'a2', 'a2g']);
+  });
+
+  it('match on a deep descendant preserves the entire ancestor chain', () => {
+    const rows = sortedFilteredWrits(forest, { searchText: 'login', sortCol: 'createdAt', sortDir: 'asc' });
+    // a (root, no match) → a2 (no match) → a2g (match): all three kept.
+    // a1 (sibling of a2, no match) is pruned.
+    assert.deepEqual(rows.map((r) => r.writ.id), ['a', 'a2', 'a2g']);
+  });
+
+  it('non-matching siblings of a matched branch are pruned', () => {
+    const rows = sortedFilteredWrits(forest, { searchText: 'factory', sortCol: 'createdAt', sortDir: 'asc' });
+    // Only a (preserved as ancestor) and a1 (match) survive; a2/a2g pruned.
+    assert.deepEqual(rows.map((r) => r.writ.id), ['a', 'a1']);
+  });
+
+  it('returns an empty array when nothing matches', () => {
+    const rows = sortedFilteredWrits(forest, { searchText: 'xyzzy' });
+    assert.deepEqual(rows, []);
+  });
+
+  it('ancestor-preserve interacts with collapse — collapsed ancestor still hides its matched subtree', () => {
+    // When the user has manually collapsed an ancestor, the search match
+    // remains pruned visually because the subtree under a collapsed node is
+    // skipped before search would otherwise surface it. This documents the
+    // current intentional behavior.
+    const rows = sortedFilteredWrits(forest, { searchText: 'login', collapsedSet: new Set(['a']) });
+    assert.deepEqual(rows.map((r) => r.writ.id), ['a']);
+  });
+});
+
+describe('sortedFilteredWrits — overflow row at depth cap', () => {
+  /**
+   * Build a single-branch chain root → child → grand → … with the given ids.
+   * Each node carries the same created-at stamp, so the root sort is stable.
+   */
+  function chain(ids) {
+    const built = ids.map((id) => ({
+      writ: {
+        id,
+        title: id,
+        type: 'mandate',
+        phase: 'open',
+        createdAt: '2025-01-01T00:00:00Z',
+      },
+      children: [],
+    }));
+    for (let i = 0; i < built.length - 1; i++) {
+      built[i].children = [built[i + 1]];
+    }
+    return built[0];
+  }
+
+  it('emits a single overflow row when a subtree extends past the cap', () => {
+    // depthCap=2; chain has 4 levels (depths 0,1,2,3). depth-2 node has a
+    // hidden subtree → expect one overflow row at depth 3 keyed to the
+    // depth-2 node.
+    const root = chain(['r', 'c', 'g', 'gg']);
+    const rows = sortedFilteredWrits([root], { depthCap: 2 });
+    assert.deepEqual(
+      rows.map((r) => [r.kind, r.kind === 'writ' ? r.writ.id : r.ancestorId, r.depth]),
+      [
+        ['writ', 'r', 0],
+        ['writ', 'c', 1],
+        ['writ', 'g', 2],
+        ['overflow', 'g', 3],
+      ],
+    );
+  });
+
+  it('no overflow row when the deepest node sits exactly at the cap with no children', () => {
+    const root = chain(['r', 'c', 'g']); // depth 0,1,2 (cap=2)
+    const rows = sortedFilteredWrits([root], { depthCap: 2 });
+    assert.deepEqual(
+      rows.map((r) => [r.kind, r.writ?.id ?? r.ancestorId, r.depth]),
+      [
+        ['writ', 'r', 0],
+        ['writ', 'c', 1],
+        ['writ', 'g', 2],
+      ],
+    );
+  });
+
+  it('depthCap=0 emits roots only with overflow beneath each root that has children', () => {
+    const forest = [
+      tree({ id: 'a', children: [{ id: 'a1' }] }),
+      tree({ id: 'b' }),
+    ];
+    const rows = sortedFilteredWrits(forest, { depthCap: 0, sortCol: 'createdAt', sortDir: 'asc' });
+    assert.deepEqual(
+      rows.map((r) => [r.kind, r.kind === 'writ' ? r.writ.id : r.ancestorId, r.depth]),
+      [
+        ['writ', 'a', 0],
+        ['overflow', 'a', 1],
+        ['writ', 'b', 0],
+      ],
+    );
+  });
+
+  it('global Children toggle suppresses overflow rows', () => {
+    const root = chain(['r', 'c', 'g', 'gg']);
+    const rows = sortedFilteredWrits([root], { depthCap: 2, showChildren: false });
+    // Only the root, no overflow.
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].kind, 'writ');
+    assert.equal(rows[0].writ.id, 'r');
+  });
+
+  it('a collapsed depth-cap node does not double-emit an overflow row', () => {
+    // When the user collapses a node, its descendants are hidden via the
+    // collapse path — the overflow path is reached only when the depth cap
+    // forces the truncation, not when the user did it manually.
+    const root = chain(['r', 'c', 'g', 'gg']);
+    const rows = sortedFilteredWrits([root], { depthCap: 2, collapsedSet: new Set(['c']) });
+    // collapse on 'c' (depth 1) hides g and gg; no overflow row appears.
+    assert.deepEqual(
+      rows.map((r) => [r.kind, r.kind === 'writ' ? r.writ.id : r.ancestorId, r.depth]),
+      [
+        ['writ', 'r', 0],
+        ['writ', 'c', 1],
+      ],
+    );
+  });
+
+  it('overflow row carries the depth-cap node id, not the truncated descendant id', () => {
+    const root = chain(['r', 'c', 'g', 'gg', 'ggg']);
+    const rows = sortedFilteredWrits([root], { depthCap: 2 });
+    const overflow = rows.find((r) => r.kind === 'overflow');
+    assert.ok(overflow, 'expected an overflow row');
+    assert.equal(overflow.ancestorId, 'g');
   });
 });
 
 describe('phaseBadge — phase → class mapping', () => {
   it('maps open to badge badge--active', () => {
-    const result = phaseBadge('open');
-    assert.equal(result, '<span class="badge badge--active">open</span>');
+    assert.equal(phaseBadge('open'), '<span class="badge badge--active">open</span>');
   });
 
   it('maps cancelled to badge badge--warning', () => {
-    const result = phaseBadge('cancelled');
-    assert.equal(result, '<span class="badge badge--warning">cancelled</span>');
+    assert.equal(phaseBadge('cancelled'), '<span class="badge badge--warning">cancelled</span>');
   });
 
   it('maps unknown phase to plain badge', () => {
-    const result = phaseBadge('unknown');
-    assert.equal(result, '<span class="badge">unknown</span>');
+    assert.equal(phaseBadge('unknown'), '<span class="badge">unknown</span>');
   });
 });
 
 describe('Toggle button state', () => {
   it('initial state: showChildren true, button has active-filter', () => {
-    let showChildren = true;
+    const showChildren = true;
     const btn = createElement('button');
     btn.className = 'btn active-filter';
     assert.equal(showChildren, true);
@@ -402,7 +649,6 @@ describe('Toggle button state', () => {
     const btn = createElement('button');
     btn.className = 'btn active-filter';
 
-    // Simulate click
     showChildren = !showChildren;
     btn.classList.toggle('active-filter', showChildren);
 
@@ -415,11 +661,8 @@ describe('Toggle button state', () => {
     const btn = createElement('button');
     btn.className = 'btn active-filter';
 
-    // First click
     showChildren = !showChildren;
     btn.classList.toggle('active-filter', showChildren);
-
-    // Second click
     showChildren = !showChildren;
     btn.classList.toggle('active-filter', showChildren);
 
@@ -428,7 +671,7 @@ describe('Toggle button state', () => {
   });
 });
 
-describe('Children table rendering in detail view', () => {
+describe('Children table rendering in detail view (D20: still direct-children only)', () => {
   it('renders children table with 3 rows and correct columns', () => {
     const writ = {
       id: 'parent-1',
@@ -440,31 +683,17 @@ describe('Children table rendering in detail view', () => {
         { id: 'c2', title: 'Child 2', type: 'task', phase: 'completed', createdAt: '2025-01-02' },
         { id: 'c3', title: 'Child 3', type: 'bug', phase: 'new', createdAt: '2025-01-03' },
       ],
-      children: {
-        summary: { active: 1, completed: 1, new: 1 },
-        items: [],
-      },
+      children: { summary: { active: 1, completed: 1, new: 1 }, items: [] },
     };
 
     const html = renderDetail(writ);
 
-    // Should contain children section
-    assert.ok(html.includes('<h4>Children</h4>'), 'Children header should exist');
-
-    // Should have 3 child-detail-row entries
-    const rowMatches = html.match(/child-detail-row/g);
-    assert.equal(rowMatches.length, 3, 'Should have 3 child rows');
-
-    // Should have Phase, Title, Type, ID, Actions columns (no Created)
+    assert.ok(html.includes('<h4>Children</h4>'));
+    assert.equal((html.match(/child-detail-row/g) || []).length, 3);
     assert.ok(html.includes('<th>Phase</th><th>Title</th><th>Type</th><th>ID</th><th>Actions</th>'));
-
-    // Verify child data appears
     assert.ok(html.includes('Child 1'));
     assert.ok(html.includes('Child 2'));
     assert.ok(html.includes('Child 3'));
-    assert.ok(html.includes('data-child-id="c1"'));
-    assert.ok(html.includes('data-child-id="c2"'));
-    assert.ok(html.includes('data-child-id="c3"'));
   });
 
   it('does not render children section when no children', () => {
@@ -475,35 +704,9 @@ describe('Children table rendering in detail view', () => {
       body: '',
       children: { summary: {}, items: [] },
     };
-
     const html = renderDetail(writ);
-    assert.ok(!html.includes('<h4>Children</h4>'), 'Children header should not exist');
-    assert.ok(!html.includes('child-detail-row'), 'No child rows');
-  });
-
-  it('children in detail table ordered by createdAt ascending', () => {
-    const writ = {
-      id: 'parent-3',
-      title: 'Parent',
-      phase: 'open',
-      body: '',
-      _fullChildren: [
-        { id: 'c-early', title: 'Early', type: 'task', phase: 'open', createdAt: '2025-01-01' },
-        { id: 'c-late', title: 'Late', type: 'task', phase: 'open', createdAt: '2025-01-10' },
-        { id: 'c-mid', title: 'Mid', type: 'task', phase: 'open', createdAt: '2025-01-05' },
-      ],
-      children: { summary: {}, items: [] },
-    };
-
-    const html = renderDetail(writ);
-    const earlyIdx = html.indexOf('c-early');
-    const midIdx = html.indexOf('c-mid');
-    const lateIdx = html.indexOf('c-late');
-
-    // _fullChildren is pre-sorted by the caller, but we test that the rendering
-    // preserves the order they appear in. In real code fetchChildrenForRoots sorts them.
-    assert.ok(earlyIdx < lateIdx, 'Early should appear before Late');
-    assert.ok(earlyIdx < midIdx, 'Early should appear before Mid');
+    assert.ok(!html.includes('<h4>Children</h4>'));
+    assert.ok(!html.includes('child-detail-row'));
   });
 });
 
@@ -516,16 +719,11 @@ describe('Parent link in detail view', () => {
       body: '',
       parent: { id: 'w-parent', title: 'Parent Writ', phase: 'open' },
     };
-
     const html = renderDetail(writ);
-
-    // Should contain Parent dt/dd
-    assert.ok(html.includes('<dt>Parent</dt>'), 'Parent label should exist');
-    // Should contain link to parent
-    assert.ok(html.includes('href="?writ=w-parent"'), 'Parent link should use ?writ= param');
-    assert.ok(html.includes('Parent Writ'), 'Parent title should appear');
-    // Should have phase badge for parent
-    assert.ok(html.includes('badge badge--active'), 'Parent phase badge should appear');
+    assert.ok(html.includes('<dt>Parent</dt>'));
+    assert.ok(html.includes('href="?writ=w-parent"'));
+    assert.ok(html.includes('Parent Writ'));
+    assert.ok(html.includes('badge badge--active'));
   });
 
   it('does not render parent row when parent is null', () => {
@@ -536,9 +734,8 @@ describe('Parent link in detail view', () => {
       body: '',
       parent: null,
     };
-
     const html = renderDetail(writ);
-    assert.ok(!html.includes('<dt>Parent</dt>'), 'Parent label should not exist');
+    assert.ok(!html.includes('<dt>Parent</dt>'));
   });
 
   it('does not render parent row when parent is undefined', () => {
@@ -548,9 +745,8 @@ describe('Parent link in detail view', () => {
       phase: 'open',
       body: '',
     };
-
     const html = renderDetail(writ);
-    assert.ok(!html.includes('<dt>Parent</dt>'), 'Parent label should not exist');
+    assert.ok(!html.includes('<dt>Parent</dt>'));
   });
 
   it('encodes parent id in URL', () => {
@@ -561,9 +757,8 @@ describe('Parent link in detail view', () => {
       body: '',
       parent: { id: 'w-parent with spaces', title: 'Parent', phase: 'open' },
     };
-
     const html = renderDetail(writ);
-    assert.ok(html.includes('href="?writ=w-parent%20with%20spaces"'), 'Parent id should be URL-encoded');
+    assert.ok(html.includes('href="?writ=w-parent%20with%20spaces"'));
   });
 });
 

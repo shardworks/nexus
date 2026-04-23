@@ -174,6 +174,11 @@ export interface WritTree {
  * - `rootLimit` and `rootOffset` page across the *root* layer of forest
  *   mode (preserves the page's `Load more` UX). They are ignored when
  *   `rootId` is supplied.
+ *
+ * In forest mode roots are returned in `createdAt desc` order (newest
+ * first) to match `list()` and the existing writs-page UX. Children
+ * within each subtree stay in `createdAt asc` order (oldest first) so the
+ * visual shape of the tree is stable across sort/filter changes.
  */
 export interface WritTreeParams {
   /** Restrict to the subtree rooted at this writ id. */

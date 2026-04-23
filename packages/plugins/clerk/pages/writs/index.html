@@ -25,7 +25,35 @@
     .confirm-section input { padding: 0.3rem 0.5rem; background: var(--bg, #1a1b26); border: 1px solid var(--border, #414868); border-radius: 4px; color: inherit; min-width: 220px; }
     tr.writ-row { cursor: pointer; }
     tr.writ-row:hover { opacity: 0.85; }
-    tr.child-row { opacity: 0.85; }
+    /*
+     * Depth-aware indentation. Each row stamps `data-depth` and the title
+     * cell uses a CSS variable to scale its left padding — keeps the HTML
+     * compact and the calculation in one place. Base padding (1rem) lines
+     * up with the rest of the table; each level adds 1.25rem.
+     */
+    tr.writ-row .title-cell {
+      padding-left: calc(0.75rem + var(--depth, 0) * 1.25rem);
+    }
+    tr.writ-row[data-depth] { /* attribute selector — depth read by CSS */ }
+    /* Per-node expand/collapse toggle */
+    .row-toggle {
+      display: inline-block;
+      width: 1rem;
+      text-align: center;
+      cursor: pointer;
+      user-select: none;
+      opacity: 0.6;
+      margin-right: 0.25rem;
+      font-family: monospace;
+    }
+    .row-toggle:hover { opacity: 1; }
+    .row-toggle.row-toggle--placeholder { visibility: hidden; cursor: default; }
+    /* Overflow row at the depth cap */
+    tr.overflow-row { cursor: pointer; opacity: 0.55; font-style: italic; }
+    tr.overflow-row:hover { opacity: 0.85; }
+    tr.overflow-row .overflow-cell {
+      padding-left: calc(0.75rem + var(--depth, 0) * 1.25rem);
+    }
     #post-section { margin-bottom: 16px; display: none; }
     #post-section.open { display: block; }
     #post-section h3 { margin: 0 0 0.75rem; }
@@ -140,19 +168,28 @@
   <script>
   (() => {
     // ── State ──────────────────────────────────────────────────────────
-    let writs = [];          // root writs only (no parentId)
+    // forest is the page's source of truth: a forest of WritTree nodes
+    // returned by /api/writ/tree. Each node is { writ, children: WritTree[] }.
+    let forest = [];
     let offset = 0;
     let currentPhase = '';   // '' = all
     let currentType = new Set();  // Set<string> — empty = no types selected (empty state)
     let searchText = '';
     let sortCol = 'createdAt';
     let sortDir = 'desc';
-    let showChildren = true; // toggle state — children shown by default
-    let childrenMap = {};    // { parentId: WritDoc[] } — fetched children keyed by parent id
+    let showChildren = true; // global Children toggle — children shown by default
+    let collapsedSet = new Set(); // per-row collapse state, keyed by writ id
     let repostSourceId = null;
     let linkKinds = [];      // [{ id, ownerPlugin, description }] — registered writ link kinds
 
-    const LIMIT = 20;
+    // Page size constant — the number of root writs fetched per batch.
+    // Bumped to 100 because the deep-descendant view brings more rows on
+    // screen, and operators want more roots visible by default.
+    const LIMIT = 100;
+    // Maximum visible depth before the overflow row replaces further
+    // descendants. The page fetches one level past the cap so it can detect
+    // (and summarise) hidden subtrees without enumerating them.
+    const DEPTH_CAP = 8;
 
     // ── Helpers ────────────────────────────────────────────────────────
 
@@ -191,38 +228,99 @@
       return 0;
     }
 
-    function sortedFilteredWrits() {
-      let roots = writs.slice();
+    // ── Forest helpers ─────────────────────────────────────────────────
 
-      // Text filter on roots
-      if (searchText) {
-        const q = searchText.toLowerCase();
-        roots = roots.filter(w => (w.title ?? '').toLowerCase().includes(q));
+    /** Locate a writ tree node by id, recursively. Returns null when absent. */
+    function findInForest(nodes, id) {
+      for (const node of nodes) {
+        if (node.writ.id === id) return node;
+        const child = findInForest(node.children ?? [], id);
+        if (child) return child;
       }
+      return null;
+    }
 
-      // Sort roots by current sort column
-      roots.sort((a, b) => {
-        const cmp = compareVal(a, b, sortCol);
+    /**
+     * Replace the WritDoc at `id` with `newWrit` (mutates in place). Used by
+     * action handlers that want to refresh a single row's underlying doc
+     * without re-issuing the tree fetch.
+     */
+    function replaceWritInForest(nodes, id, newWrit) {
+      for (const node of nodes) {
+        if (node.writ.id === id) {
+          node.writ = newWrit;
+          return true;
+        }
+        if (replaceWritInForest(node.children ?? [], id, newWrit)) return true;
+      }
+      return false;
+    }
+
+    /**
+     * Prune a tree by title match. Matched node keeps its entire subtree;
+     * non-matching node is kept only when at least one descendant matches
+     * (preserves the ancestor chain of every match). Returns null when
+     * nothing in the subtree matches.
+     */
+    function pruneByTitleMatch(node, q) {
+      const writ = node.writ;
+      const selfMatches = (writ.title ?? '').toLowerCase().includes(q);
+      if (selfMatches) {
+        return { writ, children: node.children ?? [] };
+      }
+      const prunedChildren = (node.children ?? [])
+        .map(c => pruneByTitleMatch(c, q))
+        .filter(Boolean);
+      if (prunedChildren.length > 0) {
+        return { writ, children: prunedChildren };
+      }
+      return null;
+    }
+
+    /**
+     * Flatten the current forest into rows annotated with depth, respecting
+     * the global Children toggle, per-node collapse state, ancestor-preserve
+     * title search, and the depth cap (with an overflow marker beyond it).
+     *
+     * Each row is one of:
+     *   { kind: 'writ', writ, depth, hasChildren, isCollapsed }
+     *   { kind: 'overflow', depth, ancestorId }  // ancestorId = deepest visible parent
+     *
+     * The sort column applies to roots only — descendants stay in the order
+     * the server returned them (createdAt asc within each parent), so the
+     * shape of the tree stays stable when the operator changes columns.
+     */
+    function sortedFilteredWrits() {
+      const q = searchText.toLowerCase();
+      const pruned = q
+        ? forest.map(t => pruneByTitleMatch(t, q)).filter(Boolean)
+        : forest;
+
+      const sortedRoots = [...pruned].sort((a, b) => {
+        const cmp = compareVal(a.writ, b.writ, sortCol);
         return sortDir === 'asc' ? cmp : -cmp;
       });
 
-      // Interleave children beneath each root
-      const result = [];
-      for (const root of roots) {
-        result.push({ writ: root, isChild: false });
-        if (showChildren) {
-          let children = childrenMap[root.id] ?? [];
-          // Text filter on children too
-          if (searchText) {
-            const q = searchText.toLowerCase();
-            children = children.filter(w => (w.title ?? '').toLowerCase().includes(q));
+      const out = [];
+      for (const node of sortedRoots) emit(node, 0);
+      return out;
+
+      function emit(node, depth) {
+        const writ = node.writ;
+        const hasChildren = (node.children ?? []).length > 0;
+        const isCollapsed = collapsedSet.has(writ.id);
+        out.push({ kind: 'writ', writ, depth, hasChildren, isCollapsed });
+
+        if (!showChildren) return;
+        if (depth >= DEPTH_CAP) {
+          if (hasChildren) {
+            out.push({ kind: 'overflow', depth: depth + 1, ancestorId: writ.id });
           }
-          for (const child of children) {
-            result.push({ writ: child, isChild: true });
-          }
+          return;
         }
+        if (isCollapsed) return;
+        for (const child of node.children ?? []) emit(child, depth + 1);
       }
-      return result;
     }
 
     function showError(el, msg) {
@@ -330,8 +428,7 @@
         }
         // Reload this writ and update the row
         const writ = await api('GET', `/api/writ/show?id=${encodeURIComponent(id)}`);
-        const idx = writs.findIndex(w => w.id === id);
-        if (idx >= 0) writs[idx] = writ;
+        replaceWritInForest(forest, id, writ);
         updateRowPhase(id);
         updateRowActions(id);
         // Refresh detail view if open
@@ -346,7 +443,8 @@
     }
 
     function updateRowActions(id) {
-      const writ = writs.find(w => w.id === id);
+      const node = findInForest(forest, id);
+      const writ = node?.writ;
       if (!writ) return;
       const row = document.querySelector(`tr.writ-row[data-id="${id}"]`);
       if (!row) return;
@@ -368,22 +466,52 @@
       const tbody = document.getElementById('writ-tbody');
       const visible = sortedFilteredWrits();
 
-      if (visible.length === 0 && writs.length === 0) {
+      if (visible.length === 0 && forest.length === 0) {
         tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state">No writs found.</div></td></tr>`;
         return;
       }
 
       tbody.innerHTML = '';
-      for (const { writ: w, isChild } of visible) {
+      for (const row of visible) {
+        if (row.kind === 'overflow') {
+          // Single muted child row indicating the depth cap was reached.
+          // Clicking it opens the detail view for the deepest visible
+          // ancestor so the operator can drill into the hidden subtree.
+          const tr = document.createElement('tr');
+          tr.className = 'overflow-row';
+          tr.dataset.ancestorId = row.ancestorId;
+          tr.style.setProperty('--depth', row.depth);
+          tr.innerHTML =
+            '<td></td>' +
+            '<td class="overflow-cell" colspan="5">… more descendants below — click to open detail</td>';
+          tr.addEventListener('click', () => showWritDetail(row.ancestorId));
+          tbody.appendChild(tr);
+          continue;
+        }
+
+        const w = row.writ;
         const tr = document.createElement('tr');
-        tr.className = 'writ-row' + (isChild ? ' child-row' : '');
+        tr.className = 'writ-row' + (row.depth > 0 ? ' child-row' : '');
         tr.dataset.id = w.id;
+        tr.dataset.depth = String(row.depth);
+        // CSS variable drives the title-cell padding.
+        tr.style.setProperty('--depth', row.depth);
+
+        // Per-node expand/collapse affordance — only renders a real toggle
+        // on rows with children; otherwise a placeholder keeps the title
+        // column aligned across the table.
+        const hasChildren = row.hasChildren;
+        const isCollapsed = row.isCollapsed;
+        const toggleHtml = hasChildren
+          ? `<span class="row-toggle" data-toggle-id="${w.id}" title="${isCollapsed ? 'Expand' : 'Collapse'}">${isCollapsed ? '▸' : '▾'}</span>`
+          : `<span class="row-toggle row-toggle--placeholder">·</span>`;
+
         tr.innerHTML =
           '<td>' + phaseBadge(w.phase) + '</td>' +
-          '<td' + (isChild ? ' style="padding-left:2rem"' : '') + '>' + escHtml(w.title ?? '') + '</td>' +
+          '<td class="title-cell">' + toggleHtml + escHtml(w.title ?? '') + '</td>' +
           '<td>' + (w.type ?? '') + '</td>' +
           '<td class="id-cell"><code>' + w.id + '</code> <button class="btn copy-id-btn" data-copy-id="' + w.id + '" style="padding:0.1rem 0.3rem;font-size:0.7rem;cursor:pointer">📋</button></td>' +
-          '<td>' + (isChild ? '' : fmtDate(w.createdAt)) + '</td>' +
+          '<td>' + (row.depth > 0 ? '' : fmtDate(w.createdAt)) + '</td>' +
           '<td class="row-actions" style="white-space:nowrap">' + rowActions(w) + '</td>';
 
         // Wire row-action buttons (stop row-click propagation)
@@ -398,6 +526,14 @@
         if (idCell) {
           idCell.addEventListener('click', e => e.stopPropagation());
         }
+        // Wire the per-row collapse toggle.
+        const toggleEl = tr.querySelector('.row-toggle:not(.row-toggle--placeholder)');
+        if (toggleEl) {
+          toggleEl.addEventListener('click', e => {
+            e.stopPropagation();
+            toggleNodeCollapse(toggleEl.dataset.toggleId);
+          });
+        }
         // Wire copy button in ID cell
         const copyBtn = tr.querySelector('.copy-id-btn');
         if (copyBtn) {
@@ -411,6 +547,13 @@
       }
 
       updateSortIndicators();
+    }
+
+    /** Flip a row's collapse state and re-render. */
+    function toggleNodeCollapse(id) {
+      if (collapsedSet.has(id)) collapsedSet.delete(id);
+      else collapsedSet.add(id);
+      renderTable();
     }
 
     async function copyToClipboard(text, feedbackEl) {
@@ -729,16 +872,23 @@
         if (codexEl) payload.codex = codexEl.value;
         await api('POST', '/api/writ/edit', payload);
 
-        // Update the writ in the local array
+        // Update the writ in the local forest.
         const writ = await api('GET', `/api/writ/show?id=${encodeURIComponent(id)}`);
-        const idx = writs.findIndex(w => w.id === id);
-        if (idx >= 0) writs[idx] = writ;
+        replaceWritInForest(forest, id, writ);
 
-        // Update row title and type in table
+        // Update the row in-place. The title cell carries the toggle and
+        // padding from renderTable, so re-render it the same way rather
+        // than wiping its content.
         const row = document.querySelector(`tr.writ-row[data-id="${id}"]`);
         if (row) {
           const cells = row.querySelectorAll('td');
-          if (cells[1]) cells[1].textContent = writ.title ?? '';
+          const titleCell = cells[1];
+          if (titleCell) {
+            // Preserve the existing toggle (collapse state lives on the DOM toggle).
+            const toggle = titleCell.querySelector('.row-toggle');
+            const toggleHtml = toggle ? toggle.outerHTML : '';
+            titleCell.innerHTML = toggleHtml + escHtml(writ.title ?? '');
+          }
           if (cells[2]) cells[2].textContent = writ.type ?? '';
         }
 
@@ -877,9 +1027,8 @@
       } catch (e) {
         return;
       }
-      // Update writs array
-      const idx = writs.findIndex(w => w.id === id);
-      if (idx >= 0) writs[idx] = writ;
+      // Update the writ in the local forest.
+      replaceWritInForest(forest, id, writ);
 
       // Fetch full descendant tree if there are any children.
       if (writ.children && writ.children.items.length > 0) {
@@ -903,7 +1052,8 @@
     }
 
     function updateRowPhase(id) {
-      const writ = writs.find(w => w.id === id);
+      const node = findInForest(forest, id);
+      const writ = node?.writ;
       if (!writ) return;
       const row = document.querySelector(`tr.writ-row[data-id="${id}"]`);
       if (!row) return;
@@ -923,9 +1073,8 @@
         return;
       }
 
-      // Update local data if this writ is already in our arrays
-      const idx = writs.findIndex(w => w.id === id);
-      if (idx >= 0) writs[idx] = writ;
+      // Update the writ in the local forest if it's already present.
+      replaceWritInForest(forest, id, writ);
 
       // Fetch full descendant tree for the detail children table. The detail
       // view renders deep descendants (not just direct children) so clicking
@@ -972,15 +1121,25 @@
     async function loadWrits(replace = true) {
       if (replace) {
         offset = 0;
-        writs = [];
-        childrenMap = {};
+        forest = [];
+        // Per-row collapse state is page-local — wipe it on a full reload so
+        // the deep-descendant view matches the freshly-fetched tree.
+        collapsedSet = new Set();
       }
 
-      const params = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) });
+      // Single RPC: ask the server for a depth-bounded forest of root writs
+      // matching the current filters. Fetch one level past the visual cap so
+      // the renderer can detect (and summarize) hidden subtrees.
+      const params = new URLSearchParams({
+        rootLimit: String(LIMIT),
+        rootOffset: String(offset),
+        depth: String(DEPTH_CAP + 1),
+        format: 'json',
+      });
       if (currentPhase) params.set('phase', currentPhase);
       if (currentType.size === 0) {
-        // No types selected — show empty state without hitting the API
-        if (replace) { writs = []; }
+        // No types selected — show empty state without hitting the API.
+        if (replace) { forest = []; }
         renderTable();
         document.getElementById('load-more-row').style.display = 'none';
         return;
@@ -991,51 +1150,32 @@
 
       let result;
       try {
-        result = await api('GET', `/api/writ/list?${params}`);
+        result = await api('GET', `/api/writ/tree?${params}`);
       } catch (e) {
         console.error('Failed to load writs:', e);
         return;
       }
 
-      // Partition: roots (no parentId) vs children (discarded)
-      const roots = result.filter(w => !w.parentId);
-
+      // result is a forest (WritTree[]); each element is { writ, children }.
+      const batch = Array.isArray(result) ? result : [];
       if (replace) {
-        writs = roots;
+        forest = batch;
       } else {
-        writs = writs.concat(roots);
+        forest = forest.concat(batch);
       }
 
-      offset += result.length;
-
-      // Fetch all children for each newly loaded root
-      await fetchChildrenForRoots(roots);
+      offset += batch.length;
 
       renderTable();
 
+      // Load-more is only useful when the latest batch filled the page —
+      // a short batch means the server has no more roots to give.
       const loadMoreRow = document.getElementById('load-more-row');
-      if (result.length < LIMIT) {
+      if (batch.length < LIMIT) {
         loadMoreRow.style.display = 'none';
       } else {
         loadMoreRow.style.display = 'block';
       }
-    }
-
-    async function fetchChildrenForRoots(roots) {
-      const fetches = roots.map(async (root) => {
-        try {
-          const children = await api('GET',
-            '/api/writ/list?parentId=' + encodeURIComponent(root.id) + '&limit=1000');
-          if (children.length > 0) {
-            // Sort children by createdAt ascending — oldest first
-            children.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
-            childrenMap[root.id] = children;
-          }
-        } catch (e) {
-          console.error('Failed to fetch children for ' + root.id, e);
-        }
-      });
-      await Promise.all(fetches);
     }
 
     async function loadLinkKinds() {
