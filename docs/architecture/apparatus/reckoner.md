@@ -270,9 +270,6 @@ Reckoner itself; trigger-gating belongs on the Lattice's delivery side
 - The Reckoner re-declares a narrow `SpiderStuckStatus` type locally
   rather than importing from `@shardworks/spider-apparatus`. Spider is a
   recommend, not a require; this keeps the dependency direction one-way.
-- `writShortId()` is inlined in `predicates.ts` for the same reason Ratchet
-  and Spider copy it — three-line utility, not worth a cross-package
-  extraction. A future commission tracks extracting a shared helper.
 - Drain detection uses `isQueueDrained(writs, rigs)`, which issues two
   `count` queries in parallel and returns a boolean. The parallelism keeps
   the per-transition overhead small.
