@@ -2,12 +2,23 @@
  * patron-anima clockwork engine.
  *
  * Between `inventory-check` and `decision-review`, consults a configured
- * Patron Anima to principle-check every decision the primer produced. Any
- * decision the anima confirms (including `low`-confidence confirms),
- * overrides, or fills in is set on the PlanDoc with its `selection` value
- * — `decision-review` then auto-skips it via the existing
- * "primer pre-decides → patron-input omitted" semantics. The narrow
- * abstention cases flow through unfilled for the patron to answer.
+ * Patron Anima to principle-check *every* decision the primer produced.
+ * Under attended mode the primer contractually pre-fills `selected` on
+ * every decision (so auto-acceptance never silently happens without
+ * principle-check); patron-anima then reviews them all and confirms
+ * (including `low`-confidence confirms), overrides, fills in, or
+ * narrowly abstains.
+ *
+ * Abstention as absence — decision-review coupling:
+ *   When the anima abstains on a decision (by omitting it from the
+ *   emission array), `collect()` clears both `Decision.selected` and
+ *   `Decision.patronOverride` on that decision. The engine relies on
+ *   its consumer — `decision-review` — honouring the invariant that
+ *   `selected === undefined` means "the decision still needs patron
+ *   attention." Custom rigs that replace or precede `decision-review`
+ *   must preserve this contract, or abstentions will silently
+ *   auto-accept. `Decision.patron` is deliberately left alone so any
+ *   prior verdict from a retry is preserved.
  *
  * Operational discipline (the tailored work prompt):
  *   The anima runs under a checked-in operational prompt — the static
@@ -35,8 +46,9 @@
  *       options are incoherent as posed, so no valid emission would be
  *       faithful to the patron's intent). Every other case — including
  *       principle-absence — resolves to a first-class emission. The
- *       engine treats a missing verdict as "unfilled" and flows it
- *       through to `decision-review` in the normal path.
+ *       engine treats a missing verdict as "abstained": `selected` and
+ *       `patronOverride` are cleared so `decision-review` surfaces the
+ *       decision to the patron.
  *     - Out-of-lane prohibition. The draft worktree `cwd` passed to the
  *       anima permits filesystem access, but the prompt explicitly
  *       forbids file reads, grep, codebase audit, and second-guessing
@@ -47,16 +59,24 @@
  *   guild.json["astrolabe"]["patronRole"]
  *     Qualified role name for the Patron Anima (e.g. 'guild.patron').
  *     When unset or empty, this engine no-ops — the pipeline proceeds
- *     exactly as it did before the engine existed.
+ *     exactly as it did before the engine existed. When set, the engine
+ *     summons the anima whenever the plan has any decisions.
  *
  * Run → Collect protocol:
- *   run()     → loads the plan; builds a single prompt covering all
- *                reviewable decisions; launches an anima session via
- *                `animator.summon()`. Returns
- *                `{ status: 'launched', sessionId }`.
+ *   run()     → loads the plan; when `patronRole` is set and the plan
+ *                has at least one decision, builds a single prompt
+ *                covering every decision and launches an anima session
+ *                via `animator.summon()`. Returns
+ *                `{ status: 'launched', sessionId }`. No-ops (completes
+ *                with empty yields) when `patronRole` is unset/empty or
+ *                the plan has no decisions.
  *   collect() → reads the session's `output` from Stacks, parses the
- *                emitted JSON verdict array, applies verdicts to the
- *                PlanDoc, and records each verdict as `Decision.patron`.
+ *                emitted JSON verdict array, and for every decision on
+ *                the plan either applies the anima's verdict
+ *                (`selected` + `patron`, `patronOverride` cleared) or —
+ *                if the decision is absent from the emission — clears
+ *                `selected` and `patronOverride` so the decision
+ *                surfaces to the patron via `decision-review`.
  *
  * Output contract (the anima is asked for):
  *   The session's final message must be a single fenced JSON block
@@ -68,15 +88,15 @@
  *                      primer on principle-absence; first-class emission)
  *     - `rationale`  — short free-text note (optional)
  *   Decisions the anima abstains on — the two narrow cases above — are
- *   absent from the array; the engine and parser treat absence as
- *   "unfilled, surface to patron."
+ *   absent from the array; the engine treats absence as
+ *   "surface to patron" by clearing `selected` / `patronOverride`.
  *
  * Exhaustiveness:
  *   Single pass. Any decision not carrying a well-formed verdict —
  *   because the anima abstained (omitted it), emitted malformed JSON,
- *   picked an unknown option, or the session failed entirely — is left
- *   unfilled on the PlanDoc and flows to `decision-review` in the
- *   normal flow. The engine does not retry.
+ *   picked an unknown option, or the session failed entirely — has
+ *   `selected` and `patronOverride` cleared on the PlanDoc and flows
+ *   to `decision-review` in the normal flow. The engine does not retry.
  */
 
 import { readFileSync } from 'node:fs';
@@ -114,20 +134,15 @@ const DECISIONS_PLACEHOLDER = '{{DECISIONS}}';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-/** Reviewable = not yet pre-decided by the primer. Mirrors decision-review. */
-function reviewableDecisions(plan: PlanDoc): Decision[] {
-  return (plan.decisions ?? []).filter(d => d.selected === undefined);
-}
-
 /**
- * Assemble the patron work prompt from the reviewable decisions.
+ * Assemble the patron work prompt from the plan's decisions.
  *
  * The static portion (preamble, mode discipline, out-of-lane prohibition,
  * output contract, worked example) lives in `patron-anima-prompt.md` and is
  * loaded into `PROMPT_TEMPLATE` at module load. This function renders each
- * reviewable decision — question, optional context, options, optional
- * primer recommendation / rationale — and substitutes the listing into
- * the template's `{{DECISIONS}}` placeholder.
+ * decision — question, optional context, options, optional primer
+ * recommendation / rationale — and substitutes the listing into the
+ * template's `{{DECISIONS}}` placeholder.
  */
 export function buildPatronPrompt(decisions: Decision[]): string {
   const lines: string[] = [];
@@ -308,10 +323,10 @@ export function createPatronAnimaEngine(getPlansBook: () => Book<PlanDoc>): Engi
         return { status: 'completed', yields: {} };
       }
 
-      // Fast-path: nothing is reviewable → no-op. The primer has already
-      // pre-decided everything; there's nothing for the anima to weigh in on.
-      const reviewable = reviewableDecisions(plan);
-      if (reviewable.length === 0) {
+      // Fast-path: no decisions on the plan → no-op. The primer emitted
+      // nothing for the anima to weigh in on. (D13: keep this fast-path.)
+      const decisions = plan.decisions ?? [];
+      if (decisions.length === 0) {
         return { status: 'completed', yields: {} };
       }
 
@@ -322,7 +337,7 @@ export function createPatronAnimaEngine(getPlansBook: () => Book<PlanDoc>): Engi
           ? givens.cwd
           : process.cwd();
 
-      const prompt = buildPatronPrompt(reviewable);
+      const prompt = buildPatronPrompt(decisions);
 
       const handle = animator.summon({
         role,
@@ -360,20 +375,29 @@ export function createPatronAnimaEngine(getPlansBook: () => Book<PlanDoc>): Engi
       const session = await sessionsBook.get(sessionId);
       const output = session?.output ?? '';
 
-      const reviewable = reviewableDecisions(plan);
-      const emissionsByDecisionId = parseEmission(output, reviewable);
+      const planDecisions = plan.decisions ?? [];
+      const emissionsByDecisionId = parseEmission(output, planDecisions);
 
-      // Apply verdicts to each touched decision. Untouched decisions are
-      // left unfilled — decision-review will surface them to the human.
+      // Walk every decision on the plan. Decisions the anima emitted a
+      // verdict for are stamped with `selected` + `patron`; decisions the
+      // anima abstained on (absent from the emission map) have `selected`
+      // and `patronOverride` cleared so decision-review's
+      // `selected === undefined` filter surfaces them to the patron.
+      // `Decision.patron` is deliberately left alone on abstention
+      // (D14 leave-patron).
       const touched: string[] = [];
-      const decisions = (plan.decisions ?? []).map(d => ({ ...d }));
+      const decisions = planDecisions.map(d => ({ ...d }));
       for (const decision of decisions) {
         const emission = emissionsByDecisionId.get(decision.id);
-        if (!emission) continue;
-        decision.patron = emission;
-        decision.selected = emission.selection;
-        delete decision.patronOverride;
-        touched.push(decision.id);
+        if (emission) {
+          decision.patron = emission;
+          decision.selected = emission.selection;
+          delete decision.patronOverride;
+          touched.push(decision.id);
+        } else {
+          delete decision.selected;
+          delete decision.patronOverride;
+        }
       }
 
       await book.patch(planId, {
@@ -384,7 +408,7 @@ export function createPatronAnimaEngine(getPlansBook: () => Book<PlanDoc>): Engi
       return {
         sessionId,
         touchedDecisionIds: touched,
-        totalReviewable: reviewable.length,
+        totalReviewable: planDecisions.length,
       };
     },
   };

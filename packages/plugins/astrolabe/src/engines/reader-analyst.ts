@@ -17,12 +17,6 @@
  * brief should behave according to the live config, not the config at the
  * time the plugin loaded.
  *
- * The `selected === undefined` reviewable partition is preserved
- * conceptually: the attended variant pre-fills every decision, so the
- * partition is empty by construction and patron-anima no-ops for nothing-
- * to-review; the solo variant leaves razor-matched decisions unset, which
- * is the normal path for guilds without a patron-anima.
- *
  * Design contract mirrors `anima-session`:
  *   givens    : prompt (required), cwd (required), writ (optional), metadata
  *               (optional). `role` is NOT accepted — the engine chooses it.

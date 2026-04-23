@@ -3,19 +3,24 @@
  *
  * Covers:
  *   - skip-when-unset: no `astrolabe.patronRole` configured → no-op
- *   - fast-path: no reviewable decisions → no-op (no anima call)
+ *   - fast-path: no decisions on the plan → no-op (no anima call)
+ *   - attended-primer contract: a fully pre-filled plan still launches a
+ *     session and every decision is reviewed
+ *   - every decision appears in the rendered prompt when the plan is
+ *     fully pre-filled (D6 drift-prevention)
+ *   - abstention surfacing: decisions the anima omits from its emission
+ *     have `selected` and `patronOverride` cleared (D7)
  *   - happy path: anima confirms the primer recommendation
  *   - override path: anima picks a different option; `selected` tracks it
  *   - fill-in path: no primer recommendation; anima supplies one
  *   - first-class `low`-confirm path: no principle speaks → confirm the
  *     primer at `low` (D5)
  *   - narrow abstention: anima omits a decision on irresolvable principle
- *     conflict → that decision flows through unfilled (D6)
+ *     conflict → that decision flows through unfilled
  *   - partial emission: some decisions missing from the anima's response
  *     are left unfilled (for decision-review to catch)
- *   - malformed / missing JSON → all reviewable decisions left unfilled
+ *   - malformed / missing JSON → all decisions left unfilled
  *   - confidence calibration plumbed through to `Decision.patron.confidence`
- *   - pre-decided decisions untouched even when present in the plan
  *   - `confirm` verdict whose selection disagrees with recommendation → dropped
  *   - `override` verdict whose selection matches recommendation → dropped
  *   - unknown option key in selection → dropped
@@ -271,9 +276,9 @@ describe('patron-anima engine — skip-when-unset', () => {
   });
 });
 
-// ── Fast-path: no reviewable decisions ───────────────────────────────
+// ── Fast-paths and the attended-primer contract ──────────────────────
 
-describe('patron-anima engine — no reviewable decisions', () => {
+describe('patron-anima engine — no decisions on plan', () => {
   beforeEach(() => { setup({ patronRole: 'guild.patron' }); });
   afterEach(() => { clearGuild(); });
 
@@ -286,23 +291,51 @@ describe('patron-anima engine — no reviewable decisions', () => {
     assert.equal(result.status, 'completed');
     assert.equal(fakeAnimator.summonCalls.length, 0);
   });
+});
 
-  it('no-ops when every decision is already pre-decided by the primer', async () => {
+describe('patron-anima engine — attended-primer contract (every decision reviewed)', () => {
+  beforeEach(() => { setup({ patronRole: 'guild.patron' }); });
+  afterEach(() => { clearGuild(); });
+
+  it('launches a session and reviews every decision even when the primer has pre-filled `selected` on all of them', async () => {
+    // Under attended mode, the primer pre-fills `selected` on every
+    // decision and patron-anima principle-checks them all. The engine
+    // must NOT short-circuit on a fully pre-filled plan.
     const engine = createPatronAnimaEngine(() => plansBook);
     const decisions: Decision[] = [
-      { id: 'D1', scope: [], question: 'Q?', options: { A: 'A' }, selected: 'A' },
-      { id: 'D2', scope: [], question: 'Q2?', options: { X: 'X' }, selected: 'X' },
+      { id: 'D1', scope: [], question: 'Q1?', options: { A: 'Alpha', B: 'Beta' }, recommendation: 'A', selected: 'A' },
+      { id: 'D2', scope: [], question: 'Q2?', options: { X: 'Xi', Y: 'Yankee' }, recommendation: 'X', selected: 'X' },
     ];
     const plan = makePlan({ decisions });
     await plansBook.put(plan);
 
-    const result = await engine.run({ planId: plan.id }, buildCtx());
-    assert.equal(result.status, 'completed');
-    assert.equal(fakeAnimator.summonCalls.length, 0);
+    fakeAnimator.nextOutput =
+      '```json\n' +
+      JSON.stringify([
+        { id: 'D1', verdict: 'confirm', selection: 'A', confidence: 'high' },
+        { id: 'D2', verdict: 'confirm', selection: 'X', confidence: 'low' },
+      ]) +
+      '\n```';
+
+    const givens = { planId: plan.id };
+    const result = await engine.run(givens, buildCtx());
+
+    // Engine launched a session — it did NOT short-circuit.
+    assert.equal(result.status, 'launched');
+    assert.equal(fakeAnimator.summonCalls.length, 1);
+
+    const launched = result as { status: 'launched'; sessionId: string };
+    const collected = await engine.collect!(launched.sessionId, givens, buildCtx());
+    const yields = collected as { touchedDecisionIds: string[]; totalReviewable: number };
+
+    // Every decision was reviewed — the anima's verdicts landed on every one.
+    assert.deepEqual(yields.touchedDecisionIds, ['D1', 'D2']);
+    assert.equal(yields.totalReviewable, 2);
 
     const updated = await plansBook.get(plan.id);
-    assert.equal(updated?.decisions?.[0].selected, 'A');
-    assert.equal(updated?.decisions?.[1].selected, 'X');
+    assert.equal(updated?.decisions?.[0].patron?.verdict, 'confirm');
+    assert.equal(updated?.decisions?.[1].patron?.verdict, 'confirm');
+    assert.equal(updated?.decisions?.[1].patron?.confidence, 'low');
   });
 });
 
@@ -795,21 +828,91 @@ describe('patron-anima engine — verdict validation', () => {
   });
 });
 
-// ── Pre-decided decisions are untouched ──────────────────────────────
+// ── Every decision in a fully pre-filled plan lands in the prompt ────
 
-describe('patron-anima engine — pre-decided decisions', () => {
+describe('patron-anima engine — every decision reaches the prompt', () => {
   beforeEach(() => { setup({ patronRole: 'guild.patron' }); });
   afterEach(() => { clearGuild(); });
 
-  it('only reviewable decisions are prompted; pre-decided ones are left alone', async () => {
+  it('with a fully pre-filled plan, every decision appears in the rendered prompt', async () => {
+    // D6 drift-prevention: the attended-primer role file contractually
+    // pre-fills `selected` on every decision, and patron-anima must
+    // principle-check them all. Asserting prompt content guards against
+    // any future filter that would hide pre-filled decisions from the
+    // anima.
     const engine = createPatronAnimaEngine(() => plansBook);
     const decisions: Decision[] = [
-      { id: 'D1', scope: [], question: 'Reviewable?', options: { A: 'A', B: 'B' }, recommendation: 'A' },
-      { id: 'D2', scope: [], question: 'Pre-decided?', options: { X: 'X', Y: 'Y' }, selected: 'X' },
+      { id: 'D1', scope: [], question: 'Q1?', options: { A: 'A', B: 'B' }, recommendation: 'A', selected: 'A' },
+      { id: 'D2', scope: [], question: 'Q2?', options: { X: 'X', Y: 'Y' }, recommendation: 'X', selected: 'X' },
+      { id: 'D3', scope: [], question: 'Q3?', options: { P: 'P', Q: 'Q' }, recommendation: 'Q', selected: 'Q' },
     ];
     const plan = makePlan({ decisions });
     await plansBook.put(plan);
 
+    fakeAnimator.nextOutput =
+      '```json\n' +
+      JSON.stringify([
+        { id: 'D1', verdict: 'confirm', selection: 'A', confidence: 'high' },
+        { id: 'D2', verdict: 'confirm', selection: 'X', confidence: 'med' },
+        { id: 'D3', verdict: 'confirm', selection: 'Q', confidence: 'low' },
+      ]) +
+      '\n```';
+
+    const givens = { planId: plan.id };
+    const runResult = await engine.run(givens, buildCtx());
+    assert.equal(runResult.status, 'launched');
+
+    // The prompt must mention every decision id and question.
+    assert.equal(fakeAnimator.summonCalls.length, 1);
+    const prompt = fakeAnimator.summonCalls[0].prompt;
+    assert.ok(prompt.includes('D1'), 'D1 must appear in the rendered prompt');
+    assert.ok(prompt.includes('D2'), 'D2 must appear in the rendered prompt');
+    assert.ok(prompt.includes('D3'), 'D3 must appear in the rendered prompt');
+    assert.ok(prompt.includes('Q1?'));
+    assert.ok(prompt.includes('Q2?'));
+    assert.ok(prompt.includes('Q3?'));
+  });
+});
+
+// ── Abstention surfacing through cleared `selected` ──────────────────
+
+describe('patron-anima engine — abstention surfacing', () => {
+  beforeEach(() => { setup({ patronRole: 'guild.patron' }); });
+  afterEach(() => { clearGuild(); });
+
+  it('clears `selected` and `patronOverride` on decisions the anima abstains on, so decision-review surfaces them', async () => {
+    // D7: engine-only test. With a fully pre-filled plan, the anima
+    // emits verdicts for only a subset of decisions. Omitted decisions
+    // ("narrow abstention by omission") must have both `selected` and
+    // `patronOverride` cleared after collect() so decision-review's
+    // `selected === undefined` filter surfaces them to the patron.
+    const engine = createPatronAnimaEngine(() => plansBook);
+    const decisions: Decision[] = [
+      {
+        id: 'D1',
+        scope: [],
+        question: 'Clean?',
+        options: { A: 'A', B: 'B' },
+        recommendation: 'A',
+        selected: 'A',
+      },
+      {
+        id: 'D2',
+        scope: [],
+        question: 'Irresolvable conflict?',
+        options: { X: 'X', Y: 'Y' },
+        recommendation: 'X',
+        // The primer pre-filled both `selected` and a stray override
+        // (shouldn't happen in practice, but the engine must defensively
+        // clear it regardless — D3 clear-both).
+        selected: 'X',
+        patronOverride: 'Y',
+      },
+    ];
+    const plan = makePlan({ decisions });
+    await plansBook.put(plan);
+
+    // Anima emits for D1 only; D2 is abstained (absent from the array).
     fakeAnimator.nextOutput =
       '```json\n' +
       JSON.stringify([
@@ -820,20 +923,22 @@ describe('patron-anima engine — pre-decided decisions', () => {
     const givens = { planId: plan.id };
     const runResult = await engine.run(givens, buildCtx());
     const launched = runResult as { status: 'launched'; sessionId: string };
-
-    // The prompt must mention D1 only (not D2).
-    assert.equal(fakeAnimator.summonCalls.length, 1);
-    const prompt = fakeAnimator.summonCalls[0].prompt;
-    assert.ok(prompt.includes('D1'));
-    assert.ok(!prompt.includes('D2'));
-
-    await engine.collect!(launched.sessionId, givens, buildCtx());
+    const collected = await engine.collect!(launched.sessionId, givens, buildCtx());
+    const yields = collected as { touchedDecisionIds: string[] };
+    assert.deepEqual(yields.touchedDecisionIds, ['D1']);
 
     const updated = await plansBook.get(plan.id);
-    assert.equal(updated?.decisions?.[0].selected, 'A'); // D1 filled by anima
+
+    // D1 was emitted — anima's verdict landed on both `selected` and `patron`.
+    assert.equal(updated?.decisions?.[0].selected, 'A');
     assert.equal(updated?.decisions?.[0].patron?.verdict, 'confirm');
-    assert.equal(updated?.decisions?.[1].selected, 'X'); // D2 pre-decided, untouched
-    assert.equal(updated?.decisions?.[1].patron, undefined);
+
+    // D2 was abstained — `selected` and `patronOverride` both cleared so
+    // decision-review will surface the decision to the patron.
+    assert.equal(updated?.decisions?.[1].selected, undefined,
+      'abstained decision must have `selected` cleared to surface via decision-review');
+    assert.equal(updated?.decisions?.[1].patronOverride, undefined,
+      'abstained decision must have `patronOverride` cleared defensively (D3)');
   });
 });
 
