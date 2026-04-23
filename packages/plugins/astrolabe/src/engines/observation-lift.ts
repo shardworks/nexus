@@ -2,10 +2,10 @@
  * observation-lift clockwork engine.
  *
  * Walks the plan's `observations` array once it has reached its final
- * state and creates one draft brief writ per record as a child of the
- * originating brief. This turns the sage's "things we noticed but
+ * state and creates one draft mandate writ per record as a child of the
+ * originating mandate. This turns the sage's "things we noticed but
  * didn't action" output from an inert note into commissionable drafts
- * visible in the same writ surfaces as any other brief — a downstream
+ * visible in the same writ surfaces as any other mandate — a downstream
  * curator (human or automated) promotes each draft to `open` by hand
  * or via writ-publish.
  *
@@ -17,12 +17,12 @@
  *   - Silently no-ops if `plan.observations` is not an array (legacy
  *     string-shaped plandocs) or is an empty array.
  *   - Otherwise, iterates the array in order and calls
- *     `clerk.post({ type: 'brief', title, body, codex, parentId, draft })`
- *     once per record. The brief writ must still be in a non-terminal
- *     phase at this point — the engine runs before seal, which is what
- *     finally transitions the brief to `completed`.
+ *     `clerk.post({ type: 'mandate', title, body, codex, parentId, draft })`
+ *     once per record. The originating mandate writ must still be in a
+ *     non-terminal phase at this point — the engine runs before seal,
+ *     which is what finally transitions the mandate to `completed`.
  *   - Fails fast on the first `clerk.post` error. Already-created
- *     drafts persist as `new`-status writs under the brief; they are
+ *     drafts persist as `new`-status writs under the mandate; they are
  *     invisible to the Spider until a curator publishes them.
  *   - Does not mutate the plandoc — the parentId relationship on the
  *     created writs is the sole audit trail.
@@ -77,7 +77,7 @@ export function createObservationLiftEngine(getPlansBook: () => Book<PlanDoc>): 
         // Previously-created drafts persist (invisible to Spider) and
         // a curator can reconcile manually — rollback is not attempted.
         const writ = await clerk.post({
-          type: 'brief',
+          type: 'mandate',
           title: observation.title,
           body: observation.body,
           codex: plan.codex,

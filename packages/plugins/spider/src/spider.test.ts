@@ -144,11 +144,15 @@ function buildFixture(
   };
 
   // Note: the fixture no longer auto-injects { mandate: 'default' } into
-  // rigTemplateMappings. Spider's own supportKit now contributes that
-  // mapping as a plugin-level default, so tests that post mandate writs
-  // against the STANDARD_TEMPLATE get the same dispatch behaviour without
-  // test-fixture machinery. Tests that exercise a non-default mapping
-  // declare their own config override explicitly.
+  // rigTemplateMappings. Spider's registry applies a narrow mandate-
+  // builtin fallback inside `lookup()`/`listTemplateMappings()` — when
+  // no config or kit mapping claims the `mandate` writ type, mandate
+  // writs resolve to a `default` / `spider.default` template if one is
+  // registered. Tests that post mandate writs against the
+  // STANDARD_TEMPLATE (registered as config-level `default`) get the
+  // same dispatch behaviour without test-fixture machinery. Tests that
+  // exercise a non-default mapping declare their own config override
+  // explicitly.
 
   const fakeGuildConfig: GuildConfig = {
     name: 'test-guild',
@@ -2104,9 +2108,10 @@ describe('Spider — template dispatch', () => {
     // be tracked in the books without being executed.
     //
     // Note: we post a `triage` writ (declared here with no mapping) rather
-    // than a `mandate`, because Spider's own supportKit now contributes a
-    // plugin-default `mandate → default` mapping. An unmapped custom writ
-    // type is the cleanest way to exercise the "no dispatch" branch.
+    // than a `mandate`, because the registry applies a narrow mandate-
+    // builtin fallback (mandate → default/spider.default) whenever a
+    // `default` template is registered. An unmapped custom writ type is
+    // the cleanest way to exercise the "no dispatch" branch.
     const fix = buildFixture({
       spider: {
         rigTemplates: { hotfix: { engines: [{ id: 'x', designId: 'seal', givens: {} }] } },
@@ -2127,10 +2132,12 @@ describe('Spider — template dispatch', () => {
     assert.equal(writ.phase, 'open');
   });
 
-  it('dispatches a mandate writ via the fixture auto-mapping convenience', async () => {
-    // buildFixture auto-adds { mandate: 'default' } when a 'default' template
-    // exists and no explicit mapping is provided. This mirrors the default
-    // test fixture which provides STANDARD_TEMPLATE as 'default'.
+  it('dispatches a mandate writ via the mandate-builtin fallback', async () => {
+    // The registry's narrow mandate-builtin fallback resolves mandate →
+    // default when a `default` template is registered and no explicit
+    // mapping exists. The default fixture registers STANDARD_TEMPLATE as
+    // config-level `default`, so a mandate writ dispatches through the
+    // fallback without any explicit rigTemplateMappings declaration.
     const fix = buildFixture();
     const { clerk, spider, stacks } = fix;
 
@@ -2145,9 +2152,9 @@ describe('Spider — template dispatch', () => {
     // Override the fixture's default rigTemplates injection by setting rigTemplates to undefined.
     // With no templates and no mappings for this writ type, an un-mapped
     // writ is inert — dispatch is skipped. We use a custom `triage` type
-    // instead of `mandate` because Spider's supportKit now contributes a
-    // plugin-default `mandate → default` mapping that would otherwise
-    // dispatch.
+    // instead of `mandate` because the registry's narrow mandate-builtin
+    // fallback (mandate → default/spider.default) would otherwise dispatch
+    // when the spider.default kit template is still registered.
     const fix = buildFixture({
       spider: { rigTemplates: undefined },
       clerk: { writTypes: [{ name: 'triage' }] },
@@ -5296,9 +5303,10 @@ describe('Kit contributions — rig templates and mappings', () => {
           supportKit,
         },
       };
-      // Config override: Spider's plugin-default supplies its own mandate → default
-      // kit mapping, and kit-vs-kit precedence is first-registered-wins. Tests that
-      // want a specific kit-contributed template to win declare a config override.
+      // Config override: the registry's mandate-builtin fallback resolves
+      // mandate → default/spider.default when no explicit mapping exists.
+      // Tests that want a specific kit-contributed template to win for
+      // the mandate slot declare a config override to pin the mapping.
       const fix = buildFixture(
         { spider: { rigTemplateMappings: { mandate: 'quality-tools.audit' } } },
         { status: 'completed' },
@@ -5418,15 +5426,18 @@ describe('Kit contributions — rig templates and mappings', () => {
   // outcome: operators who only declare `spider.variables` (role,
   // buildCommand, testCommand) get the canonical draft → implement → review
   // → revise → seal pipeline purely from Spider's plugin-contributed
-  // supportKit. If this test ever regresses, it means Spider's supportKit
-  // stopped contributing either the `default` rigTemplate or the
-  // `mandate → default` mapping, and every zero-config guild would break.
-  describe('Zero-config mandate dispatch (plugin-default template + mapping)', () => {
+  // supportKit. If this test ever regresses, it means either Spider's
+  // supportKit stopped contributing the `default` rigTemplate, or the
+  // narrow mandate-builtin fallback in `lookup()` /
+  // `listTemplateMappings()` no longer resolves mandate → spider.default
+  // when no explicit mapping exists — and every zero-config guild would
+  // break.
+  describe('Zero-config mandate dispatch (plugin-default template + fallback)', () => {
     it('dispatches mandate writs using Spider supportKit defaults when no config templates or mappings exist', async () => {
       // Override the fixture's STANDARD_TEMPLATE config injection — we want
       // the plugin-default rigTemplate to be the only source. rigTemplateMappings
-      // is omitted entirely so Spider's own kit mapping (mandate → default)
-      // has to take effect.
+      // is omitted entirely so the registry's narrow mandate-builtin
+      // fallback (mandate → spider.default) has to take effect.
       const fix = buildFixture({
         spider: {
           rigTemplates: undefined,

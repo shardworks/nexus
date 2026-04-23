@@ -237,7 +237,7 @@ describe('astrolabe.reader-analyst — engine surface', () => {
     const engine = createReaderAnalystEngine();
     const givens = {
       ...defaultGivens(),
-      writ: { id: 'w-test-123', type: 'brief', status: 'open' },
+      writ: { id: 'w-test-123', type: 'mandate', status: 'open' },
     };
     await engine.run(givens, buildCtx());
     assert.equal(fakeAnimator.summonCalls.length, 1);

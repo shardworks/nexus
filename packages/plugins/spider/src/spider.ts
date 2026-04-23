@@ -1172,7 +1172,16 @@ class RigTemplateRegistry {
    * leaving the writ for non-dispatch handling (e.g. custom writ types
    * tracked without automatic dispatch).
    *
-   * Precedence: config mapping → kit mapping → undefined.
+   * Precedence: config mapping → kit mapping → mandate-builtin fallback →
+   * undefined.
+   *
+   * The mandate-builtin fallback preserves zero-config dispatch for Spider-
+   * only guilds: when the requested writ type is exactly the literal
+   * `'mandate'` (Clerk's sole builtin writ type) and no config or kit
+   * mapping claims it, the registry resolves against a template named
+   * `default` (config-level) or `spider.default` (kit-qualified). The
+   * fallback is narrow — no other writ type is matched — so the opt-in-
+   * dispatch contract for every non-builtin type is preserved.
    */
   lookup(writType: string): RigTemplate | undefined {
     // Step 1: Config mapping for this specific writ type
@@ -1194,6 +1203,16 @@ class RigTemplateRegistry {
         const t = this.templates.get(resolved);
         if (t) return t;
       }
+    }
+
+    // Step 3: Mandate-builtin fallback. Only the literal writ type
+    // `'mandate'` is matched — every other unmapped writ type remains
+    // inert. The resolution pattern mirrors `resolveKitMappedName`:
+    // prefer the unqualified `default` template (so a config-level
+    // override wins) and fall back to the kit-qualified `spider.default`.
+    if (writType === 'mandate') {
+      const defaultTemplate = this.templates.get('default') ?? this.templates.get('spider.default');
+      if (defaultTemplate) return defaultTemplate;
     }
 
     // No explicit mapping — writ type is inert by configuration, skip dispatch.
@@ -1222,6 +1241,14 @@ class RigTemplateRegistry {
   /**
    * Return the merged effective writ-type → template-name mapping.
    * Config mappings override kit mappings for the same writ type.
+   *
+   * Includes the mandate-builtin fallback: when the `mandate` writ type has
+   * no explicit config or kit mapping and a template named `default` or
+   * `spider.default` is registered, the merged map reports
+   * `mandate → default` (or `mandate → spider.default`). This keeps the
+   * dispatchable-types query filter in `trySpawn` in sync with `lookup()`'s
+   * narrow fallback, so zero-config Spider-only guilds still dispatch their
+   * mandate writs without an explicit mapping declaration.
    */
   listTemplateMappings(): Record<string, string> {
     const result: Record<string, string> = {};
@@ -1233,6 +1260,15 @@ class RigTemplateRegistry {
     }
     for (const [writType, templateName] of this.configMappings) {
       result[writType] = templateName;
+    }
+    // Mandate-builtin fallback — only applies when no explicit mapping claims
+    // `mandate`. Mirrors `lookup()`'s narrow final clause.
+    if (!result['mandate']) {
+      if (this.templates.has('default')) {
+        result['mandate'] = 'default';
+      } else if (this.templates.has('spider.default')) {
+        result['mandate'] = 'spider.default';
+      }
     }
     return result;
   }
@@ -2573,13 +2609,6 @@ export function createSpider(): Plugin {
         },
         rigTemplates: {
           default: defaultRigTemplate,
-        },
-        rigTemplateMappings: {
-          // Unqualified reference — resolved via the registry's
-          // config-overrides-kit fallback. If the guild declares its own
-          // config-level `default` template, that value wins; otherwise the
-          // registry falls back to Spider's own kit-qualified `spider.default`.
-          mandate: 'default',
         },
         pages: [
           { id: 'spider', title: 'Spider', dir: 'src/static' },

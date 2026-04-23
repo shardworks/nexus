@@ -42,9 +42,9 @@ let mockClerkTransition: (id: string, to: string, fields?: unknown) => Promise<{
 const mockClerkApi = {
   show: async (id: string) => ({
     id,
-    type: 'brief',
+    type: 'mandate',
     status: 'open' as const,
-    title: `Brief for ${id}`,
+    title: `Mandate for ${id}`,
     body: 'Body',
     codex: 'test-codex',
     createdAt: new Date().toISOString(),
@@ -151,7 +151,7 @@ describe('plan-init engine', () => {
 
   it('creates a PlanDoc with status reading and yields planId', async () => {
     const engine = createPlanInitEngine(() => plansBook);
-    const writ = { id: 'w-abc', codex: 'my-codex', type: 'brief', status: 'open', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
+    const writ = { id: 'w-abc', codex: 'my-codex', type: 'mandate', status: 'open', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
 
     const result = await engine.run({ writ }, buildCtx());
 
@@ -168,7 +168,7 @@ describe('plan-init engine', () => {
 
   it('throws when writ has no codex', async () => {
     const engine = createPlanInitEngine(() => plansBook);
-    const writ = { id: 'w-abc', codex: undefined, type: 'brief', status: 'open', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
+    const writ = { id: 'w-abc', codex: undefined, type: 'mandate', status: 'open', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
 
     await assert.rejects(
       () => engine.run({ writ }, buildCtx()),
@@ -181,7 +181,7 @@ describe('plan-init engine', () => {
 
   it('throws when writ codex is empty string', async () => {
     const engine = createPlanInitEngine(() => plansBook);
-    const writ = { id: 'w-abc', codex: '   ', type: 'brief', status: 'open', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
+    const writ = { id: 'w-abc', codex: '   ', type: 'mandate', status: 'open', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
 
     await assert.rejects(
       () => engine.run({ writ }, buildCtx()),
@@ -194,7 +194,7 @@ describe('plan-init engine', () => {
 
   it('throws when a plan already exists for the writ', async () => {
     const engine = createPlanInitEngine(() => plansBook);
-    const writ = { id: 'w-dup', codex: 'codex-a', type: 'brief', status: 'open', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
+    const writ = { id: 'w-dup', codex: 'codex-a', type: 'mandate', status: 'open', title: 'Test', body: 'Body', createdAt: '', updatedAt: '' };
 
     await engine.run({ writ }, buildCtx());
 
@@ -1316,7 +1316,7 @@ describe('observation-lift engine', () => {
     assert.equal(postCalls.length, 0);
   });
 
-  it('happy path — creates one draft brief writ per observation record', async () => {
+  it('happy path — creates one draft mandate writ per observation record', async () => {
     const engine = createObservationLiftEngine(() => plansBook);
     const observations: Observation[] = [
       {
@@ -1337,7 +1337,7 @@ describe('observation-lift engine', () => {
     ];
 
     const plan = makePlan({
-      id: 'w-brief-parent',
+      id: 'w-mandate-parent',
       codex: 'my-codex',
       status: 'completed',
       observations,
@@ -1364,11 +1364,11 @@ describe('observation-lift engine', () => {
     for (let i = 0; i < observations.length; i++) {
       const call = postCalls[i];
       const obs = observations[i];
-      assert.equal(call.type, 'brief');
+      assert.equal(call.type, 'mandate');
       assert.equal(call.title, obs.title);
       assert.equal(call.body, obs.body);
       assert.equal(call.codex, 'my-codex');
-      assert.equal(call.parentId, 'w-brief-parent');
+      assert.equal(call.parentId, 'w-mandate-parent');
       assert.equal(call.draft, true);
     }
 
@@ -1388,7 +1388,7 @@ describe('observation-lift engine', () => {
     ];
 
     const plan = makePlan({
-      id: 'w-brief-fail',
+      id: 'w-mandate-fail',
       status: 'completed',
       observations,
     });

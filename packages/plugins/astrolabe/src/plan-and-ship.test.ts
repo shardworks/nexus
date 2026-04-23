@@ -106,7 +106,7 @@ describe('astrolabe.plan-and-ship rig template — shape and wiring', () => {
     );
   });
 
-  it('resolutionEngine is seal — the brief completes when implementation seals', () => {
+  it('resolutionEngine is seal — the mandate completes when implementation seals', () => {
     assert.equal(template.resolutionEngine, 'seal');
   });
 
@@ -144,8 +144,8 @@ describe('astrolabe.plan-and-ship rig template — shape and wiring', () => {
 
   it('observation-lift sits between plan-finalize and implement', () => {
     // observation-lift lifts plan.observations into draft child writs
-    // under the brief. Placement: the plan has reached `completed` (via
-    // plan-finalize) but the brief writ is still `open`, so clerk.post
+    // under the mandate. Placement: the plan has reached `completed` (via
+    // plan-finalize) but the mandate writ is still `open`, so clerk.post
     // with parentId succeeds.
     const ol = template.engines.find(e => e.id === 'observation-lift');
     assert.ok(ol, 'observation-lift engine must exist');
@@ -181,22 +181,23 @@ describe('astrolabe.plan-and-ship rig template — shape and wiring', () => {
     const seal = template.engines.find(e => e.id === 'seal');
     assert.deepEqual(seal?.upstream, ['revise']);
     // The seal is real — not an abandon seal like the two/three-phase
-    // planning rigs. The brief writ reaches completed only after this
+    // planning rigs. The mandate writ reaches completed only after this
     // seal succeeds, which is the motivating fix for the commission.
     assert.notEqual(seal?.givens?.abandon, true,
-      'combined-rig seal must not pass abandon: true — the brief writ must reach completed via a real seal');
+      'combined-rig seal must not pass abandon: true — the mandate writ must reach completed via a real seal');
   });
 });
 
 // ── Default-mapping tests ─────────────────────────────────────────────
 
-describe('astrolabe plugin-default brief mapping', () => {
+describe('astrolabe plugin-default mandate mapping', () => {
   const plugin = createAstrolabe();
   const kit = getKit(plugin);
   const mappings = kit.rigTemplateMappings as Record<string, string>;
 
-  it('maps brief → astrolabe.plan-and-ship by default', () => {
-    assert.equal(mappings.brief, 'astrolabe.plan-and-ship');
+  it('maps mandate → astrolabe.plan-and-ship by default', () => {
+    assert.equal(mappings.mandate, 'astrolabe.plan-and-ship');
+    assert.equal(mappings.brief, undefined, 'brief mapping must not be contributed');
   });
 
   it('does not register the retired two-phase-planning or three-phase-planning templates', () => {

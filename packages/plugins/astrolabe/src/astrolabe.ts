@@ -107,9 +107,9 @@ export function createAstrolabe(): Plugin {
     description: 'Show full detail for a plan',
     instructions:
       'Returns the complete plan document including inventory, scope, decisions, ' +
-      'observations, and spec fields. The planId is the brief writ ID.',
+      'observations, and spec fields. The planId is the originating mandate writ ID.',
     params: {
-      planId: z.string().describe('Plan id (same as the brief writ id)'),
+      planId: z.string().describe('Plan id (same as the originating mandate writ id)'),
     },
     permission: 'read',
     handler: async ({ planId }) => {
@@ -227,8 +227,8 @@ export function createAstrolabe(): Plugin {
       'per atomic concern noticed during the planning pass. Each record has a plandoc-local ' +
       'id (convention: obs-1, obs-2, ...), a one-line commission-title style title, and a ' +
       'markdown body with tactical detail (file paths, symbols, preconditions). Downstream ' +
-      'the astrolabe.observation-lift engine creates one draft brief writ per record as a ' +
-      'child of the originating brief, ready for a curator to promote.',
+      'the astrolabe.observation-lift engine creates one draft mandate writ per record as a ' +
+      'child of the originating mandate, ready for a curator to promote.',
     params: {
       planId: z.string().describe('Plan id'),
       observations: z
@@ -276,7 +276,6 @@ export function createAstrolabe(): Plugin {
         },
 
         writTypes: [
-          { name: 'brief', description: 'A patron brief triggering the planning pipeline' },
           { name: 'piece', description: 'An atomic task piece within a mandate, executed sequentially' },
         ],
 
@@ -323,7 +322,7 @@ export function createAstrolabe(): Plugin {
         },
 
         rigTemplateMappings: {
-          brief: 'astrolabe.plan-and-ship',
+          mandate: 'astrolabe.plan-and-ship',
         },
 
         tools: [

@@ -59,17 +59,16 @@ describe('Astrolabe supportKit shape', () => {
 
   // ── R5: writTypes ──────────────────────────────────────────────────
 
-  it('contributes brief and piece writTypes', () => {
+  it('contributes piece writType and does not contribute brief', () => {
     const kit = getKit(plugin);
     const writTypes = kit.writTypes as Array<{ name: string; description?: string }>;
     assert.ok(Array.isArray(writTypes), 'writTypes must be an array');
-    assert.equal(writTypes.length, 2, 'must have exactly two writ types');
-    const brief = writTypes.find(w => w.name === 'brief');
-    assert.ok(brief, 'brief writType must exist');
-    assert.ok(brief.description);
+    assert.equal(writTypes.length, 1, 'must have exactly one writ type');
     const piece = writTypes.find(w => w.name === 'piece');
     assert.ok(piece, 'piece writType must exist');
     assert.ok(piece.description);
+    const brief = writTypes.find(w => w.name === 'brief');
+    assert.equal(brief, undefined, 'brief writType must not be contributed');
   });
 
   // ── R6: roles ──────────────────────────────────────────────────────
@@ -241,10 +240,10 @@ describe('Astrolabe supportKit shape', () => {
     );
   });
 
-  it('observation-lift placement preserves non-terminal brief writ phase', () => {
+  it('observation-lift placement preserves non-terminal mandate writ phase', () => {
     // Clerk rejects child-writ creation under a terminal parent, so
     // observation-lift must run before the seal engine that transitions
-    // the brief writ to `completed`.
+    // the mandate writ to `completed`.
     const kit = getKit(plugin);
     const rigTemplates = kit.rigTemplates as Record<string, {
       engines: Array<{ id: string; designId: string }>;
@@ -260,10 +259,11 @@ describe('Astrolabe supportKit shape', () => {
     );
   });
 
-  it('maps brief to astrolabe.plan-and-ship', () => {
+  it('maps mandate to astrolabe.plan-and-ship', () => {
     const kit = getKit(plugin);
     const mappings = kit.rigTemplateMappings as Record<string, string>;
-    assert.equal(mappings?.brief, 'astrolabe.plan-and-ship');
+    assert.equal(mappings?.mandate, 'astrolabe.plan-and-ship');
+    assert.equal(mappings?.brief, undefined, 'brief mapping must not be contributed');
   });
 
   // ── R9: tools ──────────────────────────────────────────────────────
