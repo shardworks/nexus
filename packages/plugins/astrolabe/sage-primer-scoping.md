@@ -188,9 +188,16 @@ Accumulate a punch list of things noticed during analysis that are outside the b
 - **Doc/code discrepancies** found during inventory
 - **Potential bugs or risks** noticed in adjacent code
 
-Each entry should be actionable: specific enough that a future commission could address it without re-doing the analysis.
+Each observation is **one record per atomic concern**. Downstream, the `astrolabe.observation-lift` engine creates one draft brief writ per record as a child of the originating brief, so a curator (human or automated) can promote it to open status. Your job is to package the concerns; you do not decide which ones get promoted.
 
-Write observations using `observations-write`.
+Atomicity guidance has not changed from prior practice — if two noticings would be addressed by the same follow-up commission, they belong in one record; if they would be addressed by two different commissions, they are two records.
+
+Each observation record needs:
+- `id` — sequential plandoc-local identifier (`obs-1`, `obs-2`, …). Assigned by you; stored verbatim.
+- `title` — one line, commission-title style: imperative verb phrase or noun phrase, ~10 words maximum, no trailing punctuation. This becomes the title of the draft writ downstream, so it should read naturally in a writ list.
+- `body` — tactical detail, markdown. Name the specific files, symbols, and preconditions — the same level of detail a good brief carries today. Do not rewrite into a formal brief register; the body stays tactical.
+
+Write observations using `observations-write`. The parameter is a strict array of the records described above — a legacy prose blob is rejected at validation time.
 
 ### Boundaries
 

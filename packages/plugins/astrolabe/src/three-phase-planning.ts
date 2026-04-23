@@ -7,7 +7,14 @@
  * backward compatibility with downstream yield references even though
  * the role it summons is now `sage-primer-scoping`.
  * Stages: plan-init → draft → reader → inventory-check → analyst →
- * decision-review → spec-writer → spec-publish → seal.
+ * decision-review → spec-writer → spec-publish → observation-lift → seal.
+ *
+ * The `observation-lift` engine runs after `spec-publish` transitions the
+ * plan to `completed` but while the brief writ is still `open` (seal is
+ * what transitions the brief). It lifts each record in `plan.observations`
+ * into a draft child writ under the brief. The engine internally no-ops on
+ * empty or legacy-string observations, so it is wired unconditionally (no
+ * `when:` guard).
  */
 
 import type { RigTemplate } from '@shardworks/spider-apparatus';
@@ -83,9 +90,15 @@ export const threePhaseRigTemplate: RigTemplate = {
       givens: { planId: '${yields.plan-init.planId}' },
     },
     {
+      id: 'observation-lift',
+      designId: 'astrolabe.observation-lift',
+      upstream: ['spec-publish'],
+      givens: { planId: '${yields.plan-init.planId}' },
+    },
+    {
       id: 'seal',
       designId: 'seal',
-      upstream: ['spec-publish'],
+      upstream: ['observation-lift'],
       givens: { abandon: true },
     },
   ],

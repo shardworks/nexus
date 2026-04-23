@@ -20,8 +20,9 @@ import {
   createInventoryCheckEngine,
   createDecisionReviewEngine,
   createSpecPublishEngine,
+  createObservationLiftEngine,
 } from './engines/index.ts';
-import type { PlanDoc, Decision, ScopeItem } from './types.ts';
+import type { PlanDoc, Decision, ScopeItem, Observation } from './types.ts';
 import type { EngineRunContext } from '@shardworks/fabricator-apparatus';
 
 // ── Test harness ─────────────────────────────────────────────────────
@@ -1431,5 +1432,225 @@ Some preamble text.
 
     // No transition (live post).
     assert.equal(transitionCalls.length, 0);
+  });
+});
+
+// ── observation-lift tests ────────────────────────────────────────────
+
+describe('observation-lift engine', () => {
+  beforeEach(() => {
+    setup();
+    // Default: no-op post that each test overrides as needed.
+    mockClerkPost = async () => ({ id: 'writ-default', title: 'default' });
+  });
+  afterEach(() => { clearGuild(); });
+
+  it('has id astrolabe.observation-lift and a run function', () => {
+    const engine = createObservationLiftEngine(() => plansBook);
+    assert.equal(engine.id, 'astrolabe.observation-lift');
+    assert.equal(typeof engine.run, 'function');
+  });
+
+  it('throws when the plan does not exist', async () => {
+    const engine = createObservationLiftEngine(() => plansBook);
+    await assert.rejects(
+      () => engine.run({ planId: 'no-such-plan' }, buildCtx()),
+      (err: Error) => {
+        assert.ok(err.message.includes('not found'));
+        return true;
+      },
+    );
+  });
+
+  it('throws when plan status is not completed', async () => {
+    const engine = createObservationLiftEngine(() => plansBook);
+    const obs: Observation[] = [{ id: 'obs-1', title: 'T', body: 'B' }];
+    const plan = makePlan({ status: 'writing', observations: obs });
+    await plansBook.put(plan);
+
+    await assert.rejects(
+      () => engine.run({ planId: plan.id }, buildCtx()),
+      (err: Error) => {
+        assert.ok(
+          err.message.includes('completed'),
+          `Expected "completed" in: ${err.message}`,
+        );
+        return true;
+      },
+    );
+  });
+
+  it('no-ops with empty writIds when observations field is undefined', async () => {
+    const engine = createObservationLiftEngine(() => plansBook);
+    const plan = makePlan({ status: 'completed' });
+    await plansBook.put(plan);
+
+    const postCalls: unknown[] = [];
+    mockClerkPost = async (params) => {
+      postCalls.push(params);
+      return { id: 'should-not-be-called', title: 'x' };
+    };
+
+    const result = await engine.run({ planId: plan.id }, buildCtx());
+    assert.equal(result.status, 'completed');
+    assert.deepEqual(
+      (result as { status: 'completed'; yields: { writIds: string[] } }).yields,
+      { writIds: [] },
+    );
+    assert.equal(postCalls.length, 0);
+  });
+
+  it('no-ops with empty writIds when observations is an empty array', async () => {
+    const engine = createObservationLiftEngine(() => plansBook);
+    const plan = makePlan({ status: 'completed', observations: [] });
+    await plansBook.put(plan);
+
+    const postCalls: unknown[] = [];
+    mockClerkPost = async (params) => {
+      postCalls.push(params);
+      return { id: 'should-not-be-called', title: 'x' };
+    };
+
+    const result = await engine.run({ planId: plan.id }, buildCtx());
+    assert.equal(result.status, 'completed');
+    assert.deepEqual(
+      (result as { status: 'completed'; yields: { writIds: string[] } }).yields,
+      { writIds: [] },
+    );
+    assert.equal(postCalls.length, 0);
+  });
+
+  it('silently skips a legacy string-shaped observations payload', async () => {
+    // D15: pre-existing plandocs carry `observations` as a prose string;
+    // the engine must not explode — it treats a non-array as empty.
+    const engine = createObservationLiftEngine(() => plansBook);
+    const plan = makePlan({
+      status: 'completed',
+      // Intentionally bypass the typed shape to simulate legacy data.
+      observations: '## Risks\n- stale prose' as unknown as Observation[],
+    });
+    await plansBook.put(plan);
+
+    const postCalls: unknown[] = [];
+    mockClerkPost = async (params) => {
+      postCalls.push(params);
+      return { id: 'should-not-be-called', title: 'x' };
+    };
+
+    const result = await engine.run({ planId: plan.id }, buildCtx());
+    assert.equal(result.status, 'completed');
+    assert.deepEqual(
+      (result as { status: 'completed'; yields: { writIds: string[] } }).yields,
+      { writIds: [] },
+    );
+    assert.equal(postCalls.length, 0);
+  });
+
+  it('happy path — creates one draft brief writ per observation record', async () => {
+    const engine = createObservationLiftEngine(() => plansBook);
+    const observations: Observation[] = [
+      {
+        id: 'obs-1',
+        title: 'Replace deprecated helper in src/foo.ts',
+        body: '`renderLegacy` in `src/foo.ts` is superseded by `renderCard`.',
+      },
+      {
+        id: 'obs-2',
+        title: 'Fix typo in plan-finalize error',
+        body: 'Message reads "spec writier" instead of "spec writer".',
+      },
+      {
+        id: 'obs-3',
+        title: 'Audit stale docs in README',
+        body: 'Docs still claim `observations` is a string.',
+      },
+    ];
+
+    const plan = makePlan({
+      id: 'w-brief-parent',
+      codex: 'my-codex',
+      status: 'completed',
+      observations,
+    });
+    await plansBook.put(plan);
+
+    const postCalls: Array<Record<string, unknown>> = [];
+    let counter = 0;
+    mockClerkPost = async (params) => {
+      const p = params as Record<string, unknown>;
+      postCalls.push(p);
+      counter += 1;
+      return { id: `w-obs-child-${counter}`, title: p.title as string };
+    };
+
+    const result = await engine.run({ planId: plan.id }, buildCtx());
+    assert.equal(result.status, 'completed');
+    const yields = (result as { status: 'completed'; yields: { writIds: string[] } }).yields;
+    assert.deepEqual(yields.writIds, ['w-obs-child-1', 'w-obs-child-2', 'w-obs-child-3']);
+
+    assert.equal(postCalls.length, 3);
+
+    // Each call has the correct shape — type, title, body, codex, parentId, draft
+    for (let i = 0; i < observations.length; i++) {
+      const call = postCalls[i];
+      const obs = observations[i];
+      assert.equal(call.type, 'brief');
+      assert.equal(call.title, obs.title);
+      assert.equal(call.body, obs.body);
+      assert.equal(call.codex, 'my-codex');
+      assert.equal(call.parentId, 'w-brief-parent');
+      assert.equal(call.draft, true);
+    }
+
+    // The plandoc itself is not mutated — observations array unchanged,
+    // no tracking field added.
+    const after = await plansBook.get(plan.id);
+    assert.deepEqual(after?.observations, observations);
+    assert.equal('observationWritIds' in (after ?? {}), false);
+  });
+
+  it('fails fast on clerk.post error; previously-created drafts persist', async () => {
+    const engine = createObservationLiftEngine(() => plansBook);
+    const observations: Observation[] = [
+      { id: 'obs-1', title: 'first', body: 'b1' },
+      { id: 'obs-2', title: 'second — explodes', body: 'b2' },
+      { id: 'obs-3', title: 'third — never reached', body: 'b3' },
+    ];
+
+    const plan = makePlan({
+      id: 'w-brief-fail',
+      status: 'completed',
+      observations,
+    });
+    await plansBook.put(plan);
+
+    const postCalls: Array<Record<string, unknown>> = [];
+    let counter = 0;
+    mockClerkPost = async (params) => {
+      const p = params as Record<string, unknown>;
+      postCalls.push(p);
+      counter += 1;
+      if (counter === 2) {
+        throw new Error('simulated clerk.post failure');
+      }
+      return { id: `w-created-${counter}`, title: p.title as string };
+    };
+
+    await assert.rejects(
+      () => engine.run({ planId: plan.id }, buildCtx()),
+      (err: Error) => {
+        assert.ok(
+          err.message.includes('simulated clerk.post failure'),
+          `Expected propagation of the clerk.post error, got: ${err.message}`,
+        );
+        return true;
+      },
+    );
+
+    // Two posts attempted (the first succeeds, the second throws);
+    // the third is never reached because we fail fast.
+    assert.equal(postCalls.length, 2);
+    assert.equal(postCalls[0].title, 'first');
+    assert.equal(postCalls[1].title, 'second — explodes');
   });
 });

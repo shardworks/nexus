@@ -30,6 +30,7 @@ import {
   createDecisionReviewEngine,
   createSpecPublishEngine,
   createPlanFinalizeEngine,
+  createObservationLiftEngine,
   createReaderAnalystEngine,
 } from './engines/index.ts';
 
@@ -70,6 +71,7 @@ export function createAstrolabe(): Plugin {
   const decisionReviewEngine = createDecisionReviewEngine(() => plansBook);
   const specPublishEngine = createSpecPublishEngine(() => plansBook);
   const planFinalizeEngine = createPlanFinalizeEngine(() => plansBook);
+  const observationLiftEngine = createObservationLiftEngine(() => plansBook);
   const readerAnalystEngine = createReaderAnalystEngine();
 
   // ── API ────────────────────────────────────────────────────────
@@ -226,11 +228,23 @@ export function createAstrolabe(): Plugin {
     name: 'observations-write',
     description: 'Write primer observations for a plan',
     instructions:
-      'Writes or replaces the observations field. The observations should be a markdown ' +
-      'document noting refactoring opportunities, risks, and conventions.',
+      'Writes or replaces the observations field. The observations array carries one record ' +
+      'per atomic concern noticed during the planning pass. Each record has a plandoc-local ' +
+      'id (convention: obs-1, obs-2, ...), a one-line commission-title style title, and a ' +
+      'markdown body with tactical detail (file paths, symbols, preconditions). Downstream ' +
+      'the astrolabe.observation-lift engine creates one draft brief writ per record as a ' +
+      'child of the originating brief, ready for a curator to promote.',
     params: {
       planId: z.string().describe('Plan id'),
-      observations: z.string().describe('Observations content (markdown)'),
+      observations: z
+        .array(
+          z.object({
+            id: z.string().min(1),
+            title: z.string().min(1),
+            body: z.string().min(1),
+          }),
+        )
+        .describe('Observation records'),
     },
     permission: 'write',
     handler: async ({ planId, observations }) => {
@@ -306,6 +320,7 @@ export function createAstrolabe(): Plugin {
           'astrolabe.decision-review': decisionReviewEngine,
           'astrolabe.spec-publish': specPublishEngine,
           'astrolabe.plan-finalize': planFinalizeEngine,
+          'astrolabe.observation-lift': observationLiftEngine,
           'astrolabe.reader-analyst': readerAnalystEngine,
         },
 

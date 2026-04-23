@@ -48,11 +48,11 @@ describe('two-phase-planning rig template', () => {
     assert.ok(template, 'two-phase-planning template must exist');
   });
 
-  it('has 8 engines', () => {
-    assert.equal(template.engines.length, 8);
+  it('has 9 engines', () => {
+    assert.equal(template.engines.length, 9);
   });
 
-  it('engine list: plan-init → draft → reader-analyst → inventory-check → decision-review → spec-writer → spec-publish → seal', () => {
+  it('engine list: plan-init → draft → reader-analyst → inventory-check → decision-review → spec-writer → spec-publish → observation-lift → seal', () => {
     const engineIds = template.engines.map(e => e.id);
     assert.deepEqual(engineIds, [
       'plan-init',
@@ -62,6 +62,7 @@ describe('two-phase-planning rig template', () => {
       'decision-review',
       'spec-writer',
       'spec-publish',
+      'observation-lift',
       'seal',
     ]);
   });
@@ -174,6 +175,23 @@ describe('two-phase-planning rig template', () => {
     assert.deepEqual(dr?.upstream, ['inventory-check']);
   });
 
+  it('observation-lift is downstream of spec-publish', () => {
+    const ol = template.engines.find(e => e.id === 'observation-lift');
+    assert.ok(ol, 'observation-lift engine must exist');
+    assert.equal(ol.designId, 'astrolabe.observation-lift');
+    assert.deepEqual(ol.upstream, ['spec-publish']);
+  });
+
+  it('seal is downstream of observation-lift (not spec-publish directly)', () => {
+    const seal = template.engines.find(e => e.id === 'seal');
+    assert.deepEqual(seal?.upstream, ['observation-lift']);
+  });
+
+  it('observation-lift has planId given from plan-init', () => {
+    const ol = template.engines.find(e => e.id === 'observation-lift');
+    assert.equal(ol?.givens?.planId, '${yields.plan-init.planId}');
+  });
+
   // ── cross-template consistency ────────────────────────────────────
 
   it('all shared engines use same designIds as three-phase-planning', () => {
@@ -184,7 +202,7 @@ describe('two-phase-planning rig template', () => {
     // two-phase rig uses the astrolabe.reader-analyst engine (primer-
     // variant-aware), while three-phase-planning keeps its split
     // reader / analyst stages on the generic anima-session engine.
-    const shared = ['plan-init', 'draft', 'inventory-check', 'decision-review', 'spec-publish', 'seal'];
+    const shared = ['plan-init', 'draft', 'inventory-check', 'decision-review', 'spec-publish', 'observation-lift', 'seal'];
     for (const id of shared) {
       const two = template.engines.find(e => e.id === id);
       const three = threePhase.engines.find(e => e.id === id);

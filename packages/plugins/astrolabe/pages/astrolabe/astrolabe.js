@@ -476,7 +476,7 @@
         tabContent.innerHTML = renderMarkdown(currentPlan.inventory);
         break;
       case 'observations':
-        tabContent.innerHTML = renderMarkdown(currentPlan.observations);
+        tabContent.innerHTML = renderObservations(currentPlan.observations);
         break;
       case 'spec':
         tabContent.innerHTML = renderMarkdown(currentPlan.spec);
@@ -509,6 +509,27 @@
         '</td><td>' + badge + '</td><td>' + esc(s.rationale) + '</td></tr>';
     }
     html += '</tbody></table>';
+    return html;
+  }
+
+  // ── Observations Card List ─────────────────────────────────────────────
+
+  function renderObservations(observations) {
+    if (!Array.isArray(observations) || observations.length === 0) {
+      return '<p class="empty-state">No observations.</p>';
+    }
+    var html = '<div class="observation-list">';
+    for (var i = 0; i < observations.length; i++) {
+      var o = observations[i];
+      html += '<section class="observation-card">' +
+        '<header class="observation-head">' +
+          '<code class="observation-id">' + esc(o.id) + '</code>' +
+          '<h3 class="observation-title">' + esc(o.title) + '</h3>' +
+        '</header>' +
+        '<div class="observation-body">' + renderMarkdown(o.body) + '</div>' +
+        '</section>';
+    }
+    html += '</div>';
     return html;
   }
 

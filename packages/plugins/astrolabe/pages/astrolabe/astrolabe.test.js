@@ -3,7 +3,8 @@
  *
  * Since astrolabe.js is a browser IIFE, we extract and test the pure
  * functions (esc, formatDate, statusBadge, renderMarkdown, renderScopeTable,
- * renderDecisionsTable) by re-defining them here in an identical manner.
+ * renderDecisionsTable, renderObservations) by re-defining them here in an
+ * identical manner.
  *
  * This validates the rendering logic without requiring a browser environment.
  */
@@ -166,6 +167,25 @@ function renderDecisionsTable(decisions) {
       '<td>' + esc(d.selected || '\u2014') + '</td></tr>';
   }
   html += '</tbody></table>';
+  return html;
+}
+
+function renderObservations(observations) {
+  if (!Array.isArray(observations) || observations.length === 0) {
+    return '<p class="empty-state">No observations.</p>';
+  }
+  var html = '<div class="observation-list">';
+  for (var i = 0; i < observations.length; i++) {
+    var o = observations[i];
+    html += '<section class="observation-card">' +
+      '<header class="observation-head">' +
+        '<code class="observation-id">' + esc(o.id) + '</code>' +
+        '<h3 class="observation-title">' + esc(o.title) + '</h3>' +
+      '</header>' +
+      '<div class="observation-body">' + renderMarkdown(o.body) + '</div>' +
+      '</section>';
+  }
+  html += '</div>';
   return html;
 }
 
@@ -426,6 +446,108 @@ describe('renderDecisionsTable()', () => {
     assert.ok(html.includes('&lt;xss&gt;'));
     assert.ok(html.includes('&lt;script&gt;'));
     assert.ok(!html.includes('<script>'));
+  });
+});
+
+describe('renderObservations()', () => {
+  it('returns empty state for null', () => {
+    assert.ok(renderObservations(null).includes('No observations'));
+  });
+
+  it('returns empty state for undefined', () => {
+    assert.ok(renderObservations(undefined).includes('No observations'));
+  });
+
+  it('returns empty state for empty array', () => {
+    assert.ok(renderObservations([]).includes('No observations'));
+  });
+
+  it('returns empty state for non-array input (legacy string payload)', () => {
+    // Defensive: the new contract is array-only, but a legacy plandoc
+    // might still carry a prose string. Render as empty rather than
+    // crashing with a .length access on a string or concatenating junk.
+    var html = renderObservations('## Risks\n- Something');
+    assert.ok(html.includes('No observations'));
+    assert.ok(!html.includes('Risks'));
+  });
+
+  it('renders a single observation as a card with id, title, and markdown body', () => {
+    var observations = [
+      {
+        id: 'obs-1',
+        title: 'Replace deprecated helper in src/foo.ts',
+        body: '`renderLegacy` in `src/foo.ts` is superseded by `renderCard`.',
+      },
+    ];
+    var html = renderObservations(observations);
+    assert.ok(html.includes('observation-list'));
+    assert.ok(html.includes('observation-card'));
+    assert.ok(html.includes('obs-1'));
+    assert.ok(html.includes('Replace deprecated helper in src/foo.ts'));
+    // Body goes through renderMarkdown, which wraps text in md-content
+    assert.ok(html.includes('md-content'));
+    // Inline code from the body's markdown made it through
+    assert.ok(html.includes('<code>renderLegacy</code>'));
+  });
+
+  it('renders many observations as distinct cards in order', () => {
+    var observations = [
+      { id: 'obs-1', title: 'First concern', body: 'Body one' },
+      { id: 'obs-2', title: 'Second concern', body: 'Body two' },
+      { id: 'obs-3', title: 'Third concern', body: 'Body three' },
+    ];
+    var html = renderObservations(observations);
+    var cardCount = (html.match(/observation-card/g) || []).length;
+    assert.equal(cardCount, 3);
+    assert.ok(html.includes('obs-1'));
+    assert.ok(html.includes('obs-2'));
+    assert.ok(html.includes('obs-3'));
+    assert.ok(html.indexOf('First concern') < html.indexOf('Second concern'));
+    assert.ok(html.indexOf('Second concern') < html.indexOf('Third concern'));
+  });
+
+  it('escapes HTML in observation id and title fields', () => {
+    var observations = [
+      { id: '<xss-id>', title: '<b>sneaky</b>', body: 'safe body' },
+    ];
+    var html = renderObservations(observations);
+    assert.ok(html.includes('&lt;xss-id&gt;'));
+    assert.ok(html.includes('&lt;b&gt;sneaky&lt;/b&gt;'));
+    // Raw tags must not leak through
+    assert.ok(!html.includes('<xss-id>'));
+    assert.ok(!html.includes('<b>sneaky</b>'));
+  });
+
+  it('renders body through the markdown pipeline (lists, bold, code)', () => {
+    var observations = [
+      {
+        id: 'obs-1',
+        title: 'Refactor opportunity',
+        body: '**Why:** duplication.\n\n- `src/a.ts` has the old pattern\n- `src/b.ts` mirrors it',
+      },
+    ];
+    var html = renderObservations(observations);
+    assert.ok(html.includes('<strong>Why:</strong>'));
+    assert.ok(html.includes('<ul>'));
+    assert.ok(html.includes('<code>src/a.ts</code>'));
+  });
+});
+
+describe('astrolabe.js observations tab wiring', () => {
+  // Guard that the observations tab dispatches through renderObservations,
+  // not through the generic renderMarkdown. renderMarkdown on an array
+  // produces "[object Object]" concatenation garbage.
+  it('observations tab case calls renderObservations in astrolabe.js', () => {
+    assert.match(
+      astrolabeJs,
+      /case 'observations':[\s\S]*?renderObservations\(currentPlan\.observations\)/,
+      'observations tab must call renderObservations, not renderMarkdown',
+    );
+    assert.doesNotMatch(
+      astrolabeJs,
+      /case 'observations':[\s\S]*?renderMarkdown\(currentPlan\.observations\)/,
+      'observations tab must not call renderMarkdown on the array-typed field',
+    );
   });
 });
 

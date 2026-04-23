@@ -10,7 +10,14 @@
  *
  * Stages: plan-init → draft → reader-analyst → inventory-check →
  *         patron-anima → decision-review → spec-writer → plan-finalize →
- *         implement → review → revise → seal.
+ *         observation-lift → implement → review → revise → seal.
+ *
+ * The `observation-lift` engine runs after `plan-finalize` has transitioned
+ * the plan to `completed` but while the brief writ itself is still `open`.
+ * It lifts each record in `plan.observations` into a draft child writ under
+ * the brief, so a curator (human or overseer) can promote it later. The
+ * engine internally no-ops on empty or legacy-string observations, so it is
+ * wired unconditionally (no `when:` guard).
  *
  * The `reader-analyst` slot uses the astrolabe-owned
  * `astrolabe.reader-analyst` engine, which selects the primer role at
@@ -106,9 +113,15 @@ export const planAndShipRigTemplate: RigTemplate = {
       givens: { planId: '${yields.plan-init.planId}' },
     },
     {
+      id: 'observation-lift',
+      designId: 'astrolabe.observation-lift',
+      upstream: ['plan-finalize'],
+      givens: { planId: '${yields.plan-init.planId}' },
+    },
+    {
       id: 'implement',
       designId: 'implement',
-      upstream: ['plan-finalize'],
+      upstream: ['observation-lift'],
       givens: {
         writ: '${writ}',
         role: '${vars.role}',

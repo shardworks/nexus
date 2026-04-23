@@ -48,11 +48,11 @@ describe('three-phase-planning rig template', () => {
     assert.ok(template, 'three-phase-planning template must exist');
   });
 
-  it('has 9 engines', () => {
-    assert.equal(template.engines.length, 9);
+  it('has 10 engines', () => {
+    assert.equal(template.engines.length, 10);
   });
 
-  it('engine list: plan-init → draft → reader → inventory-check → analyst → decision-review → spec-writer → spec-publish → seal', () => {
+  it('engine list: plan-init → draft → reader → inventory-check → analyst → decision-review → spec-writer → spec-publish → observation-lift → seal', () => {
     const engineIds = template.engines.map(e => e.id);
     assert.deepEqual(engineIds, [
       'plan-init',
@@ -63,6 +63,7 @@ describe('three-phase-planning rig template', () => {
       'decision-review',
       'spec-writer',
       'spec-publish',
+      'observation-lift',
       'seal',
     ]);
   });
@@ -179,8 +180,20 @@ describe('three-phase-planning rig template', () => {
 
   // ── upstream wiring ───────────────────────────────────────────────
 
-  it('spec-publish is upstream of seal', () => {
+  it('observation-lift is downstream of spec-publish', () => {
+    const ol = template.engines.find(e => e.id === 'observation-lift');
+    assert.ok(ol, 'observation-lift engine must exist');
+    assert.equal(ol.designId, 'astrolabe.observation-lift');
+    assert.deepEqual(ol.upstream, ['spec-publish']);
+  });
+
+  it('observation-lift has planId given from plan-init', () => {
+    const ol = template.engines.find(e => e.id === 'observation-lift');
+    assert.equal(ol?.givens?.planId, '${yields.plan-init.planId}');
+  });
+
+  it('seal is downstream of observation-lift (which sits between spec-publish and seal)', () => {
     const seal = template.engines.find(e => e.id === 'seal');
-    assert.deepEqual(seal?.upstream, ['spec-publish']);
+    assert.deepEqual(seal?.upstream, ['observation-lift']);
   });
 });

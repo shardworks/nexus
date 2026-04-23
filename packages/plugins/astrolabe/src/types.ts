@@ -25,8 +25,15 @@ export interface PlanDoc {
   inventory?: string;
 
   // ── Primer output ───────────────────────────────────────────
-  /** Primer observations: refactoring opportunities, risks, conventions. */
-  observations?: string;
+  /**
+   * Primer observations: refactoring opportunities, risks, conventions.
+   *
+   * Each entry is an atomic, commissionable concern — the
+   * `astrolabe.observation-lift` engine lifts each record into a
+   * draft child writ under the originating brief so a curator
+   * (human or automated) can promote it to open status.
+   */
+  observations?: Observation[];
   /** Scope items: what's in and what's out. */
   scope?: ScopeItem[];
   /** Architectural/design decisions with options. */
@@ -47,6 +54,29 @@ export interface ScopeItem {
   description: string;
   rationale: string;
   included: boolean;
+}
+
+/**
+ * A single observation recorded by a sage during the planning pass.
+ *
+ * Each observation names one concern — a refactoring opportunity,
+ * risk, convention drift, or bug — that the sage noticed but that
+ * is outside the brief's scope. Observations flow downstream into
+ * the `astrolabe.observation-lift` engine, which creates one draft
+ * brief writ per record as a child of the originating brief.
+ *
+ * Fields are deliberately minimal (D1 in the commission spec):
+ * - `id` — plandoc-local identifier assigned by the sage (e.g. `obs-1`).
+ * - `title` — one-line commission-title style (imperative or noun
+ *   phrase, ~10 words, no trailing punctuation). Becomes the title of
+ *   the lifted draft writ.
+ * - `body` — tactical detail (file paths, symbols, preconditions)
+ *   rendered as markdown. Becomes the body of the lifted draft writ.
+ */
+export interface Observation {
+  id: string;
+  title: string;
+  body: string;
 }
 
 export interface Decision {

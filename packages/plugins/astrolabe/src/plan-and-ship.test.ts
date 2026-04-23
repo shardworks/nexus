@@ -71,8 +71,8 @@ describe('astrolabe.plan-and-ship rig template — shape and wiring', () => {
     assert.ok(template, 'plan-and-ship template must exist');
   });
 
-  it('has 12 engines', () => {
-    assert.equal(template.engines.length, 12);
+  it('has 13 engines', () => {
+    assert.equal(template.engines.length, 13);
   });
 
   it('engine sequence matches the commission spec', () => {
@@ -87,6 +87,7 @@ describe('astrolabe.plan-and-ship rig template — shape and wiring', () => {
         'decision-review',
         'spec-writer',
         'plan-finalize',
+        'observation-lift',
         'implement',
         'review',
         'revise',
@@ -150,11 +151,24 @@ describe('astrolabe.plan-and-ship rig template — shape and wiring', () => {
     assert.equal(pf.givens?.planId, '${yields.plan-init.planId}');
   });
 
+  it('observation-lift sits between plan-finalize and implement', () => {
+    // observation-lift lifts plan.observations into draft child writs
+    // under the brief. Placement: the plan has reached `completed` (via
+    // plan-finalize) but the brief writ is still `open`, so clerk.post
+    // with parentId succeeds.
+    const ol = template.engines.find(e => e.id === 'observation-lift');
+    assert.ok(ol, 'observation-lift engine must exist');
+    assert.equal(ol.designId, 'astrolabe.observation-lift');
+    assert.deepEqual(ol.upstream, ['plan-finalize']);
+    assert.equal(ol.givens?.planId, '${yields.plan-init.planId}');
+  });
+
   it('implement engine is wired to plan-finalize.spec via the prompt given', () => {
     const impl = template.engines.find(e => e.id === 'implement');
     assert.ok(impl, 'implement must exist');
     assert.equal(impl.designId, 'implement');
-    assert.deepEqual(impl.upstream, ['plan-finalize']);
+    // implement runs after observation-lift, which runs after plan-finalize.
+    assert.deepEqual(impl.upstream, ['observation-lift']);
     // The handoff: plan-finalize yields `spec`, the implement engine reads
     // it via the new optional `prompt` given.
     assert.equal(impl.givens?.prompt, '${yields.plan-finalize.spec}');
@@ -200,16 +214,23 @@ describe('astrolabe plugin-default brief mapping', () => {
       'two-phase-planning must remain registered (reachable via guild-config mapping override)');
     assert.ok(rigTemplates['three-phase-planning'],
       'three-phase-planning must remain registered (reachable via guild-config mapping override)');
-    // Confirm the old templates still produce a mandate — they end with
-    // spec-publish, which is the engine that posts the mandate writ.
-    const twoPhase = rigTemplates['two-phase-planning'];
-    const twoPhaseLastBeforeSeal = twoPhase.engines[twoPhase.engines.length - 2];
-    assert.equal(twoPhaseLastBeforeSeal.designId, 'astrolabe.spec-publish',
-      'two-phase-planning must still terminate with spec-publish → mandate post');
-    const threePhase = rigTemplates['three-phase-planning'];
-    const threePhaseLastBeforeSeal = threePhase.engines[threePhase.engines.length - 2];
-    assert.equal(threePhaseLastBeforeSeal.designId, 'astrolabe.spec-publish',
-      'three-phase-planning must still terminate with spec-publish → mandate post');
+    // Confirm the old templates still produce a mandate — they include
+    // spec-publish, which is the engine that posts the mandate writ. After
+    // the observation-lift insertion between spec-publish and seal, the
+    // last engine before seal is observation-lift, so we look for spec-
+    // publish by designId rather than positional index.
+    for (const name of ['two-phase-planning', 'three-phase-planning'] as const) {
+      const tpl = rigTemplates[name];
+      const designIds = tpl.engines.map(e => e.designId);
+      const sp = designIds.indexOf('astrolabe.spec-publish');
+      const ol = designIds.indexOf('astrolabe.observation-lift');
+      const seal = designIds.indexOf('seal');
+      assert.ok(sp >= 0, `${name} must still include spec-publish (mandate post)`);
+      assert.ok(ol >= 0, `${name} must include observation-lift`);
+      assert.ok(seal >= 0, `${name} must end with seal`);
+      assert.ok(sp < ol && ol < seal,
+        `${name} must run spec-publish → observation-lift → seal in that order`);
+    }
   });
 });
 
@@ -410,7 +431,8 @@ describe('no mandate-posting engine appears in astrolabe.plan-and-ship', () => {
     // Whitelist: astrolabe's own planning engines (all are clerk-read-only
     // or clerk-unused), including the astrolabe-owned reader-analyst that
     // replaces the generic anima-session for that slot + the spec-writer's
-    // anima-session (read-only) + the five Spider engines (draft,
+    // anima-session (read-only) + the observation-lift engine (posts draft
+    // child writs only, never a mandate) + the five Spider engines (draft,
     // implement, review, revise, seal — none of which call clerk.post
     // per the Spider codebase).
     const allowed = new Set([
@@ -420,6 +442,7 @@ describe('no mandate-posting engine appears in astrolabe.plan-and-ship', () => {
       'astrolabe.patron-anima',
       'astrolabe.decision-review',
       'astrolabe.plan-finalize',
+      'astrolabe.observation-lift',
       'anima-session',
       'draft',
       'implement',

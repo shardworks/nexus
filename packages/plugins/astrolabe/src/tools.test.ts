@@ -274,15 +274,34 @@ describe('Astrolabe tools', () => {
   // ── observations-write ─────────────────────────────────────────────
 
   describe('observations-write (via api.patch)', () => {
-    it('updates the observations field', async () => {
+    it('updates the observations field with a structured record array', async () => {
       const plan = makePlan();
       await plansBook.put(plan);
 
+      const observations = [
+        {
+          id: 'obs-1',
+          title: 'Replace deprecated helper in src/foo.ts',
+          body: '`renderLegacy` in `src/foo.ts` is superseded by `renderCard`; migrate remaining callers.',
+        },
+        {
+          id: 'obs-2',
+          title: 'Typo in error message for plan-finalize',
+          body: 'Plan-finalize throws `"spec writier"` instead of `"spec writer"` when the spec is absent.',
+        },
+      ];
+
       const updated = await api.patch(plan.id, {
-        observations: '## Risks\n\n- Breaking change in API',
+        observations,
         updatedAt: new Date().toISOString(),
       });
-      assert.equal(updated.observations, '## Risks\n\n- Breaking change in API');
+
+      assert.ok(Array.isArray(updated.observations));
+      assert.equal(updated.observations?.length, 2);
+      assert.equal(updated.observations?.[0].id, 'obs-1');
+      assert.equal(updated.observations?.[0].title, 'Replace deprecated helper in src/foo.ts');
+      assert.ok(updated.observations?.[0].body.includes('renderLegacy'));
+      assert.equal(updated.observations?.[1].id, 'obs-2');
       assert.equal(updated.status, plan.status);
     });
   });

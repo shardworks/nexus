@@ -56,19 +56,30 @@ A `PlanDoc` is keyed by the brief writ ID and tracks the full planning lifecycle
 
 ```typescript
 interface PlanDoc {
-  id: string;           // Brief writ ID
-  codex: string;        // Target codex
-  status: PlanStatus;   // 'reading' | 'analyzing' | 'reviewing' | 'writing' | 'completed' | 'failed'
-  inventory?: string;   // Markdown: affected files, types, interfaces, patterns
-  observations?: string; // Markdown: refactoring opportunities, risks, conventions
-  scope?: ScopeItem[];  // What's in and what's out
-  decisions?: Decision[]; // Architectural/design decisions with options
-  spec?: string;        // The generated specification (implementation brief + task manifest)
+  id: string;               // Brief writ ID
+  codex: string;            // Target codex
+  status: PlanStatus;       // 'reading' | 'analyzing' | 'reviewing' | 'writing' | 'completed' | 'failed'
+  inventory?: string;       // Markdown: affected files, types, interfaces, patterns
+  observations?: Observation[]; // Atomic, commissionable concerns (see Observation below)
+  scope?: ScopeItem[];      // What's in and what's out
+  decisions?: Decision[];   // Architectural/design decisions with options
+  spec?: string;            // The generated specification (implementation brief + task manifest)
   generatedWritId?: string; // ID of the generated mandate
   createdAt: string;
   updatedAt: string;
 }
+
+interface Observation {
+  /** Plandoc-local identifier assigned by the sage (convention: obs-1, obs-2, …). */
+  id: string;
+  /** One-line commission-title-style phrase (~10 words, no trailing punctuation). */
+  title: string;
+  /** Tactical markdown — file paths, symbols, preconditions, etc. */
+  body: string;
+}
 ```
+
+Each `Observation` names one concern — a refactoring opportunity, risk, convention drift, or bug — that the sage noticed but that sits outside the brief's scope. The `astrolabe.observation-lift` engine lifts each record into a draft child `brief` writ under the originating brief so a curator (human or automated) can promote it.
 
 ### `PlanFilters`
 
@@ -134,14 +145,15 @@ The Astrolabe declares one book in Stacks:
 | `astrolabe.decision-review` | Two-pass engine: blocks for patron review, then reconciles answers. Decisions with `selected` already pre-set by the primer or the patron anima are auto-accepted — they are excluded from the InputRequestDoc, and if nothing remains reviewable the engine fast-paths to `writing` without opening the gate. |
 | `astrolabe.plan-finalize` | Transitions the plan to `completed` and yields the written `spec` downstream. Does not post any writ. Used inside `plan-and-ship` to hand the spec off to the implement engine on the same brief rig. |
 | `astrolabe.spec-publish` | Publishes the generated specification as a new mandate writ. Used only by the legacy two-phase / three-phase rigs that split planning from implementation across two writs. |
+| `astrolabe.observation-lift` | Walks `plan.observations` after the planning-terminator engine has transitioned the plan to `completed` and calls `clerk.post({ type: 'brief', title, body, codex, parentId, draft: true })` once per record. Each created writ enters `new` (draft) phase, invisible to the Spider until a curator publishes it. Silently no-ops when `observations` is empty, absent, or a legacy string; fails fast on the first `clerk.post` error. Does not mutate the plan — the parent-child relationship on the Clerk side is the sole audit trail. Wired unconditionally into all three rig templates. |
 
 ### Rig Templates (contributed to Spider)
 
 | Template | Mapped Writ Type | Engines |
 |---|---|---|
-| `astrolabe.plan-and-ship` | `brief` (default) | plan-init → draft → reader-analyst → inventory-check → patron-anima → decision-review → spec-writer → plan-finalize → implement → review → revise → seal |
-| `astrolabe.two-phase-planning` | — (opt-in) | plan-init → draft → reader-analyst → inventory-check → decision-review → spec-writer → spec-publish → seal |
-| `astrolabe.three-phase-planning` | — (opt-in) | plan-init → draft → reader → inventory-check → analyst → decision-review → spec-writer → spec-publish → seal |
+| `astrolabe.plan-and-ship` | `brief` (default) | plan-init → draft → reader-analyst → inventory-check → patron-anima → decision-review → spec-writer → plan-finalize → observation-lift → implement → review → revise → seal |
+| `astrolabe.two-phase-planning` | — (opt-in) | plan-init → draft → reader-analyst → inventory-check → decision-review → spec-writer → spec-publish → observation-lift → seal |
+| `astrolabe.three-phase-planning` | — (opt-in) | plan-init → draft → reader → inventory-check → analyst → decision-review → spec-writer → spec-publish → observation-lift → seal |
 
 The `resolutionEngine` is `seal` for `plan-and-ship` (brief completes when implementation seals) and `spec-writer` for the two legacy planning-only templates (where the brief's rig terminates at spec-writer and a follow-up mandate writ carries the implementation separately).
 
@@ -172,7 +184,7 @@ Substitute `astrolabe.three-phase-planning` for the split reader / scoping-prime
 | `inventory-write` | `astrolabe:write` | Write or replace the codebase inventory |
 | `scope-write` | `astrolabe:write` | Write or replace the scope items array |
 | `decisions-write` | `astrolabe:write` | Write or replace the decisions array |
-| `observations-write` | `astrolabe:write` | Write or replace primer observations |
+| `observations-write` | `astrolabe:write` | Write or replace primer observations (strict `Observation[]` array — `{ id, title, body }` records with non-empty strings; legacy prose-string payloads are rejected at zod validation) |
 | `spec-write` | `astrolabe:write` | Write or replace the generated specification |
 
 Write tools only update their artifact field plus `updatedAt`. Status transitions are the exclusive responsibility of the clockwork engines.
@@ -187,6 +199,7 @@ The Astrolabe page provides a list/detail dashboard for PlanDoc records:
 
 - **List view** — filterable by status, paginated (20 per page), showing status badge, codex, brief writ title, plan ID, and creation date.
 - **Detail view** — metadata card with plan ID, status, codex, cross-links to brief and mandate writs (linking to the Clerk writs page via `?writ=ID`), per-step AI cost breakdowns (input/output tokens and USD cost for each anima-session engine), and tabbed content sections for Inventory, Scope, Decisions, Observations, and Spec.
+- **Observations tab** — renders the `Observation[]` array as a card-per-record list (id, title, markdown body). Card bodies flow through the same markdown renderer used by inventory and spec. An empty or absent array renders as an empty tab. A legacy prose-string payload renders as empty rather than corrupting the tab.
 - **Deep linking** — supports `?plan=ID` query parameter to open directly to a plan's detail view.
 
-Markdown fields (inventory, observations, spec) are rendered client-side with a minimal renderer supporting headings, bold, italic, inline code, fenced code blocks, and lists. All content is HTML-escaped before rendering to prevent XSS.
+Markdown fields (inventory, spec, and each observation body) are rendered client-side with a minimal renderer supporting headings, bold, italic, inline code, fenced code blocks, and lists. All content is HTML-escaped before rendering to prevent XSS.
