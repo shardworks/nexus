@@ -1,0 +1,46 @@
+{
+  "name": "@shardworks/reckoner-apparatus",
+  "version": "0.0.0",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shardworks/nexus",
+    "directory": "packages/plugins/reckoner"
+  },
+  "description": "The Reckoner — observer that emits Lattice pulses when commissions stall, fail, or when the guild's work queue drains.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@shardworks/nexus-core": "0.x"
+  },
+  "dependencies": {
+    "@shardworks/clerk-apparatus": "workspace:*",
+    "@shardworks/lattice-apparatus": "workspace:*",
+    "@shardworks/stacks-apparatus": "workspace:*"
+  },
+  "devDependencies": {
+    "@shardworks/clockworks-retry-apparatus": "workspace:*",
+    "@shardworks/lattice-discord-kit": "workspace:*",
+    "@shardworks/nexus-core": "workspace:*",
+    "@shardworks/spider-apparatus": "workspace:*",
+    "@types/node": "25.5.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  }
+}

@@ -231,6 +231,41 @@ importers:
         specifier: 25.5.0
         version: 25.5.0
 
+  packages/plugins/lattice:
+    dependencies:
+      '@shardworks/clerk-apparatus':
+        specifier: workspace:*
+        version: link:../clerk
+      '@shardworks/stacks-apparatus':
+        specifier: workspace:*
+        version: link:../stacks
+      '@shardworks/tools-apparatus':
+        specifier: workspace:*
+        version: link:../tools
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
+  packages/plugins/lattice-discord:
+    dependencies:
+      '@shardworks/lattice-apparatus':
+        specifier: workspace:*
+        version: link:../lattice
+    devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
   packages/plugins/loom:
     dependencies:
       '@shardworks/tools-apparatus':
@@ -312,6 +347,34 @@ importers:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../../framework/core
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
+  packages/plugins/reckoner:
+    dependencies:
+      '@shardworks/clerk-apparatus':
+        specifier: workspace:*
+        version: link:../clerk
+      '@shardworks/lattice-apparatus':
+        specifier: workspace:*
+        version: link:../lattice
+      '@shardworks/stacks-apparatus':
+        specifier: workspace:*
+        version: link:../stacks
+    devDependencies:
+      '@shardworks/clockworks-retry-apparatus':
+        specifier: workspace:*
+        version: link:../clockworks-retry
+      '@shardworks/lattice-discord-kit':
+        specifier: workspace:*
+        version: link:../lattice-discord
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
+      '@shardworks/spider-apparatus':
+        specifier: workspace:*
+        version: link:../spider
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
