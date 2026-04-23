@@ -341,18 +341,6 @@ List plans, optionally filtered by status or codex.
 
 ---
 
-## Writ Linking
-
-When the spec-writer posts the generated writ, it links the mandate back to the originating brief:
-
-```
-generated mandate writ ──(refines)──▶ brief writ
-```
-
-**Link type: `refines`.** The mandate *refines* the brief — it's a more detailed, actionable expression of the same intent. Direction is source→target: the mandate points back to the brief it refines. This makes the most common query efficient: given a mandate, follow its outbound `refines` link to find the brief that spawned it.
-
----
-
 ## Design Decisions
 
 - **Analyst revision loop.** For MVP, rejecting a plan's `InputRequestDoc` fails the rig. The patron posts a new brief to start over. A revision loop (reject → re-analyze) may come later via rig retry/recovery mechanisms.
