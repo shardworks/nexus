@@ -5,6 +5,7 @@ export { default as clickPark } from './click-park.ts';
 export { default as clickResume } from './click-resume.ts';
 export { default as clickConclude } from './click-conclude.ts';
 export { default as clickDrop } from './click-drop.ts';
+export { default as clickAmend } from './click-amend.ts';
 export { default as clickReparent } from './click-reparent.ts';
 export { default as clickLink } from './click-link.ts';
 export { default as clickUnlink } from './click-unlink.ts';

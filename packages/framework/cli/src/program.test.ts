@@ -687,7 +687,9 @@ describe('buildToolCommand', () => {
     assert.equal(captured['writId'], 'w-abc123');
   });
 
-  it('does not add positional when tool has multiple required string params', () => {
+  it('does not add positional when tool has multiple id-like required string params', () => {
+    // sourceId + targetId both end with "Id" — the positional convention
+    // is ambiguous and should be skipped.
     const tool: ToolDefinition = {
       name: 'click-link',
       description: 'Link two clicks',
@@ -702,6 +704,61 @@ describe('buildToolCommand', () => {
     const cmd = buildToolCommand('link', tool);
     // Should have no positional argument registered
     assert.equal(cmd.registeredArguments.length, 0);
+  });
+
+  it('adds positional for id when other required params are not id-like', async () => {
+    // `click-amend` / `click-conclude` / `click-drop` shape: a single id-like
+    // required param (`id`) plus other required strings (`goal`, `conclusion`).
+    // The id should still promote to the positional slot.
+    let captured: Record<string, unknown> | undefined;
+
+    const tool: ToolDefinition = {
+      name: 'click-amend',
+      description: 'Amend the goal of a live click',
+      params: z.object({
+        id: z.string().describe('Click ID or prefix'),
+        goal: z.string().describe('New goal text'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('amend', tool);
+
+    // Both the id option and the positional argument should be registered.
+    const idOption = cmd.options.find((o) => o.long === '--id');
+    assert.ok(idOption, '--id option should exist');
+    assert.ok(!idOption.mandatory, '--id should be non-mandatory when positional is available');
+    assert.equal(cmd.registeredArguments.length, 1);
+
+    // Positional form: `click amend c-abc123 --goal "..."`
+    cmd.exitOverride();
+    await cmd.parseAsync(['c-abc123', '--goal', 'Refined'], { from: 'user' });
+
+    assert.ok(captured, 'handler should have been called');
+    assert.equal(captured['id'], 'c-abc123');
+    assert.equal(captured['goal'], 'Refined');
+  });
+
+  it('flag form continues to work for id-plus-extra-required shape', async () => {
+    let captured: Record<string, unknown> | undefined;
+
+    const tool: ToolDefinition = {
+      name: 'click-amend',
+      description: 'Amend the goal of a live click',
+      params: z.object({
+        id: z.string().describe('Click ID or prefix'),
+        goal: z.string().describe('New goal text'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('amend', tool);
+    cmd.exitOverride();
+    await cmd.parseAsync(['--id', 'c-abc123', '--goal', 'Refined'], { from: 'user' });
+
+    assert.ok(captured);
+    assert.equal(captured['id'], 'c-abc123');
+    assert.equal(captured['goal'], 'Refined');
   });
 
   it('does not add positional when required string param is not named id/Id', () => {

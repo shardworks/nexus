@@ -9,12 +9,14 @@ import type {
   ClickStatus,
   ClickFilters,
   ClickTree,
+  GoalHistoryEntry,
   LinkType,
   RatchetApi,
   CreateClickRequest,
   ConcludeClickRequest,
   DropClickRequest,
   ReparentClickRequest,
+  AmendClickRequest,
   LinkClickRequest,
   UnlinkClickRequest,
   ExtractClickRequest,
@@ -29,6 +31,7 @@ import {
   clickResume,
   clickConclude,
   clickDrop,
+  clickAmend,
   clickReparent,
   clickLink,
   clickUnlink,
@@ -321,6 +324,49 @@ export function createRatchet(): Plugin {
       return clicks.patch(id, patch);
     },
 
+    async amend(id: string, params: AmendClickRequest): Promise<ClickDoc> {
+      return stacks.transaction(async (tx) => {
+        const txClicks = tx.book<ClickDoc>('ratchet', 'clicks');
+
+        const click = await txClicks.get(id);
+        if (!click) throw new Error(`Click "${id}" not found.`);
+
+        if (click.status !== 'live') {
+          throw new Error(
+            `Cannot amend click "${id}": status is "${click.status}", expected "live". ` +
+            `Amend is only permitted while the click is live.`,
+          );
+        }
+
+        if (params.goal === undefined || params.goal === null || params.goal.trim() === '') {
+          throw new Error('Amended goal must be a non-empty string.');
+        }
+
+        // Strict-equality no-op: no history entry, no patch, return as-is.
+        if (params.goal === click.goal) {
+          return click;
+        }
+
+        const entry: GoalHistoryEntry = {
+          goal: click.goal,
+          amendedAt: new Date().toISOString(),
+        };
+        if (params.sessionId) {
+          entry.sessionId = params.sessionId;
+        }
+
+        const existingHistory = Array.isArray(click.goalHistory) ? click.goalHistory : [];
+        const nextHistory: GoalHistoryEntry[] = [...existingHistory, entry];
+
+        await txClicks.patch(id, {
+          goal: params.goal,
+          goalHistory: nextHistory,
+        });
+        const updated = await txClicks.get(id);
+        return updated!;
+      });
+    },
+
     async reparent(id: string, params: ReparentClickRequest): Promise<ClickDoc> {
       if (params.parentId === null || params.parentId === undefined) {
         // Move to root
@@ -489,6 +535,7 @@ export function createRatchet(): Plugin {
           clickResume,
           clickConclude,
           clickDrop,
+          clickAmend,
           clickReparent,
           clickLink,
           clickUnlink,

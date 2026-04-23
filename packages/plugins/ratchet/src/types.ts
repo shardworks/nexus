@@ -2,11 +2,32 @@ export type ClickStatus = 'live' | 'parked' | 'concluded' | 'dropped';
 
 export type LinkType = 'related' | 'commissioned' | 'supersedes' | 'depends-on';
 
+/**
+ * A single entry in a click's `goalHistory`. Each entry captures the prior
+ * goal text at the moment an amend supplanted it, the ISO timestamp of that
+ * amend, and — when supplied — the session that performed it. Entries are
+ * appended chronologically; the newest entry is always last in the array.
+ */
+export interface GoalHistoryEntry {
+  /** The goal text that was replaced by this amend. */
+  goal: string;
+  /** ISO timestamp at which the amend occurred. */
+  amendedAt: string;
+  /** Session id that performed the amend, when supplied. */
+  sessionId?: string;
+}
+
 export interface ClickDoc {
   [key: string]: unknown;
   id: string;
   parentId?: string;
   goal: string;
+  /**
+   * Prior goal values preserved by `amend()`, oldest-first. Absent on records
+   * created before the amend affordance was introduced; readers must treat
+   * missing and empty as "no amends yet."
+   */
+  goalHistory?: GoalHistoryEntry[];
   status: ClickStatus;
   conclusion?: string;
   createdSessionId?: string;
@@ -47,6 +68,13 @@ export interface DropClickRequest {
 
 export interface ReparentClickRequest {
   parentId?: string | null;
+}
+
+export interface AmendClickRequest {
+  /** The new goal text. Empty or whitespace-only text is rejected. */
+  goal: string;
+  /** Session id performing the amend, recorded on the history entry. */
+  sessionId?: string;
 }
 
 export interface LinkClickRequest {
@@ -94,6 +122,7 @@ export interface RatchetApi {
   conclude(id: string, params: ConcludeClickRequest): Promise<ClickDoc>;
   drop(id: string, params: DropClickRequest): Promise<ClickDoc>;
   reparent(id: string, params: ReparentClickRequest): Promise<ClickDoc>;
+  amend(id: string, params: AmendClickRequest): Promise<ClickDoc>;
   link(params: LinkClickRequest): Promise<ClickLinkDoc>;
   unlink(params: UnlinkClickRequest): Promise<void>;
   extract(rootId: string, params: ExtractClickRequest): Promise<string | ClickTree>;

@@ -44,7 +44,7 @@ const click = await ratchet.create({
 
 | Parameter | Type | Description |
 |---|---|---|
-| `goal` | `string` | Short description of the task (immutable after creation) |
+| `goal` | `string` | Short description of the task. Editable via `amend()` while the click is `live`; sealed on transition to any non-live status. Each amend preserves the prior value in `goalHistory`. |
 | `parentId` | `string?` | Parent click ID for hierarchical nesting |
 | `createdSessionId` | `string?` | Session that created this click |
 
@@ -97,6 +97,24 @@ await ratchet.conclude(click.id, {
 ### `drop(id, params): Promise<ClickDoc>`
 
 Transition a click from `live` or `parked` to `dropped`. Same parameters as `conclude()`.
+
+### `amend(id, params): Promise<ClickDoc>`
+
+Replace the `goal` of a `live` click. The prior goal text is appended to the click's `goalHistory` as a new entry carrying the old text, an ISO `amendedAt` timestamp, and — when supplied — the `sessionId` that performed the amend. Amend is refused on `parked`, `concluded`, or `dropped` clicks: the goal seals on transition to any non-live status.
+
+```typescript
+await ratchet.amend(click.id, {
+  goal: 'Refined question',
+  sessionId: 'sess-3',
+});
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `goal` | `string` | New goal text. Empty or whitespace-only is rejected. |
+| `sessionId` | `string?` | Session that performed the amend, recorded on the history entry. |
+
+Submitting the current goal text verbatim is a strict-equality no-op — no history entry is appended. The append is wrapped in a Stacks transaction so concurrent amends never lose history entries.
 
 ### `reparent(id, params): Promise<ClickDoc>`
 
@@ -211,6 +229,7 @@ Terminal statuses (`concluded`, `dropped`) allow no further transitions.
 | `click-resume` | write | Resume a parked click |
 | `click-conclude` | write | Conclude a click |
 | `click-drop` | write | Drop a click |
+| `click-amend` | write | Amend the goal of a live click (appends the prior value to `goalHistory`) |
 | `click-reparent` | write | Move a click to a new parent |
 | `click-link` | write | Create a typed link |
 | `click-unlink` | write | Remove a link |
@@ -232,6 +251,7 @@ import type {
   ClickLinks,
   ClickStatus,
   LinkType,
+  GoalHistoryEntry,
   ClickFilters,
   ClickTree,
   RatchetApi,
@@ -239,6 +259,7 @@ import type {
   ConcludeClickRequest,
   DropClickRequest,
   ReparentClickRequest,
+  AmendClickRequest,
   LinkClickRequest,
   UnlinkClickRequest,
   ExtractClickRequest,

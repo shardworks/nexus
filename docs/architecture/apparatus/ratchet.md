@@ -4,7 +4,7 @@ Status: **Draft**
 
 Package: `@shardworks/ratchet-apparatus` · Plugin id: `ratchet`
 
-> **⚠️ MVP scope.** MVP covers the click data model, Stacks books, status lifecycle, immutability enforcement, cross-substrate links, and CLI commands. Oculus visualization and the `commission` sugar command are deferred to follow-up commissions.
+> **⚠️ MVP scope.** MVP covers the click data model, Stacks books, status lifecycle, mutability rules, cross-substrate links, and CLI commands. Oculus visualization and the `commission` sugar command are deferred to follow-up commissions.
 
 ---
 
@@ -21,7 +21,7 @@ The Ratchet does **not** manage obligations, dispatch work, or orchestrate execu
 The Ratchet provides a purpose-built substrate for inquiry. A pilgrimage assessment (see References) found that storing inquiry records as writs in the Clerk's books created structural friction: the status model, Oculus views, CLI vocabulary, and body format were all optimized for obligations, and inquiry records were fighting the substrate at every surface. The click model addresses this by providing a dedicated substrate for inquiry with its own lifecycle, invariants, and tooling.
 
 Key design principles:
-- **Immutable on create.** A click's goal (the question being asked) is frozen at creation. If the framing is wrong, drop the click and create a new one. This eliminates body-editing complexity and ensures the decision record is append-only.
+- **Live-editable, sealed at terminal.** A click's goal (the question being asked) is editable while the click is `live`, via `amend()`. Each amend preserves the prior goal text in an append-only `goalHistory` array. On transition to any non-live status (`parked`, `concluded`, or `dropped`) the goal seals — `amend()` refuses to operate. The audit guarantee a concluded click needs is preserved; the framing-drift friction of a fully immutable goal is removed.
 - **The tree is the product.** Value lives in the structure (hierarchy, relationships, decomposition), not in prose. Click bodies are minimal: a goal sentence and an optional conclusion paragraph. Long-form exploration lives in session transcripts, joinable via session ID.
 - **Children are the todo list.** Open sub-questions become child clicks, not prose sections within a parent. The tree *is* the decomposition.
 - **Four statuses, not six.** `live | parked | concluded | dropped` — designed for inquiry, not obligation.
@@ -90,7 +90,8 @@ supportKit: {
 |-------|------|---------|-------------|
 | `id` | `string` | no | Generated unique identifier |
 | `parentId` | `string \| null` | yes (via reparent) | Parent click ID. Null = root node. |
-| `goal` | `string` | **no** | The question or inquiry. Immutable after creation. |
+| `goal` | `string` | **live only** | The question or inquiry. Editable via `amend()` while the click is `live`; sealed on transition to `parked`, `concluded`, or `dropped`. Each amend appends the prior value to `goalHistory`. |
+| `goalHistory` | `GoalHistoryEntry[]` | append-only via `amend()` | Prior goal values preserved by `amend()`, oldest-first. Absent on records created before the amend affordance was introduced; readers must treat missing and empty as "no amends yet." Each entry carries `{ goal, amendedAt, sessionId? }`. |
 | `status` | `ClickStatus` | yes (via transitions) | Current lifecycle state. |
 | `conclusion` | `string \| null` | **write-once** | Decision rationale (concluded) or drop reason (dropped). Required for terminal states. Null while live/parked. Cannot be modified once set. |
 | `createdSessionId` | `string` | no | Claude session ID at creation. Join key to archived transcript. |
@@ -148,7 +149,7 @@ type ClickLinkType = 'related' | 'commissioned' | 'supersedes' | 'depends-on'
 
 ```typescript
 interface RatchetApi {
-  /** Create a new click. Goal is immutable after this call. */
+  /** Create a new click. Goal is editable via `amend()` while live; sealed on transition to any non-live status. */
   create(params: {
     goal: string
     parentId?: string
@@ -183,6 +184,16 @@ interface RatchetApi {
   drop(id: string, params: {
     conclusion: string    // reason for dropping — required
     sessionId: string
+  }): Promise<Click>
+
+  /**
+   * Amend the goal of a live click. Appends the prior value to `goalHistory`.
+   * Refused on parked, concluded, or dropped clicks — the goal seals on
+   * transition to any non-live status. Strict-equal text is a no-op.
+   */
+  amend(id: string, params: {
+    goal: string
+    sessionId?: string
   }): Promise<Click>
 
   /** Move a click to a new parent (or to root). */
@@ -222,12 +233,19 @@ interface Click {
   id: string
   parentId: string | null
   goal: string
+  goalHistory?: GoalHistoryEntry[]    // oldest-first; absent if never amended
   status: ClickStatus
   conclusion: string | null
   createdSessionId: string
   resolvedSessionId: string | null
   createdAt: string    // ISO timestamp
   resolvedAt: string | null
+}
+
+interface GoalHistoryEntry {
+  goal: string         // the prior goal text replaced by this amend
+  amendedAt: string    // ISO timestamp at which the amend occurred
+  sessionId?: string   // session that performed the amend, when supplied
 }
 
 interface ClickLink {
@@ -250,7 +268,7 @@ Create a new click.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `goal` | `string` | yes | The question or inquiry (immutable after creation) |
+| `goal` | `string` | yes | The question or inquiry. Editable via `click-amend` while the click is `live`; sealed on transition to any non-live status. |
 | `parent-id` | `string` | no | Parent click ID. Omit for root node. |
 
 ### `click-show`
@@ -325,6 +343,16 @@ Drop a click without a decision.
 | `id` | `string` | yes | Click ID |
 | `conclusion` | `string` | yes | Reason for dropping |
 
+### `click-amend`
+
+Amend the goal of a live click. The prior goal text is appended to the click's `goalHistory` array. Refused on parked, concluded, or dropped clicks — the goal seals on transition to any non-live status. Short-ID prefixes are accepted on `--id`. The click id may also be supplied positionally: `nsg click amend <id> --goal "..."`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | `string` | yes | Click ID (short prefix OK; may also be supplied positionally) |
+| `goal` | `string` | yes | New goal text (non-empty; whitespace-only rejected) |
+| `session-id` | `string` | no | Session ID that performed the amend (recorded on the history entry) |
+
 ### `click-link`
 
 Add a typed link.
@@ -348,13 +376,13 @@ When `parent-id` is omitted, the click becomes a root node (parentId set to null
 
 ---
 
-## Immutability Enforcement
+## Mutability Rules
 
-The Ratchet enforces two immutability constraints at the API level:
+The Ratchet enforces the following field-level mutability rules at the API level:
 
-1. **Goal is frozen after creation.** Any attempt to modify `goal` after the initial `create()` call is rejected. If the question was framed wrong, the correct action is to drop the click and create a new one.
+1. **Goal is live-editable, sealed at terminal.** The `goal` field may be replaced via `amend()` while the click is `live`. Every amend appends the prior goal text to `goalHistory` as a new entry carrying `{ goal, amendedAt, sessionId? }`. `amend()` refuses to operate on `parked`, `concluded`, or `dropped` clicks — the goal seals on transition out of `live`. Strict-equal text is a no-op and produces no history entry. Empty or whitespace-only text is rejected. The read-modify-write cycle is wrapped in a Stacks transaction so concurrent amends never lose history entries.
 
-2. **Conclusion is write-once.** The `conclusion` field starts as null. It is set exactly once, by `conclude()` or `drop()`. Any subsequent attempt to modify it is rejected. Terminal clicks (concluded, dropped) are fully immutable — no field changes are allowed.
+2. **Conclusion is write-once.** The `conclusion` field starts as null. It is set exactly once, by `conclude()` or `drop()`. Any subsequent attempt to modify it is rejected. Concluded and dropped clicks are terminal and accept no further `amend()`, `conclude()`, or `drop()` calls — `reparent()` remains permitted (see Tree Semantics).
 
 These constraints are enforced in the Ratchet plugin, not in Stacks. Stacks provides generic CRUD; the Ratchet adds the domain invariants.
 

@@ -45,24 +45,29 @@ function isRequiredStringSchema(schema: z.ZodTypeAny): boolean {
 }
 
 /**
- * Detect if a tool has exactly one required string param named 'id' or ending
- * with 'Id'. Returns the param key if found, undefined otherwise.
+ * Detect if a tool has exactly one required string param that looks like an
+ * identifier — named `id` or ending with `Id`. Returns the param key if found,
+ * undefined otherwise. Additional required non-id-like string params (e.g.
+ * `goal`, `conclusion`) do not block detection; only the id key is promoted
+ * to the positional slot.
  *
  * Convention: when detected, the CLI registers this param as an optional
- * positional argument so `nsg click show <id>` works alongside `--id <id>`.
+ * positional argument so `nsg click show <id>` works alongside `--id <id>`,
+ * and `nsg click amend <id> --goal "..."` works alongside
+ * `nsg click amend --id <id> --goal "..."`.
+ *
+ * Multiple id-like required strings (e.g. `click-link`'s `sourceId` and
+ * `targetId`) are ambiguous — no positional is registered in that case.
  */
 function detectPositionalId(shape: ZodShape): string | undefined {
-  const requiredStringKeys: string[] = [];
+  const idLikeRequiredKeys: string[] = [];
   for (const [key, schema] of Object.entries(shape)) {
-    if (isRequiredStringSchema(schema)) {
-      requiredStringKeys.push(key);
+    if (isRequiredStringSchema(schema) && (key === 'id' || key.endsWith('Id'))) {
+      idLikeRequiredKeys.push(key);
     }
   }
-  // Must be exactly one required string param
-  if (requiredStringKeys.length !== 1) return undefined;
-  const key = requiredStringKeys[0];
-  // Must be named 'id' or end with 'Id'
-  if (key === 'id' || key.endsWith('Id')) return key;
+  // Exactly one id-like required param — unambiguous positional target.
+  if (idLikeRequiredKeys.length === 1) return idLikeRequiredKeys[0];
   return undefined;
 }
 

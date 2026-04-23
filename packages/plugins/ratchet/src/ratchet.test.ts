@@ -15,13 +15,14 @@ import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 
 import { createRatchet } from './ratchet.ts';
-import type { RatchetApi, ClickDoc, ClickTree, ClickStatus } from './types.ts';
+import type { RatchetApi, ClickDoc, ClickTree, ClickStatus, GoalHistoryEntry } from './types.ts';
 import clickCreate from './tools/click-create.ts';
 import clickShow from './tools/click-show.ts';
 import clickList from './tools/click-list.ts';
 import clickPark from './tools/click-park.ts';
 import clickExtract from './tools/click-extract.ts';
 import clickTree from './tools/click-tree.ts';
+import clickAmend from './tools/click-amend.ts';
 
 // ── Test harness ─────────────────────────────────────────────────────
 
@@ -388,15 +389,188 @@ describe('Ratchet', () => {
     });
   });
 
-  // ── Goal immutability ──────────────────────────────────────────
+  // ── Goal mutation rules ────────────────────────────────────────
+  //
+  // A click's `goal` is editable via `amend()` while the click is `live`;
+  // the seal closes on transition to any non-live status. These tests
+  // guard against accidental clobbering by operations that are *not*
+  // amend — park, resume, and their combinations must preserve the goal
+  // untouched. Dedicated amend behavior lives in the `amend` describe.
 
-  describe('goal immutability', () => {
+  describe('goal mutation rules', () => {
     it('goal is unchanged after park/resume cycle', async () => {
       const click = await ratchet.create({ goal: 'Original' });
       await ratchet.park(click.id);
       await ratchet.resume(click.id);
       const fetched = await ratchet.get(click.id);
       assert.strictEqual(fetched.goal, 'Original');
+    });
+  });
+
+  // ── Amend ──────────────────────────────────────────────────────
+
+  describe('amend', () => {
+    it('accepts an amend on a live click, updating the goal and appending prior value to goalHistory', async () => {
+      const click = await ratchet.create({ goal: 'Original question' });
+      const updated = await ratchet.amend(click.id, { goal: 'Refined question' });
+
+      assert.strictEqual(updated.goal, 'Refined question');
+      assert.ok(Array.isArray(updated.goalHistory), 'goalHistory should be an array after amend');
+      assert.strictEqual(updated.goalHistory!.length, 1, 'one prior value should be recorded');
+      const entry = updated.goalHistory![0];
+      assert.strictEqual(entry.goal, 'Original question');
+      assert.ok(entry.amendedAt, 'entry carries an ISO timestamp');
+      assert.ok(!Number.isNaN(Date.parse(entry.amendedAt)), 'amendedAt parses as a date');
+      assert.strictEqual(entry.sessionId, undefined, 'sessionId should be absent when not supplied');
+    });
+
+    it('records sessionId on the history entry when supplied', async () => {
+      const click = await ratchet.create({ goal: 'Original' });
+      const updated = await ratchet.amend(click.id, { goal: 'Refined', sessionId: 'sess-amend-1' });
+      assert.strictEqual(updated.goalHistory![0].sessionId, 'sess-amend-1');
+    });
+
+    it('returns the full updated ClickDoc', async () => {
+      const click = await ratchet.create({ goal: 'Original', createdSessionId: 'sess-create' });
+      const updated = await ratchet.amend(click.id, { goal: 'Refined' });
+      // Preserves other fields from the original click record.
+      assert.strictEqual(updated.id, click.id);
+      assert.strictEqual(updated.status, 'live');
+      assert.strictEqual(updated.createdSessionId, 'sess-create');
+      assert.strictEqual(updated.createdAt, click.createdAt);
+    });
+
+    it('short-circuits on strict-equal text with no history entry appended', async () => {
+      const click = await ratchet.create({ goal: 'Same text' });
+      const result = await ratchet.amend(click.id, { goal: 'Same text' });
+      assert.strictEqual(result.goal, 'Same text');
+      const history = result.goalHistory;
+      assert.ok(history === undefined || history.length === 0, 'no history entry should be appended for strict-equal no-op');
+    });
+
+    it('strict-equal comparison is case-sensitive and whitespace-sensitive', async () => {
+      const click = await ratchet.create({ goal: 'Same text' });
+      // Different whitespace — not a strict match, must be accepted as a real amend.
+      const updated = await ratchet.amend(click.id, { goal: 'Same text ' });
+      assert.strictEqual(updated.goal, 'Same text ');
+      assert.strictEqual(updated.goalHistory!.length, 1);
+      assert.strictEqual(updated.goalHistory![0].goal, 'Same text');
+    });
+
+    it('rejects amend on a parked click with an error naming the status and the amend verb', async () => {
+      const click = await ratchet.create({ goal: 'Original' });
+      await ratchet.park(click.id);
+      await assert.rejects(
+        () => ratchet.amend(click.id, { goal: 'New' }),
+        (err: Error) => err.message.includes('parked') && err.message.toLowerCase().includes('amend'),
+      );
+    });
+
+    it('rejects amend on a concluded click with an error naming the status and the amend verb', async () => {
+      const click = await ratchet.create({ goal: 'Original' });
+      await ratchet.conclude(click.id, { conclusion: 'Done' });
+      await assert.rejects(
+        () => ratchet.amend(click.id, { goal: 'New' }),
+        (err: Error) => err.message.includes('concluded') && err.message.toLowerCase().includes('amend'),
+      );
+    });
+
+    it('rejects amend on a dropped click with an error naming the status and the amend verb', async () => {
+      const click = await ratchet.create({ goal: 'Original' });
+      await ratchet.drop(click.id, { conclusion: 'Gone' });
+      await assert.rejects(
+        () => ratchet.amend(click.id, { goal: 'New' }),
+        (err: Error) => err.message.includes('dropped') && err.message.toLowerCase().includes('amend'),
+      );
+    });
+
+    it('rejects empty goal text', async () => {
+      const click = await ratchet.create({ goal: 'Original' });
+      await assert.rejects(
+        () => ratchet.amend(click.id, { goal: '' }),
+        /non-empty/,
+      );
+    });
+
+    it('rejects whitespace-only goal text', async () => {
+      const click = await ratchet.create({ goal: 'Original' });
+      await assert.rejects(
+        () => ratchet.amend(click.id, { goal: '   ' }),
+        /non-empty/,
+      );
+    });
+
+    it('accumulates multiple amends in chronological order', async () => {
+      const click = await ratchet.create({ goal: 'v1' });
+      await ratchet.amend(click.id, { goal: 'v2' });
+      // Brief delay to ensure distinct timestamps.
+      await new Promise((r) => setTimeout(r, 5));
+      await ratchet.amend(click.id, { goal: 'v3' });
+      await new Promise((r) => setTimeout(r, 5));
+      const updated = await ratchet.amend(click.id, { goal: 'v4' });
+
+      assert.strictEqual(updated.goal, 'v4');
+      const history = updated.goalHistory!;
+      assert.strictEqual(history.length, 3);
+      assert.deepStrictEqual(
+        history.map((e) => e.goal),
+        ['v1', 'v2', 'v3'],
+        'history should be oldest-first',
+      );
+      // Timestamps should also be non-decreasing.
+      for (let i = 1; i < history.length; i++) {
+        assert.ok(
+          history[i].amendedAt >= history[i - 1].amendedAt,
+          'history entries should be in chronological order',
+        );
+      }
+    });
+
+    it('preserves history across a park → resume → amend cycle', async () => {
+      const click = await ratchet.create({ goal: 'v1' });
+      await ratchet.amend(click.id, { goal: 'v2' });
+      await ratchet.park(click.id);
+      await ratchet.resume(click.id);
+      const updated = await ratchet.amend(click.id, { goal: 'v3' });
+
+      assert.strictEqual(updated.goal, 'v3');
+      const history = updated.goalHistory!;
+      assert.strictEqual(history.length, 2);
+      assert.deepStrictEqual(history.map((e) => e.goal), ['v1', 'v2']);
+    });
+
+    it('amends a click whose stored record lacks a goalHistory field', async () => {
+      // Records created by create() do not carry a goalHistory field at all.
+      // The first amend must cope with absent/undefined history.
+      const click = await ratchet.create({ goal: 'Original' });
+      assert.strictEqual(click.goalHistory, undefined, 'brand-new click has no goalHistory field');
+
+      const updated = await ratchet.amend(click.id, { goal: 'Refined' });
+      assert.ok(Array.isArray(updated.goalHistory));
+      assert.strictEqual(updated.goalHistory!.length, 1);
+      assert.strictEqual(updated.goalHistory![0].goal, 'Original');
+    });
+
+    it('surfaces goalHistory in click-show JSON output', async () => {
+      const click = await ratchet.create({ goal: 'Original' });
+      await ratchet.amend(click.id, { goal: 'Refined', sessionId: 'sess-amend-show' });
+
+      const result = await clickShow.handler({ id: click.id }) as Record<string, unknown>;
+      const history = result.goalHistory as GoalHistoryEntry[] | undefined;
+      assert.ok(Array.isArray(history), 'click-show should surface goalHistory as an array');
+      assert.strictEqual(history!.length, 1);
+      assert.strictEqual(history![0].goal, 'Original');
+      assert.strictEqual(history![0].sessionId, 'sess-amend-show');
+      assert.ok(history![0].amendedAt);
+    });
+
+    it('click-amend tool resolves short IDs and delegates to the API', async () => {
+      const click = await ratchet.create({ goal: 'Original' });
+      const prefix = click.id.substring(0, 10);
+      const updated = await clickAmend.handler({ id: prefix, goal: 'Refined' }) as ClickDoc;
+      assert.strictEqual(updated.id, click.id);
+      assert.strictEqual(updated.goal, 'Refined');
+      assert.strictEqual(updated.goalHistory![0].goal, 'Original');
     });
   });
 
