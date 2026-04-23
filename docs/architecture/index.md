@@ -8,7 +8,7 @@ For the conceptual vocabulary — what guilds, animas, commissions, writs, and a
 
 ## System at a Glance
 
-> This section describes the **standard guild** — the configuration `nsg init` produces. The framework itself is a plugin loader; every apparatus named below is part of the default plugin set, not a hard requirement. §4 ([Plugin Architecture](#plugin-architecture)) explains the underlying model; the [Standard Guild](#the-standard-guild) section catalogues what the default set includes.
+> This section describes the **standard guild** — the curated baseline the rest of this document assumes. The framework itself is a plugin loader; every apparatus named below is part of that baseline, not a hard requirement, and the baseline itself is assembled by installing plugins after `nsg init` rather than shipped automatically. §4 ([Plugin Architecture](#plugin-architecture)) explains the underlying model; the [Standard Guild](#the-standard-guild) section catalogues what the baseline includes.
 
 A Nexus guild is a git repository with a `guild.json` at its root and a `.nexus/` directory holding runtime state. When the system starts, **Arbor** — the guild runtime — reads `guild.json`, loads the declared plugins, validates their dependencies, and starts each apparatus in order. From that point, the guild operates: the patron commissions work; **The Clerk** receives it and issues writs; **The Spider** assembles rigs and drives their engines to completion; **The Clockworks** turns events into action, activating relays in response to standing orders; and **anima sessions** — AI processes launched by **The Animator** — do the work that requires judgment. Results land in codexes and documents; the patron consumes what the guild delivers.
 
@@ -138,7 +138,7 @@ The versioned files — `guild.json`, `package.json`, and the guild's own conten
 
 **`nexus`** — the installed framework version. Written by `nsg init` and `nsg upgrade`; not edited by hand.
 
-**`plugins`** — ordered list of installed plugin ids. Arbor loads them in this order, respecting the dependency graph. `nsg install` and `nsg remove` manage this list. Starts empty on `nsg init`; the standard guild adds the default set.
+**`plugins`** — ordered list of installed plugin ids. Arbor loads them in this order, respecting the dependency graph. `nsg install` and `nsg remove` manage this list. Starts empty on `nsg init`; the standard guild is assembled afterward by installing each plugin listed in [The Standard Guild](#the-standard-guild).
 
 **`settings`** — operational configuration. Currently holds `model` (the default LLM model for anima sessions) and `autoMigrate` (whether to apply database migrations automatically on startup).
 
@@ -256,13 +256,13 @@ nsg remove  nexus-git     # remove a plugin
 nsg status                # show apparatus health + kit inventory
 ```
 
-`nsg init` populates the default plugin set for a new guild.
+`nsg init` writes an empty `plugins` array; the standard guild is assembled afterward by installing each plugin listed in [The Standard Guild](#the-standard-guild).
 
 ---
 
 ## The Standard Guild
 
-The plugin architecture described above is general-purpose: any guild can install any combination of kits and apparatus. In practice, nearly every guild uses the same foundational set — the apparatus and kits that `nsg init` installs by default. The sections that follow document this standard configuration.
+The plugin architecture described above is general-purpose: any guild can install any combination of kits and apparatus. In practice, nearly every guild starts from the same foundational set — the apparatus catalogued below. The sections that follow treat this curated baseline as the working assumption.
 
 Each section introduces one or more apparatus or kits from the default set. Understanding that they are plugins — replaceable, independently testable, authored against the same contracts as any community extension — is the main thing §4 provides. The remaining sections don't repeat it.
 
@@ -270,27 +270,37 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 
 | Apparatus | Plugin id | Function |
 |-----------|-----------|----------|
-| **The Stacks** | `books` | Persistence substrate — SQLite-backed document store and change-data-capture events |
-| **The Scriptorium** | `codexes` | Codex management — repository registry, bare clones, draft binding lifecycle, sealing and push |
-| **The Clockworks** | `clockworks` | Event-driven nervous system — standing orders, event queue, the summon relay |
-| **The Surveyor** | `surveyor` | Codex knowledge — surveys registered codexes so the guild knows what work applies to each |
-| **The Clerk** | `clerk` | Commission intake and writ lifecycle — receives commissions, creates writs, signals when work is ready |
-| **The Loom** | `loom` | Session context composition — weaves role instructions, tool instructions, curricula, and temperaments into a session context |
-| **The Instrumentarium** | `tools` | Tool registry — resolves installed tools, permission-gated tool sets |
-| **The Animator** | `animator` | Session lifecycle — launches, monitors, and records anima sessions |
-| **The Fabricator** | `fabricator` | Engine design registry — answers "what engine chain satisfies this need?" from installed kits |
-| **The Spider** | `spider` | Rig lifecycle — spawns, traverses, extends, and strikes rigs as work progresses |
-| **The Executor** | `executor` | Engine runner — executes clockwork and quick engines against a configured substrate |
+| **[The Stacks](apparatus/stacks.md)** | `stacks` | Persistence substrate — SQLite-backed document store with change-data-capture events |
+| **[The Scriptorium](apparatus/scriptorium.md)** | `codexes` | Codex management — repository registry, bare clones, draft binding lifecycle, sealing and push |
+| **[The Clerk](apparatus/clerk.md)** | `clerk` | Commission intake and writ lifecycle — receives commissions, creates writs, signals when work is ready |
+| **[The Ratchet](apparatus/ratchet.md)** | `ratchet` | Decision tracking — manages the click tree of questions and conclusions guiding the guild's reasoning |
+| **[The Fabricator](apparatus/fabricator.md)** | `fabricator` | Engine design registry — answers "what engine chain satisfies this need?" from installed kits |
+| **[The Spider](apparatus/spider.md)** | `spider` | Rig lifecycle — spawns, traverses, extends, and strikes rigs as work progresses |
+| **[The Loom](apparatus/loom.md)** | `loom` | Session context composition — weaves role instructions, tool instructions, curricula, and temperaments into a session context |
+| **[The Instrumentarium](apparatus/instrumentarium.md)** | `tools` | Tool registry — resolves installed tools into permission-gated tool sets |
+| **[The Animator](apparatus/animator.md)** | `animator` | Session lifecycle — launches, monitors, and records anima sessions |
+| **[Claude Code](apparatus/claude-code.md)** | `claude-code` | Session provider — launches Claude Code CLI processes and parses their structured telemetry |
+| **[The Parlour](apparatus/parlour.md)** | `parlour` | Conversation orchestration — drives `nsg consult` and `nsg convene` across multiple turns |
 
-### Default Kits
+The Clockworks, The Surveyor, and The Executor are described elsewhere in this document as part of the guild's operational fabric, but they are not yet extracted as standalone packages.
 
-| Kit | Contributes |
-|-----|-------------|
-| **nexus-stdlib** | Base tools (commission-create, tool-install, anima-create, signal, writ/session CRUD, etc.) and the summon relay |
-| **clockworks** (supportKit) | Clockworks tools (clock-start, clock-stop, clock-status, event-list, signal) |
-| **sessions** (supportKit) | Session tools (session-list, session-show, conversation-list) |
+### Opt-in Apparatus
 
-> **Note:** The list above is provisional. The standard guild configuration is still being finalized as individual apparatus are built out. Some entries listed as apparatus are not yet implemented as separate packages. Treat this as a working inventory, not a commitment.
+Some opt-ins form coherent stacks that only make sense when installed together — notably the notifications stack (`lattice` + `reckoner` + `clockworks-retry` + `lattice-discord`), which observes guild activity and fans pulses out to external channels.
+
+| Apparatus | Plugin id | Function |
+|-----------|-----------|----------|
+| **[The Astrolabe](apparatus/astrolabe.md)** | `astrolabe` | Plan-and-ship pipeline — turns patron briefs into structured specs and drives them through implementation |
+| **The Clockworks-Retry** | `clockworks-retry` | Stuck-writ retry observer — part of the opt-in notifications stack |
+| **[The Copilot](apparatus/copilot.md)** | `copilot` | Alternate session provider — launches sessions via the GitHub Models API |
+| **[The Lattice](apparatus/lattice.md)** | `lattice` | Notification substrate — part of the opt-in notifications stack |
+| **The Lattice-Discord** | `lattice-discord` | Discord channel for Lattice pulses — part of the opt-in notifications stack |
+| **The Oculus** | `oculus` | Web dashboard — serves an HTTP dashboard with kit-contributed pages and routes |
+| **[The Reckoner](apparatus/reckoner.md)** | `reckoner` | Stall, failure, and drain observer — part of the opt-in notifications stack |
+
+Today the default apparatus each contribute their own supportKits (tools, engines, relays); no standalone default kits ship.
+
+> **Note:** The Standard Guild above is a curated documentation baseline. `nsg init` does not auto-install these plugins today — install each with `nsg plugin install` after initializing a new guild.
 
 ---
 
