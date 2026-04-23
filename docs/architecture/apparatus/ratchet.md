@@ -462,5 +462,5 @@ Stretch goals: graph visualization (nodes + edges), drag-and-drop reparenting, n
 - Pilgrimage assessment: `docs/archive/design-sessions/click-model-assessment.md` (writ `w-mo0gias9`)
 - Clerk apparatus (peer, architectural reference): `docs/architecture/apparatus/clerk.md`
 - Stacks apparatus (storage layer): `docs/architecture/apparatus/stacks.md`
-- Guild vocabulary: `docs/future/guild-vocabulary.md` (Ratchet to be added)
+- Guild vocabulary: `docs/future/guild-vocabulary.md`
 - Interview and friction catalog: session `0f6580e9-2f6f-48a9-9669-14d11161734e`
