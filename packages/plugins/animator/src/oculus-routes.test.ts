@@ -1,10 +1,13 @@
 /**
  * Animator Oculus routes tests.
  *
- * Tests the three custom API routes:
+ * Tests the three surviving custom API routes:
  * - GET /api/animator/sessions — enriched session list
  * - GET /api/animator/session-transcript — transcript and status
  * - GET /api/animator/session-stream — SSE streaming
+ *
+ * `GET /api/animator/status` used to be a custom route too, but was
+ * retired in favour of the auto-registered `animator-status` tool route.
  *
  * Uses a fake guild with in-memory Stacks to test route handler logic
  * without running a real HTTP server.
@@ -561,67 +564,14 @@ describe('Animator Oculus Routes', () => {
     });
   });
 
-  // ── GET /api/animator/status ────────────────────────────────────
-
-  describe('GET /api/animator/status', () => {
-    const handler = () => getHandler('GET', '/api/animator/status');
-
-    beforeEach(() => {
-      setup();
-    });
-
-    it('returns the status doc verbatim via AnimatorApi.getStatus()', async () => {
-      // Replace the mock animator with one whose getStatus() returns a
-      // paused doc.
-      const apparatusMap = new Map<string, unknown>();
-      const statusDoc = {
-        id: 'dispatch-status',
-        state: 'paused' as const,
-        pausedSince: '2026-04-24T00:00:00.000Z',
-        pausedUntil: '2026-04-24T00:15:00.000Z',
-        pauseReason: 'rate-limit' as const,
-        backoffLevel: 1,
-        lastTriggeringSession: 'ses-42',
-      };
-      const animator = {
-        async getStatus() { return statusDoc; },
-        subscribeToSession() { return null; },
-      } as unknown as AnimatorApi;
-      apparatusMap.set('stacks', stacks);
-      apparatusMap.set('animator', animator);
-      setGuild({
-        home: '/tmp/fake',
-        apparatus<T>(name: string): T {
-          const api = apparatusMap.get(name);
-          if (!api) throw new Error(`Apparatus "${name}" not installed`);
-          return api as T;
-        },
-        config<T>(): T { return {} as T; },
-        writeConfig() {},
-        guildConfig() {
-          return { name: 't', nexus: '0.0.0', plugins: [] } as never;
-        },
-        kits: () => [],
-        apparatuses: () => [],
-        startupWarnings() { return []; },
-      } as Guild);
-
-      const { ctx, getResponse } = createMockContext();
-      await handler()(ctx as never);
-      const { data, status } = getResponse();
-      assert.equal(status, 200);
-      assert.deepEqual(data, statusDoc);
-    });
-  });
-
   // ── Route structure ─────────────────────────────────────────────────
 
   describe('Route definitions', () => {
-    it('exports all expected routes', () => {
-      assert.equal(animatorRoutes.length, 4);
+    it('exports the three surviving custom routes (status route is auto-registered)', () => {
+      assert.equal(animatorRoutes.length, 3);
 
       const paths = animatorRoutes.map((r) => `${r.method} ${r.path}`);
-      assert.ok(paths.includes('GET /api/animator/status'));
+      assert.ok(!paths.includes('GET /api/animator/status'), 'status route is no longer custom');
       assert.ok(paths.includes('GET /api/animator/sessions'));
       assert.ok(paths.includes('GET /api/animator/session-transcript'));
       assert.ok(paths.includes('GET /api/animator/session-stream'));

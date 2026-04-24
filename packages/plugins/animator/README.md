@@ -296,10 +296,11 @@ Three API routes under `/api/animator/`:
 
 | Route | Description |
 |---|---|
-| `GET /api/animator/status` | Returns the rate-limit back-off status doc verbatim (`state`, `pausedUntil`, `backoffLevel`, …). Drives the Spider Oculus pause banner. |
 | `GET /api/animator/sessions` | Enriched session list with `role`, `writTitle` (resolved from Clerk), and `tokenUsage`. Supports `status`, `from`, `to`, `limit` query params. |
 | `GET /api/animator/session-transcript` | Returns `{ messages, sessionStatus }` for a session. |
 | `GET /api/animator/session-stream` | SSE stream — emits `chunk`, `transcript`, and `done` events. Handles completed sessions, running sessions with/without broadcaster. |
+
+`GET /api/animator/status` is **not** in this list: the `animator-status` tool (see the tools table above) is auto-registered by Oculus at that path and returns the raw `AnimatorStatusDoc` — no custom handler needed. The Spider Oculus pause banner reads from the auto-registered route without modification.
 
 ## Support Kit
 

@@ -514,7 +514,7 @@ Defaults: 15 minutes / 1 hour / factor 2. The `rateLimit.backoff` block is valid
 
 ### Observability
 
-- `GET /api/animator/status` returns the current status doc over HTTP.
+- `GET /api/animator/status` returns the current status doc over HTTP via the auto-registered `animator-status` tool route (no custom Oculus handler).
 - `nsg animator-status` prints the doc as pretty-printed JSON (the tool always returns JSON; the CLI auto-printer handles the rendering).
 - The Spider Oculus page shows a conditional banner above the tab bar when the Animator is paused.
 - The status book's CDC stream is designed to be observable by a future Sentinel apparatus; no Sentinel is instantiated here. The book is the historical record — pause / resume events flow through the same CDC stream the Laboratory already ingests.

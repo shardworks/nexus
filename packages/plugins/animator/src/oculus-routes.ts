@@ -6,6 +6,10 @@
  * - GET /api/animator/session-transcript — session transcript and status
  * - GET /api/animator/session-stream — SSE stream of real-time session chunks
  *
+ * `GET /api/animator/status` is intentionally NOT a custom route — the
+ * `animator-status` tool is auto-registered by Oculus at the same path
+ * and returns the same raw AnimatorStatusDoc shape.
+ *
  * Does NOT import from @shardworks/oculus-apparatus to avoid a circular
  * package dependency. The route shape is compatible with RouteContribution
  * from the Oculus types.
@@ -32,20 +36,6 @@ interface WritEntry {
 }
 
 export const animatorRoutes = [
-  {
-    method: 'GET',
-    path: '/api/animator/status',
-    handler: async (c: Context) => {
-      // Read the back-off status doc through the Animator apparatus so
-      // consumers (Oculus banner, external monitoring) see exactly what
-      // the internal machine sees. Running on a fresh install returns
-      // the default running shape — never a null body.
-      const g = guild();
-      const animator = g.apparatus<AnimatorApi>('animator');
-      const status = await animator.getStatus();
-      return c.json(status);
-    },
-  },
   {
     method: 'GET',
     path: '/api/animator/sessions',
