@@ -342,7 +342,7 @@
      * tree of `WritTreeNode` entries. Guards against cycles with `visited` and
      * bounds recursion at `maxDepth` (default 10) to keep the UI responsive on
      * pathological data. Children at each level are sorted by createdAt ascending
-     * (oldest first), matching fetchChildrenForRoots behavior.
+     * (oldest first).
      *
      * Returns `WritTreeNode[]` — the direct children of `rootId`, each with their
      * own nested `children` list.
