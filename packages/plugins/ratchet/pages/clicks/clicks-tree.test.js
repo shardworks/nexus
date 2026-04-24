@@ -76,6 +76,20 @@ function countChildrenByStatus(children) {
   return out;
 }
 
+function hasGoalHistory(click) {
+  return Array.isArray(click?.goalHistory) && click.goalHistory.length > 0;
+}
+
+function treeHistoryMarkerProps(click) {
+  if (!hasGoalHistory(click)) return null;
+  const count = click.goalHistory.length;
+  return {
+    className: 'tree-history',
+    text: '✎',
+    title: `Has prior goals (${count})`,
+  };
+}
+
 function shortId(id) {
   const parts = String(id).split('-');
   return parts.length >= 2 ? parts.slice(0, 2).join('-') : id;
@@ -361,6 +375,110 @@ describe('shortId — c-{prefix}-{base36ts} trimming', () => {
 
   it('handles IDs with extra segments gracefully', () => {
     assert.strictEqual(shortId('w-abc-def-ghi-jkl'), 'w-abc');
+  });
+});
+
+describe('hasGoalHistory — prior-goals predicate', () => {
+  it('returns false when goalHistory is absent', () => {
+    assert.strictEqual(hasGoalHistory({ id: 'c-a', goal: 'g', status: 'live' }), false);
+  });
+
+  it('returns false when goalHistory is an empty array', () => {
+    assert.strictEqual(
+      hasGoalHistory({ id: 'c-a', goal: 'g', status: 'live', goalHistory: [] }),
+      false,
+    );
+  });
+
+  it('returns true when goalHistory is a non-empty array', () => {
+    const click = {
+      id: 'c-a',
+      goal: 'current',
+      status: 'live',
+      goalHistory: [{ goal: 'older', amendedAt: '2025-03-01T00:00:00Z' }],
+    };
+    assert.strictEqual(hasGoalHistory(click), true);
+  });
+
+  it('returns false when goalHistory is not an array (defensive)', () => {
+    assert.strictEqual(
+      hasGoalHistory({ id: 'c-a', goal: 'g', status: 'live', goalHistory: 'nope' }),
+      false,
+    );
+    assert.strictEqual(
+      hasGoalHistory({ id: 'c-a', goal: 'g', status: 'live', goalHistory: null }),
+      false,
+    );
+  });
+
+  it('returns false for null / undefined input', () => {
+    assert.strictEqual(hasGoalHistory(null), false);
+    assert.strictEqual(hasGoalHistory(undefined), false);
+  });
+});
+
+describe('treeHistoryMarkerProps — "has prior goals" marker (D18–D21)', () => {
+  function makeClick(status, goalHistory) {
+    return {
+      id: 'c-a',
+      goal: 'current goal',
+      status,
+      ...(goalHistory !== undefined ? { goalHistory } : {}),
+    };
+  }
+
+  it('returns null when goalHistory is absent (no marker rendered)', () => {
+    assert.strictEqual(treeHistoryMarkerProps(makeClick('live')), null);
+  });
+
+  it('returns null when goalHistory is an empty array', () => {
+    assert.strictEqual(treeHistoryMarkerProps(makeClick('live', [])), null);
+  });
+
+  it('returns a descriptor carrying the tree-history class and a title tooltip when history exists', () => {
+    const click = makeClick('live', [
+      { goal: 'older', amendedAt: '2025-03-01T10:00:00Z' },
+    ]);
+    const props = treeHistoryMarkerProps(click);
+    assert.ok(props);
+    assert.strictEqual(props.className, 'tree-history');
+    assert.ok(props.title.length > 0, 'title tooltip must be non-empty');
+  });
+
+  it('includes the exact entry count in the title tooltip (D21)', () => {
+    const click = makeClick('live', [
+      { goal: 'a', amendedAt: '2025-03-01T10:00:00Z' },
+      { goal: 'b', amendedAt: '2025-03-01T11:00:00Z' },
+      { goal: 'c', amendedAt: '2025-03-01T12:00:00Z' },
+    ]);
+    const props = treeHistoryMarkerProps(click);
+    assert.ok(props.title.includes('(3)'), `title "${props.title}" should carry count (3)`);
+  });
+
+  it('renders the marker regardless of status (D19)', () => {
+    for (const status of ALL_STATUSES) {
+      const click = makeClick(status, [
+        { goal: 'older', amendedAt: '2025-03-01T10:00:00Z' },
+      ]);
+      const props = treeHistoryMarkerProps(click);
+      assert.ok(props, `status=${status} with history must yield a marker`);
+      assert.strictEqual(props.className, 'tree-history');
+    }
+  });
+
+  it('never yields a marker when status varies but history is absent', () => {
+    for (const status of ALL_STATUSES) {
+      assert.strictEqual(
+        treeHistoryMarkerProps(makeClick(status)),
+        null,
+        `status=${status} without history must yield null`,
+      );
+      assert.strictEqual(
+        treeHistoryMarkerProps(makeClick(status, [])),
+        null,
+        `status=${status} with empty history must yield null`,
+      );
+    }
   });
 });
 

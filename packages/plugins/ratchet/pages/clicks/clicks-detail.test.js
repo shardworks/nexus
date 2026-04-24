@@ -75,6 +75,24 @@ function countChildrenByStatus(children) {
   return out;
 }
 
+function hasGoalHistory(click) {
+  return Array.isArray(click?.goalHistory) && click.goalHistory.length > 0;
+}
+
+function buildAmendConfirmHtml(currentGoal) {
+  const confirmLabel = 'Amend';
+  const prefill = currentGoal ?? '';
+  const startDisabled = prefill.trim().length === 0;
+  return `
+        <div class="confirm-section">
+          <label>New goal</label>
+          <input type="text" id="confirm-input" value="${escAttr(prefill)}" placeholder="Refine the goal">
+          <button class="btn" id="confirm-submit"${startDisabled ? ' disabled' : ''}>${confirmLabel}</button>
+          <button class="btn" id="confirm-abort">Cancel</button>
+          <div class="error-msg" id="confirm-error" style="display:none"></div>
+        </div>`;
+}
+
 function renderLinkRow(link, direction) {
   const isOutbound = direction === 'outbound';
   const otherId = isOutbound ? link.targetId : link.sourceId;
@@ -126,6 +144,19 @@ function buildDetailHtml(click) {
     html += `<div class="detail-conclusion">${escHtml(click.conclusion)}</div>`;
     html += `</details>`;
   }
+  if (hasGoalHistory(click)) {
+    const history = click.goalHistory;
+    html += `<details class="prior-goals" style="margin-top:0.5rem"><summary>Prior goals (${history.length})</summary>`;
+    for (const entry of history) {
+      html += `<div class="prior-goal-entry">`;
+      html += `<div class="detail-conclusion">${escHtml(entry.goal)}</div>`;
+      html += `<div class="prior-goal-meta">${escHtml(fmtDate(entry.amendedAt))}`;
+      if (entry.sessionId) html += ` · session: <code>${escHtml(entry.sessionId)}</code>`;
+      html += `</div>`;
+      html += `</div>`;
+    }
+    html += `</details>`;
+  }
   html += `</div>`;
 
   if (!isTerminal) {
@@ -135,6 +166,7 @@ function buildDetailHtml(click) {
       html += `<button class="btn" data-action="park">Park</button>`;
       html += `<button class="btn btn--success" data-action="conclude">Conclude…</button>`;
       html += `<button class="btn btn--danger" data-action="drop">Drop…</button>`;
+      html += `<button class="btn" data-action="amend">Amend…</button>`;
     } else if (click.status === 'parked') {
       html += `<button class="btn" data-action="resume">Resume</button>`;
       html += `<button class="btn btn--success" data-action="conclude">Conclude…</button>`;
@@ -212,6 +244,25 @@ function liveClickFixture() {
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+describe('hasGoalHistory — prior-goals predicate (mirrored)', () => {
+  it('treats absent goalHistory as no history', () => {
+    assert.strictEqual(hasGoalHistory(liveClickFixture()), false);
+  });
+
+  it('treats an empty goalHistory array as no history', () => {
+    const click = { ...liveClickFixture(), goalHistory: [] };
+    assert.strictEqual(hasGoalHistory(click), false);
+  });
+
+  it('returns true when goalHistory has at least one entry', () => {
+    const click = {
+      ...liveClickFixture(),
+      goalHistory: [{ goal: 'older', amendedAt: '2025-03-01T10:30:00Z' }],
+    };
+    assert.strictEqual(hasGoalHistory(click), true);
+  });
+});
+
 describe('buildDetailHtml — fields section (D24)', () => {
   it('renders goal as the heading and short+full id', () => {
     const click = liveClickFixture();
@@ -286,26 +337,139 @@ describe('buildDetailHtml — fields section (D24)', () => {
   });
 });
 
+describe('buildDetailHtml — prior-goals disclosure', () => {
+  it('renders no disclosure when goalHistory is absent', () => {
+    const click = liveClickFixture();
+    const html = buildDetailHtml(click);
+    assert.ok(!html.includes('Prior goals'));
+    assert.ok(!html.includes('class="prior-goals"'));
+  });
+
+  it('renders no disclosure when goalHistory is an empty array', () => {
+    const click = { ...liveClickFixture(), goalHistory: [] };
+    const html = buildDetailHtml(click);
+    assert.ok(!html.includes('Prior goals'));
+  });
+
+  it('renders a "Prior goals (N)" summary with the entry count', () => {
+    const click = {
+      ...liveClickFixture(),
+      goalHistory: [
+        { goal: 'first', amendedAt: '2025-03-01T10:00:00Z' },
+        { goal: 'second', amendedAt: '2025-03-01T11:00:00Z' },
+        { goal: 'third', amendedAt: '2025-03-01T12:00:00Z' },
+      ],
+    };
+    const html = buildDetailHtml(click);
+    assert.ok(html.includes('<summary>Prior goals (3)</summary>'));
+  });
+
+  it('renders entries in oldest-first storage order', () => {
+    const click = {
+      ...liveClickFixture(),
+      goalHistory: [
+        { goal: 'alpha', amendedAt: '2025-03-01T10:00:00Z' },
+        { goal: 'bravo', amendedAt: '2025-03-01T11:00:00Z' },
+        { goal: 'charlie', amendedAt: '2025-03-01T12:00:00Z' },
+      ],
+    };
+    const html = buildDetailHtml(click);
+    const iAlpha = html.indexOf('>alpha<');
+    const iBravo = html.indexOf('>bravo<');
+    const iCharlie = html.indexOf('>charlie<');
+    assert.ok(iAlpha >= 0 && iBravo >= 0 && iCharlie >= 0, 'all three entries rendered');
+    assert.ok(iAlpha < iBravo && iBravo < iCharlie, 'entries rendered oldest-first');
+  });
+
+  it('renders the formatted amendedAt timestamp for each entry', () => {
+    const iso = '2025-03-01T10:00:00Z';
+    const click = {
+      ...liveClickFixture(),
+      goalHistory: [{ goal: 'older', amendedAt: iso }],
+    };
+    const html = buildDetailHtml(click);
+    const expected = fmtDate(iso);
+    assert.ok(expected.length > 0, 'fmtDate produced a non-empty string');
+    assert.ok(html.includes(expected), `formatted timestamp "${expected}" should appear`);
+    // The raw ISO string shouldn't appear verbatim (fmtDate transforms it).
+    assert.ok(!html.includes(iso));
+  });
+
+  it('renders sessionId when present and omits it when absent', () => {
+    const click = {
+      ...liveClickFixture(),
+      goalHistory: [
+        { goal: 'with-session', amendedAt: '2025-03-01T10:00:00Z', sessionId: 's-mo2abc00' },
+        { goal: 'no-session',  amendedAt: '2025-03-01T11:00:00Z' },
+      ],
+    };
+    const html = buildDetailHtml(click);
+    assert.ok(html.includes('<code>s-mo2abc00</code>'));
+    assert.ok(html.includes('session:'));
+    // Only one "session:" marker — the entry without sessionId should not add one.
+    const matches = html.match(/session:/g) ?? [];
+    assert.strictEqual(matches.length, 1, 'only the entry with sessionId renders the session label');
+  });
+
+  it('escapes HTML in prior-goal text and sessionId', () => {
+    const click = {
+      ...liveClickFixture(),
+      goalHistory: [
+        {
+          goal: '<script>alert(1)</script>',
+          amendedAt: '2025-03-01T10:00:00Z',
+          sessionId: 's-"injected"',
+        },
+      ],
+    };
+    const html = buildDetailHtml(click);
+    assert.ok(!html.includes('<script>alert(1)</script>'));
+    assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
+    assert.ok(html.includes('s-&quot;injected&quot;'));
+  });
+
+  it('renders the disclosure on a terminal click with history (audit availability)', () => {
+    const click = {
+      ...liveClickFixture(),
+      status: 'concluded',
+      conclusion: 'shipped',
+      resolvedAt: '2025-03-02T00:00:00Z',
+      goalHistory: [{ goal: 'original', amendedAt: '2025-03-01T10:00:00Z' }],
+    };
+    const html = buildDetailHtml(click);
+    // Both disclosures present, and they are siblings — no nesting.
+    assert.ok(html.includes('<summary>Conclusion</summary>'));
+    assert.ok(html.includes('<summary>Prior goals (1)</summary>'));
+    const iConclusion = html.indexOf('<summary>Conclusion</summary>');
+    const iPrior = html.indexOf('<summary>Prior goals (1)</summary>');
+    // Conclusion is rendered first, Prior goals second — both inside the Details section.
+    assert.ok(iConclusion >= 0 && iPrior >= 0);
+    assert.ok(iConclusion < iPrior, 'Prior goals disclosure follows Conclusion disclosure');
+  });
+});
+
 describe('buildDetailHtml — actions section (D11)', () => {
-  it('shows Park / Conclude / Drop for live clicks', () => {
+  it('shows Park / Conclude / Drop / Amend for live clicks (D2)', () => {
     const click = liveClickFixture();
     const html = buildDetailHtml(click);
     assert.ok(html.includes('data-action="park"'));
     assert.ok(html.includes('data-action="conclude"'));
     assert.ok(html.includes('data-action="drop"'));
+    assert.ok(html.includes('data-action="amend"'), 'live clicks must expose the amend affordance');
     assert.ok(!html.includes('data-action="resume"'));
   });
 
-  it('shows Resume / Conclude / Drop for parked clicks', () => {
+  it('shows Resume / Conclude / Drop for parked clicks and excludes Amend (D2)', () => {
     const click = { ...liveClickFixture(), status: 'parked' };
     const html = buildDetailHtml(click);
     assert.ok(html.includes('data-action="resume"'));
     assert.ok(html.includes('data-action="conclude"'));
     assert.ok(html.includes('data-action="drop"'));
     assert.ok(!html.includes('data-action="park"'));
+    assert.ok(!html.includes('data-action="amend"'), 'parked clicks must NOT expose amend — substrate rejects it');
   });
 
-  it('renders no actions section for terminal clicks (concluded)', () => {
+  it('renders no actions section for terminal clicks (concluded) and no Amend (D2)', () => {
     const click = {
       ...liveClickFixture(),
       status: 'concluded',
@@ -318,9 +482,10 @@ describe('buildDetailHtml — actions section (D11)', () => {
     assert.ok(!html.includes('data-action="resume"'));
     assert.ok(!html.includes('data-action="conclude"'));
     assert.ok(!html.includes('data-action="drop"'));
+    assert.ok(!html.includes('data-action="amend"'), 'concluded clicks must NOT expose amend');
   });
 
-  it('renders no actions section for terminal clicks (dropped)', () => {
+  it('renders no actions section for terminal clicks (dropped) and no Amend (D2)', () => {
     const click = {
       ...liveClickFixture(),
       status: 'dropped',
@@ -329,6 +494,61 @@ describe('buildDetailHtml — actions section (D11)', () => {
     };
     const html = buildDetailHtml(click);
     assert.ok(!html.includes('<h4>Actions</h4>'));
+    assert.ok(!html.includes('data-action="amend"'), 'dropped clicks must NOT expose amend');
+  });
+});
+
+describe('buildAmendConfirmHtml — inline confirm-section (D3, D4, D7, D8)', () => {
+  it('pre-fills the input with the current goal (D4)', () => {
+    const html = buildAmendConfirmHtml('Ship the feature');
+    assert.ok(html.includes('value="Ship the feature"'));
+  });
+
+  it('escapes HTML-dangerous characters in the pre-filled value', () => {
+    const html = buildAmendConfirmHtml('<script>"alert"</script>');
+    assert.ok(!html.includes('<script>"alert"</script>'));
+    assert.ok(html.includes('value="&lt;script&gt;&quot;alert&quot;&lt;/script&gt;"'));
+  });
+
+  it('renders submit disabled when pre-fill is empty (D8)', () => {
+    const html = buildAmendConfirmHtml('');
+    // With an empty trim the submit starts disabled — the JS input handler
+    // keeps it in sync thereafter, but the rendered HTML must be truthful.
+    assert.ok(/id="confirm-submit" disabled/.test(html));
+  });
+
+  it('renders submit disabled when pre-fill is whitespace-only (D8)', () => {
+    const html = buildAmendConfirmHtml('   \t  ');
+    assert.ok(/id="confirm-submit" disabled/.test(html));
+  });
+
+  it('renders submit enabled when pre-fill is non-empty after trim', () => {
+    const html = buildAmendConfirmHtml('Ship it');
+    // The submit must NOT carry a disabled attribute on the initial render
+    // when the trimmed pre-fill is non-empty.
+    assert.ok(!/id="confirm-submit" disabled/.test(html));
+    assert.ok(html.includes('id="confirm-submit"'));
+  });
+
+  it('renders an Amend submit label, a Cancel button, and an inline error slot', () => {
+    const html = buildAmendConfirmHtml('anything');
+    assert.ok(html.includes('>Amend</button>'));
+    assert.ok(html.includes('id="confirm-abort"'));
+    assert.ok(html.includes('id="confirm-error"'));
+  });
+
+  it('renders a "New goal" label for the input', () => {
+    const html = buildAmendConfirmHtml('anything');
+    assert.ok(html.includes('<label>New goal</label>'));
+  });
+
+  it('tolerates a null/undefined currentGoal by treating it as empty', () => {
+    const htmlNull = buildAmendConfirmHtml(null);
+    const htmlUndef = buildAmendConfirmHtml(undefined);
+    assert.ok(/value=""/.test(htmlNull));
+    assert.ok(/value=""/.test(htmlUndef));
+    assert.ok(/id="confirm-submit" disabled/.test(htmlNull));
+    assert.ok(/id="confirm-submit" disabled/.test(htmlUndef));
   });
 });
 

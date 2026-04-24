@@ -32,7 +32,7 @@
       outline: 1px solid var(--cyan, #7dcfff);
     }
     .tree-row:hover:not(.selected) { background: rgba(47, 53, 73, 0.3); }
-    .tree-toggle, .tree-focus, .tree-disclose, .tree-copy {
+    .tree-toggle, .tree-focus, .tree-disclose, .tree-copy, .tree-history {
       background: transparent; border: 1px solid var(--border, #3b4261);
       color: var(--text-dim, #565f89);
       padding: 0 0.3rem;
@@ -42,6 +42,12 @@
     .tree-toggle:hover, .tree-focus:hover, .tree-disclose:hover, .tree-copy:hover {
       color: var(--text, #c0caf5);
       background: var(--surface2, #2f3549);
+    }
+    /* The history marker is presence-only — not interactive (D20). */
+    .tree-history {
+      cursor: default; display: inline-flex;
+      align-items: center; justify-content: center;
+      pointer-events: auto; /* keep the title tooltip reachable */
     }
     .tree-toggle.leaf { visibility: hidden; }
     .tree-goal { cursor: pointer; padding: 0 0.25rem; }
@@ -79,6 +85,12 @@
       border-left: 2px solid var(--border, #3b4261);
       white-space: pre-wrap; word-break: break-word;
       font-size: 0.85rem;
+    }
+    .prior-goal-entry { margin-top: 0.5rem; }
+    .prior-goal-entry:first-child { margin-top: 0.35rem; }
+    .prior-goal-meta {
+      font-size: 0.75rem; opacity: 0.6;
+      margin-top: 0.2rem; padding-left: 0.75rem;
     }
 
     .link-row {
@@ -335,6 +347,33 @@
       return out;
     }
 
+    /**
+     * Predicate: does this click carry any prior-goal history? Absent field and
+     * empty array both resolve to false — the substrate stores "no amends yet"
+     * as either shape. Used by the detail-pane disclosure and the tree-row
+     * marker so both affordances share a single derivation rule.
+     */
+    function hasGoalHistory(click) {
+      return Array.isArray(click?.goalHistory) && click.goalHistory.length > 0;
+    }
+
+    /**
+     * Descriptor for the tree-row "has prior goals" marker (D18–D21). Returns
+     * null when the marker should not render; otherwise returns the minimal
+     * shape the DOM builder needs — className, visual glyph, and a title tooltip
+     * that carries the exact count. Presence-only by design: the rendered span
+     * carries no click handler (D20).
+     */
+    function treeHistoryMarkerProps(click) {
+      if (!hasGoalHistory(click)) return null;
+      const count = click.goalHistory.length;
+      return {
+        className: 'tree-history',
+        text: '✎',
+        title: `Has prior goals (${count})`,
+      };
+    }
+
     // ── URL handling ───────────────────────────────────────────────────
 
     function currentUrlParams() {
@@ -504,6 +543,16 @@
         row.appendChild(disc);
       }
 
+      // "Has prior goals" marker — presence-only hint, non-interactive (D18–D21).
+      const histProps = treeHistoryMarkerProps(node.click);
+      if (histProps) {
+        const hist = document.createElement('span');
+        hist.className = histProps.className;
+        hist.textContent = histProps.text;
+        hist.title = histProps.title;
+        row.appendChild(hist);
+      }
+
       // Goal (click to select)
       const goal = document.createElement('span');
       goal.className = 'tree-goal';
@@ -648,6 +697,19 @@
         html += `<div class="detail-conclusion">${escHtml(click.conclusion)}</div>`;
         html += `</details>`;
       }
+      if (hasGoalHistory(click)) {
+        const history = click.goalHistory;
+        html += `<details class="prior-goals" style="margin-top:0.5rem"><summary>Prior goals (${history.length})</summary>`;
+        for (const entry of history) {
+          html += `<div class="prior-goal-entry">`;
+          html += `<div class="detail-conclusion">${escHtml(entry.goal)}</div>`;
+          html += `<div class="prior-goal-meta">${escHtml(fmtDate(entry.amendedAt))}`;
+          if (entry.sessionId) html += ` · session: <code>${escHtml(entry.sessionId)}</code>`;
+          html += `</div>`;
+          html += `</div>`;
+        }
+        html += `</details>`;
+      }
       html += `</div>`;
 
       // Lifecycle actions (D11)
@@ -658,6 +720,7 @@
           html += `<button class="btn" data-action="park">Park</button>`;
           html += `<button class="btn btn--success" data-action="conclude">Conclude…</button>`;
           html += `<button class="btn btn--danger" data-action="drop">Drop…</button>`;
+          html += `<button class="btn" data-action="amend">Amend…</button>`;
         } else if (click.status === 'parked') {
           html += `<button class="btn" data-action="resume">Resume</button>`;
           html += `<button class="btn btn--success" data-action="conclude">Conclude…</button>`;
@@ -798,6 +861,7 @@
           else if (action === 'resume') doLifecycle('resume', click.id, btn);
           else if (action === 'conclude') showTerminalConfirm('conclude', click.id);
           else if (action === 'drop') showTerminalConfirm('drop', click.id);
+          else if (action === 'amend') showAmendConfirm(click.id, click.goal);
           else if (action === 'addlink') doAddLink(click.id, btn);
           else if (action === 'unlink') doUnlink(
             btn.dataset.source,
@@ -863,6 +927,64 @@
         submit.textContent = 'Saving…';
         try {
           await api('POST', `/api/click/${action}`, { id, conclusion });
+          await refreshAll(true);
+        } catch (e) {
+          showError(errEl, e.message);
+          submit.disabled = false;
+          submit.textContent = confirmLabel;
+        }
+      });
+    }
+
+    /**
+     * Pure template for the amend confirm-section (D3, D4, D7, D8). Pre-fills
+     * the input's `value` with the current goal and bakes the submit's initial
+     * `disabled` state from the trimmed pre-fill — so the rendered HTML is
+     * truthful without needing runtime JS mutation. The input handler below
+     * keeps the disabled state in sync on subsequent keystrokes.
+     */
+    function buildAmendConfirmHtml(currentGoal) {
+      const confirmLabel = 'Amend';
+      const prefill = currentGoal ?? '';
+      const startDisabled = prefill.trim().length === 0;
+      return `
+        <div class="confirm-section">
+          <label>New goal</label>
+          <input type="text" id="confirm-input" value="${escAttr(prefill)}" placeholder="Refine the goal">
+          <button class="btn" id="confirm-submit"${startDisabled ? ' disabled' : ''}>${confirmLabel}</button>
+          <button class="btn" id="confirm-abort">Cancel</button>
+          <div class="error-msg" id="confirm-error" style="display:none"></div>
+        </div>`;
+    }
+
+    function showAmendConfirm(id, currentGoal) {
+      const area = document.getElementById('confirm-area');
+      if (!area) return;
+      const confirmLabel = 'Amend';
+
+      area.innerHTML = buildAmendConfirmHtml(currentGoal);
+
+      const input = document.getElementById('confirm-input');
+      const submit = document.getElementById('confirm-submit');
+      const abort = document.getElementById('confirm-abort');
+      const errEl = document.getElementById('confirm-error');
+
+      input.addEventListener('input', () => {
+        submit.disabled = !input.value.trim();
+      });
+
+      abort.addEventListener('click', () => {
+        area.innerHTML = '';
+      });
+
+      submit.addEventListener('click', async () => {
+        const goal = input.value.trim();
+        if (!goal) return;
+        submit.disabled = true;
+        submit.textContent = 'Saving…';
+        try {
+          // D6: send only { id, goal } — no fabricated sessionId.
+          await api('POST', '/api/click/amend', { id, goal });
           await refreshAll(true);
         } catch (e) {
           showError(errEl, e.message);
