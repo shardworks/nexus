@@ -20,9 +20,133 @@ import type {
   SessionProviderConfig,
   SessionProviderResult,
   SessionChunk,
+  SessionTerminationTag,
 } from '@shardworks/animator-apparatus';
 
 import { launchDetached } from './detached.ts';
+
+// ── Rate-limit detection ────────────────────────────────────────────
+
+/**
+ * Exit code the claude CLI reports (at least sometimes) when the Anthropic
+ * API returns a rate-limit error. The CLI does not document its exit
+ * codes, so we treat a distinguished non-zero code as a signal and keep
+ * it tunable in one place.
+ *
+ * Used as a last-resort branch: NDJSON result inspection fires first,
+ * stderr pattern fires second, and the exit code catches the case where
+ * the babysitter has no structural signal to go on.
+ */
+export const RATE_LIMIT_EXIT_CODE = 7;
+
+/**
+ * Regex that matches common rate-limit phrasings in claude CLI stderr
+ * output. The CLI's stderr text is not a stable contract — the regex is
+ * deliberately forgiving (case-insensitive, alternate phrasings) rather
+ * than narrow. If none of the branches fire, the cascade falls through
+ * to the exit-code branch.
+ */
+export const RATE_LIMIT_STDERR_PATTERN =
+  /(rate[-\s]?limit|429\b|usage[-\s]?limit|quota[-\s]?exceeded|too\s+many\s+requests)/i;
+
+/**
+ * Detect a rate-limit signature on an NDJSON message from the claude
+ * `--output-format stream-json` stream.
+ *
+ * Looks for:
+ *  - `msg.subtype` === 'error_max_turns' or any value containing the
+ *    substring `rate_limit` / `rate-limit`
+ *  - `msg.is_error` true with `msg.error` / `msg.message.error` text
+ *    matching the stderr pattern
+ *  - `msg.type` === 'result' whose `result` field contains a rate-limit
+ *    phrase (claude's CLI sometimes surfaces provider errors there)
+ *
+ * The wire shape of claude's error NDJSON is not formally documented, so
+ * the branches are generous — any positive match returns a tag. Returns
+ * null when the message does not indicate rate limiting.
+ */
+export function detectRateLimitFromNdjson(
+  msg: Record<string, unknown>,
+): SessionTerminationTag | null {
+  const subtype = typeof msg.subtype === 'string' ? msg.subtype : undefined;
+  if (subtype && /rate[-_ ]?limit/i.test(subtype)) {
+    return {
+      kind: 'rate-limit',
+      source: 'ndjson-result',
+      detail: `NDJSON subtype: ${subtype}`,
+    };
+  }
+
+  if (msg.is_error === true) {
+    const errText =
+      (typeof msg.error === 'string' ? msg.error : undefined) ??
+      (typeof (msg as { message?: { error?: unknown } }).message?.error === 'string'
+        ? ((msg as { message: { error: string } }).message.error)
+        : undefined);
+    if (errText && RATE_LIMIT_STDERR_PATTERN.test(errText)) {
+      return {
+        kind: 'rate-limit',
+        source: 'ndjson-result',
+        detail: errText.slice(0, 200),
+      };
+    }
+  }
+
+  if (msg.type === 'result') {
+    const resultText = typeof msg.result === 'string' ? msg.result : undefined;
+    if (resultText && RATE_LIMIT_STDERR_PATTERN.test(resultText)) {
+      return {
+        kind: 'rate-limit',
+        source: 'ndjson-result',
+        detail: resultText.slice(0, 200),
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Detect a rate-limit signature in a block of stderr text.
+ *
+ * Returns a tag when the pattern matches, null otherwise. The detail
+ * carries a bounded excerpt of the matching line so operators can
+ * confirm the detection in logs without the Animator forwarding the
+ * full stderr buffer.
+ */
+export function detectRateLimitFromStderr(
+  chunk: string,
+): SessionTerminationTag | null {
+  const match = chunk.match(RATE_LIMIT_STDERR_PATTERN);
+  if (!match) return null;
+  // Capture the line around the match for context — truncated to keep
+  // the tag payload small.
+  const lines = chunk.split('\n');
+  const hit = lines.find((l) => RATE_LIMIT_STDERR_PATTERN.test(l)) ?? match[0];
+  return {
+    kind: 'rate-limit',
+    source: 'stderr-pattern',
+    detail: hit.slice(0, 200),
+  };
+}
+
+/**
+ * Detect a rate-limit signature from a process exit code.
+ *
+ * Used as the last branch of the cascade — the NDJSON and stderr
+ * observers fire first. Returns a tag only for the one distinguished
+ * code; generic non-zero codes surface as plain failures.
+ */
+export function detectRateLimitFromExitCode(
+  exitCode: number,
+): SessionTerminationTag | null {
+  if (exitCode !== RATE_LIMIT_EXIT_CODE) return null;
+  return {
+    kind: 'rate-limit',
+    source: 'exit-code',
+    detail: `claude exited with distinguished rate-limit exit code ${exitCode}`,
+  };
+}
 
 // ── Output extraction ───────────────────────────────────────────────
 
@@ -131,6 +255,13 @@ export interface StreamJsonResult {
   providerSessionId?: string;
   /** Process signal name if killed by signal (e.g. 'SIGTERM'). */
   signal?: string;
+  /**
+   * Structured termination tag. Populated by the babysitter's detection
+   * cascade (NDJSON parse → stderr pattern → exit-code) when the
+   * session terminated under a detectable condition (today: rate
+   * limiting).
+   */
+  terminationTag?: SessionTerminationTag;
 }
 
 /**
@@ -148,8 +279,23 @@ export function parseStreamJsonMessage(
     costUsd?: number;
     tokenUsage?: StreamJsonResult['tokenUsage'];
     providerSessionId?: string;
+    /**
+     * First rate-limit signal observed on the NDJSON stream. Kept
+     * first-wins so the cascade source is auditable. The babysitter
+     * promotes this onto the final StreamJsonResult when present.
+     */
+    terminationTag?: SessionTerminationTag;
   },
 ): SessionChunk[] {
+  // Detection first (first-wins) — examine every NDJSON message the
+  // claude CLI emits. An error or `result`-with-error message may carry
+  // a rate-limit signature even when we otherwise just pass the message
+  // through to the transcript.
+  if (!acc.terminationTag) {
+    const tag = detectRateLimitFromNdjson(msg);
+    if (tag) acc.terminationTag = tag;
+  }
+
   const chunks: SessionChunk[] = [];
 
   if (msg.type === 'assistant') {

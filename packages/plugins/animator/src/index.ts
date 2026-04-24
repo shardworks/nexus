@@ -23,6 +23,10 @@ export {
   type SessionCost,
   type SessionDoc,
   type AnimatorConfig,
+  type AnimatorRateLimitBackoffConfig,
+  type AnimatorStatusDoc,
+  type AnimatorPauseReason,
+  type SessionTerminationTag,
   // Provider types (for implementors)
   type AnimatorSessionProvider,
   type SessionProviderConfig,

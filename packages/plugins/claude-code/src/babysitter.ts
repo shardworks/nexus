@@ -36,8 +36,12 @@ import {
   processNdjsonBuffer,
   parseStreamJsonMessage,
   extractFinalAssistantText,
+  detectRateLimitFromStderr,
+  detectRateLimitFromExitCode,
   type StreamJsonResult,
 } from './index.ts';
+
+import type { SessionTerminationTag } from '@shardworks/animator-apparatus';
 
 // ── Config types ────────────────────────────────────────────────────────
 
@@ -562,6 +566,64 @@ export async function reportRunning(
 }
 
 /**
+ * Resolve the terminal status and error text for a terminated session,
+ * giving rate-limit detection precedence over the generic exit-code
+ * mapping.
+ *
+ * Cascade order (D5):
+ *   1. A `'cancelled'` override (SIGTERM path) — short-circuits.
+ *   2. A `terminationTag` already carried on the StreamJsonResult —
+ *      set by the NDJSON-level cascade (first-wins across NDJSON and
+ *      stderr observations in the babysitter).
+ *   3. A distinguished rate-limit exit code (RATE_LIMIT_EXIT_CODE).
+ *   4. Generic exit-code mapping (0 → completed, non-zero → failed).
+ *
+ * Returns both the payload status, a human-readable error string (only
+ * populated for the failed branches), and the tag that informed the
+ * decision (if any). The tag is forwarded to the guild so the Animator's
+ * back-off machine can disambiguate rate-limit terminations without
+ * pattern-matching on error text.
+ */
+export function resolveTerminalStatus(
+  result: StreamJsonResult,
+  statusOverride?: 'cancelled',
+): { status: 'completed' | 'failed' | 'cancelled' | 'rate-limited'; error?: string; terminationTag?: SessionTerminationTag } {
+  if (statusOverride === 'cancelled') {
+    return { status: 'cancelled' };
+  }
+
+  // Second priority: a structural tag observed by the NDJSON/stderr
+  // cascades. Fire even on exit code 0 because claude may emit the
+  // rate-limit signal and still exit cleanly.
+  if (result.terminationTag) {
+    return {
+      status: 'rate-limited',
+      error: result.terminationTag.detail ?? `Anima provider reported a rate limit (source: ${result.terminationTag.source})`,
+      terminationTag: result.terminationTag,
+    };
+  }
+
+  // Third priority: distinguished exit code.
+  const exitCodeTag = detectRateLimitFromExitCode(result.exitCode);
+  if (exitCodeTag) {
+    return {
+      status: 'rate-limited',
+      error: exitCodeTag.detail,
+      terminationTag: exitCodeTag,
+    };
+  }
+
+  if (result.exitCode === 0) {
+    return { status: 'completed' };
+  }
+
+  return {
+    status: 'failed',
+    error: `claude exited with code ${result.exitCode}`,
+  };
+}
+
+/**
  * Report the final session result to the guild via the session-record tool.
  *
  * If the guild is unreachable, writes the payload to the DLQ.
@@ -575,20 +637,21 @@ export async function reportResult(
 ): Promise<void> {
   const route = toolNameToRoute('session-record');
   const url = `${config.guildToolUrl}${route}`;
-  const status = statusOverride ?? (result.exitCode === 0 ? 'completed' : 'failed');
+  const resolved = resolveTerminalStatus(result, statusOverride);
   const output = extractFinalAssistantText(transcript);
 
   const payload = {
     sessionId: config.sessionId,
-    status,
+    status: resolved.status,
     exitCode: result.exitCode,
     signal: result.signal,
-    error: status === 'failed' ? `claude exited with code ${result.exitCode}` : undefined,
+    error: resolved.error,
     costUsd: result.costUsd,
     tokenUsage: result.tokenUsage,
     output,
     providerSessionId: result.providerSessionId,
     transcript,
+    ...(resolved.terminationTag ? { terminationTag: resolved.terminationTag } : {}),
   };
 
   try {
@@ -728,8 +791,19 @@ export async function runBabysitter(
     }
     claudeProc.stdin!.end();
 
-    // Forward claude's stderr through the babysitter's redirected stderr
+    // Sample claude's stderr for rate-limit phrasing (narrow: pattern
+    // detection only, not general forwarding to the guild) then forward
+    // the raw bytes to the babysitter's redirected stderr log.
+    //
+    // First-wins: the NDJSON cascade runs inside parseStreamJsonMessage,
+    // so this branch only populates the tag when nothing more structured
+    // fired. That keeps the stderr pattern from masking the more
+    // informative NDJSON `source: 'ndjson-result'` tag in the common case.
     claudeProc.stderr?.on('data', (chunk: Buffer) => {
+      if (!acc.terminationTag) {
+        const tag = detectRateLimitFromStderr(chunk.toString());
+        if (tag) acc.terminationTag = tag;
+      }
       process.stderr.write(chunk);
     });
 
@@ -788,6 +862,12 @@ export async function runBabysitter(
       costUsd?: number;
       tokenUsage?: StreamJsonResult['tokenUsage'];
       providerSessionId?: string;
+      /**
+       * First rate-limit signal captured from any source (NDJSON result
+       * inspection inside parseStreamJsonMessage, or the stderr pattern
+       * observer above). First-wins preserves the cascade order.
+       */
+      terminationTag?: SessionTerminationTag;
     } = { transcript: [] };
 
     let buffer = '';
@@ -835,6 +915,7 @@ export async function runBabysitter(
       tokenUsage: acc.tokenUsage,
       providerSessionId: acc.providerSessionId,
       signal: exitSignal,
+      ...(acc.terminationTag ? { terminationTag: acc.terminationTag } : {}),
     };
 
     // 8. Report result
