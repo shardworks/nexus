@@ -23,6 +23,21 @@ export interface ReckonerApi {
 
 // ── Context payloads per trigger type (D30) ──────────────────────
 
+/**
+ * Dedupe-identity field present on every Reckoner context payload.
+ *
+ * The triggering writ's `updatedAt` stamp — every Clerk transition bumps
+ * `updatedAt`, so `(writId, triggerType, writUpdatedAt)` is a true
+ * per-transition identity. A CDC replay fires with the same `updatedAt`
+ * and is suppressed by the emitter's idempotency guard; a legitimate
+ * re-visit of the same phase pair gets a fresh `updatedAt` and a fresh
+ * pulse. See `docs/architecture/apparatus/reckoner.md` §"Idempotency
+ * under replay".
+ *
+ * For `QueueDrainedContext`, this carries the triggering (terminal)
+ * writ's `updatedAt` alongside the existing `lastTerminalWritId`.
+ */
+
 /** Context payload for `reckoner.writ-stuck`. */
 export interface WritStuckContext {
   /** Two-segment short id (`w-abc123`). */
@@ -33,6 +48,8 @@ export interface WritStuckContext {
   writTitle: string;
   /** Writ type. */
   writType: string;
+  /** Dedupe-identity: triggering writ's `updatedAt` at emit time. */
+  writUpdatedAt: string;
   /** Stuck cause written by Spider, when available. */
   stuckCause?: string;
   /** Spider-reported retryable flag. */
@@ -49,6 +66,8 @@ export interface WritFailedContext {
   writTitle: string;
   /** Writ type. */
   writType: string;
+  /** Dedupe-identity: triggering writ's `updatedAt` at emit time. */
+  writUpdatedAt: string;
   /** Resolution string recorded on the failed transition. */
   resolution?: string;
   /** Short ids of failed child writs referenced by the resolution, when parseable. */
@@ -61,6 +80,12 @@ export interface QueueDrainedContext {
   drainedAt: string;
   /** Id of the writ whose terminal transition brought the queue to drain. */
   lastTerminalWritId: string;
+  /**
+   * Dedupe-identity: the triggering (terminal) writ's `updatedAt` at
+   * emit time. Combined with `lastTerminalWritId`, this identifies the
+   * drain-evaluating transition uniquely across a CDC replay.
+   */
+  writUpdatedAt: string;
 }
 
 // ── Trigger type ids ────────────────────────────────────────────

@@ -267,6 +267,21 @@ Within a transaction, multiple writes to the same document produce a single CDC 
 
 Phase 2 handlers see exactly one event per document. They never see intermediate states.
 
+> **⚠️ Downstream-emitter contract.** Phase 2 today delivers each
+> coalesced post-commit event to its registered watchers **exactly
+> once per transaction**. Downstream pulse emitters rely on this to
+> keep their own observable output idempotent without a cross-process
+> dedupe store. The [Reckoner](./reckoner.md#idempotency-under-replay)
+> is the current example: it uses the triggering writ's `updatedAt` as
+> a dedupe identity inside `pulse.context` so that a *same-transition*
+> replay still de-duplicates, but that fallback is defence-in-depth on
+> top of the exactly-once invariant — not a substitute for it. Any
+> future relaxation of Phase 2 delivery semantics (at-least-once
+> delivery, durable outbox, cross-process worker distribution, etc.)
+> **must** audit every registered downstream emitter for idempotency
+> before the relaxation lands. The list today is short (the Reckoner);
+> it will grow, and the audit step grows with it.
+
 ---
 
 ## Transaction Model

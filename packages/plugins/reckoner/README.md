@@ -62,6 +62,7 @@ interface WritStuckContext {
   writPhase: 'stuck';
   writTitle: string;
   writType: string;
+  writUpdatedAt: string; // dedupe identity (see "Idempotency under replay")
   stuckCause?: string;
   retryable?: boolean;
   detail?: string;
@@ -71,6 +72,7 @@ interface WritFailedContext {
   writShortId: string;
   writTitle: string;
   writType: string;
+  writUpdatedAt: string; // dedupe identity
   resolution?: string;
   childFailures?: string[];
 }
@@ -78,11 +80,15 @@ interface WritFailedContext {
 interface QueueDrainedContext {
   drainedAt: string;
   lastTerminalWritId: string;
+  writUpdatedAt: string; // dedupe identity — triggering writ's updatedAt
 }
 ```
 
 Channels (e.g. the Discord kit) use these payloads to render richer
 notifications without having to re-parse the pulse's plain-text summary.
+The `writUpdatedAt` field records the triggering transition's `updatedAt`
+stamp so the emitter's idempotency guard can detect same-transition
+replays (see "Idempotency under replay" below).
 
 ---
 
@@ -113,6 +119,15 @@ notifications without having to re-parse the pulse's plain-text summary.
   produce pulses for them.
 - **No dedupe on drain.** Multiple terminal transitions in rapid
   succession may each emit a drain pulse. This is an accepted MVP cost.
+- **Idempotent under replay.** Every emission site is routed through a
+  persisted-lookup guard: before each `lattice.emit()` the observer
+  queries the `lattice/pulses` book for a prior pulse matching the
+  `(writId, triggerType, writUpdatedAt)` identity (or
+  `(lastTerminalWritId, writUpdatedAt)` for drain) and skips the emit
+  if one is already present. Because the check hits the persisted
+  book, the guarantee survives a process restart. See
+  [`docs/architecture/apparatus/reckoner.md`](../../../docs/architecture/apparatus/reckoner.md)
+  §"Idempotency under replay" for the full contract.
 
 ---
 

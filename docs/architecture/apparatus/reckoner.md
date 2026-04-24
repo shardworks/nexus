@@ -98,7 +98,8 @@ interface WritStuckContext {
   writPhase: 'stuck';
   writTitle: string;
   writType: string;
-  stuckCause?: string;   // from status.spider
+  writUpdatedAt: string;      // dedupe identity — see "Idempotency under replay"
+  stuckCause?: string;        // from status.spider
   retryable?: boolean;
   detail?: string;
 }
@@ -107,6 +108,7 @@ interface WritFailedContext {
   writShortId: string;
   writTitle: string;
   writType: string;
+  writUpdatedAt: string;      // dedupe identity — see "Idempotency under replay"
   resolution?: string;        // the writ's resolution text
   childFailures?: string[];   // parsed short-ids of cascaded leaf causes
 }
@@ -114,6 +116,7 @@ interface WritFailedContext {
 interface QueueDrainedContext {
   drainedAt: string;
   lastTerminalWritId: string;
+  writUpdatedAt: string;      // dedupe identity — see "Idempotency under replay"
 }
 ```
 
@@ -237,6 +240,67 @@ watcher observes transitions, not state snapshots.
 
 ---
 
+## Idempotency under replay
+
+The Phase 2 observer is idempotent under same-transition replay: a
+duplicated CDC delivery of the same writ transition produces at most
+one pulse row per trigger type, and the guarantee survives a process
+restart.
+
+### Dedupe identity
+
+Every Clerk transition bumps the writ's `updatedAt`, so
+`(writId, triggerType, writUpdatedAt)` is a true per-transition
+identity. A CDC replay fires with the same `updatedAt` and is
+suppressed; a legitimate re-visit of the same phase pair (e.g. stuck →
+open → stuck) carries a fresh `updatedAt` and produces a fresh pulse.
+
+For `reckoner.queue-drained` — which is not scoped to a single writ
+(its `pulse.writId` is `null`) — the identity is
+`(triggerType = reckoner.queue-drained, writId = null,
+lastTerminalWritId, writUpdatedAt)`, where `writUpdatedAt` is the
+triggering terminal writ's own `updatedAt` at evaluation time.
+
+Every Reckoner context payload (`WritStuckContext`, `WritFailedContext`,
+`QueueDrainedContext`) carries a `writUpdatedAt` field that records the
+identifying timestamp so the guard can re-check it after a restart.
+
+### Persisted lookup
+
+Before each `lattice.emit()`, the observer queries the persisted
+`lattice/pulses` book for a prior pulse matching the identity above. The
+lookup narrows on the already-indexed columns (`writId`, `triggerType`)
+and filters the handful of candidates in-process on the `writUpdatedAt`
+field inside `pulse.context`. No new index is required.
+
+Because the check hits the persisted book rather than an in-memory set,
+a restart that replays the same transition still finds the prior pulse
+and suppresses the duplicate.
+
+### Scope
+
+The guard is **emitter-local**: it lives inside the Reckoner observer
+and reads the pulses book directly rather than changing the Lattice's
+`EmitPulseRequest` contract. The Reckoner is the only pulse emitter
+today; promoting the check into `LatticeApi.emit` is a follow-up to be
+earned when a second emitter appears.
+
+The guard runs strictly **after** the existing predicate gating
+(roots-only, `isTerminalStuck`, drain predicate). The predicates decide
+whether a transition is pulse-worthy in principle; the guard decides
+whether this particular delivery of a pulse-worthy transition has
+already been handled.
+
+### Cross-apparatus contract
+
+This invariant depends on the Stacks' Phase 2 exactly-once delivery
+contract for coalesced post-commit events. Any future relaxation on the
+Stacks side (at-least-once delivery, durable outbox, etc.) must audit
+downstream pulse emitters for idempotency before loosening the
+guarantee. The Stacks apparatus doc carries a matching note.
+
+---
+
 ## Configuration
 
 None. The brief's D12 explicitly rules out a configuration surface on the
@@ -262,6 +326,17 @@ Reckoner itself; trigger-gating belongs on the Lattice's delivery side
 - **`reckoner.writ-cancelled`.** Patron-initiated cancellations currently
   produce no pulse. If this proves a gap in practice, adding the fourth
   trigger is a straightforward follow-up.
+- **Idempotency as a cross-apparatus contract.** The "Idempotency under
+  replay" invariant (exactly one pulse row per
+  `(writId, triggerType, writUpdatedAt)` identity, persisted across
+  restart) depends on the Stacks' Phase 2 exactly-once delivery
+  contract for coalesced post-commit events. A future Stacks change
+  that relaxes this (at-least-once, durable outbox, shared-process
+  distribution, etc.) must audit downstream pulse emitters — the
+  Reckoner today, and any future emitter — for idempotency before
+  loosening the invariant. When a second emitter appears, promoting
+  the emitter-local guard into `LatticeApi.emit` (via an explicit
+  `EmitPulseRequest` idempotency key) is the natural follow-up.
 
 ---
 

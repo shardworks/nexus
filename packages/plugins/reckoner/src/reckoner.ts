@@ -21,14 +21,26 @@
  * emit time via `guild().apparatus<ClockworksRetryApi>('clockworks-retry')`.
  * When absent every stuck is terminal from the Reckoner's viewpoint.
  *
+ * Idempotency under CDC replay: every emission site is routed through a
+ * dedupe guard that queries the persisted pulses book for a prior pulse
+ * matching the same `(writId, triggerType, writUpdatedAt)` identity (or
+ * `(lastTerminalWritId, writUpdatedAt)` for drain). If a prior pulse
+ * exists, the emission is skipped. Because the check hits the persisted
+ * book — not an in-memory set — it survives a process restart. See
+ * `docs/architecture/apparatus/reckoner.md` §"Idempotency under replay".
+ *
  * See: docs/architecture/apparatus/reckoner.md
  */
 
 import type { Plugin, StartupContext } from '@shardworks/nexus-core';
 import { guild, shortId } from '@shardworks/nexus-core';
-import type { ReadOnlyBook, StacksApi } from '@shardworks/stacks-apparatus';
+import type {
+  ChangeEvent,
+  ReadOnlyBook,
+  StacksApi,
+} from '@shardworks/stacks-apparatus';
 import type { WritDoc } from '@shardworks/clerk-apparatus';
-import type { LatticeApi } from '@shardworks/lattice-apparatus';
+import type { LatticeApi, PulseDoc } from '@shardworks/lattice-apparatus';
 
 import { isQueueDrained } from './drain.ts';
 import {
@@ -76,6 +88,284 @@ function resolveMaxAttempts(): number | undefined {
   }
 }
 
+// ── Observer helper (exported for unit testing) ────────────────────────
+
+/**
+ * Dependencies the Phase 2 observer needs to evaluate a writ transition.
+ *
+ * Extracted so `handleWritChange` can be invoked directly from unit tests
+ * with the same books / api handles the production observer receives.
+ */
+export interface ReckonerObserverDeps {
+  /** Lattice API — used to emit pulses (after the dedupe guard). */
+  readonly lattice: LatticeApi;
+  /** Read-only handle on `clerk/writs` — drain count reads. */
+  readonly writsBook: ReadOnlyBook<WritDoc>;
+  /** Read-only handle on `spider/rigs` — retry-cap and drain counts. */
+  readonly rigsBook: ReadOnlyBook<RigRow>;
+  /** Read-only handle on `lattice/pulses` — dedupe lookup. */
+  readonly pulsesBook: ReadOnlyBook<PulseDoc>;
+  /**
+   * Resolve the clockworks-retry `maxAttempts` cap (or `undefined` when
+   * clockworks-retry is not installed). Injected for test-time override.
+   */
+  readonly resolveMaxAttempts: () => number | undefined;
+}
+
+/**
+ * Query the pulses book for a prior pulse that matches the dedupe identity
+ * and return true when a match exists. The query hits the indexed columns
+ * (`writId`, `triggerType`) on the book and filters the handful of
+ * candidates in-process on `context.writUpdatedAt`.
+ *
+ * Per-writ pulses key on `(writId, triggerType, writUpdatedAt)`. Drain
+ * pulses key on `(triggerType = reckoner.queue-drained, writId = null)`
+ * narrowed to `(lastTerminalWritId, writUpdatedAt)` inside context.
+ */
+async function alreadyEmitted(
+  pulsesBook: ReadOnlyBook<PulseDoc>,
+  params: {
+    triggerType: string;
+    /** Writ id the pulse is keyed to; `null` for drain pulses. */
+    writId: string | null;
+    /** The triggering writ's `updatedAt` — the dedupe-identity field. */
+    writUpdatedAt: string;
+    /** For drain pulses only: the triggering terminal writ id. */
+    lastTerminalWritId?: string;
+  },
+): Promise<boolean> {
+  const where =
+    params.writId === null
+      ? // Drain pulses always have writId === null. The pulses book
+        // supports 'IS NULL' and, importantly, `writId` is an indexed
+        // column — so this narrows to the small "all drain pulses"
+        // candidate set.
+        ([
+          ['triggerType', '=', params.triggerType],
+          ['writId', 'IS NULL'],
+        ] as const)
+      : ([
+          ['triggerType', '=', params.triggerType],
+          ['writId', '=', params.writId],
+        ] as const);
+
+  const candidates = await pulsesBook.find({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    where: where as any,
+  });
+
+  for (const candidate of candidates) {
+    const ctx = candidate.context as
+      | {
+          writUpdatedAt?: string;
+          lastTerminalWritId?: string;
+        }
+      | undefined;
+    if (!ctx) continue;
+    if (ctx.writUpdatedAt !== params.writUpdatedAt) continue;
+    if (params.lastTerminalWritId !== undefined) {
+      if (ctx.lastTerminalWritId !== params.lastTerminalWritId) continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Build and emit a stuck pulse for `writ`, guarded by the idempotency
+ * check against the pulses book.
+ */
+async function emitStuck(
+  deps: ReckonerObserverDeps,
+  writ: WritDoc,
+): Promise<void> {
+  if (
+    await alreadyEmitted(deps.pulsesBook, {
+      triggerType: TRIGGER_WRIT_STUCK,
+      writId: writ.id,
+      writUpdatedAt: writ.updatedAt,
+    })
+  ) {
+    return;
+  }
+
+  const spiderStatus = writ.status?.spider as SpiderStuckStatus | undefined;
+  const context: WritStuckContext = {
+    writShortId: shortId(writ.id),
+    writPhase: 'stuck',
+    writTitle: writ.title,
+    writType: writ.type,
+    writUpdatedAt: writ.updatedAt,
+    ...(typeof spiderStatus?.stuckCause === 'string' ? { stuckCause: spiderStatus.stuckCause } : {}),
+    ...(typeof spiderStatus?.retryable === 'boolean' ? { retryable: spiderStatus.retryable } : {}),
+    ...(typeof spiderStatus?.detail === 'string' ? { detail: spiderStatus.detail } : {}),
+  };
+  const title = `Writ stuck: ${writ.title}`;
+  const summaryParts: string[] = [
+    `${shortId(writ.id)} ("${writ.title}") is stuck.`,
+  ];
+  if (spiderStatus?.stuckCause) {
+    summaryParts.push(`Cause: ${spiderStatus.stuckCause}.`);
+  }
+  if (spiderStatus?.detail) {
+    summaryParts.push(`Detail: ${spiderStatus.detail}`);
+  }
+  const leafFailures = parseChildFailures(writ.resolution);
+  if (leafFailures.length > 0) {
+    summaryParts.push(
+      `Originated from child ${leafFailures.map(shortId).join(', ')}.`,
+    );
+  }
+  await deps.lattice.emit({
+    source: RECKONER_PLUGIN_ID,
+    triggerType: TRIGGER_WRIT_STUCK,
+    writId: writ.id,
+    title,
+    summary: summaryParts.join(' '),
+    linkUrl: null,
+    context: context as unknown as Record<string, unknown>,
+  });
+}
+
+/** Build and emit a failed pulse for `writ`, guarded by the idempotency check. */
+async function emitFailed(
+  deps: ReckonerObserverDeps,
+  writ: WritDoc,
+): Promise<void> {
+  if (
+    await alreadyEmitted(deps.pulsesBook, {
+      triggerType: TRIGGER_WRIT_FAILED,
+      writId: writ.id,
+      writUpdatedAt: writ.updatedAt,
+    })
+  ) {
+    return;
+  }
+
+  const childFailures = parseChildFailures(writ.resolution);
+  const context: WritFailedContext = {
+    writShortId: shortId(writ.id),
+    writTitle: writ.title,
+    writType: writ.type,
+    writUpdatedAt: writ.updatedAt,
+    ...(typeof writ.resolution === 'string' ? { resolution: writ.resolution } : {}),
+    ...(childFailures.length > 0
+      ? { childFailures: childFailures.map(shortId) }
+      : {}),
+  };
+  const title = `Writ failed: ${writ.title}`;
+  const summaryParts: string[] = [
+    `${shortId(writ.id)} ("${writ.title}") failed.`,
+  ];
+  if (writ.resolution) {
+    summaryParts.push(`Resolution: ${writ.resolution}`);
+  }
+  await deps.lattice.emit({
+    source: RECKONER_PLUGIN_ID,
+    triggerType: TRIGGER_WRIT_FAILED,
+    writId: writ.id,
+    title,
+    summary: summaryParts.join(' '),
+    linkUrl: null,
+    context: context as unknown as Record<string, unknown>,
+  });
+}
+
+/**
+ * Build and emit a queue-drained pulse triggered by `lastTerminal`,
+ * guarded by the idempotency check.
+ */
+async function emitDrained(
+  deps: ReckonerObserverDeps,
+  lastTerminal: WritDoc,
+): Promise<void> {
+  if (
+    await alreadyEmitted(deps.pulsesBook, {
+      triggerType: TRIGGER_QUEUE_DRAINED,
+      writId: null,
+      writUpdatedAt: lastTerminal.updatedAt,
+      lastTerminalWritId: lastTerminal.id,
+    })
+  ) {
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const context: QueueDrainedContext = {
+    drainedAt: now,
+    lastTerminalWritId: lastTerminal.id,
+    writUpdatedAt: lastTerminal.updatedAt,
+  };
+  const title = 'Queue drained';
+  const summary = `Queue drained after ${shortId(lastTerminal.id)} ("${lastTerminal.title}") reached a terminal state.`;
+  await deps.lattice.emit({
+    source: RECKONER_PLUGIN_ID,
+    triggerType: TRIGGER_QUEUE_DRAINED,
+    writId: null,
+    title,
+    summary,
+    linkUrl: null,
+    context: context as unknown as Record<string, unknown>,
+  });
+}
+
+/**
+ * The body of the Phase 2 CDC observer — reacts to a single `ChangeEvent`
+ * on `clerk/writs` and drives the three emission paths (stuck / failed /
+ * drain) with their predicates and idempotency guards.
+ *
+ * Exported so tests can drive the observer directly with synthetic events
+ * and assert the same-transition-twice → exactly-one-pulse invariant
+ * without also exercising Stacks' CDC machinery.
+ */
+export async function handleWritChange(
+  deps: ReckonerObserverDeps,
+  event: ChangeEvent<WritDoc>,
+): Promise<void> {
+  // Only react to phase transitions on existing writs.
+  if (event.type !== 'update') return;
+  const writ = event.entry;
+  const prev = event.prev;
+  if (writ.phase === prev.phase) return;
+
+  const enteredStuck = writ.phase === 'stuck' && prev.phase !== 'stuck';
+  const enteredFailed = writ.phase === 'failed' && prev.phase !== 'failed';
+  const enteredTerminal =
+    writ.phase === 'completed' ||
+    writ.phase === 'failed' ||
+    writ.phase === 'cancelled';
+
+  // Roots-only gate for the per-writ pulses. Children never emit
+  // their own stuck/failed pulses — their cause surfaces in the
+  // parent's resolution.
+  const isRoot = !writ.parentId;
+
+  if (isRoot && enteredStuck) {
+    const spiderStatus = writ.status?.spider as SpiderStuckStatus | undefined;
+    const maxAttempts = deps.resolveMaxAttempts();
+    const rigCount = await deps.rigsBook.count([['writId', '=', writ.id]]);
+    if (isTerminalStuck(spiderStatus, rigCount, maxAttempts)) {
+      await emitStuck(deps, writ);
+    }
+  }
+
+  if (isRoot && enteredFailed) {
+    await emitFailed(deps, writ);
+  }
+
+  // Drain check runs after every terminal transition — even
+  // non-root ones. The drain predicate is independent of the
+  // roots-only gate.
+  if (enteredTerminal) {
+    const drained = await isQueueDrained(deps.writsBook, deps.rigsBook);
+    if (drained) {
+      await emitDrained(deps, writ);
+    }
+  }
+}
+
+// ── Plugin factory ─────────────────────────────────────────────────────
+
 export function createReckoner(): Plugin {
   const triggerTypes = [
     TRIGGER_WRIT_STUCK,
@@ -114,142 +404,22 @@ export function createReckoner(): Plugin {
         // intended degradation path.
         const writsBook: ReadOnlyBook<WritDoc> = stacks.readBook<WritDoc>('clerk', 'writs');
         const rigsBook: ReadOnlyBook<RigRow> = stacks.readBook<RigRow>('spider', 'rigs');
+        const pulsesBook: ReadOnlyBook<PulseDoc> = stacks.readBook<PulseDoc>('lattice', 'pulses');
 
-        // Build and emit a stuck pulse for `writ`.
-        async function emitStuck(writ: WritDoc): Promise<void> {
-          const spiderStatus = writ.status?.spider as SpiderStuckStatus | undefined;
-          const context: WritStuckContext = {
-            writShortId: shortId(writ.id),
-            writPhase: 'stuck',
-            writTitle: writ.title,
-            writType: writ.type,
-            ...(typeof spiderStatus?.stuckCause === 'string' ? { stuckCause: spiderStatus.stuckCause } : {}),
-            ...(typeof spiderStatus?.retryable === 'boolean' ? { retryable: spiderStatus.retryable } : {}),
-            ...(typeof spiderStatus?.detail === 'string' ? { detail: spiderStatus.detail } : {}),
-          };
-          const title = `Writ stuck: ${writ.title}`;
-          const summaryParts: string[] = [
-            `${shortId(writ.id)} ("${writ.title}") is stuck.`,
-          ];
-          if (spiderStatus?.stuckCause) {
-            summaryParts.push(`Cause: ${spiderStatus.stuckCause}.`);
-          }
-          if (spiderStatus?.detail) {
-            summaryParts.push(`Detail: ${spiderStatus.detail}`);
-          }
-          const leafFailures = parseChildFailures(writ.resolution);
-          if (leafFailures.length > 0) {
-            summaryParts.push(
-              `Originated from child ${leafFailures.map(shortId).join(', ')}.`,
-            );
-          }
-          await lattice.emit({
-            source: RECKONER_PLUGIN_ID,
-            triggerType: TRIGGER_WRIT_STUCK,
-            writId: writ.id,
-            title,
-            summary: summaryParts.join(' '),
-            linkUrl: null,
-            context: context as unknown as Record<string, unknown>,
-          });
-        }
-
-        // Build and emit a failed pulse for `writ`.
-        async function emitFailed(writ: WritDoc): Promise<void> {
-          const childFailures = parseChildFailures(writ.resolution);
-          const context: WritFailedContext = {
-            writShortId: shortId(writ.id),
-            writTitle: writ.title,
-            writType: writ.type,
-            ...(typeof writ.resolution === 'string' ? { resolution: writ.resolution } : {}),
-            ...(childFailures.length > 0
-              ? { childFailures: childFailures.map(shortId) }
-              : {}),
-          };
-          const title = `Writ failed: ${writ.title}`;
-          const summaryParts: string[] = [
-            `${shortId(writ.id)} ("${writ.title}") failed.`,
-          ];
-          if (writ.resolution) {
-            summaryParts.push(`Resolution: ${writ.resolution}`);
-          }
-          await lattice.emit({
-            source: RECKONER_PLUGIN_ID,
-            triggerType: TRIGGER_WRIT_FAILED,
-            writId: writ.id,
-            title,
-            summary: summaryParts.join(' '),
-            linkUrl: null,
-            context: context as unknown as Record<string, unknown>,
-          });
-        }
-
-        async function emitDrained(lastTerminal: WritDoc): Promise<void> {
-          const now = new Date().toISOString();
-          const context: QueueDrainedContext = {
-            drainedAt: now,
-            lastTerminalWritId: lastTerminal.id,
-          };
-          const title = 'Queue drained';
-          const summary = `Queue drained after ${shortId(lastTerminal.id)} ("${lastTerminal.title}") reached a terminal state.`;
-          await lattice.emit({
-            source: RECKONER_PLUGIN_ID,
-            triggerType: TRIGGER_QUEUE_DRAINED,
-            writId: null,
-            title,
-            summary,
-            linkUrl: null,
-            context: context as unknown as Record<string, unknown>,
-          });
-        }
+        const deps: ReckonerObserverDeps = {
+          lattice,
+          writsBook,
+          rigsBook,
+          pulsesBook,
+          resolveMaxAttempts,
+        };
 
         // ── Observer ────────────────────────────────────────────
 
         stacks.watch<WritDoc>(
           'clerk',
           'writs',
-          async (event) => {
-            // Only react to phase transitions on existing writs.
-            if (event.type !== 'update') return;
-            const writ = event.entry;
-            const prev = event.prev;
-            if (writ.phase === prev.phase) return;
-
-            const enteredStuck = writ.phase === 'stuck' && prev.phase !== 'stuck';
-            const enteredFailed = writ.phase === 'failed' && prev.phase !== 'failed';
-            const enteredTerminal =
-              writ.phase === 'completed' ||
-              writ.phase === 'failed' ||
-              writ.phase === 'cancelled';
-
-            // Roots-only gate for the per-writ pulses. Children never emit
-            // their own stuck/failed pulses — their cause surfaces in the
-            // parent's resolution.
-            const isRoot = !writ.parentId;
-
-            if (isRoot && enteredStuck) {
-              const spiderStatus = writ.status?.spider as SpiderStuckStatus | undefined;
-              const maxAttempts = resolveMaxAttempts();
-              const rigCount = await rigsBook.count([['writId', '=', writ.id]]);
-              if (isTerminalStuck(spiderStatus, rigCount, maxAttempts)) {
-                await emitStuck(writ);
-              }
-            }
-
-            if (isRoot && enteredFailed) {
-              await emitFailed(writ);
-            }
-
-            // Drain check runs after every terminal transition — even
-            // non-root ones. The drain predicate is independent of the
-            // roots-only gate.
-            if (enteredTerminal) {
-              const drained = await isQueueDrained(writsBook, rigsBook);
-              if (drained) {
-                await emitDrained(writ);
-              }
-            }
-          },
+          (event) => handleWritChange(deps, event),
           { failOnError: false },
         );
       },
