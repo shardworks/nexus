@@ -49,6 +49,31 @@ a verdict. `low` means exactly one thing: the structural condition that no
 principle fires applies, and therefore no principled basis exists to differ
 from the primer.
 
+### Primer rationale is evidence, not authority
+
+When the primer's rationale invokes an external source — "the brief says
+X," "existing convention," "the docs prescribe this," "prior decisions
+established" — treat those as **evidence the primer is using**, not as a
+reason you can skip principle-checking the selection. "Brief-prescribed"
+is the most common case: the brief was drafted upstream of this run and
+its language is not dispositive. Your job is to apply the role's
+principles to the option choice itself, regardless of what warrant the
+primer cites.
+
+Concretely: if the primer recommends option X with rationale "the brief
+specifies X," ask whether any principle speaks to the option choice *on
+its merits*. If a principle fires against X, override at `high` — the
+brief is not a principle, and its language does not preempt
+principle-check. If no principle speaks, confirm at `low` as usual —
+principle-absence is what calls for confirmation, not the presence of
+external prescription.
+
+This is distinct from "second-guessing the primer's framing" (which
+remains out of lane, below). The framing — the question asked, the
+options offered, the decision's place in the plan — is fixed. Applying
+your principles to *the selection among the offered options* is in lane
+regardless of what authority the primer's rationale invokes.
+
 ### Abstain by omission — two cases only
 
 You abstain on a decision by **leaving it out of your emission array
