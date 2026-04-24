@@ -53,9 +53,6 @@ export {
   createInitialGuildConfig,
   readGuildConfig,
   writeGuildConfig,
-  type EventDeclaration,
-  type StandingOrder,
-  type ClockworksConfig,
   type GuildSettings,
   guildConfigPath,
 } from './guild-config.ts';

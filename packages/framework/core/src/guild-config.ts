@@ -1,29 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-/** A custom event declaration in guild.json clockworks.events. */
-export interface EventDeclaration {
-  /** Human-readable description of what this event means. */
-  description?: string;
-  /** Optional payload schema hint (not enforced in Phase 1). */
-  schema?: Record<string, string>;
-}
-
-
-/** A standing order — a registered response to an event. */
-export type StandingOrder =
-  | { on: string; run: string }
-  | { on: string; summon: string; prompt?: string }
-  | { on: string; brief: string };
-
-/** The clockworks configuration block in guild.json. */
-export interface ClockworksConfig {
-  /** Custom event declarations. */
-  events?: Record<string, EventDeclaration>;
-  /** Standing orders — event → action mappings. */
-  standingOrders?: StandingOrder[];
-}
-
 /** Guild-level settings — operational flags and preferences. */
 export interface GuildSettings {
   /**
@@ -46,6 +23,11 @@ export interface GuildSettings {
  * training content) are declared by plugins and discovered dynamically at runtime.
  * Framework-level keys (`name`, `nexus`, `plugins`, `settings`) are defined here;
  * all other top-level keys are plugin configuration sections, keyed by plugin id.
+ *
+ * Plugin-owned config sections (e.g. `clockworks?`, `lattice?`) are contributed
+ * via `declare module '@shardworks/nexus-core'` from the owning apparatus
+ * package. GuildConfig is an open interface — anything a plugin augments onto
+ * it is visible at every call site that imports this type.
  */
 export interface GuildConfig {
   /** Guild name — used as the guildhall npm package name. */
@@ -54,8 +36,6 @@ export interface GuildConfig {
   nexus: string;
   /** Installed plugin ids (derived from npm package names). Always present; starts empty. */
   plugins: string[];
-  /** Clockworks configuration — events, standing orders. */
-  clockworks?: ClockworksConfig;
   /** Guild-level settings — operational flags and preferences. Includes default model. */
   settings?: GuildSettings;
 }
