@@ -14,7 +14,6 @@
   var sortDir = 'desc';
   var configData = null;
   var currentStatusFilter = '';
-  var writLookup = {};
   var sessionPollTimer = null;
   var selectedTemplateName = null;
   var rigListPollTimer = null;
@@ -140,13 +139,6 @@
       // 'result' messages are ignored
     }
     return lines.join('\n');
-  }
-
-  function buildWritLookup(writs) {
-    writLookup = {};
-    for (var i = 0; i < writs.length; i++) {
-      writLookup[writs[i].id] = writs[i];
-    }
   }
 
   function stopSessionPoll() {
@@ -402,12 +394,8 @@
       rigUrl += '&status=' + encodeURIComponent(currentStatusFilter);
     }
 
-    var rigPromise = fetch(rigUrl).then(function (r) { return r.json(); });
-    var writPromise = fetch('/api/writ/list?limit=100').then(function (r) { return r.json(); });
-
-    Promise.all([rigPromise, writPromise]).then(function (results) {
-      rigs = Array.isArray(results[0]) ? results[0] : [];
-      buildWritLookup(Array.isArray(results[1]) ? results[1] : []);
+    fetch(rigUrl).then(function (r) { return r.json(); }).then(function (result) {
+      rigs = Array.isArray(result) ? result : [];
       renderRigList();
 
       // Re-evaluate whether polling should continue
@@ -495,16 +483,12 @@
       rigUrl += '&status=' + encodeURIComponent(statusFilter);
     }
 
-    var rigPromise = fetch(rigUrl).then(function (r) { return r.json(); });
-    var writPromise = fetch('/api/writ/list?limit=100').then(function (r) { return r.json(); });
-
-    Promise.all([rigPromise, writPromise]).then(function (results) {
-      rigs = Array.isArray(results[0]) ? results[0] : [];
-      buildWritLookup(Array.isArray(results[1]) ? results[1] : []);
+    fetch(rigUrl).then(function (r) { return r.json(); }).then(function (result) {
+      rigs = Array.isArray(result) ? result : [];
       renderRigList();
       startRigListPollIfNeeded();
     }).catch(function (err) {
-      console.error('Failed to fetch rigs/writs:', err);
+      console.error('Failed to fetch rigs:', err);
       rigs = [];
       renderRigList();
     });
@@ -518,9 +502,11 @@
     var dateTo = (document.getElementById('date-to') || {}).value || '';
 
     var filtered = rigs.filter(function (rig) {
-      // WritId/writ title filter (case-insensitive)
+      // WritId/writ title filter (case-insensitive). Writ title is joined
+      // server-side onto the rig payload as `rig.writTitle` — no separate
+      // writ lookup window. A missing writTitle simply fails to match.
       if (writFilter) {
-        var writTitle = (writLookup[rig.writId] && writLookup[rig.writId].title) || '';
+        var writTitle = rig.writTitle || '';
         var matchesId = (rig.writId || '').toLowerCase().includes(writFilter.toLowerCase());
         var matchesTitle = writTitle.toLowerCase().includes(writFilter.toLowerCase());
         if (!matchesId && !matchesTitle) return false;
@@ -627,7 +613,8 @@
     tr.appendChild(statusTd);
 
     // Cell 2: Writ title (rig-link anchor). Writ title text is written by
-    // updateRigRow on every poll (D9) so writLookup refreshes are visible.
+    // updateRigRow on every poll (D9) so server-joined title refreshes
+    // (e.g. after a writ-edit) are visible on the next poll.
     var writTitleTd = document.createElement('td');
     var writTitleAnchor = document.createElement('a');
     writTitleAnchor.className = 'rig-link';
@@ -688,8 +675,8 @@
    * call on every 2 s poll — writes only happen when values actually
    * changed, mirroring the idempotent-write pattern used by setText /
    * updatePipelineNode. Cells touched: status (badge class + text), writ
-   * title (anchor textContent — re-read from writLookup each call per
-   * D9), cost, engines.
+   * title (anchor textContent — sourced from the server-joined
+   * `rig.writTitle` field on every call per D9), cost, engines.
    */
   function updateRigRow(row, rig) {
     // Status badge — class + text, both idempotent.
@@ -704,10 +691,12 @@
       }
     }
 
-    // Writ title — re-read from writLookup on every call (D9). The
+    // Writ title — sourced from the server-joined `rig.writTitle` field
+    // (populated by enrichRigView against the clerk/writs book). Falls
+    // back to an em-dash only when the join did not resolve. The
     // writ-title anchor is the first .rig-link in the row; the rig-id
     // anchor appears later and is not touched here.
-    var writTitle = (writLookup[rig.writId] && writLookup[rig.writId].title) || '\u2014';
+    var writTitle = rig.writTitle || '\u2014';
     var writTitleAnchor = row.querySelector('.rig-link');
     if (writTitleAnchor && writTitleAnchor.textContent !== writTitle) {
       writTitleAnchor.textContent = writTitle;
