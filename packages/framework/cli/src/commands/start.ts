@@ -321,6 +321,38 @@ async function startForeground(home: string): Promise<never> {
   //
   // This is what keeps the daemon alive. If the Spider isn't installed,
   // we still run a sleep loop so the tool/oculus servers stay up.
+  //
+  // Two non-obvious cases the loop must handle correctly:
+  //
+  // 1. Non-progress returns. crawl() returns `null` when there's nothing
+  //    to do, AND `{ action: 'gated', ... }` when it found a candidate
+  //    writ but its outbound spider.follows targets are still
+  //    non-terminal. Both will produce the identical outcome on every
+  //    subsequent tick until external state changes — so both must sleep
+  //    for intervalMs. Treating `gated` as progress causes a zero-sleep
+  //    tight loop that starves HTTP/timer macrotasks (Oculus unreachable
+  //    while the daemon is pegged).
+  //
+  // 2. Back-to-back progress ticks. When work is being processed steadily,
+  //    `await spider.crawl()` resolves via microtasks only and the loop
+  //    never yields a macrotask. That still starves HTTP/timers. A
+  //    setImmediate yield between progress ticks is the belt-and-braces
+  //    guard — it lets the event loop cycle through timer and poll phases
+  //    once per progress tick.
+  //
+  // Mirror of the fix in packages/plugins/spider/src/tools/crawl-continual.ts
+  // (both loops exist independently and must be kept in sync). Open design
+  // click c-mod928ml asks whether this classification should be lifted to
+  // the spider.crawl() API itself rather than duplicated in every consumer.
+
+  function isGated(r: unknown): boolean {
+    return (
+      typeof r === 'object' &&
+      r !== null &&
+      'action' in r &&
+      (r as { action: unknown }).action === 'gated'
+    );
+  }
 
   let spider: SpiderApiLike | null = null;
   let intervalMs = 5000;
@@ -336,8 +368,14 @@ async function startForeground(home: string): Promise<never> {
     if (spider) {
       try {
         const result = await spider.crawl();
-        if (result === null) {
+        if (result === null || isGated(result)) {
+          // Non-progress: next call will very likely produce the identical
+          // outcome until external state changes — sleep the full interval.
           await new Promise((r) => setTimeout(r, intervalMs));
+        } else {
+          // Genuine progress: yield one macrotask so HTTP handlers and
+          // timers aren't starved by microtask-only awaits on steady work.
+          await new Promise<void>((r) => setImmediate(r));
         }
       } catch (err) {
         console.error(`[daemon] crawl() error: ${err instanceof Error ? err.message : err}`);
