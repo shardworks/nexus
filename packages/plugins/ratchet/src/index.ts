@@ -11,6 +11,7 @@ export {
   type DropClickRequest,
   type ReparentClickRequest,
   type AmendClickRequest,
+  type SupersedeClickRequest,
   type LinkClickRequest,
   type UnlinkClickRequest,
   type ExtractClickRequest,

@@ -116,6 +116,28 @@ await ratchet.amend(click.id, {
 
 Submitting the current goal text verbatim is a strict-equality no-op — no history entry is appended. The append is wrapped in a Stacks transaction so concurrent amends never lose history entries.
 
+Amend is refused on `concluded` and `dropped` clicks — the error message points the operator at `supersede()` (below) as the canonical post-conclusion correction tool.
+
+### `supersede(targetId, params): Promise<{ click, link }>`
+
+Atomically create a new click and a `supersedes` link from the new click to `targetId`, in a single Stacks transaction. If either write fails, neither is persisted. The canonical post-conclusion correction pattern: once a click is `concluded` or `dropped` its goal is sealed against `amend()`, so reframing is expressed by creating a replacement click linked to the original.
+
+```typescript
+const { click, link } = await ratchet.supersede(target.id, {
+  goal: 'Refined framing',
+  parentId: someParent.id,       // optional — defaults to root
+  createdSessionId: 'sess-4',    // optional
+});
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `goal` | `string` | Goal for the new click. Empty or whitespace-only is rejected. |
+| `parentId` | `string?` | Optional parent for the new click. Defaults to root (no parent); the target is **not** auto-used as parent. |
+| `createdSessionId` | `string?` | Session that created the new click. Session provenance is recorded on the click only; the link record carries no session id. |
+
+Target-status policy: the target may be in any status — `live`, `parked`, `concluded`, or `dropped`. Target id must be a click id (must start with `c-`); cross-substrate targets are rejected at the sugar boundary. Not idempotent — each call produces a fresh click and a fresh link, so a click can legitimately accumulate multiple supersede revisions.
+
 ### `reparent(id, params): Promise<ClickDoc>`
 
 Move a click to a new parent or to root. Circular parentage is detected and rejected. Allowed for clicks in any status.
@@ -230,6 +252,7 @@ Terminal statuses (`concluded`, `dropped`) allow no further transitions.
 | `click-conclude` | write | Conclude a click |
 | `click-drop` | write | Drop a click |
 | `click-amend` | write | Amend the goal of a live click (appends the prior value to `goalHistory`) |
+| `click-supersede` | write | Atomically create a new click and a `supersedes` link to an existing click (post-conclusion correction pattern) |
 | `click-reparent` | write | Move a click to a new parent |
 | `click-link` | write | Create a typed link |
 | `click-unlink` | write | Remove a link |
@@ -260,6 +283,7 @@ import type {
   DropClickRequest,
   ReparentClickRequest,
   AmendClickRequest,
+  SupersedeClickRequest,
   LinkClickRequest,
   UnlinkClickRequest,
   ExtractClickRequest,

@@ -23,10 +23,12 @@ import clickPark from './tools/click-park.ts';
 import clickExtract from './tools/click-extract.ts';
 import clickTree from './tools/click-tree.ts';
 import clickAmend from './tools/click-amend.ts';
+import clickSupersede from './tools/click-supersede.ts';
 
 // ── Test harness ─────────────────────────────────────────────────────
 
 let ratchet: RatchetApi;
+let stacksApi: StacksApi;
 
 function buildCtx(): StartupContext {
   return {
@@ -70,6 +72,7 @@ async function setup(): Promise<void> {
   const stacksApparatus = (stacksPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
   stacksApparatus.start({ on: () => {}, kits: () => [] });
   const stacks = stacksApparatus.provides as StacksApi;
+  stacksApi = stacks;
   apparatusMap.set('stacks', stacks);
 
   // Ensure books exist
@@ -462,25 +465,36 @@ describe('Ratchet', () => {
       await ratchet.park(click.id);
       await assert.rejects(
         () => ratchet.amend(click.id, { goal: 'New' }),
-        (err: Error) => err.message.includes('parked') && err.message.toLowerCase().includes('amend'),
+        (err: Error) =>
+          err.message.includes('parked')
+          && err.message.toLowerCase().includes('amend')
+          // Parked clicks resume → amend. The supersede pointer belongs to terminal
+          // statuses only; it must not appear on the parked-status message.
+          && !err.message.includes('supersede'),
       );
     });
 
-    it('rejects amend on a concluded click with an error naming the status and the amend verb', async () => {
+    it('rejects amend on a concluded click and points at `nsg click supersede`', async () => {
       const click = await ratchet.create({ goal: 'Original' });
       await ratchet.conclude(click.id, { conclusion: 'Done' });
       await assert.rejects(
         () => ratchet.amend(click.id, { goal: 'New' }),
-        (err: Error) => err.message.includes('concluded') && err.message.toLowerCase().includes('amend'),
+        (err: Error) =>
+          err.message.includes('concluded')
+          && err.message.toLowerCase().includes('amend')
+          && err.message.includes('nsg click supersede'),
       );
     });
 
-    it('rejects amend on a dropped click with an error naming the status and the amend verb', async () => {
+    it('rejects amend on a dropped click and points at `nsg click supersede`', async () => {
       const click = await ratchet.create({ goal: 'Original' });
       await ratchet.drop(click.id, { conclusion: 'Gone' });
       await assert.rejects(
         () => ratchet.amend(click.id, { goal: 'New' }),
-        (err: Error) => err.message.includes('dropped') && err.message.toLowerCase().includes('amend'),
+        (err: Error) =>
+          err.message.includes('dropped')
+          && err.message.toLowerCase().includes('amend')
+          && err.message.includes('nsg click supersede'),
       );
     });
 
@@ -571,6 +585,240 @@ describe('Ratchet', () => {
       assert.strictEqual(updated.id, click.id);
       assert.strictEqual(updated.goal, 'Refined');
       assert.strictEqual(updated.goalHistory![0].goal, 'Original');
+    });
+  });
+
+  // ── Supersede ──────────────────────────────────────────────────
+  //
+  // `supersede(targetId, params)` is the sugar for the canonical
+  // post-conclusion correction pattern: create a new click + supersedes
+  // link in a single transaction. The target is not reparented and not
+  // mutated — all status values are valid targets (D6).
+
+  describe('supersede', () => {
+    it('creates a new click and a supersedes link in one call', async () => {
+      const target = await ratchet.create({ goal: 'Original framing' });
+      const { click, link } = await ratchet.supersede(target.id, {
+        goal: 'Refined framing',
+      });
+
+      // New click
+      assert.ok(click.id.startsWith('c-'));
+      assert.notStrictEqual(click.id, target.id);
+      assert.strictEqual(click.goal, 'Refined framing');
+      assert.strictEqual(click.status, 'live');
+      assert.strictEqual(click.parentId, undefined, 'default parent is root per D4');
+
+      // Link
+      assert.strictEqual(link.sourceId, click.id);
+      assert.strictEqual(link.targetId, target.id);
+      assert.strictEqual(link.linkType, 'supersedes');
+      assert.strictEqual(link.id, `${click.id}:${target.id}:supersedes`);
+    });
+
+    it('persists both writes — readable via get() and links()', async () => {
+      const target = await ratchet.create({ goal: 'v1' });
+      const { click } = await ratchet.supersede(target.id, { goal: 'v2' });
+
+      // New click is fetchable
+      const fetched = await ratchet.get(click.id);
+      assert.strictEqual(fetched.id, click.id);
+
+      // Supersedes link is on the target's inbound edges
+      const targetLinks = await ratchet.links(target.id);
+      assert.strictEqual(targetLinks.inbound.length, 1);
+      assert.strictEqual(targetLinks.inbound[0].sourceId, click.id);
+      assert.strictEqual(targetLinks.inbound[0].linkType, 'supersedes');
+
+      // And on the new click's outbound edges
+      const newLinks = await ratchet.links(click.id);
+      assert.strictEqual(newLinks.outbound.length, 1);
+      assert.strictEqual(newLinks.outbound[0].targetId, target.id);
+    });
+
+    it('accepts an explicit parentId', async () => {
+      const target = await ratchet.create({ goal: 'Target' });
+      const parent = await ratchet.create({ goal: 'Parent' });
+      const { click } = await ratchet.supersede(target.id, {
+        goal: 'New framing',
+        parentId: parent.id,
+      });
+      assert.strictEqual(click.parentId, parent.id);
+    });
+
+    it('propagates createdSessionId onto the new click', async () => {
+      const target = await ratchet.create({ goal: 'Target' });
+      const { click } = await ratchet.supersede(target.id, {
+        goal: 'New',
+        createdSessionId: 'sess-super-1',
+      });
+      assert.strictEqual(click.createdSessionId, 'sess-super-1');
+    });
+
+    it('does not reparent the target', async () => {
+      const target = await ratchet.create({ goal: 'Target' });
+      const { click } = await ratchet.supersede(target.id, { goal: 'New' });
+      const fetchedTarget = await ratchet.get(target.id);
+      assert.strictEqual(fetchedTarget.parentId, undefined);
+      assert.notStrictEqual(click.parentId, target.id);
+    });
+
+    it('accepts a live target', async () => {
+      const target = await ratchet.create({ goal: 'Live' });
+      const { click, link } = await ratchet.supersede(target.id, { goal: 'New' });
+      assert.strictEqual(link.targetId, target.id);
+      assert.strictEqual(click.status, 'live');
+    });
+
+    it('accepts a parked target', async () => {
+      const target = await ratchet.create({ goal: 'Parked' });
+      await ratchet.park(target.id);
+      const { link } = await ratchet.supersede(target.id, { goal: 'New' });
+      assert.strictEqual(link.targetId, target.id);
+      const fetchedTarget = await ratchet.get(target.id);
+      assert.strictEqual(fetchedTarget.status, 'parked');
+    });
+
+    it('accepts a concluded target', async () => {
+      const target = await ratchet.create({ goal: 'Concluded' });
+      await ratchet.conclude(target.id, { conclusion: 'Done' });
+      const { link } = await ratchet.supersede(target.id, { goal: 'Refined' });
+      assert.strictEqual(link.targetId, target.id);
+    });
+
+    it('accepts a dropped target', async () => {
+      const target = await ratchet.create({ goal: 'Dropped' });
+      await ratchet.drop(target.id, { conclusion: 'Gone' });
+      const { link } = await ratchet.supersede(target.id, { goal: 'Reframed' });
+      assert.strictEqual(link.targetId, target.id);
+    });
+
+    it('rejects non-`c-` target ids', async () => {
+      await assert.rejects(
+        () => ratchet.supersede('w-abc123', { goal: 'New' }),
+        (err: Error) =>
+          err.message.includes('w-abc123') && err.message.includes('must start with "c-"'),
+      );
+    });
+
+    it('rejects empty/whitespace goal', async () => {
+      const target = await ratchet.create({ goal: 'Target' });
+      await assert.rejects(
+        () => ratchet.supersede(target.id, { goal: '' }),
+        /non-empty/,
+      );
+      await assert.rejects(
+        () => ratchet.supersede(target.id, { goal: '   ' }),
+        /non-empty/,
+      );
+    });
+
+    it('throws when the target does not exist, writing neither click nor link', async () => {
+      // Baseline counts so we can confirm nothing was persisted mid-failure.
+      const clicksBefore = (await ratchet.list({ limit: 1000 })).length;
+
+      await assert.rejects(
+        () => ratchet.supersede('c-doesnotexist', { goal: 'New' }),
+        /not found/,
+      );
+
+      // No new click
+      const clicksAfter = await ratchet.list({ limit: 1000 });
+      assert.strictEqual(clicksAfter.length, clicksBefore);
+      // No inbound link on the nonexistent id either
+      const leftover = await ratchet.links('c-doesnotexist');
+      assert.strictEqual(leftover.inbound.length, 0);
+      assert.strictEqual(leftover.outbound.length, 0);
+    });
+
+    it('throws when the provided parentId does not exist, writing nothing', async () => {
+      const target = await ratchet.create({ goal: 'Target' });
+      const clicksBefore = (await ratchet.list({ limit: 1000 })).length;
+      const targetLinksBefore = await ratchet.links(target.id);
+
+      await assert.rejects(
+        () => ratchet.supersede(target.id, { goal: 'New', parentId: 'c-doesnotexist' }),
+        /not found/,
+      );
+
+      const clicksAfter = await ratchet.list({ limit: 1000 });
+      assert.strictEqual(clicksAfter.length, clicksBefore, 'no click should be written');
+      const targetLinksAfter = await ratchet.links(target.id);
+      assert.strictEqual(
+        targetLinksAfter.inbound.length,
+        targetLinksBefore.inbound.length,
+        'no link should be written',
+      );
+    });
+
+    it('rolls back the click write when the link write fails (atomicity)', async () => {
+      // Register a Phase 1 watcher on click_links that throws — this runs inside
+      // the transaction, so the click write must also roll back.
+      stacksApi.watch('ratchet', 'click_links', () => {
+        throw new Error('link write blocked');
+      }, { failOnError: true });
+
+      const target = await ratchet.create({ goal: 'Target' });
+      const clicksBefore = (await ratchet.list({ limit: 1000 })).length;
+
+      await assert.rejects(
+        () => ratchet.supersede(target.id, { goal: 'New' }),
+        /link write blocked/,
+      );
+
+      // No new click persisted — the failure on the link write rolled back the click write.
+      const clicksAfter = await ratchet.list({ limit: 1000 });
+      assert.strictEqual(clicksAfter.length, clicksBefore);
+      const targetLinks = await ratchet.links(target.id);
+      assert.strictEqual(targetLinks.inbound.length, 0);
+    });
+
+    it('is not idempotent — repeat calls produce fresh clicks and fresh links', async () => {
+      const target = await ratchet.create({ goal: 'Target' });
+      const first = await ratchet.supersede(target.id, { goal: 'v2' });
+      const second = await ratchet.supersede(target.id, { goal: 'v3' });
+
+      assert.notStrictEqual(first.click.id, second.click.id);
+      assert.notStrictEqual(first.link.id, second.link.id);
+
+      const targetLinks = await ratchet.links(target.id);
+      assert.strictEqual(targetLinks.inbound.length, 2);
+    });
+
+    // ── Tool integration ───────────────────────────────────────────
+
+    it('click-supersede tool resolves short target IDs and returns { click, link }', async () => {
+      const target = await ratchet.create({ goal: 'Original' });
+      const prefix = target.id.substring(0, 10);
+
+      const result = await clickSupersede.handler({
+        targetId: prefix,
+        goal: 'Refined',
+      }) as { click: ClickDoc; link: { sourceId: string; targetId: string; linkType: string } };
+
+      assert.ok(result.click);
+      assert.ok(result.link);
+      assert.strictEqual(result.click.goal, 'Refined');
+      assert.strictEqual(result.link.targetId, target.id);
+      assert.strictEqual(result.link.sourceId, result.click.id);
+      assert.strictEqual(result.link.linkType, 'supersedes');
+    });
+
+    it('click-supersede tool resolves a short parentId prefix', async () => {
+      const target = await ratchet.create({ goal: 'Target' });
+      // Small delay to guarantee a distinct timestamp segment on `parent` so
+      // that a short-prefix resolve is unambiguous.
+      await new Promise((r) => setTimeout(r, 5));
+      const parent = await ratchet.create({ goal: 'Parent' });
+      const parentPrefix = parent.id.substring(0, 10);
+
+      const result = await clickSupersede.handler({
+        targetId: target.id,
+        goal: 'New',
+        parentId: parentPrefix,
+      }) as { click: ClickDoc };
+
+      assert.strictEqual(result.click.parentId, parent.id);
     });
   });
 

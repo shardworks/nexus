@@ -17,6 +17,7 @@ import type {
   DropClickRequest,
   ReparentClickRequest,
   AmendClickRequest,
+  SupersedeClickRequest,
   LinkClickRequest,
   UnlinkClickRequest,
   ExtractClickRequest,
@@ -32,6 +33,7 @@ import {
   clickConclude,
   clickDrop,
   clickAmend,
+  clickSupersede,
   clickReparent,
   clickLink,
   clickUnlink,
@@ -332,10 +334,15 @@ export function createRatchet(): Plugin {
         if (!click) throw new Error(`Click "${id}" not found.`);
 
         if (click.status !== 'live') {
-          throw new Error(
-            `Cannot amend click "${id}": status is "${click.status}", expected "live". ` +
-            `Amend is only permitted while the click is live.`,
-          );
+          const base = `Cannot amend click "${id}": status is "${click.status}", expected "live".`;
+          // Terminal-status targets (concluded / dropped) point at the canonical
+          // post-conclusion correction tool. Parked clicks resume → amend, so
+          // their message stays focused on the live-only rule.
+          const suffix = TERMINAL_STATUSES.has(click.status)
+            ? ` Amend is sealed once a click is concluded or dropped. ` +
+              `Use \`nsg click supersede\` to create a replacement click and link it to this one.`
+            : ` Amend is only permitted while the click is live.`;
+          throw new Error(base + suffix);
         }
 
         if (params.goal === undefined || params.goal === null || params.goal.trim() === '') {
@@ -364,6 +371,61 @@ export function createRatchet(): Plugin {
         });
         const updated = await txClicks.get(id);
         return updated!;
+      });
+    },
+
+    async supersede(
+      targetId: string,
+      params: SupersedeClickRequest,
+    ): Promise<{ click: ClickDoc; link: ClickLinkDoc }> {
+      // Target-id validation (D9): reject non-`c-` ids at the sugar boundary.
+      if (!targetId.startsWith('c-')) {
+        throw new Error(
+          `Cannot supersede "${targetId}": target must be a click id (must start with "c-").`,
+        );
+      }
+
+      if (params.goal === undefined || params.goal === null || params.goal.trim() === '') {
+        throw new Error('Goal must be a non-empty string.');
+      }
+
+      return stacks.transaction(async (tx) => {
+        const txClicks = tx.book<ClickDoc>('ratchet', 'clicks');
+        const txClickLinks = tx.book<ClickLinkDoc>('ratchet', 'click_links');
+
+        // Validate target exists. Status is deliberately not checked (D6).
+        const target = await txClicks.get(targetId);
+        if (!target) throw new Error(`Click "${targetId}" not found.`);
+
+        // Validate parent, if supplied. Mirrors `create()`'s behavior.
+        if (params.parentId) {
+          const parent = await txClicks.get(params.parentId);
+          if (!parent) throw new Error(`Click "${params.parentId}" not found.`);
+        }
+
+        const newId = generateId('c', 6);
+        const clickDoc: ClickDoc = {
+          id: newId,
+          goal: params.goal,
+          status: 'live',
+          createdAt: new Date().toISOString(),
+          parentId: params.parentId,
+          createdSessionId: params.createdSessionId,
+        };
+        await txClicks.put(clickDoc);
+
+        const linkType: LinkType = 'supersedes';
+        const compositeId = `${newId}:${targetId}:${linkType}`;
+        const linkDoc: ClickLinkDoc = {
+          id: compositeId,
+          sourceId: newId,
+          targetId,
+          linkType,
+          createdAt: new Date().toISOString(),
+        };
+        await txClickLinks.put(linkDoc);
+
+        return { click: clickDoc, link: linkDoc };
       });
     },
 
@@ -557,6 +619,7 @@ export function createRatchet(): Plugin {
           clickConclude,
           clickDrop,
           clickAmend,
+          clickSupersede,
           clickReparent,
           clickLink,
           clickUnlink,

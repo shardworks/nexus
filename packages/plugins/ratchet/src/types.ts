@@ -77,6 +77,18 @@ export interface AmendClickRequest {
   sessionId?: string;
 }
 
+export interface SupersedeClickRequest {
+  /**
+   * Goal text for the newly created click. Empty or whitespace-only text is
+   * rejected, matching `create()`.
+   */
+  goal: string;
+  /** Optional parent for the new click. When omitted the new click is a root. */
+  parentId?: string;
+  /** Session id that created the new click. */
+  createdSessionId?: string;
+}
+
 export interface LinkClickRequest {
   sourceId: string;
   targetId: string;
@@ -123,6 +135,18 @@ export interface RatchetApi {
   drop(id: string, params: DropClickRequest): Promise<ClickDoc>;
   reparent(id: string, params: ReparentClickRequest): Promise<ClickDoc>;
   amend(id: string, params: AmendClickRequest): Promise<ClickDoc>;
+  /**
+   * Atomically create a new click and a `supersedes` link from the new click
+   * to `targetId`. Both writes land inside a single Stacks transaction; if
+   * either fails, neither is persisted. The target may be in any status —
+   * `live`, `parked`, `concluded`, or `dropped` — and is not reparented. The
+   * new click's default parent is unset (root); pass `params.parentId` to
+   * nest it. Returns both documents.
+   */
+  supersede(
+    targetId: string,
+    params: SupersedeClickRequest,
+  ): Promise<{ click: ClickDoc; link: ClickLinkDoc }>;
   link(params: LinkClickRequest): Promise<ClickLinkDoc>;
   unlink(params: UnlinkClickRequest): Promise<void>;
   extract(rootId: string, params: ExtractClickRequest): Promise<string | ClickTree>;

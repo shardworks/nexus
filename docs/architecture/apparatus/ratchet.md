@@ -76,6 +76,7 @@ supportKit: {
     clickDrop,
     clickLink,
     clickReparent,
+    clickSupersede,
   ],
 },
 ```
@@ -140,7 +141,7 @@ type ClickLinkType = 'related' | 'commissioned' | 'supersedes' | 'depends-on'
 
 - **`related`** — lateral cross-reference between clicks or between a click and a writ.
 - **`commissioned`** — this click's conclusion produced a commission (mandate writ). Target is a writ ID.
-- **`supersedes`** — this click replaces the target click (reframing, refinement).
+- **`supersedes`** — this click replaces the target click (reframing, refinement). Use the `click-supersede` CLI sugar (below) to create both the replacement click and this link in a single transaction.
 - **`depends-on`** — this click cannot be concluded until the target is resolved.
 
 ---
@@ -195,6 +196,17 @@ interface RatchetApi {
     goal: string
     sessionId?: string
   }): Promise<Click>
+
+  /**
+   * Atomically create a new click and a `supersedes` link from the new click
+   * to `targetId`, in a single Stacks transaction. Target may be in any
+   * status and is not mutated. Default parent for the new click is root.
+   */
+  supersede(targetId: string, params: {
+    goal: string
+    parentId?: string
+    createdSessionId?: string
+  }): Promise<{ click: Click; link: ClickLink }>
 
   /** Move a click to a new parent (or to root). */
   reparent(id: string, params: {
@@ -345,13 +357,24 @@ Drop a click without a decision.
 
 ### `click-amend`
 
-Amend the goal of a live click. The prior goal text is appended to the click's `goalHistory` array. Refused on parked, concluded, or dropped clicks — the goal seals on transition to any non-live status. Short-ID prefixes are accepted on `--id`. The click id may also be supplied positionally: `nsg click amend <id> --goal "..."`.
+Amend the goal of a live click. The prior goal text is appended to the click's `goalHistory` array. Refused on parked, concluded, or dropped clicks — the goal seals on transition to any non-live status. On terminal-status targets (concluded / dropped) the error points operators at `click-supersede` as the canonical post-conclusion correction tool. Short-ID prefixes are accepted on `--id`. The click id may also be supplied positionally: `nsg click amend <id> --goal "..."`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | `string` | yes | Click ID (short prefix OK; may also be supplied positionally) |
 | `goal` | `string` | yes | New goal text (non-empty; whitespace-only rejected) |
 | `session-id` | `string` | no | Session ID that performed the amend (recorded on the history entry) |
+
+### `click-supersede`
+
+Atomically create a new click and a `supersedes` link from the new click to the target. Both writes land inside a single transaction — if either fails, neither is persisted. The canonical post-conclusion correction pattern: once a click is `concluded` or `dropped` its goal is sealed against `click-amend`, so reframing is expressed by superseding. The target may be in any status (`live`, `parked`, `concluded`, `dropped`) and is not mutated or reparented. The target id may be supplied positionally: `nsg click supersede <target-id> --goal "..."`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `target-id` | `string` | yes | Click ID being superseded (short prefix OK; may also be supplied positionally). Must start with `c-`; cross-substrate targets are rejected. |
+| `goal` | `string` | yes | Goal for the new click (non-empty; whitespace-only rejected) |
+| `parent-id` | `string` | no | Optional parent for the new click. Omit for root. Defaults to root — the target is **not** auto-used as parent. |
+| `created-session-id` | `string` | no | Session ID recorded on the new click |
 
 ### `click-link`
 
