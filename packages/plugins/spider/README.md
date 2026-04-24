@@ -359,12 +359,13 @@ The Spider contributes books, tools, engines, and a role for rig inspection and 
 
 #### Rig view enrichment
 
-`rig-list` and `rig-show` return `RigView` — the persisted `RigDoc` plus two derived fields aggregated from the animator sessions book:
+`rig-list` and `rig-show` return `RigView` — the persisted `RigDoc` plus three derived fields aggregated from other books:
 
 - `costSummary?: { costUsd, inputTokens?, outputTokens? }` — totals across every engine session in the rig. Absent when no engine has a `sessionId`; `inputTokens`/`outputTokens` are absent when no session reported token usage.
 - `engineCosts?: Record<engineId, { costUsd, inputTokens?, outputTokens? }>` — per-engine cost entries. Only engines with a `sessionId` (i.e. anima engines) get an entry — clockwork and skipped engines are omitted. Engines whose sessions can't be resolved contribute zero.
+- `writTitle?: string` — the current title of the rig's writ, joined from the `clerk/writs` book. Absent when the writ cannot be resolved (e.g. deleted). Never persisted on `RigDoc`; recomputed on every read so `writ-edit` title changes are reflected on the next dashboard poll.
 
-The enrichment happens in the tool layer. `SpiderApi.list()` and `SpiderApi.show()` still return the persisted `RigDoc` shape for internal callers that don't need cost data.
+The enrichment happens in the tool layer. `SpiderApi.list()` and `SpiderApi.show()` still return the persisted `RigDoc` shape for internal callers that don't need the derived fields.
 
 ### Block Types
 
