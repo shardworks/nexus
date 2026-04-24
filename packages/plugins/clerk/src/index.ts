@@ -31,7 +31,7 @@ export {
   type WritTreeParams,
 } from './types.ts';
 
-export { createClerk, CASCADE_PARENT_TERMINATION_RESOLUTION, BUILTIN_WRIT_TYPE } from './clerk.ts';
+export { createClerk, CASCADE_PARENT_TERMINATION_RESOLUTION } from './clerk.ts';
 export type { ClerkKit } from './clerk.ts';
 
 // ── Writ-type configuration (structural shape + validator) ────────────

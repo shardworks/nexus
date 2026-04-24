@@ -4,12 +4,21 @@
  * All types exported from @shardworks/clerk-apparatus.
  */
 
+import type { WritTypeConfig } from './writ-type-config.ts';
+
 // ── Writ phase ───────────────────────────────────────────────────────
 
 /**
- * A writ's position in its lifecycle.
+ * The mandate writ type's lifecycle states.
  *
- * Transitions:
+ * This union is mandate-specific — it enumerates the six states the built-in
+ * mandate `WritTypeConfig` declares and is preserved for callers that
+ * knowingly work exclusively with mandate writs. The structural type of
+ * `WritDoc.phase` is `string` so any plugin-registered writ type's state
+ * name can round-trip through the book; callers that need a mandate-phase
+ * typed value should downcast explicitly.
+ *
+ * Mandate transitions:
  *   new    → open       (publish)   — draft enters the queue
  *   new    → cancelled  (cancel)
  *   open   → completed  (complete)
@@ -37,8 +46,14 @@ export interface WritDoc {
   id: string;
   /** Writ type — must be a type declared in guild config, or a built-in type. */
   type: string;
-  /** Current lifecycle phase (Clerk-owned; spec side of the spec/status split). */
-  phase: WritPhase;
+  /**
+   * Current lifecycle state name (Clerk-owned; spec side of the spec/status
+   * split). Structurally typed as `string` so any plugin-registered writ
+   * type's state name can round-trip through the book. For mandate-typed
+   * writs the value is constrained to a `WritPhase` literal at runtime, but
+   * callers that need a narrower static type should downcast explicitly.
+   */
+  phase: string;
   /**
    * Plugin-owned observation slot (status side of the spec/status split).
    *
@@ -485,4 +500,57 @@ export interface ClerkApi {
    * plugin id. Returns an empty array when no kinds have been registered.
    */
   listKinds(): Promise<LinkKindDoc[]>;
+
+  /**
+   * Register a writ type's state machine with the Clerk.
+   *
+   * The supplied config is validated via `validateWritTypeConfig` before the
+   * registry is updated; validator errors propagate verbatim. Registration-
+   * specific failures (duplicate name, late call after the startup window has
+   * sealed) are wrapped with a `[clerk] registerWritType:` prefix.
+   *
+   * Callable only while the startup window is open — Clerk seals the
+   * registry on the framework's global `phase:started` signal, after which
+   * further calls throw. This is the single-surface entry point for plugins
+   * contributing writ types; there is no parallel kit-channel or guild-config
+   * registration path.
+   */
+  registerWritType(config: WritTypeConfig): void;
+
+  /**
+   * Return the registered `WritTypeConfig` for a writ type.
+   *
+   * Returns `undefined` when the name is not registered. Callers that need
+   * to work with a writ type abstractly (inspect states, render UI labels,
+   * compose higher-level predicates) should use this accessor instead of
+   * reaching into the predicate surface with synthetic `WritDoc`s.
+   */
+  getWritTypeConfig(name: string): WritTypeConfig | undefined;
+
+  /**
+   * Return `true` when the writ's current state is classified `initial`
+   * in its type's registered config.
+   *
+   * Throws when the writ's stored state is not declared in its type config
+   * (fail-loud on unknown-state), or when the writ's type is not registered.
+   */
+  isInitial(writ: WritDoc): boolean;
+
+  /**
+   * Return `true` when the writ's current state is classified `active`
+   * in its type's registered config.
+   *
+   * Throws when the writ's stored state is not declared in its type config
+   * (fail-loud on unknown-state), or when the writ's type is not registered.
+   */
+  isActive(writ: WritDoc): boolean;
+
+  /**
+   * Return `true` when the writ's current state is classified `terminal`
+   * in its type's registered config.
+   *
+   * Throws when the writ's stored state is not declared in its type config
+   * (fail-loud on unknown-state), or when the writ's type is not registered.
+   */
+  isTerminal(writ: WritDoc): boolean;
 }

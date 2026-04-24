@@ -37,6 +37,9 @@ import type {
   WritTreeParams,
 } from './types.ts';
 
+import type { WritTypeConfig } from './writ-type-config.ts';
+import { validateWritTypeConfig } from './writ-type-config.ts';
+
 import {
   commissionPost,
   pieceAdd,
@@ -75,15 +78,19 @@ export interface ClerkKit {
 // ── Built-in writ types ──────────────────────────────────────────────
 
 /**
- * Name of the one built-in writ type. Single source of truth — this value
- * serves both as the sole member of `BUILTIN_TYPES` (the set of always-
- * valid writ type names) and as the fallback returned by
- * `resolveDefaultType()` when the guild config declares no `defaultType`.
- * A future rename of the built-in type lands here in one place.
+ * Mandate is the one writ type the Clerk plugin registers for itself
+ * (see T2 of the generalization refactor). The literal string is used
+ * here as a private fallback for `resolveDefaultType()` and as the
+ * unqualified name inserted into the legacy `BUILTIN_TYPES` / merged
+ * writ-type map that still drives the hardcoded `post()` and
+ * `transition()` paths until T3 cuts them over to the registry. The
+ * single-source-of-truth constant that callers used to import
+ * (`BUILTIN_WRIT_TYPE`) is gone — mandate's name now lives inline
+ * wherever it is needed.
  */
-export const BUILTIN_WRIT_TYPE = 'mandate';
+const MANDATE_TYPE_NAME = 'mandate';
 
-const BUILTIN_TYPES = new Set([BUILTIN_WRIT_TYPE]);
+const BUILTIN_TYPES = new Set([MANDATE_TYPE_NAME]);
 
 // ── Cascade resolution constants ─────────────────────────────────────
 
@@ -143,6 +150,20 @@ export function createClerk(): Plugin {
   /** Registry of kit-contributed link kinds, keyed by kind id. */
   let linkKindRegistry: Map<string, KindMeta> = new Map();
 
+  // ── Writ-type registry ──────────────────────────────────────────────
+  //
+  // The runtime registry of plugin-registered writ-type state machines.
+  // `registerWritType` is the only path for a plugin to contribute a writ
+  // type; the registry is sealed at the framework's global `phase:started`
+  // signal so registration is a startup-window-only operation. `sealed`
+  // flips to `true` once the window closes — further calls throw.
+
+  /** Sealed registry of plugin-registered writ-type state machines. */
+  const writTypeRegistry: Map<string, WritTypeConfig> = new Map();
+
+  /** Whether the registry has sealed. Flipped by `phase:started`. */
+  let writTypeRegistrySealed = false;
+
   /**
    * Grammar for kind-id suffixes after the `{pluginId}.` prefix.
    *
@@ -163,7 +184,34 @@ export function createClerk(): Plugin {
 
   function resolveDefaultType(): string {
     const config = resolveClerkConfig();
-    return config.defaultType ?? BUILTIN_WRIT_TYPE;
+    return config.defaultType ?? MANDATE_TYPE_NAME;
+  }
+
+  /**
+   * Return the classification of a writ's current state, looked up from its
+   * type's registered `WritTypeConfig`. Throws with a fail-loud message
+   * when the writ's type is not registered, or when its stored state is
+   * not declared in that type's config (D6).
+   */
+  function classifyWritState(writ: WritDoc): 'initial' | 'active' | 'terminal' {
+    const config = writTypeRegistry.get(writ.type);
+    if (!config) {
+      throw new Error(
+        `[clerk] writ "${writ.id}" carries type "${writ.type}" which is not registered; registered types are ${
+          writTypeRegistry.size === 0
+            ? '(none)'
+            : [...writTypeRegistry.keys()].map((n) => `"${n}"`).join(', ')
+        }.`,
+      );
+    }
+    const state = config.states.find((s) => s.name === writ.phase);
+    if (!state) {
+      const legal = config.states.map((s) => `"${s.name}"`).join(', ');
+      throw new Error(
+        `[clerk] writ "${writ.id}" carries state "${writ.phase}" which is not declared in type "${writ.type}" config; legal states are ${legal}.`,
+      );
+    }
+    return state.classification;
   }
 
   function buildWhereClause(filters?: WritFilters): WhereClause | undefined {
@@ -334,7 +382,7 @@ export function createClerk(): Plugin {
     const currentDepth = options?.currentDepth ?? 0;
 
     // Prune: drop the node and its subtree when it fails any filter.
-    if (phaseSet && !phaseSet.has(writ.phase)) return null;
+    if (phaseSet && !phaseSet.has(writ.phase as WritPhase)) return null;
     if (typeSet && !typeSet.has(writ.type)) return null;
 
     // Depth cap: include the node at the cap, but stop recursing.
@@ -387,7 +435,7 @@ export function createClerk(): Plugin {
           if (!parent) {
             throw new Error(`Parent writ "${request.parentId}" not found.`);
           }
-          if (!CHILD_ALLOWED_PARENT_PHASES.has(parent.phase)) {
+          if (!CHILD_ALLOWED_PARENT_PHASES.has(parent.phase as WritPhase)) {
             throw new Error(
               `Cannot add children to writ "${request.parentId}": phase is "${parent.phase}", expected one of: ${[...CHILD_ALLOWED_PARENT_PHASES].join(', ')}.`,
             );
@@ -531,7 +579,8 @@ export function createClerk(): Plugin {
       async function walk(parentId: string): Promise<void> {
         const children = await writs.find({ where: [['parentId', '=', parentId]] });
         for (const child of children) {
-          counts[child.phase] = (counts[child.phase] ?? 0) + 1;
+          const phase = child.phase as WritPhase;
+          counts[phase] = (counts[phase] ?? 0) + 1;
           await walk(child.id);
         }
       }
@@ -643,6 +692,47 @@ export function createClerk(): Plugin {
       }));
     },
 
+    registerWritType(config: WritTypeConfig): void {
+      // Validator errors propagate verbatim — their `[clerk]
+      // writTypeConfig.<path>: <problem>` shape already names the offending
+      // field precisely; wrapping would hide the path. Registration-specific
+      // failures (sealed registry, duplicate name) are wrapped with a
+      // `[clerk] registerWritType:` prefix so callers can distinguish the
+      // two failure modes.
+      validateWritTypeConfig(config);
+
+      if (writTypeRegistrySealed) {
+        throw new Error(
+          `[clerk] registerWritType: cannot register writ type "${config.name}" — the startup registration window has closed. Plugins must call registerWritType from their apparatus's start() before the framework fires phase:started.`,
+        );
+      }
+
+      const existing = writTypeRegistry.get(config.name);
+      if (existing) {
+        throw new Error(
+          `[clerk] registerWritType: duplicate writ type "${config.name}" — already registered. Two plugins cannot contribute the same writ type name.`,
+        );
+      }
+
+      writTypeRegistry.set(config.name, config);
+    },
+
+    getWritTypeConfig(name: string): WritTypeConfig | undefined {
+      return writTypeRegistry.get(name);
+    },
+
+    isInitial(writ: WritDoc): boolean {
+      return classifyWritState(writ) === 'initial';
+    },
+
+    isActive(writ: WritDoc): boolean {
+      return classifyWritState(writ) === 'active';
+    },
+
+    isTerminal(writ: WritDoc): boolean {
+      return classifyWritState(writ) === 'terminal';
+    },
+
     async edit(request: EditWritRequest): Promise<WritDoc> {
       const writ = await writs.get(request.id);
       if (!writ) {
@@ -697,7 +787,7 @@ export function createClerk(): Plugin {
       }
 
       const allowedFrom = ALLOWED_FROM[to];
-      if (!allowedFrom.includes(writ.phase)) {
+      if (!allowedFrom.includes(writ.phase as WritPhase)) {
         throw new Error(
           `Cannot transition writ "${id}" to "${to}": phase is "${writ.phase}", expected one of: ${allowedFrom.join(', ')}.`,
         );
@@ -784,7 +874,7 @@ export function createClerk(): Plugin {
     const children = await writs.find({ where: [['parentId', '=', parent.id]] });
     if (children.length === 0) return;
 
-    const nonTerminalChildren = children.filter((c) => !TERMINAL_PHASES.has(c.phase));
+    const nonTerminalChildren = children.filter((c) => !TERMINAL_PHASES.has(c.phase as WritPhase));
     if (nonTerminalChildren.length === 0) return;
 
     // When the parent reached `completed`, non-terminal children shouldn't
@@ -873,6 +963,17 @@ export function createClerk(): Plugin {
         writs = stacks.book<WritDoc>('clerk', 'writs');
         links = stacks.book<WritLinkDoc>('clerk', 'links');
 
+        // Seal the writ-type registration window on the framework's global
+        // `phase:started` signal — that moment fires once, after every
+        // apparatus's `start()` has completed, which mirrors how stacks seals
+        // its CDC watcher registry. Per-apparatus `apparatus:started` events
+        // fire too early to catch every contributor, and we want plugins to
+        // be able to register types from their own `start()` regardless of
+        // dependency ordering.
+        ctx.on('phase:started', () => {
+          writTypeRegistrySealed = true;
+        });
+
         // Initialize merged writ types from builtins + config
         const config = resolveClerkConfig();
         const configEntries = config.writTypes ?? [];
@@ -907,12 +1008,12 @@ export function createClerk(): Plugin {
           if (writ.phase === prev.phase) return;
 
           // ── Upward cascade: child → parent ──
-          if (writ.parentId && TERMINAL_PHASES.has(writ.phase)) {
+          if (writ.parentId && TERMINAL_PHASES.has(writ.phase as WritPhase)) {
             await handleChildTerminal(writ);
           }
 
           // ── Downward cascade: parent → children ──
-          if (TERMINAL_PHASES.has(writ.phase)) {
+          if (TERMINAL_PHASES.has(writ.phase as WritPhase)) {
             await handleParentTerminal(writ);
           }
         }, { failOnError: true });

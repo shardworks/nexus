@@ -85,7 +85,7 @@ export default tool({
       if (!clerk) continue;
       try {
         const writ = await clerk.show(pulse.writId);
-        if (LIVE_WRIT_PHASES.has(writ.phase)) {
+        if (LIVE_WRIT_PHASES.has(writ.phase as WritPhase)) {
           filtered.push(pulse);
         }
       } catch {

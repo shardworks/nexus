@@ -1,14 +1,18 @@
 import { z } from 'zod';
 import { guild, shortId } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
-import type { ClerkApi, WritPhase, WritTree } from '../types.ts';
+import type { ClerkApi, WritTree } from '../types.ts';
 
 /**
  * Single-glyph status indicators for the box-drawing tree. Mirrors the
  * mapping used by ratchet's click-tree so output reads consistently across
  * apparatus.
+ *
+ * Indexed by an open `string` — non-mandate phases fall through to the
+ * empty-glyph default at call sites. T5 owns a proper rework of this
+ * mapping once plugin-registered writ types ship with their own states.
  */
-const PHASE_INDICATORS: Record<WritPhase, string> = {
+const PHASE_INDICATORS: Record<string, string> = {
   new: '◌',
   open: '●',
   stuck: '◇',
