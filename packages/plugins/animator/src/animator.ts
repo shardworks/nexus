@@ -33,7 +33,7 @@ import type {
   GuildStateDoc,
 } from './types.ts';
 
-import { sessionList, sessionShow, summon as summonTool, sessionCancel, sessionRunning, sessionRecord, sessionHeartbeat } from './tools/index.ts';
+import { sessionList, sessionShow, summon as summonTool, sessionCancel, sessionRunning, sessionRecord, sessionHeartbeat, animatorStatus } from './tools/index.ts';
 import { animatorRoutes } from './oculus-routes.ts';
 import { drainDlq, recoverOrphans } from './startup.ts';
 import {
@@ -765,7 +765,7 @@ export function createAnimator(): Plugin {
           // table is maintained.
           status: {},
         },
-        tools: [sessionList, sessionShow, summonTool, sessionCancel, sessionRunning, sessionRecord, sessionHeartbeat],
+        tools: [sessionList, sessionShow, summonTool, sessionCancel, sessionRunning, sessionRecord, sessionHeartbeat, animatorStatus],
         pages: [
           { id: 'animator', title: 'Animator', dir: 'src/static' },
         ],

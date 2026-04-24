@@ -34,6 +34,20 @@ interface WritEntry {
 export const animatorRoutes = [
   {
     method: 'GET',
+    path: '/api/animator/status',
+    handler: async (c: Context) => {
+      // Read the back-off status doc through the Animator apparatus so
+      // consumers (Oculus banner, external monitoring) see exactly what
+      // the internal machine sees. Running on a fresh install returns
+      // the default running shape — never a null body.
+      const g = guild();
+      const animator = g.apparatus<AnimatorApi>('animator');
+      const status = await animator.getStatus();
+      return c.json(status);
+    },
+  },
+  {
+    method: 'GET',
     path: '/api/animator/sessions',
     handler: async (c: Context) => {
       const status = c.req.query('status');
