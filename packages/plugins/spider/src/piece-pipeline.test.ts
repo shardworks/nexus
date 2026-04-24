@@ -245,9 +245,21 @@ async function preCompleteDraft(stacks: StacksApi, writId: string): Promise<stri
   const rig = rigs[0];
   if (!rig) throw new Error(`No rig for writ ${writId}`);
 
+  const nowIso = new Date().toISOString();
   const updatedEngines = rig.engines.map(e =>
     e.id === 'draft'
-      ? { ...e, status: 'completed' as const, yields: DRAFT_YIELDS, completedAt: new Date().toISOString() }
+      ? {
+          ...e,
+          status: 'completed' as const,
+          attempts: [
+            {
+              startedAt: nowIso,
+              endedAt: nowIso,
+              status: 'completed' as const,
+              yields: DRAFT_YIELDS,
+            },
+          ],
+        }
       : e,
   );
   await book.patch(rig.id, { engines: updatedEngines });
@@ -392,16 +404,16 @@ describe('implement-loop engine', () => {
     const lastSession = sessions[sessions.length - 1];
     await sessBook.patch(lastSession.id, { status: 'failed', error: 'Task failed' });
 
-    // Collect → rig should go stuck
+    // Collect → rig should fail
     const r = await spider.crawl();
     assert.equal(r?.action, 'rig-completed');
     if (r?.action === 'rig-completed') {
-      assert.equal(r.outcome, 'stuck', 'Rig should be stuck after piece failure');
+      assert.equal(r.outcome, 'failed', 'Rig should be failed after piece failure');
     }
 
     // Verify the rig status
     const rigs = await rigsBook(s).find({ where: [['writId', '=', mandate.id]] });
-    assert.equal(rigs[0].status, 'stuck');
+    assert.equal(rigs[0].status, 'failed');
   });
 
   it('piece-session transitions piece writs on completion', async () => {
@@ -424,13 +436,14 @@ describe('implement-loop engine', () => {
     assert.equal(updatedPiece.phase, 'completed');
   });
 
-  it('piece writ stays open on session failure — collect() is not called', async () => {
+  it('piece writ is cancelled by cascade when session fails and mandate reaches failed', async () => {
     // Design: Spider's tryCollect() calls failEngine() directly for failed sessions
     // and never invokes the engine's collect() method. This means piece-session
-    // cannot transition the piece writ to 'failed' on session failure.
+    // cannot itself transition the piece writ on session failure.
     //
-    // The piece writ remains 'open' until the mandate reaches a terminal state,
-    // at which point Clerk's parent/child cascade cancels remaining child writs.
+    // In the new engine-retry model, engine-failure transitions the mandate writ
+    // directly to `phase='failed'`. Clerk's parent/child cascade then cancels
+    // remaining open child writs, so the piece ends up `cancelled`.
     const { clerk, spider, stacks: s } = fix;
 
     const mandate = await clerk.post({ title: 'Fail transition', body: 'Spec', codex: 'test', draft: true });
@@ -449,12 +462,12 @@ describe('implement-loop engine', () => {
     const lastSession = sessions[sessions.length - 1];
     await sessBook.patch(lastSession.id, { status: 'failed', error: 'Build failed' });
 
-    await spider.crawl(); // failEngine → rig stuck
+    await spider.crawl(); // failEngine → rig failed → mandate failed → child cascaded to cancelled
 
-    // The piece writ stays 'open' because collect() was never called.
+    // The piece writ is cancelled by Clerk's parent/child cascade.
     const updatedPiece = await clerk.show(piece.id);
-    assert.equal(updatedPiece.phase, 'open',
-      'Piece writ stays open — failEngine bypasses collect, so no transition occurs');
+    assert.equal(updatedPiece.phase, 'cancelled',
+      'Piece writ is cancelled by cascade when the mandate writ transitions to failed');
   });
 
   it('dynamically added pieces are picked up after the current piece completes', async () => {
@@ -699,7 +712,8 @@ describe('piece-session collect() — transition error classification', () => {
     const rigs = await rigsBook(s).find({ where: [['writId', '=', mandate.id]] });
     const pieceEngine = rigs[0]!.engines.find((e) => e.id === 'piece-0');
     assert.ok(pieceEngine, 'piece-0 engine must exist in the rig');
-    const pieceYields = pieceEngine!.yields as Record<string, unknown> | undefined;
+    const pieceTail = pieceEngine!.attempts?.[pieceEngine!.attempts.length - 1];
+    const pieceYields = pieceTail?.yields as Record<string, unknown> | undefined;
     assert.ok(pieceYields, 'piece-0 engine should have yields recorded');
     assert.equal(pieceYields!.pieceStatus, 'cancelled',
       'yields should include the observed piece writ status');
@@ -763,7 +777,8 @@ describe('piece-session collect() — transition error classification', () => {
     const rigs = await rigsBook(s).find({ where: [['writId', '=', mandate.id]] });
     const pieceEngine = rigs[0]!.engines.find((e) => e.id === 'piece-0');
     assert.ok(pieceEngine, 'piece-0 engine must exist in the rig');
-    const pieceYields = pieceEngine!.yields as Record<string, unknown> | undefined;
+    const pieceTail = pieceEngine!.attempts?.[pieceEngine!.attempts.length - 1];
+    const pieceYields = pieceTail?.yields as Record<string, unknown> | undefined;
     assert.ok(pieceYields, 'piece-0 engine should have yields recorded');
     assert.equal(pieceYields!.pieceStatus, 'open',
       'yields should reflect the observed (unchanged) piece writ status');

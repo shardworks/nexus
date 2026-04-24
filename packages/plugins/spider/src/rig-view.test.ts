@@ -128,8 +128,30 @@ describe('rig-view aggregator', () => {
       status: 'running',
       createdAt: new Date().toISOString(),
       engines: [
-        { id: 'implement', designId: 'implement', status: 'completed', upstream: [], givensSpec: {}, sessionId: 'sess-a' },
-        { id: 'review', designId: 'review', status: 'running', upstream: ['implement'], givensSpec: {}, sessionId: 'sess-b' },
+        {
+          id: 'implement',
+          designId: 'implement',
+          status: 'completed',
+          upstream: [],
+          givensSpec: {},
+          attempts: [{
+            startedAt: '2024-01-01T00:00:00Z',
+            endedAt: '2024-01-01T00:00:01Z',
+            status: 'completed' as const,
+            sessionId: 'sess-a',
+          }],
+        },
+        {
+          id: 'review',
+          designId: 'review',
+          status: 'running',
+          upstream: ['implement'],
+          givensSpec: {},
+          attempts: [{
+            startedAt: '2024-01-01T00:00:00Z',
+            sessionId: 'sess-b',
+          }],
+        },
         { id: 'seal', designId: 'seal', status: 'pending', upstream: ['review'], givensSpec: {} },
       ],
     };
@@ -157,7 +179,19 @@ describe('rig-view aggregator', () => {
       status: 'running',
       createdAt: new Date().toISOString(),
       engines: [
-        { id: 'anim', designId: 'implement', status: 'completed', upstream: [], givensSpec: {}, sessionId: 'sess-c' },
+        {
+          id: 'anim',
+          designId: 'implement',
+          status: 'completed',
+          upstream: [],
+          givensSpec: {},
+          attempts: [{
+            startedAt: '2024-01-01T00:00:00Z',
+            endedAt: '2024-01-01T00:00:01Z',
+            status: 'completed' as const,
+            sessionId: 'sess-c',
+          }],
+        },
       ],
     };
 
@@ -175,7 +209,17 @@ describe('rig-view aggregator', () => {
       status: 'running',
       createdAt: new Date().toISOString(),
       engines: [
-        { id: 'anim', designId: 'implement', status: 'running', upstream: [], givensSpec: {}, sessionId: 'sess-missing' },
+        {
+          id: 'anim',
+          designId: 'implement',
+          status: 'running',
+          upstream: [],
+          givensSpec: {},
+          attempts: [{
+            startedAt: '2024-01-01T00:00:00Z',
+            sessionId: 'sess-missing',
+          }],
+        },
       ],
     };
 
@@ -193,7 +237,17 @@ describe('rig-view aggregator', () => {
       status: 'running',
       createdAt: new Date().toISOString(),
       engines: [
-        { id: 'anim', designId: 'implement', status: 'running', upstream: [], givensSpec: {}, sessionId: 'sess-running' },
+        {
+          id: 'anim',
+          designId: 'implement',
+          status: 'running',
+          upstream: [],
+          givensSpec: {},
+          attempts: [{
+            startedAt: '2024-01-01T00:00:00Z',
+            sessionId: 'sess-running',
+          }],
+        },
       ],
     };
 
@@ -212,7 +266,19 @@ describe('rig-view aggregator', () => {
         status: 'running',
         createdAt: new Date().toISOString(),
         engines: [
-          { id: 'anim', designId: 'implement', status: 'completed', upstream: [], givensSpec: {}, sessionId: 'sess-x' },
+          {
+            id: 'anim',
+            designId: 'implement',
+            status: 'completed',
+            upstream: [],
+            givensSpec: {},
+            attempts: [{
+              startedAt: '2024-01-01T00:00:00Z',
+              endedAt: '2024-01-01T00:00:01Z',
+              status: 'completed' as const,
+              sessionId: 'sess-x',
+            }],
+          },
         ],
       },
       {

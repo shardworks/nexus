@@ -5,9 +5,12 @@
  *
  *  - tryCollect on `rate-limited` session status now routes the engine
  *    through the unified failure handler's rate-limit branch: the
- *    engine returns to `pending` with `holdReason='rate-limit'` +
+ *    engine returns to `pending` with `holdReason='animator-paused'` +
  *    `holdCondition={ sessionId }` and does NOT consume a retry
  *    attempt. The rig stays `running` (status is a pure projection).
+ *    The `holdReason` MUST match the registered BlockType id so the
+ *    dispatch predicate's gate check resolves; writing a made-up id
+ *    would leave the gate unresolvable and hot-loop.
  *  - The dispatch predicate's external-gate check delegates to the
  *    `animator-paused` BlockType's `check()`. When the Animator is
  *    running again, the predicate clears the hold and dispatches.
@@ -175,7 +178,7 @@ describe('Spider — rate-limit integration', () => {
     clearGuild();
   });
 
-  it('tryCollect on rate-limited session transitions the engine to pending + holdReason="rate-limit"', async () => {
+  it('tryCollect on rate-limited session transitions the engine to pending + holdReason="animator-paused"', async () => {
     const writ = await fix.clerk.post({ title: 'rate-limit collect test' });
     // Spawn the rig.
     await fix.spider.crawl();
@@ -213,16 +216,90 @@ describe('Spider — rate-limit integration', () => {
     const result = await fix.spider.crawl();
     assert.ok(result);
     assert.equal(result!.action, 'engine-held');
-    assert.equal((result as { holdReason: string }).holdReason, 'rate-limit');
+    // The persisted holdReason matches the registered BlockType id so
+    // the dispatch predicate's gate check resolves.
+    assert.equal((result as { holdReason: string }).holdReason, 'animator-paused');
 
     const [updatedRig] = await rigsBook.find({ where: [['id', '=', rig.id]] });
     const impl = updatedRig.engines.find((e: EngineInstance) => e.id === 'impl')!;
     assert.equal(impl.status, 'pending');
-    assert.equal(impl.holdReason, 'rate-limit');
+    assert.equal(impl.holdReason, 'animator-paused');
     assert.deepEqual(impl.holdCondition, { sessionId: fakeSessionId });
     assert.equal(impl.attemptCount, 0, 'rate-limit must not consume retry budget');
     // Rig status is a projection — with the only engine pending, rig stays 'running'.
     assert.equal(updatedRig.status, 'running');
+  });
+
+  it('rate-limited engine stays held across crawl ticks while Animator is paused (regression: gate must resolve)', async () => {
+    // Regression for the bug where handleEngineFailure wrote a made-up
+    // holdReason ('rate-limit') instead of the registered BlockType id
+    // 'animator-paused'. With the bug, evaluateDispatchPredicate's
+    // blockTypeRegistry.get('rate-limit') returned undefined, the
+    // external-gate check short-circuited, and the predicate returned
+    // dispatchable: true on the very next tick — hot-looping and
+    // re-launching the engine while the provider was still rate-limited.
+    const writ = await fix.clerk.post({ title: 'rate-limit hot-loop regression' });
+    await fix.spider.crawl(); // spawn
+
+    const rigsBook = fix.stacks.book<RigDoc>('spider', 'rigs');
+    const [rig] = await rigsBook.find({ where: [['writId', '=', writ.id]] });
+
+    const fakeSessionId = generateId('ses', 4);
+    const updatedEngines = rig.engines.map((e: EngineInstance) =>
+      e.id === 'impl'
+        ? {
+            ...e,
+            status: 'running' as const,
+            attempts: [{ startedAt: new Date().toISOString(), sessionId: fakeSessionId }],
+            attemptCount: 0,
+          }
+        : e,
+    );
+    await rigsBook.patch(rig.id, { engines: updatedEngines });
+
+    const sessions = fix.stacks.book<SessionDoc>('animator', 'sessions');
+    await sessions.put({
+      id: fakeSessionId,
+      status: 'rate-limited',
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      durationMs: 0,
+      provider: 'mock',
+      exitCode: 0,
+      error: 'Rate limited by provider',
+      terminationTag: { kind: 'rate-limit', source: 'ndjson-result' },
+    });
+
+    // Tick 1: tryCollect observes the rate-limit terminal and transitions
+    // the engine to pending + holdReason='animator-paused'.
+    await fix.spider.crawl();
+
+    // Configure the Animator as paused (still rate-limited) so the
+    // BlockType's check() reports 'pending' — gate does NOT clear.
+    fix.setStatus({
+      id: 'current',
+      state: 'paused',
+      pausedSince: new Date().toISOString(),
+      pausedUntil: new Date(Date.now() + 60_000).toISOString(),
+      pauseReason: 'rate-limit',
+      backoffLevel: 0,
+    });
+
+    // Tick 2+: with the gate still closed, the engine must stay
+    // pending+held. If the old bug regressed, the predicate would fall
+    // through to dispatchable: true and call summon() (which throws on
+    // the mock), producing a visible failure or retry mutation.
+    for (let i = 0; i < 3; i++) {
+      await fix.spider.crawl();
+    }
+
+    const [afterRig] = await rigsBook.find({ where: [['id', '=', rig.id]] });
+    const impl = afterRig.engines.find((e: EngineInstance) => e.id === 'impl')!;
+    assert.equal(impl.status, 'pending', 'engine must stay pending while animator is paused');
+    assert.equal(impl.holdReason, 'animator-paused');
+    assert.equal(impl.attemptCount ?? 0, 0, 'rate-limit hold must never consume retry budget');
+    // Rig status is a projection — still running with a held engine.
+    assert.equal(afterRig.status, 'running');
   });
 
   it('crawl() does not spawn a new rig when the Animator is paused (trySpawn gate)', async () => {

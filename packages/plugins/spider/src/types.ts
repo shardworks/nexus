@@ -129,11 +129,16 @@ export interface EngineInstance {
    */
   holdUntil?: string;
   /**
-   * BlockType id describing why the engine is being held. When set, the
-   * dispatch predicate delegates to the BlockType registered under this
-   * id for external-gate evaluation. Well-known values include
-   * `'rate-limit'` (actually resolved via the `animator-paused` BlockType),
-   * `'writ-phase'`, `'scheduled-time'`, `'patron-input'`, `'book-updated'`.
+   * BlockType id describing why the engine is being held. When set to a
+   * value registered in the block type registry, the dispatch predicate
+   * delegates to that BlockType's `check()` for external-gate
+   * evaluation. The internal sentinel `'retry-backoff'` is purely
+   * timer-driven and is not registered in the registry — the predicate
+   * relies on `holdUntil` alone to clear it. Well-known registered
+   * values include `'animator-paused'` (the rate-limit gate — the
+   * engine-failure path writes this id when a session reports a
+   * rate-limit terminal), `'writ-phase'`, `'scheduled-time'`,
+   * `'patron-input'`, and `'book-updated'`.
    */
   holdReason?: string;
   /**
@@ -274,10 +279,15 @@ export interface RigView extends RigDoc {
 
 /**
  * Filters for listing rigs.
+ *
+ * `status` accepts the current four-value `RigStatus` plus the legacy
+ * `'stuck'` and `'blocked'` strings so operators can still filter for
+ * rigs persisted before the engine-level retry reshape. New rigs never
+ * write the legacy values, but the filter tolerates them.
  */
 export interface RigFilters {
   /** Filter by rig status. */
-  status?: RigStatus;
+  status?: RigStatus | 'stuck' | 'blocked';
   /** Maximum number of results (default: 20). */
   limit?: number;
   /** Number of results to skip. */

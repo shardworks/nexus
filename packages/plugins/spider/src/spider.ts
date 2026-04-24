@@ -1546,7 +1546,12 @@ export function createSpider(): Plugin {
         return {
           ...finalized,
           status: 'pending' as const,
-          holdReason: 'rate-limit',
+          // Use the registered BlockType id so the dispatch predicate's
+          // gate check resolves against the `animator-paused` checker.
+          // Using a made-up id (e.g. 'rate-limit') would leave the gate
+          // unresolvable — the predicate would short-circuit to
+          // `dispatchable: true` and the engine would hot-loop.
+          holdReason: 'animator-paused',
           holdCondition: condition,
           // Leave holdUntil undefined — BlockType `animator-paused`'s
           // check() consults the Animator for the current window.
@@ -1697,7 +1702,18 @@ export function createSpider(): Plugin {
    *
    * Rate-limit terminals route to the failure handler's `rateLimited`
    * branch — the engine returns to `pending` with
-   * `holdReason='rate-limit'`; no budget is consumed.
+   * `holdReason='animator-paused'`; no budget is consumed.
+   *
+   * Legacy tolerance — rigs persisted with 'blocked' or 'stuck' predate
+   * this commission and are intentionally NOT fed into the crawl loop:
+   * they have no engine that the new dispatcher can reason about, and
+   * resurrecting them would risk double-dispatching sessions that already
+   * terminated. They remain visible for operator inspection (`rig show`,
+   * dashboard) and are reachable by explicit operator cancel via the
+   * writ-cancel CDC path or `api.cancel()` (both have legacy-tolerant
+   * branches). The `trySpawn` double-dispatch guard includes 'blocked'
+   * in its "active" set so the writ doesn't spawn a replacement rig
+   * while the legacy one still exists.
    */
   async function tryCollect(): Promise<CrawlResult | null> {
     const runningRigs = await rigsBook.find({ where: [['status', '=', 'running']] });
@@ -1746,7 +1762,10 @@ export function createSpider(): Plugin {
             rateLimited: true,
             rateLimitSessionId: sessionId,
           });
-          return { action: 'engine-held', rigId: rig.id, engineId: engine.id, holdReason: 'rate-limit' };
+          // The persisted holdReason is `'animator-paused'` (see
+          // handleEngineFailure); surface the same id here so
+          // observers see a consistent gate identity.
+          return { action: 'engine-held', rigId: rig.id, engineId: engine.id, holdReason: 'animator-paused' };
         }
 
         if (session.status === 'cancelled') {
@@ -2868,15 +2887,33 @@ export function createSpider(): Plugin {
 
       // Legacy tolerance: rigs persisted with 'stuck' / 'blocked' predate
       // this commission but can still be cancelled by an operator. Treat
-      // them as having no active session to cancel — just mark the rig
-      // cancelled via the rollup wrapper (which honours cancelledAt).
-      const legacyDead = (rig.status as string) === 'stuck';
+      // them as having no active session to cancel — any legacy 'blocked'
+      // engine rows get flipped to 'cancelled' so the rollup can reach
+      // terminal cleanly, then the rollup wrapper (which honours
+      // cancelledAt) writes the rig-level 'cancelled' status. We pass
+      // the rig through with a writable projection of 'running' so the
+      // wrapper's change detection accepts the transition.
+      const legacyDead =
+        (rig.status as string) === 'stuck' || (rig.status as string) === 'blocked';
       const now = new Date().toISOString();
 
       if (legacyDead) {
+        const sanitizedEngines = rig.engines.map((e) => {
+          if ((e.status as string) === 'blocked') {
+            return {
+              ...e,
+              status: 'cancelled' as const,
+              holdUntil: undefined,
+              holdReason: undefined,
+              holdCondition: undefined,
+              lastCheckedAt: undefined,
+            };
+          }
+          return e;
+        });
         await patchRigWithRollup(
           { ...rig, status: 'running' as RigStatus }, // feed the rollup a writable projection
-          rig.engines,
+          sanitizedEngines,
           { cancelledAt: rig.cancelledAt ?? now },
         );
         await rejectPendingInputRequests(rig.id);
@@ -3100,11 +3137,13 @@ export function createSpider(): Plugin {
             if (!rig) return; // No rig for this writ — silent no-op
 
             // Already terminal — silent no-op (avoids redundant cancel cycle).
-            // Legacy rigs persisted with 'stuck'/'blocked' are also treated
-            // as inert here so operator cancel of a writ whose rig predates
-            // this commission doesn't re-enter the cancel flow.
+            // Legacy rigs persisted with 'stuck' or 'blocked' are NOT
+            // treated as terminal here — they are non-terminal in the
+            // legacy shape and must cascade to cancel so operators who
+            // cancel a writ whose rig predates this commission still see
+            // the rig cleaned up. `api.cancel` contains the legacy-tolerant
+            // path that handles these statuses.
             if (rig.status === 'completed' || rig.status === 'failed' || rig.status === 'cancelled') return;
-            if ((rig.status as string) === 'stuck' || (rig.status as string) === 'blocked') return;
 
             await api.cancel(rig.id, { reason: `Writ ${writ.id} cancelled` });
           },
@@ -3172,11 +3211,14 @@ export function createSpider(): Plugin {
             } else if (rig.status === 'failed') {
               // Engine-failure terminal: writ goes directly to phase='failed'
               // (no intermediate stuck). Resolution mirrors the failed
-              // engine's last attempt error.
+              // engine's last attempt error. When no failed engine is
+              // locatable (defensive — the rollup only writes 'failed' if
+              // at least one engine is terminal-failed), we surface the
+              // generic fallback rather than dereferencing a missing engine.
               const failedEngine = rig.engines.find((e) => e.status === 'failed');
               const tail = failedEngine ? latestAttempt(failedEngine) : undefined;
-              const resolution = tail?.error ?? failedEngine?.id
-                ? `Engine "${failedEngine!.id}" failed${tail?.error ? `: ${tail.error}` : ''}`
+              const resolution = failedEngine
+                ? `Engine "${failedEngine.id}" failed${tail?.error ? `: ${tail.error}` : ''}`
                 : 'Engine failure';
               if (!writAlreadyTerminal) {
                 await clerk.transition(rig.writId, 'failed', { resolution });

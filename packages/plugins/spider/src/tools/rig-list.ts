@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { guild } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
-import type { SpiderApi, RigStatus, RigView } from '../types.ts';
+import type { SpiderApi, RigView } from '../types.ts';
 import { enrichRigViews } from '../rig-view.ts';
 
 export default tool({
@@ -21,10 +21,19 @@ export default tool({
     'Each entry includes an aggregated costSummary and engineCosts map derived ' +
     'from the animator sessions book — useful for dashboards; safe to ignore.',
   params: {
+    // The four new-model statuses plus 'stuck' / 'blocked' as deprecated
+    // legacy values. Legacy rigs persisted before this commission may
+    // still carry those strings — operators need a way to inspect them
+    // via the normal filter. New rigs never write either value.
     status: z
-      .enum(['running', 'completed', 'failed', 'cancelled'])
+      .enum(['running', 'completed', 'failed', 'cancelled', 'stuck', 'blocked'])
       .optional()
-      .describe('Filter by rig status.'),
+      .describe(
+        'Filter by rig status. Values: running | completed | failed | cancelled. ' +
+          'The deprecated values "stuck" and "blocked" are also accepted to let ' +
+          'operators inspect rigs that predate the engine-level retry reshape; ' +
+          'new rigs never write those values.',
+      ),
     limit: z
       .number()
       .optional()
@@ -39,7 +48,7 @@ export default tool({
     const g = guild();
     const spider = g.apparatus<SpiderApi>('spider');
     const rigs = await spider.list({
-      status: params.status as RigStatus | undefined,
+      status: params.status,
       limit: params.limit,
       offset: params.offset,
     });

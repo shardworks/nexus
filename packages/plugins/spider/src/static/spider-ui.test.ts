@@ -150,11 +150,16 @@ describe('spider.js cancel button', () => {
     );
   });
 
-  it('cancel button is conditional on rig status running or blocked', () => {
+  it('cancel button is conditional on rig status running', () => {
+    // After the engine-level retry reshape, `rig.status === 'blocked'`
+    // no longer exists as a live status — an engine held on a retry
+    // timer or external gate is `pending` while the rig stays
+    // `running`. The cancel button's visibility therefore gates on
+    // `running` alone.
     assert.match(
       spiderJs,
-      /currentRig\.status === 'running' \|\| currentRig\.status === 'blocked'/,
-      'showCancel should check for running or blocked rig status',
+      /currentRig\.status === 'running'/,
+      'showCancel should check for running rig status',
     );
   });
 
@@ -820,14 +825,19 @@ describe('spider.js elapsed ticker', () => {
     );
   });
 
-  it('updateEngineDetail starts the ticker for running engines with a startedAt', () => {
+  it('updateEngineDetail starts the ticker for running engines with an attempt start', () => {
+    // After the engine-level retry reshape, engine-level `startedAt`
+    // no longer exists — the attempt's startedAt lives on
+    // `attempts[-1]`. The UI reads it via a local variable derived
+    // from `latestAttempt(engine)`; the ticker start still gates on
+    // engine.status === 'running' and a non-null attempt start.
     const updaterBlock = spiderJs.match(
       /function updateEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
     );
     assert.ok(updaterBlock, 'should find updateEngineDetail');
     assert.match(
       updaterBlock[0],
-      /engine\.status\s*===\s*'running'\s*&&\s*engine\.startedAt[\s\S]*?startElapsedTimer\(/,
+      /engine\.status\s*===\s*'running'\s*&&\s*attemptStartedAt[\s\S]*?startElapsedTimer\(/,
       'updateEngineDetail should start the elapsed ticker for running engines',
     );
   });

@@ -4,7 +4,7 @@ The Spider is the guild's rig execution engine. It spawns rigs for open writs, d
 
 The Spider's state model is:
 
-- **`EngineStatus`** — `'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped'`. Holds (rate-limit, block-type, retry back-off) are **pending-plus-metadata**, not a distinct state: `status='pending'` + `holdReason` / `holdUntil` / `holdCondition` on the engine instance.
+- **`EngineStatus`** — `'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped'`. Holds (rate-limit, block-type, retry back-off) are **pending-plus-metadata**, not a distinct state: `status='pending'` + `holdReason` / `holdUntil` / `holdCondition` on the engine instance. `holdReason` is either a registered BlockType id (e.g. `'animator-paused'` — the rate-limit gate) or the sentinel `'retry-backoff'` for purely timer-driven retry holds (no BlockType; cleared when `holdUntil` elapses).
 - **`RigStatus`** — `'running' | 'completed' | 'failed' | 'cancelled'`. Rig status is a **pure projection** of the engine set: running if any engine is non-terminal, failed if any terminal-failed with no running, completed if all terminal-success with at least one completed, cancelled if `cancelledAt` is set. It is never written independently — every engine-state-change goes through a patch-wrapper (`patchRigWithRollup`) that recomputes the status and writes both fields in one transaction.
 - **Retry** — opt-in on engine designs via a nested `retry: { maxAttempts, backoff }` block. Transient failures (session crash, engine throw) retry in place on the same rig up to the design's budget, with exponential back-off. Rate-limit is a hold (no budget consumed); definitional failures (invalid graft, unknown design, non-serializable yields) fail terminally on first observation. Legacy rigs persisted with `'stuck'` / `'blocked'` statuses remain in place — readers tolerate them; no migration.
 - **Attempts** — every engine dispatch appends a row to `attempts[]` carrying `startedAt`, `endedAt`, terminal `status`, optional `error`, `sessionId`, and `yields`. Scalar engine-level `startedAt` / `completedAt` / `error` / `sessionId` / `yields` fields **do not exist** — `attempts[-1]` is authoritative.
@@ -379,10 +379,10 @@ The Spider contributes books, tools, engines, and a role for rig inspection and 
 
 | Tool | Permission | Description |
 |---|---|---|
-| `rig-list` | `read` | List rigs with optional status/limit filters (returns enriched `RigView[]`) |
-| `rig-show` | `read` | Show full detail for a rig by id (returns enriched `RigView`) |
-| `rig-resume` | `write` | Manually clear a block on a specific engine |
-| `rig-cancel` | `write` | Cancel a running, blocked, or stuck rig |
+| `rig-list` | `read` | List rigs with optional status/limit filters (returns enriched `RigView[]`). `--status` accepts the four current values (`running`/`completed`/`failed`/`cancelled`) **plus** the deprecated legacy values `stuck` and `blocked` for inspecting rigs that predate the engine-level retry reshape. |
+| `rig-show` | `read` | Show full detail for a rig by id. Default `--format text` renders a human-readable CLI view surfacing per-engine attempt count, hold state (`holdReason` / `holdUntil` / `lastCheckedAt`), and the latest attempt's error — the minimum bar the engine-level retry commission calls for. Pass `--format json` for the raw enriched `RigView`. |
+| `rig-resume` | `write` | Manually clear a hold on a specific pending engine |
+| `rig-cancel` | `write` | Cancel a running rig (also tolerates legacy `'stuck'` / `'blocked'` rigs) |
 | `crawl` | `write` | Execute a single crawl step |
 | `crawl-continual` | `write` | Poll `crawl()` in a loop until no work remains |
 
