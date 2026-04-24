@@ -319,7 +319,7 @@ describe('Clerk', () => {
 
     it('resolves a short id prefix to the full id', async () => {
       const posted = await clerk.post({ title: 'Prefix', body: 'Body' });
-      // Writ ids are `w-{base36_timestamp}{hex_random}` — the `w-{timestamp}`
+      // Writ ids are `w-{base36_timestamp}-{hex_random}` — the `w-{timestamp}`
       // segment before the final hyphen is the short display form.
       const shortId = posted.id.slice(0, posted.id.lastIndexOf('-'));
       const resolved = await clerk.resolveId(shortId);

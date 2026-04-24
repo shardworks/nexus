@@ -270,7 +270,7 @@ interface ClerkApi {
 
 ```typescript
 interface WritDoc {
-  /** Unique writ id (prefixed, sortable: `w-{base36_timestamp}{hex_random}`). */
+  /** Unique writ id (prefixed, sortable: `w-{base36_timestamp}-{hex_random}`). */
   id: string
   /** Writ type — guild vocabulary. e.g. "mandate", "task", "bug". */
   type: string
@@ -626,7 +626,7 @@ The patron's experience doesn't change — they still call `commission-post`. Th
 
 - Standalone apparatus package at `packages/plugins/clerk/`. Requires only the Stacks.
 - `WritDoc.type` uses a guild-defined vocabulary, not a framework enum. The Clerk validates against `clerk.writTypes` in the apparatus config section but the framework imposes no meaning on the type name.
-- Writ ids use the format `w-{base36_timestamp}{hex_random}` — sortable by creation time, unique without coordination. Not a formal ULID, but provides the same useful properties (temporal ordering, no coordination).
+- Writ ids use the format `w-{base36_timestamp}-{hex_random}`, produced by `generateId('w', 6)` — sortable by creation time, unique without coordination. Not a formal ULID, but provides the same useful properties (temporal ordering, no coordination).
 - The `transition()` method is the single choke point for all phase changes. All tools and future integrations go through it. This is where validation, timestamp setting, event emission, and hierarchy cascade happen. The observation slot `status` is a managed field stripped from the body alongside `id`, `phase`, timestamps, and `parentId`; the one sanctioned slot-write path is `setWritStatus()`, which performs a transactional read-modify-write on the sub-slot keyed by `pluginId` so sibling sub-slots are preserved under concurrent writers.
 - When the Clockworks is eventually added as a recommended dependency, resolve it at emit time via `guild().apparatus()`, not at startup — so the Clerk functions with or without it.
 - Parent/child cascade uses a Phase 1 CDC watcher (`failOnError: true`) so cascade operations are transactional — if a cascade step fails, the triggering transition rolls back.

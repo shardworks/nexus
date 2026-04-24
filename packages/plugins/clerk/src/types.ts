@@ -33,7 +33,7 @@ export type WritPhase = 'new' | 'open' | 'stuck' | 'completed' | 'failed' | 'can
 export interface WritDoc {
   /** Index signature required to satisfy BookEntry constraint. */
   [key: string]: unknown;
-  /** Unique writ id (`w-{base36_timestamp}{hex_random}`). Sortable by creation time. */
+  /** Unique writ id (`w-{base36_timestamp}-{hex_random}`). Sortable by creation time. */
   id: string;
   /** Writ type — must be a type declared in guild config, or a built-in type. */
   type: string;
