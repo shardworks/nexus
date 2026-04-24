@@ -12,11 +12,16 @@ export default tool({
   params: {
     id: z.string().describe('Root click ID or prefix'),
     format: z.enum(['md', 'json']).default('md').describe('Output format (default: md)'),
+    depth: z.number().optional().describe('Maximum tree depth to display (0 = roots only)'),
   },
   permission: 'read',
   handler: async (params) => {
     const ratchet = guild().apparatus<RatchetApi>('ratchet');
     const resolvedId = await ratchet.resolveId(params.id);
-    return ratchet.extract(resolvedId, { format: params.format, full: true });
+    return ratchet.extract(resolvedId, {
+      format: params.format,
+      full: true,
+      depth: params.depth,
+    });
   },
 });

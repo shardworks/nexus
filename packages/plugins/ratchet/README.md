@@ -193,6 +193,7 @@ const tree = await ratchet.extract(root.id, { format: 'json' });       // JSON, 
 |---|---|---|---|
 | `format` | `'md' \| 'json'` | — | Output format |
 | `full` | `boolean` | `false` | Include conclusions (default: goals only) |
+| `depth` | `number` | — | Maximum tree depth |
 
 ### `tree(params?): Promise<ClickTree[]>`
 

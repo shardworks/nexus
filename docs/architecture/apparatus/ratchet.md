@@ -322,6 +322,7 @@ Render a subtree as a structured markdown or JSON document. Each click block car
 | `id` | `string` | yes | Subtree root |
 | `full` | `boolean` | no | Include conclusions (default: goals only) |
 | `format` | `string` | no | `md` (default) or `json` |
+| `depth` | `number` | no | Max nesting depth |
 
 ### `click-park`
 
@@ -428,12 +429,6 @@ Circular parentage is rejected at the API level.
 Click links can reference both click IDs and writ IDs in their `targetId` field. The Ratchet does not validate that the target exists in the other substrate — it stores the reference as-is. This is a deliberate design choice: cross-substrate referential integrity would couple the Ratchet to the Clerk, which violates their peer relationship.
 
 The `commissioned` link type is the primary cross-substrate pattern: a click is concluded, a mandate writ is created from its conclusion, and a `commissioned` link connects them.
-
----
-
-## Open Questions
-
-- **`extract` depth control.** Should `extract` support a `--depth` parameter like `tree`, or always render the full subtree? Full subtree is simpler; depth control is useful for large trees.
 
 ---
 

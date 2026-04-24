@@ -962,6 +962,78 @@ describe('Ratchet', () => {
     });
   });
 
+  // ── extract with depth ────────────────────────────────────────
+
+  describe('extract with depth', () => {
+    it('depth 0 returns only the root in markdown', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      await ratchet.create({ goal: 'Child', parentId: root.id });
+
+      const md = await ratchet.extract(root.id, { format: 'md', depth: 0 }) as string;
+      assert.ok(md.includes('Root'), 'root goal should be present');
+      assert.ok(!md.includes('Child'), 'child goal should be omitted at depth 0');
+      // Only the root heading, no child ## heading
+      const h2count = (md.match(/^## /gm) || []).length;
+      assert.strictEqual(h2count, 0);
+    });
+
+    it('depth 0 returns only the root in json', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      await ratchet.create({ goal: 'Child', parentId: root.id });
+
+      const tree = await ratchet.extract(root.id, { format: 'json', depth: 0 }) as ClickTree;
+      assert.strictEqual(tree.click.id, root.id);
+      assert.strictEqual(tree.children.length, 0);
+    });
+
+    it('depth 1 returns root + immediate children, no grandchildren, in markdown', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const child = await ratchet.create({ goal: 'Child', parentId: root.id });
+      await ratchet.create({ goal: 'Grandchild', parentId: child.id });
+
+      const md = await ratchet.extract(root.id, { format: 'md', depth: 1 }) as string;
+      assert.ok(md.includes('Root'));
+      assert.ok(md.includes('Child'));
+      assert.ok(!md.includes('Grandchild'), 'grandchild should be pruned at depth 1');
+    });
+
+    it('depth 1 returns root + immediate children, no grandchildren, in json', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const child = await ratchet.create({ goal: 'Child', parentId: root.id });
+      await ratchet.create({ goal: 'Grandchild', parentId: child.id });
+
+      const tree = await ratchet.extract(root.id, { format: 'json', depth: 1 }) as ClickTree;
+      assert.strictEqual(tree.click.id, root.id);
+      assert.strictEqual(tree.children.length, 1);
+      assert.strictEqual(tree.children[0].click.id, child.id);
+      assert.strictEqual(tree.children[0].children.length, 0);
+    });
+
+    it('depth omitted returns the full subtree in markdown (regression)', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const child = await ratchet.create({ goal: 'Child', parentId: root.id });
+      await ratchet.create({ goal: 'Grandchild', parentId: child.id });
+
+      const md = await ratchet.extract(root.id, { format: 'md' }) as string;
+      assert.ok(md.includes('Root'));
+      assert.ok(md.includes('Child'));
+      assert.ok(md.includes('Grandchild'), 'grandchild should be present when depth is omitted');
+    });
+
+    it('depth omitted returns the full subtree in json (regression)', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const child = await ratchet.create({ goal: 'Child', parentId: root.id });
+      const grandchild = await ratchet.create({ goal: 'Grandchild', parentId: child.id });
+
+      const tree = await ratchet.extract(root.id, { format: 'json' }) as ClickTree;
+      assert.strictEqual(tree.click.id, root.id);
+      assert.strictEqual(tree.children.length, 1);
+      assert.strictEqual(tree.children[0].click.id, child.id);
+      assert.strictEqual(tree.children[0].children.length, 1);
+      assert.strictEqual(tree.children[0].children[0].click.id, grandchild.id);
+    });
+  });
+
   // ── Links ──────────────────────────────────────────────────────
 
   describe('links', () => {
@@ -1619,6 +1691,29 @@ describe('Ratchet', () => {
       const result = await clickExtract.handler({ id: click.id, format: 'md' }) as string;
       assert.ok(result.includes('All done'), 'conclusion should appear in CLI output');
       assert.ok(result.includes('Test'), 'goal should appear in CLI output');
+    });
+
+    it('forwards depth to the API in md format', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const child = await ratchet.create({ goal: 'Child', parentId: root.id });
+      await ratchet.create({ goal: 'Grandchild', parentId: child.id });
+
+      const result = await clickExtract.handler({ id: root.id, format: 'md', depth: 1 }) as string;
+      assert.ok(result.includes('Root'));
+      assert.ok(result.includes('Child'));
+      assert.ok(!result.includes('Grandchild'), 'grandchild should be pruned at depth 1');
+    });
+
+    it('forwards depth to the API in json format', async () => {
+      const root = await ratchet.create({ goal: 'Root' });
+      const child = await ratchet.create({ goal: 'Child', parentId: root.id });
+      await ratchet.create({ goal: 'Grandchild', parentId: child.id });
+
+      const result = await clickExtract.handler({ id: root.id, format: 'json', depth: 1 }) as ClickTree;
+      assert.strictEqual(result.click.id, root.id);
+      assert.strictEqual(result.children.length, 1);
+      assert.strictEqual(result.children[0].click.id, child.id);
+      assert.strictEqual(result.children[0].children.length, 0);
     });
   });
 

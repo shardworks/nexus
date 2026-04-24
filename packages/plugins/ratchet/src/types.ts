@@ -104,6 +104,7 @@ export interface UnlinkClickRequest {
 export interface ExtractClickRequest {
   format: 'md' | 'json';
   full?: boolean;
+  depth?: number;
 }
 
 export interface ClickFilters {

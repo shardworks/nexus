@@ -688,7 +688,8 @@ export function createRatchet(): Plugin {
     },
 
     async extract(rootId: string, params: ExtractClickRequest): Promise<string | ClickTree> {
-      const tree = await buildTree(rootId);
+      const opts = { depth: params.depth };
+      const tree = await buildTree(rootId, opts);
       if (tree === null) throw new Error(`Click "${rootId}" not found.`);
       const full = params.full ?? false;
       if (params.format === 'json') {
