@@ -1295,6 +1295,7 @@ describe('observation-lift engine', () => {
       { writIds: [] },
     );
     assert.equal(postCalls.length, 0);
+    assert.equal(mockClerkLinkCalls.length, 0);
   });
 
   it('no-ops with empty writIds when observations is an empty array', async () => {
@@ -1315,6 +1316,7 @@ describe('observation-lift engine', () => {
       { writIds: [] },
     );
     assert.equal(postCalls.length, 0);
+    assert.equal(mockClerkLinkCalls.length, 0);
   });
 
   it('silently skips a legacy string-shaped observations payload', async () => {
@@ -1341,9 +1343,163 @@ describe('observation-lift engine', () => {
       { writIds: [] },
     );
     assert.equal(postCalls.length, 0);
+    assert.equal(mockClerkLinkCalls.length, 0);
   });
 
-  it('happy path — creates one draft mandate writ per observation record', async () => {
+  // ── Flat mode: exactly one observation ─────────────────────────────
+
+  it('flat mode — single observation posts one top-level draft mandate with both lifted-from and spider.follows edges', async () => {
+    const engine = createObservationLiftEngine(() => plansBook);
+    const observations: Observation[] = [
+      {
+        id: 'obs-1',
+        title: 'Replace deprecated helper in src/foo.ts',
+        body: '`renderLegacy` in `src/foo.ts` is superseded by `renderCard`.',
+      },
+    ];
+
+    const plan = makePlan({
+      id: 'w-mandate-flat',
+      codex: 'my-codex',
+      status: 'completed',
+      observations,
+    });
+    await plansBook.put(plan);
+
+    // Track post / link interleaving so we can assert call ordering.
+    const callLog: Array<{ kind: 'post' | 'link'; arg: unknown }> = [];
+
+    const postCalls: Array<Record<string, unknown>> = [];
+    let counter = 0;
+    mockClerkPost = async (params) => {
+      const p = params as Record<string, unknown>;
+      postCalls.push(p);
+      counter += 1;
+      callLog.push({ kind: 'post', arg: p });
+      return { id: `w-obs-flat-${counter}`, title: p.title as string };
+    };
+    mockClerkLink = async (sourceId, targetId, label, kind) => {
+      callLog.push({ kind: 'link', arg: { sourceId, targetId, label, kind } });
+      return {};
+    };
+
+    const result = await engine.run({ planId: plan.id }, buildCtx());
+    assert.equal(result.status, 'completed');
+    const yields = (result as { status: 'completed'; yields: { writIds: string[] } }).yields;
+    assert.deepEqual(yields.writIds, ['w-obs-flat-1']);
+
+    // Exactly one post — a top-level draft mandate (no parentId).
+    assert.equal(postCalls.length, 1);
+    const call = postCalls[0];
+    assert.equal(call.type, 'mandate');
+    assert.equal(call.title, observations[0].title);
+    assert.equal(call.body, observations[0].body);
+    assert.equal(call.codex, 'my-codex');
+    assert.equal(call.draft, true);
+    assert.equal('parentId' in call, false, 'flat-mode writ must be top-level (no parentId)');
+
+    // Two outbound edges, both from the new draft to the originating mandate:
+    //   1. astrolabe.lifted-from (provenance)
+    //   2. spider.follows       (precedence gate)
+    assert.equal(mockClerkLinkCalls.length, 2);
+
+    const liftedLink = mockClerkLinkCalls.find((l) => l.kind === 'astrolabe.lifted-from');
+    assert.ok(liftedLink, 'must emit an astrolabe.lifted-from edge');
+    assert.equal(liftedLink.sourceId, 'w-obs-flat-1');
+    assert.equal(liftedLink.targetId, 'w-mandate-flat');
+    assert.equal(liftedLink.label, 'lifted from');
+
+    const followsLink = mockClerkLinkCalls.find((l) => l.kind === 'spider.follows');
+    assert.ok(followsLink, 'must emit a spider.follows edge');
+    assert.equal(followsLink.sourceId, 'w-obs-flat-1');
+    assert.equal(followsLink.targetId, 'w-mandate-flat');
+    assert.equal(followsLink.label, 'depends on');
+
+    // Call ordering: post comes first, then the two links after it.
+    assert.deepEqual(
+      callLog.map((c) => c.kind),
+      ['post', 'link', 'link'],
+    );
+
+    // The plandoc itself is not mutated — observations array unchanged,
+    // no tracking field added.
+    const after = await plansBook.get(plan.id);
+    assert.deepEqual(after?.observations, observations);
+    assert.equal('observationWritIds' in (after ?? {}), false);
+  });
+
+  it('flat mode — fails fast on clerk.post error; no link is attempted', async () => {
+    const engine = createObservationLiftEngine(() => plansBook);
+    const observations: Observation[] = [
+      { id: 'obs-1', title: 'only — explodes', body: 'b1' },
+    ];
+
+    const plan = makePlan({
+      id: 'w-mandate-flat-post-fail',
+      status: 'completed',
+      observations,
+    });
+    await plansBook.put(plan);
+
+    mockClerkPost = async () => {
+      throw new Error('simulated clerk.post failure');
+    };
+
+    await assert.rejects(
+      () => engine.run({ planId: plan.id }, buildCtx()),
+      (err: Error) => {
+        assert.ok(err.message.includes('simulated clerk.post failure'));
+        return true;
+      },
+    );
+
+    // No links attempted — the post threw before any link call.
+    assert.equal(mockClerkLinkCalls.length, 0);
+  });
+
+  it('flat mode — fails fast on clerk.link error; post persisted but link failed', async () => {
+    const engine = createObservationLiftEngine(() => plansBook);
+    const observations: Observation[] = [
+      { id: 'obs-1', title: 'only — link explodes', body: 'b1' },
+    ];
+
+    const plan = makePlan({
+      id: 'w-mandate-flat-link-fail',
+      status: 'completed',
+      observations,
+    });
+    await plansBook.put(plan);
+
+    let postCounter = 0;
+    mockClerkPost = async (params) => {
+      const p = params as Record<string, unknown>;
+      postCounter += 1;
+      return { id: `w-flat-linkfail-${postCounter}`, title: p.title as string };
+    };
+
+    mockClerkLink = async () => {
+      throw new Error('simulated clerk.link failure');
+    };
+
+    await assert.rejects(
+      () => engine.run({ planId: plan.id }, buildCtx()),
+      (err: Error) => {
+        assert.ok(err.message.includes('simulated clerk.link failure'));
+        return true;
+      },
+    );
+
+    // The first link attempt (astrolabe.lifted-from) threw — the second
+    // (spider.follows) never executed.
+    assert.equal(mockClerkLinkCalls.length, 1);
+    assert.equal(mockClerkLinkCalls[0].sourceId, 'w-flat-linkfail-1');
+    assert.equal(mockClerkLinkCalls[0].targetId, 'w-mandate-flat-link-fail');
+    assert.equal(mockClerkLinkCalls[0].kind, 'astrolabe.lifted-from');
+  });
+
+  // ── Grouped mode: two or more observations ─────────────────────────
+
+  it('grouped mode — creates an observation-set parent plus N draft mandate children with the correct edges', async () => {
     const engine = createObservationLiftEngine(() => plansBook);
     const observations: Observation[] = [
       {
@@ -1364,15 +1520,13 @@ describe('observation-lift engine', () => {
     ];
 
     const plan = makePlan({
-      id: 'w-mandate-parent',
+      id: 'w-mandate-grouped',
       codex: 'my-codex',
       status: 'completed',
       observations,
     });
     await plansBook.put(plan);
 
-    // Track post / link interleaving so we can assert per-record
-    // ordering (post then link, before the next iteration).
     const callLog: Array<{ kind: 'post' | 'link'; arg: unknown }> = [];
 
     const postCalls: Array<Record<string, unknown>> = [];
@@ -1382,7 +1536,9 @@ describe('observation-lift engine', () => {
       postCalls.push(p);
       counter += 1;
       callLog.push({ kind: 'post', arg: p });
-      return { id: `w-obs-child-${counter}`, title: p.title as string };
+      // First post is the group parent, subsequent posts are children.
+      const id = counter === 1 ? 'w-obs-group' : `w-obs-child-${counter - 1}`;
+      return { id, title: p.title as string };
     };
     mockClerkLink = async (sourceId, targetId, label, kind) => {
       callLog.push({ kind: 'link', arg: { sourceId, targetId, label, kind } });
@@ -1391,60 +1547,101 @@ describe('observation-lift engine', () => {
 
     const result = await engine.run({ planId: plan.id }, buildCtx());
     assert.equal(result.status, 'completed');
+
+    // yields.writIds is exactly the N child ids in record order — NOT
+    // including the group parent id.
     const yields = (result as { status: 'completed'; yields: { writIds: string[] } }).yields;
     assert.deepEqual(yields.writIds, ['w-obs-child-1', 'w-obs-child-2', 'w-obs-child-3']);
 
-    assert.equal(postCalls.length, 3);
+    // Four posts total: one group parent + three children.
+    assert.equal(postCalls.length, 4);
 
-    // Each call has the correct shape — type, title, body, codex, parentId, draft
+    // Group parent shape — type observation-set, top-level (no parentId),
+    // title embeds the originating mandate title, body lists the child
+    // titles with a preamble naming the originating writ.
+    const groupPost = postCalls[0];
+    assert.equal(groupPost.type, 'observation-set');
+    assert.equal(groupPost.codex, 'my-codex');
+    assert.equal(groupPost.draft, true);
+    assert.equal('parentId' in groupPost, false, 'group parent must be top-level');
+    assert.equal(groupPost.title, 'Observations from "Mandate for w-mandate-grouped"');
+    const body = groupPost.body as string;
+    assert.ok(
+      body.includes('Mandate for w-mandate-grouped'),
+      'group body preamble must name the originating mandate',
+    );
+    assert.ok(body.includes('w-mandate-grouped'), 'group body preamble must include originating writ id');
+    assert.ok(body.includes(`1. ${observations[0].title}`), 'group body must include numbered child 1');
+    assert.ok(body.includes(`2. ${observations[1].title}`), 'group body must include numbered child 2');
+    assert.ok(body.includes(`3. ${observations[2].title}`), 'group body must include numbered child 3');
+
+    // Each child post is a draft mandate whose parentId is the group
+    // parent's id, with title/body from the matching observation.
     for (let i = 0; i < observations.length; i++) {
-      const call = postCalls[i];
+      const call = postCalls[i + 1];
       const obs = observations[i];
       assert.equal(call.type, 'mandate');
       assert.equal(call.title, obs.title);
       assert.equal(call.body, obs.body);
       assert.equal(call.codex, 'my-codex');
-      assert.equal(call.parentId, 'w-mandate-parent');
+      assert.equal(call.parentId, 'w-obs-group');
       assert.equal(call.draft, true);
     }
 
-    // One spider.follows dependency edge per posted writ, with the
-    // agreed direction (source = new draft, target = originating
-    // mandate), label `'depends on'`, and kind `'spider.follows'`.
-    assert.equal(mockClerkLinkCalls.length, 3);
+    // Edges: exactly 1 group-parent lifted-from + N child spider.follows
+    // (no lifted-from on children, no spider.follows on group parent).
+    assert.equal(mockClerkLinkCalls.length, 1 + observations.length);
+
+    const liftedLinks = mockClerkLinkCalls.filter((l) => l.kind === 'astrolabe.lifted-from');
+    assert.equal(liftedLinks.length, 1, 'exactly one lifted-from edge (on the group parent)');
+    assert.equal(liftedLinks[0].sourceId, 'w-obs-group');
+    assert.equal(liftedLinks[0].targetId, 'w-mandate-grouped');
+    assert.equal(liftedLinks[0].label, 'lifted from');
+
+    const followsLinks = mockClerkLinkCalls.filter((l) => l.kind === 'spider.follows');
+    assert.equal(followsLinks.length, observations.length, 'one spider.follows edge per child');
     for (let i = 0; i < observations.length; i++) {
-      const linkCall = mockClerkLinkCalls[i];
-      assert.equal(linkCall.sourceId, `w-obs-child-${i + 1}`);
-      assert.equal(linkCall.targetId, 'w-mandate-parent');
-      assert.equal(linkCall.label, 'depends on');
-      assert.equal(linkCall.kind, 'spider.follows');
+      const link = followsLinks[i];
+      assert.equal(link.sourceId, `w-obs-child-${i + 1}`);
+      assert.equal(link.targetId, 'w-mandate-grouped');
+      assert.equal(link.label, 'depends on');
     }
 
-    // Per-record ordering: each iteration posts then links before the
-    // next iteration begins. With three observations we expect
-    // [post, link, post, link, post, link].
+    // The group parent must NOT carry a spider.follows edge.
+    const groupFollowsEdge = mockClerkLinkCalls.find(
+      (l) => l.kind === 'spider.follows' && l.sourceId === 'w-obs-group',
+    );
+    assert.equal(groupFollowsEdge, undefined, 'group parent must not carry spider.follows');
+
+    // Children must NOT carry astrolabe.lifted-from edges.
+    const childLiftedEdge = mockClerkLinkCalls.find(
+      (l) => l.kind === 'astrolabe.lifted-from' && l.sourceId.startsWith('w-obs-child-'),
+    );
+    assert.equal(childLiftedEdge, undefined, 'children must not carry lifted-from');
+
+    // Call ordering: group post → group lifted-from link → then per
+    // record: child post → child spider.follows link.
     assert.deepEqual(
       callLog.map((c) => c.kind),
-      ['post', 'link', 'post', 'link', 'post', 'link'],
+      ['post', 'link', 'post', 'link', 'post', 'link', 'post', 'link'],
     );
 
-    // The plandoc itself is not mutated — observations array unchanged,
-    // no tracking field added.
+    // The plandoc itself is not mutated.
     const after = await plansBook.get(plan.id);
     assert.deepEqual(after?.observations, observations);
     assert.equal('observationWritIds' in (after ?? {}), false);
   });
 
-  it('fails fast on clerk.post error; no link is attempted for the failed observation', async () => {
+  it('grouped mode — threshold is 2: two observations produce a grouped output', async () => {
     const engine = createObservationLiftEngine(() => plansBook);
     const observations: Observation[] = [
       { id: 'obs-1', title: 'first', body: 'b1' },
-      { id: 'obs-2', title: 'second — explodes', body: 'b2' },
-      { id: 'obs-3', title: 'third — never reached', body: 'b3' },
+      { id: 'obs-2', title: 'second', body: 'b2' },
     ];
 
     const plan = makePlan({
-      id: 'w-mandate-fail',
+      id: 'w-mandate-two',
+      codex: 'c',
       status: 'completed',
       observations,
     });
@@ -1456,43 +1653,117 @@ describe('observation-lift engine', () => {
       const p = params as Record<string, unknown>;
       postCalls.push(p);
       counter += 1;
-      if (counter === 2) {
-        throw new Error('simulated clerk.post failure');
-      }
-      return { id: `w-created-${counter}`, title: p.title as string };
+      const id = counter === 1 ? 'w-obs-group-2' : `w-obs-child-2-${counter - 1}`;
+      return { id, title: p.title as string };
     };
-    // Default link mock no-ops — extending the original test to also
-    // assert "no link was attempted for the failed-post observation"
-    // (the third call is never reached because we fail fast).
+
+    const result = await engine.run({ planId: plan.id }, buildCtx());
+    assert.equal(result.status, 'completed');
+
+    // Exactly two observations → grouped output (threshold is 2).
+    assert.equal(postCalls.length, 3, 'group parent + 2 children');
+    assert.equal(postCalls[0].type, 'observation-set');
+    assert.equal(postCalls[1].type, 'mandate');
+    assert.equal(postCalls[1].parentId, 'w-obs-group-2');
+    assert.equal(postCalls[2].type, 'mandate');
+    assert.equal(postCalls[2].parentId, 'w-obs-group-2');
+
+    // yields.writIds is only the child ids.
+    const yields = (result as { status: 'completed'; yields: { writIds: string[] } }).yields;
+    assert.deepEqual(yields.writIds, ['w-obs-child-2-1', 'w-obs-child-2-2']);
+  });
+
+  it('grouped mode — fails fast on group-parent clerk.post error before any child post or link', async () => {
+    const engine = createObservationLiftEngine(() => plansBook);
+    const observations: Observation[] = [
+      { id: 'obs-1', title: 'first', body: 'b1' },
+      { id: 'obs-2', title: 'second', body: 'b2' },
+    ];
+
+    const plan = makePlan({
+      id: 'w-mandate-group-post-fail',
+      status: 'completed',
+      observations,
+    });
+    await plansBook.put(plan);
+
+    const postCalls: Array<Record<string, unknown>> = [];
+    mockClerkPost = async (params) => {
+      const p = params as Record<string, unknown>;
+      postCalls.push(p);
+      // First post is the group parent — fail it.
+      throw new Error('simulated group-parent post failure');
+    };
 
     await assert.rejects(
       () => engine.run({ planId: plan.id }, buildCtx()),
       (err: Error) => {
-        assert.ok(
-          err.message.includes('simulated clerk.post failure'),
-          `Expected propagation of the clerk.post error, got: ${err.message}`,
-        );
+        assert.ok(err.message.includes('simulated group-parent post failure'));
         return true;
       },
     );
 
-    // Two posts attempted (the first succeeds, the second throws);
-    // the third is never reached because we fail fast.
-    assert.equal(postCalls.length, 2);
-    assert.equal(postCalls[0].title, 'first');
-    assert.equal(postCalls[1].title, 'second — explodes');
-
-    // Only the first observation's link was issued — the second
-    // observation's post threw before its link could be attempted, and
-    // the third observation never executed at all.
-    assert.equal(mockClerkLinkCalls.length, 1);
-    assert.equal(mockClerkLinkCalls[0].sourceId, 'w-created-1');
-    assert.equal(mockClerkLinkCalls[0].targetId, 'w-mandate-fail');
-    assert.equal(mockClerkLinkCalls[0].label, 'depends on');
-    assert.equal(mockClerkLinkCalls[0].kind, 'spider.follows');
+    // Exactly one post attempted — the group parent — and no link
+    // attempts; children never ran.
+    assert.equal(postCalls.length, 1);
+    assert.equal(postCalls[0].type, 'observation-set');
+    assert.equal(mockClerkLinkCalls.length, 0);
   });
 
-  it('fails fast on clerk.link error; preceding post+link pairs persist, current writ is posted but unlinked', async () => {
+  it('grouped mode — fails fast on child clerk.post error; coherent prefix persists', async () => {
+    const engine = createObservationLiftEngine(() => plansBook);
+    const observations: Observation[] = [
+      { id: 'obs-1', title: 'first', body: 'b1' },
+      { id: 'obs-2', title: 'second — explodes', body: 'b2' },
+      { id: 'obs-3', title: 'third — never reached', body: 'b3' },
+    ];
+
+    const plan = makePlan({
+      id: 'w-mandate-grouped-child-fail',
+      status: 'completed',
+      observations,
+    });
+    await plansBook.put(plan);
+
+    const postCalls: Array<Record<string, unknown>> = [];
+    let counter = 0;
+    mockClerkPost = async (params) => {
+      const p = params as Record<string, unknown>;
+      postCalls.push(p);
+      counter += 1;
+      // Order: 1 = group parent, 2 = child1 (ok), 3 = child2 (fail).
+      if (counter === 3) {
+        throw new Error('simulated child clerk.post failure');
+      }
+      const id = counter === 1 ? 'w-obs-group-fail' : `w-obs-child-fail-${counter - 1}`;
+      return { id, title: p.title as string };
+    };
+
+    await assert.rejects(
+      () => engine.run({ planId: plan.id }, buildCtx()),
+      (err: Error) => {
+        assert.ok(err.message.includes('simulated child clerk.post failure'));
+        return true;
+      },
+    );
+
+    // Three post attempts — group parent, child 1, child 2 (throws).
+    // Child 3 never executed because we failed fast.
+    assert.equal(postCalls.length, 3);
+    assert.equal(postCalls[0].type, 'observation-set');
+    assert.equal(postCalls[1].title, 'first');
+    assert.equal(postCalls[2].title, 'second — explodes');
+
+    // Two links persisted — group parent lifted-from + child 1's
+    // spider.follows. Child 2's post threw before its link was attempted.
+    assert.equal(mockClerkLinkCalls.length, 2);
+    assert.equal(mockClerkLinkCalls[0].kind, 'astrolabe.lifted-from');
+    assert.equal(mockClerkLinkCalls[0].sourceId, 'w-obs-group-fail');
+    assert.equal(mockClerkLinkCalls[1].kind, 'spider.follows');
+    assert.equal(mockClerkLinkCalls[1].sourceId, 'w-obs-child-fail-1');
+  });
+
+  it('grouped mode — fails fast on mid-loop clerk.link error; preceding writs and edges persist', async () => {
     const engine = createObservationLiftEngine(() => plansBook);
     const observations: Observation[] = [
       { id: 'obs-1', title: 'first', body: 'b1' },
@@ -1501,7 +1772,7 @@ describe('observation-lift engine', () => {
     ];
 
     const plan = makePlan({
-      id: 'w-mandate-link-fail',
+      id: 'w-mandate-grouped-link-fail',
       status: 'completed',
       observations,
     });
@@ -1513,14 +1784,19 @@ describe('observation-lift engine', () => {
       const p = params as Record<string, unknown>;
       postCalls.push(p);
       postCounter += 1;
-      return { id: `w-link-fail-${postCounter}`, title: p.title as string };
+      const id = postCounter === 1
+        ? 'w-obs-linkgroup'
+        : `w-obs-linkchild-${postCounter - 1}`;
+      return { id, title: p.title as string };
     };
 
     let linkCounter = 0;
     mockClerkLink = async () => {
       linkCounter += 1;
-      if (linkCounter === 2) {
-        throw new Error('simulated clerk.link failure');
+      // Order: 1 = group lifted-from, 2 = child1 spider.follows,
+      // 3 = child2 spider.follows (throws).
+      if (linkCounter === 3) {
+        throw new Error('simulated mid-loop clerk.link failure');
       }
       return {};
     };
@@ -1528,35 +1804,75 @@ describe('observation-lift engine', () => {
     await assert.rejects(
       () => engine.run({ planId: plan.id }, buildCtx()),
       (err: Error) => {
-        assert.ok(
-          err.message.includes('simulated clerk.link failure'),
-          `Expected propagation of the clerk.link error, got: ${err.message}`,
-        );
+        assert.ok(err.message.includes('simulated mid-loop clerk.link failure'));
         return true;
       },
     );
 
-    // Two posts went through — the first observation's post+link pair
-    // persists, and the second observation's post persists without its
-    // link (the failing call). The third observation never executed.
-    assert.equal(postCalls.length, 2);
-    assert.equal(postCalls[0].title, 'first');
-    assert.equal(postCalls[1].title, 'second — link explodes');
+    // Three posts went through — group parent, child 1, child 2. The
+    // third observation never executed because child 2's link threw.
+    assert.equal(postCalls.length, 3);
+    assert.equal(postCalls[0].type, 'observation-set');
+    assert.equal(postCalls[1].title, 'first');
+    assert.equal(postCalls[2].title, 'second — link explodes');
 
-    // Two link calls were attempted — the first succeeded, the second
-    // threw. The third observation was never reached.
-    assert.equal(mockClerkLinkCalls.length, 2);
+    // Three link attempts: group lifted-from (ok), child 1 spider.follows
+    // (ok), child 2 spider.follows (threw).
+    assert.equal(mockClerkLinkCalls.length, 3);
+    assert.equal(mockClerkLinkCalls[0].kind, 'astrolabe.lifted-from');
+    assert.equal(mockClerkLinkCalls[0].sourceId, 'w-obs-linkgroup');
+    assert.equal(mockClerkLinkCalls[0].targetId, 'w-mandate-grouped-link-fail');
 
-    // First observation: post+link pair fully persisted.
-    assert.equal(mockClerkLinkCalls[0].sourceId, 'w-link-fail-1');
-    assert.equal(mockClerkLinkCalls[0].targetId, 'w-mandate-link-fail');
-    assert.equal(mockClerkLinkCalls[0].label, 'depends on');
-    assert.equal(mockClerkLinkCalls[0].kind, 'spider.follows');
-
-    // Second observation: post persisted, link attempted (and threw).
-    assert.equal(mockClerkLinkCalls[1].sourceId, 'w-link-fail-2');
-    assert.equal(mockClerkLinkCalls[1].targetId, 'w-mandate-link-fail');
-    assert.equal(mockClerkLinkCalls[1].label, 'depends on');
     assert.equal(mockClerkLinkCalls[1].kind, 'spider.follows');
+    assert.equal(mockClerkLinkCalls[1].sourceId, 'w-obs-linkchild-1');
+    assert.equal(mockClerkLinkCalls[1].targetId, 'w-mandate-grouped-link-fail');
+
+    assert.equal(mockClerkLinkCalls[2].kind, 'spider.follows');
+    assert.equal(mockClerkLinkCalls[2].sourceId, 'w-obs-linkchild-2');
+    assert.equal(mockClerkLinkCalls[2].targetId, 'w-mandate-grouped-link-fail');
+  });
+
+  it('grouped mode — fails fast on the group parent lifted-from link error before any child post', async () => {
+    const engine = createObservationLiftEngine(() => plansBook);
+    const observations: Observation[] = [
+      { id: 'obs-1', title: 'first', body: 'b1' },
+      { id: 'obs-2', title: 'second', body: 'b2' },
+    ];
+
+    const plan = makePlan({
+      id: 'w-mandate-group-linkfail-first',
+      status: 'completed',
+      observations,
+    });
+    await plansBook.put(plan);
+
+    const postCalls: Array<Record<string, unknown>> = [];
+    let postCounter = 0;
+    mockClerkPost = async (params) => {
+      const p = params as Record<string, unknown>;
+      postCalls.push(p);
+      postCounter += 1;
+      return { id: `w-obs-glf-${postCounter}`, title: p.title as string };
+    };
+    mockClerkLink = async () => {
+      throw new Error('simulated group lifted-from link failure');
+    };
+
+    await assert.rejects(
+      () => engine.run({ planId: plan.id }, buildCtx()),
+      (err: Error) => {
+        assert.ok(err.message.includes('simulated group lifted-from link failure'));
+        return true;
+      },
+    );
+
+    // Only the group parent was posted; children never ran.
+    assert.equal(postCalls.length, 1);
+    assert.equal(postCalls[0].type, 'observation-set');
+    // One link attempt — the group-parent lifted-from edge.
+    assert.equal(mockClerkLinkCalls.length, 1);
+    assert.equal(mockClerkLinkCalls[0].kind, 'astrolabe.lifted-from');
+    assert.equal(mockClerkLinkCalls[0].sourceId, 'w-obs-glf-1');
+    assert.equal(mockClerkLinkCalls[0].targetId, 'w-mandate-group-linkfail-first');
   });
 });

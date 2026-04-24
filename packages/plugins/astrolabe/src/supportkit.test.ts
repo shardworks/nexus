@@ -59,16 +59,40 @@ describe('Astrolabe supportKit shape', () => {
 
   // ── R5: writTypes ──────────────────────────────────────────────────
 
-  it('contributes piece writType and does not contribute brief', () => {
+  it('contributes piece and observation-set writTypes and does not contribute brief', () => {
     const kit = getKit(plugin);
     const writTypes = kit.writTypes as Array<{ name: string; description?: string }>;
     assert.ok(Array.isArray(writTypes), 'writTypes must be an array');
-    assert.equal(writTypes.length, 1, 'must have exactly one writ type');
+    assert.equal(writTypes.length, 2, 'must have exactly two writ types');
     const piece = writTypes.find(w => w.name === 'piece');
     assert.ok(piece, 'piece writType must exist');
     assert.ok(piece.description);
+    const observationSet = writTypes.find(w => w.name === 'observation-set');
+    assert.ok(observationSet, 'observation-set writType must exist');
+    assert.ok(observationSet.description);
     const brief = writTypes.find(w => w.name === 'brief');
     assert.equal(brief, undefined, 'brief writType must not be contributed');
+  });
+
+  // ── linkKinds ──────────────────────────────────────────────────────
+
+  it('contributes astrolabe.lifted-from link kind', () => {
+    const kit = getKit(plugin);
+    const linkKinds = kit.linkKinds as Array<{ id: string; description?: string }>;
+    assert.ok(Array.isArray(linkKinds), 'linkKinds must be an array');
+    assert.equal(linkKinds.length, 1, 'must have exactly one link kind');
+    const liftedFrom = linkKinds.find(k => k.id === 'astrolabe.lifted-from');
+    assert.ok(liftedFrom, 'astrolabe.lifted-from link kind must exist');
+    assert.ok(liftedFrom.description && liftedFrom.description.length > 0);
+  });
+
+  it('observation-set writ type is non-dispatchable (no rigTemplateMappings entry)', () => {
+    const kit = getKit(plugin);
+    const mappings = kit.rigTemplateMappings as Record<string, string>;
+    assert.equal(
+      mappings['observation-set'], undefined,
+      'observation-set must not map to a rig template — it is a pure container type',
+    );
   });
 
   // ── R6: roles ──────────────────────────────────────────────────────
