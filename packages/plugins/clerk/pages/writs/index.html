@@ -462,12 +462,31 @@
 
     // ── Render ─────────────────────────────────────────────────────────
 
+    /**
+     * Pure empty-state message chooser — invoked from renderTable's empty
+     * branch. When the operator has deselected every type filter, name both
+     * the cause and the remedy; for every other empty case (empty backend
+     * result, phase filter with no hits, search text with no matches) fall
+     * back to the generic "No writs found." message. `forestIsEmpty`
+     * documents the caller's precondition (this helper is only meaningful
+     * when the table is actually empty) but does not change the decision —
+     * the type-deselected branch always wins when it applies, because that
+     * is the only case where loadWrits short-circuits the network fetch.
+     */
+    function chooseEmptyStateMessage(noTypesSelected, forestIsEmpty) {
+      if (noTypesSelected) {
+        return 'All types deselected — select at least one type to see writs';
+      }
+      return 'No writs found.';
+    }
+
     function renderTable() {
       const tbody = document.getElementById('writ-tbody');
       const visible = sortedFilteredWrits();
 
       if (visible.length === 0 && forest.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state">No writs found.</div></td></tr>`;
+        const message = chooseEmptyStateMessage(currentType.size === 0, forest.length === 0);
+        tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state">${message}</div></td></tr>`;
         return;
       }
 

@@ -227,6 +227,20 @@ function depthIndentStyle(depth) {
 }
 
 /**
+ * Mirrors chooseEmptyStateMessage in index.html. Pure: decides which
+ * empty-state message to show when the writs table is empty. When the
+ * operator has deselected every type filter, name both the cause and the
+ * remedy; every other empty case (empty backend result, phase filter with
+ * no hits, search text with no matches) falls back to the generic message.
+ */
+function chooseEmptyStateMessage(noTypesSelected, forestIsEmpty) {
+  if (noTypesSelected) {
+    return 'All types deselected — select at least one type to see writs';
+  }
+  return 'No writs found.';
+}
+
+/**
  * Extracted renderDetail logic for parent link and children table.
  * The detail view stays direct-children-only (D20).
  */
@@ -999,5 +1013,29 @@ describe('Deep descendant rendering in detail view', () => {
     // Depth 1 (open phase) gets Cancel only
     assert.ok(html.match(/data-action="row-cancel"[^>]*data-id="g"/));
     assert.ok(!html.match(/data-action="row-publish"[^>]*data-id="g"/));
+  });
+});
+
+describe('chooseEmptyStateMessage — empty-state message chooser', () => {
+  it('returns the type-deselected message when no types are selected', () => {
+    // When the operator toggles off every type filter, loadWrits short-
+    // circuits with forest = [] and renderTable reaches the empty branch
+    // with currentType.size === 0. The chooser must name the deselection
+    // as the cause and direct the operator to the remedy — verbatim.
+    assert.equal(
+      chooseEmptyStateMessage(true, true),
+      'All types deselected — select at least one type to see writs',
+    );
+  });
+
+  it('returns the generic "No writs found." message when at least one type is selected but the forest is empty', () => {
+    // Phase filter with no hits, search text with no matches, or a valid
+    // filter set that genuinely returns nothing — all fall through to the
+    // generic message. The string is kept exact so wording drift breaks
+    // the suite.
+    assert.equal(
+      chooseEmptyStateMessage(false, true),
+      'No writs found.',
+    );
   });
 });
