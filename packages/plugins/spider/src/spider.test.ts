@@ -28,7 +28,7 @@ import type { AnimatorApi, SummonRequest, AnimateHandle, SessionChunk, SessionRe
 import { z } from 'zod';
 
 import { createSpider, countRunningEngines, countRunningEnginesInRig } from './spider.ts';
-import type { SpiderApi, RigDoc, EngineInstance, ReviewYields, MechanicalCheck, RigTemplate, BlockRecord, BlockType, CheckResult, SpiderEngineRunResult, SpiderCollectResult, InputRequestDoc } from './types.ts';
+import type { SpiderApi, RigDoc, RigView, EngineInstance, ReviewYields, MechanicalCheck, RigTemplate, BlockRecord, BlockType, CheckResult, SpiderEngineRunResult, SpiderCollectResult, InputRequestDoc } from './types.ts';
 
 import animaSessionEngine from './engines/anima-session.ts';
 
@@ -3185,6 +3185,38 @@ describe('Spider tools — handler delegation', () => {
       assert.equal(typeof result.createdAt, 'string');
     });
 
+    it('populates writTitle from the clerk/writs book', async () => {
+      const fix = buildFixture();
+      const { clerk, spider } = fix;
+      const writ = await postWrit(clerk, 'A rig title regression guard');
+      await spider.crawl(); // spawn
+
+      const rigs = await spider.list();
+      const rigId = rigs[0].id;
+
+      const result = await rigShowTool.handler({ id: rigId }) as RigView;
+      assert.equal(result.writId, writ.id);
+      assert.equal(result.writTitle, 'A rig title regression guard');
+    });
+
+    it('leaves writTitle unset when the writ cannot be resolved', async () => {
+      const fix = buildFixture();
+      const { stacks } = fix;
+      // Seed a rig whose writId does not exist in clerk/writs.
+      const book = rigsBook(stacks);
+      await book.put({
+        id: 'rig-orphan',
+        writId: 'w-does-not-exist',
+        status: 'running',
+        engines: [],
+        createdAt: new Date().toISOString(),
+      });
+
+      const result = await rigShowTool.handler({ id: 'rig-orphan' }) as RigView;
+      assert.equal(result.writId, 'w-does-not-exist');
+      assert.equal(result.writTitle, undefined, 'writTitle must be absent when the writ is missing');
+    });
+
     it('throws with "not found" message for an unknown rig id', async () => {
       buildFixture();
       await assert.rejects(
@@ -3266,6 +3298,43 @@ describe('Spider tools — handler delegation', () => {
 
       const page = await rigListTool.handler({ limit: 2, offset: 2 }) as RigDoc[];
       assert.equal(page.length, 1);
+    });
+
+    it('populates writTitle on every RigView from the clerk/writs book', async () => {
+      const fix = buildFixture();
+      const { clerk, spider } = fix;
+      await postWrit(clerk, 'Writ-title join coverage');
+      await spider.crawl(); // spawn
+
+      const rigs = await rigListTool.handler({}) as RigView[];
+      assert.equal(rigs.length, 1);
+      assert.equal(rigs[0].writTitle, 'Writ-title join coverage');
+    });
+
+    it('leaves writTitle unset for rigs whose writs are missing from the book', async () => {
+      const fix = buildFixture();
+      const { stacks } = fix;
+      const book = rigsBook(stacks);
+      await book.put({
+        id: 'rig-missing-a',
+        writId: 'w-absent-a',
+        status: 'running',
+        engines: [],
+        createdAt: new Date().toISOString(),
+      });
+      await book.put({
+        id: 'rig-missing-b',
+        writId: 'w-absent-b',
+        status: 'running',
+        engines: [],
+        createdAt: new Date().toISOString(),
+      });
+
+      const rigs = await rigListTool.handler({}) as RigView[];
+      assert.equal(rigs.length, 2);
+      for (const rig of rigs) {
+        assert.equal(rig.writTitle, undefined, `writTitle must be undefined for rig ${rig.id}`);
+      }
     });
   });
 
