@@ -1033,6 +1033,41 @@ describe('spider.js server-supplied engine cost', () => {
   });
 });
 
+// ── Server-supplied writ title (no client-side writ-list fetch) ─────────
+
+describe('spider.js server-supplied writ title', () => {
+  // Parallel to the cost-data migration above: the client no longer
+  // fetches /api/writ/list or maintains a writLookup cache — the writ
+  // title arrives on the rig payload itself via RigView.writTitle
+  // (populated server-side by enrichRigView against the clerk/writs
+  // book). Guarding against the old pattern prevents the
+  // latest-100-writs-window bug from regressing into the Rigs tab.
+
+  it('no longer declares a writLookup cache', () => {
+    assert.doesNotMatch(
+      spiderJs,
+      /writLookup/,
+      'writLookup cache must not exist — writ title comes from the rig payload',
+    );
+  });
+
+  it('no longer defines a buildWritLookup helper', () => {
+    assert.doesNotMatch(
+      spiderJs,
+      /buildWritLookup/,
+      'buildWritLookup helper was removed with the client-side writ fetch',
+    );
+  });
+
+  it('UI never calls /api/writ/list for row titles', () => {
+    assert.doesNotMatch(
+      spiderJs,
+      /\/api\/writ\/list/,
+      'UI should not hit /api/writ/list — writ title is joined server-side onto each rig',
+    );
+  });
+});
+
 // ── Cost / token formatting via shared namespace ────────────────────────
 
 describe('spider.js cost/token formatting delegates to window.NexusFormat', () => {
