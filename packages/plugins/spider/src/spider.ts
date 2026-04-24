@@ -71,6 +71,7 @@ import {
   scheduledTimeBlockType,
   bookUpdatedBlockType,
   patronInputBlockType,
+  animatorPausedBlockType,
 } from './block-types/index.ts';
 
 import {
@@ -1502,16 +1503,40 @@ export function createSpider(): Plugin {
         }
 
         if (session.status === 'rate-limited') {
-          // Placeholder (T1): detection path compiles end-to-end without
-          // falling through to the generic failed branch. T4 replaces this
-          // with an `animator-paused` block-type transition that returns
-          // the engine to `pending` once the Animator's pause clears.
-          const sessionDetail = session.error ?? 'Anima provider is rate limited';
-          await failEngine(rig, engine.id, sessionDetail, {
-            retryable: true,
-            detail: `Session rate-limited: ${sessionDetail}`,
-          });
-          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
+          // Provider-reported rate-limit terminal: transition the engine
+          // into the `blocked` state (block type `animator-paused`).
+          // `tryCheckBlocked` polls the Animator's status and clears the
+          // block once pause ends; the engine then returns to `pending`
+          // and `tryRun` dispatches a fresh session on the next crawl
+          // tick. No retryable fail-path here — the waiting is durable.
+          const blockRecord: BlockRecord = {
+            type: 'animator-paused',
+            condition: { sessionId: engine.sessionId },
+            blockedAt: now,
+            message: session.error ?? 'Anima provider is rate limited',
+          };
+          // Return the engine to `pending` lifecycle-wise (we need a
+          // fresh session after the pause clears — the previous session
+          // is terminal). Clear the sessionId so tryRun generates a new
+          // one on dispatch. We still hold the block record on the
+          // engine so the rig transitions to `blocked` instead of
+          // attempting to run it immediately.
+          const patchedEngines = rig.engines.map((e) =>
+            e.id === engine.id
+              ? {
+                  ...e,
+                  status: 'blocked' as const,
+                  block: blockRecord,
+                  // Drop the sessionId so a subsequent re-dispatch
+                  // picks up a fresh session (the previous one is
+                  // terminal in the rate-limited state).
+                  sessionId: undefined,
+                }
+              : e,
+          );
+          const rigStatus = isRigBlocked(patchedEngines) ? 'blocked' : 'running';
+          await rigsBook.patch(rig.id, { engines: patchedEngines, status: rigStatus });
+          return { action: 'engine-blocked', rigId: rig.id, engineId: engine.id, blockType: 'animator-paused' };
         }
 
         if (session.status === 'cancelled') {
@@ -2402,6 +2427,30 @@ export function createSpider(): Plugin {
 
   // ── SpiderApi ─────────────────────────────────────────────────────
 
+  /**
+   * Pause-gate predicate (D14 / D24).
+   *
+   * Returns true when the Animator is currently paused AND the persisted
+   * `pausedUntil` window has not yet elapsed — the combined check that
+   * governs dispatchability across the system. The crawl loop uses
+   * this to short-circuit `tryRun` and `trySpawn` while keeping the
+   * collect / graft / checkBlocked / autoUnstick phases running
+   * (the first so we still ingest the triggering rate-limit signals;
+   * the third so the block-type checker can clear engines).
+   */
+  async function isAnimatorPaused(): Promise<boolean> {
+    try {
+      const status = await animator.getStatus();
+      if (status.state !== 'paused') return false;
+      if (!status.pausedUntil) return false;
+      return new Date(status.pausedUntil).getTime() > Date.now();
+    } catch {
+      // Animator unavailable → treat as not-paused. Dispatch can then
+      // surface its own errors on the normal path.
+      return false;
+    }
+  }
+
   const api: SpiderApi = {
     async crawl(): Promise<CrawlResult | null> {
       const collected = await tryCollect();
@@ -2412,6 +2461,16 @@ export function createSpider(): Plugin {
 
       const checked = await tryCheckBlocked();
       if (checked) return checked;
+
+      // Pause gate (D14 / D15). When the Animator is paused AND the
+      // window has not elapsed, we suppress the dispatching phases
+      // (`tryRun` and `trySpawn`) and return `null` — today's "no work"
+      // signal. Collect / graft / checkBlocked / autoUnstick continue
+      // above because they don't dispatch.
+      const paused = await isAnimatorPaused();
+      if (paused) {
+        return null;
+      }
 
       const ran = await tryRun();
       if (ran) return ran;
@@ -2634,6 +2693,7 @@ export function createSpider(): Plugin {
           'scheduled-time': scheduledTimeBlockType,
           'book-updated':   bookUpdatedBlockType,
           'patron-input':   patronInputBlockType,
+          'animator-paused': animatorPausedBlockType,
         },
         rigTemplates: {
           default: defaultRigTemplate,
