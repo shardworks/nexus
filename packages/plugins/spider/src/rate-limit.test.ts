@@ -1,18 +1,19 @@
 /**
  * Spider — rate-limit integration tests.
  *
- * Exercises:
- *  - tryCollect branching on `rate-limited` session status → transitions
- *    the engine to `blocked` with block type `animator-paused`.
- *  - The crawl gate (D14 / D15) — when the Animator reports paused AND
- *    `pausedUntil` is in the future, `crawl()` returns null rather than
- *    calling tryRun / trySpawn.
- *  - `tryCheckBlocked` invoking the `animator-paused` block checker,
- *    which clears the block when the Animator returns to `running` or
- *    the pause window has elapsed.
+ * After the engine-level retry + rig-status rollup reshape:
  *
- * Uses a controllable AnimatorApi mock so tests can flip between paused
- * and running state without invoking the real back-off machine.
+ *  - tryCollect on `rate-limited` session status now routes the engine
+ *    through the unified failure handler's rate-limit branch: the
+ *    engine returns to `pending` with `holdReason='rate-limit'` +
+ *    `holdCondition={ sessionId }` and does NOT consume a retry
+ *    attempt. The rig stays `running` (status is a pure projection).
+ *  - The dispatch predicate's external-gate check delegates to the
+ *    `animator-paused` BlockType's `check()`. When the Animator is
+ *    running again, the predicate clears the hold and dispatches.
+ *  - `isAnimatorPaused` continues to guard `trySpawn` only, so the
+ *    pause short-circuit still prevents new rigs from spawning while
+ *    Animator is paused.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -115,8 +116,6 @@ function buildFixture(): Fixture {
   let status: AnimatorStatusDoc = { id: 'dispatch-status', state: 'running', backoffLevel: 0 };
   // (was `id: 'current'` before the dispatch-status relocation)
 
-  // Mock AnimatorApi — just enough for spider tests. Tests excluded
-  // from typecheck so missing members are fine at compile time.
   const mockAnimator = {
     async getStatus(): Promise<AnimatorStatusDoc> { return status; },
     summon() { throw new Error('summon not used in this test'); },
@@ -176,7 +175,7 @@ describe('Spider — rate-limit integration', () => {
     clearGuild();
   });
 
-  it('tryCollect transitions the engine to blocked(animator-paused) when the session is rate-limited', async () => {
+  it('tryCollect on rate-limited session transitions the engine to pending + holdReason="rate-limit"', async () => {
     const writ = await fix.clerk.post({ title: 'rate-limit collect test' });
     // Spawn the rig.
     await fix.spider.crawl();
@@ -185,9 +184,15 @@ describe('Spider — rate-limit integration', () => {
     const [rig] = await rigsBook.find({ where: [['writId', '=', writ.id]] });
 
     const fakeSessionId = generateId('ses', 4);
+    // Simulate a dispatched engine: status=running with an attempt carrying sessionId.
     const updatedEngines = rig.engines.map((e: EngineInstance) =>
       e.id === 'impl'
-        ? { ...e, status: 'running' as const, sessionId: fakeSessionId }
+        ? {
+            ...e,
+            status: 'running' as const,
+            attempts: [{ startedAt: new Date().toISOString(), sessionId: fakeSessionId }],
+            attemptCount: 0,
+          }
         : e,
     );
     await rigsBook.patch(rig.id, { engines: updatedEngines });
@@ -207,17 +212,20 @@ describe('Spider — rate-limit integration', () => {
 
     const result = await fix.spider.crawl();
     assert.ok(result);
-    assert.equal(result!.action, 'engine-blocked');
-    assert.equal((result as { blockType: string }).blockType, 'animator-paused');
+    assert.equal(result!.action, 'engine-held');
+    assert.equal((result as { holdReason: string }).holdReason, 'rate-limit');
 
     const [updatedRig] = await rigsBook.find({ where: [['id', '=', rig.id]] });
     const impl = updatedRig.engines.find((e: EngineInstance) => e.id === 'impl')!;
-    assert.equal(impl.status, 'blocked');
-    assert.equal(impl.block?.type, 'animator-paused');
-    assert.equal(impl.sessionId, undefined, 'sessionId must be cleared so next tryRun picks up a fresh session');
+    assert.equal(impl.status, 'pending');
+    assert.equal(impl.holdReason, 'rate-limit');
+    assert.deepEqual(impl.holdCondition, { sessionId: fakeSessionId });
+    assert.equal(impl.attemptCount, 0, 'rate-limit must not consume retry budget');
+    // Rig status is a projection — with the only engine pending, rig stays 'running'.
+    assert.equal(updatedRig.status, 'running');
   });
 
-  it('crawl() returns null when the Animator is paused (gate short-circuits tryRun and trySpawn)', async () => {
+  it('crawl() does not spawn a new rig when the Animator is paused (trySpawn gate)', async () => {
     fix.setStatus({
       id: 'dispatch-status',
       state: 'paused',
@@ -231,16 +239,14 @@ describe('Spider — rate-limit integration', () => {
     await fix.clerk.post({ title: 'paused gate test' });
 
     const result = await fix.spider.crawl();
-    // No rig spawned while paused — crawl returns null.
     assert.equal(result, null);
 
-    // Rig count: zero.
     const rigsBook = fix.stacks.book<RigDoc>('spider', 'rigs');
     const rigs = await rigsBook.list();
     assert.equal(rigs.length, 0);
   });
 
-  it('crawl() dispatches normally once the pause window elapses', async () => {
+  it('crawl() spawns normally once the pause window elapses', async () => {
     fix.setStatus({
       id: 'dispatch-status',
       state: 'paused',
@@ -256,40 +262,45 @@ describe('Spider — rate-limit integration', () => {
     assert.equal(result!.action, 'rig-spawned');
   });
 
-  it('tryCheckBlocked clears an animator-paused block when the Animator returns to running', async () => {
-    // Seed a rig whose sole engine is blocked with animator-paused.
+  it('dispatch predicate clears an animator-paused hold when the Animator returns to running', async () => {
     const writ = await fix.clerk.post({ title: 'unblock test' });
     await fix.spider.crawl(); // spawn
 
     const rigsBook = fix.stacks.book<RigDoc>('spider', 'rigs');
     const [rig] = await rigsBook.find({ where: [['writId', '=', writ.id]] });
-    const blockedEngines = rig.engines.map((e: EngineInstance) =>
+    // Seed an engine in the new pending+hold shape.
+    const heldEngines = rig.engines.map((e: EngineInstance) =>
       e.id === 'impl'
         ? {
             ...e,
-            status: 'blocked' as const,
-            block: {
-              type: 'animator-paused',
-              condition: { sessionId: 'ses-old' },
-              blockedAt: new Date().toISOString(),
-              lastCheckedAt: new Date(0).toISOString(),
-            },
+            status: 'pending' as const,
+            holdReason: 'animator-paused',
+            holdCondition: { sessionId: 'ses-old' },
+            lastCheckedAt: new Date(0).toISOString(),
           }
         : e,
     );
-    await rigsBook.patch(rig.id, { engines: blockedEngines, status: 'blocked' });
+    await rigsBook.patch(rig.id, { engines: heldEngines });
 
-    // With the Animator reporting running, the check should clear.
+    // With the Animator reporting running, the dispatch predicate
+    // should clear the hold and dispatch. The mocked animator's
+    // summon throws when called, so this will fail fast once
+    // tryRun reaches it — but the important assertion is that the
+    // engine left the held state.
     fix.setStatus({ id: 'dispatch-status', state: 'running', backoffLevel: 0 });
 
-    const result = await fix.spider.crawl();
-    assert.ok(result);
-    assert.equal(result!.action, 'engine-unblocked');
+    // Crawl once — the dispatch predicate clears the hold, tryRun
+    // calls summon() which throws (mock), and the failure handler
+    // retries or fails. We don't assert the outcome; we assert the
+    // hold fields were cleared / dispatched-past.
+    await fix.spider.crawl();
 
-    const [updatedRig] = await rigsBook.find({ where: [['id', '=', rig.id]] });
-    const impl = updatedRig.engines.find((e: EngineInstance) => e.id === 'impl')!;
-    assert.equal(impl.status, 'pending');
-    assert.equal(impl.block, undefined);
-    assert.equal(updatedRig.status, 'running');
+    const [after] = await rigsBook.find({ where: [['id', '=', rig.id]] });
+    const impl = after.engines.find((e: EngineInstance) => e.id === 'impl')!;
+    // Either the engine is now running, or has been retried
+    // (pending+holdReason=retry-backoff), or has been terminally failed.
+    // What it must NOT be: pending with holdReason='animator-paused'.
+    assert.notEqual(impl.holdReason, 'animator-paused',
+      'animator-paused hold must be cleared when the predicate sees cleared state');
   });
 });

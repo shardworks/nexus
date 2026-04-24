@@ -77,6 +77,12 @@ export function createDecisionReviewEngine(getPlansBook: () => Book<PlanDoc>): E
   return {
     id: 'astrolabe.decision-review',
 
+    // Retry budget — transient session crashes retry in-place. Terminal
+    // exhaustion fails the writ directly. Decision-review itself is a
+    // clockwork engine that creates input requests; the retry budget
+    // covers transient errors in that path (e.g. stacks transient errors).
+    retry: { maxAttempts: 2 },
+
     async run(
       givens: Record<string, unknown>,
       context: EngineRunContext,

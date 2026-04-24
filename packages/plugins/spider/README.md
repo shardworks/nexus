@@ -2,7 +2,14 @@
 
 The Spider is the guild's rig execution engine. It spawns rigs for open writs, drives engine pipelines to completion, and transitions writs via the Clerk when rigs finish. Each rig is an ordered pipeline of engine instances; the Spider's `crawl()` loop advances that pipeline one step at a time.
 
-The Spider maintains bidirectional CDC cascades between writs and rigs: when a rig reaches a terminal or `stuck` state, the associated writ is transitioned to match; when a writ is cancelled, the associated rig is cancelled (writs transitioning to `completed` or `failed` do not cancel the rig). Engine failures cascade the rig to `stuck` (a non-terminal "needs attention" state) and the writ to `stuck`, preserving the obligation for future retry. Guards in both handlers break the circular cascade path so that a writ cancellation that triggers a rig cancellation does not attempt to re-transition the already-terminal writ.
+The Spider's state model is:
+
+- **`EngineStatus`** — `'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped'`. Holds (rate-limit, block-type, retry back-off) are **pending-plus-metadata**, not a distinct state: `status='pending'` + `holdReason` / `holdUntil` / `holdCondition` on the engine instance.
+- **`RigStatus`** — `'running' | 'completed' | 'failed' | 'cancelled'`. Rig status is a **pure projection** of the engine set: running if any engine is non-terminal, failed if any terminal-failed with no running, completed if all terminal-success with at least one completed, cancelled if `cancelledAt` is set. It is never written independently — every engine-state-change goes through a patch-wrapper (`patchRigWithRollup`) that recomputes the status and writes both fields in one transaction.
+- **Retry** — opt-in on engine designs via a nested `retry: { maxAttempts, backoff }` block. Transient failures (session crash, engine throw) retry in place on the same rig up to the design's budget, with exponential back-off. Rate-limit is a hold (no budget consumed); definitional failures (invalid graft, unknown design, non-serializable yields) fail terminally on first observation. Legacy rigs persisted with `'stuck'` / `'blocked'` statuses remain in place — readers tolerate them; no migration.
+- **Attempts** — every engine dispatch appends a row to `attempts[]` carrying `startedAt`, `endedAt`, terminal `status`, optional `error`, `sessionId`, and `yields`. Scalar engine-level `startedAt` / `completedAt` / `error` / `sessionId` / `yields` fields **do not exist** — `attempts[-1]` is authoritative.
+
+The Spider maintains bidirectional CDC cascades between writs and rigs: when a rig reaches a terminal state, the associated writ is transitioned to match; when a writ is cancelled, the associated rig is cancelled (writs transitioning to `completed` or `failed` do not cancel the rig). Engine-failure retry now lives inside the rig — only terminal retry exhaustion routes the rig to `failed`, which cascades the writ directly to `phase='failed'`. Guards in both handlers break the circular cascade path so that a writ cancellation that triggers a rig cancellation does not attempt to re-transition the already-terminal writ.
 
 Depends on `@shardworks/stacks-apparatus` for rig persistence, `@shardworks/fabricator-apparatus` to look up engine designs, `@shardworks/clerk-apparatus` to transition writs, and `@shardworks/animator-apparatus` to launch quick-engine sessions. Recommends `@shardworks/loom-apparatus` so the Spider's support kit can contribute the `mender` role used by the seal-engine recovery tail.
 
@@ -31,9 +38,9 @@ const spider = guild().apparatus<SpiderApi>('spider');
 
 ### `crawl(): Promise<CrawlResult | null>`
 
-Execute one step of the crawl loop. The Spider evaluates pending work in priority order — collect > processGrafts > checkBlocked > **pause gate** > run > autoUnstick > spawn — and returns a description of the action taken, or `null` if no work was available.
+Execute one step of the crawl loop. The Spider evaluates pending work in priority order — collect > processGrafts > run > autoUnstick > spawn (guarded by the Animator-paused gate) — and returns a description of the action taken, or `null` if no work was available.
 
-The **pause gate** consults the Animator's rate-limit status (via `AnimatorApi.getStatus()`) and short-circuits the `tryRun` and `trySpawn` phases when the Animator is paused AND the persisted `pausedUntil` window has not elapsed. The earlier phases (`tryCollect`, `tryProcessGrafts`, `tryCheckBlocked`) still run so the triggering rate-limit signal is ingested and the `animator-paused` block-type checker can drive auto-resume. When the gate suppresses both dispatch phases and no other phase produced work, `crawl()` returns `null` (today's "no work" signal — no new CrawlResult variant).
+Dispatch (inside `tryRun`) is governed by a single **dispatch predicate** that composes four checks per pending engine: status is `'pending'`, every upstream is terminal-success, `holdUntil` is absent or in the past, and — if `holdReason` names a registered `BlockType` — the BlockType's `check()` returns `'cleared'` (honouring its `pollIntervalMs` against the engine's `lastCheckedAt` stamp). The top-level `isAnimatorPaused()` gate now only guards `trySpawn`; `tryRun` is handled uniformly by the per-engine predicate.
 
 ```typescript
 const result = await spider.crawl();
@@ -49,12 +56,11 @@ CrawlResult variants:
 | `'rig-spawned'` | Created a new rig for an open writ |
 | `'engine-started'` | Launched a quick engine's session |
 | `'engine-completed'` | An engine finished; rig still running |
-| `'engine-blocked'` | Engine entered blocked status |
-| `'engine-unblocked'` | A blocked engine's condition cleared |
+| `'engine-held'` | Engine transitioned to `'pending'` with a hold (rate-limit, block-type gate) |
+| `'engine-retrying'` | A retryable failure was observed; engine is pending with a back-off `holdUntil` and `attemptCount` was incremented |
 | `'engine-skipped'` | Engine (and any downstream-only dependents) was skipped due to `when` condition |
 | `'engine-grafted'` | Engine injected additional engines into the pipeline |
-| `'rig-completed'` | Rig reached terminal or stuck state (completed, stuck, failed, or cancelled) |
-| `'rig-blocked'` | All forward progress stalled; rig entered blocked status |
+| `'rig-completed'` | Rig reached terminal state (`completed`, `failed`, or `cancelled`) |
 | `'gated'` | Spawn was deferred — the writ has outbound `spider.follows` blockers (includes the case where a blocker reached `failed` and the writ was cascaded to `stuck`) |
 | `'writ-unstuck'` | `autoUnstick` phase returned a previously-Spider-stuck writ to `open` because its recorded blockers resolved |
 
@@ -69,18 +75,41 @@ Spider contributes a `spider.follows` link kind and consults outbound `spider.fo
 
 Before `trySpawn`, each crawl tick runs an `autoUnstick` pass that re-evaluates every writ whose `status.spider.stuckCause` is one of the dependency-recovery causes (`failed-blocker` or `cycle`). When the recorded cause resolves (all `failed-blocker` ids are now `completed`/`cancelled`, or any `cycle` member has moved out of `open`/`stuck`), the writ is returned to `open` and emits a `'writ-unstuck'` result. Writs stuck with other causes — including `engine-failure` writs (see below) and operator-stuck writs with no `status.spider` slot — are left alone; their recovery is owned by a separate retry clockwork, not by `autoUnstick`.
 
-### Engine-failure stuck payload
+### Engine-level retry (in-place within the rig)
 
-When an engine failure takes a rig to `stuck` via the `failEngine` path (session crash, engine throw, graft validation failure, unknown design, unknown block type, invalid block condition, non-JSON-serializable yields), Spider publishes an observability payload to the writ's `status.spider` sub-slot alongside the standard rig → writ CDC transition:
+Engine designs may declare an opt-in retry policy:
 
-- `stuckCause: 'engine-failure'` — the single bucket for every engine-cascade failure. Sub-taxonomy lives in `detail`, not in the enum.
-- `retryable: boolean` — classified at the `failEngine` call site. `true` for transient failures (session crashes, engine threw an unexpected error) where a fresh attempt may succeed. `false` for definitional failures (invalid graft, unknown design/block type, bad schema, non-JSON-serializable yields) where the same code would reproduce the same failure.
-- `detail: string` — freeform human-readable description of the specific failure. Surfaces to the patron UI and analytics, and is the designated place for case-by-case context.
-- `observedAt: string` — ISO timestamp of the transition.
+```typescript
+const myEngine: EngineDesign = {
+  id: 'my-engine',
+  retry: { maxAttempts: 2, backoff: { initialMs: 30_000, maxMs: 600_000, factor: 2 } },
+  async run(givens, ctx) { /* … */ },
+};
+```
 
-The `retryable` flag is informational in this plugin — nothing here acts on it. The retry clockwork (a separate commission) is the sole load-bearing consumer. Dependency-recovery stucks (`failed-blocker` / `cycle`) do not write `retryable` or `detail`; they carry `blockerIds` instead and are serviced by `autoUnstick`.
+When an engine observes a retryable failure (session crash, engine throw, `collect()` throw) and the design has remaining budget, the unified failure handler:
 
-`failEngine` writes the rig patch (`status: 'stuck'`) and the writ's `status.spider` payload inside a single `stacks.transaction`. Both land in the same post-commit event batch, so any Phase 2 observer (the retry clockwork in particular) sees a writ stuck transition whose status slot is already fully populated. Producers must not split these two writes across transactions — that would expose a window where a stuck observer reads a slot with stale data.
+1. Finalizes the in-flight `attempts[-1]` row with `status='failed'` and the error message.
+2. Increments `engine.attemptCount`.
+3. Sets `engine.status='pending'` with `holdReason='retry-backoff'` and `holdUntil` computed from the back-off policy.
+4. Leaves downstream engines pending (no cascade-cancel).
+
+The dispatch predicate picks the engine up again once `holdUntil` elapses; a fresh attempt row is appended to `attempts[]`, and the sequence repeats until the attempt succeeds or the budget is exhausted.
+
+Retry is **opt-in**. Engine designs without a `retry` block default to `maxAttempts: 0` — the first retryable failure is terminal. Definitional failures (invalid graft, unknown design, unknown block type, non-JSON-serializable yields) fail terminally regardless of budget.
+
+Designs shipping with retry enabled in this commission: `anima-session`, `implement`, `review`, `revise`, `astrolabe.reader-analyst`, `astrolabe.patron-anima`, `astrolabe.decision-review`. All others (including `draft`, `seal`, `manual-merge`, `piece-session`, `implement-loop`, `astrolabe.plan-init`, `astrolabe.inventory-check`, `astrolabe.plan-finalize`, `astrolabe.observation-lift`) default to no retry.
+
+### Terminal engine-failure cascade
+
+When an engine exhausts its retry budget (or observes a definitional failure), the unified failure handler:
+
+1. Finalizes the in-flight attempts[] row.
+2. Sets `engine.status='failed'`.
+3. Cascade-cancels every non-terminal engine (both plain pending and pending-with-hold) in one pass.
+4. The `patchRigWithRollup` wrapper projects `rig.status='failed'` as the natural derivation.
+
+The existing rigs→writs CDC handler translates `rig.status='failed'` directly to `writ.phase='failed'` — no intermediate stuck state. Consequently the writ's `status.spider.stuckCause='engine-failure'` slot (and its companion `retryable` / `detail` fields) is **no longer written on the engine-failure path**. It remains on the interface for read-compatibility with legacy writs; the sibling retry clockwork (`clockworks-retry`) reads that flag but its trigger condition simply no longer fires, since writs now skip stuck and go to failed.
 
 ### `show(id): Promise<RigDoc>`
 

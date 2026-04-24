@@ -300,6 +300,10 @@ export function createPatronAnimaEngine(getPlansBook: () => Book<PlanDoc>): Engi
   return {
     id: 'astrolabe.patron-anima',
 
+    // Retry budget — transient session crashes retry in-place. Terminal
+    // exhaustion fails the writ directly.
+    retry: { maxAttempts: 2 },
+
     async run(
       givens: Record<string, unknown>,
       context: EngineRunContext,

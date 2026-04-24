@@ -44,6 +44,10 @@ Commit all changes before ending your session.`;
 const implementEngine: EngineDesign = {
   id: 'implement',
 
+  // Retry budget — transient session crashes / animator hiccups retry
+  // in-place on the same rig. Terminal exhaustion fails the writ directly.
+  retry: { maxAttempts: 2 },
+
   async run(givens, context) {
     const animator = guild().apparatus<AnimatorApi>('animator');
     const writ = givens.writ as WritDoc;

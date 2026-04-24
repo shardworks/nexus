@@ -348,7 +348,17 @@ describe('Clockworks-Retry × Spider — cross-plugin round trip', () => {
     clearGuild();
   });
 
-  describe('retryable: true engine-failure → requeued', () => {
+  describe('engine-failure no longer writes stuck+retryable (post engine-level retry reshape)', () => {
+    // After the engine-level retry and rig-status rollup commission, the
+    // Spider's engine-failure path no longer writes status.spider.retryable
+    // (D19) and no longer transitions rigs through `'stuck'`. Retryable
+    // failures retry in-place inside the rig up to the engine design's
+    // `retry.maxAttempts` budget; terminal exhaustion sets rig.status =
+    // 'failed' which cascades the writ directly to phase='failed'.
+    //
+    // These two tests exercise the new contract — clockworks-retry's
+    // trigger condition is never met on the engine-failure path, so the
+    // writ does not come back to 'open' and no second rig spawns.
     const template: RigTemplate = {
       engines: [{ id: 'thrower', designId: 'always-throws', givens: {} }],
     };
@@ -357,77 +367,46 @@ describe('Clockworks-Retry × Spider — cross-plugin round trip', () => {
       fix = buildFixture(template);
     });
 
-    it('drives writ through failEngine, observes stuck entry, requeues, spawns a second rig', async () => {
+    it('engine-failure drives the writ directly to phase=failed — clockworks-retry does not fire', async () => {
       const writ = await postMandate(fix.clerk);
 
-      // Drive the entire round trip to idle in one go. Per the fixture's
-      // `crawlToIdle` doc, intermediate polling of the writ phase races
-      // with the retry clockwork's synchronous Phase 2 handler — the
-      // writ may flip stuck → open inside the same crawl tick that
-      // drove it stuck. We assert on the terminal state instead.
-      //
-      // Expected sequence for cap=2:
-      //   tick 1: trySpawn → rig 1 created
-      //   tick 2: tryRun(rig 1) throws → failEngine writes stuck+retryable
-      //           → Phase 2 retry clockwork transitions writ stuck → open
-      //   tick 3: trySpawn → rig 2 created
-      //   tick 4: tryRun(rig 2) throws → failEngine writes stuck+retryable
-      //           → Phase 2 retry clockwork observes 2 rigs (cap), no-ops
-      //   tick 5: crawl returns null (no more work)
+      // Spin the crawl to idle. With the always-throws engine and no
+      // retry config on it, the first attempt immediately fails
+      // terminally, the rig rollup projects rig.status='failed', and
+      // the rigs→writs CDC transitions the writ directly to
+      // phase='failed'. Clockworks-retry only fires on stuck entry, so
+      // its trigger condition is never met.
       await fix.crawlToIdle();
 
-      // At steady state the writ is stuck and two rigs have been attached —
-      // one per attempt, per the multi-rig-lite design.
-      assert.equal(await fix.rigCount(writ.id), 2,
-        'one rig per attempt — a second rig must have spawned after the retry clockwork requeued');
+      assert.equal(await fix.rigCount(writ.id), 1,
+        'exactly one rig — no second attempt because clockworks-retry never fires on the new engine-failure path');
 
       const after = await fix.clerk.show(writ.id);
-      assert.equal(after.phase, 'stuck',
-        'at cap the retry clockwork refuses to requeue — writ remains stuck');
-
-      // The spider status slot must still reflect the latest stuck
-      // (flat-canonical shape populated by failEngine). The retry
-      // clockwork reads this slot; it never rewrites it.
-      const stuckStatus = await fix.readSpiderStatus(writ.id);
-      assert.ok(stuckStatus, 'status.spider must be populated after failEngine');
-      assert.equal(stuckStatus!.stuckCause, 'engine-failure');
-      assert.equal(stuckStatus!.retryable, true,
-        'engine run() throw is transient — retryable:true');
+      assert.equal(after.phase, 'failed',
+        'writ transitions directly to failed — no intermediate stuck in the new model');
     });
 
-    it('respects MAX_RETRY_ATTEMPTS — a third failure does not requeue past the cap', async () => {
-      assert.equal(MAX_RETRY_ATTEMPTS, 2, 'this test assumes cap=2');
-
+    it('the writ.status.spider slot is NOT populated on the engine-failure path', async () => {
       const writ = await postMandate(fix.clerk);
 
       await fix.crawlToIdle();
 
-      assert.equal(await fix.rigCount(writ.id), MAX_RETRY_ATTEMPTS,
-        'exactly two rigs should exist at the cap');
-
-      const afterCap = await fix.clerk.show(writ.id);
-      assert.equal(afterCap.phase, 'stuck',
-        'writ must remain stuck — retry clockwork refuses to requeue past the cap');
-
-      // Kicking the crawl again must not invent a third rig: the writ
-      // is stuck, so trySpawn does not touch it.
-      await fix.crawlN(5);
-      assert.equal(await fix.rigCount(writ.id), MAX_RETRY_ATTEMPTS,
-        'no further rigs spawned past the cap');
-
-      const stillStuck = await fix.clerk.show(writ.id);
-      assert.equal(stillStuck.phase, 'stuck',
-        'writ must still be stuck — the retry clockwork is load-bearing for capping');
-
-      // And the final stuck payload must still be the retryable one —
-      // the retry clockwork ignored it, it did not rewrite it.
-      const finalStatus = await fix.readSpiderStatus(writ.id);
-      assert.equal(finalStatus?.stuckCause, 'engine-failure');
-      assert.equal(finalStatus?.retryable, true);
+      const status = await fix.readSpiderStatus(writ.id);
+      // The engine-failure path no longer writes status.spider (D19) —
+      // the slot may be absent entirely, or present-but-empty. Either
+      // way, `stuckCause='engine-failure'` and `retryable` are gone.
+      if (status !== undefined && status !== null) {
+        assert.notEqual(status.stuckCause, 'engine-failure',
+          'engine-failure cause must not be written on the new engine-failure path');
+      }
     });
   });
 
-  describe('retryable: false engine-failure → ignored', () => {
+  describe('retryable: false graft failure → writ direct-to-failed (post reshape)', () => {
+    // Definitional failures (invalid graft, unknown design, etc.) now
+    // fail the rig terminally on first observation, regardless of
+    // retry config. The writ goes straight to failed; clockworks-retry
+    // never fires.
     const template: RigTemplate = {
       engines: [{ id: 'grafter', designId: 'bad-grafter', givens: {} }],
     };
@@ -436,25 +415,16 @@ describe('Clockworks-Retry × Spider — cross-plugin round trip', () => {
       fix = buildFixture(template);
     });
 
-    it('writ stays stuck with retryable:false, rigs.length stays at 1', async () => {
+    it('writ goes directly to phase=failed; clockworks-retry stays silent', async () => {
       const writ = await postMandate(fix.clerk);
 
       await fix.crawlToIdle();
 
-      const status = await fix.readSpiderStatus(writ.id);
-      assert.ok(status, 'failEngine should have populated status.spider');
-      assert.equal(status!.stuckCause, 'engine-failure');
-      assert.equal(status!.retryable, false,
-        'graft validation failures are definitional — retryable:false');
-
-      // Give the retry clockwork ample opportunity to (wrongly) fire.
-      await fix.crawlN(5);
-
       const after = await fix.clerk.show(writ.id);
-      assert.equal(after.phase, 'stuck',
-        'definitional failure must not be requeued by the retry clockwork');
+      assert.equal(after.phase, 'failed',
+        'definitional failure goes straight to failed — no stuck, no retry');
       assert.equal(await fix.rigCount(writ.id), 1,
-        'no second rig should have spawned');
+        'exactly one rig — no retry path active');
     });
   });
 

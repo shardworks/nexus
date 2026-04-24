@@ -18,6 +18,11 @@ import type { WritDoc } from '@shardworks/clerk-apparatus';
 const animaSessionEngine: EngineDesign = {
   id: 'anima-session',
 
+  // Retry budget — transient session crashes retry in-place. This is
+  // the design used by the plan-and-ship template's `spec-writer` slot
+  // (and any other rig template that summons a generic anima session).
+  retry: { maxAttempts: 2 },
+
   async run(givens, context) {
     // Validate required givens
     if (typeof givens.role !== 'string' || givens.role.length === 0) {

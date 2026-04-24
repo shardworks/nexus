@@ -36,12 +36,13 @@ import type { KitRoleDefinition } from '@shardworks/loom-apparatus';
 
 import type {
   RigDoc,
+  RigStatus,
   RigFilters,
   EngineInstance,
+  EngineAttempt,
   SpiderApi,
   CrawlResult,
   SpiderConfig,
-  BlockRecord,
   BlockType,
   BlockTypeInfo,
   CheckResult,
@@ -53,6 +54,8 @@ import type {
   SpiderWritStatus,
   SpiderStuckCause,
 } from './types.ts';
+import { resolveEngineRetryConfig } from '@shardworks/fabricator-apparatus';
+import type { EngineDesign } from '@shardworks/fabricator-apparatus';
 
 import {
   animaSessionEngine,
@@ -130,33 +133,33 @@ function isJsonSerializable(value: unknown): boolean {
 }
 
 /**
+ * Read the latest yields from a completed engine's attempts history.
+ * Returns undefined when the engine has no attempts or no yield on the
+ * tail entry. Used by `buildUpstreamMap` and graft-yield assembly.
+ */
+function latestAttempt(engine: EngineInstance): EngineAttempt | undefined {
+  const attempts = engine.attempts;
+  if (!attempts || attempts.length === 0) return undefined;
+  return attempts[attempts.length - 1];
+}
+
+/**
  * Build the upstream yields map for a rig: all completed engine yields
  * keyed by engine id. Passed as context.upstream to the engine's run().
+ *
+ * With the types reshape, `attempts[-1].yields` is authoritative — the
+ * engine no longer carries a top-level `yields` scalar.
  */
 function buildUpstreamMap(rig: RigDoc): Record<string, unknown> {
   const upstream: Record<string, unknown> = {};
   for (const engine of rig.engines) {
-    if (engine.status === 'completed' && engine.yields !== undefined) {
-      upstream[engine.id] = engine.yields;
+    if (engine.status !== 'completed') continue;
+    const tail = latestAttempt(engine);
+    if (tail?.yields !== undefined) {
+      upstream[engine.id] = tail.yields;
     }
   }
   return upstream;
-}
-
-/**
- * Find the first pending engine whose entire upstream is completed or skipped.
- * Returns null if no runnable engine exists.
- */
-function findRunnableEngine(rig: RigDoc): EngineInstance | null {
-  for (const engine of rig.engines) {
-    if (engine.status !== 'pending') continue;
-    const allUpstreamDone = engine.upstream.every((upstreamId) => {
-      const dep = rig.engines.find((e) => e.id === upstreamId);
-      return dep?.status === 'completed' || dep?.status === 'skipped';
-    });
-    if (allUpstreamDone) return engine;
-  }
-  return null;
 }
 
 /**
@@ -184,21 +187,55 @@ export function countRunningEnginesInRig(rig: RigDoc): number {
 }
 
 /**
- * Determine whether a rig should enter the blocked state.
- *
- * A rig is blocked when:
- * - No engine is currently running
- * - No engine is runnable (pending with all upstream completed)
- * - At least one engine is blocked
+ * Terminal-success engine statuses — treated as "upstream satisfied" by
+ * the dispatch predicate and by cascade-skip evaluation. A `skipped`
+ * engine counts as terminal-success for dispatch purposes (its
+ * downstream's upstream requirement is met).
  */
-function isRigBlocked(engines: EngineInstance[]): boolean {
+const TERMINAL_SUCCESS_ENGINE_STATUSES: ReadonlySet<EngineInstance['status']> =
+  new Set(['completed', 'skipped']);
+
+/**
+ * Terminal engine statuses — completed, failed, cancelled, skipped.
+ * These never participate in dispatch again.
+ */
+const TERMINAL_ENGINE_STATUSES: ReadonlySet<EngineInstance['status']> =
+  new Set(['completed', 'failed', 'cancelled', 'skipped']);
+
+/**
+ * Derive the rig status from the current engine set plus the
+ * operator-cancel marker. Pure projection: there is no independent
+ * rig-level state any more.
+ *
+ *   cancelledAt set    → 'cancelled' (short-circuit, per D15)
+ *   any engine running → 'running'
+ *   any engine failed  → 'failed' (no running, at least one terminal-failed)
+ *   all terminal,
+ *     any completed    → 'completed'
+ *   all terminal,
+ *     no completed     → 'cancelled' (everything was cancelled/skipped/failed-less)
+ *   otherwise          → 'running' (engines still pending / held)
+ */
+function deriveRigStatus(
+  engines: EngineInstance[],
+  cancelledAt: string | undefined,
+): RigStatus {
+  if (cancelledAt) return 'cancelled';
+
   const hasRunning = engines.some((e) => e.status === 'running');
-  if (hasRunning) return false;
-  const hasBlocked = engines.some((e) => e.status === 'blocked');
-  if (!hasBlocked) return false;
-  // Check runnability by constructing a minimal RigDoc-like object
-  const syntheticRig = { engines } as RigDoc;
-  return findRunnableEngine(syntheticRig) === null;
+  if (hasRunning) return 'running';
+
+  const hasFailed = engines.some((e) => e.status === 'failed');
+  if (hasFailed) return 'failed';
+
+  const allTerminal = engines.every((e) => TERMINAL_ENGINE_STATUSES.has(e.status));
+  if (!allTerminal) return 'running';
+
+  const anyCompleted = engines.some((e) => e.status === 'completed');
+  if (anyCompleted) return 'completed';
+
+  // All terminal, none completed → only cancels/skips. Treat as cancelled.
+  return 'cancelled';
 }
 
 // ── Template-based rig building ────────────────────────────────────────
@@ -224,17 +261,6 @@ function computeUpstreamReachable(
   return reachable;
 }
 
-/**
- * Check whether all engines in the list have reached a terminal state
- * (completed or skipped) and at least one is completed.
- */
-function isRigComplete(engines: EngineInstance[]): boolean {
-  const allTerminal = engines.every(
-    (e) => e.status === 'completed' || e.status === 'skipped',
-  );
-  if (!allTerminal) return false;
-  return engines.some((e) => e.status === 'completed');
-}
 
 /**
  * Evaluate a `when` condition against the upstream yields map.
@@ -1307,11 +1333,19 @@ export function createSpider(): Plugin {
   const rigTemplateRegistry = new RigTemplateRegistry();
 
   /**
-   * In-memory store for block records that have been cleared.
-   * Key: "rigId:engineId". Written when an engine is unblocked (via checker or resume()).
-   * Read and deleted in tryRun() when building EngineRunContext.
+   * In-memory store for hold metadata snapshots whose hold has just been
+   * cleared. Key: "rigId:engineId". Populated when the dispatch predicate
+   * observes a `check() === 'cleared'` result and surfaces the hold to
+   * `tryRun` via `context.priorBlock`. Consumed and deleted in `tryRun`
+   * when building EngineRunContext.
    */
-  const pendingPriorBlocks = new Map<string, BlockRecord>();
+  const pendingPriorBlocks = new Map<string, {
+    type: string;
+    condition: unknown;
+    blockedAt: string;
+    message?: string;
+    lastCheckedAt?: string;
+  }>();
 
   /**
    * In-memory queue of pending grafts.
@@ -1324,106 +1358,280 @@ export function createSpider(): Plugin {
   // ── Internal crawl operations ─────────────────────────────────────
 
   /**
-   * Mark an engine failed and propagate to the rig as `stuck` (same update).
-   * The failed engine itself transitions to `failed`; pending/blocked engines
-   * are cancelled. The rig enters `stuck` — a non-terminal "needs attention"
-   * state that preserves the obligation for future retry.
-   *
-   * The caller must classify the failure at the call site:
-   *   - `retryable: true`  — transient failure (session crash, engine threw
-   *                          an unexpected error) that a retry might clear.
-   *   - `retryable: false` — definitional failure (invalid graft, unknown
-   *                          design/block type, bad schema, non-serializable
-   *                          yields) that would reproduce on retry.
-   *   - `detail`           — human-readable freeform description of the
-   *                          specific failure. Surfaces to the patron UI
-   *                          and analytics; sub-taxonomy lives here rather
-   *                          than in a growing enum.
-   *
-   * Alongside the rig patch, `failEngine` writes the writ's `status.spider`
-   * sub-slot with `stuckCause: 'engine-failure'`, `retryable`, and `detail`
-   * so downstream retry clockwork can branch on that payload.
-   *
-   * Both writes — the rig patch (which cascades to the writ phase transition
-   * via the rigs → writs CDC Phase 1 handler) and the writ status-slot write
-   * — are performed inside a single outer stacks transaction. Per the stacks
-   * contract:
-   *
-   *   - Nested `runTransaction` calls flatten into the outer tx via the
-   *     `activeTx` check (see stacks-core.ts), so `setWritStatus`'s own
-   *     transaction joins this one rather than opening a second.
-   *   - Phase 2 CDC events are coalesced per `ref:docId` per transaction
-   *     (see cdc.ts `coalesceEvents`), so a Phase 2 observer of the writs
-   *     book sees exactly one `update` event per writ carrying both the
-   *     phase transition AND the new status payload — never one event with
-   *     phase disagreeing with status.
-   *
-   * This atomicity is load-bearing for the retry clockwork: its trigger
-   * condition reads `writ.status.spider.retryable` on the very Phase 2 event
-   * that carries the stuck phase transition. If the two writes landed in
-   * separate transactions, the retry clockwork would observe the phase
-   * transition first with an empty status slot and ignore the writ, and the
-   * later status-only update would be filtered out by its stuck→stuck guard.
-   */
-  /**
    * Build a patch fragment that sets `terminalAt` to the current ISO
    * timestamp when the rig does not already have one. Returns an empty
    * object when the rig's `terminalAt` is already set.
    *
    * Keep-first semantics: the first terminal transition pins `terminalAt`;
-   * subsequent terminal transitions (e.g. a `stuck` rig being `cancelled`)
+   * subsequent terminal transitions (e.g. a failed rig being cancelled)
    * must NOT overwrite the original value. This helper is the single
    * source of truth for that rule — every rig-level patch that writes a
    * terminal `status` value should spread its result into the patch.
    */
-  function terminalAtPatch(rig: RigDoc): { terminalAt?: string } {
+  function terminalAtPatch(rig: RigDoc, nextStatus: RigStatus): { terminalAt?: string } {
     if (rig.terminalAt !== undefined) return {};
+    if (nextStatus === 'running') return {};
     return { terminalAt: new Date().toISOString() };
   }
 
-  async function failEngine(
+  /**
+   * Rig-status rollup patch-wrapper.
+   *
+   * The single point of truth for every engine-state-change patch. Given
+   * the rig and a new engine set, derives the rig status as a pure
+   * projection (see `deriveRigStatus`), computes `terminalAt` keep-first,
+   * and writes both engines and status in one transaction. Optional
+   * `extraPatch` applies additional fields alongside (e.g. cancelledAt).
+   *
+   * `opts.pendingGraft` overrides the rollup to force `status='running'`
+   * when a graft is queued for the next crawl tick. This keeps the rig
+   * from prematurely projecting to `'completed'` when the only completed
+   * engines are the ones whose grafts still need to land.
+   *
+   * Every call-site that mutates the engine array must route through this
+   * wrapper — there is no inline `rig.status = ...` assignment anywhere
+   * else in Spider.
+   */
+  async function patchRigWithRollup(
     rig: RigDoc,
-    engineId: string,
-    errorMessage: string,
-    opts: { retryable: boolean; detail: string },
-  ): Promise<void> {
-    const now = new Date().toISOString();
-    const updatedEngines = rig.engines.map((e) => {
-      if (e.id === engineId) {
-        return { ...e, status: 'failed' as const, error: errorMessage, completedAt: now };
-      }
-      if (e.status === 'pending' || e.status === 'blocked') {
-        return { ...e, status: 'cancelled' as const, block: undefined };
-      }
-      return e;
+    updatedEngines: EngineInstance[],
+    extraPatch: Partial<RigDoc> = {},
+    opts: { pendingGraft?: boolean } = {},
+  ): Promise<RigStatus> {
+    const cancelledAt = (extraPatch.cancelledAt as string | undefined) ?? rig.cancelledAt;
+    let nextStatus = deriveRigStatus(updatedEngines, cancelledAt);
+    // Pending-graft override: treat the rig as still-running so the
+    // rollup doesn't finalize while queued grafts are pending.
+    if (opts.pendingGraft && nextStatus === 'completed') {
+      nextStatus = 'running';
+    }
+    await rigsBook.patch(rig.id, {
+      ...extraPatch,
+      engines: updatedEngines,
+      status: nextStatus,
+      ...terminalAtPatch(rig, nextStatus),
     });
-
-    const status: SpiderWritStatus = {
-      stuckCause: 'engine-failure',
-      retryable: opts.retryable,
-      detail: opts.detail,
-      observedAt: now,
-    };
-
-    await stacks.transaction(async () => {
-      await rigsBook.patch(rig.id, {
-        engines: updatedEngines,
-        status: 'stuck',
-        ...terminalAtPatch(rig),
-      });
-
-      // Publish the observability payload to the writ's status.spider
-      // sub-slot. Coalesces with the writ phase transition (fired by the
-      // rigs → writs CDC Phase 1 handler above) into a single Phase 2
-      // event so downstream observers see phase and status atomically.
-      await clerk.setWritStatus(rig.writId, 'spider', status);
-    });
+    return nextStatus;
   }
 
   /**
-   * Mark an engine cancelled and propagate cancellation to the rig (same update).
-   * Cancels all pending and blocked engines. Does NOT call Animator.cancel() —
-   * that is the caller's responsibility.
+   * Append-on-start: push a new attempt row onto an engine's `attempts[]`
+   * and return the updated engine. The caller then assembles the new
+   * engines array for patching via `patchRigWithRollup`.
+   *
+   * Subsequent `finalizeAttempt(engine, …)` patches the tail row with
+   * endedAt / status / error / yields on terminal.
+   */
+  function appendAttemptStart(
+    engine: EngineInstance,
+    startedAt: string,
+  ): EngineInstance {
+    const nextAttempts = [...(engine.attempts ?? []), { startedAt } as EngineAttempt];
+    return { ...engine, attempts: nextAttempts };
+  }
+
+  /**
+   * Patch the tail attempt with session metadata (e.g. sessionId set
+   * after a quick engine launches). Does not change attempt status or
+   * endedAt.
+   */
+  function patchTailAttempt(
+    engine: EngineInstance,
+    patch: Partial<EngineAttempt>,
+  ): EngineInstance {
+    const attempts = engine.attempts ?? [];
+    if (attempts.length === 0) {
+      // No open attempt — defensive no-op. Should not happen in normal flow.
+      return engine;
+    }
+    const tail = attempts[attempts.length - 1];
+    const nextAttempts = attempts.slice(0, -1).concat([{ ...tail, ...patch }]);
+    return { ...engine, attempts: nextAttempts };
+  }
+
+  /**
+   * Finalize the tail attempt: stamp endedAt, terminal status, and
+   * optional error/yields. Returns the updated engine.
+   */
+  function finalizeAttempt(
+    engine: EngineInstance,
+    fields: {
+      endedAt: string;
+      status: 'completed' | 'failed';
+      error?: string;
+      yields?: unknown;
+      sessionId?: string;
+    },
+  ): EngineInstance {
+    return patchTailAttempt(engine, fields);
+  }
+
+  /**
+   * Compute the back-off delay (in ms) for a given retryable attempt
+   * count. `attemptCount` is the count of failed attempts observed so
+   * far (zero-indexed: 1 → initial delay, 2 → initial*factor, …).
+   */
+  function computeBackoffDelay(
+    backoff: { initialMs: number; maxMs: number; factor: number },
+    attemptCount: number,
+  ): number {
+    if (attemptCount <= 0) return backoff.initialMs;
+    const raw = backoff.initialMs * Math.pow(backoff.factor, attemptCount - 1);
+    return Math.min(Math.floor(raw), backoff.maxMs);
+  }
+
+  /**
+   * Failure outcome — the discriminated result of the single failure
+   * handler. The handler classifies the incoming failure against the
+   * engine design's retry policy and the failure's nature, then writes
+   * the rig in one transaction.
+   */
+  type FailureOutcome =
+    | { kind: 'rate-limit-held' }
+    | { kind: 'retryable-within-budget'; attemptCount: number }
+    | { kind: 'terminally-failed' };
+
+  /**
+   * The unified failure handler.
+   *
+   * Handles three cases:
+   *   1. `rateLimited: true` — transition the engine to `pending` with
+   *      `holdReason='rate-limit'`, close out the in-flight attempt
+   *      without error, clear sessionId so the next dispatch launches
+   *      fresh. `attemptCount` is NOT incremented — rate-limit is not a
+   *      retryable failure, it's a hold.
+   *   2. `retryable: true` AND the design has remaining retry budget —
+   *      increment `attemptCount`, close out the in-flight attempt with
+   *      status='failed'+error, set `holdUntil` from the design's
+   *      back-off. Downstream stays pending.
+   *   3. Otherwise — mark the engine `failed`, close out the in-flight
+   *      attempt, cascade-cancel every non-terminal engine (pending or
+   *      held). The rig rollup writes status='failed'.
+   *
+   * The engine-failure path does NOT write `writ.status.spider`
+   * (D19). The rigs→writs CDC handler translates rig.status='failed' →
+   * writ.phase='failed' directly.
+   */
+  async function handleEngineFailure(
+    rig: RigDoc,
+    engineId: string,
+    errorMessage: string,
+    opts: {
+      retryable: boolean;
+      rateLimited?: boolean;
+      rateLimitSessionId?: string;
+      detail?: string;
+    },
+  ): Promise<FailureOutcome> {
+    const now = new Date().toISOString();
+    const target = rig.engines.find((e) => e.id === engineId);
+    if (!target) {
+      throw new Error(`handleEngineFailure: engine "${engineId}" not found in rig "${rig.id}"`);
+    }
+
+    // ── Branch 1: rate-limit hold ──────────────────────────────────
+    if (opts.rateLimited) {
+      const condition = { sessionId: opts.rateLimitSessionId };
+      const updatedEngines = rig.engines.map((e) => {
+        if (e.id !== engineId) return e;
+        // Close out the in-flight attempt without error; rate-limit is
+        // not a failure of the attempt — the attempt just didn't run.
+        // We use `status: 'failed'` on the attempt row to record that
+        // it did not produce yields, but we do not increment the budget.
+        const finalized = finalizeAttempt(e, {
+          endedAt: now,
+          status: 'failed',
+          error: errorMessage,
+        });
+        return {
+          ...finalized,
+          status: 'pending' as const,
+          holdReason: 'rate-limit',
+          holdCondition: condition,
+          // Leave holdUntil undefined — BlockType `animator-paused`'s
+          // check() consults the Animator for the current window.
+          holdUntil: undefined,
+          lastCheckedAt: undefined,
+        };
+      });
+      await patchRigWithRollup(rig, updatedEngines);
+      return { kind: 'rate-limit-held' };
+    }
+
+    // ── Branch 2: retryable within budget ──────────────────────────
+    const design = fabricator.getEngineDesign(target.designId);
+    const retry = design ? resolveEngineRetryConfig(design) : { maxAttempts: 0, backoff: { initialMs: 30_000, maxMs: 600_000, factor: 2 } };
+    const currentAttemptCount = target.attemptCount ?? 0;
+    const budgetRemaining = currentAttemptCount < retry.maxAttempts;
+
+    if (opts.retryable && budgetRemaining) {
+      const nextAttemptCount = currentAttemptCount + 1;
+      const delayMs = computeBackoffDelay(retry.backoff, nextAttemptCount);
+      const holdUntil = new Date(Date.now() + delayMs).toISOString();
+      const updatedEngines = rig.engines.map((e) => {
+        if (e.id !== engineId) return e;
+        const finalized = finalizeAttempt(e, {
+          endedAt: now,
+          status: 'failed',
+          error: errorMessage,
+        });
+        return {
+          ...finalized,
+          status: 'pending' as const,
+          attemptCount: nextAttemptCount,
+          holdReason: 'retry-backoff',
+          holdUntil,
+          holdCondition: undefined,
+          lastCheckedAt: undefined,
+        };
+      });
+      await patchRigWithRollup(rig, updatedEngines);
+      return { kind: 'retryable-within-budget', attemptCount: nextAttemptCount };
+    }
+
+    // ── Branch 3: terminal failure (cascade-cancel downstream) ─────
+    const updatedEngines = rig.engines.map((e) => {
+      if (e.id === engineId) {
+        const finalized = finalizeAttempt(e, {
+          endedAt: now,
+          status: 'failed',
+          error: errorMessage,
+        });
+        return {
+          ...finalized,
+          status: 'failed' as const,
+          // Clear any hold metadata; the engine is terminal now.
+          holdUntil: undefined,
+          holdReason: undefined,
+          holdCondition: undefined,
+          lastCheckedAt: undefined,
+        };
+      }
+      // Cascade-cancel any pending engine (covers both plain pending and
+      // held engines — those are pending-with-hold in the new model).
+      if (e.status === 'pending') {
+        return {
+          ...e,
+          status: 'cancelled' as const,
+          holdUntil: undefined,
+          holdReason: undefined,
+          holdCondition: undefined,
+          lastCheckedAt: undefined,
+        };
+      }
+      return e;
+    });
+    await patchRigWithRollup(rig, updatedEngines);
+    return { kind: 'terminally-failed' };
+  }
+
+  /**
+   * Mark an engine cancelled and propagate cancellation to the rig.
+   * Cancels all pending engines (including those with hold metadata).
+   * Does NOT call Animator.cancel() — that is the caller's responsibility.
+   *
+   * This path is triggered by explicit operator-cancel (`api.cancel`); the
+   * rig rollup observes `cancelledAt` and short-circuits to `'cancelled'`.
    */
   async function cancelEngine(
     rig: RigDoc,
@@ -1433,17 +1641,32 @@ export function createSpider(): Plugin {
     const now = new Date().toISOString();
     const updatedEngines = rig.engines.map((e) => {
       if (e.id === engineId) {
-        return { ...e, status: 'cancelled' as const, error: reason ?? undefined, completedAt: now, block: undefined };
+        const withCloseout = (e.attempts && e.attempts.length > 0 && !e.attempts[e.attempts.length - 1].endedAt)
+          ? finalizeAttempt(e, { endedAt: now, status: 'failed', error: reason })
+          : e;
+        return {
+          ...withCloseout,
+          status: 'cancelled' as const,
+          holdUntil: undefined,
+          holdReason: undefined,
+          holdCondition: undefined,
+          lastCheckedAt: undefined,
+        };
       }
-      if (e.status === 'pending' || e.status === 'blocked') {
-        return { ...e, status: 'cancelled' as const, block: undefined };
+      if (e.status === 'pending') {
+        return {
+          ...e,
+          status: 'cancelled' as const,
+          holdUntil: undefined,
+          holdReason: undefined,
+          holdCondition: undefined,
+          lastCheckedAt: undefined,
+        };
       }
       return e;
     });
-    await rigsBook.patch(rig.id, {
-      engines: updatedEngines,
-      status: 'cancelled',
-      ...terminalAtPatch(rig),
+    await patchRigWithRollup(rig, updatedEngines, {
+      cancelledAt: rig.cancelledAt ?? now,
     });
   }
 
@@ -1467,25 +1690,26 @@ export function createSpider(): Plugin {
   /**
    * Phase 1 — collect.
    *
-   * Find the first running engine with a sessionId whose session has
-   * reached a terminal state. Populate yields and advance the engine
-   * (and possibly the rig) to completed or failed.
+   * Find the first running engine whose attempts[-1].sessionId's session
+   * has reached a terminal state. Populate yields and advance the engine
+   * (and possibly the rig) to completed or failed via the unified
+   * failure handler or the patch-wrapper rollup.
    *
-   * After collecting a completed engine, check whether the rig has
-   * become blocked (no running engines, no runnable engines, some blocked).
+   * Rate-limit terminals route to the failure handler's `rateLimited`
+   * branch — the engine returns to `pending` with
+   * `holdReason='rate-limit'`; no budget is consumed.
    */
   async function tryCollect(): Promise<CrawlResult | null> {
     const runningRigs = await rigsBook.find({ where: [['status', '=', 'running']] });
     for (const rig of runningRigs) {
       for (const engine of rig.engines) {
-        if (engine.status !== 'running' || !engine.sessionId) continue;
+        if (engine.status !== 'running') continue;
+        const tail = latestAttempt(engine);
+        const sessionId = tail?.sessionId;
+        if (!sessionId) continue;
 
-        const session = await sessionsBook.get(engine.sessionId);
+        const session = await sessionsBook.get(sessionId);
         // Both 'pending' and 'running' are non-terminal — keep waiting.
-        // 'pending' was added when launchDetached started pre-writing the
-        // SessionDoc before spawning the babysitter; without this check we
-        // would treat freshly-pre-written sessions as already-completed and
-        // mark engines done with no actual work performed.
         if (!session || session.status === 'running' || session.status === 'pending') continue;
 
         // Terminal session found — collect.
@@ -1493,50 +1717,36 @@ export function createSpider(): Plugin {
 
         if (session.status === 'failed' || session.status === 'timeout') {
           // Session-side terminal failure (crash / timeout) — transient by
-          // nature: the next attempt runs a fresh session so `retryable: true`.
+          // nature: the next attempt runs a fresh session.
           const sessionDetail = session.error ?? `Session ${session.status}`;
-          await failEngine(rig, engine.id, sessionDetail, {
+          const outcome = await handleEngineFailure(rig, engine.id, sessionDetail, {
             retryable: true,
             detail: `Session ${session.status}: ${sessionDetail}`,
           });
-          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
+          if (outcome.kind === 'retryable-within-budget') {
+            return {
+              action: 'engine-retrying',
+              rigId: rig.id,
+              engineId: engine.id,
+              attemptCount: outcome.attemptCount,
+            };
+          }
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
         }
 
         if (session.status === 'rate-limited') {
-          // Provider-reported rate-limit terminal: transition the engine
-          // into the `blocked` state (block type `animator-paused`).
-          // `tryCheckBlocked` polls the Animator's status and clears the
-          // block once pause ends; the engine then returns to `pending`
-          // and `tryRun` dispatches a fresh session on the next crawl
-          // tick. No retryable fail-path here — the waiting is durable.
-          const blockRecord: BlockRecord = {
-            type: 'animator-paused',
-            condition: { sessionId: engine.sessionId },
-            blockedAt: now,
-            message: session.error ?? 'Anima provider is rate limited',
-          };
-          // Return the engine to `pending` lifecycle-wise (we need a
-          // fresh session after the pause clears — the previous session
-          // is terminal). Clear the sessionId so tryRun generates a new
-          // one on dispatch. We still hold the block record on the
-          // engine so the rig transitions to `blocked` instead of
-          // attempting to run it immediately.
-          const patchedEngines = rig.engines.map((e) =>
-            e.id === engine.id
-              ? {
-                  ...e,
-                  status: 'blocked' as const,
-                  block: blockRecord,
-                  // Drop the sessionId so a subsequent re-dispatch
-                  // picks up a fresh session (the previous one is
-                  // terminal in the rate-limited state).
-                  sessionId: undefined,
-                }
-              : e,
-          );
-          const rigStatus = isRigBlocked(patchedEngines) ? 'blocked' : 'running';
-          await rigsBook.patch(rig.id, { engines: patchedEngines, status: rigStatus });
-          return { action: 'engine-blocked', rigId: rig.id, engineId: engine.id, blockType: 'animator-paused' };
+          // Provider-reported rate-limit terminal: rate-limit hold path.
+          // The unified failure handler transitions the engine to
+          // `pending` + `holdReason='rate-limit'` and does not increment
+          // the retry budget. The dispatch predicate's external-gate
+          // check (via the `animator-paused` BlockType) clears the hold
+          // once the pause window ends.
+          await handleEngineFailure(rig, engine.id, session.error ?? 'Anima provider is rate limited', {
+            retryable: false,
+            rateLimited: true,
+            rateLimitSessionId: sessionId,
+          });
+          return { action: 'engine-held', rigId: rig.id, engineId: engine.id, holdReason: 'rate-limit' };
         }
 
         if (session.status === 'cancelled') {
@@ -1555,26 +1765,26 @@ export function createSpider(): Plugin {
           const givens = resolveYieldRefs(engine.givensSpec, upstream);
           const context = { rigId: rig.id, engineId: engine.id, upstream };
           // Treat a collect() throw the same way tryRun() treats a run() throw:
-          // fail the engine with the error message and take the rig to stuck.
-          // This is what engines like manual-merge rely on to signal failure
-          // when the anima's output does not satisfy the output contract.
+          // fail the engine transient-retryable.
           let collectResult: unknown;
           try {
-            collectResult = await design.collect(engine.sessionId!, givens, context);
+            collectResult = await design.collect(sessionId, givens, context);
           } catch (err) {
-            // Engine's collect() threw. Treat as transient per spec: a
-            // fresh session may produce output that the collector accepts.
-            // Engines that want to signal a definitional contract failure
-            // should surface it via non-serializable-yields or graft
-            // validation errors, which are classified retryable:false.
             const errorMessage = err instanceof Error ? err.message : String(err);
-            await failEngine(rig, engine.id, errorMessage, {
+            const outcome = await handleEngineFailure(rig, engine.id, errorMessage, {
               retryable: true,
               detail: `Engine "${engine.id}" collect() threw: ${errorMessage}`,
             });
-            return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
+            if (outcome.kind === 'retryable-within-budget') {
+              return {
+                action: 'engine-retrying',
+                rigId: rig.id,
+                engineId: engine.id,
+                attemptCount: outcome.attemptCount,
+              };
+            }
+            return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
           }
-          // Check for SpiderCollectResult shape (duck-typing)
           if (
             collectResult !== null &&
             collectResult !== undefined &&
@@ -1598,44 +1808,47 @@ export function createSpider(): Plugin {
         }
 
         if (!isJsonSerializable(yields)) {
-          // Definitional — the engine's collect() wiring returned a value
-          // that cannot round-trip through JSON. A retry would produce the
-          // same shape from the same code path.
-          await failEngine(rig, engine.id, 'Session yields are not JSON-serializable', {
+          // Definitional — the collect() wiring returned a value that
+          // cannot round-trip through JSON.
+          const outcome = await handleEngineFailure(rig, engine.id, 'Session yields are not JSON-serializable', {
             retryable: false,
             detail: `Engine "${engine.id}" collect() produced non-JSON-serializable yields`,
           });
-          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
+          if (outcome.kind === 'retryable-within-budget') {
+            return {
+              action: 'engine-retrying',
+              rigId: rig.id,
+              engineId: engine.id,
+              attemptCount: outcome.attemptCount,
+            };
+          }
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
         }
 
-        const updatedEngines = rig.engines.map((e) =>
-          e.id === engine.id
-            ? { ...e, status: 'completed' as const, yields, completedAt: now }
-            : e,
-        );
+        const updatedEngines = rig.engines.map((e) => {
+          if (e.id !== engine.id) return e;
+          const finalized = finalizeAttempt(e, {
+            endedAt: now,
+            status: 'completed',
+            yields,
+            sessionId,
+          });
+          return { ...finalized, status: 'completed' as const };
+        });
 
-        // Store graft for processing in tryProcessGrafts phase.
-        // Graft takes priority over rig-completion: even if the rig would be complete,
-        // we must queue the graft first and return engine-completed so the graft
-        // is processed on the next crawl step.
         if (collectGraft !== undefined && collectGraft.length > 0) {
           pendingGrafts.set(rig.id, { engineId: engine.id, graft: collectGraft, writId: rig.writId, graftTail: collectGraftTail });
-          await rigsBook.patch(rig.id, { engines: updatedEngines, status: 'running' });
+          await patchRigWithRollup(rig, updatedEngines, {}, { pendingGraft: true });
           return { action: 'engine-completed', rigId: rig.id, engineId: engine.id };
         }
 
-        if (isRigComplete(updatedEngines)) {
-          await rigsBook.patch(rig.id, { engines: updatedEngines, status: 'completed', ...terminalAtPatch(rig) });
+        const newStatus = await patchRigWithRollup(rig, updatedEngines);
+        if (newStatus === 'completed') {
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'completed' };
         }
-
-        // Check whether completing this engine has caused the rig to become blocked
-        if (isRigBlocked(updatedEngines)) {
-          await rigsBook.patch(rig.id, { engines: updatedEngines, status: 'blocked' });
-          return { action: 'rig-blocked', rigId: rig.id, writId: rig.writId };
+        if (newStatus === 'failed') {
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
         }
-
-        await rigsBook.patch(rig.id, { engines: updatedEngines, status: 'running' });
         return { action: 'engine-completed', rigId: rig.id, engineId: engine.id };
       }
     }
@@ -1668,11 +1881,14 @@ export function createSpider(): Plugin {
     if (validationError !== null) {
       // Definitional — the graft the engine produced is structurally
       // invalid; the same engine code would emit the same bad graft again.
-      await failEngine(rig, engineId, `Graft validation failed: ${validationError}`, {
+      const outcome = await handleEngineFailure(rig, engineId, `Graft validation failed: ${validationError}`, {
         retryable: false,
         detail: `Graft validation failed in engine "${engineId}": ${validationError}`,
       });
-      return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
+      if (outcome.kind === 'retryable-within-budget') {
+        return { action: 'engine-retrying', rigId: rig.id, engineId, attemptCount: outcome.attemptCount };
+      }
+      return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
     }
 
     // Convert grafted RigTemplateEngine entries to EngineInstance
@@ -1687,15 +1903,10 @@ export function createSpider(): Plugin {
 
     let updatedEngines = [...rig.engines, ...graftedInstances];
 
-    // graftTail: when specified, any existing engine that has the grafting
-    // engine (`engineId`) in its upstream also gains the graftTail engine
-    // as an upstream dependency. This ensures downstream engines wait for
-    // all grafted work to finish before running.
     if (graftTail) {
       const graftedIds = new Set(graftedInstances.map((e) => e.id));
       if (!graftedIds.has(graftTail)) {
-        // Definitional — graftTail must name one of the grafted engines.
-        await failEngine(
+        const outcome = await handleEngineFailure(
           rig,
           engineId,
           `Graft validation failed: graftTail "${graftTail}" is not a grafted engine id`,
@@ -1704,10 +1915,12 @@ export function createSpider(): Plugin {
             detail: `Graft validation failed in engine "${engineId}": graftTail "${graftTail}" is not a grafted engine id`,
           },
         );
-        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
+        if (outcome.kind === 'retryable-within-budget') {
+          return { action: 'engine-retrying', rigId: rig.id, engineId, attemptCount: outcome.attemptCount };
+        }
+        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
       }
       updatedEngines = updatedEngines.map((e) => {
-        // Only patch existing (non-grafted) engines that depend on the grafting engine
         if (!graftedIds.has(e.id) && e.upstream.includes(engineId)) {
           return { ...e, upstream: [...e.upstream, graftTail] };
         }
@@ -1715,7 +1928,7 @@ export function createSpider(): Plugin {
       });
     }
 
-    await rigsBook.patch(rig.id, { engines: updatedEngines });
+    await patchRigWithRollup(rig, updatedEngines);
 
     return {
       action: 'engine-grafted',
@@ -1726,107 +1939,136 @@ export function createSpider(): Plugin {
   }
 
   /**
-   * Phase 2 — checkBlocked.
+   * The dispatch predicate — the single source of truth for whether a
+   * pending engine may run this tick.
    *
-   * Query rigs with status 'running' or 'blocked'. For each blocked engine,
-   * run the registered checker (respecting pollIntervalMs). If cleared,
-   * transition the engine back to pending and restore the rig to running.
-   * If not cleared, update lastCheckedAt and continue to the next engine.
+   * Composes four checks:
+   *   1. status === 'pending'
+   *   2. every upstream engine is terminal-success (`completed`/`skipped`)
+   *   3. holdUntil is either absent or in the past
+   *   4. if `holdReason` is set, the registered BlockType's `check()`
+   *      returns `'cleared'` (honouring `pollIntervalMs` against the
+   *      engine's `lastCheckedAt` stamp)
+   *
+   * Returns one of:
+   *   - `{ dispatchable: true, priorBlock? }` — engine is ready; caller
+   *     consumes `priorBlock` for EngineRunContext and clears the hold.
+   *   - `{ dispatchable: false, reason, updatedEngine? }` — engine stays
+   *     pending. `updatedEngine` carries a lastCheckedAt patch when the
+   *     predicate actually invoked `check()` and observed `'pending'`.
+   *   - `{ dispatchable: false, reason: 'gate-failed', message }` — the
+   *     BlockType reported `'failed'`; the caller routes to the unified
+   *     failure handler as a definitional failure.
    */
-  async function tryCheckBlocked(): Promise<CrawlResult | null> {
-    // Fetch both running rigs (may have blocked engines) and blocked rigs
-    const runningRigs = await rigsBook.find({ where: [['status', '=', 'running']] });
-    const blockedRigs = await rigsBook.find({ where: [['status', '=', 'blocked']] });
-    const rigs = [...runningRigs, ...blockedRigs];
+  type DispatchPredicateResult =
+    | { dispatchable: true; priorBlock?: { type: string; condition: unknown; blockedAt: string; message?: string; lastCheckedAt?: string } }
+    | { dispatchable: false; reason: 'not-pending' | 'upstream-incomplete' | 'hold-window' | 'hold-gate-pending'; updatedEngine?: EngineInstance }
+    | { dispatchable: false; reason: 'hold-gate-failed'; message: string };
 
-    for (const rig of rigs) {
-      for (const engine of rig.engines) {
-        if (engine.status !== 'blocked' || !engine.block) continue;
+  async function evaluateDispatchPredicate(
+    rig: RigDoc,
+    engine: EngineInstance,
+  ): Promise<DispatchPredicateResult> {
+    // 1. Must be pending.
+    if (engine.status !== 'pending') {
+      return { dispatchable: false, reason: 'not-pending' };
+    }
 
-        const blockType = blockTypeRegistry.get(engine.block.type);
-        if (!blockType) continue; // Type was unregistered after block was created; skip
+    // 2. Upstream must be terminal-success.
+    const upstreamReady = engine.upstream.every((upId) => {
+      const dep = rig.engines.find((e) => e.id === upId);
+      return dep !== undefined && TERMINAL_SUCCESS_ENGINE_STATUSES.has(dep.status);
+    });
+    if (!upstreamReady) {
+      return { dispatchable: false, reason: 'upstream-incomplete' };
+    }
 
-        // Poll interval throttle
-        if (blockType.pollIntervalMs !== undefined && engine.block.lastCheckedAt) {
-          const elapsed = Date.now() - new Date(engine.block.lastCheckedAt).getTime();
-          if (elapsed < blockType.pollIntervalMs) continue;
+    // 3. holdUntil gate — if set and in the future, defer.
+    if (engine.holdUntil) {
+      const untilMs = new Date(engine.holdUntil).getTime();
+      if (untilMs > Date.now()) {
+        return { dispatchable: false, reason: 'hold-window' };
+      }
+    }
+
+    // 4. External-gate check via BlockType, if holdReason is set.
+    if (engine.holdReason) {
+      const blockType = blockTypeRegistry.get(engine.holdReason);
+      // Internal hold reasons (e.g. 'retry-backoff') are not registered
+      // in the BlockType registry — they are purely timer-driven and
+      // clear once `holdUntil` elapses. Pass-through if the reason has
+      // no registered block type.
+      if (blockType) {
+        // Honour pollIntervalMs against the engine's lastCheckedAt stamp.
+        // If the interval hasn't elapsed, return pending without
+        // re-invoking check() — avoids per-tick hammering.
+        if (blockType.pollIntervalMs !== undefined && engine.lastCheckedAt) {
+          const elapsed = Date.now() - new Date(engine.lastCheckedAt).getTime();
+          if (elapsed < blockType.pollIntervalMs) {
+            return { dispatchable: false, reason: 'hold-gate-pending' };
+          }
         }
 
         let result: CheckResult;
         try {
-          result = await blockType.check(engine.block.condition);
+          result = await blockType.check(engine.holdCondition);
         } catch (err) {
-          // Log warning, skip — engine stays blocked, retry next cycle
           console.warn(
-            `Block checker "${engine.block.type}" threw for engine "${engine.id}" in rig "${rig.id}":`,
+            `Block checker "${engine.holdReason}" threw for engine "${engine.id}" in rig "${rig.id}":`,
             err,
           );
-          continue;
+          // Throwing check() → keep held. Update lastCheckedAt so the
+          // poll-interval throttle still applies.
+          const now = new Date().toISOString();
+          return {
+            dispatchable: false,
+            reason: 'hold-gate-pending',
+            updatedEngine: { ...engine, lastCheckedAt: now },
+          };
         }
 
         if (result.status === 'failed') {
-          // Permanent failure — fail the engine and rig immediately
           const message = result.reason
-            ? `Block "${engine.block.type}" failed: ${result.reason}`
-            : `Block "${engine.block.type}" failed permanently`;
-          // Definitional — the block type declared the condition is
-          // permanently unresolvable. Retrying the engine would just
-          // re-enter the same block and fail again.
-          await failEngine(rig, engine.id, message, {
-            retryable: false,
-            detail: message,
-          });
-          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
+            ? `Block "${engine.holdReason}" failed: ${result.reason}`
+            : `Block "${engine.holdReason}" failed permanently`;
+          return { dispatchable: false, reason: 'hold-gate-failed', message };
         }
 
         if (result.status !== 'cleared') {
-          // Pending (or any unexpected status) — update lastCheckedAt and continue checking other engines
           const now = new Date().toISOString();
-          const updatedEngines = rig.engines.map((e) =>
-            e.id === engine.id
-              ? { ...e, block: { ...e.block!, lastCheckedAt: now } }
-              : e,
-          );
-          await rigsBook.patch(rig.id, { engines: updatedEngines });
-          continue; // Check next engine
+          return {
+            dispatchable: false,
+            reason: 'hold-gate-pending',
+            updatedEngine: { ...engine, lastCheckedAt: now },
+          };
         }
-
-        // Cleared — store block record in memory for priorBlock, then transition engine to pending
-        const priorBlockRecord = engine.block;
-        pendingPriorBlocks.set(`${rig.id}:${engine.id}`, priorBlockRecord);
-
-        const updatedEngines = rig.engines.map((e) =>
-          e.id === engine.id
-            ? { ...e, status: 'pending' as const, block: undefined }
-            : e,
-        );
-
-        // Restore rig to running if it was blocked; use isRigBlocked on updatedEngines
-        // (always false after unblocking, but keeps call sites consistent per R13)
-        const stillBlocked = isRigBlocked(updatedEngines);
-        const rigStatus = stillBlocked ? 'blocked' : 'running';
-
-        await rigsBook.patch(rig.id, {
-          engines: updatedEngines,
-          status: rigStatus,
-        });
-
-        return { action: 'engine-unblocked', rigId: rig.id, engineId: engine.id };
       }
+
+      // Cleared — surface the hold snapshot to tryRun via priorBlock.
+      const priorBlock = {
+        type: engine.holdReason,
+        condition: engine.holdCondition,
+        blockedAt: engine.holdUntil ?? (engine.lastCheckedAt ?? new Date().toISOString()),
+        lastCheckedAt: engine.lastCheckedAt,
+      };
+      return { dispatchable: true, priorBlock };
     }
-    return null;
+
+    return { dispatchable: true };
   }
 
   /**
-   * Phase 3 — run.
+   * Phase 2/3 — check holds + run.
    *
-   * Find the first pending engine in any running rig whose upstream is
-   * all completed. Execute it:
-   * - Clockwork ('completed') → store yields, mark engine completed,
-   *   check for rig completion.
-   * - Quick ('launched') → store sessionId, mark engine running.
-   * - Blocked ('blocked') → validate block type and condition, persist
-   *   block record, check whether rig should enter blocked state.
+   * Walks every running rig's pending engines and routes each through
+   * the dispatch predicate. When the predicate returns dispatchable,
+   * executes the engine design's run(). When it returns a hold update,
+   * writes the lastCheckedAt stamp. When it returns a gate failure,
+   * routes to the unified failure handler.
+   *
+   * Throttling (global + per-rig concurrency) is applied OUTSIDE the
+   * predicate — the predicate answers "is this engine ready?", not
+   * "may we dispatch another engine this tick?".
    */
   async function tryRun(): Promise<CrawlResult | null> {
     const runningRigs = await rigsBook.find({ where: [['status', '=', 'running']] });
@@ -1834,42 +2076,89 @@ export function createSpider(): Plugin {
     // Throttle: compute system-wide running engine count
     const maxGlobal = spiderConfig.maxConcurrentEngines ?? 3;
     const maxPerRig = spiderConfig.maxConcurrentEnginesPerRig ?? 1;
-    const systemRunning = countRunningEngines(runningRigs);
+    let systemRunning = countRunningEngines(runningRigs);
 
     for (const rig of runningRigs) {
-      const pending = findRunnableEngine(rig);
-      if (!pending) continue;
+      // Find the first pending engine that passes the dispatch predicate.
+      // Note we may walk past engines returning hold-gate-pending — those
+      // don't block the next candidate, they just don't dispatch.
+      let runnable: { engine: EngineInstance; priorBlock?: { type: string; condition: unknown; blockedAt: string; message?: string; lastCheckedAt?: string } } | null = null;
+      let workingEngines = rig.engines;
+
+      for (const engine of rig.engines) {
+        if (engine.status !== 'pending') continue;
+
+        // Throttle: compute once outside this loop so all candidates are
+        // evaluated uniformly against the current concurrency limits.
+        const result = await evaluateDispatchPredicate(
+          { ...rig, engines: workingEngines },
+          workingEngines.find((e) => e.id === engine.id) ?? engine,
+        );
+
+        if (result.dispatchable) {
+          runnable = { engine: workingEngines.find((e) => e.id === engine.id) ?? engine, priorBlock: result.priorBlock };
+          break;
+        }
+
+        if (result.reason === 'hold-gate-failed') {
+          const outcome = await handleEngineFailure(
+            { ...rig, engines: workingEngines },
+            engine.id,
+            result.message,
+            {
+              retryable: false,
+              detail: result.message,
+            },
+          );
+          if (outcome.kind === 'retryable-within-budget') {
+            return { action: 'engine-retrying', rigId: rig.id, engineId: engine.id, attemptCount: outcome.attemptCount };
+          }
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+        }
+
+        if (result.reason === 'hold-gate-pending' && result.updatedEngine) {
+          // Record lastCheckedAt patch in our working copy; flush once
+          // per tick at most if no dispatch occurs.
+          workingEngines = workingEngines.map((e) => (e.id === engine.id ? result.updatedEngine! : e));
+        }
+      }
+
+      // If the predicate surfaced hold-gate-pending + a lastCheckedAt
+      // update but no engine is dispatchable, flush the updated engines
+      // so the poll-interval throttle actually advances.
+      if (!runnable && workingEngines !== rig.engines) {
+        await patchRigWithRollup(rig, workingEngines);
+      }
+
+      if (!runnable) continue;
 
       // Throttle: check system-wide and per-rig limits.
-      // Deferred engines stay in pending; the next crawl tick will re-evaluate.
-      if (systemRunning >= maxGlobal || countRunningEnginesInRig(rig) >= maxPerRig) {
+      if (systemRunning >= maxGlobal || countRunningEnginesInRig({ ...rig, engines: workingEngines }) >= maxPerRig) {
         continue;
       }
 
+      const pending = runnable.engine;
+      const priorBlock = runnable.priorBlock;
       const now = new Date().toISOString();
-      const upstream = buildUpstreamMap(rig);
+      const upstream = buildUpstreamMap({ ...rig, engines: workingEngines });
 
       // Evaluate `when` condition before running the engine
       if (pending.when !== undefined) {
         const shouldRun = evaluateWhen(pending.when, upstream);
         if (!shouldRun) {
-          // Skip this engine and cascade-skip downstream conditionals
-          const mutableEngines = rig.engines.map((e) =>
-            e.id === pending.id ? { ...e, status: 'skipped' as const } : { ...e },
+          const mutableEngines = workingEngines.map((e) =>
+            e.id === pending.id
+              ? { ...e, status: 'skipped' as const, holdUntil: undefined, holdReason: undefined, holdCondition: undefined, lastCheckedAt: undefined }
+              : { ...e },
           );
           const cascaded = cascadeSkip(mutableEngines, upstream);
-
-          if (isRigComplete(mutableEngines)) {
-            await rigsBook.patch(rig.id, { engines: mutableEngines, status: 'completed', ...terminalAtPatch(rig) });
+          const newStatus = await patchRigWithRollup(rig, mutableEngines);
+          if (newStatus === 'completed') {
             return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'completed' };
           }
-
-          if (isRigBlocked(mutableEngines)) {
-            await rigsBook.patch(rig.id, { engines: mutableEngines, status: 'blocked' });
-            return { action: 'rig-blocked', rigId: rig.id, writId: rig.writId };
+          if (newStatus === 'failed') {
+            return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
           }
-
-          await rigsBook.patch(rig.id, { engines: mutableEngines });
           return {
             action: 'engine-skipped',
             rigId: rig.id,
@@ -1881,22 +2170,17 @@ export function createSpider(): Plugin {
 
       const design = fabricator.getEngineDesign(pending.designId);
       if (!design) {
-        // Definitional — the rig template referenced a designId that is
-        // not present in the Fabricator registry. No amount of retrying
-        // the engine will make the design appear.
-        await failEngine(rig, pending.id, `No engine design found for "${pending.designId}"`, {
+        const outcome = await handleEngineFailure({ ...rig, engines: workingEngines }, pending.id, `No engine design found for "${pending.designId}"`, {
           retryable: false,
           detail: `Engine "${pending.id}" references unknown design "${pending.designId}"`,
         });
-        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
+        if (outcome.kind === 'retryable-within-budget') {
+          return { action: 'engine-retrying', rigId: rig.id, engineId: pending.id, attemptCount: outcome.attemptCount };
+        }
+        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
       }
 
       const givens = resolveYieldRefs(pending.givensSpec, upstream);
-
-      // Check for a prior block record (engine was previously blocked and unblocked)
-      const priorBlockKey = `${rig.id}:${pending.id}`;
-      const priorBlock = pendingPriorBlocks.get(priorBlockKey);
-      if (priorBlock) pendingPriorBlocks.delete(priorBlockKey);
 
       const context = {
         rigId: rig.id,
@@ -1905,153 +2189,161 @@ export function createSpider(): Plugin {
         ...(priorBlock ? { priorBlock } : {}),
       };
 
-      let engineResult: Awaited<ReturnType<typeof design.run>>;
+      // Dispatch: transition to running and append-on-start a new
+      // attempts[] row carrying the startedAt timestamp. Clear hold
+      // metadata (the engine is leaving the hold window). We patch
+      // this state before calling design.run() so the rig reflects the
+      // running engine to any concurrent observer.
+      const startedEngines = workingEngines.map((e) => {
+        if (e.id !== pending.id) return e;
+        const appended = appendAttemptStart(e, now);
+        return {
+          ...appended,
+          status: 'running' as const,
+          holdUntil: undefined,
+          holdReason: undefined,
+          holdCondition: undefined,
+          lastCheckedAt: undefined,
+        };
+      });
+      await patchRigWithRollup(rig, startedEngines);
+      systemRunning++;
+
+      const updatedRig: RigDoc = { ...rig, engines: startedEngines };
+
+      let engineResult: Awaited<ReturnType<EngineDesign['run']>>;
       try {
-        // Mark engine as running before executing
-        const startedEngines = rig.engines.map((e) =>
-          e.id === pending.id ? { ...e, status: 'running' as const, startedAt: now } : e,
-        );
-        await rigsBook.patch(rig.id, { engines: startedEngines });
-
-        // Re-fetch to get the up-to-date engines list (with startedAt set)
-        const updatedRig = { ...rig, engines: startedEngines };
-
         engineResult = await design.run(givens, context);
-
-        if (engineResult.status === 'launched') {
-          // Quick engine — store sessionId, leave engine in 'running'
-          const { sessionId } = engineResult;
-          const launchedEngines = updatedRig.engines.map((e) =>
-            e.id === pending.id
-              ? { ...e, status: 'running' as const, sessionId }
-              : e,
-          );
-          await rigsBook.patch(rig.id, { engines: launchedEngines });
-          return { action: 'engine-started', rigId: rig.id, engineId: pending.id };
-        }
-
-        if (engineResult.status === 'blocked') {
-          const { blockType: blockTypeId, condition, message } = engineResult;
-
-          // Look up the block type
-          const blockType = blockTypeRegistry.get(blockTypeId);
-          if (!blockType) {
-            // Definitional — the engine asked to block on a type the
-            // registry does not know. Retrying would fail the same lookup.
-            await failEngine(updatedRig, pending.id, `Unknown block type: "${blockTypeId}"`, {
-              retryable: false,
-              detail: `Engine "${pending.id}" requested unknown block type "${blockTypeId}"`,
-            });
-            return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
-          }
-
-          // Validate the condition against the block type's schema
-          try {
-            blockType.conditionSchema.parse(condition);
-          } catch (zodErr) {
-            const zodMessage = zodErr instanceof Error ? zodErr.message : String(zodErr);
-            // Definitional — the engine produced a block condition that
-            // does not satisfy the block type's schema.
-            await failEngine(
-              updatedRig,
-              pending.id,
-              `Block type "${blockTypeId}" rejected condition: ${zodMessage}`,
-              {
-                retryable: false,
-                detail: `Engine "${pending.id}" produced invalid condition for block type "${blockTypeId}": ${zodMessage}`,
-              },
-            );
-            return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
-          }
-
-          // Build the block record and persist the blocked engine
-          const blockRecord: BlockRecord = {
-            type: blockTypeId,
-            condition,
-            blockedAt: new Date().toISOString(),
-            ...(message !== undefined ? { message } : {}),
-          };
-
-          const blockedEngines = updatedRig.engines.map((e) =>
-            e.id === pending.id
-              ? { ...e, status: 'blocked' as const, block: blockRecord }
-              : e,
-          );
-
-          // Determine whether the rig should also enter blocked state
-          if (isRigBlocked(blockedEngines)) {
-            await rigsBook.patch(rig.id, { engines: blockedEngines, status: 'blocked' });
-            return { action: 'rig-blocked', rigId: rig.id, writId: rig.writId };
-          }
-
-          await rigsBook.patch(rig.id, { engines: blockedEngines });
-          return { action: 'engine-blocked', rigId: rig.id, engineId: pending.id, blockType: blockTypeId };
-        }
-
-        // Clockwork engine — validate and store yields
-        const { yields } = engineResult;
-        if (!isJsonSerializable(yields)) {
-          // Definitional — the clockwork engine's run() returned a value
-          // that cannot round-trip through JSON. Retrying would produce
-          // the same shape from the same code path.
-          await failEngine(updatedRig, pending.id, 'Engine yields are not JSON-serializable', {
-            retryable: false,
-            detail: `Engine "${pending.id}" run() produced non-JSON-serializable yields`,
-          });
-          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
-        }
-
-        // Check for graft (SpiderEngineRunResult extension — duck-typing)
-        const engineResultRecord = engineResult as Record<string, unknown>;
-        const runGraft = engineResultRecord.graft as RigTemplateEngine[] | undefined;
-        const runGraftTail = engineResultRecord.graftTail as string | undefined;
-
-        const completedAt = new Date().toISOString();
-        const completedEngines = updatedRig.engines.map((e) =>
-          e.id === pending.id
-            ? { ...e, status: 'completed' as const, yields, completedAt }
-            : e,
-        );
-
-        // Store graft for processing in tryProcessGrafts phase.
-        // Graft takes priority over rig-completion: even if the rig would be complete,
-        // we must queue the graft first and return engine-completed so the graft
-        // is processed on the next crawl step.
-        if (runGraft !== undefined && runGraft.length > 0) {
-          pendingGrafts.set(rig.id, { engineId: pending.id, graft: runGraft, writId: rig.writId, graftTail: runGraftTail });
-          await rigsBook.patch(rig.id, {
-            engines: completedEngines,
-            status: 'running',
-          });
-          return { action: 'engine-completed', rigId: rig.id, engineId: pending.id };
-        }
-
-        if (isRigComplete(completedEngines)) {
-          await rigsBook.patch(rig.id, {
-            engines: completedEngines,
-            status: 'completed',
-            ...terminalAtPatch(rig),
-          });
-          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'completed' };
-        }
-
-        await rigsBook.patch(rig.id, {
-          engines: completedEngines,
-          status: 'running',
-        });
-
-        return { action: 'engine-completed', rigId: rig.id, engineId: pending.id };
       } catch (err) {
-        // Engine's run() threw. Treat as transient per spec: "engine threw
-        // an unexpected error" is exactly the failure class a retry is
-        // meant to address.
         const errorMessage = err instanceof Error ? err.message : String(err);
-        await failEngine(rig, pending.id, errorMessage, {
+        const outcome = await handleEngineFailure(updatedRig, pending.id, errorMessage, {
           retryable: true,
           detail: `Engine "${pending.id}" run() threw: ${errorMessage}`,
         });
-        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
+        if (outcome.kind === 'retryable-within-budget') {
+          return { action: 'engine-retrying', rigId: rig.id, engineId: pending.id, attemptCount: outcome.attemptCount };
+        }
+        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
       }
+
+      if (engineResult.status === 'launched') {
+        // Quick engine — patch the tail attempt with sessionId; leave engine running.
+        const { sessionId } = engineResult;
+        const launchedEngines = updatedRig.engines.map((e) => {
+          if (e.id !== pending.id) return e;
+          return patchTailAttempt(e, { sessionId });
+        });
+        await patchRigWithRollup(updatedRig, launchedEngines);
+        return { action: 'engine-started', rigId: rig.id, engineId: pending.id };
+      }
+
+      if (engineResult.status === 'blocked') {
+        const { blockType: blockTypeId, condition, message } = engineResult;
+
+        const blockType = blockTypeRegistry.get(blockTypeId);
+        if (!blockType) {
+          // Definitional — the engine asked to block on a type the
+          // registry does not know. Retrying would fail the same lookup.
+          const outcome = await handleEngineFailure(updatedRig, pending.id, `Unknown block type: "${blockTypeId}"`, {
+            retryable: false,
+            detail: `Engine "${pending.id}" requested unknown block type "${blockTypeId}"`,
+          });
+          if (outcome.kind === 'retryable-within-budget') {
+            return { action: 'engine-retrying', rigId: rig.id, engineId: pending.id, attemptCount: outcome.attemptCount };
+          }
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+        }
+
+        try {
+          blockType.conditionSchema.parse(condition);
+        } catch (zodErr) {
+          const zodMessage = zodErr instanceof Error ? zodErr.message : String(zodErr);
+          const outcome = await handleEngineFailure(
+            updatedRig,
+            pending.id,
+            `Block type "${blockTypeId}" rejected condition: ${zodMessage}`,
+            {
+              retryable: false,
+              detail: `Engine "${pending.id}" produced invalid condition for block type "${blockTypeId}": ${zodMessage}`,
+            },
+          );
+          if (outcome.kind === 'retryable-within-budget') {
+            return { action: 'engine-retrying', rigId: rig.id, engineId: pending.id, attemptCount: outcome.attemptCount };
+          }
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+        }
+
+        // Transition the engine into the held-pending state. The
+        // in-flight attempts[] row gets a close-out without error (the
+        // attempt's run() succeeded by returning a blocked result —
+        // it's the hold gate, not a failure of the attempt). On hold
+        // clear, the dispatch predicate surfaces this as a priorBlock
+        // and tryRun starts a fresh attempt row.
+        const finalizeNow = new Date().toISOString();
+        const blockedEngines = updatedRig.engines.map((e) => {
+          if (e.id !== pending.id) return e;
+          const finalized = finalizeAttempt(e, {
+            endedAt: finalizeNow,
+            status: 'completed',
+          });
+          return {
+            ...finalized,
+            status: 'pending' as const,
+            holdReason: blockTypeId,
+            holdCondition: condition,
+            // Block types don't generally declare an inherent holdUntil;
+            // the gate is consulted via check(). Leave holdUntil undefined.
+            holdUntil: undefined,
+            lastCheckedAt: undefined,
+            ...(message !== undefined ? {} : {}),
+          };
+        });
+        await patchRigWithRollup(updatedRig, blockedEngines);
+        return { action: 'engine-held', rigId: rig.id, engineId: pending.id, holdReason: blockTypeId };
+      }
+
+      // Clockwork engine — validate and store yields
+      const { yields } = engineResult;
+      if (!isJsonSerializable(yields)) {
+        const outcome = await handleEngineFailure(updatedRig, pending.id, 'Engine yields are not JSON-serializable', {
+          retryable: false,
+          detail: `Engine "${pending.id}" run() produced non-JSON-serializable yields`,
+        });
+        if (outcome.kind === 'retryable-within-budget') {
+          return { action: 'engine-retrying', rigId: rig.id, engineId: pending.id, attemptCount: outcome.attemptCount };
+        }
+        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+      }
+
+      const engineResultRecord = engineResult as Record<string, unknown>;
+      const runGraft = engineResultRecord.graft as RigTemplateEngine[] | undefined;
+      const runGraftTail = engineResultRecord.graftTail as string | undefined;
+
+      const completedAt = new Date().toISOString();
+      const completedEngines = updatedRig.engines.map((e) => {
+        if (e.id !== pending.id) return e;
+        const finalized = finalizeAttempt(e, {
+          endedAt: completedAt,
+          status: 'completed',
+          yields,
+        });
+        return { ...finalized, status: 'completed' as const };
+      });
+
+      if (runGraft !== undefined && runGraft.length > 0) {
+        pendingGrafts.set(rig.id, { engineId: pending.id, graft: runGraft, writId: rig.writId, graftTail: runGraftTail });
+        await patchRigWithRollup(updatedRig, completedEngines, {}, { pendingGraft: true });
+        return { action: 'engine-completed', rigId: rig.id, engineId: pending.id };
+      }
+
+      const newStatus = await patchRigWithRollup(updatedRig, completedEngines);
+      if (newStatus === 'completed') {
+        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'completed' };
+      }
+      if (newStatus === 'failed') {
+        return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'failed' };
+      }
+      return { action: 'engine-completed', rigId: rig.id, engineId: pending.id };
     }
     return null;
   }
@@ -2068,7 +2360,6 @@ export function createSpider(): Plugin {
   // a blocker that has `failed` cascades the dependent into stuck; any
   // non-terminal phase (new/open/stuck) holds the gate.
   const TERMINAL_SUCCESS_PHASES = new Set(['completed', 'cancelled']);
-  const TERMINAL_PHASES = new Set(['completed', 'failed', 'cancelled']);
 
   /**
    * Gate evaluation result for a single candidate writ. The walk inspects
@@ -2328,19 +2619,18 @@ export function createSpider(): Plugin {
     });
 
     for (const writ of openWrits) {
-      // Check for an active rig. A writ may legitimately carry multiple
-      // rigs across its lifetime (multi-rig-lite retry: one writ
-      // accumulates multiple rigs over successive attempts; see
-      // `c-mo56pq2k`). The invariant we still uphold is "no two rigs
-      // for the same writ are active at the same time" — terminal or
-      // stuck rigs don't block a new dispatch, because a stuck rig is
-      // precisely the signal that the prior attempt reached its
-      // non-terminal "needs attention" state and the writ may have
-      // since been returned to `open` for a retry.
+      // Check for an active rig. With engine-level retry the rig
+      // reshapes don't accumulate across retries — the same rig retries
+      // in place — but legacy rigs in 'stuck'/'blocked' may still exist
+      // alongside terminal rigs. The invariant is "no two rigs for the
+      // same writ are active at the same time" — 'running' is the only
+      // non-terminal status the new model writes. Legacy 'blocked' and
+      // 'stuck' strings are tolerated here so operators don't see
+      // phantom duplicate rigs when legacy docs linger.
       //
-      // Active statuses: 'running' and 'blocked'. Everything else
-      // ('stuck', 'completed', 'failed', 'cancelled') is inert for
-      // dispatch purposes.
+      // Active statuses (new model): 'running'. Legacy docs may still
+      // carry 'blocked' — treat those as active for dispatch purposes
+      // too so the writ doesn't double-spawn around them.
       const activeForWrit = await rigsBook.count([
         ['writId', '=', writ.id],
         ['status', 'IN', ['running', 'blocked']],
@@ -2459,28 +2749,24 @@ export function createSpider(): Plugin {
       const grafted = await tryProcessGrafts();
       if (grafted) return grafted;
 
-      const checked = await tryCheckBlocked();
-      if (checked) return checked;
-
-      // Pause gate (D14 / D15). When the Animator is paused AND the
-      // window has not elapsed, we suppress the dispatching phases
-      // (`tryRun` and `trySpawn`) and return `null` — today's "no work"
-      // signal. Collect / graft / checkBlocked / autoUnstick continue
-      // above because they don't dispatch.
-      const paused = await isAnimatorPaused();
-      if (paused) {
-        return null;
-      }
-
       const ran = await tryRun();
       if (ran) return ran;
 
       // Before trySpawn: re-evaluate writs Spider previously stuck via the
       // gating path. `autoUnstick` skips writs without
-      // `status.spider?.stuckCause` so the engine-cascade stuck path stays
-      // untouched (D6).
+      // `status.spider?.stuckCause` so operator-stuck writs are untouched.
       const unstuck = await autoUnstick();
       if (unstuck) return unstuck;
+
+      // Pause gate (D22). Keep `isAnimatorPaused` guarding `trySpawn`
+      // only — `tryRun` is handled uniformly by the dispatch predicate
+      // per-engine. Spawning new rigs while the Animator is paused
+      // would just clutter the rig list with pending engines, so the
+      // top-level gate is preserved here.
+      const paused = await isAnimatorPaused();
+      if (paused) {
+        return null;
+      }
 
       const spawned = await trySpawn();
       if (spawned) return spawned;
@@ -2511,10 +2797,6 @@ export function createSpider(): Plugin {
     },
 
     async forWrit(writId: string): Promise<RigDoc | null> {
-      // Return the newest rig for this writ. With multi-rig-lite retry
-      // a writ may accumulate multiple rigs across successive attempts
-      // (see `c-mo56pq2k`); callers consistently want the current rig,
-      // not an arbitrary prior attempt.
       const results = await rigsBook.find({
         where: [['writId', '=', writId]],
         orderBy: ['createdAt', 'desc'],
@@ -2523,66 +2805,102 @@ export function createSpider(): Plugin {
       return results[0] ?? null;
     },
 
+    /**
+     * Clear a hold on a specific pending engine, forcing the dispatch
+     * predicate to re-evaluate it on the next crawl tick. Throws when
+     * the engine is not pending or has no hold set.
+     */
     async resume(rigId: string, engineId: string): Promise<void> {
-      const rig = await api.show(rigId); // Throws if not found
+      const rig = await api.show(rigId);
       const engine = rig.engines.find((e) => e.id === engineId);
       if (!engine) {
         throw new Error(`Engine "${engineId}" not found in rig "${rigId}".`);
       }
-      if (engine.status !== 'blocked') {
+      if (engine.status !== 'pending') {
         throw new Error(
-          `Engine "${engineId}" in rig "${rigId}" is not blocked (status: ${engine.status}).`,
+          `Engine "${engineId}" in rig "${rigId}" is not pending (status: ${engine.status}).`,
+        );
+      }
+      if (!engine.holdUntil && !engine.holdReason) {
+        throw new Error(
+          `Engine "${engineId}" in rig "${rigId}" has no hold to resume.`,
         );
       }
 
-      // Store prior block for priorBlock context on next run
-      if (engine.block) {
-        pendingPriorBlocks.set(`${rigId}:${engineId}`, engine.block);
+      // Surface the cleared hold snapshot as a priorBlock so the next
+      // dispatch's EngineRunContext carries the same advisory payload
+      // the old block-record path used to carry.
+      if (engine.holdReason) {
+        pendingPriorBlocks.set(`${rigId}:${engineId}`, {
+          type: engine.holdReason,
+          condition: engine.holdCondition,
+          blockedAt: engine.holdUntil ?? (engine.lastCheckedAt ?? new Date().toISOString()),
+          lastCheckedAt: engine.lastCheckedAt,
+        });
       }
 
       const updatedEngines = rig.engines.map((e) =>
         e.id === engineId
-          ? { ...e, status: 'pending' as const, block: undefined }
+          ? {
+              ...e,
+              holdUntil: undefined,
+              holdReason: undefined,
+              holdCondition: undefined,
+              lastCheckedAt: undefined,
+            }
           : e,
       );
 
-      const rigStatus = rig.status === 'blocked' ? 'running' : rig.status;
-
-      await rigsBook.patch(rigId, {
-        engines: updatedEngines,
-        status: rigStatus,
-      });
+      await patchRigWithRollup(rig, updatedEngines);
     },
 
     async cancel(rigId: string, options?: { reason?: string }): Promise<RigDoc> {
-      const rig = await api.show(rigId); // Throws if not found
+      const rig = await api.show(rigId);
 
-      // Idempotent for terminal rigs
-      if (rig.status === 'completed' || rig.status === 'failed' || rig.status === 'cancelled') {
+      // Idempotent for terminal rigs.
+      if (
+        rig.status === 'completed' ||
+        rig.status === 'failed' ||
+        rig.status === 'cancelled'
+      ) {
         return rig;
       }
 
-      // Stuck rigs have no active engines — just mark cancelled directly.
-      if (rig.status === 'stuck') {
-        await rigsBook.patch(rig.id, { status: 'cancelled', ...terminalAtPatch(rig) });
+      // Legacy tolerance: rigs persisted with 'stuck' / 'blocked' predate
+      // this commission but can still be cancelled by an operator. Treat
+      // them as having no active session to cancel — just mark the rig
+      // cancelled via the rollup wrapper (which honours cancelledAt).
+      const legacyDead = (rig.status as string) === 'stuck';
+      const now = new Date().toISOString();
+
+      if (legacyDead) {
+        await patchRigWithRollup(
+          { ...rig, status: 'running' as RigStatus }, // feed the rollup a writable projection
+          rig.engines,
+          { cancelledAt: rig.cancelledAt ?? now },
+        );
         await rejectPendingInputRequests(rig.id);
         return api.show(rigId);
       }
 
-      // Find the active engine to cancel
+      // Find the active engine to cancel.
       let targetEngineId: string | undefined;
 
-      // 1. Running engine with sessionId — cancel the session first
-      const runningWithSession = rig.engines.find(
-        (e) => e.status === 'running' && e.sessionId,
-      );
+      // 1. Running engine with an in-flight sessionId — cancel the session first.
+      const runningWithSession = rig.engines.find((e) => {
+        if (e.status !== 'running') return false;
+        const tail = latestAttempt(e);
+        return !!tail?.sessionId;
+      });
       if (runningWithSession) {
         targetEngineId = runningWithSession.id;
-        try {
-          await animator.cancel(runningWithSession.sessionId!, { reason: options?.reason });
-        } catch (err) {
-          // Best-effort — log but don't propagate
-          console.error('[spider] Failed to cancel animator session:', err);
+        const sessionId = latestAttempt(runningWithSession)?.sessionId;
+        if (sessionId) {
+          try {
+            await animator.cancel(sessionId, { reason: options?.reason });
+          } catch (err) {
+            console.error('[spider] Failed to cancel animator session:', err);
+          }
         }
       }
 
@@ -2592,31 +2910,21 @@ export function createSpider(): Plugin {
         if (runningNoSession) targetEngineId = runningNoSession.id;
       }
 
-      // 3. Blocked engine
+      // 3. Pending engine (including held)
       if (!targetEngineId) {
-        const blockedEngine = rig.engines.find((e) => e.status === 'blocked');
-        if (blockedEngine) targetEngineId = blockedEngine.id;
-      }
-
-      // Fallback: use first non-terminal engine
-      if (!targetEngineId) {
-        const pending = rig.engines.find(
-          (e) => e.status === 'pending',
-        );
-        if (pending) targetEngineId = pending.id;
+        const pendingEngine = rig.engines.find((e) => e.status === 'pending');
+        if (pendingEngine) targetEngineId = pendingEngine.id;
       }
 
       if (targetEngineId) {
         await cancelEngine(rig, targetEngineId, options?.reason);
       } else {
-        // No active engines — just mark rig cancelled
-        await rigsBook.patch(rig.id, { status: 'cancelled', ...terminalAtPatch(rig) });
+        // No active engines — mark rig cancelled via the rollup.
+        await patchRigWithRollup(rig, rig.engines, { cancelledAt: rig.cancelledAt ?? now });
       }
 
-      // Reject pending input requests
       await rejectPendingInputRequests(rig.id);
 
-      // Re-fetch and return the updated rig
       return api.show(rigId);
     },
 
@@ -2791,8 +3099,12 @@ export function createSpider(): Plugin {
             const rig = await api.forWrit(writ.id);
             if (!rig) return; // No rig for this writ — silent no-op
 
-            // Already terminal or stuck — silent no-op (avoids redundant cancel cycle)
-            if (rig.status === 'completed' || rig.status === 'failed' || rig.status === 'cancelled' || rig.status === 'stuck') return;
+            // Already terminal — silent no-op (avoids redundant cancel cycle).
+            // Legacy rigs persisted with 'stuck'/'blocked' are also treated
+            // as inert here so operator cancel of a writ whose rig predates
+            // this commission doesn't re-enter the cancel flow.
+            if (rig.status === 'completed' || rig.status === 'failed' || rig.status === 'cancelled') return;
+            if ((rig.status as string) === 'stuck' || (rig.status as string) === 'blocked') return;
 
             await api.cancel(rig.id, { reason: `Writ ${writ.id} cancelled` });
           },
@@ -2800,8 +3112,10 @@ export function createSpider(): Plugin {
         );
 
         // CDC — Phase 1 cascade on rigs book.
-        // When a rig reaches a terminal or stuck state, transition the associated writ.
-        // The 'blocked' status intentionally falls through — no CDC action.
+        // When a rig reaches a terminal state, transition the associated writ.
+        // The engine-failure path now routes through `rig.status='failed'`
+        // directly (no intermediate stuck), so the writ transitions
+        // straight to `phase='failed'`.
         stacks.watch<RigDoc>(
           'spider',
           'rigs',
@@ -2811,41 +3125,31 @@ export function createSpider(): Plugin {
             const rig = event.entry;
             const prev = event.prev;
 
-            // Only act when status changes
             if (rig.status === prev.status) return;
 
-            // Skip writ transition when the writ is already in a terminal state.
-            // This happens when a writ is cancelled/completed/failed out-of-band
-            // (e.g. via the clerk directly) and the rig is cancelled afterwards.
             const writ = await writsBook.get(rig.writId);
             const writAlreadyTerminal = writ && (
               writ.phase === 'completed' || writ.phase === 'failed' || writ.phase === 'cancelled'
             );
 
-            if (rig.status === 'stuck') {
-              // Engine failure cascade: rig stuck → writ stuck.
-              // Only cascade if the writ is still in open phase (not already terminal or stuck).
-              if (writ && writ.phase === 'open') {
-                const failedEngine = rig.engines.find((e) => e.status === 'failed');
-                const resolution = failedEngine?.error ?? 'Engine failure';
-                await clerk.transition(rig.writId, 'stuck', { resolution });
-              }
-            } else if (rig.status === 'completed') {
+            if (rig.status === 'completed') {
               let resolutionYields: unknown;
 
               // 1. Try the declared resolution engine
               if (rig.resolutionEngineId) {
                 const declared = rig.engines.find((e) => e.id === rig.resolutionEngineId);
-                if (declared?.yields !== undefined) {
-                  resolutionYields = declared.yields;
+                const tail = declared ? latestAttempt(declared) : undefined;
+                if (tail?.yields !== undefined) {
+                  resolutionYields = tail.yields;
                 }
               }
 
-              // 2. Fall back to seal engine (backwards compat for pre-existing rigs)
+              // 2. Fall back to seal engine (backwards compat)
               if (resolutionYields === undefined) {
                 const seal = rig.engines.find((e) => e.id === 'seal');
-                if (seal?.yields !== undefined) {
-                  resolutionYields = seal.yields;
+                const tail = seal ? latestAttempt(seal) : undefined;
+                if (tail?.yields !== undefined) {
+                  resolutionYields = tail.yields;
                 }
               }
 
@@ -2853,9 +3157,9 @@ export function createSpider(): Plugin {
               if (resolutionYields === undefined) {
                 const lastCompleted = [...rig.engines]
                   .reverse()
-                  .find((e) => e.status === 'completed' && e.yields !== undefined);
+                  .find((e) => e.status === 'completed' && latestAttempt(e)?.yields !== undefined);
                 if (lastCompleted) {
-                  resolutionYields = lastCompleted.yields;
+                  resolutionYields = latestAttempt(lastCompleted)?.yields;
                 }
               }
 
@@ -2866,19 +3170,30 @@ export function createSpider(): Plugin {
                 await clerk.transition(rig.writId, 'completed', { resolution });
               }
             } else if (rig.status === 'failed') {
+              // Engine-failure terminal: writ goes directly to phase='failed'
+              // (no intermediate stuck). Resolution mirrors the failed
+              // engine's last attempt error.
               const failedEngine = rig.engines.find((e) => e.status === 'failed');
-              const resolution = failedEngine?.error ?? 'Engine failure';
+              const tail = failedEngine ? latestAttempt(failedEngine) : undefined;
+              const resolution = tail?.error ?? failedEngine?.id
+                ? `Engine "${failedEngine!.id}" failed${tail?.error ? `: ${tail.error}` : ''}`
+                : 'Engine failure';
               if (!writAlreadyTerminal) {
                 await clerk.transition(rig.writId, 'failed', { resolution });
               }
             } else if (rig.status === 'cancelled') {
-              const cancelledEngine = rig.engines.find((e) => e.status === 'cancelled' && e.error);
-              const resolution = cancelledEngine?.error ?? 'Rig cancelled';
+              const cancelledEngine = rig.engines.find((e) => {
+                if (e.status !== 'cancelled') return false;
+                const tail = latestAttempt(e);
+                return !!tail?.error;
+              });
+              const tail = cancelledEngine ? latestAttempt(cancelledEngine) : undefined;
+              const resolution = tail?.error ?? 'Rig cancelled';
               if (!writAlreadyTerminal) {
                 await clerk.transition(rig.writId, 'cancelled', { resolution });
               }
             }
-            // 'blocked' — no CDC action (rig is waiting for unblock, not terminal)
+            // 'running' — no CDC action (rig is still working).
           },
           { failOnError: true },
         );

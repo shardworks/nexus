@@ -18,7 +18,8 @@ export default tool({
   instructions:
     'Returns the full RigDoc for the given rig id, enriched with a derived ' +
     'costSummary and per-engine engineCosts map. Throws if the rig does not exist. ' +
-    'Blocked engines include a block record with type, condition, blockedAt, and lastCheckedAt timestamps.',
+    'Pending engines on hold carry attemptCount, holdUntil, holdReason, and lastCheckedAt ' +
+    'metadata; attempts[] carries per-dispatch history (startedAt, endedAt, error, yields).',
   params: {
     id: z.string().describe('The rig id to look up.'),
   },

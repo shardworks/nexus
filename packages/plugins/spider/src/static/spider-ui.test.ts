@@ -1375,18 +1375,20 @@ describe('spider.js session-log lifecycle', () => {
     );
   });
 
-  it('transcript polling is driven off engine.sessionId (anima gating)', () => {
+  it('transcript polling is driven off the latest attempt sessionId (anima gating)', () => {
     // D4 / D19: engines without a sessionId are non-anima; the session
-    // log stays hidden. updateEngineDetail funnels the sessionId-or-null
-    // into startSessionTranscriptPoll, which hides the section for null.
+    // log stays hidden. After the engine-level retry reshape, sessionId
+    // lives on attempts[-1] rather than as a scalar on the engine. The
+    // updater derives it into attemptSessionId and funnels that into
+    // startSessionTranscriptPoll; a null value hides the section.
     const updaterBlock = spiderJs.match(
       /function updateEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
     );
     assert.ok(updaterBlock, 'should find updateEngineDetail');
     assert.match(
       updaterBlock[0],
-      /startSessionTranscriptPoll\(engine\.sessionId\s*\|\|\s*null\)/,
-      'updateEngineDetail should pass engine.sessionId || null so non-anima engines hide the log',
+      /startSessionTranscriptPoll\(attemptSessionId\s*\|\|\s*null\)/,
+      'updateEngineDetail should pass attemptSessionId (derived from attempts[-1]) so non-anima engines hide the log',
     );
 
     const startPollBlock = spiderJs.match(
@@ -1433,8 +1435,8 @@ describe('spider.js rigEndTime read order', () => {
     );
     assert.match(
       body,
-      /maxCompletedAt\s*\|\|\s*rig\.createdAt/,
-      'rigEndTime must retain the createdAt final fallback',
+      /maxEndedAt\s*\|\|\s*rig\.createdAt/,
+      'rigEndTime must retain the createdAt final fallback (max attempts[-1].endedAt)',
     );
   });
 });

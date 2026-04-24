@@ -17,6 +17,8 @@ export type {
   EngineDesignInfo,
   EngineRunContext,
   EngineRunResult,
+  EngineRetryConfig,
+  EngineRetryBackoffConfig,
 } from './fabricator.ts';
 
 // ── Fabricator API ────────────────────────────────────────────────────
@@ -25,7 +27,12 @@ export type { FabricatorApi } from './fabricator.ts';
 
 // ── Apparatus factory (for tests and direct instantiation) ────────────
 
-export { createFabricator } from './fabricator.ts';
+export {
+  createFabricator,
+  DEFAULT_ENGINE_RETRY_BACKOFF,
+  validateEngineRetryConfig,
+  resolveEngineRetryConfig,
+} from './fabricator.ts';
 
 // ── Default export: the apparatus plugin ──────────────────────────────
 

@@ -14,7 +14,10 @@ import { createSpider } from './spider.ts';
 
 export type {
   EngineStatus,
+  EngineAttempt,
   EngineInstance,
+  EngineRetryConfig,
+  EngineRetryBackoffConfig,
   RigStatus,
   RigDoc,
   RigView,
@@ -24,7 +27,6 @@ export type {
   CrawlResult,
   SpiderApi,
   SpiderConfig,
-  BlockRecord,
   BlockType,
   BlockTypeInfo,
   CheckResult,

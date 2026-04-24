@@ -115,6 +115,10 @@ Produce your findings as your final message in the format above.`;
 const reviewEngine: EngineDesign = {
   id: 'review',
 
+  // Retry budget — transient session crashes retry in-place. Terminal
+  // exhaustion fails the writ directly.
+  retry: { maxAttempts: 2 },
+
   async run(givens, context) {
     const animator = guild().apparatus<AnimatorApi>('animator');
     const writ = givens.writ as WritDoc;

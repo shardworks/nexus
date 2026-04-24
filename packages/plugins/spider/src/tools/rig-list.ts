@@ -22,7 +22,7 @@ export default tool({
     'from the animator sessions book — useful for dashboards; safe to ignore.',
   params: {
     status: z
-      .enum(['running', 'stuck', 'completed', 'failed', 'blocked'])
+      .enum(['running', 'completed', 'failed', 'cancelled'])
       .optional()
       .describe('Filter by rig status.'),
     limit: z

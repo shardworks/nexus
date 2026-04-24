@@ -50,6 +50,10 @@ export function createReaderAnalystEngine(): EngineDesign {
   return {
     id: 'astrolabe.reader-analyst',
 
+    // Retry budget — transient session crashes retry in-place. Terminal
+    // exhaustion fails the writ directly.
+    retry: { maxAttempts: 2 },
+
     async run(givens, context) {
       if (typeof givens.prompt !== 'string' || givens.prompt.length === 0) {
         throw new Error(

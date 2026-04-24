@@ -52,10 +52,15 @@
       case 'completed': return 'badge--success';
       case 'running':   return 'badge--active';
       case 'failed':    return 'badge--error';
+      // Legacy tolerance — rigs persisted with 'stuck'/'blocked' predate
+      // the engine-level retry reshape. Render them as warnings so
+      // operators can still see them, but new writes never use these
+      // values on the rig or engine.
       case 'stuck':     return 'badge--warning';
       case 'blocked':   return 'badge--warning';
       case 'cancelled': return 'badge--cancelled';
       case 'pending':
+      case 'skipped':
       default:          return '';
     }
   }
@@ -338,15 +343,21 @@
    */
   function rigEndTime(rig) {
     if (rig.terminalAt) return rig.terminalAt;
-    var maxCompletedAt = null;
+    // Legacy fallback: max(attempts[-1].endedAt) — the authoritative
+    // terminal timestamp moved off the engine-level scalar and onto
+    // attempts[]. Walk every attempt across every engine for the max.
+    var maxEndedAt = null;
     var engines = rig.engines || [];
     for (var i = 0; i < engines.length; i++) {
-      var ca = engines[i].completedAt;
-      if (ca && (maxCompletedAt === null || ca > maxCompletedAt)) {
-        maxCompletedAt = ca;
+      var attempts = engines[i].attempts || [];
+      for (var j = 0; j < attempts.length; j++) {
+        var ca = attempts[j].endedAt;
+        if (ca && (maxEndedAt === null || ca > maxEndedAt)) {
+          maxEndedAt = ca;
+        }
       }
     }
-    return maxCompletedAt || rig.createdAt;
+    return maxEndedAt || rig.createdAt;
   }
 
   function countCompletedEngines(engines) {
@@ -361,6 +372,8 @@
   // ── Rig polling helpers ────────────────────────────────────────────────
 
   function isRigInFlight(rig) {
+    // New model: 'running' is the only non-terminal rig status. Legacy
+    // tolerance: rigs persisted with 'blocked' still render as in-flight.
     return rig.status === 'running' || rig.status === 'blocked';
   }
 
@@ -1147,15 +1160,31 @@
    * disturb <details> open state, <pre> scroll, or the cancel-button
    * click handler must NOT happen here.
    */
+  function latestAttempt(engine) {
+    var attempts = engine && engine.attempts;
+    if (!attempts || attempts.length === 0) return null;
+    return attempts[attempts.length - 1];
+  }
+
   function updateEngineDetail(engine) {
     if (!engine) return;
 
+    // Derive scalar fields from the latest attempt. The engine-level
+    // scalars (startedAt / completedAt / sessionId / error / yields) no
+    // longer exist as persisted fields; attempts[-1] is authoritative.
+    var tail = latestAttempt(engine);
+    var attemptStartedAt = tail ? tail.startedAt : null;
+    var attemptEndedAt = tail ? tail.endedAt : null;
+    var attemptSessionId = tail ? tail.sessionId : null;
+    var attemptError = tail ? tail.error : null;
+    var attemptYields = tail && tail.yields !== undefined ? tail.yields : undefined;
+
     // Decide cancel button visibility (in-place; never re-creates the button).
     var showCancel = false;
-    if (currentRig && (currentRig.status === 'running' || currentRig.status === 'blocked' || currentRig.status === 'stuck')) {
+    if (currentRig && currentRig.status === 'running') {
       showCancel = true;
     }
-    if (engine.status === 'running' && engine.sessionId) {
+    if (engine.status === 'running' && attemptSessionId) {
       showCancel = true;
     }
     if (currentRig && (currentRig.status === 'completed' || currentRig.status === 'failed' || currentRig.status === 'cancelled')) {
@@ -1171,20 +1200,20 @@
     setHtml('ed-status', badgeHtml(engine.status));
     setText('ed-design-id', engine.designId == null ? '' : String(engine.designId));
     setText('ed-upstream', (engine.upstream || []).join(', ') || '(none)');
-    setText('ed-started-at', formatDate(engine.startedAt) || '\u2014');
-    setText('ed-completed-at', formatDate(engine.completedAt) || '\u2014');
+    setText('ed-started-at', formatDate(attemptStartedAt) || '\u2014');
+    setText('ed-completed-at', formatDate(attemptEndedAt) || '\u2014');
 
     // Elapsed (only shown for completed-with-times or running-with-start).
     // For completed engines we write the final elapsed once and tear down
     // the ticker. For running engines we start a 1 s ticker that keeps
     // #ed-elapsed fresh locally without a server roundtrip per tick.
     var showElapsed = false;
-    if (engine.status === 'completed' && engine.startedAt && engine.completedAt) {
+    if (engine.status === 'completed' && attemptStartedAt && attemptEndedAt) {
       stopElapsedTimer();
-      setHtml('ed-elapsed', esc(formatElapsed(engine.startedAt, engine.completedAt)));
+      setHtml('ed-elapsed', esc(formatElapsed(attemptStartedAt, attemptEndedAt)));
       showElapsed = true;
-    } else if (engine.status === 'running' && engine.startedAt) {
-      startElapsedTimer(engine.startedAt);
+    } else if (engine.status === 'running' && attemptStartedAt) {
+      startElapsedTimer(attemptStartedAt);
       showElapsed = true;
     } else {
       stopElapsedTimer();
@@ -1192,50 +1221,60 @@
     }
     setRowDisplay('ed-elapsed-dt', 'ed-elapsed', showElapsed);
 
-    // Error (only when present)
-    if (engine.error) {
-      setText('ed-error', String(engine.error));
+    // Error — read from the latest attempt.
+    if (attemptError) {
+      setText('ed-error', String(attemptError));
       setRowDisplay('ed-error-dt', 'ed-error', true);
     } else {
       setText('ed-error', '');
       setRowDisplay('ed-error-dt', 'ed-error', false);
     }
 
-    // Session ID (only when present)
-    if (engine.sessionId) {
-      setText('ed-session-id', String(engine.sessionId));
+    // Session ID — read from the latest attempt.
+    if (attemptSessionId) {
+      setText('ed-session-id', String(attemptSessionId));
       setRowDisplay('ed-session-id-dt', 'ed-session-id', true);
     } else {
       setText('ed-session-id', '');
       setRowDisplay('ed-session-id-dt', 'ed-session-id', false);
     }
 
-    // Block info
-    if (engine.block) {
-      setText('ed-block-type', String(engine.block.type || ''));
+    // Hold / retry info — shown on pending engines that carry hold
+    // metadata. Reuses the existing block-* row ids (re-labelled for
+    // hold) so DOM wiring keeps working.
+    var hasHold = engine.status === 'pending' && (engine.holdReason || engine.holdUntil || engine.attemptCount);
+    if (hasHold) {
+      var holdLabel = engine.holdReason || '(timer)';
+      if (engine.attemptCount) {
+        holdLabel += ' (attempt ' + engine.attemptCount + ')';
+      }
+      setText('ed-block-type', holdLabel);
       setRowDisplay('ed-block-type-dt', 'ed-block-type', true);
 
-      setText('ed-block-blocked-at', formatDate(engine.block.blockedAt) || '');
-      setRowDisplay('ed-block-blocked-at-dt', 'ed-block-blocked-at', true);
-
-      if (engine.block.message) {
-        setText('ed-block-message', String(engine.block.message));
-        setRowDisplay('ed-block-message-dt', 'ed-block-message', true);
+      if (engine.holdUntil) {
+        setText('ed-block-blocked-at', formatDate(engine.holdUntil) || '');
+        setRowDisplay('ed-block-blocked-at-dt', 'ed-block-blocked-at', true);
       } else {
-        setRowDisplay('ed-block-message-dt', 'ed-block-message', false);
+        setRowDisplay('ed-block-blocked-at-dt', 'ed-block-blocked-at', false);
       }
 
-      if (engine.block.lastCheckedAt) {
-        setText('ed-block-last-checked', formatDate(engine.block.lastCheckedAt));
+      setRowDisplay('ed-block-message-dt', 'ed-block-message', false);
+
+      if (engine.lastCheckedAt) {
+        setText('ed-block-last-checked', formatDate(engine.lastCheckedAt));
         setRowDisplay('ed-block-last-checked-dt', 'ed-block-last-checked', true);
       } else {
         setRowDisplay('ed-block-last-checked-dt', 'ed-block-last-checked', false);
       }
 
-      var condText = JSON.stringify(engine.block.condition, null, 2);
-      var condPre = document.getElementById('ed-block-condition-pre');
-      if (condPre && condPre.textContent !== condText) condPre.textContent = condText;
-      setRowDisplay('ed-block-condition-dt', 'ed-block-condition', true);
+      if (engine.holdCondition !== undefined) {
+        var condText = JSON.stringify(engine.holdCondition, null, 2);
+        var condPre = document.getElementById('ed-block-condition-pre');
+        if (condPre && condPre.textContent !== condText) condPre.textContent = condText;
+        setRowDisplay('ed-block-condition-dt', 'ed-block-condition', true);
+      } else {
+        setRowDisplay('ed-block-condition-dt', 'ed-block-condition', false);
+      }
     } else {
       setRowDisplay('ed-block-type-dt', 'ed-block-type', false);
       setRowDisplay('ed-block-blocked-at-dt', 'ed-block-blocked-at', false);
@@ -1251,12 +1290,12 @@
       if (givensCode.textContent !== givensText) givensCode.textContent = givensText;
     }
 
-    // Yields (only when defined)
+    // Yields — read from the latest attempt.
     var yieldsDetails = document.getElementById('ed-yields-details');
     var yieldsCode = document.getElementById('ed-yields-code');
-    if (engine.yields !== undefined) {
+    if (attemptYields !== undefined) {
       if (yieldsCode) {
-        var yieldsText = JSON.stringify(engine.yields, null, 2);
+        var yieldsText = JSON.stringify(attemptYields, null, 2);
         if (yieldsCode.textContent !== yieldsText) yieldsCode.textContent = yieldsText;
       }
       if (yieldsDetails && yieldsDetails.style.display === 'none') {
@@ -1267,9 +1306,7 @@
     }
 
     // Cost — read from the enriched rig-show payload. Shown only when the
-    // rig view includes a per-engine cost entry for this engine (which
-    // means the engine has a sessionId — i.e. is an anima engine).
-    // Updates on the 2 s rig poll cadence without any per-engine fetch.
+    // rig view includes a per-engine cost entry for this engine.
     var engineCost = (currentRig && currentRig.engineCosts) ? currentRig.engineCosts[engine.id] : undefined;
     if (engineCost) {
       setText('ed-cost', window.NexusFormat.formatCostWithTokens(engineCost.costUsd, engineCost.inputTokens, engineCost.outputTokens));
@@ -1279,11 +1316,8 @@
       setRowDisplay('ed-cost-dt', 'ed-cost', false);
     }
 
-    // Transcript polling target is driven off the current engine's
-    // sessionId. The dedupe inside startSessionTranscriptPoll makes it
-    // safe to call every rig poll — the loop is only torn down and
-    // rebuilt when the sessionId actually changes (or becomes null).
-    startSessionTranscriptPoll(engine.sessionId || null);
+    // Transcript polling target — read from the latest attempt's sessionId.
+    startSessionTranscriptPoll(attemptSessionId || null);
 
     // Pipeline-node selection class (kept in sync without a full re-render).
     var nodes = document.querySelectorAll('#pipeline .pipeline-node');

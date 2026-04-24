@@ -37,6 +37,11 @@ import type {
  * snapshots of every engine's session (if any) and summing across them.
  *
  * Does not mutate the rig. Safe to call on every read.
+ *
+ * Per-engine `sessionId` is read from the engine's latest attempt
+ * (`attempts[-1].sessionId`) — the engine no longer carries a scalar
+ * `sessionId` field. Earlier attempts' sessions (pre-retry) are not
+ * currently aggregated; that is a deferred follow-up decision.
  */
 export async function enrichRigView(rig: RigDoc): Promise<RigView> {
   // Look up the writ title from the clerk/writs book. Direct book read —
@@ -51,8 +56,11 @@ export async function enrichRigView(rig: RigDoc): Promise<RigView> {
   // Collect (engineId, sessionId) pairs to look up.
   const pairs: Array<{ engineId: string; sessionId: string }> = [];
   for (const engine of rig.engines || []) {
-    if (engine.sessionId) {
-      pairs.push({ engineId: engine.id, sessionId: engine.sessionId });
+    const attempts = engine.attempts ?? [];
+    if (attempts.length === 0) continue;
+    const tail = attempts[attempts.length - 1];
+    if (tail.sessionId) {
+      pairs.push({ engineId: engine.id, sessionId: tail.sessionId });
     }
   }
 

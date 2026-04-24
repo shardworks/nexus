@@ -10,26 +10,59 @@ import type { ZodSchema } from 'zod';
 
 // ── Engine instance status ────────────────────────────────────────────
 
-export type EngineStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked' | 'skipped';
+/**
+ * Engine status — the full lifecycle of a single engine slot within a rig.
+ *
+ * 'pending'   — awaiting dispatch. Covers both "not yet tried" and "held"
+ *               engines; a hold is represented as `pending` + `holdReason`
+ *               / `holdUntil` metadata on the engine instance. The
+ *               dispatch predicate is the sole arbiter of when a pending
+ *               engine actually runs.
+ * 'running'   — currently executing (either a clockwork run in progress
+ *               or a launched anima session being polled by tryCollect).
+ * 'completed' — finished successfully. `attempts[-1]` carries the yields.
+ * 'failed'    — terminally failed (retry budget exhausted or the failure
+ *               was definitional).
+ * 'cancelled' — cancelled by operator action or by cascade from a failed
+ *               upstream engine.
+ * 'skipped'   — `when` condition evaluated false; the engine was never
+ *               run and its downstream has cascade-skipped any conditionals.
+ *
+ * There is no `'blocked'` value: holds are `'pending'` with hold metadata.
+ */
+export type EngineStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped';
 
-// ── Block record ──────────────────────────────────────────────────────
+// ── Engine attempt history ────────────────────────────────────────────
 
 /**
- * Persisted record of an active engine block.
- * Present on an EngineInstance when status === 'blocked'.
- * Cleared when the block is resolved.
+ * A single engine attempt — one dispatch of the engine's run(), from
+ * the moment the dispatcher picks it up through its terminal outcome.
+ *
+ * Entries are append-on-start: tryRun pushes a row with `startedAt` when
+ * dispatching, and the terminal handler (or the success path) patches the
+ * tail row with `endedAt`, `status`, and `error`/`yields` at completion.
+ *
+ * Scalar engine-level `startedAt`/`completedAt`/`error`/`sessionId`/`yields`
+ * fields do not exist — `attempts[-1]` is authoritative.
  */
-export interface BlockRecord {
-  /** Block type identifier (matches a registered BlockType.id). */
-  type: string;
-  /** Structured condition payload — shape validated by the block type's conditionSchema. */
-  condition: unknown;
-  /** ISO timestamp when the engine was blocked. */
-  blockedAt: string;
-  /** Optional human-readable message from the engine. */
-  message?: string;
-  /** ISO timestamp of the last checker evaluation. Updated on every check cycle. */
-  lastCheckedAt?: string;
+export interface EngineAttempt {
+  /** ISO timestamp when the attempt started. */
+  startedAt: string;
+  /** ISO timestamp when the attempt terminated; absent while in-flight. */
+  endedAt?: string;
+  /**
+   * Terminal attempt status — only the two terminal outcomes a single
+   * attempt can reach. `'completed'` means the attempt produced yields;
+   * `'failed'` means the attempt threw or observed a non-rate-limit
+   * session terminal. Absent while the attempt is still in-flight.
+   */
+  status?: 'completed' | 'failed';
+  /** Error message if the attempt terminated in `'failed'`. */
+  error?: string;
+  /** Animator session id associated with this attempt, if any. */
+  sessionId?: string;
+  /** Yields produced by this attempt, if `status === 'completed'`. */
+  yields?: unknown;
 }
 
 // ── Engine instance ───────────────────────────────────────────────────
@@ -43,6 +76,15 @@ export interface BlockRecord {
  * `givensSpec` holds values set at spawn time (writ, role, commands) and
  * may contain unresolved yield expression strings (`${yields.<id>.<path>}`)
  * that the Spider resolves at run time from upstream engine yields.
+ *
+ * Hold metadata (`holdUntil`, `holdReason`, `holdCondition`, `lastCheckedAt`)
+ * is present while the engine is in `'pending'` due to a retry back-off
+ * window or an external-gate BlockType. It is cleared when the hold is
+ * resolved (by poll-clear, by window expiration, or by operator resume).
+ *
+ * `attempts[]` is the append-only per-dispatch history for this engine.
+ * The latest entry carries the in-flight or most recently completed
+ * attempt's timestamps, session id, yields, and error.
  */
 export interface EngineInstance {
   /** Unique identifier within the rig (e.g. 'draft', 'implement'). */
@@ -65,23 +107,66 @@ export interface EngineInstance {
    * Evaluated at runtime when upstream is all done. Absent means unconditional.
    */
   when?: string;
-  /** Yields from a completed engine run (JSON-serializable). */
-  yields?: unknown;
-  /** Error message if this engine failed. */
-  error?: string;
-  /** Session ID from a launched quick engine, used by the collect step. */
-  sessionId?: string;
-  /** ISO timestamp when execution started. */
-  startedAt?: string;
-  /** ISO timestamp when execution completed (or failed). */
-  completedAt?: string;
-  /** Present when status === 'blocked'. Cleared when the block is resolved. */
-  block?: BlockRecord;
+  /**
+   * Per-dispatch history. Each entry records one attempt's lifecycle.
+   * Downstream code reads `attempts[attempts.length - 1]` for the latest
+   * state (sessionId, yields, error). An empty array means the engine
+   * has never been dispatched.
+   */
+  attempts?: EngineAttempt[];
+  /**
+   * Retry-budget counter. Incremented only when the failure handler
+   * routes a terminal attempt to the retryable-within-budget branch. A
+   * rate-limit hold does not increment; a terminal-failed outcome does
+   * not increment (it records the final consumed attempt via attempts[]).
+   */
+  attemptCount?: number;
+  /**
+   * ISO timestamp this engine may not dispatch before. Set by the retry
+   * back-off path; also set by BlockTypes whose hold carries a natural
+   * deadline. When undefined, the hold is purely gate-driven (the
+   * BlockType's `check()` result decides readiness).
+   */
+  holdUntil?: string;
+  /**
+   * BlockType id describing why the engine is being held. When set, the
+   * dispatch predicate delegates to the BlockType registered under this
+   * id for external-gate evaluation. Well-known values include
+   * `'rate-limit'` (actually resolved via the `animator-paused` BlockType),
+   * `'writ-phase'`, `'scheduled-time'`, `'patron-input'`, `'book-updated'`.
+   */
+  holdReason?: string;
+  /**
+   * Structured payload validated by the BlockType's `conditionSchema`.
+   * Carries the specifics needed by `check()` (e.g. `{ sessionId }` for
+   * `animator-paused`). Shape is opaque to the Spider.
+   */
+  holdCondition?: unknown;
+  /**
+   * ISO timestamp of the last dispatch-predicate check on this hold.
+   * The predicate honours the BlockType's `pollIntervalMs` against this
+   * stamp — `check()` only re-runs after the interval elapses.
+   */
+  lastCheckedAt?: string;
 }
 
 // ── Rig ──────────────────────────────────────────────────────────────
 
-export type RigStatus = 'running' | 'stuck' | 'completed' | 'failed' | 'cancelled' | 'blocked';
+/**
+ * Rig status — the full lifecycle of a rig. Computed as a pure projection
+ * of the rig's engine states plus the operator-cancel marker; never
+ * written independently.
+ *
+ * 'running'   — at least one engine is non-terminal.
+ * 'completed' — every engine is terminal and at least one completed.
+ * 'failed'    — some engine terminally failed and no engine is running
+ *               (i.e. the rig reached a dead end via engine failure).
+ * 'cancelled' — operator cancel (signalled by a `cancelledAt` stamp).
+ *
+ * Legacy rig docs persisted with `'stuck'` or `'blocked'` predate this
+ * commission; readers must tolerate those string values without crashing.
+ */
+export type RigStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
 /**
  * A rig — the execution context for a single writ.
@@ -105,13 +190,20 @@ export interface RigDoc {
   createdAt: string;
   /**
    * ISO timestamp recorded the first time the rig enters a terminal status
-   * (`completed`, `failed`, `cancelled`, or `stuck`). Keep-first semantics:
-   * subsequent terminal transitions (e.g. `stuck → cancelled`) do NOT
-   * overwrite this value — it pins the moment the rig first stopped making
-   * forward progress. Absent on rigs that predate this field; the dashboard
-   * falls back to `max(engine.completedAt)` for those.
+   * (`completed`, `failed`, `cancelled`). Keep-first semantics:
+   * subsequent terminal transitions do NOT overwrite this value — it
+   * pins the moment the rig first stopped making forward progress.
+   * Absent on rigs that predate this field; the dashboard falls back to
+   * the latest `attempts[-1].endedAt` for those.
    */
   terminalAt?: string;
+  /**
+   * ISO timestamp recorded when the rig is cancelled by explicit operator
+   * action (via `SpiderApi.cancel`). The rig-status rollup short-circuits
+   * to `'cancelled'` when this is set, distinguishing operator-cancel
+   * from cascade-by-upstream cancel.
+   */
+  cancelledAt?: string;
   /** Engine id whose yields provide the resolution summary. Set at spawn time. */
   resolutionEngineId?: string;
 }
@@ -251,6 +343,41 @@ export interface RigTemplate {
   resolutionEngine?: string;
 }
 
+// ── Retry policy on engine designs ────────────────────────────────────
+
+/**
+ * Back-off config for an engine's retry policy. Matches the shape of
+ * `AnimatorRateLimitBackoffConfig`: `initialMs` is the first attempt's
+ * hold; each subsequent attempt multiplies by `factor`, capped at `maxMs`.
+ */
+export interface EngineRetryBackoffConfig {
+  /** First attempt's hold window in milliseconds. */
+  initialMs: number;
+  /** Cap on the hold window in milliseconds. */
+  maxMs: number;
+  /** Back-off growth factor. Must be > 1. */
+  factor: number;
+}
+
+/**
+ * Opt-in retry policy for an engine design. When absent, the effective
+ * policy is `maxAttempts: 0` — the engine fails terminally on the first
+ * transient error with no retry. Explicit config enables retry.
+ *
+ * Validated at engine-design registration time (see
+ * `validateEngineRetryConfig`); malformed values throw at startup.
+ */
+export interface EngineRetryConfig {
+  /**
+   * Total retry budget. `0` means fail fast (never retry — same as
+   * absent). `1` means one retry (so up to two attempts total). Matches
+   * the "attempts consumed from budget" semantics in the commission brief.
+   */
+  maxAttempts: number;
+  /** Back-off growth parameters. Optional; defaults applied when omitted. */
+  backoff?: Partial<EngineRetryBackoffConfig>;
+}
+
 // ── CrawlResult ────────────────────────────────────────────────────────
 
 /**
@@ -259,11 +386,18 @@ export interface RigTemplate {
  * Variants, ordered by priority:
  * - 'engine-completed'  — an engine finished (collected or ran inline); rig still running
  * - 'engine-started'    — launched a quick engine's session
- * - 'engine-blocked'    — engine entered blocked status; rig is still running (other engines active)
- * - 'engine-unblocked'  — a blocked engine's condition cleared; engine returned to pending
+ * - 'engine-held'       — engine entered pending+hold status (rate-limit or
+ *                         block type gate); rig is still running (other
+ *                         engines may be active)
+ * - 'engine-retrying'   — an engine observed a retryable terminal failure
+ *                         and is pending a back-off window before the
+ *                         next attempt dispatches
+ * - 'engine-skipped'    — engine's `when` evaluated false; optional
+ *                         cascadeSkipped list when downstream conditionals
+ *                         cascade-skipped
+ * - 'engine-grafted'    — a graft was applied; downstream engines added
  * - 'rig-spawned'       — created a new rig for a ready writ
  * - 'rig-completed'     — the crawl step caused a rig to reach a terminal state
- * - 'rig-blocked'       — all forward progress stalled; rig entered blocked status
  * - 'gated'             — an open writ's dispatch is gated on outbound
  *                         spider.follows links that point at non-terminal
  *                         blockers; no rig was spawned and no status was
@@ -278,13 +412,12 @@ export interface RigTemplate {
 export type CrawlResult =
   | { action: 'engine-completed'; rigId: string; engineId: string }
   | { action: 'engine-started'; rigId: string; engineId: string }
-  | { action: 'engine-blocked'; rigId: string; engineId: string; blockType: string }
-  | { action: 'engine-unblocked'; rigId: string; engineId: string }
+  | { action: 'engine-held'; rigId: string; engineId: string; holdReason: string }
+  | { action: 'engine-retrying'; rigId: string; engineId: string; attemptCount: number }
   | { action: 'engine-skipped'; rigId: string; engineId: string; cascadeSkipped?: string[] }
   | { action: 'engine-grafted'; rigId: string; engineId: string; graftedEngineIds: string[] }
   | { action: 'rig-spawned'; rigId: string; writId: string }
-  | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'stuck' | 'failed' | 'cancelled' }
-  | { action: 'rig-blocked'; rigId: string; writId: string }
+  | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'failed' | 'cancelled' }
   | { action: 'gated'; writId: string; blockerIds: string[] }
   | { action: 'writ-unstuck'; writId: string };
 
@@ -341,7 +474,7 @@ export interface BlockType {
    * when the condition is permanently unresolvable.
    *
    * Throwing is reserved for transient errors (network failures, etc.)
-   * — the engine stays blocked and the checker is retried next cycle.
+   * — the engine stays held and the checker is retried next cycle.
    */
   check: (condition: unknown) => Promise<CheckResult>;
   /** Zod schema for validating the condition payload at block time. */
@@ -359,7 +492,7 @@ export interface SpiderApi {
   /**
    * Execute one step of the crawl loop.
    *
-   * Priority ordering: collect > checkBlocked > run > spawn.
+   * Priority ordering: collect > graft > run > spawn.
    * Returns null when no work is available.
    */
   crawl(): Promise<CrawlResult | null>;
@@ -380,14 +513,15 @@ export interface SpiderApi {
   forWrit(writId: string): Promise<RigDoc | null>;
 
   /**
-   * Manually clear a block on a specific engine, regardless of checker result.
-   * Throws if the engine is not blocked.
+   * Clear a hold on a specific pending engine, forcing the dispatch
+   * predicate to re-evaluate it on the next crawl tick. Throws if the
+   * engine is not pending or has no hold set.
    */
   resume(rigId: string, engineId: string): Promise<void>;
 
   /**
-   * Cancel a running or blocked rig. Cancels the active session (if any),
-   * marks all non-terminal engines as cancelled, rejects pending input
+   * Cancel a running rig. Cancels the active session (if any), marks
+   * all non-terminal engines as cancelled, rejects pending input
    * requests, and transitions the rig to cancelled status.
    *
    * Idempotent: returns the rig unchanged if it is already in a terminal state.
@@ -711,29 +845,33 @@ export interface SpiderCollectResult {
  * - 'cycle'          — a back-edge was discovered in the `spider.follows`
  *                      graph during gate evaluation; every cycle member is
  *                      stuck with this cause.
- * - 'engine-failure' — the rig transitioned to stuck through a `failEngine`
- *                      call: session crashes, engine throws, graft
- *                      validation failures, unknown designs/block types,
- *                      non-JSON-serializable yields, and any other
- *                      engine-side failure path. Sub-taxonomy lives in the
- *                      `detail` string, not in the enum.
+ *
+ * The historical `'engine-failure'` value is no longer written by this
+ * Spider: the engine-failure path now retries in-place within the rig
+ * (up to the engine design's `maxAttempts` budget) and, on exhaustion,
+ * transitions the writ directly to `phase='failed'` without writing
+ * `status.spider.stuckCause`. Readers must tolerate the absent slot.
  */
-export type SpiderStuckCause = 'failed-blocker' | 'cycle' | 'engine-failure';
+export type SpiderStuckCause = 'failed-blocker' | 'cycle';
 
 /**
  * Shape of the plugin-owned `status.spider` sub-slot as written by the
- * Spider's stuck paths.
+ * Spider's dependency-gating paths.
  *
  * The slot is absent (not the empty object) on writs Spider has never
- * touched. For engine-cascade stuck transitions it is populated by
- * `failEngine` with `stuckCause: 'engine-failure'` plus a `retryable`
- * boolean and freeform `detail` string so downstream retry clockwork and
- * UIs can make per-failure decisions. For dependency-recovery stucks
- * (`failed-blocker` / `cycle`), only `stuckCause`, `blockerIds`, and
- * `observedAt` are written — those do not participate in retry policy.
+ * touched. For dependency-recovery stucks (`failed-blocker` / `cycle`),
+ * the slot carries `stuckCause`, `blockerIds`, and `observedAt`.
  *
- * The slot is written only on stuck transitions and cleared on
- * auto-unstick. Nothing is written while a writ is gated-but-not-stuck.
+ * `retryable` / `detail` remain on the interface for read-compatibility
+ * with legacy writs (whose engine-failure stucks carried those fields)
+ * but are NOT written by the current Spider's engine-failure path —
+ * that path now transitions rigs straight to `failed` and writs straight
+ * to `phase='failed'` without a `status.spider.stuckCause='engine-failure'`
+ * entry.
+ *
+ * The slot is written only on stuck transitions via the dependency
+ * gating paths and cleared on auto-unstick. Nothing is written while a
+ * writ is gated-but-not-stuck or during engine-failure retry.
  */
 export interface SpiderWritStatus {
   /** Present only while the writ is stuck for a reason Spider recorded. */
@@ -743,24 +881,21 @@ export interface SpiderWritStatus {
    * For `failed-blocker`, these are the outbound `spider.follows` targets
    * that reached `failed`. For `cycle`, these are the members of the
    * detected cycle (typically including the dependent itself).
-   * Not set for `engine-failure` stucks.
    */
   blockerIds?: string[];
   /** ISO timestamp recorded at the moment the stuck transition was taken. */
   observedAt?: string;
   /**
-   * Retry signal written only for `engine-failure` stucks. `true` for
-   * transient failures (session crash, engine threw an unexpected error);
-   * `false` for definitional failures (invalid graft, unknown design,
-   * unknown block type, malformed brief). The retry clockwork — a
-   * dependent commission — is the sole load-bearing consumer.
+   * Retry signal — inert on the engine-failure path in the current Spider
+   * (engine-failure now writes `phase='failed'` directly rather than
+   * stuck with this flag). Retained on the interface so legacy writs
+   * that still carry it round-trip through readers without erroring.
    */
   retryable?: boolean;
   /**
-   * Freeform human-readable failure description written only for
-   * `engine-failure` stucks. Consumed by the patron UI and lab analytics.
-   * Not structured, not an enum — sub-taxonomy of engine failures lives
-   * here, not in `stuckCause`.
+   * Freeform human-readable failure description — also inert on the
+   * engine-failure path in the current Spider. Retained for legacy
+   * writs and in case future commissions re-enable the slot.
    */
   detail?: string;
 }
