@@ -223,7 +223,7 @@ Accumulate a punch list of things noticed during your pass that are outside the 
 - **Doc/code discrepancies** found during inventory
 - **Potential bugs or risks** noticed in adjacent code
 
-Each observation is **one record per atomic concern**. Downstream, the `astrolabe.observation-lift` engine creates one draft brief writ per record as a child of the originating brief, so a curator (human or automated) can promote it to open status. Your job is to package the concerns; you do not decide which ones get promoted.
+Each observation is **one record per atomic concern**. Downstream, the `astrolabe.observation-lift` engine lifts each record into a draft top-level `mandate` writ (never a child of the originating mandate); each lifted writ carries an `astrolabe.lifted-from` provenance edge back to the originating mandate, plus a `spider.follows` edge that holds dispatch until the mandate has terminated. When the plan yields two or more observations, the engine additionally groups them under a top-level `observation-set` container that parents the draft mandates and carries the `astrolabe.lifted-from` edge on behalf of the batch. A curator (human or automated) promotes each draft to open status. Your job is to package the concerns; you do not decide which ones get promoted.
 
 Atomicity guidance has not changed from prior practice — if two noticings would be addressed by the same follow-up commission, they belong in one record; if they would be addressed by two different commissions, they are two records.
 

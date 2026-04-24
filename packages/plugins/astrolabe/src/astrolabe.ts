@@ -227,8 +227,12 @@ export function createAstrolabe(): Plugin {
       'per atomic concern noticed during the planning pass. Each record has a plandoc-local ' +
       'id (convention: obs-1, obs-2, ...), a one-line commission-title style title, and a ' +
       'markdown body with tactical detail (file paths, symbols, preconditions). Downstream ' +
-      'the astrolabe.observation-lift engine creates one draft mandate writ per record as a ' +
-      'child of the originating mandate, ready for a curator to promote.',
+      'the astrolabe.observation-lift engine lifts each record into a draft top-level ' +
+      'mandate writ (never a child of the originating mandate); each lifted writ carries an ' +
+      'astrolabe.lifted-from provenance edge back to the originating mandate. When the plan ' +
+      'yields two or more observations, the engine additionally groups them under a top-level ' +
+      'observation-set container that parents the draft mandates. A curator then promotes ' +
+      'each draft to open status.',
     params: {
       planId: z.string().describe('Plan id'),
       observations: z

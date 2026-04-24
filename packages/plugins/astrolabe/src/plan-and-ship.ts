@@ -14,10 +14,16 @@
  *
  * The `observation-lift` engine runs after `plan-finalize` has transitioned
  * the plan to `completed` but while the brief writ itself is still `open`.
- * It lifts each record in `plan.observations` into a draft child writ under
- * the brief, so a curator (human or overseer) can promote it later. The
- * engine internally no-ops on empty or legacy-string observations, so it is
- * wired unconditionally (no `when:` guard).
+ * It lifts each record in `plan.observations` into a draft top-level
+ * `mandate` writ (never a child of the originating mandate); each lifted
+ * writ carries an `astrolabe.lifted-from` provenance edge and a
+ * `spider.follows` precedence edge back to the originating mandate. When
+ * the plan yields two or more observations, the engine additionally groups
+ * the drafts under a top-level `observation-set` container that carries the
+ * provenance edge on behalf of the batch. A curator (human or overseer)
+ * promotes each draft to open status later. The engine internally no-ops
+ * on empty or legacy-string observations, so it is wired unconditionally
+ * (no `when:` guard).
  *
  * The `reader-analyst` slot uses the astrolabe-owned
  * `astrolabe.reader-analyst` engine, which selects the primer role at

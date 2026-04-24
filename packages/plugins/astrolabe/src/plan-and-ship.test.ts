@@ -143,10 +143,11 @@ describe('astrolabe.plan-and-ship rig template — shape and wiring', () => {
   });
 
   it('observation-lift sits between plan-finalize and implement', () => {
-    // observation-lift lifts plan.observations into draft child writs
-    // under the mandate. Placement: the plan has reached `completed` (via
-    // plan-finalize) but the mandate writ is still `open`, so clerk.post
-    // with parentId succeeds.
+    // observation-lift lifts plan.observations into draft top-level writs
+    // with an astrolabe.lifted-from edge back to the originating mandate.
+    // Placement: the plan has reached `completed` (via plan-finalize) but
+    // the mandate writ is still `open`, so the spider.follows gate the
+    // engine installs on each lifted writ is well-formed.
     const ol = template.engines.find(e => e.id === 'observation-lift');
     assert.ok(ol, 'observation-lift engine must exist');
     assert.equal(ol.designId, 'astrolabe.observation-lift');
@@ -412,9 +413,10 @@ describe('no mandate-posting engine appears in astrolabe.plan-and-ship', () => {
     // or clerk-unused), including the astrolabe-owned reader-analyst that
     // replaces the generic anima-session for that slot + the spec-writer's
     // anima-session (read-only) + the observation-lift engine (posts draft
-    // child writs only, never a mandate) + the five Spider engines (draft,
-    // implement, review, revise, seal — none of which call clerk.post
-    // per the Spider codebase).
+    // top-level observation writs plus an optional observation-set container,
+    // none of which are mandates dispatched by this rig) + the five Spider
+    // engines (draft, implement, review, revise, seal — none of which call
+    // clerk.post per the Spider codebase).
     const allowed = new Set([
       'astrolabe.plan-init',
       'astrolabe.inventory-check',

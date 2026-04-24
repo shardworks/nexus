@@ -29,9 +29,13 @@ export interface PlanDoc {
    * Primer observations: refactoring opportunities, risks, conventions.
    *
    * Each entry is an atomic, commissionable concern — the
-   * `astrolabe.observation-lift` engine lifts each record into a
-   * draft child writ under the originating brief so a curator
-   * (human or automated) can promote it to open status.
+   * `astrolabe.observation-lift` engine lifts each record into a draft
+   * top-level `mandate` writ (never a child of the originating mandate),
+   * attaching an `astrolabe.lifted-from` provenance edge back to the
+   * originating mandate. When the plan yields two or more observations,
+   * the engine additionally groups the drafts under a top-level
+   * `observation-set` container. A curator (human or automated) then
+   * promotes each draft to open status.
    */
   observations?: Observation[];
   /** Scope items: what's in and what's out. */
@@ -67,8 +71,12 @@ export interface ScopeItem {
  * Each observation names one concern — a refactoring opportunity,
  * risk, convention drift, or bug — that the sage noticed but that
  * is outside the brief's scope. Observations flow downstream into
- * the `astrolabe.observation-lift` engine, which creates one draft
- * brief writ per record as a child of the originating brief.
+ * the `astrolabe.observation-lift` engine, which lifts each record
+ * into a draft top-level `mandate` writ (never a child of the
+ * originating mandate). The provenance relationship rides on the
+ * kit-registered `astrolabe.lifted-from` link kind. When a plan
+ * yields two or more observations, the engine additionally groups
+ * the drafts under a top-level `observation-set` container.
  *
  * Fields are deliberately minimal (D1 in the commission spec):
  * - `id` — plandoc-local identifier assigned by the sage (e.g. `obs-1`).
