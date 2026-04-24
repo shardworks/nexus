@@ -408,11 +408,7 @@ The `commissioned` link type is the primary cross-substrate pattern: a click is 
 
 ## Open Questions
 
-- **ID format.** Should click IDs follow the same `w-{random}-{hash}` pattern as writs, or use a different prefix (e.g., `c-{random}-{hash}`) to make them visually distinguishable? A distinct prefix makes cross-substrate links unambiguous (you can tell whether a target is a click or a writ from the ID alone).
-
 - **`extract` depth control.** Should `extract` support a `--depth` parameter like `tree`, or always render the full subtree? Full subtree is simpler; depth control is useful for large trees.
-
-- **Stacks book registration generalization.** Clerk is currently the primary consumer of Stacks book registration. The Ratchet is the second plugin to own books. Verify that the registration API generalizes cleanly — if it was designed with Clerk-specific assumptions, those may need to be relaxed.
 
 ---
 
@@ -453,6 +449,7 @@ Stretch goals: graph visualization (nodes + edges), drag-and-drop reparenting, n
 - **Reference implementation:** follow the Clerk plugin (`packages/plugins/clerk/`) as the architectural pattern. The Ratchet is structurally similar but simpler (no rig integration, no status cascading, fewer status values).
 - **Package location:** `packages/plugins/ratchet/` in the framework monorepo.
 - **Short ID resolution:** implement a `resolveId(prefix)` helper that queries the clicks book with a prefix match. Error if zero or multiple matches. This pattern may be worth extracting to Stacks as a shared utility if the Clerk adopts it too.
+- Click ids use the format `c-{base36_timestamp}-{hex_random}`, produced by `generateId('c', 6)` — sortable by creation time, unique without coordination. The distinct `c-` prefix makes click ids visually distinguishable from writ ids, disambiguating cross-substrate link targets from the ID alone.
 - **CDC:** all mutations flow through Stacks, so CDC events are emitted automatically. The Laboratory can observe click lifecycle events (created, status changed, concluded, dropped, reparented, linked) using the same CDC machinery it uses for writs.
 
 ---
