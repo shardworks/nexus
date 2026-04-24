@@ -94,13 +94,7 @@ Returns: session summary (id, status, provider, durationMs, exitCode, costUsd, t
 
 ### `animator-status` tool
 
-Show the Animator's current rate-limit pause state — the `'dispatch-status'` document from the shared `state` book (see § Rate-Limit Back-Off). Patron-callable, `read` permission.
-
-| Parameter | Type | Description |
-|---|---|---|
-| `json` | `boolean` (optional) | Emit the raw status doc as JSON instead of the human-readable summary |
-
-Returns: the `AnimatorStatusDoc`. Framework auto-registration surfaces it as `nsg animator-status`.
+Show the Animator's current rate-limit pause state — the `'dispatch-status'` document from the shared `state` book (see § Rate-Limit Back-Off). Patron-callable, `read` permission. Empty params; always returns the raw `AnimatorStatusDoc` as JSON. The framework CLI auto-printer renders it as pretty-printed JSON at the terminal, so `nsg animator-status` is enough — there is no `--json` flag. Invoking it with an unknown flag errors.
 
 ---
 
@@ -521,7 +515,7 @@ Defaults: 15 minutes / 1 hour / factor 2. The `rateLimit.backoff` block is valid
 ### Observability
 
 - `GET /api/animator/status` returns the current status doc over HTTP.
-- `nsg animator-status` prints the doc — default human-readable, `--json` for machine-parseable output.
+- `nsg animator-status` prints the doc as pretty-printed JSON (the tool always returns JSON; the CLI auto-printer handles the rendering).
 - The Spider Oculus page shows a conditional banner above the tab bar when the Animator is paused.
 - The status book's CDC stream is designed to be observable by a future Sentinel apparatus; no Sentinel is instantiated here. The book is the historical record — pause / resume events flow through the same CDC stream the Laboratory already ingests.
 

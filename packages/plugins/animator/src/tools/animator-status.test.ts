@@ -1,7 +1,9 @@
 /**
  * Tests for the animator-status tool.
  *
- * Covers the text / JSON output variants and the AnimatorApi read path.
+ * The tool is JSON-only: empty params, returns the AnimatorStatusDoc
+ * verbatim, CLI auto-printer pretty-prints. No --json flag, no text
+ * formatter.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -59,7 +61,16 @@ describe('animator-status tool', () => {
     assert.deepEqual(animatorStatus.callableBy, ['patron']);
   });
 
-  it('returns the raw status doc when --json is set', async () => {
+  it('exposes an empty params schema (no --json flag remains)', () => {
+    // `tool()` wraps the raw shape with `z.object(...)` — an empty
+    // shape parses cleanly and admits no keys.
+    const parsed = animatorStatus.params.parse({});
+    assert.deepEqual(parsed, {});
+    // An unknown property is rejected (the old `json` flag is gone).
+    assert.throws(() => animatorStatus.params.strict().parse({ json: true }));
+  });
+
+  it('returns the status doc verbatim (paused shape)', async () => {
     currentStatus = {
       id: 'dispatch-status',
       state: 'paused',
@@ -69,36 +80,17 @@ describe('animator-status tool', () => {
       backoffLevel: 1,
       lastTriggeringSession: 'ses-42',
     };
-    const result = await animatorStatus.handler({ json: true });
-    assert.ok(typeof result === 'object');
-    assert.equal((result as AnimatorStatusDoc).state, 'paused');
-    assert.equal((result as AnimatorStatusDoc).backoffLevel, 1);
-    assert.equal((result as AnimatorStatusDoc).lastTriggeringSession, 'ses-42');
-  });
-
-  it('returns a human-readable multi-line string by default', async () => {
-    currentStatus = {
-      id: 'dispatch-status',
-      state: 'paused',
-      pausedSince: '2026-04-24T00:00:00.000Z',
-      pausedUntil: new Date(Date.now() + 60_000).toISOString(),
-      pauseReason: 'rate-limit',
-      backoffLevel: 2,
-      lastTriggeringSession: 'ses-77',
-    };
     const result = await animatorStatus.handler({});
-    assert.ok(typeof result === 'string');
-    assert.match(result as string, /State:\s+paused/);
-    assert.match(result as string, /Back-off level:\s+2/);
-    assert.match(result as string, /Pause reason:\s+rate-limit/);
-    assert.match(result as string, /Triggering sess.:\s+ses-77/);
+    assert.deepEqual(result, currentStatus);
   });
 
-  it('covers the running-state path (default install)', async () => {
+  it('returns the default running doc on a fresh install', async () => {
     currentStatus = { id: 'dispatch-status', state: 'running', backoffLevel: 0 };
     const result = await animatorStatus.handler({});
-    assert.ok(typeof result === 'string');
-    assert.match(result as string, /State:\s+running/);
-    assert.ok(!(result as string).includes('Paused'), 'no paused-only fields when running');
+    assert.deepEqual(result, {
+      id: 'dispatch-status',
+      state: 'running',
+      backoffLevel: 0,
+    });
   });
 });

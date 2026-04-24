@@ -324,7 +324,7 @@ The Animator contributes two books, inspection/dispatch tools, an Oculus page, a
 | `session-running` | `write` | Record initial "running" state for a detached session |
 | `session-record` | `write` | Record a terminal session result for a detached session |
 | `session-heartbeat` | `write` | Refresh session liveness timestamp (called periodically by babysitters) |
-| `animator-status` | `read` | Show the Animator's current rate-limit pause state (`--json` for machine-parseable output) |
+| `animator-status` | `read` | Show the Animator's current rate-limit pause state as JSON (the CLI auto-printer pretty-prints it) |
 
 The `summon` and `session-cancel` tools are patron-only (`callableBy: 'patron'`). The `session-running`, `session-record`, and `session-heartbeat` tools are infrastructure-facing (`callableBy: 'anima'`) — called by session babysitters over the Tool HTTP API to report detached session lifecycle events. See `docs/architecture/detached-sessions.md`.
 
