@@ -161,14 +161,21 @@ export interface EngineCostSummary {
  * - `engineCosts` maps engineId → per-engine cost snapshot. Contains an
  *   entry for every engine with a sessionId. Omitted when no engine has
  *   a sessionId.
+ * - `writTitle` is the current title of this rig's writ, joined from the
+ *   `clerk/writs` book. Omitted when the writ cannot be resolved (e.g.
+ *   deleted). Derived-only — never persisted on `RigDoc`; recomputed on
+ *   every read so `writ-edit` title changes are reflected on the next
+ *   dashboard poll.
  *
- * Both derived fields are read-only reports — they are never persisted.
+ * All derived fields are read-only reports — they are never persisted.
  */
 export interface RigView extends RigDoc {
   /** Rig-level cost aggregate (sum across all engine sessions). */
   costSummary?: RigCostSummary;
   /** Per-engine cost snapshot keyed by engine id. */
   engineCosts?: Record<string, EngineCostSummary>;
+  /** Current title of this rig's writ, joined from `clerk/writs`. */
+  writTitle?: string;
 }
 
 // ── Rig filters ───────────────────────────────────────────────────────

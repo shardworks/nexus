@@ -1,6 +1,7 @@
 /**
  * Rig view aggregator — builds the UI-facing RigView from a persisted
- * RigDoc by joining against the Animator's per-session cost snapshot.
+ * RigDoc by joining against the Animator's per-session cost snapshot and
+ * the Clerk writs book for the rig's writ title.
  *
  * Read-only. Pure derived fields; never persisted.
  *
@@ -11,6 +12,9 @@
  *   zeros; sessions that are missing from the book are skipped silently.
  * - tokenUsage fields are optional: when no contributing session has
  *   tokenUsage, the aggregate inputTokens/outputTokens are omitted.
+ * - writTitle is populated from the `clerk/writs` book via a direct book
+ *   read. On a miss (book returns null/undefined), writTitle is left
+ *   unset; the client renders an em-dash fallback for that one row.
  *
  * The cost data comes from AnimatorApi.getSessionCosts — the Animator owns
  * the shape of cost answers, so consumers like this aggregator do not reach
@@ -19,6 +23,8 @@
 
 import { guild } from '@shardworks/nexus-core';
 import type { AnimatorApi } from '@shardworks/animator-apparatus';
+import type { StacksApi } from '@shardworks/stacks-apparatus';
+import type { WritDoc } from '@shardworks/clerk-apparatus';
 import type {
   RigDoc,
   RigView,
@@ -33,6 +39,15 @@ import type {
  * Does not mutate the rig. Safe to call on every read.
  */
 export async function enrichRigView(rig: RigDoc): Promise<RigView> {
+  // Look up the writ title from the clerk/writs book. Direct book read —
+  // `book.get(id)` returns null/undefined on miss (no throw), matching the
+  // omit-field semantic (client falls back to em-dash for that one row).
+  const stacks = guild().apparatus<StacksApi>('stacks');
+  const writsBook = stacks.readBook<WritDoc>('clerk', 'writs');
+  const writTitlePromise = rig.writId
+    ? writsBook.get(rig.writId).then((w) => (w && typeof w.title === 'string' ? w.title : undefined))
+    : Promise.resolve<string | undefined>(undefined);
+
   // Collect (engineId, sessionId) pairs to look up.
   const pairs: Array<{ engineId: string; sessionId: string }> = [];
   for (const engine of rig.engines || []) {
@@ -41,9 +56,13 @@ export async function enrichRigView(rig: RigDoc): Promise<RigView> {
     }
   }
 
-  // No engines with sessions: no cost data to report.
+  // No engines with sessions: no cost data to report — but still attach
+  // the writ title if we resolved one.
   if (pairs.length === 0) {
-    return { ...rig };
+    const writTitle = await writTitlePromise;
+    const view: RigView = { ...rig };
+    if (writTitle !== undefined) view.writTitle = writTitle;
+    return view;
   }
 
   // Resolve the Animator via the same apparatus-resolution mechanism
@@ -52,7 +71,10 @@ export async function enrichRigView(rig: RigDoc): Promise<RigView> {
   // (see AnimatorApi.getSessionCosts), which preserves the "missing = zero
   // contribution" semantic this aggregator has always had.
   const animator = guild().apparatus<AnimatorApi>('animator');
-  const costs = await animator.getSessionCosts(pairs.map((p) => p.sessionId));
+  const [costs, writTitle] = await Promise.all([
+    animator.getSessionCosts(pairs.map((p) => p.sessionId)),
+    writTitlePromise,
+  ]);
 
   const engineCosts: Record<string, EngineCostSummary> = {};
   let totalCostUsd = 0;
@@ -89,11 +111,13 @@ export async function enrichRigView(rig: RigDoc): Promise<RigView> {
     costSummary.outputTokens = totalOutputTokens;
   }
 
-  return {
+  const view: RigView = {
     ...rig,
     costSummary,
     engineCosts,
   };
+  if (writTitle !== undefined) view.writTitle = writTitle;
+  return view;
 }
 
 /**
