@@ -48,7 +48,13 @@ export default tool({
 
     // Terminal-state guard: a late or duplicate ready report must not regress
     // a session that has already reached a terminal state.
-    const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timeout', 'cancelled']);
+    const TERMINAL_STATUSES: ReadonlySet<SessionDoc['status']> = new Set([
+      'completed',
+      'failed',
+      'timeout',
+      'cancelled',
+      'rate-limited',
+    ]);
     if (existing && TERMINAL_STATUSES.has(existing.status)) {
       console.warn(
         `[animator] Ignoring session-running for ${params.sessionId} (already ${existing.status})`,

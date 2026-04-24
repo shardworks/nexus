@@ -1501,6 +1501,19 @@ export function createSpider(): Plugin {
           return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
         }
 
+        if (session.status === 'rate-limited') {
+          // Placeholder (T1): detection path compiles end-to-end without
+          // falling through to the generic failed branch. T4 replaces this
+          // with an `animator-paused` block-type transition that returns
+          // the engine to `pending` once the Animator's pause clears.
+          const sessionDetail = session.error ?? 'Anima provider is rate limited';
+          await failEngine(rig, engine.id, sessionDetail, {
+            retryable: true,
+            detail: `Session rate-limited: ${sessionDetail}`,
+          });
+          return { action: 'rig-completed', rigId: rig.id, writId: rig.writId, outcome: 'stuck' };
+        }
+
         if (session.status === 'cancelled') {
           await cancelEngine(rig, engine.id, session.error ?? 'Session cancelled');
           await rejectPendingInputRequests(rig.id);

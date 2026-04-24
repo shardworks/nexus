@@ -51,7 +51,14 @@ interface SpiderConfigLike {
 
 interface SessionDocLike {
   id: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled';
+  status:
+    | 'pending'
+    | 'running'
+    | 'completed'
+    | 'failed'
+    | 'timeout'
+    | 'cancelled'
+    | 'rate-limited';
   authorizedTools?: string[];
 }
 

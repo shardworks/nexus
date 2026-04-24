@@ -21,7 +21,9 @@ export default tool({
     'Use for investigating recent activity, debugging, or reporting. ' +
     'Filters by indexed fields only — use Stacks queries directly for metadata fields.',
   params: {
-    status: z.enum(['running', 'completed', 'failed', 'timeout', 'cancelled']).optional()
+    status: z
+      .enum(['running', 'completed', 'failed', 'timeout', 'cancelled', 'rate-limited'])
+      .optional()
       .describe('Filter by session status'),
     provider: z.string().optional()
       .describe('Filter by provider name (e.g. "claude-code")'),

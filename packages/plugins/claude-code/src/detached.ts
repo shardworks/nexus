@@ -309,6 +309,9 @@ function docToProviderResult(doc: SessionDoc): SessionProviderResult {
     tokenUsage: doc.tokenUsage,
     costUsd: doc.costUsd,
     output: doc.output,
+    // Forward any structured termination tag the babysitter recorded on
+    // the SessionDoc — load-bearing for the Animator's back-off machine.
+    ...(doc.terminationTag ? { terminationTag: doc.terminationTag } : {}),
     // Note: transcript is not included here — it's in the transcripts book.
     // The babysitter writes it directly to SQLite.
   };

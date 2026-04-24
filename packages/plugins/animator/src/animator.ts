@@ -19,6 +19,7 @@ import type {
   AnimateHandle,
   AnimatorConfig,
   AnimateRequest,
+  AnimatorStatusDoc,
   SummonRequest,
   SessionResult,
   SessionChunk,
@@ -229,6 +230,7 @@ function buildSessionResult(
     costUsd: providerResult.costUsd,
     metadata: request.metadata,
     output: providerResult.output,
+    ...(providerResult.terminationTag ? { terminationTag: providerResult.terminationTag } : {}),
   };
 }
 
@@ -279,6 +281,7 @@ function toSessionDoc(result: SessionResult): SessionDoc {
     costUsd: result.costUsd,
     metadata: result.metadata,
     output: result.output,
+    ...(result.terminationTag ? { terminationTag: result.terminationTag } : {}),
   };
 }
 
@@ -357,7 +360,13 @@ async function recordRunning(
 }
 
 /** Terminal status values — any of these means the session is done. */
-const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timeout', 'cancelled']);
+const TERMINAL_STATUSES: ReadonlySet<SessionDoc['status']> = new Set([
+  'completed',
+  'failed',
+  'timeout',
+  'cancelled',
+  'rate-limited',
+]);
 
 // ── Apparatus factory ────────────────────────────────────────────────
 
@@ -386,6 +395,14 @@ export function createAnimator(): Plugin {
       const broadcaster = activeSessions.get(sessionId);
       if (!broadcaster) return null;
       return broadcaster.subscribe();
+    },
+
+    async getStatus(): Promise<AnimatorStatusDoc> {
+      // Placeholder (T1): returns a default `running` doc so the type
+      // system compiles end-to-end. T3 replaces this with a real read
+      // against the `animator/status` book (id: 'current') and the
+      // back-off state machine.
+      return { id: 'current', state: 'running', backoffLevel: 0 };
     },
 
     async getSessionCosts(sessionIds: string[]): Promise<Map<string, SessionCost>> {

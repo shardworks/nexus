@@ -7,11 +7,11 @@
 
 import { guild } from '@shardworks/nexus-core';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
-import type { SessionDoc, TranscriptDoc, TranscriptMessage } from './types.ts';
+import type { SessionDoc, SessionTerminationTag, TranscriptDoc, TranscriptMessage } from './types.ts';
 
 export interface SessionRecordParams {
   sessionId: string;
-  status: 'completed' | 'failed' | 'timeout';
+  status: 'completed' | 'failed' | 'timeout' | 'rate-limited';
   exitCode: number;
   error?: string;
   costUsd?: number;
@@ -25,7 +25,24 @@ export interface SessionRecordParams {
   providerSessionId?: string;
   conversationId?: string;
   transcript?: TranscriptMessage[];
+  /**
+   * Structured termination tag set by the provider when the terminal
+   * status reflects a specific detected condition (today: rate-limit).
+   * Persisted on the SessionDoc and forwarded to the Animator's back-off
+   * state machine as the load-bearing signal — consumers do not need to
+   * pattern-match on `error` text.
+   */
+  terminationTag?: SessionTerminationTag;
 }
+
+/** Terminal statuses recognized by the session-record handler. */
+const TERMINAL_STATUSES: ReadonlySet<SessionDoc['status']> = new Set([
+  'completed',
+  'failed',
+  'timeout',
+  'cancelled',
+  'rate-limited',
+]);
 
 export async function handleSessionRecord(
   params: SessionRecordParams,
@@ -36,7 +53,6 @@ export async function handleSessionRecord(
 
   // Step 1: Check if session is already in a terminal state — don't overwrite.
   const currentDoc = await sessions.get(params.sessionId);
-  const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timeout', 'cancelled']);
   if (currentDoc && TERMINAL_STATUSES.has(currentDoc.status)) {
     // Session already terminal — don't overwrite. Write transcript if provided.
     console.log(
@@ -78,6 +94,10 @@ export async function handleSessionRecord(
     // Preserve metadata and cancelHandle from the running doc.
     ...(currentDoc?.metadata ? { metadata: currentDoc.metadata } : {}),
     ...(currentDoc?.cancelHandle ? { cancelHandle: currentDoc.cancelHandle } : {}),
+    // Propagate any structured termination tag — load-bearing signal
+    // for the Animator's back-off state machine and Spider's tryCollect
+    // branch on rate-limited sessions.
+    ...(params.terminationTag ? { terminationTag: params.terminationTag } : {}),
   };
 
   await sessions.put(doc);

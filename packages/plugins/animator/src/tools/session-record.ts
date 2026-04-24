@@ -26,7 +26,9 @@ export default tool({
     'Not intended for patron or anima use.',
   params: {
     sessionId: z.string().describe('The session ID'),
-    status: z.enum(['completed', 'failed', 'timeout']).describe('Terminal session status'),
+    status: z
+      .enum(['completed', 'failed', 'timeout', 'rate-limited'])
+      .describe('Terminal session status'),
     exitCode: z.number().describe('Process exit code'),
     error: z.string().optional().describe('Error message if failed'),
     costUsd: z.number().optional().describe('Cost in USD'),
@@ -40,6 +42,17 @@ export default tool({
     providerSessionId: z.string().optional().describe("Claude's session ID for --resume"),
     conversationId: z.string().optional().describe('Conversation ID'),
     transcript: z.array(z.record(z.string(), z.unknown())).optional().describe('Session transcript messages'),
+    terminationTag: z
+      .object({
+        kind: z.literal('rate-limit'),
+        source: z.enum(['ndjson-result', 'stderr-pattern', 'exit-code']),
+        detail: z.string().optional(),
+      })
+      .optional()
+      .describe(
+        'Structured termination tag set by the provider when the terminal status ' +
+          'reflects a specific detected condition (today: rate-limit).',
+      ),
   },
   callableBy: 'anima',
   permission: 'write',

@@ -15,7 +15,13 @@ import type { StacksApi } from '@shardworks/stacks-apparatus';
 import type { SessionDoc } from '../types.ts';
 
 /** Terminal status values — any of these means the session is done. */
-const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timeout', 'cancelled']);
+const TERMINAL_STATUSES: ReadonlySet<SessionDoc['status']> = new Set([
+  'completed',
+  'failed',
+  'timeout',
+  'cancelled',
+  'rate-limited',
+]);
 
 export default tool({
   name: 'session-heartbeat',
