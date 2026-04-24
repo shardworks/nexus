@@ -258,6 +258,77 @@ describe('BackoffMachine', () => {
     await bm.observeTerminal({ sessionId: 'ses-2', status: 'completed' });
     assert.equal(bm.peek().state, 'running');
   });
+
+  // ── reconcileOnBoot() — eager pause-window expiry reconciliation ──
+
+  it('reconcileOnBoot() flips a paused + elapsed doc to running (D22)', async () => {
+    await statusBook.put({
+      id: 'dispatch-status',
+      state: 'paused',
+      pausedSince: new Date(clock - 60_000).toISOString(),
+      pausedUntil: new Date(clock - 1).toISOString(),
+      pauseReason: 'rate-limit',
+      backoffLevel: 1,
+      backoffLastHitAt: new Date(clock - 60_000).toISOString(),
+      lastTriggeringSession: 'ses-elapsed',
+    });
+    const bm = make();
+    await bm.reconcileOnBoot();
+    const doc = await bm.read();
+    assert.equal(doc.state, 'running');
+    assert.equal(doc.backoffLevel, 0);
+    assert.equal(doc.pausedUntil, undefined);
+    assert.equal(doc.pausedSince, undefined);
+    assert.equal(doc.pauseReason, undefined);
+    // Audit history preserved.
+    assert.equal(doc.lastTriggeringSession, 'ses-elapsed');
+    assert.ok(doc.backoffLastHitAt);
+  });
+
+  it('reconcileOnBoot() does not touch a paused doc whose window has not elapsed', async () => {
+    const pausedUntil = new Date(clock + 60_000).toISOString();
+    await statusBook.put({
+      id: 'dispatch-status',
+      state: 'paused',
+      pausedSince: new Date(clock).toISOString(),
+      pausedUntil,
+      pauseReason: 'rate-limit',
+      backoffLevel: 0,
+    });
+    const bm = make();
+    await bm.reconcileOnBoot();
+    const doc = await bm.read();
+    assert.equal(doc.state, 'paused');
+    assert.equal(doc.pausedUntil, pausedUntil);
+    assert.equal(doc.backoffLevel, 0);
+  });
+
+  it('reconcileOnBoot() is a no-op on a running doc', async () => {
+    const bm = make();
+    await bm.reconcileOnBoot();
+    const doc = await bm.read();
+    assert.equal(doc.state, 'running');
+    assert.equal(doc.backoffLevel, 0);
+  });
+
+  it('reconcileOnBoot() refreshes peek() so a subsequent synchronous read reflects the flip', async () => {
+    await statusBook.put({
+      id: 'dispatch-status',
+      state: 'paused',
+      pausedSince: new Date(clock - 60_000).toISOString(),
+      pausedUntil: new Date(clock - 1).toISOString(),
+      pauseReason: 'rate-limit',
+      backoffLevel: 2,
+    });
+    const bm = make();
+    // Warm the cache first so peek() returns the persisted paused doc.
+    await bm.read();
+    assert.equal(bm.peek().state, 'paused');
+    await bm.reconcileOnBoot();
+    // peek() must now reflect the reconciled running state.
+    assert.equal(bm.peek().state, 'running');
+    assert.equal(bm.peek().backoffLevel, 0);
+  });
 });
 
 // ── buildPrecheckRejectionResult ────────────────────────────────────

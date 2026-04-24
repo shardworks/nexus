@@ -778,7 +778,7 @@ export function createAnimator(): Plugin {
 
       provides: api,
 
-      start(_ctx: StartupContext): void {
+      async start(_ctx: StartupContext): Promise<void> {
         const g = guild();
         config = g.guildConfig().animator ?? {};
 
@@ -809,16 +809,20 @@ export function createAnimator(): Plugin {
         });
         setBackoffMachine({ observeTerminal: backoff.observeTerminal });
 
-        // Warm the back-off cache so the first animate() call's
-        // synchronous pre-check reflects the persisted state rather
-        // than the default running shape. D24's "passive reconciliation"
-        // intentionally leaves any persisted paused doc alone — the
-        // first dispatch after `pausedUntil` elapses naturally flips it.
-        void backoff.read().catch((err) => {
+        // Eager awaited read() of the persisted dispatch-status doc at
+        // the very top of start(). Previously this was a fire-and-forget
+        // `void backoff.read().catch(...)` which left a race window where
+        // the first animate() pre-check could peek() a default `running`
+        // shape before the real (possibly paused) row loaded. Awaiting
+        // here guarantees peek() reflects persisted state by the time
+        // start() returns, while animate() itself stays synchronous.
+        try {
+          await backoff.read();
+        } catch (err) {
           console.warn(
             `[animator] Failed to read initial rate-limit status: ${err instanceof Error ? err.message : err}`,
           );
-        });
+        }
 
         const GUILD_HEARTBEAT_INTERVAL_MS = 30_000;
         const GUILD_HEARTBEAT_DOC_ID = 'guild-heartbeat';
@@ -832,12 +836,30 @@ export function createAnimator(): Plugin {
         // stale (no recent heartbeat) and marks them failed — losing the real result.
         // drainDlq() applies the correct terminal status; recoverOrphans() then
         // correctly skips them as already-terminal.
+        //
+        // Eager boot reconciliation of the rate-limit pause window (D22)
+        // runs AFTER drainDlq() — the DLQ may deliver a rate-limit
+        // terminal that opens a pause the reconciler must observe — and
+        // BEFORE recoverOrphans() and the periodic timers, so the first
+        // post-start dispatch reads reconciled persisted state.
         (async () => {
           try {
             await drainDlq(g.home);
           } catch (err) {
             console.warn(
               `[animator] DLQ drain failed: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+
+          // Eager reconciliation of the pause window (D22). If the
+          // persisted doc is paused and `pausedUntil <= now`, flip it
+          // back to running before orphan recovery runs and before the
+          // next animate() pre-check fires.
+          try {
+            await backoff.reconcileOnBoot();
+          } catch (err) {
+            console.warn(
+              `[animator] Rate-limit boot reconciliation failed: ${err instanceof Error ? err.message : err}`,
             );
           }
 

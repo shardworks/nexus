@@ -207,6 +207,20 @@ export interface BackoffMachine {
    * terminal increments back-off rather than coalescing.
    */
   noteDispatch(): void;
+  /**
+   * Reconcile persisted pause state against the wall clock at boot
+   * time. If the doc is `state: 'paused'` AND `pausedUntil <= now`,
+   * transition it to `'running'` with `backoffLevel: 0` and the pause
+   * window fields cleared; `backoffLastHitAt` and
+   * `lastTriggeringSession` are preserved for audit. No-op when the
+   * doc is already running or the pause window has not elapsed.
+   *
+   * Runs once during animator startup, after DLQ drain and before
+   * orphan recovery / timer starts. Keeps the persisted state and the
+   * observed state from drifting during the boot window before any
+   * dispatch happens.
+   */
+  reconcileOnBoot(): Promise<void>;
 }
 
 export function createBackoffMachine(params: {
@@ -290,16 +304,15 @@ export function createBackoffMachine(params: {
     }
   }
 
-  async function onOtherTerminal(): Promise<void> {
-    // Any non-rate-limit terminal counts as a successful probe from the
-    // back-off machine's perspective (D7): reset the level and, if
-    // paused, return to running.
-    const prev = await read();
-    if (prev.state === 'running' && prev.backoffLevel === 0) {
-      // Nothing to do — already reset.
-      return;
-    }
-    const nowIso = new Date(now()).toISOString();
+  /**
+   * Reset the persisted dispatch-status doc to `running` with
+   * `backoffLevel: 0`, preserving `backoffLastHitAt` and
+   * `lastTriggeringSession` as audit history. Shared between the
+   * "non-rate-limit terminal after a pause" reset (D7) and the boot
+   * reconciler (D24 eager flip). Writes to the book, updates the
+   * cache, and resets the probe counter.
+   */
+  async function resetToRunning(prev: AnimatorStatusDoc): Promise<void> {
     const next: AnimatorStatusDoc = {
       id: DISPATCH_STATUS_DOC_ID,
       state: 'running',
@@ -311,10 +324,40 @@ export function createBackoffMachine(params: {
       ...(prev.lastTriggeringSession ? { lastTriggeringSession: prev.lastTriggeringSession } : {}),
     };
     // Explicitly drop pausedSince/pausedUntil/pauseReason from the row.
-    void nowIso;
     await statusBook.put(next);
     cached = next;
     probe.resetOnPause();
+  }
+
+  async function onOtherTerminal(): Promise<void> {
+    // Any non-rate-limit terminal counts as a successful probe from the
+    // back-off machine's perspective (D7): reset the level and, if
+    // paused, return to running.
+    const prev = await read();
+    if (prev.state === 'running' && prev.backoffLevel === 0) {
+      // Nothing to do — already reset.
+      return;
+    }
+    await resetToRunning(prev);
+  }
+
+  async function reconcileOnBoot(): Promise<void> {
+    // Align persisted pause state with the wall clock. Two no-op paths:
+    //   1. The doc is already running — nothing to do.
+    //   2. The doc is paused but the window has not elapsed — honour
+    //      the persisted decision until the timer fires.
+    // The third path flips the doc back to running, preserving audit
+    // fields via the shared reset helper. This runs once at boot, after
+    // DLQ drain and before orphan recovery / timers — so a subsequent
+    // `animate()` pre-check reads a reconciled `peek()` rather than a
+    // stale paused snapshot.
+    const prev = await read();
+    if (prev.state !== 'paused') return;
+    const pausedUntilMs = prev.pausedUntil
+      ? new Date(prev.pausedUntil).getTime()
+      : undefined;
+    if (pausedUntilMs !== undefined && pausedUntilMs > now()) return;
+    await resetToRunning(prev);
   }
 
   async function observeTerminal(params: {
@@ -339,6 +382,7 @@ export function createBackoffMachine(params: {
     peek,
     observeTerminal,
     noteDispatch: probe.noteDispatch,
+    reconcileOnBoot,
   };
 }
 

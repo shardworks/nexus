@@ -165,11 +165,11 @@ let memBackendRef: InstanceType<typeof MemoryBackend>;
  *
  * @param opts.installLoom — if true, installs The Loom apparatus (needed for summon() tests)
  */
-function setup(
+async function setup(
   provider: AnimatorSessionProvider = createFakeProvider(),
   sessionProviderPluginId = 'fake-provider',
   opts: { installLoom?: boolean } = {},
-) {
+): Promise<void> {
   memBackendRef = new MemoryBackend();
   const memBackend = memBackendRef;
   const stacksPlugin = createStacksApparatus(memBackend);
@@ -238,9 +238,12 @@ function setup(
   });
   memBackend.ensureBook({ ownerId: 'animator', book: 'state' }, {});
 
-  // Start animator
-  const animatorApparatus = (animatorPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-  animatorApparatus.start({ on: () => {}, kits: () => [] });
+  // Start animator. start() is async now (it awaits the initial
+  // rate-limit status read so peek() reflects persisted state by the
+  // time start() returns); await the promise so tests see the same
+  // ordering production sees.
+  const animatorApparatus = (animatorPlugin as { apparatus: { start: (ctx: unknown) => Promise<void> | void; provides: unknown } }).apparatus;
+  await Promise.resolve(animatorApparatus.start({ on: () => {}, kits: () => [] }));
   animator = animatorApparatus.provides as AnimatorApi;
 }
 
@@ -252,8 +255,8 @@ describe('Animator', () => {
   });
 
   describe('animate()', () => {
-    beforeEach(() => {
-      setup();
+    beforeEach(async () => {
+      await setup();
     });
 
     it('returns an AnimateHandle with chunks and result', () => {
@@ -344,7 +347,7 @@ describe('Animator', () => {
 
     it('passes prompt and systemPrompt to provider', async () => {
       const { provider, getCapturedConfig } = createSpyProvider();
-      setup(provider);
+      await setup(provider);
 
       await animator.animate({
         context: { systemPrompt: 'System prompt here' },
@@ -363,7 +366,7 @@ describe('Animator', () => {
 
     it('passes context environment through to provider', async () => {
       const { provider, getCapturedConfig } = createSpyProvider();
-      setup(provider);
+      await setup(provider);
 
       await animator.animate({
         context: { systemPrompt: 'Test', environment: { GIT_AUTHOR_NAME: 'Custom' } },
@@ -377,7 +380,7 @@ describe('Animator', () => {
 
     it('merges request environment over context environment', async () => {
       const { provider, getCapturedConfig } = createSpyProvider();
-      setup(provider);
+      await setup(provider);
 
       await animator.animate({
         context: {
@@ -396,7 +399,7 @@ describe('Animator', () => {
 
     it('records failed session when provider throws', async () => {
       const throwProvider = createThrowingProvider(new Error('Provider exploded'));
-      setup(throwProvider);
+      await setup(throwProvider);
 
       await assert.rejects(
         () => animator.animate({
@@ -421,7 +424,7 @@ describe('Animator', () => {
         exitCode: 2,
         error: 'Process crashed',
       });
-      setup(failProvider);
+      await setup(failProvider);
 
       const result = await animator.animate({
         context: { systemPrompt: 'Test' },
@@ -439,7 +442,7 @@ describe('Animator', () => {
         exitCode: 124,
         error: 'Session timed out after 300s',
       });
-      setup(timeoutProvider);
+      await setup(timeoutProvider);
 
       const result = await animator.animate({
         context: { systemPrompt: 'Test' },
@@ -450,9 +453,9 @@ describe('Animator', () => {
       assert.equal(result.exitCode, 124);
     });
 
-    it('throws when session provider apparatus not installed', () => {
+    it('throws when session provider apparatus not installed', async () => {
       // Set up with a bad provider plugin id
-      setup(createFakeProvider(), 'nonexistent');
+      await setup(createFakeProvider(), 'nonexistent');
       // The provider IS registered at 'nonexistent', so the lookup will work.
       // Instead, set up a guild that has no apparatus at the configured id.
       clearGuild();
@@ -491,9 +494,11 @@ describe('Animator', () => {
       sa.start({ on: () => {}, kits: () => [] });
       apparatusMap.set('stacks', sa.provides);
       memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, { indexes: [] });
+      memBackend.ensureBook({ ownerId: 'animator', book: 'transcripts' }, { indexes: [] });
+      memBackend.ensureBook({ ownerId: 'animator', book: 'state' }, {});
 
-      const aa = (animatorPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-      aa.start({ on: () => {}, kits: () => [] });
+      const aa = (animatorPlugin as { apparatus: { start: (ctx: unknown) => Promise<void> | void; provides: unknown } }).apparatus;
+      await Promise.resolve(aa.start({ on: () => {}, kits: () => [] }));
       const a = aa.provides as AnimatorApi;
 
       // animate() resolves the provider synchronously — throws before
@@ -525,7 +530,7 @@ describe('Animator', () => {
 
     it('records output from provider result', async () => {
       const providerWithOutput = createFakeProvider({ output: 'The task is done.' });
-      setup(providerWithOutput);
+      await setup(providerWithOutput);
 
       const result = await animator.animate({
         context: { systemPrompt: 'Test' },
@@ -545,7 +550,7 @@ describe('Animator', () => {
         { type: 'result', total_cost_usd: 0.01 },
       ];
       const providerWithTranscript = createFakeProvider({ transcript, output: 'Hello' });
-      setup(providerWithTranscript);
+      await setup(providerWithTranscript);
 
       const result = await animator.animate({
         context: { systemPrompt: 'Test' },
@@ -561,7 +566,7 @@ describe('Animator', () => {
 
     it('skips transcript write when transcript is undefined', async () => {
       // Default fake provider has no transcript
-      setup();
+      await setup();
 
       const result = await animator.animate({
         context: { systemPrompt: 'Test' },
@@ -575,7 +580,7 @@ describe('Animator', () => {
 
     it('skips transcript write when transcript is empty', async () => {
       const providerWithEmptyTranscript = createFakeProvider({ transcript: [] });
-      setup(providerWithEmptyTranscript);
+      await setup(providerWithEmptyTranscript);
 
       const result = await animator.animate({
         context: { systemPrompt: 'Test' },
@@ -596,7 +601,7 @@ describe('Animator', () => {
         { type: 'assistant', message: { content: [{ type: 'text', text: 'Done' }] } },
       ];
       const providerWithTranscript = createFakeProvider({ transcript, output: 'Done' });
-      setup(providerWithTranscript);
+      await setup(providerWithTranscript);
 
       // Should resolve without throwing even if internal writes fail
       const result = await animator.animate({
@@ -618,7 +623,7 @@ describe('Animator', () => {
         { type: 'text', text: 'Done.' },
       ];
 
-      setup(createStreamingFakeProvider(testChunks));
+      await setup(createStreamingFakeProvider(testChunks));
 
       const { chunks, result } = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -647,7 +652,7 @@ describe('Animator', () => {
 
     it('returns empty chunks when provider ignores streaming flag', async () => {
       // createFakeProvider always returns empty chunks regardless of streaming
-      setup(createFakeProvider());
+      await setup(createFakeProvider());
 
       const { chunks, result } = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -671,7 +676,7 @@ describe('Animator', () => {
         { type: 'text', text: 'Starting...' },
       ];
 
-      setup(createStreamingFakeProvider(failChunks, {
+      await setup(createStreamingFakeProvider(failChunks, {
         status: 'failed',
         exitCode: 1,
         error: 'Stream failed',
@@ -694,8 +699,8 @@ describe('Animator', () => {
   });
 
   describe('subscribeToSession()', () => {
-    it('returns null for an unknown session id', () => {
-      setup();
+    it('returns null for an unknown session id', async () => {
+      await setup();
       const result = animator.subscribeToSession('ses-unknown-0000');
       assert.equal(result, null);
     });
@@ -705,7 +710,7 @@ describe('Animator', () => {
         { type: 'text', text: 'Hello' },
         { type: 'tool_use', tool: 'read' },
       ];
-      setup(createStreamingFakeProvider(testChunks));
+      await setup(createStreamingFakeProvider(testChunks));
 
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -736,7 +741,7 @@ describe('Animator', () => {
         { type: 'text', text: 'chunk1' },
         { type: 'text', text: 'chunk2' },
       ];
-      setup(createStreamingFakeProvider(testChunks));
+      await setup(createStreamingFakeProvider(testChunks));
 
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -774,7 +779,7 @@ describe('Animator', () => {
         { type: 'text', text: 'B' },
         { type: 'text', text: 'C' },
       ];
-      setup(createStreamingFakeProvider(testChunks));
+      await setup(createStreamingFakeProvider(testChunks));
 
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -809,8 +814,8 @@ describe('Animator', () => {
   });
 
   describe('session id generation', () => {
-    beforeEach(() => {
-      setup();
+    beforeEach(async () => {
+      await setup();
     });
 
     it('generates unique ids', async () => {
@@ -835,8 +840,8 @@ describe('Animator', () => {
   });
 
   describe('summon()', () => {
-    it('returns an AnimateHandle with chunks and result', () => {
-      setup(createFakeProvider(), 'fake-provider', { installLoom: true });
+    it('returns an AnimateHandle with chunks and result', async () => {
+      await setup(createFakeProvider(), 'fake-provider', { installLoom: true });
 
       const handle = animator.summon({
         prompt: 'Build the frobnicator',
@@ -849,7 +854,7 @@ describe('Animator', () => {
 
     it('composes context via The Loom and launches a session', async () => {
       const { provider, getCapturedConfig } = createSpyProvider();
-      setup(provider, 'fake-provider', { installLoom: true });
+      await setup(provider, 'fake-provider', { installLoom: true });
 
       const result = await animator.summon({
         prompt: 'Build the frobnicator',
@@ -869,7 +874,7 @@ describe('Animator', () => {
     });
 
     it('auto-populates trigger: summon in metadata', async () => {
-      setup(createFakeProvider(), 'fake-provider', { installLoom: true });
+      await setup(createFakeProvider(), 'fake-provider', { installLoom: true });
 
       const result = await animator.summon({
         prompt: 'Do the thing',
@@ -885,7 +890,7 @@ describe('Animator', () => {
     });
 
     it('merges caller metadata with auto-generated metadata', async () => {
-      setup(createFakeProvider(), 'fake-provider', { installLoom: true });
+      await setup(createFakeProvider(), 'fake-provider', { installLoom: true });
 
       const result = await animator.summon({
         prompt: 'Build it',
@@ -903,7 +908,7 @@ describe('Animator', () => {
 
     it('passes conversationId through for resume', async () => {
       const { provider, getCapturedConfig } = createSpyProvider();
-      setup(provider, 'fake-provider', { installLoom: true });
+      await setup(provider, 'fake-provider', { installLoom: true });
 
       const result = await animator.summon({
         prompt: 'Continue working',
@@ -919,7 +924,7 @@ describe('Animator', () => {
 
     it('skips cwd preamble for resumed conversations', async () => {
       const { provider, getCapturedConfig } = createSpyProvider();
-      setup(provider, 'fake-provider', { installLoom: true });
+      await setup(provider, 'fake-provider', { installLoom: true });
 
       await animator.summon({
         prompt: 'Continue working',
@@ -932,7 +937,7 @@ describe('Animator', () => {
     });
 
     it('records session to Stacks', async () => {
-      setup(createFakeProvider(), 'fake-provider', { installLoom: true });
+      await setup(createFakeProvider(), 'fake-provider', { installLoom: true });
 
       const result = await animator.summon({
         prompt: 'Build it',
@@ -948,7 +953,7 @@ describe('Animator', () => {
 
     it('throws with clear error when Loom is not installed', async () => {
       // Setup WITHOUT the Loom
-      setup(createFakeProvider());
+      await setup(createFakeProvider());
 
       assert.throws(
         () => animator.summon({
@@ -961,7 +966,7 @@ describe('Animator', () => {
 
     it('records failed session when provider throws', async () => {
       const throwProvider = createThrowingProvider(new Error('Session crashed'));
-      setup(throwProvider, 'fake-provider', { installLoom: true });
+      await setup(throwProvider, 'fake-provider', { installLoom: true });
 
       await assert.rejects(
         () => animator.summon({
@@ -981,7 +986,7 @@ describe('Animator', () => {
 
     it('Loom produces undefined systemPrompt at MVP', async () => {
       const { provider, getCapturedConfig } = createSpyProvider();
-      setup(provider, 'fake-provider', { installLoom: true });
+      await setup(provider, 'fake-provider', { installLoom: true });
 
       await animator.summon({
         prompt: 'Build the thing',
@@ -993,7 +998,7 @@ describe('Animator', () => {
     });
 
     it('records role in metadata when provided', async () => {
-      setup(createFakeProvider(), 'fake-provider', { installLoom: true });
+      await setup(createFakeProvider(), 'fake-provider', { installLoom: true });
 
       const result = await animator.summon({
         prompt: 'Build it',
@@ -1006,7 +1011,7 @@ describe('Animator', () => {
     });
 
     it('omits role from metadata when not provided', async () => {
-      setup(createFakeProvider(), 'fake-provider', { installLoom: true });
+      await setup(createFakeProvider(), 'fake-provider', { installLoom: true });
 
       const result = await animator.summon({
         prompt: 'Build it',
@@ -1019,7 +1024,7 @@ describe('Animator', () => {
 
     it('prompt bypasses the Loom and goes directly to provider', async () => {
       const { provider, getCapturedConfig } = createSpyProvider();
-      setup(provider, 'fake-provider', { installLoom: true });
+      await setup(provider, 'fake-provider', { installLoom: true });
 
       await animator.summon({
         prompt: 'Build the frobnicator',
@@ -1035,7 +1040,7 @@ describe('Animator', () => {
     });
 
     it('returns empty chunks when streaming is not requested', async () => {
-      setup(createFakeProvider(), 'fake-provider', { installLoom: true });
+      await setup(createFakeProvider(), 'fake-provider', { installLoom: true });
 
       const { chunks, result } = animator.summon({
         prompt: 'Build it',
@@ -1054,7 +1059,7 @@ describe('Animator', () => {
 
     it('passes Loom environment to provider when no request environment', async () => {
       const { provider, getCapturedConfig } = createSpyProvider();
-      setup(provider, 'fake-provider', { installLoom: true });
+      await setup(provider, 'fake-provider', { installLoom: true });
 
       await animator.summon({
         prompt: 'Build the thing',
@@ -1072,7 +1077,7 @@ describe('Animator', () => {
 
     it('merges request environment over Loom environment', async () => {
       const { provider, getCapturedConfig } = createSpyProvider();
-      setup(provider, 'fake-provider', { installLoom: true });
+      await setup(provider, 'fake-provider', { installLoom: true });
 
       await animator.summon({
         prompt: 'Build the thing',
@@ -1103,7 +1108,7 @@ describe('Animator', () => {
           };
         },
       };
-      setup(slowProvider);
+      await setup(slowProvider);
 
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -1127,7 +1132,7 @@ describe('Animator', () => {
     });
 
     it('is idempotent on terminal session (completed)', async () => {
-      setup();
+      await setup();
 
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -1153,7 +1158,7 @@ describe('Animator', () => {
           };
         },
       };
-      setup(slowProvider);
+      await setup(slowProvider);
 
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -1174,7 +1179,7 @@ describe('Animator', () => {
     });
 
     it('throws for missing session', async () => {
-      setup();
+      await setup();
 
       await assert.rejects(
         () => animator.cancel('ses-nonexistent'),
@@ -1196,7 +1201,7 @@ describe('Animator', () => {
           };
         },
       };
-      setup(noProcessInfoProvider);
+      await setup(noProcessInfoProvider);
 
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -1226,7 +1231,7 @@ describe('Animator', () => {
           };
         },
       };
-      setup(slowProvider);
+      await setup(slowProvider);
 
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -1272,7 +1277,7 @@ describe('Animator', () => {
           };
         },
       };
-      setup(throwingSlowProvider);
+      await setup(throwingSlowProvider);
 
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -1306,7 +1311,7 @@ describe('Animator', () => {
           };
         },
       };
-      setup(transcriptProvider);
+      await setup(transcriptProvider);
 
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -1348,7 +1353,7 @@ describe('Animator', () => {
           };
         },
       };
-      setup(providerWithProcessInfo);
+      await setup(providerWithProcessInfo);
 
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -1386,7 +1391,7 @@ describe('Animator', () => {
           cancelCalledWith = metadata;
         },
       };
-      setup(cancellableProvider);
+      await setup(cancellableProvider);
 
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -1404,8 +1409,8 @@ describe('Animator', () => {
   });
 
   describe('getSessionCosts()', () => {
-    beforeEach(() => {
-      setup();
+    beforeEach(async () => {
+      await setup();
     });
 
     async function seedSessionDoc(
@@ -1488,8 +1493,8 @@ describe('Animator', () => {
   // ── Rate-limit pre-check (D12 / D13) ────────────────────────────
 
   describe('animate() rate-limit pre-check', () => {
-    beforeEach(() => {
-      setup();
+    beforeEach(async () => {
+      await setup();
     });
 
     async function setPaused(windowMs: number): Promise<void> {
@@ -1572,11 +1577,165 @@ describe('Animator', () => {
     });
   });
 
+  // ── Boot-time reconciliation of pause-window expiry ─────────────
+
+  describe('animate() eager boot reconciliation (D22)', () => {
+    afterEach(() => {
+      clearGuild();
+    });
+
+    it('flips a persisted paused+elapsed doc to running by the time start() returns', async () => {
+      // Build the fixture manually so we can seed a paused+elapsed doc
+      // BEFORE animator.start() runs — exactly the production shape.
+      const memBackend = new MemoryBackend();
+      const stacksPlugin = createStacksApparatus(memBackend);
+      const animatorPlugin = createAnimator();
+      const apparatusMap = new Map<string, unknown>();
+      apparatusMap.set('fake-provider', createFakeProvider());
+
+      const fakeGuild: Guild = {
+        home: '/tmp/fake-guild',
+        apparatus<T>(name: string): T {
+          const api = apparatusMap.get(name);
+          if (!api) throw new Error(`Apparatus "${name}" not installed`);
+          return api as T;
+        },
+        config<T>(): T { return {} as T; },
+        writeConfig() {},
+        guildConfig() {
+          return {
+            name: 't', nexus: '0.0.0', workshops: {}, roles: {},
+            baseTools: [], plugins: [], settings: { model: 'sonnet' },
+            animator: { sessionProvider: 'fake-provider' },
+          };
+        },
+        kits: () => [],
+        apparatuses: () => [],
+        startupWarnings() { return []; },
+      };
+      setGuild(fakeGuild);
+
+      const sa = (stacksPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
+      sa.start({ on: () => {}, kits: () => [] });
+      const stacksApi = sa.provides as StacksApi;
+      apparatusMap.set('stacks', stacksApi);
+
+      memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, {
+        indexes: ['startedAt', 'status', 'conversationId', 'provider'],
+      });
+      memBackend.ensureBook({ ownerId: 'animator', book: 'transcripts' }, { indexes: ['sessionId'] });
+      memBackend.ensureBook({ ownerId: 'animator', book: 'state' }, {});
+
+      // Seed a persisted pause whose window has already elapsed.
+      const stateBook = stacksApi.book('animator', 'state');
+      await stateBook.put({
+        id: 'dispatch-status',
+        state: 'paused',
+        pausedSince: new Date(Date.now() - 120_000).toISOString(),
+        pausedUntil: new Date(Date.now() - 60_000).toISOString(),
+        pauseReason: 'rate-limit',
+        backoffLevel: 3,
+        backoffLastHitAt: new Date(Date.now() - 120_000).toISOString(),
+        lastTriggeringSession: 'ses-old',
+      });
+
+      // Start animator and await. The eager `read()` at the top of
+      // start() warms peek(); the DLQ drain + reconcileOnBoot run in
+      // a subsequent async IIFE we observe by polling getStatus().
+      const aa = (animatorPlugin as { apparatus: { start: (ctx: unknown) => Promise<void> | void; provides: unknown } }).apparatus;
+      await Promise.resolve(aa.start({ on: () => {}, kits: () => [] }));
+      const a = aa.provides as AnimatorApi;
+
+      // Allow the async startup IIFE (DLQ drain → reconcileOnBoot) to
+      // complete. On an empty DLQ this resolves on the next tick.
+      for (let i = 0; i < 20; i++) {
+        const status = await a.getStatus();
+        if (status.state === 'running') break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      const status = await a.getStatus();
+      assert.equal(status.state, 'running', 'reconcileOnBoot should flip paused+elapsed → running');
+      assert.equal(status.backoffLevel, 0);
+      assert.equal(status.pausedUntil, undefined);
+      // Audit history preserved.
+      assert.equal(status.lastTriggeringSession, 'ses-old');
+      assert.ok(status.backoffLastHitAt);
+    });
+
+    it('peek() reflects persisted state by the time start() returns (animate() keeps its sync contract)', async () => {
+      // Seed a persisted paused doc whose window is still open; after
+      // start() returns, the first animate() call must see `paused`
+      // synchronously (no race on the initial read()).
+      const memBackend = new MemoryBackend();
+      const stacksPlugin = createStacksApparatus(memBackend);
+      const animatorPlugin = createAnimator();
+      const apparatusMap = new Map<string, unknown>();
+      apparatusMap.set('fake-provider', createFakeProvider());
+
+      const fakeGuild: Guild = {
+        home: '/tmp/fake-guild',
+        apparatus<T>(name: string): T {
+          const api = apparatusMap.get(name);
+          if (!api) throw new Error(`Apparatus "${name}" not installed`);
+          return api as T;
+        },
+        config<T>(): T { return {} as T; },
+        writeConfig() {},
+        guildConfig() {
+          return {
+            name: 't', nexus: '0.0.0', workshops: {}, roles: {},
+            baseTools: [], plugins: [], settings: { model: 'sonnet' },
+            animator: { sessionProvider: 'fake-provider' },
+          };
+        },
+        kits: () => [],
+        apparatuses: () => [],
+        startupWarnings() { return []; },
+      };
+      setGuild(fakeGuild);
+
+      const sa = (stacksPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
+      sa.start({ on: () => {}, kits: () => [] });
+      const stacksApi = sa.provides as StacksApi;
+      apparatusMap.set('stacks', stacksApi);
+      memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, {
+        indexes: ['startedAt', 'status', 'conversationId', 'provider'],
+      });
+      memBackend.ensureBook({ ownerId: 'animator', book: 'transcripts' }, { indexes: ['sessionId'] });
+      memBackend.ensureBook({ ownerId: 'animator', book: 'state' }, {});
+
+      const stateBook = stacksApi.book('animator', 'state');
+      await stateBook.put({
+        id: 'dispatch-status',
+        state: 'paused',
+        pausedSince: new Date().toISOString(),
+        pausedUntil: new Date(Date.now() + 60_000).toISOString(),
+        pauseReason: 'rate-limit',
+        backoffLevel: 0,
+      });
+
+      const aa = (animatorPlugin as { apparatus: { start: (ctx: unknown) => Promise<void> | void; provides: unknown } }).apparatus;
+      await Promise.resolve(aa.start({ on: () => {}, kits: () => [] }));
+      const a = aa.provides as AnimatorApi;
+
+      // animate() is synchronous — its pre-check must see the paused
+      // state via peek() immediately after start() returns. If the
+      // eager read() had been fire-and-forget, this would race.
+      const handle = a.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      });
+      const result = await handle.result;
+      assert.equal(result.status, 'rate-limited', 'pre-check should reject via peek() reading persisted state');
+    });
+  });
+
   // ── Back-off transitions via session-record ────────────────────
 
   describe('Back-off transitions via session-record', () => {
-    beforeEach(() => {
-      setup();
+    beforeEach(async () => {
+      await setup();
     });
 
     it('paused → running after a completed terminal reset (D7)', async () => {
@@ -1622,48 +1781,48 @@ describe('Animator', () => {
       clearGuild();
     });
 
-    it('throws on a malformed rateLimit.backoff block', () => {
-      assert.throws(
-        () => {
-          const memBackend = new MemoryBackend();
-          const stacksPlugin = createStacksApparatus(memBackend);
-          const animatorPlugin = createAnimator();
-          const apparatusMap = new Map<string, unknown>();
-          const fakeGuild: Guild = {
-            home: '/tmp/fake-guild',
-            apparatus<T>(name: string): T {
-              const api = apparatusMap.get(name);
-              if (!api) throw new Error(`Apparatus "${name}" not installed`);
-              return api as T;
+    it('rejects on a malformed rateLimit.backoff block (start() is async)', async () => {
+      const memBackend = new MemoryBackend();
+      const stacksPlugin = createStacksApparatus(memBackend);
+      const animatorPlugin = createAnimator();
+      const apparatusMap = new Map<string, unknown>();
+      const fakeGuild: Guild = {
+        home: '/tmp/fake-guild',
+        apparatus<T>(name: string): T {
+          const api = apparatusMap.get(name);
+          if (!api) throw new Error(`Apparatus "${name}" not installed`);
+          return api as T;
+        },
+        config<T>(): T { return {} as T; },
+        writeConfig() {},
+        guildConfig() {
+          return {
+            name: 't',
+            nexus: '0.0.0',
+            plugins: [],
+            settings: { model: 'sonnet' },
+            animator: {
+              sessionProvider: 'fake',
+              rateLimit: { backoff: { initialMs: -1 } },
             },
-            config<T>(): T { return {} as T; },
-            writeConfig() {},
-            guildConfig() {
-              return {
-                name: 't',
-                nexus: '0.0.0',
-                plugins: [],
-                settings: { model: 'sonnet' },
-                animator: {
-                  sessionProvider: 'fake',
-                  rateLimit: { backoff: { initialMs: -1 } },
-                },
-              } as never;
-            },
-            kits: () => [],
-            apparatuses: () => [],
-            startupWarnings() { return []; },
-          };
-          setGuild(fakeGuild);
-          apparatusMap.set('fake', createFakeProvider());
-          memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, { indexes: [] });
-          memBackend.ensureBook({ ownerId: 'animator', book: 'transcripts' }, { indexes: [] });
-          memBackend.ensureBook({ ownerId: 'animator', book: 'state' }, {});
-          const stacksApp = (stacksPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-          stacksApp.start({ on: () => {}, kits: () => [] });
-          apparatusMap.set('stacks', stacksApp.provides);
-          const animatorApp = (animatorPlugin as { apparatus: { start: (ctx: unknown) => void } }).apparatus;
-          animatorApp.start({ on: () => {}, kits: () => [] });
+          } as never;
+        },
+        kits: () => [],
+        apparatuses: () => [],
+        startupWarnings() { return []; },
+      };
+      setGuild(fakeGuild);
+      apparatusMap.set('fake', createFakeProvider());
+      memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, { indexes: [] });
+      memBackend.ensureBook({ ownerId: 'animator', book: 'transcripts' }, { indexes: [] });
+      memBackend.ensureBook({ ownerId: 'animator', book: 'state' }, {});
+      const stacksApp = (stacksPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
+      stacksApp.start({ on: () => {}, kits: () => [] });
+      apparatusMap.set('stacks', stacksApp.provides);
+      const animatorApp = (animatorPlugin as { apparatus: { start: (ctx: unknown) => Promise<void> | void } }).apparatus;
+      await assert.rejects(
+        async () => {
+          await Promise.resolve(animatorApp.start({ on: () => {}, kits: () => [] }));
         },
         /initialMs/,
       );

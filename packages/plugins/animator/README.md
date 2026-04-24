@@ -331,15 +331,19 @@ The `summon` and `session-cancel` tools are patron-only (`callableBy: 'patron'`)
 
 ### Startup Routines
 
-On startup the Animator runs recovery and starts background timers (all non-blocking):
+On startup the Animator runs the following sequence. The `start()` method is `async`; it `await`s the initial pause-state read up front so `peek()` reflects persisted state by the time `start()` returns. DLQ drain and reconciliation run in an async IIFE afterwards (fire-and-forget from Arbor's perspective):
+
+0. **Eager pause-state read** — Awaits a single `BackoffMachine.read()` at the very top of `start()`. The previous fire-and-forget version allowed the first `animate()` call to race with the initial load and `peek()` a default running shape; the awaited read closes that window while keeping `animate()` synchronous.
 
 1. **DLQ Drain** — Scans `.nexus/dlq/` for JSON files containing session-record payloads that babysitters couldn't deliver (guild was down). Each file is processed through the session-record handler and deleted on success. The directory is created if it doesn't exist.
 
-2. **Downtime Credit** — Reads the previous `guild-heartbeat` document from the `state` book to compute how long the guild was down. This credit is applied to the initial reconciliation pass so sessions that were healthy before the guild went down aren't falsely marked as stale.
+2. **Eager Pause-Window Reconciliation** — Immediately after DLQ drain (and before orphan recovery / timers), the back-off machine's `reconcileOnBoot()` runs: if the persisted dispatch-status doc is `state: 'paused'` AND `pausedUntil <= now`, it flips to `state: 'running', backoffLevel: 0`, preserving `backoffLastHitAt` and `lastTriggeringSession` for audit. This closes the drift window between persisted and observed state that used to stall post-expiry dispatch on first boot.
 
-3. **Heartbeat-based Reconciliation** — Scans sessions in `pending` and `running` states. When `now - lastActivityAt - downtimeCredit > 90s`, the session is transitioned to `failed`. Sessions without `lastActivityAt` (legacy) are backfilled and skipped for one pass. Runs once at startup (with downtime credit) and then periodically every 30s (without credit) via an unref'd timer with a single-flight guard.
+3. **Downtime Credit** — Reads the previous `guild-heartbeat` document from the `state` book to compute how long the guild was down. This credit is applied to the initial reconciliation pass so sessions that were healthy before the guild went down aren't falsely marked as stale.
 
-4. **Guild Self-Heartbeat** — Writes `guildAliveAt` to the `state` book every 30s via an unref'd timer. This timestamp is used to compute the downtime credit on the next startup.
+4. **Heartbeat-based Reconciliation** — Scans sessions in `pending` and `running` states. When `now - lastActivityAt - downtimeCredit > 90s`, the session is transitioned to `failed`. Sessions without `lastActivityAt` (legacy) are backfilled and skipped for one pass. Runs once at startup (with downtime credit) and then periodically every 30s (without credit) via an unref'd timer with a single-flight guard.
+
+5. **Guild Self-Heartbeat** — Writes `guildAliveAt` to the `state` book every 30s via an unref'd timer. This timestamp is used to compute the downtime credit on the next startup.
 
 ## Rate-Limit Back-Off
 

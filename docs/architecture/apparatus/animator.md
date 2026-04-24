@@ -488,7 +488,9 @@ Two narrowed book references write to the same underlying `state` book — one t
 ### Dispatchability predicate
 
 Consumers that need to decide whether it is safe to dispatch compose the predicate themselves:
-`state === 'running' OR pausedUntil <= now`. The Animator exposes the raw doc via `AnimatorApi.getStatus()` and does not pre-compute the predicate. This is the "natural probe" semantic from decision D24: a daemon restart leaves the persisted doc untouched, and the first successful dispatch after `pausedUntil` elapses naturally flips the state back to running.
+`state === 'running' OR pausedUntil <= now`. The Animator exposes the raw doc via `AnimatorApi.getStatus()` and does not pre-compute the predicate. This is the "natural probe" semantic from decision D24: a daemon restart while the window is still open honours the persisted decision, and the first successful dispatch after `pausedUntil` elapses naturally flips the state back to running via the `onOtherTerminal` reset path.
+
+After a restart where the pause window has already elapsed, the animator runs an **eager reconciliation step** at boot so the persisted and observed state don't drift during the startup window. `BackoffMachine.reconcileOnBoot()` runs between DLQ drain and orphan recovery: when the persisted doc is `paused` AND `pausedUntil <= now`, it flips the doc to `state: 'running', backoffLevel: 0` with pause-window fields cleared, preserving `backoffLastHitAt` and `lastTriggeringSession` for audit. Combined with an awaited initial `read()` at the top of `start()`, this guarantees `peek()` reflects a reconciled state before any post-start dispatch fires.
 
 ### `animate()` pre-check
 
