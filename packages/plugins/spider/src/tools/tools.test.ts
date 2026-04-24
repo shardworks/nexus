@@ -83,6 +83,8 @@ function makeCyclingCrawl(
 /** A sample CrawlResult for use as a non-null "work was done" sentinel. */
 const SPAWNED: CrawlResult = { action: 'rig-spawned', rigId: 'rig-1', writId: 'writ-1' };
 const COMPLETED: CrawlResult = { action: 'engine-completed', rigId: 'rig-1', engineId: 'draft' };
+/** A sample gated result — a non-null *stall* signal (writ found but blocked). */
+const GATED: CrawlResult = { action: 'gated', writId: 'writ-1', blockerIds: ['writ-2'] };
 
 // ── crawl-one ──────────────────────────────────────────────────────────
 
@@ -406,6 +408,142 @@ describe('crawl-continual — error handling', () => {
     assert.equal(callCount, 4);
     assert.equal(result.totalActions, 1);
     assert.deepEqual(result.actions, [SPAWNED]);
+  });
+});
+
+// ── crawl-continual — stall backoff (gated is non-progress) ──────────
+//
+// Regression coverage for the tight-loop bug: an open writ perpetually
+// gated on a stuck target caused crawl() to return { action: 'gated' }
+// on every tick. The old loop treated any non-null result as "progress,"
+// reset idleCount, and skipped the sleep — burning 100% CPU and starving
+// the event loop so HTTP (Oculus) never responded.
+
+describe('crawl-continual — stall backoff', () => {
+  afterEach(() => clearGuild());
+
+  it('treats gated as non-progress: auto-stops instead of running forever', async () => {
+    // If `gated` were still counted as progress, idleCount would reset on
+    // every tick and the handler would never terminate — this test would
+    // time out. We race a deadline to prove termination rather than
+    // relying on --test-timeout.
+    setGuild(makeGuild(async () => GATED));
+
+    const handler = crawlContinualTool.handler({ maxIdleCycles: 3, pollIntervalMs: 0 });
+    const deadline = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('tight-loop regression: handler never returned')), 2000),
+    );
+
+    const result = (await Promise.race([handler, deadline])) as {
+      actions: unknown[];
+      totalActions: number;
+    };
+
+    // 3 gated ticks, then exit. Gated results are recorded for visibility.
+    assert.equal(result.totalActions, 3);
+    assert.ok(
+      (result.actions as CrawlResult[]).every((a) => a.action === 'gated'),
+      'all recorded actions should be gated',
+    );
+  });
+
+  it('sleeps pollIntervalMs between gated ticks (does not tight-loop)', async () => {
+    // With pollIntervalMs: 30 and maxIdleCycles: 3, a correct loop takes
+    // ~90ms wall-clock. A tight-looping bug would exit in single-digit ms.
+    setGuild(makeGuild(async () => GATED));
+
+    const start = Date.now();
+    await crawlContinualTool.handler({ maxIdleCycles: 3, pollIntervalMs: 30 });
+    const elapsed = Date.now() - start;
+
+    assert.ok(
+      elapsed >= 50,
+      `gated ticks must sleep pollIntervalMs; expected ≥ 50ms (3 ticks × 30ms), got ${elapsed}ms — tight-loop regression`,
+    );
+    assert.ok(
+      elapsed < 1000,
+      `reasonable ceiling; expected < 1000ms, got ${elapsed}ms`,
+    );
+  });
+
+  it('resets idle counter when real progress appears after gated ticks', async () => {
+    // gated, gated, SPAWNED, gated, gated, gated → maxIdleCycles=3 → stops after trailing 3 gateds
+    const sequence: Array<CrawlResult | null> = [GATED, GATED, SPAWNED, GATED, GATED, GATED];
+    let callCount = 0;
+    setGuild(makeGuild(async () => sequence[callCount++] ?? null));
+
+    const result = await crawlContinualTool.handler({ maxIdleCycles: 3, pollIntervalMs: 0 }) as {
+      actions: unknown[];
+      totalActions: number;
+    };
+
+    assert.equal(callCount, 6, 'must process all 6 cycles before stopping');
+    // 5 gated + 1 spawned recorded
+    assert.equal(result.totalActions, 6);
+  });
+
+  it('records null idles silently (not in actions) while counting them', async () => {
+    // Behavior check: null results still don't get pushed to actions, but
+    // they do increment idleCount so the loop still auto-stops.
+    setGuild(makeGuild(async () => null));
+
+    const result = await crawlContinualTool.handler({ maxIdleCycles: 2, pollIntervalMs: 0 }) as {
+      actions: unknown[];
+      totalActions: number;
+    };
+
+    assert.deepEqual(result, { actions: [], totalActions: 0 });
+  });
+});
+
+// ── crawl-continual — event-loop starvation guard ─────────────────────
+//
+// Regression coverage for fix #2: even when back-to-back progress ticks
+// occur with no interval sleep, the loop must yield a macrotask so that
+// external timers / HTTP handlers aren't starved. The original code
+// between progress ticks only touched microtasks, which meant a stream
+// of synchronously-resolving awaits could starve macrotask handlers
+// (the actual Oculus-unreachable-while-daemon-burns-CPU symptom).
+
+describe('crawl-continual — event-loop starvation guard', () => {
+  afterEach(() => clearGuild());
+
+  it('yields a macrotask between progress ticks so external callbacks can fire', async () => {
+    // Probe: schedule a setImmediate BEFORE the handler runs. If the
+    // handler truly yields between progress ticks (via its own
+    // setImmediate), on the first yield we enter the check phase, which
+    // drains all queued immediates — ours included. If the loop
+    // tight-loops (microtask-only awaits), the check phase never runs
+    // and our probe never fires.
+    //
+    // setImmediate is used as the probe rather than setTimeout(0) because
+    // setTimeout(0) has a ~1ms floor in Node and a fast loop can easily
+    // complete all iterations in sub-millisecond time before the timer
+    // becomes eligible — a false negative on the fix. setImmediate has
+    // no such floor: if the loop yields at all, our probe runs.
+    const CALLS = 50;
+    let callCount = 0;
+    let probeFired = false;
+    const probeFiredAtCall: number[] = [];
+
+    setImmediate(() => { probeFired = true; });
+
+    setGuild(makeGuild(async () => {
+      if (probeFired) probeFiredAtCall.push(callCount);
+      callCount++;
+      return callCount < CALLS ? SPAWNED : null;
+    }));
+
+    await crawlContinualTool.handler({ maxIdleCycles: 1, pollIntervalMs: 0 });
+
+    assert.ok(
+      probeFiredAtCall.length > 0,
+      'external setImmediate must fire while the loop is running — starvation regression',
+    );
+    assert.ok(
+      probeFiredAtCall[0]! < 10,
+      `probe should fire within the first few ticks; observed first at call ${probeFiredAtCall[0]} of ${CALLS}`,
+    );
   });
 });
 
