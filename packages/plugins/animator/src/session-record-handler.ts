@@ -9,6 +9,40 @@ import { guild } from '@shardworks/nexus-core';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 import type { SessionDoc, SessionTerminationTag, TranscriptDoc, TranscriptMessage } from './types.ts';
 
+// ── Back-off machine hook ───────────────────────────────────────────
+
+/**
+ * Callback interface the Animator apparatus registers during startup.
+ *
+ * session-record-handler is imported both by the animator plugin itself
+ * and by the DLQ drain path; both enter through `handleSessionRecord`.
+ * Rather than reaching back into `guild().apparatus('animator')` — which
+ * would create a circular invocation during startup — we accept a
+ * registered hook and invoke it from the handler after a terminal write.
+ *
+ * `null` means the apparatus has not started yet (e.g. unit tests that
+ * exercise handleSessionRecord in isolation); the handler silently
+ * skips the observation in that case.
+ */
+export interface BackoffObserver {
+  observeTerminal(params: {
+    sessionId: string;
+    status: 'completed' | 'failed' | 'timeout' | 'cancelled' | 'rate-limited';
+    terminationTag?: SessionTerminationTag;
+  }): Promise<void>;
+}
+
+let backoffObserver: BackoffObserver | null = null;
+
+/**
+ * Register (or clear) the back-off observer invoked after every
+ * terminal session recording. The Animator apparatus calls this during
+ * start(); tests that need isolation can pass null to reset.
+ */
+export function setBackoffMachine(observer: BackoffObserver | null): void {
+  backoffObserver = observer;
+}
+
 export interface SessionRecordParams {
   sessionId: string;
   status: 'completed' | 'failed' | 'timeout' | 'rate-limited';
@@ -109,6 +143,22 @@ export async function handleSessionRecord(
     } catch (err) {
       console.warn(
         `[animator] Failed to record transcript for ${params.sessionId}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+
+  // Step 4: Notify the back-off machine. Never throws — a status-book
+  // write failure must not mask the terminal session record.
+  if (backoffObserver) {
+    try {
+      await backoffObserver.observeTerminal({
+        sessionId: params.sessionId,
+        status: params.status,
+        terminationTag: params.terminationTag,
+      });
+    } catch (err) {
+      console.warn(
+        `[animator] Back-off observer failed for ${params.sessionId}: ${err instanceof Error ? err.message : err}`,
       );
     }
   }

@@ -36,6 +36,17 @@ import type {
 import { sessionList, sessionShow, summon as summonTool, sessionCancel, sessionRunning, sessionRecord, sessionHeartbeat } from './tools/index.ts';
 import { animatorRoutes } from './oculus-routes.ts';
 import { drainDlq, recoverOrphans } from './startup.ts';
+import {
+  ANIMATOR_STATUS_DOC_ID,
+  buildPrecheckRejectionResult,
+  createBackoffMachine,
+  createResumeProbeTracker,
+  freshStatusDoc,
+  isDispatchable,
+  validateBackoffConfig,
+  type BackoffMachine,
+} from './rate-limit-backoff.ts';
+import { setBackoffMachine } from './session-record-handler.ts';
 
 // ── Session broadcast infrastructure ─────────────────────────────────
 
@@ -382,6 +393,8 @@ export function createAnimator(): Plugin {
   let config: AnimatorConfig = {};
   let sessions: Book<SessionDoc>;
   let transcripts: Book<TranscriptDoc>;
+  let statusBook: Book<AnimatorStatusDoc>;
+  let backoff: BackoffMachine;
 
   /**
    * In-memory registry of active session broadcasters.
@@ -398,11 +411,11 @@ export function createAnimator(): Plugin {
     },
 
     async getStatus(): Promise<AnimatorStatusDoc> {
-      // Placeholder (T1): returns a default `running` doc so the type
-      // system compiles end-to-end. T3 replaces this with a real read
-      // against the `animator/status` book (id: 'current') and the
-      // back-off state machine.
-      return { id: 'current', state: 'running', backoffLevel: 0 };
+      // The back-off machine owns the `'current'` doc in the animator
+      // status book. A fresh install (never rate-limited) returns the
+      // default running shape rather than `undefined` — consumers can
+      // branch on `state`/`pausedUntil` without a null check.
+      return backoff ? backoff.read() : freshStatusDoc();
     },
 
     async getSessionCosts(sessionIds: string[]): Promise<Map<string, SessionCost>> {
@@ -553,12 +566,62 @@ export function createAnimator(): Plugin {
       const provider = resolveProvider(config);
       const model = resolveModel();
 
-      // Step 1: use pre-generated session id if provided (from summon()),
-      // otherwise generate one. Capture startedAt.
-      const id = request.sessionId ?? generateId('ses', 4);
-      const startedAt = new Date().toISOString();
+      // Step 0: rate-limit pre-check (D13 — top of animate(), before id
+      // generation or SessionDoc write). Uses the back-off machine's
+      // synchronous cached doc so the returned handle keeps its
+      // happy-path sync contract (no await before activeSessions is
+      // populated, so immediate subscribeToSession() calls resolve).
+      // When paused AND the current window has not yet elapsed, we
+      // synthesize a rate-limited SessionResult and resolve without
+      // dispatching; no SessionDoc is written for the rejected call.
+      if (backoff) {
+        const statusDoc = backoff.peek();
+        if (!isDispatchable(statusDoc)) {
+          const rejectionId = request.sessionId ?? generateId('ses', 4);
+          const startedAt = new Date().toISOString();
+          const rejection = buildPrecheckRejectionResult({
+            sessionId: rejectionId,
+            startedAt,
+            provider: provider.name,
+            pausedUntil: statusDoc.pausedUntil ?? new Date().toISOString(),
+            pauseReason: statusDoc.pauseReason ?? 'rate-limit',
+            metadata: request.metadata,
+            conversationId: request.conversationId,
+          });
+          const emptyChunks: AsyncIterable<SessionChunk> = {
+            [Symbol.asyncIterator]() {
+              return {
+                async next() {
+                  return { value: undefined as unknown as SessionChunk, done: true };
+                },
+              };
+            },
+          };
+          return {
+            sessionId: rejectionId,
+            chunks: emptyChunks,
+            result: Promise.resolve(rejection),
+          };
+        }
+        // Gate open — record the dispatch attempt so the next rate-limit
+        // terminal increments back-off rather than coalescing (D8).
+        backoff.noteDispatch();
+      }
 
-      const providerConfig = buildProviderConfig(request, model, id);
+      return dispatchAnimate(request, request.sessionId ?? generateId('ses', 4));
+    },
+  };
+
+  /**
+   * The pre-check-free dispatch path. Extracted so animate() can call it
+   * after the pause gate has been cleared. Always writes a SessionDoc
+   * and drives the provider.launch lifecycle.
+   */
+  function dispatchAnimate(request: AnimateRequest, id: string): AnimateHandle {
+    const provider = resolveProvider(config);
+    const model = resolveModel();
+    const startedAt = new Date().toISOString();
+    const providerConfig = buildProviderConfig(request, model, id);
 
       // Single path — the provider returns { chunks, result } regardless
       // of whether streaming is enabled. Providers that don't support
@@ -679,8 +742,7 @@ export function createAnimator(): Plugin {
       // The handle's chunks is a broadcaster subscription, providing history
       // replay and real-time delivery for this session's caller.
       return { sessionId: id, chunks: broadcaster.subscribe(), result };
-    },
-  };
+  }
 
   return {
     apparatus: {
@@ -696,6 +758,12 @@ export function createAnimator(): Plugin {
             indexes: ['sessionId'],
           },
           state: {},
+          // Single-row book for the rate-limit back-off machine.
+          // Document id is always `'current'` (ANIMATOR_STATUS_DOC_ID).
+          // The Laboratory's CDC ingestion of this book is the historical
+          // record of pause / resume transitions; no separate events
+          // table is maintained.
+          status: {},
         },
         tools: [sessionList, sessionShow, summonTool, sessionCancel, sessionRunning, sessionRecord, sessionHeartbeat],
         pages: [
@@ -710,9 +778,39 @@ export function createAnimator(): Plugin {
         const g = guild();
         config = g.guildConfig().animator ?? {};
 
+        // Fail-loud validation of the rate-limit back-off block (D10
+        // patron override). The default shape is applied silently when
+        // the block is absent; malformed values throw at startup so we
+        // don't silently drift from the configured window.
+        validateBackoffConfig(config.rateLimitBackoff);
+
         const stacks = g.apparatus<StacksApi>('stacks');
         sessions = stacks.book<SessionDoc>('animator', 'sessions');
         transcripts = stacks.book<TranscriptDoc>('animator', 'transcripts');
+        statusBook = stacks.book<AnimatorStatusDoc>('animator', 'status');
+
+        // Build the back-off machine. The config read is deferred per
+        // transition so a live-reloaded guild config takes effect on
+        // the next transition without restarting the Animator.
+        backoff = createBackoffMachine({
+          statusBook,
+          config: {
+            get: () => validateBackoffConfig(guild().guildConfig().animator?.rateLimitBackoff),
+          },
+          probe: createResumeProbeTracker(),
+        });
+        setBackoffMachine({ observeTerminal: backoff.observeTerminal });
+
+        // Warm the back-off cache so the first animate() call's
+        // synchronous pre-check reflects the persisted state rather
+        // than the default running shape. D24's "passive reconciliation"
+        // intentionally leaves any persisted paused doc alone — the
+        // first dispatch after `pausedUntil` elapses naturally flips it.
+        void backoff.read().catch((err) => {
+          console.warn(
+            `[animator] Failed to read initial rate-limit status: ${err instanceof Error ? err.message : err}`,
+          );
+        });
 
         const GUILD_HEARTBEAT_INTERVAL_MS = 30_000;
         const GUILD_HEARTBEAT_DOC_ID = 'guild-heartbeat';

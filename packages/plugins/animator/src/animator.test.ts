@@ -236,6 +236,8 @@ function setup(
   memBackend.ensureBook({ ownerId: 'animator', book: 'transcripts' }, {
     indexes: ['sessionId'],
   });
+  memBackend.ensureBook({ ownerId: 'animator', book: 'state' }, {});
+  memBackend.ensureBook({ ownerId: 'animator', book: 'status' }, {});
 
   // Start animator
   const animatorApparatus = (animatorPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
@@ -1481,6 +1483,192 @@ describe('Animator', () => {
     it('returns an empty Map for empty input without touching the book', async () => {
       const result = await animator.getSessionCosts([]);
       assert.equal(result.size, 0);
+    });
+  });
+
+  // ── Rate-limit pre-check (D12 / D13) ────────────────────────────
+
+  describe('animate() rate-limit pre-check', () => {
+    beforeEach(() => {
+      setup();
+    });
+
+    async function setPaused(windowMs: number): Promise<void> {
+      // Directly seed the status book, then force the back-off cache to
+      // refresh by observing a rate-limited terminal. This mirrors the
+      // in-production path (machine writes the doc and keeps the cache
+      // fresh) without reaching into private state.
+      const statusBook = stacks.book('animator', 'status');
+      const pausedUntil = new Date(Date.now() + windowMs).toISOString();
+      await statusBook.put({
+        id: 'current',
+        state: 'paused',
+        pausedSince: new Date().toISOString(),
+        pausedUntil,
+        pauseReason: 'rate-limit',
+        backoffLevel: 0,
+      });
+      // Trigger the back-off machine to re-read.
+      await animator.getStatus();
+    }
+
+    it('synthesizes a rate-limited SessionResult when paused (D12)', async () => {
+      await setPaused(60_000);
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      });
+      const result = await handle.result;
+      assert.equal(result.status, 'rate-limited');
+      assert.ok(result.terminationTag);
+      assert.equal(result.terminationTag!.kind, 'rate-limit');
+      // No SessionDoc must be written for the rejected call.
+      const sessions = stacks.readBook<SessionDoc>('animator', 'sessions');
+      const doc = await sessions.get(result.id);
+      assert.ok(doc == null, `Expected no SessionDoc for rejected call; got ${JSON.stringify(doc)}`);
+    });
+
+    it('allows dispatch when the pause window has elapsed (D24)', async () => {
+      // Seed a paused doc whose window has already elapsed.
+      const statusBook = stacks.book('animator', 'status');
+      await statusBook.put({
+        id: 'current',
+        state: 'paused',
+        pausedSince: new Date(Date.now() - 120_000).toISOString(),
+        pausedUntil: new Date(Date.now() - 60_000).toISOString(),
+        pauseReason: 'rate-limit',
+        backoffLevel: 0,
+      });
+      // Warm cache.
+      await animator.getStatus();
+
+      const result = await animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      }).result;
+      assert.equal(result.status, 'completed');
+    });
+
+    it('getStatus() returns the persisted back-off doc', async () => {
+      const before = await animator.getStatus();
+      assert.equal(before.state, 'running');
+      assert.equal(before.backoffLevel, 0);
+
+      await setPaused(30_000);
+      const after = await animator.getStatus();
+      assert.equal(after.state, 'paused');
+      assert.ok(after.pausedUntil);
+    });
+
+    it('emits empty chunks on pre-check rejection', async () => {
+      await setPaused(60_000);
+      const handle = animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+        streaming: true,
+      });
+      const collected: SessionChunk[] = [];
+      for await (const c of handle.chunks) collected.push(c);
+      assert.equal(collected.length, 0);
+    });
+  });
+
+  // ── Back-off transitions via session-record ────────────────────
+
+  describe('Back-off transitions via session-record', () => {
+    beforeEach(() => {
+      setup();
+    });
+
+    it('paused → running after a completed terminal reset (D7)', async () => {
+      const statusBook = stacks.book('animator', 'status');
+      await statusBook.put({
+        id: 'current',
+        state: 'paused',
+        pausedSince: new Date().toISOString(),
+        pausedUntil: new Date(Date.now() + 60_000).toISOString(),
+        pauseReason: 'rate-limit',
+        backoffLevel: 2,
+      });
+      // Reload cache.
+      await animator.getStatus();
+
+      // Simulate a completed session-record firing through the
+      // session-record handler (which invokes the back-off observer
+      // registered by animator.start()).
+      const { handleSessionRecord } = await import('./session-record-handler.ts');
+      const sessions = stacks.book<SessionDoc>('animator', 'sessions');
+      await sessions.put({
+        id: 'ses-reset',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        provider: 'fake',
+      });
+      await handleSessionRecord({
+        sessionId: 'ses-reset',
+        status: 'completed',
+        exitCode: 0,
+      });
+
+      const status = await animator.getStatus();
+      assert.equal(status.state, 'running');
+      assert.equal(status.backoffLevel, 0);
+    });
+  });
+
+  // ── Config validation ────────────────────────────────────────────
+
+  describe('startup config validation (D10 patron override)', () => {
+    afterEach(() => {
+      clearGuild();
+    });
+
+    it('throws on a malformed rateLimitBackoff block', () => {
+      assert.throws(
+        () => {
+          const memBackend = new MemoryBackend();
+          const stacksPlugin = createStacksApparatus(memBackend);
+          const animatorPlugin = createAnimator();
+          const apparatusMap = new Map<string, unknown>();
+          const fakeGuild: Guild = {
+            home: '/tmp/fake-guild',
+            apparatus<T>(name: string): T {
+              const api = apparatusMap.get(name);
+              if (!api) throw new Error(`Apparatus "${name}" not installed`);
+              return api as T;
+            },
+            config<T>(): T { return {} as T; },
+            writeConfig() {},
+            guildConfig() {
+              return {
+                name: 't',
+                nexus: '0.0.0',
+                plugins: [],
+                settings: { model: 'sonnet' },
+                animator: {
+                  sessionProvider: 'fake',
+                  rateLimitBackoff: { initialMs: -1 },
+                },
+              } as never;
+            },
+            kits: () => [],
+            apparatuses: () => [],
+            startupWarnings() { return []; },
+          };
+          setGuild(fakeGuild);
+          apparatusMap.set('fake', createFakeProvider());
+          memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, { indexes: [] });
+          memBackend.ensureBook({ ownerId: 'animator', book: 'transcripts' }, { indexes: [] });
+          memBackend.ensureBook({ ownerId: 'animator', book: 'state' }, {});
+          memBackend.ensureBook({ ownerId: 'animator', book: 'status' }, {});
+          const stacksApp = (stacksPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
+          stacksApp.start({ on: () => {}, kits: () => [] });
+          apparatusMap.set('stacks', stacksApp.provides);
+          const animatorApp = (animatorPlugin as { apparatus: { start: (ctx: unknown) => void } }).apparatus;
+          animatorApp.start({ on: () => {}, kits: () => [] });
+        },
+        /initialMs/,
+      );
     });
   });
 });
