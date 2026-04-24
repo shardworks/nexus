@@ -2663,10 +2663,10 @@ export function createSpider(): Plugin {
 
       if (gate.kind === 'gated') {
         // Non-terminal blockers — hold dispatch. Nothing is written to
-        // status (D1: the gate-but-not-stuck state is not persisted). We
-        // continue to the next candidate so a later, unblocked writ can
+        // status (D1: the gate-but-not-stuck state is not persisted).
+        // Continue to the next candidate so a later, unblocked writ can
         // still dispatch this tick.
-        return { action: 'gated', writId: writ.id, blockerIds: gate.blockerIds };
+        continue;
       }
 
       if (gate.kind === 'failed-blocker') {
@@ -2675,7 +2675,10 @@ export function createSpider(): Plugin {
           ? `Blocked by failed dependency: ${shortIds[0]}`
           : `Blocked by failed dependencies: ${shortIds.join(', ')}`;
         await stuckFromGate(writ.id, 'failed-blocker', gate.blockerIds, resolution);
-        return { action: 'gated', writId: writ.id, blockerIds: gate.blockerIds };
+        // Writ is now `stuck` and out of the open-writs query on future
+        // ticks; continue scanning the current candidate page so a later,
+        // unblocked writ can still dispatch this tick.
+        continue;
       }
 
       if (gate.kind === 'cycle') {
@@ -2695,7 +2698,9 @@ export function createSpider(): Plugin {
             );
           }
         }
-        return { action: 'gated', writId: writ.id, blockerIds: gate.members };
+        // Cycle members are now `stuck`; continue scanning other
+        // candidates so a later, unblocked writ can still dispatch.
+        continue;
       }
 
       // gate.kind === 'ready' — fall through to dispatch.

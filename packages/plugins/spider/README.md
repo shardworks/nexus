@@ -61,16 +61,17 @@ CrawlResult variants:
 | `'engine-skipped'` | Engine (and any downstream-only dependents) was skipped due to `when` condition |
 | `'engine-grafted'` | Engine injected additional engines into the pipeline |
 | `'rig-completed'` | Rig reached terminal state (`completed`, `failed`, or `cancelled`) |
-| `'gated'` | Spawn was deferred — the writ has outbound `spider.follows` blockers (includes the case where a blocker reached `failed` and the writ was cascaded to `stuck`) |
 | `'writ-unstuck'` | `autoUnstick` phase returned a previously-Spider-stuck writ to `open` because its recorded blockers resolved |
+
+A `null` return means no dispatchable candidate was found this tick — either the queue is empty, or every candidate writ was gated on non-terminal blockers. Gate state lives on the writ substrate (`phase` + `status.spider`), not in the `CrawlResult`.
 
 ### Dispatch gating via `spider.follows`
 
 Spider contributes a `spider.follows` link kind and consults outbound `spider.follows` links when deciding whether to spawn a rig for an open writ. The gate is evaluated in `trySpawn` before any rig is created:
 
-- If any direct outbound `spider.follows` target is still `new`, `open`, or `stuck` — the writ is held. `trySpawn` emits a `'gated'` result and the writ stays `open` until a later poll.
-- If any direct outbound target is `failed` — the writ is cascaded to `stuck`. A `status.spider` record is written with `stuckCause: 'failed-blocker'` and the ids of every failed blocker. The resolution text is `Blocked by failed dependency: <short-id>` (or `Blocked by failed dependencies: …` when plural).
-- If the full transitive `spider.follows` walk from the writ visits a cycle — the writ is cascaded to `stuck` with `stuckCause: 'cycle'` and the cycle members as blockers. The resolution text is `Detected spider.follows cycle: <id> → <id> → … → <id>`.
+- If any direct outbound `spider.follows` target is still `new`, `open`, or `stuck` — the writ is held. The scan continues to the next candidate so a later, unblocked writ can still dispatch this tick; the gated writ stays `open` and no status is persisted.
+- If any direct outbound target is `failed` — the writ is cascaded to `stuck`. A `status.spider` record is written with `stuckCause: 'failed-blocker'` and the ids of every failed blocker. The resolution text is `Blocked by failed dependency: <short-id>` (or `Blocked by failed dependencies: …` when plural). The scan then continues with the next candidate.
+- If the full transitive `spider.follows` walk from the writ visits a cycle — every cycle member is cascaded to `stuck` with `stuckCause: 'cycle'` and the cycle members as blockers. The resolution text is `Cycle detected in spider.follows graph`. The scan then continues with the next candidate.
 - Only when every direct outbound target is in a terminal-success state (`completed`, or `cancelled`) does the writ proceed to rig spawn.
 
 Before `trySpawn`, each crawl tick runs an `autoUnstick` pass that re-evaluates every writ whose `status.spider.stuckCause` is one of the dependency-recovery causes (`failed-blocker` or `cycle`). When the recorded cause resolves (all `failed-blocker` ids are now `completed`/`cancelled`, or any `cycle` member has moved out of `open`/`stuck`), the writ is returned to `open` and emits a `'writ-unstuck'` result. Writs stuck with other causes — including `engine-failure` writs (see below) and operator-stuck writs with no `status.spider` slot — are left alone; their recovery is owned by a separate retry clockwork, not by `autoUnstick`.

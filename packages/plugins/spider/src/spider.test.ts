@@ -9982,7 +9982,7 @@ describe('Spider — spider.follows gate', () => {
       if (result === null) break;
       actions.push(result as { action: string });
       // Stop on actions that signal end-of-tick for spawning work.
-      if (result.action === 'gated' || result.action === 'writ-unstuck' || result.action === 'rig-spawned') break;
+      if (result.action === 'writ-unstuck' || result.action === 'rig-spawned') break;
     }
     return actions;
   }
@@ -10054,31 +10054,48 @@ describe('Spider — spider.follows gate', () => {
       const dependent2 = await postWrit(clerk, 'Dependent 2');
       await clerk.link(dependent2.id, blocker2.id, 'depends on', 'spider.follows');
 
-      // Walk until either gated or spawn. With blocker2 older than
-      // dependent2, spider may first spawn a rig for blocker2. Track the
-      // candidates tried.
-      let sawGated = false;
-      for (let i = 0; i < 8; i++) {
-        const r = await spider.crawl();
-        if (!r) break;
-        if (r.action === 'gated' && (r as { writId: string }).writId === dependent2.id) {
-          sawGated = true;
-          break;
-        }
-        // Advance blocker2's rig by keeping it "stuck" in draft — but we
-        // actually just need to prevent dependent2 from dispatching. If
-        // blocker2 reaches a rig-spawned state, cancel it to force the
-        // blocker writ into cancelled, which would then release the gate
-        // — so instead, stall it by leaving the rig in place and not
-        // completing engines. The next crawl for dependent2 will still
-        // see blocker2 as `open` → gated.
-        if (r.action === 'rig-spawned') continue;
-      }
+      // Evaluate the gate on dependent2 without letting blocker2's own
+      // rig progress to terminal (which would change dependent2's gate
+      // classification). Two ticks is enough: tick 1 dispatches blocker2;
+      // tick 2 evaluates dependent2 (gate hits non-terminal blocker2 →
+      // continue). The load-bearing assertion is that dependent2 got no
+      // rig while its blocker is non-terminal.
+      await spider.crawl();
+      await spider.crawl();
 
-      // The dependent must not have spawned a rig.
       const depRig = await rigsBook(stacks).find({ where: [['writId', '=', dependent2.id]] });
       assert.equal(depRig.length, 0, 'dependent should not have spawned a rig while blocker is non-terminal');
-      assert.ok(sawGated, 'expected a gated outcome for the dependent');
+    });
+
+    it('gated candidate does not short-circuit the scan — later unblocked candidates still dispatch', async () => {
+      // Regression for a trySpawn bug where the loop returned on the
+      // first gated candidate instead of continuing. That caused newer
+      // dispatchable writs to starve behind any older gated one until
+      // external state changed. Candidate-order in the scan is
+      // createdAt-asc, so we post the gated pair first and the
+      // unblocked writ last.
+      const { clerk, spider, stacks } = fix;
+      const blocker = await postWrit(clerk, 'Blocker first');
+      const gated = await postWrit(clerk, 'Gated second');
+      await clerk.link(gated.id, blocker.id, 'depends on', 'spider.follows');
+      const independent = await postWrit(clerk, 'Independent third');
+
+      // Drive crawls until independent has spawned or we give up. Before
+      // the fix, independent would never spawn because trySpawn returned
+      // on the first gated candidate (`gated`) instead of continuing.
+      // The earlier crawl cycles are consumed by blocker's rig running
+      // through tryRun/tryCollect phases — only when trySpawn is reached
+      // and the scan continues past `gated` does independent get a rig.
+      let indepSpawned = false;
+      for (let i = 0; i < 12; i++) {
+        await spider.crawl();
+        const rigs = await rigsBook(stacks).find({ where: [['writId', '=', independent.id]] });
+        if (rigs.length > 0) { indepSpawned = true; break; }
+      }
+      assert.ok(indepSpawned, 'independent writ should have spawned a rig even though an older candidate was gated');
+
+      const gatedRig = await rigsBook(stacks).find({ where: [['writId', '=', gated.id]] });
+      assert.equal(gatedRig.length, 0, 'gated writ must not have spawned a rig while its blocker is non-terminal');
     });
 
     it('releases the gate once the blocker reaches completed (dispatches dependent on next poll)', async () => {
@@ -10143,21 +10160,16 @@ describe('Spider — spider.follows gate', () => {
       await writsStacksBook.patch(b1.id, { phase: 'completed' });
       await writsStacksBook.patch(b2.id, { phase: 'cancelled' });
 
-      // Drive enough crawls to surface the gated outcome for `dep`. Along
-      // the way, other non-gated candidates (b3 in particular) may spawn
-      // rigs; we assert only about `dep`'s state.
-      let sawGated = false;
-      for (let i = 0; i < 12; i++) {
-        const r = await spider.crawl();
-        if (!r) break;
-        if (r.action === 'gated' && (r as { writId: string }).writId === dep.id) {
-          sawGated = true;
-          break;
-        }
-      }
+      // Drive a single crawl so dep's gate is evaluated. b3 is older than
+      // dep in createdAt-asc order but has no outbound follows — it may
+      // spawn a rig. The behavioral check we want is "dep did not spawn
+      // a rig because its gate classified it gated." Using exactly one
+      // crawl keeps b3's rig from progressing to terminal and changing
+      // dep's gate classification.
+      await spider.crawl();
+      await spider.crawl();
       const depRigBefore = await rigsBook(stacks).find({ where: [['writId', '=', dep.id]] });
       assert.equal(depRigBefore.length, 0, 'dependent should not have spawned a rig while b3 is non-terminal');
-      assert.ok(sawGated, 'dependent should be gated while b3 is open');
 
       // Release the last blocker (patch direct to avoid transition phase rules).
       await writsStacksBook.patch(b3.id, { phase: 'completed' });
@@ -10184,17 +10196,13 @@ describe('Spider — spider.follows gate', () => {
 
       await clerk.transition(blocker.id, 'failed', { resolution: 'boom' });
 
-      // Drain crawls until dependent is stuck.
-      let gatedFired = false;
+      // Drain crawls; dependent should be cascaded to `stuck` via
+      // failed-blocker on its first evaluation. The phase transition is
+      // the behavioral signal.
       for (let i = 0; i < 6; i++) {
         const r = await spider.crawl();
         if (!r) break;
-        if (r.action === 'gated' && (r as { writId: string }).writId === dependent.id) {
-          gatedFired = true;
-          break;
-        }
       }
-      assert.ok(gatedFired, 'expected gated outcome for failed blocker');
 
       const writAfter = await clerk.show(dependent.id);
       assert.equal(writAfter.phase, 'stuck');
@@ -10221,7 +10229,6 @@ describe('Spider — spider.follows gate', () => {
 
       for (let i = 0; i < 6; i++) {
         const r = await spider.crawl();
-        if (r?.action === 'gated' && (r as { writId: string }).writId === dep.id) break;
         if (!r) break;
       }
 
@@ -10250,14 +10257,13 @@ describe('Spider — spider.follows gate', () => {
       await clerk.link(b.id, c.id, 'depends on', 'spider.follows');
       await clerk.link(c.id, a.id, 'depends on', 'spider.follows');
 
-      // Drain crawls until we've seen a gated outcome.
-      let gated = false;
+      // Drain crawls; the first evaluation of any cycle member should
+      // cascade all members to `stuck`. The per-writ stuck-state check
+      // below is the behavioral signal.
       for (let i = 0; i < 6; i++) {
         const r = await spider.crawl();
         if (!r) break;
-        if (r.action === 'gated') { gated = true; break; }
       }
-      assert.ok(gated, 'expected a gated outcome from cycle detection');
 
       for (const writId of [a.id, b.id, c.id]) {
         const w = await clerk.show(writId);
@@ -10311,10 +10317,9 @@ describe('Spider — spider.follows gate', () => {
 
       await clerk.transition(blocker.id, 'failed', { resolution: 'boom' });
 
-      // Drive crawls until dependent is stuck.
+      // Drive crawls until dependent is cascaded to `stuck`.
       for (let i = 0; i < 6; i++) {
         const r = await spider.crawl();
-        if (r?.action === 'gated' && (r as { writId: string }).writId === dependent.id) break;
         if (!r) break;
       }
       const stuck = await clerk.show(dependent.id);
@@ -10392,16 +10397,21 @@ describe('Spider — spider.follows gate', () => {
       await writsStacksBook.patch(c.id, { phase: 'failed', resolution: 'boom' });
 
       // Tick 1: Spider sees B (oldest open candidate). Evaluates gate —
-      // C is failed → B becomes stuck with cause='failed-blocker'. A stays
-      // `open`; it was NOT transitively cascaded in the same tick (D14).
-      let bWent = false;
+      // C is failed → B becomes stuck with cause='failed-blocker'. A's
+      // direct blocker (B) is now non-terminal (stuck), so A is
+      // gate-held but NOT transitively cascaded in the same tick (D14).
+      // A single crawl is sufficient to check this — the gate sticks
+      // on the direct cascade and moves on. We run enough ticks to be
+      // sure B's state transition settled; the phase check is the
+      // load-bearing assertion.
       for (let i = 0; i < 4; i++) {
         const r = await spider.crawl();
-        if (!r) break;
         const bw = await clerk.show(b.id);
-        if (bw.phase === 'stuck') { bWent = true; break; }
+        if (bw.phase === 'stuck') break;
+        if (!r) break;
       }
-      assert.ok(bWent, 'B should be stuck after the failed-blocker cascade');
+      const bAfter = await clerk.show(b.id);
+      assert.equal(bAfter.phase, 'stuck', 'B should be stuck after the failed-blocker cascade');
       const aAfterB = await clerk.show(a.id);
       assert.equal(aAfterB.phase, 'open', 'A must remain open immediately after B is stucked — no transitive single-poll cascade');
 
@@ -10420,14 +10430,13 @@ describe('Spider — spider.follows gate', () => {
       // same mechanism" wording in D14.
       await writsStacksBook.patch(b.id, { phase: 'failed', resolution: 'also boom' });
 
-      let aWent = false;
       for (let i = 0; i < 4; i++) {
-        const r = await spider.crawl();
-        if (!r) break;
+        await spider.crawl();
         const aw = await clerk.show(a.id);
-        if (aw.phase === 'stuck') { aWent = true; break; }
+        if (aw.phase === 'stuck') break;
       }
-      assert.ok(aWent, 'A should be stuck after B reaches failed — on a later poll than B');
+      const aAfterFail = await clerk.show(a.id);
+      assert.equal(aAfterFail.phase, 'stuck', 'A should be stuck after B reaches failed — on a later poll than B');
       const aFinal = await clerk.show(a.id);
       assert.equal(aFinal.phase, 'stuck');
       const aStatus = aFinal.status?.spider as Record<string, unknown> | undefined;
@@ -10509,7 +10518,6 @@ describe('Spider — spider.follows gate', () => {
       for (let i = 0; i < 6; i++) {
         const r = await spider.crawl();
         if (!r) break;
-        if (r.action === 'gated' && (r as { writId: string }).writId === dependent.id) break;
       }
 
       const w = await clerk.show(dependent.id);
@@ -10530,7 +10538,6 @@ describe('Spider — spider.follows gate', () => {
       for (let i = 0; i < 6; i++) {
         const r = await spider.crawl();
         if (!r) break;
-        if (r.action === 'gated') break;
       }
 
       const w = await clerk.show(a.id);

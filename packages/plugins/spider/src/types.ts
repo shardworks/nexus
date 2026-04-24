@@ -408,16 +408,16 @@ export interface EngineRetryConfig {
  * - 'engine-grafted'    — a graft was applied; downstream engines added
  * - 'rig-spawned'       — created a new rig for a ready writ
  * - 'rig-completed'     — the crawl step caused a rig to reach a terminal state
- * - 'gated'             — an open writ's dispatch is gated on outbound
- *                         spider.follows links that point at non-terminal
- *                         blockers; no rig was spawned and no status was
- *                         written (gate-only state is never persisted).
  * - 'writ-unstuck'      — a writ that Spider previously stuck via the gating
  *                         path returned to `open` because its recorded causes
  *                         resolved (all failed blockers reached success, or
  *                         a cycle was broken by external action).
  *
- * null means no work was available.
+ * null means no work was available this tick. This includes the case where
+ * every candidate open writ was gated on non-terminal follows-blockers —
+ * the crawl loop skips gated candidates internally and returns null if
+ * no dispatchable writ was found. Gate state lives on the writ substrate
+ * (phase + status.spider), not in the CrawlResult.
  */
 export type CrawlResult =
   | { action: 'engine-completed'; rigId: string; engineId: string }
@@ -428,7 +428,6 @@ export type CrawlResult =
   | { action: 'engine-grafted'; rigId: string; engineId: string; graftedEngineIds: string[] }
   | { action: 'rig-spawned'; rigId: string; writId: string }
   | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'failed' | 'cancelled' }
-  | { action: 'gated'; writId: string; blockerIds: string[] }
   | { action: 'writ-unstuck'; writId: string };
 
 // ── Block type ────────────────────────────────────────────────────────

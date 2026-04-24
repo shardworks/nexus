@@ -5,18 +5,15 @@
  * indefinitely; pass a positive maxIdleCycles to enable auto-stop after
  * that many consecutive idle cycles.
  *
- * "Idle" here means *no actual progress was made*. A `null` return (Spider
- * had nothing to do) and a `{ action: 'gated' }` return (Spider found a
- * candidate but its outbound spider.follows targets are still non-terminal)
- * are both non-progress signals that produce the same output on every
- * subsequent tick until external state changes. Both count toward idleCount
- * and both cause the loop to sleep for intervalMs before the next call.
+ * An "idle" tick is simply a `null` return from crawl() — Spider had
+ * nothing dispatchable to do this pass (either the queue is empty, or
+ * every candidate open writ was gated on non-terminal blockers). Any
+ * non-null CrawlResult counts as progress, resets idleCount, and the
+ * loop yields a macrotask before the next tick.
  *
- * Failing to treat `gated` as non-progress caused a tight-loop event-loop
- * starvation bug: an open writ perpetually gated on a stuck target would
- * cycle crawl() with zero sleep, burning 100% CPU and starving HTTP /
- * timer macrotasks (Oculus unreachable while daemon listened). See the
- * commit introducing this comment for the diagnosis.
+ * Event-loop starvation guard: even on back-to-back progress ticks,
+ * `await` chains resolve via microtasks only. A setImmediate yield
+ * between progress ticks lets HTTP handlers and timers run.
  */
 
 import { z } from 'zod';
@@ -24,26 +21,13 @@ import { guild } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
 import type { SpiderApi, SpiderConfig, CrawlResult } from '../types.ts';
 
-/**
- * Classify a CrawlResult as progress or non-progress.
- *
- * Non-progress = `null` (nothing to do) or `{ action: 'gated' }`
- * (found a writ but it's waiting on non-terminal blockers). Every other
- * action is a one-shot state transition that shouldn't recur identically
- * on the next tick, so it counts as progress and resets idleCount.
- */
-function madeProgress(result: CrawlResult | null): result is CrawlResult {
-  return result !== null && result.action !== 'gated';
-}
-
 export default tool({
   name: 'crawl-continual',
   description: "Run the Spider's crawl loop continuously",
   instructions:
-    "Polls crawl() in a loop, sleeping between steps when there's no actual progress " +
-    "(null or gated returns). By default the loop runs indefinitely. Pass a positive " +
-    'maxIdleCycles to stop after that many consecutive non-progress cycles. ' +
-    'Returns a summary of all actions taken.',
+    "Polls crawl() in a loop, sleeping pollIntervalMs between idle ticks (null returns). " +
+    'By default runs indefinitely. Pass a positive maxIdleCycles to stop after that many ' +
+    'consecutive idle cycles. Returns a summary of all actions taken.',
   params: {
     maxIdleCycles: z
       .number()
@@ -81,7 +65,7 @@ export default tool({
         continue;
       }
 
-      if (madeProgress(result)) {
+      if (result !== null) {
         idleCount = 0;
         actions.push(result);
         // Belt-and-braces event-loop starvation guard: even when we have
@@ -89,14 +73,9 @@ export default tool({
         // and timers aren't starved by microtask-resolving DB calls.
         await new Promise<void>((resolve) => setImmediate(resolve));
       } else {
-        // null (idle) or 'gated' (stall). Either way, no forward progress
-        // was made this cycle and the next call is very likely to produce
-        // the identical outcome until external state changes — so sleep
-        // for the full interval.
+        // Idle — no dispatchable candidate found this tick. Sleep the
+        // full interval before asking again.
         idleCount++;
-        // Record 'gated' results for operator visibility even though they
-        // don't count as progress; null is just a silent idle.
-        if (result !== null) actions.push(result);
         await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
       }
     }
