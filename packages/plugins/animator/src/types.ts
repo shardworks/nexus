@@ -442,6 +442,26 @@ export interface SessionTerminationTag {
   detail?: string;
 }
 
+/**
+ * Passive diagnostic record captured by the session provider when a
+ * session terminates with `status: 'failed'` (non-zero exit, no
+ * structured termination tag, no cancel override). Captured solely so
+ * operators can audit the signal that did NOT satisfy the narrowed
+ * rate-limit detector — the Animator's back-off machine never widens
+ * its pause gate on this field, only displays/logs it.
+ *
+ * Carries the process exit code and, when available, the last 200
+ * characters of the subprocess stderr stream. Not produced for
+ * `'timeout'`, `'cancelled'`, `'rate-limited'` or `'completed'`
+ * sessions.
+ */
+export interface TerminationDiagnostic {
+  /** Process exit code that produced the `'failed'` status. */
+  exitCode: number;
+  /** Tail of the subprocess stderr (<= 200 chars) if any was captured. */
+  stderrExcerpt?: string;
+}
+
 export interface SessionProviderResult {
   /** Exit status. */
   status: 'completed' | 'failed' | 'timeout' | 'cancelled' | 'rate-limited';
@@ -551,6 +571,13 @@ export interface SessionDoc {
    * `session-record`, preserved across status patches.
    */
   terminationTag?: SessionTerminationTag;
+  /**
+   * Passive diagnostic captured when the session ended with
+   * `status: 'failed'` and no structured termination tag. Shape is
+   * `{ exitCode, stderrExcerpt? }`. Informational only — the Animator's
+   * back-off machine does not consume this field. See TerminationDiagnostic.
+   */
+  terminationDiagnostic?: TerminationDiagnostic;
   /** Index signature required by BookEntry. */
   [key: string]: unknown;
 }

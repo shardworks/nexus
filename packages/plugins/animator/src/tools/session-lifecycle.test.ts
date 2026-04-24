@@ -454,6 +454,53 @@ describe('session-record tool', () => {
     assert.ok(callableBy.includes('anima'));
     assert.equal(sessionRecord.permission, 'write');
   });
+
+  it('persists terminationDiagnostic on failed sessions', async () => {
+    await sessions.put({
+      id: 'ses-rec-diag-1',
+      status: 'running',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+    });
+
+    await sessionRecord.handler({
+      sessionId: 'ses-rec-diag-1',
+      status: 'failed',
+      exitCode: 2,
+      error: 'claude exited with code 2',
+      terminationDiagnostic: {
+        exitCode: 2,
+        stderrExcerpt: 'boom: process died',
+      },
+    });
+
+    const doc = await sessions.get('ses-rec-diag-1');
+    assert.ok(doc);
+    assert.equal(doc.status, 'failed');
+    assert.deepEqual(doc.terminationDiagnostic, {
+      exitCode: 2,
+      stderrExcerpt: 'boom: process died',
+    });
+  });
+
+  it('omits terminationDiagnostic when not supplied', async () => {
+    await sessions.put({
+      id: 'ses-rec-diag-2',
+      status: 'running',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+    });
+
+    await sessionRecord.handler({
+      sessionId: 'ses-rec-diag-2',
+      status: 'completed',
+      exitCode: 0,
+    });
+
+    const doc = await sessions.get('ses-rec-diag-2');
+    assert.ok(doc);
+    assert.equal(doc.terminationDiagnostic, undefined);
+  });
 });
 
 // ── DLQ drain tests ────────────────────────────────────────────────

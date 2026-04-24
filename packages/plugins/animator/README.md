@@ -367,6 +367,26 @@ State transitions:
 
 Daemon restarts leave the persisted doc untouched; the first dispatch after `pausedUntil` elapses naturally flips the state back to `running` (the "natural probe" semantic).
 
+### SessionDoc — passive termination diagnostic
+
+When a session terminates with exactly `status: 'failed'` (non-zero exit, no structured termination tag, no cancel override), the provider attaches a passive `terminationDiagnostic` field to the session record:
+
+```typescript
+interface TerminationDiagnostic {
+  /** Process exit code that produced the `'failed'` status. */
+  exitCode: number
+  /** Tail of the subprocess stderr (<= 200 chars) if any was captured. */
+  stderrExcerpt?: string
+}
+
+interface SessionDoc {
+  // ... other fields
+  terminationDiagnostic?: TerminationDiagnostic
+}
+```
+
+The diagnostic is **informational only** — the Animator's back-off state machine does not consume it. It exists so operators can audit the signal that did NOT satisfy the narrowed rate-limit detector. `timeout`, `cancelled`, `rate-limited`, and `completed` sessions never carry this field.
+
 ## Exports
 
 The main export provides the apparatus factory, API types, and provider interface types:
@@ -393,6 +413,7 @@ import {
   type AnimatorStatusDoc,
   type AnimatorPauseReason,
   type SessionTerminationTag,
+  type TerminationDiagnostic,
 } from '@shardworks/animator-apparatus';
 ```
 

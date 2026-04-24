@@ -27,6 +27,7 @@ export {
   type AnimatorStatusDoc,
   type AnimatorPauseReason,
   type SessionTerminationTag,
+  type TerminationDiagnostic,
   // Provider types (for implementors)
   type AnimatorSessionProvider,
   type SessionProviderConfig,

@@ -613,8 +613,18 @@ export function resolveTerminalStatus(
   };
 }
 
+/** Maximum number of characters to retain for the diagnostic stderr tail. */
+export const STDERR_DIAGNOSTIC_TAIL_LIMIT = 200;
+
 /**
  * Report the final session result to the guild via the session-record tool.
+ *
+ * When the resolved terminal status is exactly `'failed'` (non-zero exit,
+ * no structured termination tag, no cancel override), attach a passive
+ * `terminationDiagnostic: { exitCode, stderrExcerpt? }` to the payload.
+ * The diagnostic is informational only — the Animator's back-off
+ * machine never consumes it. The stderr excerpt is only present when
+ * the caller supplied a non-empty tail.
  *
  * If the guild is unreachable, writes the payload to the DLQ.
  */
@@ -624,11 +634,22 @@ export async function reportResult(
   transcript: Record<string, unknown>[],
   timeoutMs?: number,
   statusOverride?: 'cancelled',
+  stderrTail?: string,
 ): Promise<void> {
   const route = toolNameToRoute('session-record');
   const url = `${config.guildToolUrl}${route}`;
   const resolved = resolveTerminalStatus(result, statusOverride);
   const output = extractFinalAssistantText(transcript);
+
+  // Only attach the passive diagnostic on a clean `'failed'` bucket —
+  // timeout / cancelled / rate-limited are already well-classified.
+  const terminationDiagnostic =
+    resolved.status === 'failed'
+      ? {
+          exitCode: result.exitCode,
+          ...(stderrTail && stderrTail.length > 0 ? { stderrExcerpt: stderrTail } : {}),
+        }
+      : undefined;
 
   const payload = {
     sessionId: config.sessionId,
@@ -642,6 +663,7 @@ export async function reportResult(
     providerSessionId: result.providerSessionId,
     transcript,
     ...(resolved.terminationTag ? { terminationTag: resolved.terminationTag } : {}),
+    ...(terminationDiagnostic ? { terminationDiagnostic } : {}),
   };
 
   try {
@@ -785,8 +807,16 @@ export async function runBabysitter(
     // stderr log. No detection happens here — rate-limit signals are
     // detected only on structured NDJSON messages inside
     // parseStreamJsonMessage.
+    //
+    // Also maintain a rolling tail buffer (last
+    // STDERR_DIAGNOSTIC_TAIL_LIMIT chars) — used as the `stderrExcerpt`
+    // of the passive `terminationDiagnostic` attached when the session
+    // ends with `'failed'`. O(1) per chunk: append then slice the tail.
+    let stderrTail = '';
     claudeProc.stderr?.on('data', (chunk: Buffer) => {
       process.stderr.write(chunk);
+      const text = chunk.toString('utf8');
+      stderrTail = (stderrTail + text).slice(-STDERR_DIAGNOSTIC_TAIL_LIMIT);
     });
 
     // 5. Report "running" status (don't await — fire and forget with retry)
@@ -901,7 +931,14 @@ export async function runBabysitter(
     };
 
     // 8. Report result
-    await reportResult(config, result, acc.transcript, retryTimeoutMs, cancelledBySignal ? 'cancelled' : undefined);
+    await reportResult(
+      config,
+      result,
+      acc.transcript,
+      retryTimeoutMs,
+      cancelledBySignal ? 'cancelled' : undefined,
+      stderrTail,
+    );
   } catch (err) {
     // Top-level error: attempt to report failure
     const message = err instanceof Error ? err.message : String(err);

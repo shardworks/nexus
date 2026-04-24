@@ -7,7 +7,13 @@
 
 import { guild } from '@shardworks/nexus-core';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
-import type { SessionDoc, SessionTerminationTag, TranscriptDoc, TranscriptMessage } from './types.ts';
+import type {
+  SessionDoc,
+  SessionTerminationTag,
+  TerminationDiagnostic,
+  TranscriptDoc,
+  TranscriptMessage,
+} from './types.ts';
 
 // ── Back-off machine hook ───────────────────────────────────────────
 
@@ -67,6 +73,13 @@ export interface SessionRecordParams {
    * pattern-match on `error` text.
    */
   terminationTag?: SessionTerminationTag;
+  /**
+   * Passive diagnostic set by the provider when the terminal status is
+   * exactly `'failed'` — non-zero exit, no structured termination tag,
+   * no cancel override. Informational only; the back-off machine does
+   * not consume this field. See TerminationDiagnostic.
+   */
+  terminationDiagnostic?: TerminationDiagnostic;
 }
 
 /** Terminal statuses recognized by the session-record handler. */
@@ -132,6 +145,10 @@ export async function handleSessionRecord(
     // for the Animator's back-off state machine and Spider's tryCollect
     // branch on rate-limited sessions.
     ...(params.terminationTag ? { terminationTag: params.terminationTag } : {}),
+    // Passive diagnostic for `'failed'` terminations that had no
+    // structured tag. Written through as-is; never read by the back-off
+    // machine.
+    ...(params.terminationDiagnostic ? { terminationDiagnostic: params.terminationDiagnostic } : {}),
   };
 
   await sessions.put(doc);

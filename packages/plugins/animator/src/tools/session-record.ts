@@ -53,6 +53,16 @@ export default tool({
         'Structured termination tag set by the provider when the terminal status ' +
           'reflects a specific detected condition (today: rate-limit).',
       ),
+    terminationDiagnostic: z
+      .object({
+        exitCode: z.number(),
+        stderrExcerpt: z.string().optional(),
+      })
+      .optional()
+      .describe(
+        'Passive diagnostic attached by the provider when the terminal status is exactly ' +
+          "'failed' (non-zero exit with no structured termination tag). Informational only.",
+      ),
   },
   callableBy: 'anima',
   permission: 'write',

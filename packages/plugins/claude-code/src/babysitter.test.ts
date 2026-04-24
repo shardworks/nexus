@@ -633,6 +633,113 @@ describe('reportResult()', () => {
     assert.equal(dlqContent.sessionId, 'sess-dlq-2');
     assert.equal(dlqContent.status, 'completed');
   });
+
+  it('attaches terminationDiagnostic on failed status (non-zero exit, no tag)', async () => {
+    mockServer = await startMockServer(() => ({ status: 200, body: { ok: true } }));
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'result-diag-'));
+    const config = makeConfig({ guildToolUrl: mockServer.url, cwd: tmpDir });
+
+    await reportResult(
+      config,
+      { exitCode: 2, transcript: [] },
+      [],
+      undefined,
+      undefined,
+      'Traceback: something died',
+    );
+
+    const body = JSON.parse(mockServer.requests[0]!.body);
+    assert.equal(body.status, 'failed');
+    assert.deepEqual(body.terminationDiagnostic, {
+      exitCode: 2,
+      stderrExcerpt: 'Traceback: something died',
+    });
+  });
+
+  it('omits terminationDiagnostic on completed status', async () => {
+    mockServer = await startMockServer(() => ({ status: 200, body: { ok: true } }));
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'result-diag-'));
+    const config = makeConfig({ guildToolUrl: mockServer.url, cwd: tmpDir });
+
+    await reportResult(
+      config,
+      { exitCode: 0, transcript: [] },
+      [],
+      undefined,
+      undefined,
+      'some stderr text',
+    );
+
+    const body = JSON.parse(mockServer.requests[0]!.body);
+    assert.equal(body.status, 'completed');
+    assert.equal(body.terminationDiagnostic, undefined);
+  });
+
+  it('omits terminationDiagnostic on cancelled override', async () => {
+    mockServer = await startMockServer(() => ({ status: 200, body: { ok: true } }));
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'result-diag-'));
+    const config = makeConfig({ guildToolUrl: mockServer.url, cwd: tmpDir });
+
+    await reportResult(
+      config,
+      { exitCode: 1, transcript: [] },
+      [],
+      undefined,
+      'cancelled',
+      'some stderr text',
+    );
+
+    const body = JSON.parse(mockServer.requests[0]!.body);
+    assert.equal(body.status, 'cancelled');
+    assert.equal(body.terminationDiagnostic, undefined);
+  });
+
+  it('omits terminationDiagnostic on rate-limited terminal (NDJSON tag present)', async () => {
+    mockServer = await startMockServer(() => ({ status: 200, body: { ok: true } }));
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'result-diag-'));
+    const config = makeConfig({ guildToolUrl: mockServer.url, cwd: tmpDir });
+
+    await reportResult(
+      config,
+      {
+        exitCode: 1,
+        transcript: [],
+        terminationTag: { kind: 'rate-limit', source: 'ndjson-result' },
+      },
+      [],
+      undefined,
+      undefined,
+      'some stderr text',
+    );
+
+    const body = JSON.parse(mockServer.requests[0]!.body);
+    assert.equal(body.status, 'rate-limited');
+    assert.equal(body.terminationDiagnostic, undefined);
+  });
+
+  it('attaches terminationDiagnostic with exitCode only when stderrTail is empty', async () => {
+    mockServer = await startMockServer(() => ({ status: 200, body: { ok: true } }));
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'result-diag-'));
+    const config = makeConfig({ guildToolUrl: mockServer.url, cwd: tmpDir });
+
+    await reportResult(
+      config,
+      { exitCode: 42, transcript: [] },
+      [],
+      undefined,
+      undefined,
+      '',
+    );
+
+    const body = JSON.parse(mockServer.requests[0]!.body);
+    assert.equal(body.status, 'failed');
+    assert.deepEqual(body.terminationDiagnostic, { exitCode: 42 });
+  });
 });
 
 // ── runBabysitter (end-to-end) ─────────────────────────────────────────
@@ -949,6 +1056,58 @@ describe('runBabysitter()', () => {
     assert.equal(body.signal, 'SIGTERM');
     assert.equal(body.exitCode, 1); // code ?? 1 fallback
     assert.equal(body.status, 'failed');
+
+    db.close();
+  });
+
+  it('attaches terminationDiagnostic reflecting only the stderr tail', async () => {
+    mockServer = await startMockServer(() => ({ status: 200, body: { ok: true } }));
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-diag-tail-'));
+    const dbPath = path.join(tmpDir, 'guild.db');
+    const db = initTranscriptDb(Database, dbPath);
+
+    const config = makeConfig({
+      guildToolUrl: mockServer.url,
+      cwd: tmpDir,
+      dbPath,
+      sessionId: 'e2e-diag-tail-1',
+    });
+
+    // Mock claude that emits a lot of stderr then exits non-zero.
+    const mockSpawn = (() => {
+      const proc = new EventEmitter() as EventEmitter & {
+        stdin: { write: (d: string) => void; end: () => void };
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        pid: number;
+      };
+      proc.stdin = { write: () => {}, end: () => {} };
+      proc.stdout = new EventEmitter();
+      proc.stderr = new EventEmitter();
+      proc.pid = 77;
+
+      setTimeout(() => {
+        // Emit ~1000 chars of "prefix" stderr that should be dropped,
+        // followed by a short tail that must survive in the buffer.
+        proc.stderr.emit('data', Buffer.from('X'.repeat(1000)));
+        proc.stderr.emit('data', Buffer.from('\nTAIL-MARKER-END\n'));
+        setTimeout(() => proc.emit('close', 3), 30);
+      }, 20);
+      return proc;
+    }) as unknown as typeof import('node:child_process').spawn;
+
+    await runBabysitter(config, { db, spawnFn: mockSpawn });
+
+    const recordReq = mockServer!.requests.find((r) => r.url === '/api/session/record');
+    assert.ok(recordReq, 'should call session-record');
+    const body = JSON.parse(recordReq!.body);
+    assert.equal(body.status, 'failed');
+    assert.ok(body.terminationDiagnostic, 'diagnostic should be present');
+    assert.equal(body.terminationDiagnostic.exitCode, 3);
+    const excerpt = body.terminationDiagnostic.stderrExcerpt as string;
+    assert.ok(excerpt.length <= 200, `excerpt should fit the 200-char cap, got ${excerpt.length}`);
+    assert.ok(excerpt.includes('TAIL-MARKER-END'), 'the tail of the stream must survive in the excerpt');
 
     db.close();
   });
