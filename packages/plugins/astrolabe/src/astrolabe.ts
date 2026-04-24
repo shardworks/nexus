@@ -277,6 +277,19 @@ export function createAstrolabe(): Plugin {
 
         writTypes: [
           { name: 'piece', description: 'An atomic task piece within a mandate, executed sequentially' },
+          {
+            name: 'observation-set',
+            description:
+              'A non-dispatchable container grouping writs lifted from a single planning run. Spider never dispatches this type (no rig-template mapping); it exists so curators can triage related lifted observations as a batch.',
+          },
+        ],
+
+        linkKinds: [
+          {
+            id: 'astrolabe.lifted-from',
+            description:
+              'The source writ was lifted from the planning run of the target writ. Provenance edge: marks the originating mandate whose plan-and-ship rig produced this writ via the observation-lift engine.',
+          },
         ],
 
         roles: {
