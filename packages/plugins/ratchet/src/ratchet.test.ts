@@ -15,7 +15,7 @@ import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 
 import { createRatchet } from './ratchet.ts';
-import type { RatchetApi, ClickDoc, ClickTree, ClickStatus, GoalHistoryEntry } from './types.ts';
+import type { RatchetApi, ClickDoc, ClickLinkDoc, ClickTree, ClickStatus, GoalHistoryEntry } from './types.ts';
 import clickCreate from './tools/click-create.ts';
 import clickShow from './tools/click-show.ts';
 import clickList from './tools/click-list.ts';
@@ -1633,6 +1633,338 @@ describe('Ratchet', () => {
       const result = await clickList.handler({ rootId: root.id, limit: 20 }) as ClickDoc[];
       assert.strictEqual(result.length, 1);
       assert.strictEqual(result[0].goal, 'Child');
+    });
+  });
+
+  // ── Supersede enrichment in tree/extract ──────────────────────
+  //
+  // `nsg click tree` and `nsg click extract` surface inbound and
+  // outbound `supersedes` links inline so a reader arriving at a
+  // superseded click sees the successor without having to drill into
+  // `click-show`. These tests cover the rendering cases in the
+  // commission's acceptance signal — baseline / single / multi / chain /
+  // cycle / missing / cross-scope.
+
+  describe('supersede enrichment', () => {
+    // Directly insert a link record into the click_links book,
+    // bypassing `ratchet.link()`'s existence validation. Used only for
+    // simulating broken/dangling edges in D8 tests — normal link
+    // creation always goes through the API.
+    async function insertRawLink(sourceId: string, targetId: string): Promise<void> {
+      const book = stacksApi.book<ClickLinkDoc>('ratchet', 'click_links');
+      await book.put({
+        id: `${sourceId}:${targetId}:supersedes`,
+        sourceId,
+        targetId,
+        linkType: 'supersedes',
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    // ── (a) no-supersede baseline ─────────────────────────────
+
+    it('no supersede links: tree/extract output unchanged', async () => {
+      const root = await ratchet.create({ goal: 'Root goal' });
+      await ratchet.create({ goal: 'Child', parentId: root.id });
+
+      const tree = await clickTree.handler({}) as string;
+      // No supersede suffix — no arrow in the line.
+      assert.ok(!tree.includes(' → '), 'baseline tree should not contain the supersede arrow');
+
+      const md = await ratchet.extract(root.id, { format: 'md', full: true }) as string;
+      assert.ok(!md.includes('Superseded by:'), 'baseline extract should not contain Superseded by line');
+      assert.ok(!md.includes('Supersedes:'), 'baseline extract should not contain Supersedes line');
+
+      // JSON surfaces should not carry supersede fields either.
+      const json = await clickTree.handler({ format: 'json' }) as ClickTree[];
+      assert.strictEqual(json[0].supersededBy, undefined);
+      assert.strictEqual(json[0].supersedes, undefined);
+    });
+
+    // ── (b) single inbound supersede ──────────────────────────
+
+    it('single inbound supersede: tree suffix and extract "Superseded by:" line appear', async () => {
+      const a = await ratchet.create({ goal: 'Original framing' });
+      await ratchet.conclude(a.id, { conclusion: 'Superseded later' });
+      const b = await ratchet.create({ goal: 'Refined framing' });
+      await ratchet.link({ sourceId: b.id, targetId: a.id, linkType: 'supersedes' });
+
+      const tree = await clickTree.handler({}) as string;
+      const lineA = tree.split('\n').find((l) => l.includes('Original framing'))!;
+      assert.ok(lineA.includes(`→ ${shortId(b.id)}`), `A's row should carry the ↦-suffix to B: ${JSON.stringify(lineA)}`);
+      // B itself has an outbound only — no inbound — so no suffix.
+      const lineB = tree.split('\n').find((l) => l.includes('Refined framing'))!;
+      assert.ok(!lineB.includes(' → '), `B's row should not carry a suffix: ${JSON.stringify(lineB)}`);
+
+      const md = await ratchet.extract(a.id, { format: 'md', full: true }) as string;
+      const linesArr = md.split('\n');
+      const supersededByIdx = linesArr.findIndex((l) => l.startsWith('Superseded by:'));
+      const conclusionIdx = linesArr.findIndex((l) => l.startsWith('Conclusion:'));
+      assert.ok(supersededByIdx > conclusionIdx, 'Superseded by line should follow Conclusion line');
+      const createdByIdx = linesArr.findIndex((l) => l.startsWith('Created:'));
+      assert.ok(supersededByIdx < createdByIdx, 'Superseded by line should precede Created line');
+      assert.ok(linesArr[supersededByIdx].includes(shortId(b.id)), 'line should name B by short-id');
+      assert.ok(linesArr[supersededByIdx].includes('"Refined framing"'), 'line should quote B\'s goal');
+    });
+
+    // ── (c) single outbound supersede ─────────────────────────
+
+    it('single outbound supersede: extract "Supersedes:" line appears on the superseding click', async () => {
+      const a = await ratchet.create({ goal: 'Original framing' });
+      await ratchet.conclude(a.id, { conclusion: 'Superseded later' });
+      const b = await ratchet.create({ goal: 'Refined framing' });
+      await ratchet.link({ sourceId: b.id, targetId: a.id, linkType: 'supersedes' });
+
+      const md = await ratchet.extract(b.id, { format: 'md', full: true }) as string;
+      const linesArr = md.split('\n');
+      const supersedesIdx = linesArr.findIndex((l) => l.startsWith('Supersedes:'));
+      assert.ok(supersedesIdx >= 0, 'Supersedes: line should appear on the superseding click');
+      assert.ok(linesArr[supersedesIdx].includes(shortId(a.id)), 'should reference A by short-id');
+      assert.ok(linesArr[supersedesIdx].includes('"Original framing"'), 'should quote A\'s goal');
+
+      // Tree view does not render outbound — no suffix on B's row.
+      const tree = await clickTree.handler({}) as string;
+      const lineB = tree.split('\n').find((l) => l.includes('Refined framing'))!;
+      assert.ok(!lineB.includes(' → '), 'B\'s row should not carry a suffix for its outbound supersede');
+    });
+
+    // ── (d) 3-hop chain A ← B ← C ─────────────────────────────
+
+    it('3-hop chain A ← B ← C renders chain form on A, both lines on B, only Supersedes on C', async () => {
+      const a = await ratchet.create({ goal: 'A goal' });
+      await ratchet.conclude(a.id, { conclusion: 'done-a' });
+      const b = await ratchet.create({ goal: 'B goal' });
+      await ratchet.conclude(b.id, { conclusion: 'done-b' });
+      const c = await ratchet.create({ goal: 'C goal' });
+      await ratchet.link({ sourceId: b.id, targetId: a.id, linkType: 'supersedes' });
+      await ratchet.link({ sourceId: c.id, targetId: b.id, linkType: 'supersedes' });
+
+      const mdA = await ratchet.extract(a.id, { format: 'md', full: true }) as string;
+      assert.ok(
+        mdA.includes(`Superseded by: ${shortId(b.id)} → ${shortId(c.id)} "C goal"`),
+        `A should show chain walk: ${mdA}`,
+      );
+      assert.ok(!mdA.includes('Supersedes:'), 'A has no outbound supersede');
+
+      const mdB = await ratchet.extract(b.id, { format: 'md', full: true }) as string;
+      assert.ok(
+        mdB.includes(`Superseded by: ${shortId(c.id)} "C goal"`),
+        `B should show C as immediate superseder: ${mdB}`,
+      );
+      assert.ok(
+        mdB.includes(`Supersedes: ${shortId(a.id)} "A goal"`),
+        `B should show A as outbound: ${mdB}`,
+      );
+
+      const mdC = await ratchet.extract(c.id, { format: 'md', full: true }) as string;
+      assert.ok(
+        mdC.includes(`Supersedes: ${shortId(b.id)} "B goal"`),
+        `C should show B as outbound: ${mdC}`,
+      );
+      assert.ok(!mdC.includes('Superseded by:'), 'C has no inbound supersede');
+    });
+
+    // ── (e) cross-scope parentage ─────────────────────────────
+
+    it('cross-scope: superseder parented outside rendered subtree still shows suffix and JSON field', async () => {
+      // Build two separate root trees. A lives under Root1; B lives
+      // under Root2. B supersedes A. Rendering --root-id=Root1 should
+      // still surface the suffix on A and the JSON field.
+      const root1 = await ratchet.create({ goal: 'Root1' });
+      const a = await ratchet.create({ goal: 'A goal', parentId: root1.id });
+      await ratchet.conclude(a.id, { conclusion: 'done' });
+
+      const root2 = await ratchet.create({ goal: 'Root2' });
+      const b = await ratchet.create({ goal: 'B goal', parentId: root2.id });
+      await ratchet.link({ sourceId: b.id, targetId: a.id, linkType: 'supersedes' });
+
+      const tree = await clickTree.handler({ rootId: root1.id }) as string;
+      const lineA = tree.split('\n').find((l) => l.includes('A goal'))!;
+      assert.ok(
+        lineA.includes(`→ ${shortId(b.id)}`),
+        `A should carry suffix even though B lives in a different root: ${JSON.stringify(lineA)}`,
+      );
+      // B's line should not appear — outside rendered scope.
+      assert.ok(!tree.includes('B goal'), 'B is outside the subtree and should not render');
+
+      const json = await clickTree.handler({ format: 'json', rootId: root1.id }) as ClickTree[];
+      // JSON for A should carry supersededBy populated with B's id.
+      const findNode = (nodes: ClickTree[], id: string): ClickTree | undefined => {
+        for (const n of nodes) {
+          if (n.click.id === id) return n;
+          const child = findNode(n.children, id);
+          if (child) return child;
+        }
+        return undefined;
+      };
+      const aNode = findNode(json, a.id);
+      assert.ok(aNode, 'A should be in the JSON tree');
+      assert.ok(Array.isArray(aNode!.supersededBy), 'A should carry supersededBy');
+      assert.strictEqual(aNode!.supersededBy!.length, 1);
+      assert.strictEqual(aNode!.supersededBy![0].id, b.id);
+      assert.strictEqual(aNode!.supersededBy![0].goal, 'B goal');
+    });
+
+    // ── (f) multiple outbound on one click ─────────────────────
+
+    it('multiple outbound: one Supersedes: line per edge', async () => {
+      const a = await ratchet.create({ goal: 'A goal' });
+      await ratchet.conclude(a.id, { conclusion: 'done' });
+      const b = await ratchet.create({ goal: 'B goal' });
+      await ratchet.conclude(b.id, { conclusion: 'done' });
+      const merged = await ratchet.create({ goal: 'Merged framing' });
+      await ratchet.link({ sourceId: merged.id, targetId: a.id, linkType: 'supersedes' });
+      await ratchet.link({ sourceId: merged.id, targetId: b.id, linkType: 'supersedes' });
+
+      const md = await ratchet.extract(merged.id, { format: 'md', full: true }) as string;
+      const supersedeLines = md.split('\n').filter((l) => l.startsWith('Supersedes:'));
+      assert.strictEqual(supersedeLines.length, 2, `expected 2 Supersedes lines, got: ${supersedeLines.join('\\n')}`);
+      const ids = supersedeLines.map((l) => l).join(' ');
+      assert.ok(ids.includes(shortId(a.id)));
+      assert.ok(ids.includes(shortId(b.id)));
+    });
+
+    // ── (g) multiple immediate inbound ────────────────────────
+
+    it('multiple immediate inbound: one Superseded by: line per inbound, each with its own walk', async () => {
+      const a = await ratchet.create({ goal: 'A goal' });
+      await ratchet.conclude(a.id, { conclusion: 'done' });
+      const b = await ratchet.create({ goal: 'B goal' });
+      const c = await ratchet.create({ goal: 'C goal' });
+      await ratchet.link({ sourceId: b.id, targetId: a.id, linkType: 'supersedes' });
+      await ratchet.link({ sourceId: c.id, targetId: a.id, linkType: 'supersedes' });
+
+      const md = await ratchet.extract(a.id, { format: 'md', full: true }) as string;
+      const lines = md.split('\n').filter((l) => l.startsWith('Superseded by:'));
+      assert.strictEqual(lines.length, 2, `expected 2 Superseded by lines, got: ${lines.join('\\n')}`);
+      const allText = lines.join(' ');
+      assert.ok(allText.includes(shortId(b.id)));
+      assert.ok(allText.includes(shortId(c.id)));
+    });
+
+    // ── (h) cycle A ← B ← A ───────────────────────────────────
+
+    it('cycle A ← B ← A: walk terminates, does not infinite loop', async () => {
+      const a = await ratchet.create({ goal: 'A goal' });
+      const b = await ratchet.create({ goal: 'B goal' });
+      // B supersedes A; then insert A supersedes B via raw insert to
+      // bypass any cycle-preventing validation we might add later.
+      await ratchet.link({ sourceId: b.id, targetId: a.id, linkType: 'supersedes' });
+      await ratchet.link({ sourceId: a.id, targetId: b.id, linkType: 'supersedes' });
+
+      // If the walk fails to terminate, this line hangs forever. The
+      // test timeout from node:test will catch it, but we also want to
+      // confirm the output renders cleanly.
+      const md = await ratchet.extract(a.id, { format: 'md', full: true }) as string;
+      assert.ok(md.includes('Superseded by:'), 'A should still render its inbound');
+      assert.ok(md.includes('Supersedes:'), 'A should still render its outbound');
+    });
+
+    // ── (i) missing superseder ────────────────────────────────
+
+    it('missing superseder: <missing> placeholder in both tree and extract, no throw', async () => {
+      const a = await ratchet.create({ goal: 'A goal' });
+      await ratchet.conclude(a.id, { conclusion: 'done' });
+      // Insert a raw link to a non-existent click — bypasses the
+      // existence check that ratchet.link() enforces.
+      const ghostId = 'c-ghost-missing';
+      await insertRawLink(ghostId, a.id);
+
+      const md = await ratchet.extract(a.id, { format: 'md', full: true }) as string;
+      assert.ok(md.includes('Superseded by:'), 'line should appear');
+      assert.ok(md.includes('<missing>'), `line should carry missing placeholder: ${md}`);
+
+      const tree = await clickTree.handler({}) as string;
+      const lineA = tree.split('\n').find((l) => l.includes('A goal'))!;
+      assert.ok(
+        lineA.includes(`→ ${shortId(ghostId)}`),
+        `tree suffix should still name the dangling superseder: ${JSON.stringify(lineA)}`,
+      );
+    });
+
+    // ── (j) JSON shapes carry the arrays ──────────────────────
+
+    it('tree JSON carries supersededBy / supersedes per D3/D9/D12/D14', async () => {
+      const a = await ratchet.create({ goal: 'A goal' });
+      await ratchet.conclude(a.id, { conclusion: 'done' });
+      const b = await ratchet.create({ goal: 'B goal' });
+      await ratchet.link({ sourceId: b.id, targetId: a.id, linkType: 'supersedes' });
+
+      const json = await clickTree.handler({ format: 'json' }) as ClickTree[];
+
+      const findNode = (nodes: ClickTree[], id: string): ClickTree | undefined => {
+        for (const n of nodes) {
+          if (n.click.id === id) return n;
+          const child = findNode(n.children, id);
+          if (child) return child;
+        }
+        return undefined;
+      };
+      const aNode = findNode(json, a.id)!;
+      const bNode = findNode(json, b.id)!;
+
+      // A has an inbound; should carry `supersededBy` but no `supersedes`.
+      assert.ok(Array.isArray(aNode.supersededBy));
+      assert.strictEqual(aNode.supersededBy!.length, 1);
+      assert.strictEqual(aNode.supersededBy![0].id, b.id);
+      assert.strictEqual(aNode.supersededBy![0].goal, 'B goal');
+      assert.strictEqual(aNode.supersedes, undefined);
+
+      // B has an outbound; should carry `supersedes` but no `supersededBy`.
+      assert.ok(Array.isArray(bNode.supersedes));
+      assert.strictEqual(bNode.supersedes!.length, 1);
+      assert.strictEqual(bNode.supersedes![0].id, a.id);
+      assert.strictEqual(bNode.supersedes![0].goal, 'A goal');
+      assert.strictEqual(bNode.supersededBy, undefined);
+    });
+
+    it('extract JSON carries supersededBy / supersedes per D3/D9/D12', async () => {
+      const a = await ratchet.create({ goal: 'A goal' });
+      await ratchet.conclude(a.id, { conclusion: 'done' });
+      const b = await ratchet.create({ goal: 'B goal' });
+      await ratchet.link({ sourceId: b.id, targetId: a.id, linkType: 'supersedes' });
+
+      const jsonA = await ratchet.extract(a.id, { format: 'json', full: true }) as ClickTree;
+      assert.ok(Array.isArray(jsonA.supersededBy));
+      assert.strictEqual(jsonA.supersededBy!.length, 1);
+      assert.strictEqual(jsonA.supersededBy![0].id, b.id);
+      assert.strictEqual(jsonA.supersededBy![0].goal, 'B goal');
+
+      const jsonB = await ratchet.extract(b.id, { format: 'json', full: true }) as ClickTree;
+      assert.ok(Array.isArray(jsonB.supersedes));
+      assert.strictEqual(jsonB.supersedes!.length, 1);
+      assert.strictEqual(jsonB.supersedes![0].id, a.id);
+      assert.strictEqual(jsonB.supersedes![0].goal, 'A goal');
+    });
+
+    it('extract JSON (stripped) still carries supersede fields when full=false', async () => {
+      const a = await ratchet.create({ goal: 'A goal' });
+      await ratchet.conclude(a.id, { conclusion: 'done' });
+      const b = await ratchet.create({ goal: 'B goal' });
+      await ratchet.link({ sourceId: b.id, targetId: a.id, linkType: 'supersedes' });
+
+      const jsonA = await ratchet.extract(a.id, { format: 'json' }) as ClickTree;
+      assert.ok(Array.isArray(jsonA.supersededBy), 'supersededBy should survive stripping');
+    });
+
+    // ── (k) long goal with suffix — truncation ────────────────
+
+    it('long goal with suffix: goal truncated to preserve suffix within column cap', async () => {
+      const longGoal = 'This is an exceptionally long goal meant to exceed the column cap so we can observe truncation behavior in detail';
+      const a = await ratchet.create({ goal: longGoal });
+      await ratchet.conclude(a.id, { conclusion: 'done' });
+      const b = await ratchet.create({ goal: 'New framing' });
+      await ratchet.link({ sourceId: b.id, targetId: a.id, linkType: 'supersedes' });
+
+      const tree = await clickTree.handler({}) as string;
+      const lineA = tree.split('\n').find((l) => l.includes('This is an'))!;
+      // Goal must have been truncated — original text ends with "detail",
+      // which should not appear if truncation is effective.
+      assert.ok(!lineA.includes('detail'), `A's goal should be truncated: ${JSON.stringify(lineA)}`);
+      // Truncation marker should be present.
+      assert.ok(lineA.includes('…'), 'truncation marker should be present');
+      // The suffix must still fit on the line.
+      assert.ok(lineA.includes(`→ ${shortId(b.id)}`), `suffix must be present: ${JSON.stringify(lineA)}`);
     });
   });
 });

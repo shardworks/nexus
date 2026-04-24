@@ -2,6 +2,8 @@ import type { Plugin, StartupContext } from '@shardworks/nexus-core';
 import { guild, generateId } from '@shardworks/nexus-core';
 import type { StacksApi, Book, WhereClause } from '@shardworks/stacks-apparatus';
 
+import { shortId } from '@shardworks/nexus-core';
+
 import type {
   ClickDoc,
   ClickLinkDoc,
@@ -12,6 +14,7 @@ import type {
   GoalHistoryEntry,
   LinkType,
   RatchetApi,
+  SupersedeRef,
   CreateClickRequest,
   ConcludeClickRequest,
   DropClickRequest,
@@ -104,7 +107,10 @@ export function createRatchet(): Plugin {
   /**
    * Build a ClickTree recursively. Supports optional status filtering
    * (prune semantics — filtered nodes and their subtrees are removed)
-   * and depth limiting.
+   * and depth limiting. Every returned node is enriched with supersede
+   * refs (`supersededBy` / `supersedes`) derived from the `click_links`
+   * book — these are parentage-independent, so a superseder living
+   * outside the rendered scope still appears on the host node.
    */
   async function buildTree(
     clickId: string,
@@ -120,24 +126,136 @@ export function createRatchet(): Plugin {
       return null;
     }
 
-    // Depth limit: include this node but don't recurse into children
-    if (maxDepth !== undefined && currentDepth >= maxDepth) {
-      return { click, children: [] };
+    // Build the node (with or without recursion into children).
+    let childTrees: ClickTree[] = [];
+    if (maxDepth === undefined || currentDepth < maxDepth) {
+      const children = await clicks.find({ where: [['parentId', '=', clickId]] });
+      // Sort children by createdAt ascending
+      children.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      for (const child of children) {
+        const childTree = await buildTree(child.id, {
+          statusSet,
+          depth: maxDepth,
+          currentDepth: currentDepth + 1,
+        });
+        if (childTree) childTrees.push(childTree);
+      }
     }
 
-    const children = await clicks.find({ where: [['parentId', '=', clickId]] });
-    const childTrees: ClickTree[] = [];
-    // Sort children by createdAt ascending
-    children.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    for (const child of children) {
-      const childTree = await buildTree(child.id, {
-        statusSet,
-        depth: maxDepth,
-        currentDepth: currentDepth + 1,
-      });
-      if (childTree) childTrees.push(childTree);
+    const node: ClickTree = { click, children: childTrees };
+    await attachSupersedeRefs(node);
+    return node;
+  }
+
+  /**
+   * Attach supersede-link enrichment to a ClickTree node. Reads from
+   * `click_links` directly (not `api.links()`), filtered to `supersedes`,
+   * so this runs without needing a broader fetch. Populates fields only
+   * when the corresponding edges exist — absence is the signal to the
+   * renderer that no supersede lines should be emitted.
+   *
+   * Outbound (`supersedes`) is one hop per edge: each ref names the
+   * immediate predecessor the host supersedes. Inbound (`supersededBy`)
+   * is chain-walked per D7 — one ref per immediate inbound superseder,
+   * each with its own visited-set traversal to the terminal (cycle
+   * re-entry and multi-inbound branches both halt the walk).
+   *
+   * Missing refs (target or mid-chain node unfetchable) surface as
+   * `{ id, goal: null }` so the renderer can emit a `<missing>` marker
+   * without aborting the whole command (D8).
+   */
+  async function attachSupersedeRefs(node: ClickTree): Promise<void> {
+    const clickId = node.click.id;
+
+    const [outboundLinks, inboundLinks] = await Promise.all([
+      clickLinks.find({
+        where: [['sourceId', '=', clickId], ['linkType', '=', 'supersedes']],
+        orderBy: [['createdAt', 'asc']],
+      }),
+      clickLinks.find({
+        where: [['targetId', '=', clickId], ['linkType', '=', 'supersedes']],
+        orderBy: [['createdAt', 'asc']],
+      }),
+    ]);
+
+    if (outboundLinks.length > 0) {
+      const out: SupersedeRef[] = [];
+      for (const link of outboundLinks) {
+        const target = await tryGetClick(link.targetId);
+        out.push({ id: link.targetId, goal: target ? target.goal : null });
+      }
+      node.supersedes = out;
     }
-    return { click, children: childTrees };
+
+    if (inboundLinks.length > 0) {
+      const inb: SupersedeRef[] = [];
+      for (const link of inboundLinks) {
+        const ref = await walkInboundSupersedeChain(link.sourceId, clickId);
+        inb.push(ref);
+      }
+      node.supersededBy = inb;
+    }
+  }
+
+  /**
+   * Walk the inbound supersede chain starting at `startId` (the immediate
+   * superseder of `hostId`). Returns a `SupersedeRef` whose `id` is the
+   * terminal superseder, `goal` is the terminal's goal text (or `null` if
+   * unfetchable), and `chain` lists the intermediate full-ids passed
+   * through between `startId` (exclusive of terminal) and the terminal
+   * itself. An empty `chain` means `startId` is the terminal (1-hop).
+   *
+   * Halts per D7:
+   *   - current node has zero inbound supersedes (natural terminal)
+   *   - current node has multiple inbound supersedes (branch — stop and
+   *     let the reader drill in)
+   *   - the single inbound's source is already visited (cycle)
+   *
+   * The visited set is seeded with `hostId` so a direct A ← B ← A cycle
+   * halts immediately without infinite loop (matching `reparent()`'s
+   * ancestor-walk pattern).
+   */
+  async function walkInboundSupersedeChain(startId: string, hostId: string): Promise<SupersedeRef> {
+    const visited = new Set<string>([hostId, startId]);
+    const chain: string[] = [];
+    let currentId = startId;
+
+    // Bound defensively against any pathological data — the visited-set
+    // already breaks cycles, but a very long legitimate chain shouldn't
+    // run unbounded either. In practice supersede chains are short.
+    const MAX_HOPS = 1000;
+    for (let i = 0; i < MAX_HOPS; i++) {
+      const inbounds = await clickLinks.find({
+        where: [['targetId', '=', currentId], ['linkType', '=', 'supersedes']],
+      });
+      if (inbounds.length !== 1) break;
+      const nextId = inbounds[0].sourceId;
+      if (visited.has(nextId)) break;
+      chain.push(currentId);
+      currentId = nextId;
+      visited.add(currentId);
+    }
+
+    const terminal = await tryGetClick(currentId);
+    return {
+      id: currentId,
+      goal: terminal ? terminal.goal : null,
+      chain,
+    };
+  }
+
+  /**
+   * Fetch a click by id without throwing. Used by supersede enrichment
+   * so a broken link (target deleted, cross-substrate reference, etc.)
+   * surfaces as a `<missing>` placeholder rather than aborting the
+   * tree/extract command.
+   */
+  async function tryGetClick(id: string): Promise<ClickDoc | null> {
+    try {
+      return await clicks.get(id);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -151,6 +269,37 @@ export function createRatchet(): Plugin {
       ids.push(...childIds);
     }
     return ids;
+  }
+
+  /**
+   * Format one inbound `supersededBy` ref as the right-hand side of a
+   * `Superseded by:` line — the walked chain of intermediate short-ids,
+   * an arrow into the terminal short-id, and the terminal's quoted goal
+   * snippet (or a `<missing>` marker when the terminal's goal is
+   * unavailable — D8).
+   */
+  function formatInboundSupersedeRef(ref: SupersedeRef): string {
+    const chain = ref.chain ?? [];
+    const intermediateShorts = chain.map((id) => shortId(id));
+    const terminalShort = shortId(ref.id);
+    const idChain = [...intermediateShorts, terminalShort].join(' → ');
+    if (ref.goal === null) {
+      return `${idChain} <missing>`;
+    }
+    return `${idChain} "${ref.goal}"`;
+  }
+
+  /**
+   * Format one outbound `supersedes` ref as the right-hand side of a
+   * `Supersedes:` line — short-id and quoted goal snippet (or a
+   * `<missing>` marker when the target is unfetchable — D8).
+   */
+  function formatOutboundSupersedeRef(ref: SupersedeRef): string {
+    const short = shortId(ref.id);
+    if (ref.goal === null) {
+      return `${short} <missing>`;
+    }
+    return `${short} "${ref.goal}"`;
   }
 
   function renderMarkdown(tree: ClickTree, depth: number = 0, full: boolean = true): string {
@@ -168,6 +317,24 @@ export function createRatchet(): Plugin {
     lines.push(`> ${click.goal}`);
     lines.push(`Status: ${click.status}`);
     if (full && click.conclusion !== undefined) lines.push(`Conclusion: ${click.conclusion}`);
+
+    // Supersede lines (D4) sit immediately after Conclusion (when present)
+    // or Status (when no conclusion), before the Created/Resolved metadata
+    // tail. Inbound first (what supersedes this click — the forward
+    // pointer most readers need), then outbound (what this click
+    // supersedes). Absence of supersede edges produces no lines, so
+    // output stays byte-identical for unaffected clicks.
+    if (tree.supersededBy && tree.supersededBy.length > 0) {
+      for (const ref of tree.supersededBy) {
+        lines.push(`Superseded by: ${formatInboundSupersedeRef(ref)}`);
+      }
+    }
+    if (tree.supersedes && tree.supersedes.length > 0) {
+      for (const ref of tree.supersedes) {
+        lines.push(`Supersedes: ${formatOutboundSupersedeRef(ref)}`);
+      }
+    }
+
     if (click.createdSessionId !== undefined) lines.push(`Created by: ${click.createdSessionId}`);
     if (click.resolvedSessionId !== undefined) lines.push(`Resolved by: ${click.resolvedSessionId}`);
     lines.push(`Created: ${click.createdAt}`);
@@ -183,13 +350,19 @@ export function createRatchet(): Plugin {
 
   /**
    * Strip conclusion fields from a ClickTree for goals-only JSON output.
+   * Supersede enrichment fields (`supersededBy`, `supersedes`) are
+   * computed container fields and carry through untouched — per D9 both
+   * JSON surfaces expose them.
    */
   function stripConclusions(tree: ClickTree): ClickTree {
     const { conclusion: _, ...clickWithout } = tree.click;
-    return {
+    const stripped: ClickTree = {
       click: clickWithout as ClickDoc,
       children: tree.children.map(stripConclusions),
     };
+    if (tree.supersededBy !== undefined) stripped.supersededBy = tree.supersededBy;
+    if (tree.supersedes !== undefined) stripped.supersedes = tree.supersedes;
+    return stripped;
   }
 
   // ── API ─────────────────────────────────────────────────────────

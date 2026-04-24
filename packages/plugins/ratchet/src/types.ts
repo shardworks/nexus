@@ -114,9 +114,46 @@ export interface ClickFilters {
   offset?: number;
 }
 
+/**
+ * A single entry in a `ClickTree` supersede reference array. Each entry
+ * names the referenced click by id and carries a `goal` snippet to let
+ * downstream renderers (markdown, text tree) format a link line without
+ * a second fetch.
+ *
+ * When the referenced click cannot be fetched (e.g. deleted, stale link),
+ * `goal` is `null` and renderers should emit a `<missing>` placeholder.
+ *
+ * Inbound (`supersededBy`) entries may carry an optional `chain` of
+ * intermediate short-ids walked between the host node and the terminal
+ * superseder — populated only when the inbound supersede chain is longer
+ * than one hop. `id` and `goal` always describe the *terminal* superseder
+ * for the chain; `chain` (when present) lists the short-ids of the
+ * intermediate hops in walk order (excluding the host and the terminal).
+ */
+export interface SupersedeRef {
+  id: string;
+  goal: string | null;
+  chain?: string[];
+}
+
 export interface ClickTree {
   click: ClickDoc;
   children: ClickTree[];
+  /**
+   * Inbound `supersedes` links — i.e. clicks that supersede *this* click.
+   * Populated by `ratchet.tree()` / `ratchet.extract()` enrichment; each
+   * entry represents one immediate inbound superseder, with its chain
+   * walked to the terminal (cycle-safe, branch-terminating). Absent when
+   * the click has no inbound supersedes.
+   */
+  supersededBy?: SupersedeRef[];
+  /**
+   * Outbound `supersedes` links — i.e. clicks that *this* click supersedes.
+   * Populated by `ratchet.tree()` / `ratchet.extract()` enrichment as one
+   * immediate predecessor per edge (one hop). Absent when the click has
+   * no outbound supersedes.
+   */
+  supersedes?: SupersedeRef[];
 }
 
 export interface TreeParams {

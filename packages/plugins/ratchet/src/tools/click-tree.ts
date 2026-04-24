@@ -11,6 +11,30 @@ const STATUS_INDICATORS: Record<ClickStatus, string> = {
 };
 
 /**
+ * Compute the supersede suffix for a tree row. When the node has at
+ * least one inbound `supersededBy` entry, the suffix names the
+ * *immediate* superseder (D13 — one hop only, even when enrichment
+ * carries a longer chain) prefixed by two spaces and a Unicode arrow
+ * (D11). Rows without inbound supersedes produce an empty suffix, so
+ * their output stays byte-identical with pre-change rendering.
+ *
+ * Multiple inbound supersedes on the same row surface only the first in
+ * the tree view — the full set is visible via `click-extract`, which
+ * renders one line per inbound.
+ */
+function supersedeSuffix(tree: ClickTree): string {
+  const inbound = tree.supersededBy;
+  if (!inbound || inbound.length === 0) return '';
+  const first = inbound[0];
+  // The enrichment stores the terminal in `id` and the hops walked
+  // between immediate and terminal in `chain`. The immediate is the
+  // first chain entry when the chain advanced past the start, else the
+  // terminal itself.
+  const immediateId = first.chain && first.chain.length > 0 ? first.chain[0] : first.id;
+  return `  → ${shortId(immediateId)}`;
+}
+
+/**
  * Render a forest of ClickTree nodes as a text tree with box-drawing connectors.
  * Each row includes the short click ID in a fixed-width column between the
  * tree-drawing characters and the goal text, so Coco can pivot from `tree` to
@@ -60,18 +84,24 @@ function renderForest(forest: ClickTree[]): string {
     const linePrefix = isRoot ? '' : prefix + connector;
     const idPadded = shortId(tree.click.id).padEnd(idColumnWidth);
 
+    // Supersede suffix (D10 + D11 + D13): reserve its width from the
+    // goal budget so the indicator stays aligned and the total line
+    // width stays within the existing cap. Rows without supersedes
+    // produce an empty suffix and behave exactly as before.
+    const suffix = supersedeSuffix(tree);
+
     // Truncate goal if needed — goal gets whatever is left in the content
-    // column after the line prefix and ID column.
+    // column after the line prefix, ID column, and reserved suffix.
     let displayGoal = goalText;
-    const maxGoalLen = maxColumnWidth - linePrefix.length - idColumnWidth;
+    const maxGoalLen = maxColumnWidth - linePrefix.length - idColumnWidth - suffix.length;
     if (maxGoalLen > 3 && displayGoal.length > maxGoalLen) {
       displayGoal = displayGoal.substring(0, maxGoalLen - 1) + '…';
     }
 
     const finalContentWidth = linePrefix.length + idColumnWidth + displayGoal.length;
-    const padding = Math.max(2, maxColumnWidth - finalContentWidth + 2);
+    const padding = Math.max(2, maxColumnWidth - finalContentWidth + 2 - suffix.length);
 
-    lines.push(`${linePrefix}${idPadded}${displayGoal}${' '.repeat(padding)}${indicator}`);
+    lines.push(`${linePrefix}${idPadded}${displayGoal}${' '.repeat(padding)}${indicator}${suffix}`);
 
     const childPrefix = isRoot ? '' : prefix + (isLast ? '    ' : '│   ');
     for (let i = 0; i < tree.children.length; i++) {

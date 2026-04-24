@@ -305,6 +305,8 @@ List clicks with filters.
 
 Render the click tree with short IDs and status indicators. Each row places the short click ID (e.g. `c-mo1mq8ry`) in a fixed-width column between the tree-drawing connectors and the goal text, so the ID can be fed directly into `click-show` / `click-extract` / `--root-id` without a second lookup.
 
+Rows whose click has an inbound `supersedes` link carry a ` → c-<shortId>` suffix after the status indicator — naming the *immediate* superseder (one hop). The suffix width is reserved from the goal budget before truncation, so the total row stays within the existing column cap. Outbound supersedes are not shown in the tree view; use `click-extract` for chain walking.
+
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `root-id` | `string` | no | Subtree root. Omit for full forest. |
@@ -313,7 +315,7 @@ Render the click tree with short IDs and status indicators. Each row places the 
 
 ### `click-extract`
 
-Render a subtree as a structured markdown or JSON document.
+Render a subtree as a structured markdown or JSON document. Each click block carries a `Superseded by:` line per inbound `supersedes` link (chain-walked to the terminal) and a `Supersedes:` line per outbound edge, positioned immediately after the `Conclusion:` / `Status:` line and before the timestamp tail. A 3-hop inbound chain renders as `Superseded by: c-B → c-C "<C's goal>"`. Supersede information is parentage-independent — a superseder parented in a different root still surfaces on its target.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

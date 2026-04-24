@@ -181,6 +181,8 @@ const fullId = await ratchet.resolveId('c-mo0z');
 
 Extract a click tree in markdown or JSON format. By default, only goals are shown (conclusions omitted). Pass `full: true` to include conclusions.
 
+Every node returned by `extract()` (both `md` and `json` formats) is enriched with `supersedes` link information — see [Supersede surfacing](#supersede-surfacing) below.
+
 ```typescript
 const md = await ratchet.extract(root.id, { format: 'md' });           // goals only
 const full = await ratchet.extract(root.id, { format: 'md', full: true }); // with conclusions
@@ -196,6 +198,8 @@ const tree = await ratchet.extract(root.id, { format: 'json' });       // JSON, 
 
 Return the click hierarchy as a forest of trees. Returns all root clicks by default, or a specific subtree when `rootId` is given. Supports status filtering (prune semantics) and depth limiting.
 
+Every node returned by `tree()` is enriched with `supersedes` link information — see [Supersede surfacing](#supersede-surfacing) below.
+
 ```typescript
 const forest = await ratchet.tree();                           // all roots
 const subtree = await ratchet.tree({ rootId: root.id });       // specific subtree
@@ -208,6 +212,44 @@ const shallow = await ratchet.tree({ depth: 2 });              // limit depth
 | `rootId` | `string` | — | Show subtree from this click |
 | `status` | `ClickStatus \| ClickStatus[]` | — | Filter by status (prune semantics) |
 | `depth` | `number` | — | Maximum tree depth |
+
+---
+
+## Supersede surfacing
+
+The `supersedes` link type is the canonical post-conclusion correction mechanism — a concluded click stays frozen, and a newer click that revises the original framing links `supersedes` to it. `ratchet.tree()`, `ratchet.extract()`, and the corresponding CLI surfaces (`nsg click tree`, `nsg click extract`) surface both directions of that edge inline so a reader arriving at a superseded click sees the successor without having to drill into `click-show`.
+
+### JSON shape
+
+Every `ClickTree` node returned by `tree()` or `extract()` may carry:
+
+- **`supersededBy`** — inbound supersedes (clicks that supersede this one). One entry per immediate inbound superseder. Each entry carries the walked chain to the *terminal* superseder (`id` + `goal`), plus an ordered list of intermediate full-ids in `chain` when the walk is longer than one hop. The chain walk uses a visited-set, halting on cycle re-entry or on a node with multiple inbounds — so a pathological graph can't hang the renderer.
+- **`supersedes`** — outbound supersedes (clicks that this one supersedes). One entry per edge; always one hop.
+
+Either field is absent when the corresponding direction has no edges. `goal` is `null` when the referenced click cannot be fetched (dangling link); the markdown renderer surfaces that as a `<missing>` placeholder.
+
+These fields are parentage-independent: a superseder parented in a different root still populates the field on its target.
+
+### Markdown rendering
+
+`renderMarkdown` emits one `Superseded by:` line per inbound and one `Supersedes:` line per outbound, positioned immediately after the `Conclusion:` line (or after `Status:` when no conclusion is present) and before the `Created by` / timestamp tail:
+
+```
+Superseded by: c-B → c-C "C's goal"
+Supersedes: c-A "A's goal"
+```
+
+A chain of length one shows only the terminal (`c-B "B's goal"`); a 3-hop chain A ← B ← C, when rendered on A, shows `c-B → c-C "C's goal"`.
+
+### Tree suffix
+
+`nsg click tree` appends ` → c-<shortId>` — the *immediate* superseder, one hop only — after the status indicator on any row whose node has an inbound supersede:
+
+```
+└── c-mo0z  Ship v2 release   ○  → c-mo1m
+```
+
+The suffix width is reserved from the goal budget before truncation, so the total row stays within the existing column cap. Outbound supersedes are not rendered in the tree view — readers walking chains use `extract`.
 
 ---
 
@@ -277,6 +319,7 @@ import type {
   GoalHistoryEntry,
   ClickFilters,
   ClickTree,
+  SupersedeRef,
   RatchetApi,
   CreateClickRequest,
   ConcludeClickRequest,

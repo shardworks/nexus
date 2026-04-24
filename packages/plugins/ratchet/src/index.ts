@@ -17,6 +17,7 @@ export {
   type ExtractClickRequest,
   type ClickFilters,
   type ClickTree,
+  type SupersedeRef,
   type TreeParams,
 } from './types.ts';
 
