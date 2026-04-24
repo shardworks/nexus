@@ -265,3 +265,31 @@ details.collapsible pre {
   opacity: 0.6;
   text-decoration: line-through;
 }
+
+/* ── Animator pause banner ───────────────────────────────────────────
+   Top-of-page alert shown when the Animator's rate-limit back-off
+   machine has paused session dispatch. Rendered inside <main> above
+   the tab bar so it is visible from every tab (D21). Hidden by default;
+   the independent status poll in spider.js shows/hides it. */
+
+.animator-pause-banner {
+  background-color: #4a1f1f;
+  border: 1px solid #a33;
+  color: #ffdede;
+  border-radius: 4px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.animator-pause-banner strong {
+  display: block;
+  color: #ffb4b4;
+  margin-bottom: 4px;
+}
+
+.animator-pause-banner span {
+  display: block;
+  color: #f0d0d0;
+}

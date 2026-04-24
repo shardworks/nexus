@@ -1540,6 +1540,67 @@
     body.innerHTML = html;
   }
 
+  // ── Animator pause banner ─────────────────────────────────────────────
+  //
+  // Independent polling timer — fires every ANIMATOR_STATUS_POLL_INTERVAL
+  // regardless of whether rigs are in flight. The banner MUST update
+  // precisely when no rigs are running (that is often why they're not
+  // running), so we do not piggyback on the rig-list poll.
+
+  var ANIMATOR_STATUS_POLL_INTERVAL = 10_000;
+  var animatorStatusPollTimer = null;
+
+  function renderAnimatorBanner(status) {
+    var banner = document.getElementById('animator-pause-banner');
+    if (!banner) return;
+    var detail = document.getElementById('animator-pause-banner-detail');
+    if (!status || status.state !== 'paused' || !status.pausedUntil) {
+      banner.style.display = 'none';
+      return;
+    }
+    var untilMs = new Date(status.pausedUntil).getTime();
+    if (!isFinite(untilMs) || untilMs <= Date.now()) {
+      banner.style.display = 'none';
+      return;
+    }
+    banner.style.display = '';
+    if (detail) {
+      var parts = [];
+      parts.push((status.pauseReason || 'rate-limit') + '.');
+      parts.push('Dispatch resumes at ' + status.pausedUntil);
+      var secs = Math.ceil((untilMs - Date.now()) / 1000);
+      if (secs > 0) parts.push('(~' + secs + 's from now)');
+      if (status.lastTriggeringSession) {
+        parts.push('- triggered by session ' + status.lastTriggeringSession);
+      }
+      detail.textContent = parts.join(' ');
+    }
+  }
+
+  function fetchAnimatorStatus() {
+    fetch('/api/animator/status')
+      .then(function (r) {
+        if (!r.ok) return null;
+        return r.json();
+      })
+      .then(function (status) { renderAnimatorBanner(status); })
+      .catch(function (err) {
+        // Non-fatal — Oculus may be starting up or the route may be
+        // unregistered in tests. Hide the banner rather than flicker.
+        console.warn('[spider] animator status poll error:', err);
+        var banner = document.getElementById('animator-pause-banner');
+        if (banner) banner.style.display = 'none';
+      });
+  }
+
+  function startAnimatorStatusPoll() {
+    if (animatorStatusPollTimer !== null) return;
+    // Fire once immediately so the banner is truthful before the first
+    // tick elapses, then settle into the interval cadence.
+    fetchAnimatorStatus();
+    animatorStatusPollTimer = setInterval(fetchAnimatorStatus, ANIMATOR_STATUS_POLL_INTERVAL);
+  }
+
   // ── Event wiring ───────────────────────────────────────────────────────
 
   document.addEventListener('DOMContentLoaded', function () {
@@ -1630,5 +1691,10 @@
 
     // Initial load
     fetchRigs('');
+
+    // Start the independent Animator pause-banner poll. Runs on every
+    // tab (rigs/config) regardless of rig activity (D23 — the banner
+    // must be truthful precisely when no rigs are running).
+    startAnimatorStatusPoll();
   });
 })();

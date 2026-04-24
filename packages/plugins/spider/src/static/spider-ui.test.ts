@@ -1403,3 +1403,69 @@ describe('spider.js rigEndTime read order', () => {
     );
   });
 });
+
+// ── Animator pause banner ─────────────────────────────────────────────
+
+describe('Animator pause banner', () => {
+  it('declares the banner element at the top of <main> above the tab bar', () => {
+    // The banner must be a sibling of the tab bar, rendered ABOVE it
+    // inside <main> so it is visible on every tab (D21).
+    const bannerIdx = indexHtml.indexOf('id="animator-pause-banner"');
+    const tabBarIdx = indexHtml.indexOf('class="tab-bar"');
+    assert.ok(bannerIdx > 0, 'banner element must exist in index.html');
+    assert.ok(tabBarIdx > 0, 'tab-bar must exist in index.html');
+    assert.ok(bannerIdx < tabBarIdx, 'banner must be declared before the tab bar');
+  });
+
+  it('is hidden by default via inline style', () => {
+    assert.match(
+      indexHtml,
+      /id="animator-pause-banner"[^>]*style="display:none"/,
+      'banner must start hidden; the poller shows it when paused',
+    );
+  });
+
+  it('carries role=status with aria-live=polite', () => {
+    assert.match(
+      indexHtml,
+      /id="animator-pause-banner"[^>]*role="status"/,
+      'banner should be an ARIA status region',
+    );
+    assert.match(
+      indexHtml,
+      /id="animator-pause-banner"[^>]*aria-live="polite"/,
+      'banner should announce via aria-live="polite"',
+    );
+  });
+
+  it('has a CSS rule for .animator-pause-banner', () => {
+    assert.match(spiderCss, /\.animator-pause-banner\s*\{/, 'CSS must style the banner');
+  });
+
+  it('spider.js declares an independent status-poll timer', () => {
+    assert.match(spiderJs, /var ANIMATOR_STATUS_POLL_INTERVAL/);
+    assert.match(spiderJs, /function fetchAnimatorStatus\(\)/);
+    assert.match(spiderJs, /'\/api\/animator\/status'/);
+  });
+
+  it('status poll fires on DOMContentLoaded regardless of rig activity', () => {
+    // startAnimatorStatusPoll must be called unconditionally in the
+    // init block — not gated on rigs.some(isRigInFlight).
+    assert.match(spiderJs, /startAnimatorStatusPoll\(\)/);
+  });
+
+  it('banner hides when the poll returns a non-paused state', () => {
+    // The renderAnimatorBanner function must set display:none when
+    // state !== 'paused' OR when pausedUntil has already elapsed.
+    assert.match(
+      spiderJs,
+      /status\.state\s*!==\s*['"]paused['"]/,
+      'banner should hide when the machine is running',
+    );
+    assert.match(
+      spiderJs,
+      /untilMs\s*<=\s*Date\.now\(\)/,
+      'banner should hide once pausedUntil has elapsed',
+    );
+  });
+});
