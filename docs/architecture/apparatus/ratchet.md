@@ -53,8 +53,8 @@ supportKit: {
   books: {
     clicks: {
       indexes: [
-        'status', 'parentId', 'createdAt', 'resolvedAt',
-        ['status', 'parentId'], ['status', 'createdAt'],
+        'status', 'createdAt', 'parentId',
+        ['status', 'createdAt'], ['parentId', 'status'],
       ],
     },
     click_links: {
