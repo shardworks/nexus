@@ -422,21 +422,22 @@ export type TranscriptMessage = Record<string, unknown>;
  * detects a specific non-generic reason for a session's terminal state.
  *
  * Today the only kind is `'rate-limit'` — the claude-code provider raises
- * this when it observes a rate-limit signature on the NDJSON result,
- * stderr stream, or exit code. The Animator consumes the tag to drive
- * its back-off state machine; consumers that only care about the outcome
- * can ignore the tag and branch on status instead.
+ * this when it observes a rate-limit signature in a structured NDJSON
+ * message (either the message `subtype` or a structured `is_error`
+ * payload). The Animator consumes the tag to drive its back-off state
+ * machine; consumers that only care about the outcome can ignore the
+ * tag and branch on status instead.
  *
- * The shape is deliberately open: the `source` field records which signal
- * fired so the cascade order is auditable from the SessionDoc, and new
- * kinds can be added (e.g. future operator-triggered termination)
- * without breaking existing consumers.
+ * The `source` enum is deliberately narrow: stderr-pattern and
+ * exit-code detection were retired after producing false-positive
+ * pauses. Narrow-then-expand — new sources can be added once there is
+ * real data calling for them.
  */
 export interface SessionTerminationTag {
   /** Reason discriminator. */
   kind: 'rate-limit';
   /** Which provider signal fired the detection. */
-  source: 'ndjson-result' | 'stderr-pattern' | 'exit-code';
+  source: 'ndjson-result';
   /** Optional operator-facing explanation from the provider. */
   detail?: string;
 }

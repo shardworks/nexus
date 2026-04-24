@@ -45,7 +45,7 @@ export default tool({
     terminationTag: z
       .object({
         kind: z.literal('rate-limit'),
-        source: z.enum(['ndjson-result', 'stderr-pattern', 'exit-code']),
+        source: z.literal('ndjson-result'),
         detail: z.string().optional(),
       })
       .optional()

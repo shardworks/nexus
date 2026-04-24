@@ -36,8 +36,6 @@ import {
   processNdjsonBuffer,
   parseStreamJsonMessage,
   extractFinalAssistantText,
-  detectRateLimitFromStderr,
-  detectRateLimitFromExitCode,
   type StreamJsonResult,
 } from './index.ts';
 
@@ -566,19 +564,21 @@ export async function reportRunning(
 }
 
 /**
- * Resolve the terminal status and error text for a terminated session,
- * giving rate-limit detection precedence over the generic exit-code
- * mapping.
+ * Resolve the terminal status and error text for a terminated session.
  *
- * Cascade order (D5):
+ * Cascade order:
  *   1. A `'cancelled'` override (SIGTERM path) — short-circuits.
  *   2. A `terminationTag` already carried on the StreamJsonResult —
- *      set by the NDJSON-level cascade (first-wins across NDJSON and
- *      stderr observations in the babysitter).
- *   3. A distinguished rate-limit exit code (RATE_LIMIT_EXIT_CODE).
- *   4. Generic exit-code mapping (0 → completed, non-zero → failed).
+ *      set by the NDJSON detection cascade inside
+ *      `parseStreamJsonMessage` (the only active detector).
+ *   3. Generic exit-code mapping (0 → completed, non-zero → failed).
  *
- * Returns both the payload status, a human-readable error string (only
+ * Generic non-zero exit codes surface as `'failed'`; the Animator's
+ * back-off machine only reacts to structured rate-limit terminals, and
+ * exit-code-based detection was retired because it produced
+ * false-positive pauses.
+ *
+ * Returns the payload status, a human-readable error string (only
  * populated for the failed branches), and the tag that informed the
  * decision (if any). The tag is forwarded to the guild so the Animator's
  * back-off machine can disambiguate rate-limit terminations without
@@ -592,24 +592,14 @@ export function resolveTerminalStatus(
     return { status: 'cancelled' };
   }
 
-  // Second priority: a structural tag observed by the NDJSON/stderr
-  // cascades. Fire even on exit code 0 because claude may emit the
+  // Second priority: a structural NDJSON tag observed during stream
+  // parsing. Fire even on exit code 0 because claude may emit the
   // rate-limit signal and still exit cleanly.
   if (result.terminationTag) {
     return {
       status: 'rate-limited',
       error: result.terminationTag.detail ?? `Anima provider reported a rate limit (source: ${result.terminationTag.source})`,
       terminationTag: result.terminationTag,
-    };
-  }
-
-  // Third priority: distinguished exit code.
-  const exitCodeTag = detectRateLimitFromExitCode(result.exitCode);
-  if (exitCodeTag) {
-    return {
-      status: 'rate-limited',
-      error: exitCodeTag.detail,
-      terminationTag: exitCodeTag,
     };
   }
 
@@ -791,19 +781,11 @@ export async function runBabysitter(
     }
     claudeProc.stdin!.end();
 
-    // Sample claude's stderr for rate-limit phrasing (narrow: pattern
-    // detection only, not general forwarding to the guild) then forward
-    // the raw bytes to the babysitter's redirected stderr log.
-    //
-    // First-wins: the NDJSON cascade runs inside parseStreamJsonMessage,
-    // so this branch only populates the tag when nothing more structured
-    // fired. That keeps the stderr pattern from masking the more
-    // informative NDJSON `source: 'ndjson-result'` tag in the common case.
+    // Forward claude's stderr bytes to the babysitter's redirected
+    // stderr log. No detection happens here — rate-limit signals are
+    // detected only on structured NDJSON messages inside
+    // parseStreamJsonMessage.
     claudeProc.stderr?.on('data', (chunk: Buffer) => {
-      if (!acc.terminationTag) {
-        const tag = detectRateLimitFromStderr(chunk.toString());
-        if (tag) acc.terminationTag = tag;
-      }
       process.stderr.write(chunk);
     });
 
@@ -863,9 +845,9 @@ export async function runBabysitter(
       tokenUsage?: StreamJsonResult['tokenUsage'];
       providerSessionId?: string;
       /**
-       * First rate-limit signal captured from any source (NDJSON result
-       * inspection inside parseStreamJsonMessage, or the stderr pattern
-       * observer above). First-wins preserves the cascade order.
+       * First rate-limit signal captured from the NDJSON result
+       * inspection inside parseStreamJsonMessage. First-wins preserves
+       * the order of observation.
        */
       terminationTag?: SessionTerminationTag;
     } = { transcript: [] };

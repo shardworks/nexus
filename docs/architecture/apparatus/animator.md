@@ -404,7 +404,7 @@ interface SessionProviderResult {
    * The Animator forwards it onto the SessionDoc and SessionResult so
    * downstream consumers do not have to pattern-match freeform error text.
    */
-  terminationTag?: { kind: 'rate-limit'; source: 'ndjson-result' | 'stderr-pattern' | 'exit-code'; detail?: string }
+  terminationTag?: { kind: 'rate-limit'; source: 'ndjson-result'; detail?: string }
   /** Numeric exit code from the process. */
   exitCode: number
   /** Error message if failed. */
@@ -451,7 +451,7 @@ Provider reports rate-limit  → record status 'rate-limited' + terminationTag,
 Recording fails              → log warning, continue with return/re-throw
 ```
 
-The rate-limit branch is the fifth outcome. The claude-code provider runs a three-stage detection cascade (NDJSON `result` message → stderr pattern → distinguished exit code) and attaches a structured `terminationTag: { kind: 'rate-limit', source, detail? }` to its `SessionProviderResult`. The Animator forwards this tag onto the SessionDoc and onto the `SessionResult` it returns; the back-off state machine in § Rate-Limit Back-Off observes the terminal and transitions the `animator/status` book accordingly. Consumers (Spider's `tryCollect`, UI filters, the Laboratory's CDC ingestion) key off the new `'rate-limited'` status rather than pattern-matching freeform `error` text.
+The rate-limit branch is the fifth outcome. The claude-code provider runs a **two-branch NDJSON detector** — a message whose `subtype` contains `rate_limit` / `rate-limit`, or an `is_error: true` message whose structured error text matches the rate-limit phrasing pattern — and attaches a structured `terminationTag: { kind: 'rate-limit', source: 'ndjson-result', detail? }` to its `SessionProviderResult`. The Animator forwards this tag onto the SessionDoc and onto the `SessionResult` it returns; the back-off state machine in § Rate-Limit Back-Off observes the terminal and transitions the dispatch-status doc accordingly. Consumers (Spider's `tryCollect`, UI filters, the Laboratory's CDC ingestion) key off the new `'rate-limited'` status rather than pattern-matching freeform `error` text. Stderr-pattern and exit-code detectors were retired after producing false-positive pauses; generic non-zero exits now surface as `'failed'`.
 
 ---
 

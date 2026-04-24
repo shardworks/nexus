@@ -1,14 +1,11 @@
 /**
  * Tests for rate-limit signature detection in the claude-code provider.
  *
- * Covers the three-branch cascade declared by decision D5:
- *   1. NDJSON `result` / error message inspection (first-wins)
- *   2. Stderr pattern match
- *   3. Distinguished exit code mapping
- *
- * Also verifies the cascade ordering inside resolveTerminalStatus() —
- * the babysitter's one-stop seat for translating a StreamJsonResult and
- * optional status override into the payload sent to session-record.
+ * The active detector is structural NDJSON inspection — the two branches
+ * of `detectRateLimitFromNdjson` (subtype / is_error). The previous
+ * stderr-pattern and exit-code branches were retired after producing
+ * false-positive pauses; this file also pins the narrowed behaviour of
+ * `resolveTerminalStatus`, which now maps non-zero exits to `'failed'`.
  */
 
 import { describe, it } from 'node:test';
@@ -16,10 +13,7 @@ import assert from 'node:assert/strict';
 
 import {
   detectRateLimitFromNdjson,
-  detectRateLimitFromStderr,
-  detectRateLimitFromExitCode,
   parseStreamJsonMessage,
-  RATE_LIMIT_EXIT_CODE,
   type StreamJsonResult,
 } from './index.ts';
 import { resolveTerminalStatus } from './babysitter.ts';
@@ -55,13 +49,15 @@ describe('detectRateLimitFromNdjson()', () => {
     assert.equal(tag!.source, 'ndjson-result');
   });
 
-  it('tags result messages whose result text mentions rate limit', () => {
+  it('does NOT tag a result message whose `result` text mentions rate limit', () => {
+    // The prose `result`-text branch was removed because it matched an
+    // assistant's summary of a prior rate-limit event and paused the
+    // guild on a false positive.
     const tag = detectRateLimitFromNdjson({
       type: 'result',
       result: 'Error: Rate limit exceeded. Please try again later.',
     });
-    assert.ok(tag);
-    assert.equal(tag!.source, 'ndjson-result');
+    assert.equal(tag, null);
   });
 
   it('returns null on ordinary assistant messages', () => {
@@ -72,64 +68,13 @@ describe('detectRateLimitFromNdjson()', () => {
     assert.equal(tag, null);
   });
 
-  it('returns null on a result message without matching text', () => {
+  it('returns null on a result message without matching error text', () => {
     const tag = detectRateLimitFromNdjson({
       type: 'result',
       result: 'Done!',
       total_cost_usd: 0.01,
     });
     assert.equal(tag, null);
-  });
-});
-
-// ── stderr detection ────────────────────────────────────────────────
-
-describe('detectRateLimitFromStderr()', () => {
-  it('matches "rate limit" phrasing case-insensitively', () => {
-    const tag = detectRateLimitFromStderr('Error: Rate Limit reached, retry later.\n');
-    assert.ok(tag);
-    assert.equal(tag!.source, 'stderr-pattern');
-  });
-
-  it('matches 429 status code', () => {
-    const tag = detectRateLimitFromStderr('HTTP/1.1 429 Too Many Requests\n');
-    assert.ok(tag);
-  });
-
-  it('matches "usage limit" phrasing', () => {
-    const tag = detectRateLimitFromStderr('Your usage limit has been reached for today.\n');
-    assert.ok(tag);
-  });
-
-  it('returns null on ordinary stderr', () => {
-    const tag = detectRateLimitFromStderr('[babysitter] MCP proxy server listening on port 12345\n');
-    assert.equal(tag, null);
-  });
-
-  it('bounds the detail excerpt to 200 characters', () => {
-    const longLine = 'rate limit exceeded: ' + 'x'.repeat(500);
-    const tag = detectRateLimitFromStderr(longLine);
-    assert.ok(tag);
-    assert.ok((tag!.detail ?? '').length <= 200);
-  });
-});
-
-// ── exit code detection ────────────────────────────────────────────
-
-describe('detectRateLimitFromExitCode()', () => {
-  it('tags the distinguished exit code', () => {
-    const tag = detectRateLimitFromExitCode(RATE_LIMIT_EXIT_CODE);
-    assert.ok(tag);
-    assert.equal(tag!.source, 'exit-code');
-  });
-
-  it('returns null for exit code 0', () => {
-    assert.equal(detectRateLimitFromExitCode(0), null);
-  });
-
-  it('returns null for generic non-zero exit codes', () => {
-    assert.equal(detectRateLimitFromExitCode(1), null);
-    assert.equal(detectRateLimitFromExitCode(137), null);
   });
 });
 
@@ -175,7 +120,7 @@ describe('parseStreamJsonMessage() rate-limit accumulation', () => {
 describe('resolveTerminalStatus()', () => {
   it('honours a cancel override over everything else', () => {
     const result: StreamJsonResult = {
-      exitCode: RATE_LIMIT_EXIT_CODE,
+      exitCode: 7,
       transcript: [],
       terminationTag: { kind: 'rate-limit', source: 'ndjson-result' },
     };
@@ -196,15 +141,11 @@ describe('resolveTerminalStatus()', () => {
     assert.equal(resolved.terminationTag!.source, 'ndjson-result');
   });
 
-  it('falls back to the distinguished exit-code branch when no tag is present', () => {
-    const result: StreamJsonResult = {
-      exitCode: RATE_LIMIT_EXIT_CODE,
-      transcript: [],
-    };
-    const resolved = resolveTerminalStatus(result);
-    assert.equal(resolved.status, 'rate-limited');
-    assert.ok(resolved.terminationTag);
-    assert.equal(resolved.terminationTag!.source, 'exit-code');
+  it('maps a generic non-zero exit code to failed (exit-code branch retired)', () => {
+    const resolved = resolveTerminalStatus({ exitCode: 7, transcript: [] });
+    assert.equal(resolved.status, 'failed');
+    assert.equal(resolved.terminationTag, undefined);
+    assert.match(resolved.error ?? '', /exited with code 7/);
   });
 
   it('returns completed for exit 0 with no rate-limit signal', () => {

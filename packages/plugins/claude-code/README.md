@@ -55,24 +55,20 @@ import {
 
 ### Rate-Limit Detection
 
-The provider runs a three-stage detection cascade to identify rate-limited terminations and attach a structured `terminationTag` to the session result. The Animator's back-off state machine consumes the tag and transitions its status book accordingly.
+The provider runs a **two-branch NDJSON detector** to identify rate-limited terminations and attach a structured `terminationTag` to the session result. The Animator's back-off state machine consumes the tag and transitions its pause-state doc accordingly.
 
 ```typescript
-import {
-  detectRateLimitFromNdjson,
-  detectRateLimitFromStderr,
-  detectRateLimitFromExitCode,
-  RATE_LIMIT_EXIT_CODE,
-} from '@shardworks/claude-code-apparatus';
+import { detectRateLimitFromNdjson } from '@shardworks/claude-code-apparatus';
 ```
 
-Cascade order (first-wins):
+Active detector branches (first-wins):
 
-1. **NDJSON inspection** — `parseStreamJsonMessage` checks every NDJSON message for a rate-limit `subtype`, an `is_error: true` message whose error text matches the pattern, or a `result` message text match.
-2. **Stderr pattern match** — the babysitter's stderr observer samples each chunk for a forgiving rate-limit regex (`rate limit`, `429`, `usage limit`, `quota exceeded`, `too many requests` — case-insensitive). Scope is narrow: detection only; the babysitter does not forward the full stderr buffer to the guild.
-3. **Distinguished exit code** — if neither of the above fired and `claude` exits with `RATE_LIMIT_EXIT_CODE`, the provider still promotes the result to `rate-limited`.
+1. **Structural `subtype`** — `parseStreamJsonMessage` inspects every NDJSON message whose `subtype` contains `rate_limit` / `rate-limit` and emits a tag with `source: 'ndjson-result'`.
+2. **Structural `is_error`** — if `msg.is_error === true` and the carried error text matches the rate-limit phrasing regex, the same tag is produced.
 
-Generic non-zero exit codes surface as plain `failed` — rate-limit detection is deliberately conservative.
+Everything else surfaces as plain `failed`. The previous stderr-pattern and exit-code branches were retired after two production incidents where an assistant's prose summary / a generic non-zero exit code tripped a false-positive pause. Generic non-zero exit codes surface as `'failed'`; the babysitter no longer samples claude's stderr for pattern matches, only forwards it to the per-session log file.
+
+When a non-zero exit arrives without an NDJSON termination tag, the babysitter captures a `terminationDiagnostic: { exitCode, stderrExcerpt? }` on the session-record payload so operators can review the signal that fell through — without the Animator widening its pause gate on it.
 
 ## Session Babysitter
 

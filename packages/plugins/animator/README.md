@@ -267,7 +267,7 @@ interface SessionProviderResult {
    * The Animator forwards it onto the SessionDoc / SessionResult so
    * downstream consumers don't have to pattern-match freeform error text.
    */
-  terminationTag?: { kind: 'rate-limit'; source: 'ndjson-result' | 'stderr-pattern' | 'exit-code'; detail?: string };
+  terminationTag?: { kind: 'rate-limit'; source: 'ndjson-result'; detail?: string };
 }
 ```
 
