@@ -78,19 +78,72 @@ export interface ClerkKit {
 // ── Built-in writ types ──────────────────────────────────────────────
 
 /**
- * Mandate is the one writ type the Clerk plugin registers for itself
- * (see T2 of the generalization refactor). The literal string is used
- * here as a private fallback for `resolveDefaultType()` and as the
- * unqualified name inserted into the legacy `BUILTIN_TYPES` / merged
- * writ-type map that still drives the hardcoded `post()` and
- * `transition()` paths until T3 cuts them over to the registry. The
- * single-source-of-truth constant that callers used to import
+ * Mandate is the one writ type the Clerk plugin registers for itself.
+ * The literal string is used here as a private fallback for
+ * `resolveDefaultType()` and as the unqualified name inserted into the
+ * legacy `BUILTIN_TYPES` / merged writ-type map that still drives the
+ * hardcoded `post()` and `transition()` paths until the registry cut-over
+ * lands. The single-source-of-truth constant that callers used to import
  * (`BUILTIN_WRIT_TYPE`) is gone — mandate's name now lives inline
  * wherever it is needed.
  */
 const MANDATE_TYPE_NAME = 'mandate';
 
 const BUILTIN_TYPES = new Set([MANDATE_TYPE_NAME]);
+
+/**
+ * Mandate's lifecycle as a first-class `WritTypeConfig`. Byte-faithful to
+ * the legacy hardcoded phase machine (see `ALLOWED_FROM` in this file):
+ * `new` initial → open/cancelled; `open` active → stuck/completed/failed/
+ * cancelled; `stuck` active (with the `stuck` attr) → open/failed/cancelled;
+ * `completed` terminal with the `success` attr; `failed` terminal with the
+ * `failure` attr; `cancelled` terminal with the `cancelled` attr. Clerk
+ * registers this config for its own built-in type during `start()` so
+ * mandate is present in the new registry on the same footing as any
+ * plugin-registered type.
+ *
+ * No `childrenBehavior` block in this commission — the children-behavior
+ * engine lands separately and patches it on then.
+ */
+const MANDATE_CONFIG: WritTypeConfig = {
+  name: MANDATE_TYPE_NAME,
+  states: [
+    {
+      name: 'new',
+      classification: 'initial',
+      allowedTransitions: ['open', 'cancelled'],
+    },
+    {
+      name: 'open',
+      classification: 'active',
+      allowedTransitions: ['stuck', 'completed', 'failed', 'cancelled'],
+    },
+    {
+      name: 'stuck',
+      classification: 'active',
+      attrs: ['stuck'],
+      allowedTransitions: ['open', 'failed', 'cancelled'],
+    },
+    {
+      name: 'completed',
+      classification: 'terminal',
+      attrs: ['success'],
+      allowedTransitions: [],
+    },
+    {
+      name: 'failed',
+      classification: 'terminal',
+      attrs: ['failure'],
+      allowedTransitions: [],
+    },
+    {
+      name: 'cancelled',
+      classification: 'terminal',
+      attrs: ['cancelled'],
+      allowedTransitions: [],
+    },
+  ],
+};
 
 // ── Cascade resolution constants ─────────────────────────────────────
 
@@ -973,6 +1026,15 @@ export function createClerk(): Plugin {
         ctx.on('phase:started', () => {
           writTypeRegistrySealed = true;
         });
+
+        // Register the built-in `mandate` writ type with the new registry.
+        // The hardcoded phase tables still drive `post()` and `transition()`
+        // — the cut-over to the registry happens in the next task. Seeding
+        // the registry here means the new classification predicates resolve
+        // correctly for mandate writs from this start() forward, and there
+        // is no "one mandate visible through two surfaces" race once the
+        // cut-over lands.
+        api.registerWritType(MANDATE_CONFIG);
 
         // Initialize merged writ types from builtins + config
         const config = resolveClerkConfig();
