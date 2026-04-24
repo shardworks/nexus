@@ -61,7 +61,7 @@ export function validateBackoffConfig(
 
   if (typeof raw !== 'object' || raw === null) {
     throw new Error(
-      `[animator] animator.rateLimitBackoff must be an object; received ${typeof raw}`,
+      `[animator] animator.rateLimit.backoff must be an object; received ${typeof raw}`,
     );
   }
 
@@ -70,7 +70,7 @@ export function validateBackoffConfig(
   if (raw.initialMs !== undefined) {
     if (!Number.isInteger(raw.initialMs) || raw.initialMs <= 0) {
       throw new Error(
-        `[animator] animator.rateLimitBackoff.initialMs must be a positive integer; received ${String(raw.initialMs)}`,
+        `[animator] animator.rateLimit.backoff.initialMs must be a positive integer; received ${String(raw.initialMs)}`,
       );
     }
     resolved.initialMs = raw.initialMs;
@@ -79,7 +79,7 @@ export function validateBackoffConfig(
   if (raw.maxMs !== undefined) {
     if (!Number.isInteger(raw.maxMs) || raw.maxMs <= 0) {
       throw new Error(
-        `[animator] animator.rateLimitBackoff.maxMs must be a positive integer; received ${String(raw.maxMs)}`,
+        `[animator] animator.rateLimit.backoff.maxMs must be a positive integer; received ${String(raw.maxMs)}`,
       );
     }
     resolved.maxMs = raw.maxMs;
@@ -88,7 +88,7 @@ export function validateBackoffConfig(
   if (raw.factor !== undefined) {
     if (typeof raw.factor !== 'number' || !Number.isFinite(raw.factor) || raw.factor <= 1) {
       throw new Error(
-        `[animator] animator.rateLimitBackoff.factor must be a finite number greater than 1; received ${String(raw.factor)}`,
+        `[animator] animator.rateLimit.backoff.factor must be a finite number greater than 1; received ${String(raw.factor)}`,
       );
     }
     resolved.factor = raw.factor;
@@ -96,7 +96,7 @@ export function validateBackoffConfig(
 
   if (resolved.maxMs < resolved.initialMs) {
     throw new Error(
-      `[animator] animator.rateLimitBackoff.maxMs (${resolved.maxMs}) must be >= initialMs (${resolved.initialMs})`,
+      `[animator] animator.rateLimit.backoff.maxMs (${resolved.maxMs}) must be >= initialMs (${resolved.initialMs})`,
     );
   }
 

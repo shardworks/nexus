@@ -505,16 +505,18 @@ Consumers that need to decide whether it is safe to dispatch compose the predica
 ```json
 {
   "animator": {
-    "rateLimitBackoff": {
-      "initialMs": 900000,
-      "maxMs": 3600000,
-      "factor": 2
+    "rateLimit": {
+      "backoff": {
+        "initialMs": 900000,
+        "maxMs": 3600000,
+        "factor": 2
+      }
     }
   }
 }
 ```
 
-Defaults: 15 minutes / 1 hour / factor 2. The block is validated fail-loud at startup (a patron override of the Animator's default silent-default config convention, scoped to this block only). Malformed values throw; a missing block uses the defaults.
+Defaults: 15 minutes / 1 hour / factor 2. The `rateLimit.backoff` block is validated fail-loud at startup (a patron override of the Animator's default silent-default config convention, scoped to this block only). Malformed values throw; a missing block uses the defaults. The `rateLimit` umbrella leaves room for future sibling blocks (detection thresholds, per-source overrides) without flattening the top-level namespace.
 
 ### Observability
 

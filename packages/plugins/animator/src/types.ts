@@ -663,7 +663,7 @@ export interface AnimatorStatusDoc {
 
 /**
  * Rate-limit back-off configuration — lives under
- * `guild.json["animator"]["rateLimitBackoff"]`.
+ * `guild.json["animator"]["rateLimit"]["backoff"]`.
  *
  * Validated fail-loud at animator startup (D10 — patron override of the
  * silent-default convention applied *only* to this block). The block is
@@ -688,6 +688,17 @@ export interface AnimatorRateLimitBackoffConfig {
   factor?: number;
 }
 
+/**
+ * Umbrella for all rate-limit-related Animator configuration. Today the
+ * only nested block is `backoff`; the wrapper is in place so future
+ * rate-limit tuning (detection thresholds, per-source overrides, etc.)
+ * can land without flattening the top-level namespace.
+ */
+export interface AnimatorRateLimitConfig {
+  /** Rate-limit back-off tuning. See AnimatorRateLimitBackoffConfig. */
+  backoff?: AnimatorRateLimitBackoffConfig;
+}
+
 /** Plugin configuration stored at guild.json["animator"]. */
 export interface AnimatorConfig {
   /**
@@ -697,10 +708,11 @@ export interface AnimatorConfig {
    */
   sessionProvider?: string;
   /**
-   * Rate-limit back-off tuning. Optional; each field falls back to its
-   * documented default when absent. Malformed values throw at startup.
+   * Rate-limit configuration umbrella. Optional; each nested field falls
+   * back to its documented default when absent. Malformed values throw
+   * at startup.
    */
-  rateLimitBackoff?: AnimatorRateLimitBackoffConfig;
+  rateLimit?: AnimatorRateLimitConfig;
 }
 
 // Augment GuildConfig so `guild().guildConfig().animator` is typed without

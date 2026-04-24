@@ -786,7 +786,7 @@ export function createAnimator(): Plugin {
         // patron override). The default shape is applied silently when
         // the block is absent; malformed values throw at startup so we
         // don't silently drift from the configured window.
-        validateBackoffConfig(config.rateLimitBackoff);
+        validateBackoffConfig(config.rateLimit?.backoff);
 
         const stacks = g.apparatus<StacksApi>('stacks');
         sessions = stacks.book<SessionDoc>('animator', 'sessions');
@@ -803,7 +803,7 @@ export function createAnimator(): Plugin {
         backoff = createBackoffMachine({
           statusBook: dispatchStatusBook,
           config: {
-            get: () => validateBackoffConfig(guild().guildConfig().animator?.rateLimitBackoff),
+            get: () => validateBackoffConfig(guild().guildConfig().animator?.rateLimit?.backoff),
           },
           probe: createResumeProbeTracker(),
         });

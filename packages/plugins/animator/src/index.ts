@@ -23,6 +23,7 @@ export {
   type SessionCost,
   type SessionDoc,
   type AnimatorConfig,
+  type AnimatorRateLimitConfig,
   type AnimatorRateLimitBackoffConfig,
   type AnimatorStatusDoc,
   type AnimatorPauseReason,

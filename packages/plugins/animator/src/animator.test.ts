@@ -1622,7 +1622,7 @@ describe('Animator', () => {
       clearGuild();
     });
 
-    it('throws on a malformed rateLimitBackoff block', () => {
+    it('throws on a malformed rateLimit.backoff block', () => {
       assert.throws(
         () => {
           const memBackend = new MemoryBackend();
@@ -1646,7 +1646,7 @@ describe('Animator', () => {
                 settings: { model: 'sonnet' },
                 animator: {
                   sessionProvider: 'fake',
-                  rateLimitBackoff: { initialMs: -1 },
+                  rateLimit: { backoff: { initialMs: -1 } },
                 },
               } as never;
             },

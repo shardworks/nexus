@@ -210,10 +210,12 @@ The Animator reads its config from `guild.json["animator"]`:
 {
   "animator": {
     "sessionProvider": "claude-code",
-    "rateLimitBackoff": {
-      "initialMs": 900000,
-      "maxMs": 3600000,
-      "factor": 2
+    "rateLimit": {
+      "backoff": {
+        "initialMs": 900000,
+        "maxMs": 3600000,
+        "factor": 2
+      }
     }
   }
 }
@@ -222,11 +224,11 @@ The Animator reads its config from `guild.json["animator"]`:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `sessionProvider` | `string` | `'claude-code'` | Plugin id of the apparatus that implements `AnimatorSessionProvider`. Looked up via `guild().apparatus()`. |
-| `rateLimitBackoff.initialMs` | `number` | `900_000` (15 min) | Initial pause window when the first rate-limit hit arrives. |
-| `rateLimitBackoff.maxMs` | `number` | `3_600_000` (1 h) | Upper bound for the pause window after exponential back-off. |
-| `rateLimitBackoff.factor` | `number` | `2` | Multiplier applied per successive failed resume attempt. |
+| `rateLimit.backoff.initialMs` | `number` | `900_000` (15 min) | Initial pause window when the first rate-limit hit arrives. |
+| `rateLimit.backoff.maxMs` | `number` | `3_600_000` (1 h) | Upper bound for the pause window after exponential back-off. |
+| `rateLimit.backoff.factor` | `number` | `2` | Multiplier applied per successive failed resume attempt. |
 
-The `rateLimitBackoff` block is validated fail-loud at startup (a patron override of the Animator's default silent-default convention, scoped to this block only). Malformed values throw; a missing block uses the defaults.
+The `rateLimit.backoff` block is validated fail-loud at startup (a patron override of the Animator's default silent-default convention, scoped to this block only). Malformed values throw; a missing block uses the defaults. The `rateLimit` umbrella is future-proofing: today it only holds `backoff`, but further rate-limit tuning (detection thresholds, per-source overrides) can land nested under it without flattening the top-level namespace.
 
 ## Session Provider Interface
 
