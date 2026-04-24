@@ -378,10 +378,9 @@
   function fetchCostData(planId) {
     var costEl = document.getElementById('cost-summary');
 
-    fetch('/api/rig/list?limit=100')
+    fetch('/api/rig/for-writ?writId=' + encodeURIComponent(planId))
       .then(function (r) { return r.json(); })
-      .then(function (rigs) {
-        var rig = rigs.find(function (r) { return r.writId === planId; });
+      .then(function (rig) {
         if (!rig) {
           renderCostUnavailable(costEl);
           return;

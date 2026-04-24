@@ -656,3 +656,55 @@ describe('astrolabe.js cost table delegates to window.NexusFormat', () => {
     );
   });
 });
+
+// ── Cost-panel rig lookup is not window-blind ────────────────────────
+
+describe('astrolabe.js cost-panel rig lookup uses rig-for-writ', () => {
+  // Regression guard: the cost panel historically fetched
+  // `/api/rig/list?limit=100` and client-side `.find()`d the plan's rig by
+  // writId. Any plan whose rig had aged out of the newest 100 silently
+  // rendered "Cost data not available". The replacement endpoint
+  // `/api/rig/for-writ?writId=<planId>` does a direct server-side lookup
+  // with no list window. Pin the new endpoint in the cost-data function
+  // and forbid the legacy list-and-find form within that same function
+  // body — scoped so future legitimate list-view fetches elsewhere on
+  // this page are not pre-empted.
+  const fetchCostDataMatch = astrolabeJs.match(
+    /function fetchCostData\([\s\S]*?\n  \}/,
+  );
+  const fetchCostDataBody = fetchCostDataMatch ? fetchCostDataMatch[0] : '';
+
+  it('extracts the fetchCostData function body from source', () => {
+    assert.ok(
+      fetchCostDataBody,
+      'should find fetchCostData function body in astrolabe.js',
+    );
+  });
+
+  it('fetches the rig directly via /api/rig/for-writ with an encoded writId', () => {
+    assert.match(
+      fetchCostDataBody,
+      /\/api\/rig\/for-writ\?writId=['"]?\s*\+\s*encodeURIComponent\(planId\)/,
+      'cost-data path must fetch /api/rig/for-writ?writId=<encodeURIComponent(planId)>',
+    );
+  });
+
+  it('does not fetch the windowed /api/rig/list?limit=100 in the cost path', () => {
+    assert.doesNotMatch(
+      fetchCostDataBody,
+      /\/api\/rig\/list\?limit=100/,
+      'cost-data path must not fetch the windowed rig list — it silently hides aged-out rigs',
+    );
+  });
+
+  it('does not client-side .find() over an array of rigs in the cost path', () => {
+    // The for-writ endpoint returns a single RigDoc | null, so there is
+    // no array to scan. A defensive .find() wrapper would be cargo-cult
+    // and would hide any future contract break.
+    assert.doesNotMatch(
+      fetchCostDataBody,
+      /rigs\.find\(/,
+      'cost-data path must not .find() over a rigs array — the for-writ endpoint is singular',
+    );
+  });
+});
