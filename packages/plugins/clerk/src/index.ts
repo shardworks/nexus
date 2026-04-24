@@ -34,6 +34,19 @@ export {
 export { createClerk, CASCADE_PARENT_TERMINATION_RESOLUTION, BUILTIN_WRIT_TYPE } from './clerk.ts';
 export type { ClerkKit } from './clerk.ts';
 
+// ── Writ-type configuration (structural shape + validator) ────────────
+
+export { validateWritTypeConfig } from './writ-type-config.ts';
+export type {
+  WritTypeConfig,
+  WritTypeStateDefinition,
+  WritTypeStateClassification,
+  WritTypeStateAttr,
+  KnownWritTypeStateAttr,
+  WritTypeChildrenBehavior,
+  WritTypeChildrenBehaviorAction,
+} from './writ-type-config.ts';
+
 // ── Default export: the apparatus plugin ──────────────────────────────
 
 export default createClerk();

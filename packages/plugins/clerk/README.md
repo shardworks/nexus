@@ -501,3 +501,34 @@ import clerkPlugin, { createClerk, type ClerkApi, type WritTypeInfo } from '@sha
 ```
 
 The default export is a pre-built plugin instance, ready for guild installation.
+
+### Writ-type configuration
+
+The package also exports the structural shape that describes a writ type's state machine and lifecycle behavior, plus a pure structural validator. These primitives are the foundation for plugin-registered writ types; they do not yet participate in the runtime lifecycle.
+
+```typescript
+import {
+  validateWritTypeConfig,
+  type WritTypeConfig,
+  type WritTypeStateDefinition,
+  type WritTypeStateClassification,
+  type WritTypeStateAttr,
+  type KnownWritTypeStateAttr,
+  type WritTypeChildrenBehavior,
+  type WritTypeChildrenBehaviorAction,
+} from '@shardworks/clerk-apparatus';
+```
+
+A `WritTypeConfig` names the type, enumerates its lifecycle states (each with a `classification` of `'initial' | 'active' | 'terminal'`, an optional `attrs` vocabulary, and per-state `allowedTransitions`), and optionally declares `childrenBehavior` triggers (`allSuccess`, `anyFailure`) that lift terminal-child outcomes back onto the parent.
+
+`validateWritTypeConfig(config)` throws a plain `Error` on the first structural violation it encounters and returns `void` on success. Error messages take the shape `[clerk] writTypeConfig.<path>: <problem>; received <value>` with the path naming the offending field (e.g. `states[2].classification`, `childrenBehavior.anyFailure.transition`). The validator enforces:
+
+- non-empty `name`
+- non-empty `states` array with unique non-empty state names
+- every `classification` drawn from the known vocabulary
+- every `allowedTransitions` entry references an existing state
+- exactly one state classified `initial`
+- every non-initial state has at least one inbound transition
+- terminal states declare no outbound transitions
+- every declared `childrenBehavior` trigger carries an action with a `transition` field that references an existing state
+- every `childrenBehavior` transition target is reachable from every non-terminal state via `allowedTransitions`
