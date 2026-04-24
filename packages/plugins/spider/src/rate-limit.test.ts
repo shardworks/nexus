@@ -112,7 +112,8 @@ function buildFixture(): Fixture {
   });
 
   // Controllable animator status
-  let status: AnimatorStatusDoc = { id: 'current', state: 'running', backoffLevel: 0 };
+  let status: AnimatorStatusDoc = { id: 'dispatch-status', state: 'running', backoffLevel: 0 };
+  // (was `id: 'current'` before the dispatch-status relocation)
 
   // Mock AnimatorApi — just enough for spider tests. Tests excluded
   // from typecheck so missing members are fine at compile time.
@@ -218,7 +219,7 @@ describe('Spider — rate-limit integration', () => {
 
   it('crawl() returns null when the Animator is paused (gate short-circuits tryRun and trySpawn)', async () => {
     fix.setStatus({
-      id: 'current',
+      id: 'dispatch-status',
       state: 'paused',
       pausedSince: new Date().toISOString(),
       pausedUntil: new Date(Date.now() + 60_000).toISOString(),
@@ -241,7 +242,7 @@ describe('Spider — rate-limit integration', () => {
 
   it('crawl() dispatches normally once the pause window elapses', async () => {
     fix.setStatus({
-      id: 'current',
+      id: 'dispatch-status',
       state: 'paused',
       pausedSince: new Date(Date.now() - 120_000).toISOString(),
       pausedUntil: new Date(Date.now() - 60_000).toISOString(),
@@ -279,7 +280,7 @@ describe('Spider — rate-limit integration', () => {
     await rigsBook.patch(rig.id, { engines: blockedEngines, status: 'blocked' });
 
     // With the Animator reporting running, the check should clear.
-    fix.setStatus({ id: 'current', state: 'running', backoffLevel: 0 });
+    fix.setStatus({ id: 'dispatch-status', state: 'running', backoffLevel: 0 });
 
     const result = await fix.spider.crawl();
     assert.ok(result);

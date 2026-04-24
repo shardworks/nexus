@@ -309,8 +309,7 @@ The Animator contributes two books, inspection/dispatch tools, an Oculus page, a
 |---|---|---|
 | `sessions` | `startedAt`, `status`, `conversationId`, `provider` | Session records — one per `animate()` call. Includes `output` (final assistant text). |
 | `transcripts` | `sessionId` | Full NDJSON transcripts — one per session. Drives web UIs, operational logs, debugging. |
-| `state` | — | Operational state (guild self-heartbeat). Single well-known document `guild-heartbeat`. |
-| `status` | — | Rate-limit back-off state. Single well-known document `current`. See § Rate-Limit Back-Off. |
+| `state` | — | Shared operational state. Two well-known documents: `guild-heartbeat` (written by the heartbeat timer) and `dispatch-status` (owned by the rate-limit back-off machine). See § Rate-Limit Back-Off. |
 
 ### Tools
 
@@ -341,11 +340,11 @@ On startup the Animator runs recovery and starts background timers (all non-bloc
 
 ## Rate-Limit Back-Off
 
-When the claude-code provider (or any future provider that sets a `terminationTag`) reports a rate-limited session terminal, the Animator opens a pause window that blocks further dispatch across every caller — Spider, Parlour, and CLI paths alike. The state lives in a single-row `status` book keyed at `'current'`:
+When the claude-code provider (or any future provider that sets a `terminationTag`) reports a rate-limited session terminal, the Animator opens a pause window that blocks further dispatch across every caller — Spider, Parlour, and CLI paths alike. The state lives as a single well-known document inside the shared `state` book at `'dispatch-status'` (sibling of the `'guild-heartbeat'` doc):
 
 ```typescript
 interface AnimatorStatusDoc {
-  id: 'current';
+  id: 'dispatch-status';
   state: 'running' | 'paused';
   pausedSince?: string;
   pausedUntil?: string;

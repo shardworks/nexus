@@ -1,8 +1,9 @@
 /**
  * Animator rate-limit back-off state machine.
  *
- * Owns the `'current'` document in the animator `status` book and
- * translates terminal session outcomes into pause / resume transitions.
+ * Owns the `'dispatch-status'` document in the shared animator `state`
+ * book and translates terminal session outcomes into pause / resume
+ * transitions.
  *
  * Design references:
  *  - D7  — "successful dispatch after resume" = any terminal other than
@@ -29,8 +30,11 @@ import type {
   SessionTerminationTag,
 } from './types.ts';
 
-/** Well-known document id for the single animator status row. */
-export const ANIMATOR_STATUS_DOC_ID = 'current';
+/**
+ * Well-known document id for the single animator dispatch-status row in
+ * the shared `animator/state` book. Sibling of `'guild-heartbeat'`.
+ */
+export const DISPATCH_STATUS_DOC_ID = 'dispatch-status';
 
 /** Defaults applied when the caller omits the corresponding config field. */
 export const DEFAULT_RATE_LIMIT_BACKOFF = Object.freeze({
@@ -102,7 +106,7 @@ export function validateBackoffConfig(
 /** The default status doc used when nothing has been persisted yet. */
 export function freshStatusDoc(): AnimatorStatusDoc {
   return {
-    id: ANIMATOR_STATUS_DOC_ID,
+    id: DISPATCH_STATUS_DOC_ID,
     state: 'running',
     backoffLevel: 0,
   };
@@ -220,7 +224,7 @@ export function createBackoffMachine(params: {
   let cached: AnimatorStatusDoc = freshStatusDoc();
 
   async function read(): Promise<AnimatorStatusDoc> {
-    const doc = await statusBook.get(ANIMATOR_STATUS_DOC_ID);
+    const doc = await statusBook.get(DISPATCH_STATUS_DOC_ID);
     cached = doc ?? freshStatusDoc();
     return cached;
   }
@@ -266,7 +270,7 @@ export function createBackoffMachine(params: {
 
     const nowIso = new Date(now()).toISOString();
     const next: AnimatorStatusDoc = {
-      id: ANIMATOR_STATUS_DOC_ID,
+      id: DISPATCH_STATUS_DOC_ID,
       state: 'paused',
       pausedSince: isCoalesce ? (prev.pausedSince ?? nowIso) : nowIso,
       pausedUntil: new Date(pausedUntilMs).toISOString(),
@@ -297,7 +301,7 @@ export function createBackoffMachine(params: {
     }
     const nowIso = new Date(now()).toISOString();
     const next: AnimatorStatusDoc = {
-      id: ANIMATOR_STATUS_DOC_ID,
+      id: DISPATCH_STATUS_DOC_ID,
       state: 'running',
       backoffLevel: 0,
       // Clear window fields; keep backoffLastHitAt for audit trail.

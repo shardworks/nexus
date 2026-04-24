@@ -37,7 +37,7 @@ import { sessionList, sessionShow, summon as summonTool, sessionCancel, sessionR
 import { animatorRoutes } from './oculus-routes.ts';
 import { drainDlq, recoverOrphans } from './startup.ts';
 import {
-  ANIMATOR_STATUS_DOC_ID,
+  DISPATCH_STATUS_DOC_ID,
   buildPrecheckRejectionResult,
   createBackoffMachine,
   createResumeProbeTracker,
@@ -393,7 +393,10 @@ export function createAnimator(): Plugin {
   let config: AnimatorConfig = {};
   let sessions: Book<SessionDoc>;
   let transcripts: Book<TranscriptDoc>;
-  let statusBook: Book<AnimatorStatusDoc>;
+  // Two narrowed references to the shared `animator/state` book. One
+  // holds the back-off dispatch-status doc, the other holds the guild
+  // self-heartbeat doc. Same underlying book, different doc ids.
+  let dispatchStatusBook: Book<AnimatorStatusDoc>;
   let backoff: BackoffMachine;
 
   /**
@@ -411,10 +414,11 @@ export function createAnimator(): Plugin {
     },
 
     async getStatus(): Promise<AnimatorStatusDoc> {
-      // The back-off machine owns the `'current'` doc in the animator
-      // status book. A fresh install (never rate-limited) returns the
-      // default running shape rather than `undefined` — consumers can
-      // branch on `state`/`pausedUntil` without a null check.
+      // The back-off machine owns the `'dispatch-status'` doc in the
+      // shared `animator/state` book. A fresh install (never
+      // rate-limited) returns the default running shape rather than
+      // `undefined` — consumers can branch on `state`/`pausedUntil`
+      // without a null check.
       return backoff ? backoff.read() : freshStatusDoc();
     },
 
@@ -757,13 +761,13 @@ export function createAnimator(): Plugin {
           transcripts: {
             indexes: ['sessionId'],
           },
+          // Shared operational-state book. Holds two well-known
+          // documents: `'guild-heartbeat'` (written by the heartbeat
+          // timer) and `'dispatch-status'` (owned by the rate-limit
+          // back-off machine). The Laboratory's CDC ingestion of this
+          // book is the historical record of pause / resume transitions;
+          // no separate events table is maintained.
           state: {},
-          // Single-row book for the rate-limit back-off machine.
-          // Document id is always `'current'` (ANIMATOR_STATUS_DOC_ID).
-          // The Laboratory's CDC ingestion of this book is the historical
-          // record of pause / resume transitions; no separate events
-          // table is maintained.
-          status: {},
         },
         tools: [sessionList, sessionShow, summonTool, sessionCancel, sessionRunning, sessionRecord, sessionHeartbeat, animatorStatus],
         pages: [
@@ -787,13 +791,17 @@ export function createAnimator(): Plugin {
         const stacks = g.apparatus<StacksApi>('stacks');
         sessions = stacks.book<SessionDoc>('animator', 'sessions');
         transcripts = stacks.book<TranscriptDoc>('animator', 'transcripts');
-        statusBook = stacks.book<AnimatorStatusDoc>('animator', 'status');
+        // Two narrowed references off the shared `animator/state`
+        // book — one per well-known doc shape. Underlying rows live in
+        // the same table; the narrowed types keep writer ergonomics
+        // clean without inventing a union.
+        dispatchStatusBook = stacks.book<AnimatorStatusDoc>('animator', 'state');
 
         // Build the back-off machine. The config read is deferred per
         // transition so a live-reloaded guild config takes effect on
         // the next transition without restarting the Animator.
         backoff = createBackoffMachine({
-          statusBook,
+          statusBook: dispatchStatusBook,
           config: {
             get: () => validateBackoffConfig(guild().guildConfig().animator?.rateLimitBackoff),
           },

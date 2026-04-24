@@ -237,7 +237,6 @@ function setup(
     indexes: ['sessionId'],
   });
   memBackend.ensureBook({ ownerId: 'animator', book: 'state' }, {});
-  memBackend.ensureBook({ ownerId: 'animator', book: 'status' }, {});
 
   // Start animator
   const animatorApparatus = (animatorPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
@@ -1494,14 +1493,14 @@ describe('Animator', () => {
     });
 
     async function setPaused(windowMs: number): Promise<void> {
-      // Directly seed the status book, then force the back-off cache to
-      // refresh by observing a rate-limited terminal. This mirrors the
-      // in-production path (machine writes the doc and keeps the cache
-      // fresh) without reaching into private state.
-      const statusBook = stacks.book('animator', 'status');
+      // Directly seed the dispatch-status doc in the shared state book,
+      // then force the back-off cache to refresh by reading. This
+      // mirrors the in-production path (machine writes the doc and
+      // keeps the cache fresh) without reaching into private state.
+      const stateBook = stacks.book('animator', 'state');
       const pausedUntil = new Date(Date.now() + windowMs).toISOString();
-      await statusBook.put({
-        id: 'current',
+      await stateBook.put({
+        id: 'dispatch-status',
         state: 'paused',
         pausedSince: new Date().toISOString(),
         pausedUntil,
@@ -1530,9 +1529,9 @@ describe('Animator', () => {
 
     it('allows dispatch when the pause window has elapsed (D24)', async () => {
       // Seed a paused doc whose window has already elapsed.
-      const statusBook = stacks.book('animator', 'status');
-      await statusBook.put({
-        id: 'current',
+      const stateBook = stacks.book('animator', 'state');
+      await stateBook.put({
+        id: 'dispatch-status',
         state: 'paused',
         pausedSince: new Date(Date.now() - 120_000).toISOString(),
         pausedUntil: new Date(Date.now() - 60_000).toISOString(),
@@ -1581,9 +1580,9 @@ describe('Animator', () => {
     });
 
     it('paused → running after a completed terminal reset (D7)', async () => {
-      const statusBook = stacks.book('animator', 'status');
-      await statusBook.put({
-        id: 'current',
+      const stateBook = stacks.book('animator', 'state');
+      await stateBook.put({
+        id: 'dispatch-status',
         state: 'paused',
         pausedSince: new Date().toISOString(),
         pausedUntil: new Date(Date.now() + 60_000).toISOString(),
@@ -1660,7 +1659,6 @@ describe('Animator', () => {
           memBackend.ensureBook({ ownerId: 'animator', book: 'sessions' }, { indexes: [] });
           memBackend.ensureBook({ ownerId: 'animator', book: 'transcripts' }, { indexes: [] });
           memBackend.ensureBook({ ownerId: 'animator', book: 'state' }, {});
-          memBackend.ensureBook({ ownerId: 'animator', book: 'status' }, {});
           const stacksApp = (stacksPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
           stacksApp.start({ on: () => {}, kits: () => [] });
           apparatusMap.set('stacks', stacksApp.provides);

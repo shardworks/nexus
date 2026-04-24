@@ -575,7 +575,7 @@ describe('Animator Oculus Routes', () => {
       // paused doc.
       const apparatusMap = new Map<string, unknown>();
       const statusDoc = {
-        id: 'current',
+        id: 'dispatch-status',
         state: 'paused' as const,
         pausedSince: '2026-04-24T00:00:00.000Z',
         pausedUntil: '2026-04-24T00:15:00.000Z',

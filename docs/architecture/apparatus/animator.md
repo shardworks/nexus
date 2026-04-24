@@ -29,7 +29,7 @@ requires:   ['stacks']
 recommends: ['loom']
 ```
 
-- **The Stacks** (required) — records session results (the `sessions` book), full transcripts (the `transcripts` book), and the single-row rate-limit status document (the `status` book; see § Rate-Limit Back-Off).
+- **The Stacks** (required) — records session results (the `sessions` book), full transcripts (the `transcripts` book), and the shared operational-state book (`state`) holding the guild self-heartbeat and the rate-limit dispatch-status doc (see § Rate-Limit Back-Off).
 - **The Loom** (recommended) — composes session context for `summon()`. Not needed for `animate()`, which accepts a pre-composed context. Resolved at call time, not at startup — the Animator starts without the Loom, but `summon()` throws if it's not installed. Arbor emits a startup warning if the Loom is not installed.
 
 ---
@@ -47,8 +47,10 @@ supportKit: {
     transcripts: {
       indexes: ['sessionId'],
     },
-    // Single-row operational state — see § Rate-Limit Back-Off.
-    status: {},
+    // Shared operational-state book with two well-known document ids:
+    //   'guild-heartbeat'   — written by the heartbeat timer
+    //   'dispatch-status'   — owned by the rate-limit back-off machine
+    state: {},
   },
   tools: [sessionList, sessionShow, summon, animatorStatus, /* … */],
 },
@@ -92,7 +94,7 @@ Returns: session summary (id, status, provider, durationMs, exitCode, costUsd, t
 
 ### `animator-status` tool
 
-Show the Animator's current rate-limit pause state — the `'current'` document from the status book (see § Rate-Limit Back-Off). Patron-callable, `read` permission.
+Show the Animator's current rate-limit pause state — the `'dispatch-status'` document from the shared `state` book (see § Rate-Limit Back-Off). Patron-callable, `read` permission.
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -459,13 +461,13 @@ The rate-limit branch is the fifth outcome. The claude-code provider runs a **tw
 
 The Animator owns an in-memory / stacks-backed state machine that tracks whether the anima provider is currently rate-limited. Every session-spawning caller (Spider, Parlour, future consumers) inherits a single pause gate without needing to know about rate limits directly.
 
-### Status book
+### Dispatch-status doc
 
-The back-off state is persisted in a dedicated single-row book: `animator.books.status`, document id `'current'`. The doc shape is:
+The back-off state is persisted as a single well-known document in the shared `animator.books.state` book, document id `'dispatch-status'` (sibling of the `'guild-heartbeat'` doc written by the heartbeat timer). The doc shape is:
 
 ```typescript
 interface AnimatorStatusDoc {
-  id: 'current'
+  id: 'dispatch-status'
   state: 'running' | 'paused'
   pausedSince?: string          // ISO-8601 — when the current pause began
   pausedUntil?: string          // ISO-8601 — when the current window ends
@@ -476,7 +478,9 @@ interface AnimatorStatusDoc {
 }
 ```
 
-A fresh install returns `{ id: 'current', state: 'running', backoffLevel: 0 }` — the shape is always defined so callers don't need a null check.
+A fresh install returns `{ id: 'dispatch-status', state: 'running', backoffLevel: 0 }` — the shape is always defined so callers don't need a null check.
+
+Two narrowed book references write to the same underlying `state` book — one typed `Book<GuildStateDoc>` for the heartbeat writer, one typed `Book<AnimatorStatusDoc>` for the back-off machine. No union type is introduced; each writer keeps its natural schema.
 
 ### State transitions
 

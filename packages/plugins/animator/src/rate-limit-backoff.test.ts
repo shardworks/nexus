@@ -21,7 +21,7 @@ import { setGuild, clearGuild } from '@shardworks/nexus-core';
 import type { Guild, GuildConfig, KitEntry } from '@shardworks/nexus-core';
 
 import {
-  ANIMATOR_STATUS_DOC_ID,
+  DISPATCH_STATUS_DOC_ID,
   DEFAULT_RATE_LIMIT_BACKOFF,
   buildPrecheckRejectionResult,
   createBackoffMachine,
@@ -77,13 +77,13 @@ describe('validateBackoffConfig()', () => {
 
 describe('isDispatchable()', () => {
   it('allows dispatch while running', () => {
-    assert.equal(isDispatchable({ id: 'current', state: 'running', backoffLevel: 0 }), true);
+    assert.equal(isDispatchable({ id: 'dispatch-status', state: 'running', backoffLevel: 0 }), true);
   });
 
   it('allows dispatch when paused but window has elapsed', () => {
     const past = new Date(Date.now() - 60_000).toISOString();
     const doc: AnimatorStatusDoc = {
-      id: 'current',
+      id: 'dispatch-status',
       state: 'paused',
       pausedUntil: past,
       backoffLevel: 0,
@@ -94,7 +94,7 @@ describe('isDispatchable()', () => {
   it('blocks dispatch when paused and window is open', () => {
     const future = new Date(Date.now() + 60_000).toISOString();
     const doc: AnimatorStatusDoc = {
-      id: 'current',
+      id: 'dispatch-status',
       state: 'paused',
       pausedUntil: future,
       backoffLevel: 0,
@@ -113,7 +113,7 @@ describe('BackoffMachine', () => {
 
   beforeEach(() => {
     const memBackend = new MemoryBackend();
-    memBackend.ensureBook({ ownerId: 'animator', book: 'status' }, {});
+    memBackend.ensureBook({ ownerId: 'animator', book: 'state' }, {});
     const apparatuses = new Map<string, unknown>();
     const fakeGuild: Guild = {
       home: '/tmp/backoff-test',
@@ -137,7 +137,7 @@ describe('BackoffMachine', () => {
     stacks = stacksPlugin.apparatus.provides as StacksApi;
     apparatuses.set('stacks', stacks);
 
-    statusBook = stacks.book<AnimatorStatusDoc>('animator', 'status');
+    statusBook = stacks.book<AnimatorStatusDoc>('animator', 'state');
     clock = Date.UTC(2026, 3, 24, 0, 0, 0);
   });
 
@@ -289,9 +289,10 @@ describe('buildPrecheckRejectionResult()', () => {
 // ── freshStatusDoc ───────────────────────────────────────────────────
 
 describe('freshStatusDoc()', () => {
-  it('uses the well-known document id and a running default', () => {
+  it('uses the well-known dispatch-status document id and a running default', () => {
     const doc = freshStatusDoc();
-    assert.equal(doc.id, ANIMATOR_STATUS_DOC_ID);
+    assert.equal(doc.id, DISPATCH_STATUS_DOC_ID);
+    assert.equal(DISPATCH_STATUS_DOC_ID, 'dispatch-status');
     assert.equal(doc.state, 'running');
     assert.equal(doc.backoffLevel, 0);
   });

@@ -16,7 +16,7 @@ import type { AnimatorApi, AnimatorStatusDoc } from '../types.ts';
 // ── Harness ─────────────────────────────────────────────────────────
 
 let currentStatus: AnimatorStatusDoc = {
-  id: 'current',
+  id: 'dispatch-status',
   state: 'running',
   backoffLevel: 0,
 };
@@ -61,7 +61,7 @@ describe('animator-status tool', () => {
 
   it('returns the raw status doc when --json is set', async () => {
     currentStatus = {
-      id: 'current',
+      id: 'dispatch-status',
       state: 'paused',
       pausedSince: '2026-04-24T00:00:00.000Z',
       pausedUntil: '2026-04-24T00:15:00.000Z',
@@ -78,7 +78,7 @@ describe('animator-status tool', () => {
 
   it('returns a human-readable multi-line string by default', async () => {
     currentStatus = {
-      id: 'current',
+      id: 'dispatch-status',
       state: 'paused',
       pausedSince: '2026-04-24T00:00:00.000Z',
       pausedUntil: new Date(Date.now() + 60_000).toISOString(),
@@ -95,7 +95,7 @@ describe('animator-status tool', () => {
   });
 
   it('covers the running-state path (default install)', async () => {
-    currentStatus = { id: 'current', state: 'running', backoffLevel: 0 };
+    currentStatus = { id: 'dispatch-status', state: 'running', backoffLevel: 0 };
     const result = await animatorStatus.handler({});
     assert.ok(typeof result === 'string');
     assert.match(result as string, /State:\s+running/);
