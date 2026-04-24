@@ -53,6 +53,27 @@ import {
 - **`parseStreamJsonMessage(msg, acc)`** — processes a single NDJSON message, accumulates transcript/metrics, returns `SessionChunk[]`.
 - **`extractFinalAssistantText(transcript)`** — walks transcript backwards to find the last assistant message's text content.
 
+### Rate-Limit Detection
+
+The provider runs a three-stage detection cascade to identify rate-limited terminations and attach a structured `terminationTag` to the session result. The Animator's back-off state machine consumes the tag and transitions its status book accordingly.
+
+```typescript
+import {
+  detectRateLimitFromNdjson,
+  detectRateLimitFromStderr,
+  detectRateLimitFromExitCode,
+  RATE_LIMIT_EXIT_CODE,
+} from '@shardworks/claude-code-apparatus';
+```
+
+Cascade order (first-wins):
+
+1. **NDJSON inspection** — `parseStreamJsonMessage` checks every NDJSON message for a rate-limit `subtype`, an `is_error: true` message whose error text matches the pattern, or a `result` message text match.
+2. **Stderr pattern match** — the babysitter's stderr observer samples each chunk for a forgiving rate-limit regex (`rate limit`, `429`, `usage limit`, `quota exceeded`, `too many requests` — case-insensitive). Scope is narrow: detection only; the babysitter does not forward the full stderr buffer to the guild.
+3. **Distinguished exit code** — if neither of the above fired and `claude` exits with `RATE_LIMIT_EXIT_CODE`, the provider still promotes the result to `rate-limited`.
+
+Generic non-zero exit codes surface as plain `failed` — rate-limit detection is deliberately conservative.
+
 ## Session Babysitter
 
 The babysitter is a standalone Node.js script that runs as a detached process, hosting a claude session independently of the guild. It survives guild restarts.

@@ -31,7 +31,9 @@ const spider = guild().apparatus<SpiderApi>('spider');
 
 ### `crawl(): Promise<CrawlResult | null>`
 
-Execute one step of the crawl loop. The Spider evaluates pending work in priority order — collect > processGrafts > checkBlocked > run > spawn — and returns a description of the action taken, or `null` if no work was available.
+Execute one step of the crawl loop. The Spider evaluates pending work in priority order — collect > processGrafts > checkBlocked > **pause gate** > run > autoUnstick > spawn — and returns a description of the action taken, or `null` if no work was available.
+
+The **pause gate** consults the Animator's rate-limit status (via `AnimatorApi.getStatus()`) and short-circuits the `tryRun` and `trySpawn` phases when the Animator is paused AND the persisted `pausedUntil` window has not elapsed. The earlier phases (`tryCollect`, `tryProcessGrafts`, `tryCheckBlocked`) still run so the triggering rate-limit signal is ingested and the `animator-paused` block-type checker can drive auto-resume. When the gate suppresses both dispatch phases and no other phase produced work, `crawl()` returns `null` (today's "no work" signal — no new CrawlResult variant).
 
 ```typescript
 const result = await spider.crawl();
@@ -363,6 +365,18 @@ The Spider contributes books, tools, engines, and a role for rig inspection and 
 - `engineCosts?: Record<engineId, { costUsd, inputTokens?, outputTokens? }>` — per-engine cost entries. Only engines with a `sessionId` (i.e. anima engines) get an entry — clockwork and skipped engines are omitted. Engines whose sessions can't be resolved contribute zero.
 
 The enrichment happens in the tool layer. `SpiderApi.list()` and `SpiderApi.show()` still return the persisted `RigDoc` shape for internal callers that don't need cost data.
+
+### Block Types
+
+Built-in block types contributed via the Spider's support kit:
+
+| Id | Poll interval | Condition | Description |
+|---|---|---|---|
+| `writ-phase` | 10s | `{ writId, targetPhase }` | Blocks until a specific writ reaches the named phase. |
+| `scheduled-time` | 30s | `{ resumeAt: ISO-8601 }` | Blocks until a wall-clock timestamp is reached. |
+| `book-updated` | 10s | `{ book, sinceId? }` | Blocks until a book gets a new entry. |
+| `patron-input` | 10s | `{ requestId }` | Blocks until an `InputRequestDoc` is answered or rejected. |
+| `animator-paused` | 10s | `{ sessionId? }` | Blocks until the Animator's rate-limit back-off machine reports `state === 'running'` OR `pausedUntil` has elapsed. Entered via `tryCollect` when a session terminates with `status: 'rate-limited'`. |
 
 ### Engines
 
