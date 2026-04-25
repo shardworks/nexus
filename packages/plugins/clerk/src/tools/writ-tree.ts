@@ -2,32 +2,20 @@ import { z } from 'zod';
 import { guild, shortId } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
 import type { ClerkApi, WritTree } from '../types.ts';
-
-/**
- * Single-glyph status indicators for the box-drawing tree. Mirrors the
- * mapping used by ratchet's click-tree so output reads consistently across
- * apparatus.
- *
- * Indexed by an open `string` — non-mandate phases fall through to the
- * empty-glyph default at call sites. T5 owns a proper rework of this
- * mapping once plugin-registered writ types ship with their own states.
- */
-const PHASE_INDICATORS: Record<string, string> = {
-  new: '◌',
-  open: '●',
-  stuck: '◇',
-  completed: '○',
-  failed: '✕',
-  cancelled: '⊘',
-};
+import { deriveStateIndicator } from '../writ-presentation.ts';
 
 /**
  * Render a forest of `WritTree` nodes as a text tree with box-drawing
  * connectors, modeled directly on click-tree. Each row aligns the short id
  * column and pads the title so the phase indicator lands in a stable
  * column even with deep nesting.
+ *
+ * Indicators are derived per-row from the writ's classification (carried
+ * on the WritTree node) plus the per-state attrs read from the writ's
+ * registered type config. Tolerant of unregistered types and undeclared
+ * states (D17): both surface as `?` and the walker continues.
  */
-function renderForest(forest: WritTree[]): string {
+function renderForest(forest: WritTree[], clerk: ClerkApi): string {
   const lines: string[] = [];
 
   // Pass 1: compute max short-id width so the id column aligns.
@@ -58,7 +46,18 @@ function renderForest(forest: WritTree[]): string {
   const maxColumnWidth = Math.min(maxContentWidth, 72);
 
   function renderNode(tree: WritTree, prefix: string, isLast: boolean, isRoot: boolean): void {
-    const indicator = PHASE_INDICATORS[tree.writ.phase] ?? ' ';
+    // Look up attrs for this writ's current state — combined with the
+    // classification carried on tree.writ, the deriveStateIndicator helper
+    // produces the box-drawing glyph. When the type is unregistered or the
+    // state undeclared, classification is `'unknown'` and the helper
+    // surfaces `?` per D17 — the row still renders and the walk continues.
+    const config = clerk.getWritTypeConfig(tree.writ.type);
+    const stateAttrs =
+      config?.states.find((s) => s.name === tree.writ.phase)?.attrs ?? [];
+    const indicator = deriveStateIndicator({
+      classification: tree.writ.classification,
+      attrs: stateAttrs,
+    }).glyph;
     const connector = isRoot ? '' : isLast ? '└── ' : '├── ';
     const linePrefix = isRoot ? '' : prefix + connector;
     const idPadded = shortId(tree.writ.id).padEnd(idColumnWidth);
@@ -151,6 +150,6 @@ export default tool({
       return 'No writs found.';
     }
 
-    return renderForest(forest);
+    return renderForest(forest, clerk);
   },
 });

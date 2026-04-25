@@ -2685,6 +2685,76 @@ describe('Clerk', () => {
       assert.equal(onlyMandate[0].children.length, 0);
     });
 
+    it('renders mandate writ glyphs byte-for-byte: new=◌, open=●, stuck=◇, completed=○, failed=✕, cancelled=⊘', async () => {
+      // One writ per declared mandate state; each glyph appears at least once
+      // in the rendered tree.
+      const draft = await clerk.post({ title: 'Draft', body: 'Body' });
+      assert.equal(draft.phase, 'new');
+
+      const open = await postMandate({ title: 'Open writ', body: 'Body' });
+
+      const completed = await postMandate({ title: 'Done', body: 'Body' });
+      await clerk.transition(completed.id, 'completed', { resolution: 'fine' });
+
+      const failed = await postMandate({ title: 'Bust', body: 'Body' });
+      await clerk.transition(failed.id, 'failed', { resolution: 'broke' });
+
+      const cancelled = await postMandate({ title: 'Withdrawn', body: 'Body' });
+      await clerk.transition(cancelled.id, 'cancelled', { resolution: 'gone' });
+
+      const stuck = await postMandate({ title: 'Stuck', body: 'Body' });
+      await clerk.transition(stuck.id, 'stuck');
+
+      const text = await writTree.handler({ format: 'text' }) as string;
+      assert.ok(text.includes('◌'), 'new glyph ◌ should appear');
+      assert.ok(text.includes('●'), 'open glyph ● should appear');
+      assert.ok(text.includes('◇'), 'stuck glyph ◇ should appear');
+      assert.ok(text.includes('○'), 'completed glyph ○ should appear');
+      assert.ok(text.includes('✕'), 'failed glyph ✕ should appear');
+      assert.ok(text.includes('⊘'), 'cancelled glyph ⊘ should appear');
+
+      // Discard unused references so the linter does not complain.
+      void [draft, open, completed, failed, cancelled, stuck];
+    });
+
+    it('renders non-mandate writ glyphs through attrs-driven derivation', async () => {
+      await setup({
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
+        ],
+      });
+      const errand = await clerk.post({ title: 'Errand', body: 'Body', type: 'errand' });
+      assert.equal(errand.phase, 'new');
+      const text = await writTree.handler({ format: 'text' }) as string;
+      // Initial state → ◌ (matches mandate's `new` glyph because both share
+      // the `initial` classification with no recognized attrs).
+      assert.ok(text.includes('◌'), 'errand initial state glyph ◌ should appear');
+    });
+
+    it('renders ? for an unregistered writ type without aborting the walk', async () => {
+      // Bypass clerk.post() and write directly so the writ persists with a
+      // type the registry never saw — mirrors the legacy/orphan condition
+      // D17 calls out.
+      const stacks = guild().apparatus<StacksApi>('stacks');
+      const writs = stacks.book<WritDoc>('clerk', 'writs');
+      const orphan: WritDoc = {
+        id: 'w-orphan-aaaaaaaaaaaa',
+        type: 'unregistered-type',
+        phase: 'open',
+        title: 'Orphan',
+        body: 'Body',
+        createdAt: '2025-01-01T00:00:00Z',
+        updatedAt: '2025-01-01T00:00:00Z',
+      };
+      await writs.put(orphan);
+
+      // The text render must not throw and must surface `?` for the unknown
+      // classification.
+      const text = await writTree.handler({ format: 'text' }) as string;
+      assert.ok(text.includes('Orphan'));
+      assert.ok(text.includes('?'), 'unregistered-type writ should render with ? glyph');
+    });
+
     it('embeds classification + allowedTransitions on every node in the tree', async () => {
       // Mixed-type tree exercises both mandate and a plugin-registered
       // type so the assertion can prove non-mandate transitions surface.
