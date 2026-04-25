@@ -256,5 +256,5 @@ If you register a writ type that may sit *beneath* a parent type declaring a `pa
 - [The Clerk → Writ-Types Substrate](../architecture/apparatus/clerk.md#writ-types-substrate) — architectural treatment and the full per-field schema reference, including the mandate canonical example.
 - [The Spider → Plugin-default template and mapping](../architecture/apparatus/spider.md#plugin-default-template-and-mapping) — how declared types are dispatched into rigs.
 - [The Guild Metaphor → Writ](../guild-metaphor.md#writ) — conceptual framing of writs and per-type lifecycles.
-- [Building Engines](building-engines.md) — adjacent guide for event-driven handlers your writ type may fire into.
+- [Building Relays](building-relays.md) — adjacent guide for event-driven handlers your writ type may fire into.
 - [Building Tools](building-tools.md) — adjacent guide for interactive tools animas wield.

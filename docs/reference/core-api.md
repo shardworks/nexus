@@ -8,36 +8,7 @@
 
 > **Note:** The `tool()` factory, `ToolDefinition`, `ToolCaller`, `isToolDefinition()`, and `resolveToolFromExport()` have moved to `@shardworks/tools-apparatus`. See the [Instrumentarium API Contract](../architecture/apparatus/instrumentarium.md) for the tool authoring API.
 
-The following SDK factories remain in `@shardworks/nexus-core`:
-
-### `engine(def): EngineDefinition`
-
-Define a clockwork engine — an event-driven handler invoked by standing orders.
-
-```typescript
-engine({
-  name: string,
-  handler: (event: GuildEvent | null, ctx: EngineContext) => Promise<void>,
-}): EngineDefinition
-```
-
-The handler receives the triggering `GuildEvent` (or `null` for direct invocation) and an `EngineContext` (`{ home: string }`).
-
-### `isClockworkEngine(obj): obj is EngineDefinition`
-
-Type guard — checks if a value has the `__clockwork: true` brand.
-
-### `resolveEngineFromExport(moduleDefault, engineName?): EngineDefinition | null`
-
-Resolve a single engine from a module's default export. Same pattern as `resolveToolFromExport`.
-
-### Types
-
-| Type | Description |
-|------|-------------|
-| `GuildEvent` | `{ id, name, payload, emitter, firedAt }` — immutable event from the queue |
-| `EngineContext` | `{ home: string }` — injected into engine handlers |
-| `EngineDefinition` | A fully-defined clockwork engine (return type of `engine()`) |
+> **Note:** The `relay()` factory, `RelayDefinition`, `RelayContext`, `RelayHandler`, `GuildEvent`, and `isRelayDefinition()` have moved to `@shardworks/clockworks-apparatus`. See [Building Relays](../guides/building-relays.md) and [The Clockworks](../architecture/clockworks.md) for the relay authoring API.
 
 ---
 

@@ -256,7 +256,7 @@ import { tool } from '@shardworks/tools-apparatus';
 import { guild } from '@shardworks/nexus-core';
 ```
 
-**See also:** [Building Engines](building-engines.md) — if you need to build event-driven automation rather than an interactive tool.
+**See also:** [Building Relays](building-relays.md) — if you need to build event-driven automation rather than an interactive tool.
 
 ## How it gets loaded
 
