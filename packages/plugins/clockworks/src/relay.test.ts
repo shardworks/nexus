@@ -130,6 +130,29 @@ describe('relay()', () => {
     );
   });
 
+  it('allows handler invocation with a null event (direct invocation surface)', async () => {
+    // The handler signature types `event` as nullable so that the future
+    // dispatcher's direct-invocation path (no triggering GuildEvent) does
+    // not require an unsafe cast. This regression test exercises that
+    // contract by passing `null` and asserting nothing throws.
+    let received: GuildEvent | null = {
+      id: 'sentinel',
+      name: 'sentinel',
+      payload: null,
+      emitter: 'sentinel',
+      firedAt: 'sentinel',
+    };
+    const def = relay({
+      name: 'nullable-event',
+      handler: (event, _ctx) => {
+        received = event;
+      },
+    });
+
+    await def.handler(null, { home: '/tmp', params: {} });
+    assert.equal(received, null);
+  });
+
   it('mentions the relay name in the handler-validation error message', () => {
     assert.throws(
       () =>

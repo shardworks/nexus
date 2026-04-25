@@ -330,10 +330,10 @@ The Clockworks apparatus registers relays from both standalone kit packages and 
 
 ### Relay Contract
 
-The Clockworks needs a standard invocation contract to call relays generically. Relays export a default using the `relay()` SDK factory from `nexus-core`:
+The Clockworks needs a standard invocation contract to call relays generically. Relays export a default using the `relay()` SDK factory shipped from `@shardworks/clockworks-apparatus` — kit authoring factories live with their owning apparatus (mirrors `tool()` in `@shardworks/tools-apparatus`):
 
 ```typescript
-import { relay } from '@shardworks/nexus-core';
+import { relay } from '@shardworks/clockworks-apparatus';
 
 export default relay({
   handler: async (event: GuildEvent | null, { home, params }) => {

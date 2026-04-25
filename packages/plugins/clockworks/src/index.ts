@@ -30,6 +30,7 @@ export {
   type GuildEvent,
   type RelayContext,
   type RelayDefinition,
+  type RelayHandler,
 } from './relay.ts';
 
 export { createClockworks } from './clockworks.ts';

@@ -19,8 +19,8 @@
  *   relay({
  *     name: 'log-event',
  *     description: 'Write the event to stdout.',
- *     handler: async ({ event, home, params }) => {
- *       console.log(`[${home}] ${event.name}`, event.payload, params);
+ *     handler: async (event, { home, params }) => {
+ *       console.log(`[${home}] ${event?.name ?? '(direct)'}`, event?.payload, params);
  *     },
  *   }),
  * ];
@@ -76,6 +76,21 @@ export interface RelayContext {
 }
 
 /**
+ * The relay handler signature.
+ *
+ * `event` is nullable because the dispatcher exposes a direct-invocation
+ * surface (no triggering `GuildEvent`) alongside the standing-order path.
+ * Authors should treat `event` as possibly-null and guard accordingly.
+ *
+ * May be sync or async — the dispatcher always awaits. Signals failure by
+ * throwing; return values are not consumed.
+ */
+export type RelayHandler = (
+  event: GuildEvent | null,
+  context: RelayContext,
+) => void | Promise<void>;
+
+/**
  * A fully-defined relay — the return type of `relay()`.
  *
  * Registered by the Clockworks under `name`; looked up by the dispatcher
@@ -91,23 +106,17 @@ export interface RelayDefinition {
    */
   readonly description?: string;
   /**
-   * The handler. May be sync or async — the dispatcher always awaits.
-   * Signals failure by throwing; return values are not consumed.
+   * The handler. See `RelayHandler` for the signature contract — `event`
+   * is nullable to accommodate direct invocation.
    */
-  readonly handler: (
-    event: GuildEvent,
-    context: RelayContext,
-  ) => void | Promise<void>;
+  readonly handler: RelayHandler;
 }
 
 /** Input to `relay()` — the author's authoring shape. */
 export interface RelayInput {
   name: string;
   description?: string;
-  handler: (
-    event: GuildEvent,
-    context: RelayContext,
-  ) => void | Promise<void>;
+  handler: RelayHandler;
 }
 
 // ── Factory ─────────────────────────────────────────────────────────
