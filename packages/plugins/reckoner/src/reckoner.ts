@@ -46,6 +46,7 @@ import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import type { LatticeApi, PulseDoc } from '@shardworks/lattice-apparatus';
 
 import { isQueueDrained } from './drain.ts';
+import { resolveEngineFailureContext } from './engine-context.ts';
 import {
   type SpiderStuckStatus,
   isTerminalStuck,
@@ -89,13 +90,52 @@ interface ClerkChildCascadeStatus {
 }
 
 /**
- * Minimal shape of a Spider rig row — only `writId` and `status` are read.
- * Declared locally to avoid a hard Spider dependency.
+ * Local re-declaration of the per-attempt history entry on a Spider
+ * engine instance. Mirrors `EngineAttempt` from `@shardworks/spider-apparatus`
+ * narrowly — every field is kept optional to match the source type's
+ * "in-flight or terminal" optionality. Re-declared here so the Reckoner's
+ * import graph does not depend on Spider for one read-only row shape.
+ */
+interface EngineAttempt {
+  startedAt?: string;
+  endedAt?: string;
+  status?: 'completed' | 'failed';
+  error?: string;
+  sessionId?: string;
+  /**
+   * Yields are intentionally read but not surfaced on the engine-failure
+   * context block — the diagnostic pulse trades fidelity for size.
+   */
+  yields?: unknown;
+}
+
+/**
+ * Local re-declaration of a Spider engine instance. Captures only the
+ * fields the engine-context resolver reads: the engine identity, the
+ * status, the retry-budget counter, and the per-attempt history.
+ */
+interface EngineInstance {
+  id: string;
+  designId: string;
+  status: string;
+  attemptCount?: number;
+  attempts?: EngineAttempt[];
+}
+
+/**
+ * Minimal shape of a Spider rig row — `writId`, `status`, `createdAt`,
+ * and the engine pipeline. The engine-context resolver scans `engines`
+ * for a `status === 'failed'` slot to enrich the writ-failed pulse;
+ * `createdAt` orders the rigs-for-writ scan to pick the most recent
+ * failed rig when more than one exists. Declared locally to avoid a
+ * hard Spider dependency.
  */
 interface RigRow extends Record<string, unknown> {
   id: string;
   writId: string;
   status: string;
+  createdAt?: string;
+  engines?: EngineInstance[];
 }
 
 /** Resolve the clockworks-retry cap, or undefined if not installed. */
@@ -322,6 +362,19 @@ async function emitFailed(
   }
 
   const childFailures = await chaseTriggeringChildren(deps.clerk, writ);
+  // Engine-failure enrichment (D1, D3): when the failed mandate's rig
+  // carries a failed engine, attach a structured `engineFailure` block so
+  // the patron sees the engine identity, retry count, last error, and
+  // attempt history without dropping into `nsg rig show`. The resolver
+  // never throws — it returns undefined on missing rig / missing failed
+  // engine / book-read error — so a non-engine failure path emits with
+  // the legacy shape unchanged (D5).
+  let engineFailure;
+  try {
+    engineFailure = await resolveEngineFailureContext(deps.rigsBook, writ.id);
+  } catch {
+    engineFailure = undefined;
+  }
   const context: WritFailedContext = {
     writShortId: shortId(writ.id),
     writTitle: writ.title,
@@ -331,6 +384,7 @@ async function emitFailed(
     ...(childFailures.length > 0
       ? { childFailures: childFailures.map(shortId) }
       : {}),
+    ...(engineFailure ? { engineFailure } : {}),
   };
   const title = `Writ failed: ${writ.title}`;
   const summaryParts: string[] = [

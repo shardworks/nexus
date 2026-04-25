@@ -84,7 +84,7 @@ interface ReckonerApi {
 | Trigger | `writId` | Emitted on |
 |---------|----------|-----------|
 | `reckoner.writ-stuck` | root writ id | root writ enters `stuck` and the stuck is terminal non-success (see predicate). |
-| `reckoner.writ-failed` | root writ id | root writ enters `failed`. |
+| `reckoner.writ-failed` | root writ id | root writ enters `failed`. When the failure originated in an engine retry-budget exhaustion, the pulse's context carries an additional `engineFailure` block (see "Engine-failure enrichment" below). |
 | `reckoner.queue-drained` | `null` | any terminal writ transition that brings the guild to `open = 0 AND active rigs = 0`. |
 
 ### Context payloads (D30)
@@ -112,6 +112,25 @@ interface WritFailedContext {
   resolution?: string;        // the writ's resolution text
   childFailures?: string[];   // chase-chain of cascaded leaf-cause short ids
                               // (outer→inner; populated from status['clerk'])
+  engineFailure?: EngineFailureContext; // engine-failure enrichment (see below)
+}
+
+interface EngineFailureContext {
+  rigId: string;              // the rig whose failed engine produced this enrichment
+  engineId: string;           // engine instance id within the rig (e.g. 'implement')
+  engineDesignId: string;     // engine design id — the Fabricator design key
+  attemptCount?: number;      // retry budget consumed by the failed engine
+  lastError?: string;         // tail attempt's `error` string when status === 'failed'
+  attemptsSummary: EngineAttemptSummary[]; // ordered per-attempt summary (yields dropped)
+}
+
+interface EngineAttemptSummary {
+  startedAt?: string;         // ISO timestamp when the attempt started
+  endedAt?: string;           // ISO timestamp when the attempt terminated
+  status?: 'completed' | 'failed';
+  error?: string;             // error message if `status === 'failed'`
+  sessionId?: string;         // Animator session id, if any
+  // (yields are intentionally dropped — pulse is a diagnostic surface, not an audit log)
 }
 
 interface QueueDrainedContext {
@@ -120,6 +139,48 @@ interface QueueDrainedContext {
   writUpdatedAt: string;      // dedupe identity — see "Idempotency under replay"
 }
 ```
+
+---
+
+## Engine-failure enrichment on `writ-failed`
+
+When a root mandate enters `failed` because Spider's engine-retry path
+exhausted its budget, the pulse's context carries an additional
+`engineFailure` block populated from the rigs book. The block surfaces
+the failed engine's identity, retry counter, last attempt error, and a
+per-attempt history summary so the patron can identify the failed engine
+and read the attempt trail without dropping into `nsg rig show`.
+
+The lookup is a separate resolver module (`engine-context.ts`) called
+from the writ-failed emit path after the dedupe guard and before
+`lattice.emit()`. It queries the rigs book for the most-recent failed
+rig keyed to the writ (`status='failed'` ordered by `createdAt desc`,
+`limit 1`), scans the rig's `engines` array for the first engine in
+`status='failed'`, and assembles the `EngineFailureContext`. When the
+writ has no rig, the rig is not failed, or no engine on the rig is
+failed (patron-driven failure, cascade-only failure), the resolver
+returns `undefined` and the pulse emits with the legacy `WritFailedContext`
+shape unchanged.
+
+The resolver **never throws** past the boundary — book-read errors are
+caught and surfaced as `undefined`, preserving the Phase 2 watcher's
+`failOnError: false` semantics.
+
+The dedupe identity for `reckoner.writ-failed` is unchanged
+(`(writId, triggerType, writUpdatedAt)`); the enrichment widens the
+context payload but does not affect idempotency.
+
+The Reckoner re-declares narrow `RigRow` / `EngineInstance` /
+`EngineAttempt` row shapes locally rather than importing from
+`@shardworks/spider-apparatus`, mirroring the existing
+`SpiderStuckStatus` / `ClerkChildCascadeStatus` precedent. Spider
+remains a `recommend`, not a `require`.
+
+The enrichment is failed-only: `reckoner.writ-stuck`,
+`reckoner.queue-drained`, and any other trigger are never enriched
+with engine context. Stuck transitions in the post-reshape model carry
+no engine-failure information; adding fields with no producer is
+structure with no consumer.
 
 ---
 

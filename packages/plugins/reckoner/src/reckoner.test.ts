@@ -71,11 +71,28 @@ const TASK_TYPE_CONFIG: WritTypeConfig = {
 
 // ── Test bootstrap ──────────────────────────────────────────────
 
+interface EngineAttemptRow {
+  startedAt?: string;
+  endedAt?: string;
+  status?: 'completed' | 'failed';
+  error?: string;
+  sessionId?: string;
+}
+
+interface EngineInstanceRow {
+  id: string;
+  designId: string;
+  status: string;
+  attemptCount?: number;
+  attempts?: EngineAttemptRow[];
+}
+
 interface RigRow extends BookEntry {
   id: string;
   writId: string;
   status: 'running' | 'blocked' | 'stuck' | 'completed' | 'failed' | 'cancelled';
   createdAt: string;
+  engines?: EngineInstanceRow[];
 }
 
 const FRAMEWORK_KIT_FIELDS = new Set(['requires', 'recommends']);
@@ -125,6 +142,19 @@ interface Fixture {
     request: { title: string; body: string; type?: string; parentId?: string },
   ) => Promise<WritDoc>;
   seedRig: (writId: string, status?: RigRow['status']) => Promise<string>;
+  /**
+   * Insert a rig with the given engines. The rig is keyed to `writId`
+   * with the requested status and an explicit `createdAt` (defaults to
+   * "now" — newer than any earlier seed in the test). Useful for the
+   * engine-failure context branches where the resolver picks the
+   * most-recent failed rig.
+   */
+  seedRigWithEngines: (params: {
+    writId: string;
+    status?: RigRow['status'];
+    engines: EngineInstanceRow[];
+    createdAt?: string;
+  }) => Promise<string>;
   rigCount: (writId: string) => Promise<number>;
   pulsesOf: (triggerType?: string) => Promise<PulseDoc[]>;
 }
@@ -260,6 +290,23 @@ async function buildFixture(
     return id;
   }
 
+  async function seedRigWithEngines(params: {
+    writId: string;
+    status?: RigRow['status'];
+    engines: EngineInstanceRow[];
+    createdAt?: string;
+  }): Promise<string> {
+    const id = generateId('rig', 4);
+    await rigsBook.put({
+      id,
+      writId: params.writId,
+      status: params.status ?? 'failed',
+      createdAt: params.createdAt ?? new Date().toISOString(),
+      engines: params.engines,
+    });
+    return id;
+  }
+
   async function rigCount(writId: string): Promise<number> {
     return rigsBook.count([['writId', '=', writId]]);
   }
@@ -273,7 +320,16 @@ async function buildFixture(
     });
   }
 
-  return { stacks, clerk, lattice, postOpen, seedRig, rigCount, pulsesOf };
+  return {
+    stacks,
+    clerk,
+    lattice,
+    postOpen,
+    seedRig,
+    seedRigWithEngines,
+    rigCount,
+    pulsesOf,
+  };
 }
 
 async function stuckWith(
@@ -462,6 +518,126 @@ describe('Reckoner — writ-failed emission', () => {
       parent.id,
       'the only pulse is keyed to the root parent — child is not its own emit source',
     );
+  });
+
+  // ── Engine-failure context enrichment (D1, D3, D5, D6) ──────────
+
+  it('attaches an engineFailure block when a failed rig has a failed engine', async () => {
+    const writ = await fix.postOpen({ title: 'engine-fail mandate', body: 'b' });
+    await fix.seedRigWithEngines({
+      writId: writ.id,
+      status: 'failed',
+      engines: [
+        { id: 'draft', designId: 'draft', status: 'completed' },
+        {
+          id: 'implement',
+          designId: 'claude-code',
+          status: 'failed',
+          attemptCount: 3,
+          attempts: [
+            {
+              startedAt: '2026-04-25T00:00:00.000Z',
+              endedAt: '2026-04-25T00:01:00.000Z',
+              status: 'failed',
+              error: 'transient 1',
+              sessionId: 's-1',
+            },
+            {
+              startedAt: '2026-04-25T00:02:00.000Z',
+              endedAt: '2026-04-25T00:03:00.000Z',
+              status: 'failed',
+              error: 'transient 2',
+              sessionId: 's-2',
+            },
+            {
+              startedAt: '2026-04-25T00:04:00.000Z',
+              endedAt: '2026-04-25T00:05:00.000Z',
+              status: 'failed',
+              error: 'final boom',
+              sessionId: 's-3',
+            },
+          ],
+        },
+      ],
+    });
+    await fix.clerk.transition(writ.id, 'failed', { resolution: 'engine exhausted' });
+
+    const pulses = await fix.pulsesOf(TRIGGER_WRIT_FAILED);
+    assert.equal(pulses.length, 1);
+    const ctx = pulses[0]?.context as {
+      engineFailure?: {
+        rigId: string;
+        engineId: string;
+        engineDesignId: string;
+        attemptCount?: number;
+        lastError?: string;
+        attemptsSummary: Array<{
+          startedAt?: string;
+          endedAt?: string;
+          status?: string;
+          error?: string;
+          sessionId?: string;
+        }>;
+      };
+    };
+    assert.ok(ctx.engineFailure, 'engineFailure must be present');
+    const ef = ctx.engineFailure!;
+    assert.equal(ef.engineId, 'implement');
+    assert.equal(ef.engineDesignId, 'claude-code');
+    assert.equal(ef.attemptCount, 3);
+    assert.equal(ef.lastError, 'final boom');
+    assert.ok(typeof ef.rigId === 'string' && ef.rigId.length > 0);
+    assert.equal(ef.attemptsSummary.length, 3);
+    const tail = ef.attemptsSummary[2]!;
+    assert.equal(tail.error, 'final boom');
+    assert.equal(tail.sessionId, 's-3');
+    assert.equal(tail.status, 'failed');
+  });
+
+  it('omits engineFailure when no rig exists for the failed writ', async () => {
+    const writ = await fix.postOpen({ title: 'patron-fail', body: 'b' });
+    await fix.clerk.transition(writ.id, 'failed', { resolution: 'patron abandoned' });
+    const pulses = await fix.pulsesOf(TRIGGER_WRIT_FAILED);
+    assert.equal(pulses.length, 1);
+    const ctx = pulses[0]?.context as { engineFailure?: unknown };
+    assert.equal(ctx.engineFailure, undefined);
+  });
+
+  it('omits engineFailure when the rig is failed but no engine is failed', async () => {
+    const writ = await fix.postOpen({ title: 'no-failed-engine', body: 'b' });
+    await fix.seedRigWithEngines({
+      writId: writ.id,
+      status: 'failed',
+      engines: [
+        { id: 'a', designId: 'da', status: 'completed' },
+        { id: 'b', designId: 'db', status: 'cancelled' },
+      ],
+    });
+    await fix.clerk.transition(writ.id, 'failed', { resolution: 'rig wedged' });
+    const pulses = await fix.pulsesOf(TRIGGER_WRIT_FAILED);
+    assert.equal(pulses.length, 1);
+    const ctx = pulses[0]?.context as { engineFailure?: unknown };
+    assert.equal(ctx.engineFailure, undefined);
+  });
+
+  it('picks the first failed engine when multiple are failed (D6)', async () => {
+    const writ = await fix.postOpen({ title: 'multi-failed', body: 'b' });
+    await fix.seedRigWithEngines({
+      writId: writ.id,
+      status: 'failed',
+      engines: [
+        { id: 'first', designId: 'd1', status: 'failed', attemptCount: 1 },
+        { id: 'second', designId: 'd2', status: 'failed', attemptCount: 2 },
+      ],
+    });
+    await fix.clerk.transition(writ.id, 'failed', { resolution: 'engine exhausted' });
+    const pulses = await fix.pulsesOf(TRIGGER_WRIT_FAILED);
+    const ctx = pulses[0]?.context as {
+      engineFailure?: { engineId: string; attemptCount?: number };
+    };
+    assert.ok(ctx.engineFailure);
+    assert.equal(ctx.engineFailure!.engineId, 'first');
+    assert.equal(ctx.engineFailure!.attemptCount, 1);
   });
 });
 

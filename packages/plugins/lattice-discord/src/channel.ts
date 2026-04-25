@@ -105,6 +105,44 @@ export function contextFields(pulse: PulseDoc): EmbedField[] {
         value: truncate(ctx.childFailures.map(String).join(', '), 800),
       });
     }
+    // Engine-failure enrichment (D10): when the Reckoner attaches an
+    // `engineFailure` block, surface the engine identity / attempt count
+    // / last error as structured fields. Inline placement matches the
+    // existing field cadence; the long error string stays non-inline so
+    // it doesn't get truncated by Discord's inline-field width budget.
+    const engineFailure = ctx.engineFailure as
+      | {
+          engineId?: string;
+          engineDesignId?: string;
+          attemptCount?: number;
+          lastError?: string;
+        }
+      | undefined;
+    if (engineFailure) {
+      if (typeof engineFailure.engineId === 'string') {
+        fields.push({ name: 'Engine', value: engineFailure.engineId, inline: true });
+      }
+      if (typeof engineFailure.engineDesignId === 'string') {
+        fields.push({
+          name: 'Engine design',
+          value: engineFailure.engineDesignId,
+          inline: true,
+        });
+      }
+      if (typeof engineFailure.attemptCount === 'number') {
+        fields.push({
+          name: 'Attempts',
+          value: String(engineFailure.attemptCount),
+          inline: true,
+        });
+      }
+      if (typeof engineFailure.lastError === 'string') {
+        fields.push({
+          name: 'Last error',
+          value: truncate(engineFailure.lastError, 800),
+        });
+      }
+    }
   } else if (pulse.triggerType === 'reckoner.queue-drained') {
     if (typeof ctx.drainedAt === 'string') fields.push({ name: 'Drained at', value: ctx.drainedAt, inline: true });
     if (typeof ctx.lastTerminalWritId === 'string') {

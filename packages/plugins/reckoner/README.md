@@ -49,7 +49,7 @@ can enumerate the trigger types the Reckoner emits.
 | Trigger | `writId` | Emitted on |
 |---|---|---|
 | `reckoner.writ-stuck` | root writ id | root writ enters `stuck` and the stuck is terminal non-success. |
-| `reckoner.writ-failed` | root writ id | root writ enters `failed`. |
+| `reckoner.writ-failed` | root writ id | root writ enters `failed`. When an engine exhausted its retry budget, the context carries an additional `engineFailure` block (rig id, engine id, engine design, attempt count, last error, attempts summary). |
 | `reckoner.queue-drained` | `null` | any terminal writ transition that brings the guild to `open = 0 AND active rigs = 0`. |
 
 ### Context payloads
@@ -76,6 +76,30 @@ interface WritFailedContext {
   resolution?: string;
   childFailures?: string[]; // chase-chain of cascaded leaf-cause short ids
                             // (outer→inner; populated from status['clerk'])
+  engineFailure?: EngineFailureContext; // present when an engine retry budget exhausted
+}
+
+// Engine-failure enrichment — present on the writ-failed pulse when the
+// failure originated in an engine that exhausted its retry budget. Lets a
+// patron identify the failed engine and inspect the attempt trail without
+// dropping into `nsg rig show`. Absent for patron-driven failures and
+// cascade-only failures.
+interface EngineFailureContext {
+  rigId: string;             // the rig whose failed engine produced this
+  engineId: string;          // engine instance id within the rig
+  engineDesignId: string;    // engine design id — the Fabricator design key
+  attemptCount?: number;     // retry budget consumed by the failed engine
+  lastError?: string;        // tail attempt's `error` string when failed
+  attemptsSummary: EngineAttemptSummary[]; // ordered per-attempt summary
+}
+
+interface EngineAttemptSummary {
+  startedAt?: string;
+  endedAt?: string;
+  status?: 'completed' | 'failed';
+  error?: string;
+  sessionId?: string;
+  // (yields are intentionally dropped — diagnostic, not audit-log)
 }
 
 interface QueueDrainedContext {

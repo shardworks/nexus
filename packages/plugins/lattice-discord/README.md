@@ -87,12 +87,12 @@ Each pulse is posted as a single Discord embed:
 
 Colors are distinct per trigger type:
 
-| Trigger | Color |
-|---|---|
-| `reckoner.writ-stuck` | orange |
-| `reckoner.writ-failed` | red |
-| `reckoner.queue-drained` | green |
-| other | Discord blurple (neutral fallback) |
+| Trigger | Color | Notes |
+|---|---|---|
+| `reckoner.writ-stuck` | orange | Includes `Type`, `Cause`, `Retryable`, `Detail` fields when present. |
+| `reckoner.writ-failed` | red | Includes `Type`, `Resolution`, `Child failures` fields. When the pulse's context carries an `engineFailure` block (engine retry-budget exhaustion), the embed also surfaces `Engine` (engine id), `Engine design` (`engineDesignId`), `Attempts` (`attemptCount`), and `Last error` fields. Pulses without `engineFailure` render as before. |
+| `reckoner.queue-drained` | green | Includes `Drained at`, `Last terminal` fields. |
+| other | Discord blurple (neutral fallback) | Unknown trigger types render raw context keys generically. |
 
 ### Delivery policy
 

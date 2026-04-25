@@ -53,11 +53,28 @@ import {
 
 // ── Fixture ────────────────────────────────────────────────────
 
+interface EngineAttemptRow {
+  startedAt?: string;
+  endedAt?: string;
+  status?: 'completed' | 'failed';
+  error?: string;
+  sessionId?: string;
+}
+
+interface EngineInstanceRow {
+  id: string;
+  designId: string;
+  status: string;
+  attemptCount?: number;
+  attempts?: EngineAttemptRow[];
+}
+
 interface RigRow extends BookEntry {
   id: string;
   writId: string;
   status: 'running' | 'blocked' | 'stuck' | 'completed' | 'failed' | 'cancelled';
   createdAt: string;
+  engines?: EngineInstanceRow[];
 }
 
 function buildCtx(entries: KitEntry[] = []): StartupContext {
@@ -75,6 +92,12 @@ interface Fixture {
   lattice: LatticeApi;
   deps: ReckonerObserverDeps;
   seedRig: (writId: string, status?: RigRow['status']) => Promise<string>;
+  seedRigWithEngines: (params: {
+    writId: string;
+    status?: RigRow['status'];
+    engines: EngineInstanceRow[];
+    createdAt?: string;
+  }) => Promise<string>;
   pulsesOf: (triggerType?: string) => Promise<PulseDoc[]>;
   pulsesBook: ReadOnlyBook<PulseDoc>;
 }
@@ -164,6 +187,23 @@ async function buildFixture(): Promise<Fixture> {
     return id;
   }
 
+  async function seedRigWithEngines(params: {
+    writId: string;
+    status?: RigRow['status'];
+    engines: EngineInstanceRow[];
+    createdAt?: string;
+  }): Promise<string> {
+    const id = generateId('rig', 4);
+    await writableRigs.put({
+      id,
+      writId: params.writId,
+      status: params.status ?? 'failed',
+      createdAt: params.createdAt ?? new Date().toISOString(),
+      engines: params.engines,
+    });
+    return id;
+  }
+
   async function pulsesOf(triggerType?: string): Promise<PulseDoc[]> {
     const where = triggerType !== undefined ? [['triggerType', '=', triggerType] as const] : [];
     return writablePulses.find({
@@ -181,7 +221,16 @@ async function buildFixture(): Promise<Fixture> {
     resolveMaxAttempts: () => 2,
   };
 
-  return { stacks, clerk, lattice, deps, seedRig, pulsesOf, pulsesBook };
+  return {
+    stacks,
+    clerk,
+    lattice,
+    deps,
+    seedRig,
+    seedRigWithEngines,
+    pulsesOf,
+    pulsesBook,
+  };
 }
 
 /**
@@ -269,6 +318,68 @@ describe('Reckoner — idempotency under CDC replay', () => {
     assert.equal(pulses[0]?.writId, writ.id);
     const ctx = pulses[0]?.context as { writUpdatedAt?: string };
     assert.equal(ctx.writUpdatedAt, entry.updatedAt);
+  });
+
+  it('writ-failed with engine context: same transition replayed twice yields exactly one pulse', async () => {
+    // Engine-context enrichment must not change the dedupe identity.
+    // The same engine-enriched CDC event delivered twice must still
+    // produce exactly one persisted pulse row.
+    const writ = await fix.clerk.post({ title: 'engine-fail mandate', body: 'b' });
+    await fix.seedRigWithEngines({
+      writId: writ.id,
+      status: 'failed',
+      engines: [
+        {
+          id: 'implement',
+          designId: 'claude-code',
+          status: 'failed',
+          attemptCount: 2,
+          attempts: [
+            {
+              startedAt: '2026-04-23T10:00:00.000Z',
+              endedAt: '2026-04-23T10:01:00.000Z',
+              status: 'failed',
+              error: 'first',
+              sessionId: 's-1',
+            },
+            {
+              startedAt: '2026-04-23T10:02:00.000Z',
+              endedAt: '2026-04-23T10:03:00.000Z',
+              status: 'failed',
+              error: 'second',
+              sessionId: 's-2',
+            },
+          ],
+        },
+      ],
+    });
+    const entry: WritDoc = {
+      ...writ,
+      phase: 'failed',
+      updatedAt: '2026-04-23T11:30:00.000Z',
+      resolution: 'engine exhausted',
+    };
+    const event = makeUpdateEvent({ entry, prevPhase: 'open' });
+
+    await handleWritChange(fix.deps, event);
+    await handleWritChange(fix.deps, event);
+
+    const pulses = await fix.pulsesOf(TRIGGER_WRIT_FAILED);
+    assert.equal(
+      pulses.length,
+      1,
+      'engine-context enrichment must not duplicate writ-failed under replay',
+    );
+    assert.equal(pulses[0]?.writId, writ.id);
+    const ctx = pulses[0]?.context as {
+      writUpdatedAt?: string;
+      engineFailure?: { engineId?: string; engineDesignId?: string; lastError?: string };
+    };
+    assert.equal(ctx.writUpdatedAt, entry.updatedAt);
+    assert.ok(ctx.engineFailure, 'engineFailure must be present on the replayed pulse');
+    assert.equal(ctx.engineFailure!.engineId, 'implement');
+    assert.equal(ctx.engineFailure!.engineDesignId, 'claude-code');
+    assert.equal(ctx.engineFailure!.lastError, 'second');
   });
 
   it('queue-drained: same terminal transition replayed twice yields exactly one pulse', async () => {

@@ -126,6 +126,62 @@ describe('context field rendering', () => {
     assert.equal(map.get('Child failures'), 'w-bad1, w-bad2');
   });
 
+  it('renders failed context with engine-failure fields when engineFailure is present', () => {
+    const fields = contextFields(
+      pulse({
+        triggerType: 'reckoner.writ-failed',
+        context: {
+          writType: 'mandate',
+          resolution: 'engine exhausted',
+          engineFailure: {
+            rigId: 'rig-1234',
+            engineId: 'implement',
+            engineDesignId: 'claude-code',
+            attemptCount: 3,
+            lastError: 'session crashed: ECONNRESET',
+            attemptsSummary: [
+              { startedAt: 's', endedAt: 'e', status: 'failed', error: 'first', sessionId: 's-1' },
+              { startedAt: 's', endedAt: 'e', status: 'failed', error: 'session crashed: ECONNRESET', sessionId: 's-2' },
+            ],
+          },
+        },
+      }),
+    );
+    const map = new Map(fields.map((f) => [f.name, f.value]));
+    assert.equal(map.get('Engine'), 'implement');
+    assert.equal(map.get('Engine design'), 'claude-code');
+    assert.equal(map.get('Attempts'), '3');
+    assert.equal(map.get('Last error'), 'session crashed: ECONNRESET');
+    // The long error stays non-inline.
+    const lastError = fields.find((f) => f.name === 'Last error');
+    assert.ok(lastError);
+    assert.notEqual(lastError!.inline, true);
+    // Inline placement is consistent for the short scalars.
+    const engineField = fields.find((f) => f.name === 'Engine');
+    assert.equal(engineField?.inline, true);
+    const designField = fields.find((f) => f.name === 'Engine design');
+    assert.equal(designField?.inline, true);
+    const attemptsField = fields.find((f) => f.name === 'Attempts');
+    assert.equal(attemptsField?.inline, true);
+  });
+
+  it('renders failed context with NO engine fields when engineFailure is absent', () => {
+    const fields = contextFields(
+      pulse({
+        triggerType: 'reckoner.writ-failed',
+        context: {
+          writType: 'mandate',
+          resolution: 'patron-driven failure',
+        },
+      }),
+    );
+    const names = new Set(fields.map((f) => f.name));
+    assert.ok(!names.has('Engine'), 'Engine field must be absent without engineFailure');
+    assert.ok(!names.has('Engine design'), 'Engine design field must be absent without engineFailure');
+    assert.ok(!names.has('Attempts'), 'Attempts field must be absent without engineFailure');
+    assert.ok(!names.has('Last error'), 'Last error field must be absent without engineFailure');
+  });
+
   it('renders drain context with drainedAt and lastTerminalWritId', () => {
     const fields = contextFields(
       pulse({

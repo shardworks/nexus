@@ -58,6 +58,69 @@ export interface WritStuckContext {
   detail?: string;
 }
 
+/**
+ * Per-attempt summary entry surfaced on `WritFailedContext.engineFailure.attemptsSummary`.
+ *
+ * Mirrors a Spider `EngineAttempt` row, less the `yields` payload — the
+ * pulse is a diagnostic surface, not an audit log, and yields can balloon
+ * the context size without serving a named consumer.
+ *
+ * Every field is optional because the source `EngineAttempt` row keeps
+ * them optional while an attempt is in flight or terminates without a
+ * session id.
+ */
+export interface EngineAttemptSummary {
+  /** ISO timestamp when the attempt started. */
+  startedAt?: string;
+  /** ISO timestamp when the attempt terminated; absent while in-flight. */
+  endedAt?: string;
+  /**
+   * Terminal attempt status — only the two terminal outcomes a single
+   * attempt can reach. Absent while the attempt is still in-flight.
+   */
+  status?: 'completed' | 'failed';
+  /** Error message if the attempt terminated in `'failed'`. */
+  error?: string;
+  /** Animator session id associated with this attempt, if any. */
+  sessionId?: string;
+}
+
+/**
+ * Engine-failure enrichment block on `WritFailedContext`.
+ *
+ * Present only when the failed root mandate has a rig in `failed` status
+ * with at least one engine in `failed` status. Surfaces the design-click
+ * diagnostic fields so a patron reading the pulse can identify the failed
+ * engine, attempt count, and per-attempt error trail without dropping
+ * into `nsg rig show`.
+ */
+export interface EngineFailureContext {
+  /** Rig id whose failed engine produced this enrichment. */
+  rigId: string;
+  /** Engine instance id within the rig (e.g. 'draft', 'implement'). */
+  engineId: string;
+  /** Engine design id — the Fabricator design key. */
+  engineDesignId: string;
+  /**
+   * Retry budget consumed by the failed engine. Absent on rigs whose
+   * failed engine never had its retry counter incremented (rare: a
+   * fail-fast engine with `maxAttempts: 0`).
+   */
+  attemptCount?: number;
+  /**
+   * Most recent attempt's error message — the `error` field on the tail
+   * `EngineAttempt` row when its `status === 'failed'`. Absent when the
+   * tail attempt has no error string.
+   */
+  lastError?: string;
+  /**
+   * Ordered list of attempt summaries copied from the engine's
+   * `attempts[]` array. Empty when the engine has never been dispatched
+   * (which would be unusual on a `failed` engine but is tolerated).
+   */
+  attemptsSummary: EngineAttemptSummary[];
+}
+
 /** Context payload for `reckoner.writ-failed`. */
 export interface WritFailedContext {
   /** Two-segment short id. */
@@ -72,6 +135,13 @@ export interface WritFailedContext {
   resolution?: string;
   /** Short ids of failed child writs referenced by the resolution, when parseable. */
   childFailures?: string[];
+  /**
+   * Optional engine-failure enrichment block. Present when the failed
+   * mandate has a `failed` rig with a `failed` engine; absent for
+   * patron-driven failures, cascade-only failures, and rigs whose engines
+   * are all in non-failed terminal states.
+   */
+  engineFailure?: EngineFailureContext;
 }
 
 /** Context payload for `reckoner.queue-drained`. */
