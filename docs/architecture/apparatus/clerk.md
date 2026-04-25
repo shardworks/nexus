@@ -228,12 +228,9 @@ interface ClerkApi {
    * must be written via setWritStatus() — transition() silently
    * strips any caller-supplied status field.
    *
-   * CDC cascade behavior:
-   * - Child failed → parent: failure propagates up
-   * - Parent failed/cancelled → children: non-terminal children are cancelled
-   * - Parent completed → children: non-terminal children are left as-is
-   *   and a warning is logged (their existence indicates an upstream
-   *   bookkeeping gap that should be investigated)
+   * Cascade across the parent/child boundary is not driven by
+   * `transition()` itself; it is dispatched by the per-type
+   * children-behavior engine. See [Children-behavior cascade](#children-behavior-cascade).
    */
   transition(id: string, to: WritPhase, fields?: Partial<WritDoc>): Promise<WritDoc>
 
