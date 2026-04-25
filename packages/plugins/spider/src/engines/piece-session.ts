@@ -35,13 +35,20 @@ import type { SpiderCollectResult, RigTemplateEngine, RigDoc } from '../types.ts
  * failed) — in which case the failed transition is expected (the cascade or
  * another path beat us to it) and should be swallowed silently.
  *
- * Matches the wording produced by Clerk's `transition()` guard, e.g.
- *   `Cannot transition writ "…" to "completed": phase is "cancelled", expected one of: open.`
+ * Matches the wording produced by Clerk's `transition()` guard. Both the
+ * pre-T2 and post-T2 error shapes are recognised so this classifier keeps
+ * working across the writ-type-config refactor:
+ *   pre-T2:  `Cannot transition writ "…" to "completed": phase is "cancelled", …`
+ *   post-T2: `Cannot transition writ "…" from "cancelled" to "completed": legal transitions from "cancelled" are none (terminal state).`
  * Also tolerates future phrasing like "already terminal".
  */
 function isAlreadyTerminalTransitionError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   if (message.includes('already terminal')) return true;
+  // Post-T2 strict-transition wording — `none (terminal state)` is emitted
+  // exactly when the writ's current state is terminal and has no outbound
+  // transitions, which is the race condition this guard is meant to swallow.
+  if (message.includes('none (terminal state)')) return true;
   return (
     message.includes('phase is "cancelled"') ||
     message.includes('phase is "completed"') ||

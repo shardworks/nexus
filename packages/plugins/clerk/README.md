@@ -34,7 +34,14 @@ const clerk = guild().apparatus<ClerkApi>('clerk');
 
 ### `post(request): Promise<WritDoc>`
 
-Post a new commission, creating a writ in its registered type's declared `initial` state. For mandate that's `new` (a draft); the `commission-post` tool auto-publishes mandate writs to `open` by default.
+Post a new commission, creating a writ in its registered type's declared `initial` state. For mandate that's `new` (a draft).
+
+> **API vs. tool — auto-publish UX lives in the tool layer.** `clerk.post()` always lands the writ in the type's `initial` state and never advances it on its own — the API surface is intentionally minimal and predictable. The two tool wrappers reach `open` for you:
+>
+> - **`commission-post`** transitions newly-posted **mandate** writs to `open` automatically unless `draft: true` is passed. Other types (anything plugin-registered) are left in their `initial` state — advancing them without a type-specific tool would be silent coupling, so the auto-advance is confined to mandate.
+> - **`piece-add`** unconditionally transitions the new piece to `open` (the tool has no `draft` parameter).
+>
+> Direct `clerk.post()` callers — including most plugin code — keep the `initial`-state landing semantics; if you want the writ to be dispatchable, follow up with `clerk.transition(id, 'open')`.
 
 ```typescript
 const writ = await clerk.post({
@@ -406,7 +413,8 @@ The Clerk contributes books, tools, and pages to the guild:
 
 | Tool | Permission | Description |
 |---|---|---|
-| `commission-post` | `clerk:write` | Post a new commission (create a writ, optionally as child) |
+| `commission-post` | `clerk:write` | Post a new commission (create a writ, optionally as child). Auto-publishes mandate writs to `open` unless `draft: true` is passed; other types stay in their `initial` state. |
+| `piece-add` | `clerk:write` | Add a child `piece` writ to a mandate from a structured task description; the piece is auto-published to `open` and joins the implement-loop queue. |
 | `writ-show` | `clerk:read` | Show full detail for a writ (includes parent/children context) |
 | `writ-list` | `clerk:read` | List writs with optional filters (phase, type, parentId) |
 | `writ-tree` | `clerk:read` | Render the writ hierarchy as a depth-aware tree (forest or single subtree); supports `phase` / `type` filters with prune semantics and a `depth` cap. Output is a box-drawing ASCII tree by default (`--format text`) or the structured `WritTree[]` forest (`--format json`). |

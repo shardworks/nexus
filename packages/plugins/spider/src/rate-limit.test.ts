@@ -132,7 +132,22 @@ function buildFixture(): Fixture {
   // Clerk
   if (!('apparatus' in clerkPlugin)) throw new Error('clerk must be apparatus');
   clerkPlugin.apparatus.start(noopCtx);
-  const clerk = clerkPlugin.apparatus.provides as ClerkApi;
+  const realClerk = clerkPlugin.apparatus.provides as ClerkApi;
+
+  // Fixture wrapper: post-refactor `clerk.post()` lands writs in their
+  // declared initial state (`new`). The spider only dispatches `open`
+  // writs, so the rate-limit tests need their writs auto-published to
+  // reach the rig-spawn path. Mirrors the wrapper in spider.test.ts.
+  const clerk: ClerkApi = {
+    ...realClerk,
+    async post(request) {
+      const writ = await realClerk.post(request);
+      if (writ.phase === 'new') {
+        return realClerk.transition(writ.id, 'open');
+      }
+      return writ;
+    },
+  };
   apparatusMap.set('clerk', clerk);
 
   // Fabricator — seed the `anima-session` engine from Spider's support kit.

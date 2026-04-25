@@ -310,7 +310,10 @@ describe('Clerk', () => {
     });
 
     it('sets createdAt and updatedAt to the same value on creation', async () => {
-      const writ = await postMandate({ title: 'Timestamps', body: 'Body' });
+      // Use clerk.post() directly — postMandate() does post() then transition(),
+      // which crosses two writes and breaks the createdAt === updatedAt invariant.
+      const writ = await clerk.post({ title: 'Timestamps', body: 'Body' });
+      assert.equal(writ.phase, 'new');
       assert.equal(writ.createdAt, writ.updatedAt);
     });
 

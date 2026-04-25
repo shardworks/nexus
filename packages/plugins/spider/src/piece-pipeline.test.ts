@@ -198,8 +198,7 @@ function buildFixture(
   apparatusMap.set('animator', mockAnimatorApi);
 
   clerkApparatus.start(noopCtx);
-  const clerk = clerkApparatus.provides as ClerkApi;
-  apparatusMap.set('clerk', clerk);
+  const realClerk = clerkApparatus.provides as ClerkApi;
 
   // Register `piece` with the Clerk's runtime registry. The legacy
   // `clerk.writTypes` guild-config channel and the kit-channel scan have
@@ -208,7 +207,7 @@ function buildFixture(
   // here while the registry's startup window is still open — the test
   // harness never fires `phase:started`, so the registry stays open for
   // the lifetime of the fixture.
-  clerk.registerWritType({
+  realClerk.registerWritType({
     name: 'piece',
     states: [
       { name: 'new', classification: 'initial', allowedTransitions: ['open', 'cancelled'] },
@@ -219,6 +218,27 @@ function buildFixture(
       { name: 'cancelled', classification: 'terminal', attrs: ['cancelled'], allowedTransitions: [] },
     ],
   });
+
+  // Fixture wrapper: legacy piece-pipeline tests post mandate writs and
+  // expect them to be `open` (dispatchable) immediately — that was the
+  // pre-registry-refactor auto-publish semantics. The post-refactor
+  // ClerkApi.post() lands writs in their declared initial state (`new`).
+  // The wrapper preserves the fixture's prior behaviour by auto-publishing
+  // any writ that lands in `new`. Mandate, piece, and any other type used
+  // here all declare `new → open` as a legal transition. This is a
+  // test-fixture concession, not an API change. Tests that need a writ to
+  // stay in `new` can call `realClerk.post(...)` directly.
+  const clerk: ClerkApi = {
+    ...realClerk,
+    async post(request) {
+      const writ = await realClerk.post(request);
+      if (writ.phase === 'new') {
+        return realClerk.transition(writ.id, 'open');
+      }
+      return writ;
+    },
+  };
+  apparatusMap.set('clerk', clerk);
 
   const { ctx: fabricatorCtx } = buildCtx(fabricatorKitEntries);
   fabricatorApparatus.start(fabricatorCtx);
@@ -231,7 +251,7 @@ function buildFixture(
   apparatusMap.set('spider', spider);
 
   return {
-    stacks, clerk, fabricator, spider, memBackend,
+    stacks, clerk, realClerk, fabricator, spider, memBackend,
     summonCalls,
     setSessionOutcome(outcome: { status: 'completed' | 'failed'; error?: string; output?: string }) {
       currentSessionOutcome = outcome;
@@ -336,8 +356,7 @@ describe('implement-loop engine', () => {
     await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>Task 1</name></task>', parentId: mandate.id });
     await clerk.post({ type: 'piece', title: 'Task 2', body: '<task id="t2"><name>Task 2</name></task>', parentId: mandate.id });
 
-    // Publish mandate
-    await clerk.transition(mandate.id, 'open');
+    // Mandate is already in `open` thanks to the fixture's auto-publish wrapper.
 
     // Spawn rig
     const r1 = await spider.crawl();
@@ -377,7 +396,6 @@ describe('implement-loop engine', () => {
     const mandate = await clerk.post({ title: 'Sequential', body: 'Spec', codex: 'test' });
     await clerk.post({ type: 'piece', title: 'Task A', body: '<task id="ta"><name>A</name></task>', parentId: mandate.id });
     await clerk.post({ type: 'piece', title: 'Task B', body: '<task id="tb"><name>B</name></task>', parentId: mandate.id });
-    await clerk.transition(mandate.id, 'open');
 
     // Spawn → pre-complete draft → implement-loop → graft → piece-0 started
     await spider.crawl(); // rig-spawned
@@ -405,7 +423,6 @@ describe('implement-loop engine', () => {
     const mandate = await clerk.post({ title: 'Fail test', body: 'Spec', codex: 'test' });
     await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
     await clerk.post({ type: 'piece', title: 'Task 2', body: '<task id="t2"><name>T2</name></task>', parentId: mandate.id });
-    await clerk.transition(mandate.id, 'open');
 
     // Spawn → pre-complete draft → implement-loop → graft → piece-0 starts
     await spider.crawl(); // rig-spawned
@@ -437,7 +454,6 @@ describe('implement-loop engine', () => {
 
     const mandate = await clerk.post({ title: 'Transition test', body: 'Spec', codex: 'test' });
     const piece = await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
-    await clerk.transition(mandate.id, 'open');
 
     // Run through to piece completion
     await spider.crawl(); // rig-spawned
@@ -452,19 +468,20 @@ describe('implement-loop engine', () => {
     assert.equal(updatedPiece.phase, 'completed');
   });
 
-  it('piece writ is cancelled by cascade when session fails and mandate reaches failed', async () => {
+  it('piece writ stays open when session fails and mandate reaches failed (T2 — cascade dropped, see T3)', async () => {
     // Design: Spider's tryCollect() calls failEngine() directly for failed sessions
     // and never invokes the engine's collect() method. This means piece-session
     // cannot itself transition the piece writ on session failure.
     //
-    // In the new engine-retry model, engine-failure transitions the mandate writ
-    // directly to `phase='failed'`. Clerk's parent/child cascade then cancels
-    // remaining open child writs, so the piece ends up `cancelled`.
+    // In the engine-retry model, engine-failure transitions the mandate writ
+    // directly to `phase='failed'`. Pre-T2 Clerk cascaded that to cancel the
+    // piece writ; T2 dropped the hardcoded cascade and T3 will reintroduce
+    // it via WritTypeConfig.childrenBehavior. This test pins the current
+    // contract: piece writ is left in `open` because nothing transitions it.
     const { clerk, spider, stacks: s } = fix;
 
     const mandate = await clerk.post({ title: 'Fail transition', body: 'Spec', codex: 'test' });
     const piece = await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
-    await clerk.transition(mandate.id, 'open');
 
     await spider.crawl(); // rig-spawned
     await preCompleteDraft(s, mandate.id);
@@ -478,12 +495,14 @@ describe('implement-loop engine', () => {
     const lastSession = sessions[sessions.length - 1];
     await sessBook.patch(lastSession.id, { status: 'failed', error: 'Build failed' });
 
-    await spider.crawl(); // failEngine → rig failed → mandate failed → child cascaded to cancelled
+    await spider.crawl(); // failEngine → rig failed → mandate failed (no cascade)
 
-    // The piece writ is cancelled by Clerk's parent/child cascade.
+    const updatedMandate = await clerk.show(mandate.id);
+    assert.equal(updatedMandate.phase, 'failed', 'Mandate transitions to failed via engine-failure path');
+
     const updatedPiece = await clerk.show(piece.id);
-    assert.equal(updatedPiece.phase, 'cancelled',
-      'Piece writ is cancelled by cascade when the mandate writ transitions to failed');
+    assert.equal(updatedPiece.phase, 'open',
+      'Piece writ is NOT cancelled — T2 dropped the parent→child cancellation cascade. T3 will reintroduce it.');
   });
 
   it('dynamically added pieces are picked up after the current piece completes', async () => {
@@ -491,7 +510,6 @@ describe('implement-loop engine', () => {
 
     const mandate = await clerk.post({ title: 'Dynamic pieces', body: 'Spec', codex: 'test' });
     await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
-    await clerk.transition(mandate.id, 'open');
 
     // Spawn → draft → implement-loop → graft → piece-0 starts
     await spider.crawl(); // rig-spawned
@@ -538,7 +556,6 @@ describe('implement-loop engine', () => {
 
     const mandate = await clerk.post({ title: 'Dynamic graftTail', body: 'Spec', codex: 'test' });
     await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
-    await clerk.transition(mandate.id, 'open');
 
     await spider.crawl(); // rig-spawned
     await preCompleteDraft(s, mandate.id);
@@ -576,7 +593,6 @@ describe('implement-loop engine', () => {
 
     const mandate = await clerk.post({ title: 'Givens test', body: 'Spec body', codex: 'test' });
     const piece = await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
-    await clerk.transition(mandate.id, 'open');
 
     await spider.crawl(); // rig-spawned
     await preCompleteDraft(s, mandate.id);
@@ -609,7 +625,6 @@ describe('implement-loop engine', () => {
 
     const mandate = await clerk.post({ title: 'Full pipeline', body: 'Spec', codex: 'test' });
     await clerk.post({ type: 'piece', title: 'Only task', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
-    await clerk.transition(mandate.id, 'open');
 
     await spider.crawl(); // rig-spawned
     await preCompleteDraft(s, mandate.id);
@@ -674,7 +689,6 @@ describe('piece-session collect() — transition error classification', () => {
       body: '<task id="t1"><name>T1</name></task>',
       parentId: mandate.id,
     });
-    await clerk.transition(mandate.id, 'open');
 
     await spider.crawl();                      // rig-spawned
     await preCompleteDraft(s, mandate.id);
