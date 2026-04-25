@@ -435,20 +435,32 @@ import animator from '@shardworks/animator-apparatus';
 ## Framework events
 
 When the Clockworks is installed, every terminal session site fires
-framework events:
+framework events. Names follow the catalog
+(`docs/reference/event-catalog.md`) — past-tense lifecycle verbs:
 
-- `session.start` — written from every running-state transition site
+- `session.started` — written from every running-state transition site
   (in-process attached, detached `session-running` ready report).
-- `session.end` — written from every terminal site (in-process
+- `session.ended` — written from every terminal site (in-process
   attached on completion/failure/timeout/rate-limited, detached
   `session-record`, in-process `cancel()`, orphan recovery).
-- `commission.session.ended` — fired alongside `session.end` when
+- `commission.session.ended` — fired alongside `session.ended` when
   `metadata.writId` resolves (by walking `parentId`) to a root
   mandate. The root id is the `commissionId` on the payload.
 - `session.record-failed` — fired from the catch path of session-doc
   / transcript writes that themselves failed (the only path the CDC
-  observer on the sessions book cannot see). The `phase` field is
-  `'session-doc'` or `'transcript'` mirroring the actual write site.
+  observer on the sessions book cannot see). The `phase` field follows
+  the catalog's three-phase taxonomy: `'insert'` for the initial
+  running row, `'update-row'` for terminal-state SessionDoc overwrites
+  (recordSession failure, cancel, orphan recovery, detached terminal),
+  and `'write-record'` for transcript writes.
+- `anima.manifested` — fired alongside `session.started` whenever the
+  session's metadata carries an anima `role`. The catalog's other two
+  `anima.*` events (`anima.instantiated`, `anima.state.changed`) are
+  deferred until the Roster apparatus lands; there is no aspirant →
+  active state machine to observe today.
+- `anima.session.ended` — fired alongside `session.ended` whenever the
+  session's metadata carries an anima `role`. Same payload shape as
+  `session.ended`.
 
 The rate-limit pre-check rejection path does NOT emit — no SessionDoc
 was authoritatively written.

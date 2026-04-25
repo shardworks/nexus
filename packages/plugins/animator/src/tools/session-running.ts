@@ -97,7 +97,7 @@ export default tool({
 
     await sessions.put(doc);
 
-    // Detached running tool — fire `session.start` for the canonical
+    // Detached running tool — fire `session.started` for the canonical
     // first-time pending → running transition. Already-running and
     // terminal-state guards above return before this point so the
     // emission only fires once per session.

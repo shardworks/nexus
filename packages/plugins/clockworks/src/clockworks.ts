@@ -364,6 +364,37 @@ export function createClockworks(): Plugin {
           );
         }
 
+        // ── migration.applied emission ────────────────────────────────
+        // Stacks' `reconcileSchemas` is the only authoritative migration
+        // code path today: it runs `CREATE TABLE IF NOT EXISTS` /
+        // `CREATE INDEX IF NOT EXISTS` for every book contributed via
+        // the `books` kit. Stacks runs first (clockworks `requires:
+        // stacks`), so by the time we get here the schema reconciliation
+        // is complete.
+        //
+        // We don't have a "what changed this boot" signal from Stacks
+        // (the IF NOT EXISTS calls are silent on whether they did
+        // anything). Instead, we use the events book itself as the
+        // ledger: emit one `migration.applied` per `(pluginId, book)`
+        // pair the first time we observe it, and never re-emit. First
+        // boot fires one event per declared book; subsequent boots fire
+        // events only for newly-introduced books. That matches the
+        // catalog's "a database migration is applied" semantics — each
+        // event records the moment a new schema came into existence.
+        //
+        // Idempotency is per-book, not per-boot, so adding a new book
+        // in plugin v1.2 fires `migration.applied` for that book on the
+        // next boot even though the guild itself isn't newly
+        // initialized. Wrapped in best-effort try/catch per D13.
+        try {
+          await emitMigrationsApplied(ctx, api, events);
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[clockworks] best-effort emit of "migration.applied" failed: ${reason}`,
+          );
+        }
+
         // ── Writ-lifecycle and commission CDC observer ────────────────
         // Watches `clerk/writs` for both create and update events. The
         // observer fires writ-lifecycle events (`{type}.ready`, etc.)
@@ -388,4 +419,93 @@ export function createClockworks(): Plugin {
       },
     },
   };
+}
+
+/**
+ * Walk every `books` kit contribution from the startup context and emit
+ * one `migration.applied` event per `(pluginId, book)` pair we have not
+ * already announced. Idempotency is keyed off the events book itself —
+ * each emitted row is the durable marker that the migration was
+ * announced.
+ *
+ * Payload shape: `{ pluginId, book, indexes }`. The catalog defines
+ * `migration.applied` only by name and namespace; we choose a payload
+ * that names the affected entity (the new schema) plus its identifying
+ * index list per the spec's "name the affected entity id plus any
+ * disambiguating context" guidance.
+ *
+ * Per-emit failures (a single book's emit throwing) don't stop the
+ * loop — we trap and warn so a single bad row doesn't block the rest of
+ * the boot from being announced.
+ */
+async function emitMigrationsApplied(
+  ctx: StartupContext,
+  api: ClockworksApi,
+  events: Book<EventDoc>,
+): Promise<void> {
+  const bookKits = ctx.kits('books');
+  if (bookKits.length === 0) return;
+
+  // Pre-load every prior `migration.applied` row so we can short-circuit
+  // re-emission without one query per book. Subsequent boots will find
+  // exactly the rows for books that were already migrated.
+  const priorRows = await events.find({
+    where: [['name', '=', 'migration.applied']],
+  });
+  const seen = new Set<string>();
+  for (const row of priorRows) {
+    const payload = row.payload as
+      | { pluginId?: unknown; book?: unknown }
+      | null
+      | undefined;
+    if (!payload || typeof payload !== 'object') continue;
+    const pluginId = (payload as { pluginId?: unknown }).pluginId;
+    const book = (payload as { book?: unknown }).book;
+    if (typeof pluginId === 'string' && typeof book === 'string') {
+      seen.add(`${pluginId}/${book}`);
+    }
+  }
+
+  for (const entry of bookKits) {
+    const books = entry.value;
+    if (typeof books !== 'object' || books === null) continue;
+    for (const [bookName, schema] of Object.entries(books as Record<string, unknown>)) {
+      const key = `${entry.pluginId}/${bookName}`;
+      if (seen.has(key)) continue;
+      const indexes = extractIndexes(schema);
+      try {
+        await api.emit(
+          'migration.applied',
+          {
+            pluginId: entry.pluginId,
+            book: bookName,
+            indexes,
+          },
+          'framework',
+        );
+        seen.add(key);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[clockworks] best-effort emit of "migration.applied" for ${key} failed: ${reason}`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Pull the declared `indexes` off a per-book schema contribution.
+ * Returns an empty array when the contribution is malformed or omits
+ * indexes — `reconcileSchemas` already tolerates such shapes silently,
+ * and we mirror that.
+ */
+function extractIndexes(schema: unknown): readonly (string | string[])[] {
+  if (typeof schema !== 'object' || schema === null) return [];
+  const indexes = (schema as { indexes?: unknown }).indexes;
+  if (!Array.isArray(indexes)) return [];
+  return indexes.filter(
+    (i): i is string | string[] =>
+      typeof i === 'string' || Array.isArray(i),
+  );
 }

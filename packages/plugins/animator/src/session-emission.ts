@@ -4,9 +4,19 @@
  * Every terminal session site (in-process attached dispatch, detached
  * `handleSessionRecord`, the detached `session-running` tool, orphan
  * recovery in `startup.ts`) routes through this module so the
- * `session.start`, `session.end`, `session.record-failed`, and
+ * `session.started`, `session.ended`, `session.record-failed`, and
  * `commission.session.ended` events fire from a single payload-shape
- * source of truth.
+ * source of truth. Names follow the catalog (past tense) — see
+ * `docs/reference/event-catalog.md`.
+ *
+ * Also fires the `anima.*` lifecycle events for sessions that carry an
+ * anima `role` on their metadata: `anima.manifested` at the canonical
+ * pending → running transition, `anima.session.ended` alongside the
+ * terminal-emit pair. The catalog's other two `anima.*` events
+ * (`anima.instantiated`, `anima.state.changed`) are deferred until the
+ * Roster apparatus lands — there is no aspirant → active state machine
+ * to observe today, so emitting from here would invent semantics. See
+ * the README for the deferral.
  *
  * `ClockworksApi` is resolved lazily via `guild().apparatus()` inside a
  * try/catch. When the Clockworks is not installed (it is in Animator's
@@ -162,22 +172,37 @@ async function deriveCommissionIdForSession(
 // ── Emit helpers ─────────────────────────────────────────────────────
 
 /**
- * Emit `session.start` for a session that has just begun (in-process
- * attached, detached `session-running` ready report, etc.). The doc must
- * carry the canonical `metadata` set by the caller (`role`, `trigger`,
- * etc.). No-op when Clockworks is not installed.
+ * Emit `session.started` for a session that has just begun (in-process
+ * attached, detached `session-running` ready report, etc.). When the
+ * session's metadata carries a `role`, also emits `anima.manifested`
+ * with the same payload — per the catalog: "an anima is launched for a
+ * session". The doc must carry the canonical `metadata` set by the
+ * caller (`role`, `trigger`, etc.). No-op when Clockworks is not
+ * installed.
  */
 export async function emitSessionStarted(doc: SessionDoc): Promise<void> {
   const clockworks = tryResolveClockworks();
   if (!clockworks) return;
 
   const payload = buildBasePayload(doc.id, doc.metadata);
-  await safeEmit(clockworks, 'session.start', payload);
+  await safeEmit(clockworks, 'session.started', payload);
+
+  // anima.manifested — catalog semantics: "an anima is launched for a
+  // session". The pending → running transition is the precise moment
+  // the anima becomes active in a session, so we co-emit here. We only
+  // fire when an anima role is actually known; sessions without a role
+  // (e.g. a detached `animate()` call with no metadata) don't have an
+  // anima to announce.
+  if (typeof payload.anima === 'string') {
+    await safeEmit(clockworks, 'anima.manifested', payload);
+  }
 }
 
 /**
- * Emit `session.end` (and, when the chain resolves to a root mandate,
- * `commission.session.ended`) for a terminal session. Accepts either a
+ * Emit `session.ended` (and, when the chain resolves to a root mandate,
+ * `commission.session.ended`) for a terminal session. When the session
+ * carries an anima `role` on its metadata, also emits
+ * `anima.session.ended` with the same payload. Accepts either a
  * `SessionResult` (in-process path) or a `SessionDoc` (detached /
  * orphan-recovery paths) — they share the field set this helper reads.
  */
@@ -195,7 +220,15 @@ export async function emitSessionEnded(
   if (typeof result.costUsd === 'number') payload.costUsd = result.costUsd;
   if (typeof result.error === 'string') payload.error = result.error;
 
-  await safeEmit(clockworks, 'session.end', payload);
+  await safeEmit(clockworks, 'session.ended', payload);
+
+  // anima.session.ended — co-emitted alongside `session.ended` when an
+  // anima role is recorded on the session. Same payload as
+  // `session.ended` so subscribers can switch on event name without
+  // having to re-derive context.
+  if (typeof payload.anima === 'string') {
+    await safeEmit(clockworks, 'anima.session.ended', payload);
+  }
 
   // Derive the root mandate via Clerk and emit
   // `commission.session.ended` when it resolves. Per D6 we degrade
@@ -210,17 +243,26 @@ export async function emitSessionEnded(
   }
 }
 
-/** The `phase` of a session-record-write failure, mirroring the actual write site. */
-export type SessionRecordFailurePhase = 'session-doc' | 'transcript';
+/**
+ * Catalog-defined phases for a session-record-write failure (see
+ * `docs/reference/event-catalog.md`).
+ *
+ *   - `'insert'`      — initial row write failed (the running-state
+ *                       SessionDoc could not be created).
+ *   - `'write-record'` — transcript JSON write failed.
+ *   - `'update-row'`  — final / terminal SessionDoc overwrite failed.
+ */
+export type SessionRecordFailurePhase = 'insert' | 'write-record' | 'update-row';
 
 /**
  * Emit `session.record-failed` from the catch path of a session-record
  * write that itself failed.
  *
- * Per D22, `phase` is `'session-doc'` or `'transcript'` mirroring the
- * current write-site name. The catalog's three-phase taxonomy doesn't
- * match the current code; that mismatch is documented here in a code
- * comment and surfaced as a follow-up observation.
+ * `phase` follows the catalog's three-phase taxonomy: `'insert'` for the
+ * initial running-row write, `'update-row'` for terminal SessionDoc
+ * overwrites, and `'write-record'` for transcript writes. Call sites
+ * pass the phase that matches the failing write — see the catch sites
+ * in `animator.ts` and `session-record-handler.ts` for examples.
  */
 export async function emitSessionRecordFailed(
   sessionId: string,
@@ -233,9 +275,6 @@ export async function emitSessionRecordFailed(
   const message = error instanceof Error ? error.message : String(error);
   await safeEmit(clockworks, 'session.record-failed', {
     sessionId,
-    // NB: D22 — `phase` mirrors the current write-site name and diverges
-    // from the catalog's three-phase taxonomy. Follow-up: align catalog
-    // and code.
     phase,
     error: message,
   });

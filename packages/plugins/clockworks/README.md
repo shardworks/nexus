@@ -214,6 +214,14 @@ Clockworks failure cannot roll back the originating writ transition.
 `guild.initialized` row and emits one if absent. The persisted row is
 the first-boot marker — subsequent boots find it and skip.
 
+`start()` also walks every `books` kit contribution and emits one
+`migration.applied` event per `(pluginId, book)` pair the first time
+each is observed (idempotency keyed off the events book itself, like
+`guild.initialized`). The catalog defines this event by name only; the
+chosen payload is `{ pluginId, book, indexes }`. First boot fires one
+event per declared book; subsequent boots fire only for newly-introduced
+books.
+
 ## Tools
 
 - `signal` — anima-facing event emission. Validates the proposed event

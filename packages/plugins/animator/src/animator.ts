@@ -324,8 +324,10 @@ async function recordSession(
     // The SessionDoc write failed — fire `session.record-failed` so
     // standing orders bound to it can react. This is the only path that
     // CDC on the sessions book cannot observe (the row was never
-    // authoritatively written).
-    await emitSessionRecordFailed(result.id, 'session-doc', err);
+    // authoritatively written). Phase is `'update-row'` per the catalog
+    // taxonomy: this is a terminal-state overwrite of a row that
+    // recordRunning() already inserted.
+    await emitSessionRecordFailed(result.id, 'update-row', err);
   }
 
   if (transcript && transcript.length > 0) {
@@ -335,11 +337,11 @@ async function recordSession(
       console.warn(
         `[animator] Failed to record transcript for ${result.id}: ${err instanceof Error ? err.message : err}`,
       );
-      await emitSessionRecordFailed(result.id, 'transcript', err);
+      await emitSessionRecordFailed(result.id, 'write-record', err);
     }
   }
 
-  // Fire `session.end` (and possibly `commission.session.ended`) for
+  // Fire `session.ended` (and possibly `commission.session.ended`) for
   // the in-process attached path. Skip when the SessionDoc write itself
   // failed — there is no authoritative session-end to announce; the
   // operator has already received `session.record-failed` instead.
@@ -385,7 +387,7 @@ async function recordRunning(
     }
     await sessions.put(merged);
 
-    // Emit `session.start` once per running transition. The
+    // Emit `session.started` once per running transition. The
     // already-running guard above means a duplicate ready report on a
     // session already in `running` returns before this point in the
     // existing path; for the in-process attached writer (this helper)
@@ -398,9 +400,10 @@ async function recordRunning(
       `[animator] Failed to write initial session record ${id}: ${err instanceof Error ? err.message : err}`,
     );
     // Initial running-record write failed — fire `session.record-failed`
-    // so standing orders see the session at all. We tag the phase as
-    // `session-doc` because that is the actual write site (D22).
-    await emitSessionRecordFailed(id, 'session-doc', err);
+    // so standing orders see the session at all. Phase is `'insert'`
+    // per the catalog taxonomy: this is the first row write that
+    // creates the running session record.
+    await emitSessionRecordFailed(id, 'insert', err);
   }
 }
 
@@ -514,7 +517,8 @@ export function createAnimator(): Plugin {
         console.warn(
           `[animator] Failed to patch session ${sessionId} to cancelled: ${err instanceof Error ? err.message : err}`,
         );
-        await emitSessionRecordFailed(sessionId, 'session-doc', err);
+        // Cancel-path overwrite of an existing session row → catalog phase `'update-row'`.
+        await emitSessionRecordFailed(sessionId, 'update-row', err);
       }
 
       // Step 3: If cancelHandle available, delegate to provider
@@ -531,7 +535,7 @@ export function createAnimator(): Plugin {
         }
       }
 
-      // Cancellation is a terminal session site — fire `session.end`
+      // Cancellation is a terminal session site — fire `session.ended`
       // (and `commission.session.ended` when the writ chain resolves).
       // Skipped when the SessionDoc write itself failed: the operator
       // already received `session.record-failed` instead.
@@ -797,8 +801,9 @@ export function createAnimator(): Plugin {
     apparatus: {
       requires: ['stacks'],
       // Clockworks is a soft dependency: when it's installed every
-      // session lifecycle event (session.start / .end / .record-failed,
-      // commission.session.ended) flows into the events book; when it's
+      // session lifecycle event (session.started / .ended /
+      // .record-failed, commission.session.ended, anima.manifested,
+      // anima.session.ended) flows into the events book; when it's
       // not, the helpers no-op silently. Resolution is lazy inside the
       // helpers so an Animator-without-Clockworks install remains
       // viable. Mirrors `summon()` → `LoomApi`.
@@ -876,7 +881,7 @@ export function createAnimator(): Plugin {
         }
 
         // Register the session-lifecycle emitter so the detached
-        // `handleSessionRecord` path can fire `session.end` and
+        // `handleSessionRecord` path can fire `session.ended` and
         // `session.record-failed` without re-resolving `guild()` per
         // call. Mirrors the `setBackoffMachine` hook just above.
         setEmitter({

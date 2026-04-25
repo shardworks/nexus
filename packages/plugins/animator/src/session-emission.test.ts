@@ -3,19 +3,26 @@
  *
  * Covers the four invocation sites required by the commission:
  *
- *   - session.start fires for newly-running sessions (via the helper)
- *   - session.end fires for terminal sessions, with the agreed payload
+ *   - session.started fires for newly-running sessions (via the helper)
+ *   - session.ended fires for terminal sessions, with the agreed payload
  *   - commission.session.ended fires only when metadata.writId resolves
  *     to a root mandate (D6)
  *   - session.record-failed fires from the SessionDoc / transcript
- *     write-failure paths with `phase` mirroring the actual write site (D22)
+ *     write-failure paths with `phase` from the catalog taxonomy
+ *     (`'insert' | 'write-record' | 'update-row'`)
+ *   - anima.manifested co-fires with session.started when metadata.role
+ *     is set; anima.session.ended co-fires with session.ended on the
+ *     same condition. Animator's responsibility for the anima.* family
+ *     stops here — the catalog's other two (`anima.instantiated`,
+ *     `anima.state.changed`) are deferred until the Roster lands.
  *
  * Plus the soft-dependency contract: when the Clockworks is not
  * installed, every helper silently no-ops and never throws (D12).
  *
  * The terminal-site coverage (in-process attached, detached, orphan
  * recovery, rate-limit pre-check rejection) is asserted in a separate
- * end-to-end animator-emission integration test that drives the actual
+ * end-to-end animator-emission integration test
+ * (`session-emission.integration.test.ts`) that drives the actual
  * dispatch paths.
  */
 
@@ -175,16 +182,16 @@ describe('Animator — session emission helper', () => {
     }) as Promise<EventDoc[]>;
   }
 
-  // ── session.start ──────────────────────────────────────────────────
+  // ── session.started ────────────────────────────────────────────────
 
-  it('emitSessionStarted fires session.start with metadata-derived anima/trigger', async () => {
+  it('emitSessionStarted fires session.started with metadata-derived anima/trigger', async () => {
     const doc = makeSessionDoc({
       id: 'ses-start-1',
       metadata: { role: 'artificer', trigger: 'summon' },
     });
     await emitSessionStarted(doc);
 
-    const [event] = await findEvents('session.start');
+    const [event] = await findEvents('session.started');
     assert.ok(event);
     const payload = event.payload as Record<string, unknown>;
     assert.equal(payload.sessionId, 'ses-start-1');
@@ -197,15 +204,38 @@ describe('Animator — session emission helper', () => {
 
   it('emitSessionStarted omits anima/trigger when metadata is absent', async () => {
     await emitSessionStarted(makeSessionDoc({ id: 'ses-bare' }));
-    const [event] = await findEvents('session.start');
+    const [event] = await findEvents('session.started');
     const payload = event!.payload as Record<string, unknown>;
     assert.ok(!('anima' in payload));
     assert.ok(!('trigger' in payload));
   });
 
-  // ── session.end + commission.session.ended ─────────────────────────
+  // ── anima.manifested ───────────────────────────────────────────────
 
-  it('emitSessionEnded fires session.end with terminal-payload fields', async () => {
+  it('emitSessionStarted co-emits anima.manifested when metadata.role is set', async () => {
+    const doc = makeSessionDoc({
+      id: 'ses-anima-1',
+      metadata: { role: 'artificer', trigger: 'summon' },
+    });
+    await emitSessionStarted(doc);
+
+    const [manifested] = await findEvents('anima.manifested');
+    assert.ok(manifested, 'anima.manifested must fire when role is present');
+    const payload = manifested.payload as Record<string, unknown>;
+    assert.equal(payload.sessionId, 'ses-anima-1');
+    assert.equal(payload.anima, 'artificer');
+    assert.equal(payload.trigger, 'summon');
+  });
+
+  it('emitSessionStarted does NOT emit anima.manifested when metadata.role is absent', async () => {
+    await emitSessionStarted(makeSessionDoc({ id: 'ses-no-role' }));
+    const events = await findEvents('anima.manifested');
+    assert.equal(events.length, 0);
+  });
+
+  // ── session.ended + commission.session.ended ───────────────────────
+
+  it('emitSessionEnded fires session.ended with terminal-payload fields', async () => {
     await emitSessionEnded({
       id: 'ses-end-1',
       status: 'completed',
@@ -218,13 +248,47 @@ describe('Animator — session emission helper', () => {
       metadata: { role: 'artificer' },
     });
 
-    const [event] = await findEvents('session.end');
+    const [event] = await findEvents('session.ended');
     const payload = event!.payload as Record<string, unknown>;
     assert.equal(payload.sessionId, 'ses-end-1');
     assert.equal(payload.exitCode, 0);
     assert.equal(payload.durationMs, 60_000);
     assert.equal(payload.costUsd, 0.42);
     assert.equal(payload.anima, 'artificer');
+  });
+
+  it('emitSessionEnded co-emits anima.session.ended when metadata.role is set', async () => {
+    await emitSessionEnded({
+      id: 'ses-anima-end-1',
+      status: 'completed',
+      startedAt: '2026-04-01T10:00:00Z',
+      endedAt: '2026-04-01T10:01:00Z',
+      durationMs: 60_000,
+      provider: 'claude-code',
+      exitCode: 0,
+      metadata: { role: 'artificer' },
+    });
+
+    const [animaEnded] = await findEvents('anima.session.ended');
+    assert.ok(animaEnded, 'anima.session.ended must fire when role is present');
+    const payload = animaEnded.payload as Record<string, unknown>;
+    assert.equal(payload.sessionId, 'ses-anima-end-1');
+    assert.equal(payload.anima, 'artificer');
+  });
+
+  it('emitSessionEnded does NOT emit anima.session.ended when metadata.role is absent', async () => {
+    await emitSessionEnded({
+      id: 'ses-end-no-role',
+      status: 'completed',
+      startedAt: '2026-04-01T10:00:00Z',
+      endedAt: '2026-04-01T10:01:00Z',
+      durationMs: 60_000,
+      provider: 'claude-code',
+      exitCode: 0,
+      metadata: {},
+    });
+    const events = await findEvents('anima.session.ended');
+    assert.equal(events.length, 0);
   });
 
   it('emitSessionEnded fires commission.session.ended when writId resolves to a root mandate', async () => {
@@ -241,7 +305,7 @@ describe('Animator — session emission helper', () => {
       metadata: { role: 'artificer', writId: root.id },
     });
 
-    const [end] = await findEvents('session.end');
+    const [end] = await findEvents('session.ended');
     const [comEnd] = await findEvents('commission.session.ended');
     assert.ok(end);
     assert.ok(comEnd);
@@ -288,7 +352,7 @@ describe('Animator — session emission helper', () => {
       metadata: {},
     });
 
-    const sessionEnd = await findEvents('session.end');
+    const sessionEnd = await findEvents('session.ended');
     const comEnd = await findEvents('commission.session.ended');
     assert.equal(sessionEnd.length, 1);
     assert.equal(comEnd.length, 0);
@@ -296,7 +360,7 @@ describe('Animator — session emission helper', () => {
 
   it('emitSessionEnded does NOT fire commission.session.ended when the chain dead-ends at a non-mandate root', async () => {
     // Pre-seed the writs book with a writ whose type is NOT 'mandate'
-    // and which has no parent. The emit should fire session.end only.
+    // and which has no parent. The emit should fire session.ended only.
     const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
     await writsBook.put({
       id: 'w-task-1',
@@ -319,36 +383,49 @@ describe('Animator — session emission helper', () => {
       metadata: { writId: 'w-task-1' },
     });
 
-    assert.equal((await findEvents('session.end')).length, 1);
+    assert.equal((await findEvents('session.ended')).length, 1);
     assert.equal((await findEvents('commission.session.ended')).length, 0);
   });
 
   // ── session.record-failed ──────────────────────────────────────────
 
-  it('emitSessionRecordFailed fires with phase=session-doc and an error message', async () => {
+  it('emitSessionRecordFailed fires with phase=insert and an error message', async () => {
     await emitSessionRecordFailed(
       'ses-fail-1',
-      'session-doc',
+      'insert',
       new Error('disk full'),
     );
 
     const [event] = await findEvents('session.record-failed');
     const payload = event!.payload as Record<string, unknown>;
     assert.equal(payload.sessionId, 'ses-fail-1');
-    assert.equal(payload.phase, 'session-doc');
+    assert.equal(payload.phase, 'insert');
     assert.equal(payload.error, 'disk full');
   });
 
-  it('emitSessionRecordFailed fires with phase=transcript', async () => {
+  it('emitSessionRecordFailed fires with phase=update-row', async () => {
     await emitSessionRecordFailed(
       'ses-fail-2',
-      'transcript',
+      'update-row',
+      new Error('row clobbered'),
+    );
+
+    const [event] = await findEvents('session.record-failed');
+    const payload = event!.payload as Record<string, unknown>;
+    assert.equal(payload.phase, 'update-row');
+    assert.equal(payload.error, 'row clobbered');
+  });
+
+  it('emitSessionRecordFailed fires with phase=write-record', async () => {
+    await emitSessionRecordFailed(
+      'ses-fail-3',
+      'write-record',
       'transcript-write-error',
     );
 
     const [event] = await findEvents('session.record-failed');
     const payload = event!.payload as Record<string, unknown>;
-    assert.equal(payload.phase, 'transcript');
+    assert.equal(payload.phase, 'write-record');
     assert.equal(payload.error, 'transcript-write-error');
   });
 
@@ -372,7 +449,7 @@ describe('Animator — session emission helper', () => {
       exitCode: 0,
       metadata: { writId: 'something' },
     });
-    await emitSessionRecordFailed('ses-no-cw', 'session-doc', new Error('x'));
+    await emitSessionRecordFailed('ses-no-cw', 'insert', new Error('x'));
 
     // The events book has no rows (and silence is the contract).
     assert.equal(await fix.eventsBook.count(), 0);

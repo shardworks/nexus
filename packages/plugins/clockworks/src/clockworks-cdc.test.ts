@@ -28,6 +28,14 @@
  *
  *   - The `clockworks/event_dispatches` book *is* auto-wired (it is
  *     not part of the carve-out) — sanity-check by writing a row.
+ *
+ * Boot-time event interactions: the framework-event-emission commission
+ * landed `guild.initialized` and `migration.applied` emissions in
+ * `start()`, both of which write to `clockworks/events`. The fixture
+ * captures the post-startup row set and `eventsAfter()` /
+ * `countAfter()` exclude those baseline rows so the test assertions can
+ * keep their pre-bootstrap row counts (the assertions never had to know
+ * about the bootstrap rows, and they shouldn't start now).
  */
 
 import { afterEach, describe, it } from 'node:test';
@@ -88,7 +96,23 @@ interface FixtureOptions {
 interface Fixture {
   stacks: StacksApi;
   clockworks: ClockworksApi;
+  /**
+   * Raw handle on `clockworks/events`. Only useful for direct writes —
+   * tests asserting on visible rows should use `eventsAfter()` to
+   * exclude the boot-time bootstrap row set captured by the fixture
+   * builder.
+   */
   events: Book<EventDoc>;
+  /**
+   * Return only the events emitted *after* the fixture finished
+   * building. Boot-time bootstraps (`guild.initialized`,
+   * `migration.applied` for each declared book) are excluded so the
+   * test assertions can keep their pre-bootstrap row counts. Sorted by
+   * `firedAt` ascending.
+   */
+  eventsAfter(): Promise<EventDoc[]>;
+  /** Count of events visible to `eventsAfter()`. */
+  countAfter(): Promise<number>;
   apparatusMap: Map<string, unknown>;
 }
 
@@ -208,7 +232,29 @@ async function buildFixture(opts: FixtureOptions = {}): Promise<Fixture> {
 
   const events = stacks.book<EventDoc>('clockworks', 'events');
 
-  return { stacks, clockworks, events, apparatusMap };
+  // Capture the set of event ids that already exist in the events book
+  // immediately after fixture build. These are the boot-time
+  // bootstraps: `guild.initialized` once per fresh guild, plus one
+  // `migration.applied` row per `(pluginId, book)` declared in the
+  // `books` kit contributions. The test assertions are written for
+  // post-bootstrap activity, so `eventsAfter()` filters them out.
+  const baselineRows = await events.list();
+  const baselineIds = new Set(baselineRows.map((r) => r.id));
+
+  return {
+    stacks,
+    clockworks,
+    events,
+    apparatusMap,
+    async eventsAfter(): Promise<EventDoc[]> {
+      const all = await events.list({ orderBy: ['firedAt', 'asc'] });
+      return all.filter((r) => !baselineIds.has(r.id));
+    },
+    async countAfter(): Promise<number> {
+      const visible = await events.find({});
+      return visible.filter((r) => !baselineIds.has(r.id)).length;
+    },
+  };
 }
 
 interface MyDoc extends BookEntry {
@@ -231,7 +277,7 @@ describe('Clockworks — CDC auto-wiring (book.* events)', () => {
     const myBook = fix.stacks.book<MyDoc>('test-plugin', 'myBook');
     await myBook.put({ id: 'r1', value: 'hello' });
 
-    const rows = await fix.events.list();
+    const rows = await fix.eventsAfter();
     assert.equal(rows.length, 1, 'exactly one event row landed');
     const evt = rows[0];
     assert.equal(evt.name, 'book.test-plugin.myBook.created');
@@ -255,7 +301,7 @@ describe('Clockworks — CDC auto-wiring (book.* events)', () => {
     await myBook.put({ id: 'r1', value: 'first' });
     await myBook.put({ id: 'r1', value: 'second' });
 
-    const rows = await fix.events.list({ orderBy: ['firedAt', 'asc'] });
+    const rows = await fix.eventsAfter();
     assert.equal(rows.length, 2);
     assert.equal(rows[0].name, 'book.test-plugin.myBook.created');
     assert.equal(rows[1].name, 'book.test-plugin.myBook.updated');
@@ -282,7 +328,7 @@ describe('Clockworks — CDC auto-wiring (book.* events)', () => {
     await myBook.put({ id: 'r1', value: 'first' });
     await myBook.patch('r1', { value: 'patched' });
 
-    const rows = await fix.events.list({ orderBy: ['firedAt', 'asc'] });
+    const rows = await fix.eventsAfter();
     assert.equal(rows.length, 2);
     assert.equal(rows[1].name, 'book.test-plugin.myBook.updated');
     const payload = rows[1].payload as { type: string; entry: MyDoc };
@@ -301,7 +347,7 @@ describe('Clockworks — CDC auto-wiring (book.* events)', () => {
     await myBook.put({ id: 'r1', value: 'hello' });
     await myBook.delete('r1');
 
-    const rows = await fix.events.list({ orderBy: ['firedAt', 'asc'] });
+    const rows = await fix.eventsAfter();
     assert.equal(rows.length, 2);
     assert.equal(rows[1].name, 'book.test-plugin.myBook.deleted');
     assert.equal(rows[1].emitter, 'framework');
@@ -321,7 +367,7 @@ describe('Clockworks — CDC auto-wiring (book.* events)', () => {
     const myBook = fix.stacks.book<MyDoc>('test-plugin', 'myBook');
     await myBook.delete('nope'); // silent no-op per BookSpec
 
-    assert.equal(await fix.events.count(), 0);
+    assert.equal(await fix.countAfter(), 0);
   });
 
   it('clockworks/event_dispatches IS auto-wired (only events is excluded)', async () => {
@@ -344,7 +390,7 @@ describe('Clockworks — CDC auto-wiring (book.* events)', () => {
     };
     await dispatches.put(doc);
 
-    const rows = await fix.events.list();
+    const rows = await fix.eventsAfter();
     assert.equal(rows.length, 1, 'event_dispatches write produced an event');
     assert.equal(rows[0].name, 'book.clockworks.event_dispatches.created');
     assert.equal(rows[0].emitter, 'framework');
@@ -365,7 +411,7 @@ describe('Clockworks — CDC auto-wiring recursion guard', () => {
       'test',
     );
 
-    const rows = await fix.events.list();
+    const rows = await fix.eventsAfter();
     assert.equal(rows.length, 1, 'exactly one row — no recursive echo');
     assert.equal(rows[0].id, id);
     assert.equal(rows[0].name, 'something.custom');
@@ -383,7 +429,7 @@ describe('Clockworks — CDC auto-wiring recursion guard', () => {
     await fix.clockworks.emit('a.second', { n: 2 }, 'test');
     await fix.clockworks.emit('a.third', { n: 3 }, 'test');
 
-    const rows = await fix.events.list({ orderBy: ['firedAt', 'asc'] });
+    const rows = await fix.eventsAfter();
     assert.equal(rows.length, 3);
     assert.deepEqual(
       rows.map((r) => r.name),
@@ -416,7 +462,7 @@ describe('Clockworks — CDC auto-wiring kit-entry tolerance', () => {
     const good = fix.stacks.book<MyDoc>('good-plugin', 'goodBook');
     await good.put({ id: 'r1', value: 'ok' });
 
-    const rows = await fix.events.list();
+    const rows = await fix.eventsAfter();
     assert.equal(rows.length, 1);
     assert.equal(rows[0].name, 'book.good-plugin.goodBook.created');
   });
@@ -445,7 +491,7 @@ describe('Clockworks — CDC auto-wiring kit-entry tolerance', () => {
     const good = fix.stacks.book<MyDoc>('good-plugin', 'goodBook');
     await good.put({ id: 'r1', value: 'ok' });
 
-    const rows = await fix.events.list();
+    const rows = await fix.eventsAfter();
     assert.equal(rows.length, 1);
     assert.equal(rows[0].name, 'book.good-plugin.goodBook.created');
   });
@@ -456,12 +502,12 @@ describe('Clockworks — CDC auto-wiring kit-entry tolerance', () => {
     // wired (events is the carve-out).
     const fix = await buildFixture();
 
-    // Sanity: nothing has been emitted yet.
-    assert.equal(await fix.events.count(), 0);
+    // Sanity: nothing has been emitted yet (post-bootstrap view).
+    assert.equal(await fix.countAfter(), 0);
 
     // A direct emit() still works (the events book is reachable);
     // and writing to event_dispatches is observed.
     await fix.clockworks.emit('startup.smoke', { ok: true }, 'test');
-    assert.equal(await fix.events.count(), 1);
+    assert.equal(await fix.countAfter(), 1);
   });
 });

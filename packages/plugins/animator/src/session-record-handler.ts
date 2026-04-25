@@ -53,7 +53,7 @@ export function setBackoffMachine(observer: BackoffObserver | null): void {
 
 /**
  * Callback shape the Animator apparatus registers during startup so the
- * session-record-handler can fire `session.end` (and the failed-write
+ * session-record-handler can fire `session.ended` (and the failed-write
  * companions) without re-resolving `guild()` per call.
  *
  * The handler runs from two entry points (the `session-record` tool and
@@ -69,7 +69,7 @@ export interface SessionLifecycleEmitter {
   emitSessionEnded(doc: SessionDoc): Promise<void>;
   emitSessionRecordFailed(
     sessionId: string,
-    phase: 'session-doc' | 'transcript',
+    phase: 'insert' | 'write-record' | 'update-row',
     error: unknown,
   ): Promise<void>;
 }
@@ -197,7 +197,11 @@ export async function handleSessionRecord(
     );
     if (emitter) {
       try {
-        await emitter.emitSessionRecordFailed(params.sessionId, 'session-doc', err);
+        // Catalog phase `'update-row'` — the detached terminal write
+        // overwrites a row that the running babysitter previously
+        // inserted (or, in the no-running-row degenerate case, would
+        // still functionally be an upsert overwrite of a pending row).
+        await emitter.emitSessionRecordFailed(params.sessionId, 'update-row', err);
       } catch { /* best-effort */ }
     }
   }
@@ -212,13 +216,13 @@ export async function handleSessionRecord(
       );
       if (emitter) {
         try {
-          await emitter.emitSessionRecordFailed(params.sessionId, 'transcript', err);
+          await emitter.emitSessionRecordFailed(params.sessionId, 'write-record', err);
         } catch { /* best-effort */ }
       }
     }
   }
 
-  // Step 3.5: Emit `session.end` (and possibly
+  // Step 3.5: Emit `session.ended` (and possibly
   // `commission.session.ended`) for the detached terminal path. Skipped
   // when the SessionDoc write itself failed — the operator already
   // received `session.record-failed`.
