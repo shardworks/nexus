@@ -1078,6 +1078,78 @@ describe('spider.js server-supplied writ title', () => {
   });
 });
 
+// ── Writ-title fallback asymmetry (display vs filter) ───────────────────
+
+describe('spider.js writ-title fallback asymmetry is structurally locked', () => {
+  // The two `rig.writTitle` call sites read the same server-joined field
+  // but must use different fallbacks:
+  //   - updateRigRow (display)    → WRIT_TITLE_MISSING (em-dash) so the
+  //                                 cell has a visible placeholder.
+  //   - renderRigList (filter)    → '' so a substring match against a
+  //                                 user-supplied filter does not
+  //                                 spuriously match every missing-title
+  //                                 row whenever the input contains a
+  //                                 character that happens to appear in
+  //                                 the em-dash literal.
+  // These guards pin the post-fix invariant so a future cleanup pass
+  // cannot silently align the two fallbacks and reintroduce one of two
+  // known failure modes.
+
+  it('declares WRIT_TITLE_MISSING at module scope as the em-dash placeholder', () => {
+    assert.match(
+      spiderJs,
+      /var\s+WRIT_TITLE_MISSING\s*=\s*['"]—['"]/,
+      'WRIT_TITLE_MISSING constant must be declared at module scope with the em-dash value',
+    );
+  });
+
+  it('updateRigRow display site references WRIT_TITLE_MISSING (no inline em-dash)', () => {
+    const updateRigRowMatch = spiderJs.match(
+      /function updateRigRow\(row, rig\)[\s\S]*?(?=\n  \}\n\n  \/\/|\n  function )/,
+    );
+    assert.ok(updateRigRowMatch, 'should find updateRigRow body');
+    const body = updateRigRowMatch[0];
+    assert.match(
+      body,
+      /rig\.writTitle\s*\|\|\s*WRIT_TITLE_MISSING/,
+      'updateRigRow should fall back to WRIT_TITLE_MISSING for missing writ titles',
+    );
+    // The em-dash literal must not be inlined at the display call site
+    // itself — it now lives on the constant declaration only.
+    assert.doesNotMatch(
+      body,
+      /rig\.writTitle\s*\|\|\s*['"]—['"]/,
+      'updateRigRow must source the em-dash via WRIT_TITLE_MISSING, not inline',
+    );
+  });
+
+  it('renderRigList filter site falls back to "" and does not use WRIT_TITLE_MISSING', () => {
+    // Slice the renderRigList body so doesNotMatch is scoped to the
+    // filter call site, not the whole file (mirrors the function-body
+    // slicing pattern used by createRigRow / updateRigRow guards above).
+    const renderRigListMatch = spiderJs.match(
+      /function renderRigList\(\)[\s\S]*?(?=\n  \}\n\n  \/\/|\n  function )/,
+    );
+    assert.ok(renderRigListMatch, 'should find renderRigList body');
+    const body = renderRigListMatch[0];
+    assert.match(
+      body,
+      /var\s+writTitle\s*=\s*rig\.writTitle\s*\|\|\s*['"]['"]/,
+      'renderRigList filter must fall back to the empty string',
+    );
+    assert.doesNotMatch(
+      body,
+      /rig\.writTitle\s*\|\|\s*WRIT_TITLE_MISSING/,
+      'filter site must not source the em-dash via WRIT_TITLE_MISSING — see asymmetry comment',
+    );
+    assert.doesNotMatch(
+      body,
+      /rig\.writTitle\s*\|\|\s*['"]—['"]/,
+      'filter site must not inline the em-dash literal — see asymmetry comment',
+    );
+  });
+});
+
 // ── Cost / token formatting via shared namespace ────────────────────────
 
 describe('spider.js cost/token formatting delegates to window.NexusFormat', () => {

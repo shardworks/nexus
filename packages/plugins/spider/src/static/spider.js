@@ -45,6 +45,17 @@
 
   var RIG_POLL_INTERVAL = 2000;
 
+  // Placeholder rendered in the rig-row writ-title cell when the
+  // server-joined `rig.writTitle` field is absent (the writ row was not
+  // resolvable by enrichRigView). Used at the display call site in
+  // updateRigRow only. The writ-title FILTER call site in renderRigList
+  // deliberately falls back to '' instead of WRIT_TITLE_MISSING — a
+  // substring match against this em-dash literal would match every
+  // missing-title row whenever the filter input contains a character
+  // that happens to appear in the em-dash, spuriously hiding/showing
+  // unrelated rows. Keep these two fallbacks asymmetric on purpose.
+  var WRIT_TITLE_MISSING = '—';
+
   // ── Badge mapping ──────────────────────────────────────────────────────
 
   function badgeClass(status) {
@@ -518,6 +529,15 @@
       // WritId/writ title filter (case-insensitive). Writ title is joined
       // server-side onto the rig payload as `rig.writTitle` — no separate
       // writ lookup window. A missing writTitle simply fails to match.
+      //
+      // Deliberate asymmetry with the DISPLAY call site in updateRigRow:
+      // that site falls back to WRIT_TITLE_MISSING (em-dash) so the cell
+      // has a visible placeholder. This filter site falls back to '' and
+      // explicitly does NOT use WRIT_TITLE_MISSING — substring-matching
+      // a user-supplied filter against the em-dash literal would match
+      // every missing-title row whenever the input contains a character
+      // that happens to appear in the em-dash, spuriously hiding/showing
+      // unrelated rows. Do not unify the two fallbacks.
       if (writFilter) {
         var writTitle = rig.writTitle || '';
         var matchesId = (rig.writId || '').toLowerCase().includes(writFilter.toLowerCase());
@@ -706,10 +726,19 @@
 
     // Writ title — sourced from the server-joined `rig.writTitle` field
     // (populated by enrichRigView against the clerk/writs book). Falls
-    // back to an em-dash only when the join did not resolve. The
+    // back to WRIT_TITLE_MISSING (em-dash) only when the join did not
+    // resolve, so the cell always has a visible placeholder. The
     // writ-title anchor is the first .rig-link in the row; the rig-id
     // anchor appears later and is not touched here.
-    var writTitle = rig.writTitle || '\u2014';
+    //
+    // Note the deliberate asymmetry with the FILTER call site in
+    // renderRigList: that site falls back to '' instead of
+    // WRIT_TITLE_MISSING because substring-matching a user-supplied
+    // filter against the em-dash literal would match every
+    // missing-title row whenever the input contains a character that
+    // happens to appear in the em-dash. The two fallbacks must stay
+    // different — do not align them.
+    var writTitle = rig.writTitle || WRIT_TITLE_MISSING;
     var writTitleAnchor = row.querySelector('.rig-link');
     if (writTitleAnchor && writTitleAnchor.textContent !== writTitle) {
       writTitleAnchor.textContent = writTitle;
