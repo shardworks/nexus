@@ -92,7 +92,7 @@ for (const plugin of ctx.plugins) {
 This means any book mutation from any plugin is observable via standing orders without the originating plugin needing to signal events explicitly. Standing orders can respond to book change events just like framework or custom events:
 
 ```json
-{ "on": "book.nexus-ledger.writs.updated", "run": "audit-writ-changes" }
+{ "on": "book.clerk.writs.updated", "run": "audit-writ-changes" }
 ```
 
 ---
