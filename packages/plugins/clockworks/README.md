@@ -5,7 +5,8 @@ and standing-order engine: declares events, accepts emissions, and fans
 them out to registered handlers (relays, summons, briefs).
 
 **Status:** Write path, event-triggered dispatcher, CDC auto-wiring,
-and the manual operator CLI are live. The Clockworks exposes
+the manual operator CLI, AND framework-event emission from real
+lifecycle activity are all live. The Clockworks exposes
 `ClockworksApi.emit` for trusted framework callers, a validated
 `signal` tool for animas (with an operator-facing `nsg signal` CLI
 counterpart), `ClockworksApi.processEvents()` — the bulk-drain
@@ -14,7 +15,11 @@ relays, persists one dispatch row per invocation, and flips the
 event's `processed` flag — and, at startup, registers a Phase-2 CDC
 watcher on every plugin-declared book (other than `clockworks/events`
 itself) that re-emits each row create/update/delete as a
-`book.<ownerId>.<book>.<verb>` event with emitter `'framework'`. The
+`book.<ownerId>.<book>.<verb>` event with emitter `'framework'`.
+Startup also registers a CDC observer on `clerk/writs` that emits
+writ-lifecycle (`{type}.{ready|completed|stuck|failed}`) and
+root-mandate `commission.*` events as writs transition, and emits a
+one-shot `guild.initialized` the first time a guild comes up. The
 operator-facing `nsg clock list/tick/run` CLI composes on top of
 `processEvents()`. The unattended daemon and cron scheduling are
 still to come.
@@ -183,6 +188,31 @@ existing Phase-2 error path logs the failure and the system keeps
 going.
 
 ---
+
+## Framework events
+
+`start()` registers a CDC observer on `clerk/writs` that produces:
+
+- `{type}.{ready|completed|stuck|failed}` for every writ on entry into
+  the corresponding phase. Transitions into `new` (drafts) and
+  `cancelled` are silent — the catalog has no entries for those
+  phases. Stuck → open re-entry re-emits `{type}.ready` so dispatchers
+  see the writ as available again.
+- For root mandates only (`type === 'mandate'` AND no `parentId`):
+  `commission.posted` on entry into `open`,
+  `commission.state.changed` on every phase change, both
+  `commission.sealed` AND `commission.completed` on entry into
+  `completed`, and `commission.failed` on entry into `failed`.
+
+Every payload carries a `commissionId` derived at emit time by walking
+`parentId` to the root — there is no `commissionId` column on
+`WritDoc`. All emissions go through the shared `emit()` write path with
+`emitter: 'framework'` and are wrapped in best-effort `try/catch`: a
+Clockworks failure cannot roll back the originating writ transition.
+
+`start()` also queries the `events` book for any prior
+`guild.initialized` row and emits one if absent. The persisted row is
+the first-boot marker — subsequent boots find it and skip.
 
 ## Tools
 

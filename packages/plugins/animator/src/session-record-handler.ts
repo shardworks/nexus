@@ -49,6 +49,42 @@ export function setBackoffMachine(observer: BackoffObserver | null): void {
   backoffObserver = observer;
 }
 
+// ── Lifecycle emitter hook ──────────────────────────────────────────
+
+/**
+ * Callback shape the Animator apparatus registers during startup so the
+ * session-record-handler can fire `session.end` (and the failed-write
+ * companions) without re-resolving `guild()` per call.
+ *
+ * The handler runs from two entry points (the `session-record` tool and
+ * the DLQ drain) — both inside the apparatus context AND from
+ * pre-startup boot in the case of the DLQ drain. Threading the emitter
+ * through a `setEmitter` hook mirrors `setBackoffMachine` so the same
+ * pattern handles both observers.
+ *
+ * `null` means the apparatus has not started yet (or this is a unit
+ * test); the handler silently skips emission in that case.
+ */
+export interface SessionLifecycleEmitter {
+  emitSessionEnded(doc: SessionDoc): Promise<void>;
+  emitSessionRecordFailed(
+    sessionId: string,
+    phase: 'session-doc' | 'transcript',
+    error: unknown,
+  ): Promise<void>;
+}
+
+let emitter: SessionLifecycleEmitter | null = null;
+
+/**
+ * Register (or clear) the session-lifecycle emitter invoked after every
+ * terminal session recording. The Animator apparatus calls this during
+ * start(); tests that need isolation can pass null to reset.
+ */
+export function setEmitter(next: SessionLifecycleEmitter | null): void {
+  emitter = next;
+}
+
 export interface SessionRecordParams {
   sessionId: string;
   status: 'completed' | 'failed' | 'timeout' | 'rate-limited';
@@ -151,7 +187,20 @@ export async function handleSessionRecord(
     ...(params.terminationDiagnostic ? { terminationDiagnostic: params.terminationDiagnostic } : {}),
   };
 
-  await sessions.put(doc);
+  let sessionDocWritten = false;
+  try {
+    await sessions.put(doc);
+    sessionDocWritten = true;
+  } catch (err) {
+    console.warn(
+      `[animator] Failed to write terminal session record ${params.sessionId}: ${err instanceof Error ? err.message : err}`,
+    );
+    if (emitter) {
+      try {
+        await emitter.emitSessionRecordFailed(params.sessionId, 'session-doc', err);
+      } catch { /* best-effort */ }
+    }
+  }
 
   // Step 3: Write transcript if provided.
   if (params.transcript && params.transcript.length > 0) {
@@ -161,7 +210,22 @@ export async function handleSessionRecord(
       console.warn(
         `[animator] Failed to record transcript for ${params.sessionId}: ${err instanceof Error ? err.message : err}`,
       );
+      if (emitter) {
+        try {
+          await emitter.emitSessionRecordFailed(params.sessionId, 'transcript', err);
+        } catch { /* best-effort */ }
+      }
     }
+  }
+
+  // Step 3.5: Emit `session.end` (and possibly
+  // `commission.session.ended`) for the detached terminal path. Skipped
+  // when the SessionDoc write itself failed — the operator already
+  // received `session.record-failed`.
+  if (sessionDocWritten && emitter) {
+    try {
+      await emitter.emitSessionEnded(doc);
+    } catch { /* best-effort */ }
   }
 
   // Step 4: Notify the back-off machine. Never throws — a status-book

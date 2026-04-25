@@ -128,6 +128,13 @@ async function buildFixture(): Promise<Fixture> {
     }
   }
 
+  // The Clockworks `start()` resolves the clerk/writs book to register
+  // the writ-lifecycle CDC observer. Pre-seed an empty clerk/writs so
+  // the readBook() call returns a working handle in the unit fixture.
+  backend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
+    indexes: ['phase', 'type', 'createdAt', 'parentId'],
+  });
+
   const clockworksApparatus = clockworksPlugin.apparatus;
   await clockworksApparatus.start(buildCtx());
   const clockworks = clockworksApparatus.provides as ClockworksApi;
@@ -153,9 +160,12 @@ describe('Clockworks — skeleton', () => {
       'event_dispatches',
     );
 
-    // Both handles should be usable — `count()` is the lightest
-    // observable behavior that exercises the underlying schema.
-    assert.equal(await events.count(), 0);
+    // The events book has exactly one row from the boot-time
+    // `guild.initialized` emission. The dispatches book is still empty
+    // until the runner / dispatcher commission claims it.
+    const initialized = await events.find({ where: [['name', '=', 'guild.initialized']] });
+    assert.equal(initialized.length, 1);
+    assert.equal(await events.count(), 1);
     assert.equal(await dispatches.count(), 0);
   });
 

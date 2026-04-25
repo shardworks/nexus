@@ -48,8 +48,10 @@ import type {
   BookEntry,
   BookSchema,
   ChangeEvent,
+  ReadOnlyBook,
   StacksApi,
 } from '@shardworks/stacks-apparatus';
+import type { WritDoc } from '@shardworks/clerk-apparatus';
 
 import type {
   ClockworksApi,
@@ -64,6 +66,7 @@ import {
 } from './dispatcher.ts';
 import { isRelayDefinition, type RelayDefinition } from './relay.ts';
 import { signal } from './tools/index.ts';
+import { handleWritLifecycle } from './writ-lifecycle-observer.ts';
 
 // ── Kit contribution vocabulary ─────────────────────────────────────
 
@@ -340,6 +343,44 @@ export function createClockworks(): Plugin {
             );
           }
         }
+
+        // ── First-boot guild.initialized emission ─────────────────────
+        // The persisted event row is itself the idempotency marker — we
+        // query the events book for any prior `guild.initialized` row
+        // and emit one if absent. Subsequent boots find the row and
+        // skip. Wrapped in best-effort try/catch per D13.
+        try {
+          const priorBoots = await events.find({
+            where: [['name', '=', 'guild.initialized']],
+            limit: 1,
+          });
+          if (priorBoots.length === 0) {
+            await api.emit('guild.initialized', null, 'framework');
+          }
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[clockworks] best-effort emit of "guild.initialized" failed: ${reason}`,
+          );
+        }
+
+        // ── Writ-lifecycle and commission CDC observer ────────────────
+        // Watches `clerk/writs` for both create and update events. The
+        // observer fires writ-lifecycle events (`{type}.ready`, etc.)
+        // for every writ, plus the `commission.*` family for root
+        // mandates. Phase 2 (`failOnError: false`) so a slow events
+        // book write cannot stall a writ transition; per-emit try/catch
+        // already handles failure modes per D13.
+        const writsBook: ReadOnlyBook<WritDoc> = stacks.readBook<WritDoc>(
+          'clerk',
+          'writs',
+        );
+        stacks.watch<WritDoc>(
+          'clerk',
+          'writs',
+          (event) => handleWritLifecycle({ clockworks: api, writsBook }, event),
+          { failOnError: false },
+        );
       },
 
       stop(): void {

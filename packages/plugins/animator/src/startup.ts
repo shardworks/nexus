@@ -15,6 +15,7 @@ import type { Book } from '@shardworks/stacks-apparatus';
 import type { AnimatorStatusDoc, SessionDoc, TranscriptDoc } from './types.ts';
 import { handleSessionRecord, type SessionRecordParams } from './session-record-handler.ts';
 import { DISPATCH_STATUS_DOC_ID } from './rate-limit-backoff.ts';
+import { emitSessionEnded, emitSessionRecordFailed } from './session-emission.ts';
 
 // ── DLQ drain ───────────────────────────────────────────────────────
 
@@ -243,10 +244,17 @@ export async function recoverOrphans(
     try {
       await sessions.put(updated);
       recovered++;
+      // Orphan recovery is a terminal session site — fire `session.end`
+      // (and `commission.session.ended` when the writ chain resolves).
+      await emitSessionEnded(updated);
     } catch (err) {
       console.warn(
         `[animator] Failed to recover stale session ${doc.id}: ${err instanceof Error ? err.message : err}`,
       );
+      // The session-doc rewrite failed — fire `session.record-failed`
+      // so standing orders bound to it can react. CDC won't observe
+      // this case (no row was authoritatively written).
+      await emitSessionRecordFailed(doc.id, 'session-doc', err);
     }
   }
 

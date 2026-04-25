@@ -27,6 +27,9 @@ importers:
 
   packages/framework/cli:
     dependencies:
+      '@shardworks/clockworks-apparatus':
+        specifier: workspace:*
+        version: link:../../plugins/clockworks
       '@shardworks/nexus-arbor':
         specifier: workspace:*
         version: link:../arbor
@@ -58,6 +61,9 @@ importers:
       '@shardworks/clerk-apparatus':
         specifier: workspace:*
         version: link:../clerk
+      '@shardworks/clockworks-apparatus':
+        specifier: workspace:*
+        version: link:../clockworks
       '@shardworks/loom-apparatus':
         specifier: workspace:*
         version: link:../loom

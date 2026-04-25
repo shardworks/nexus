@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@shardworks/clerk-apparatus": "workspace:*",
+    "@shardworks/clockworks-apparatus": "workspace:*",
     "@shardworks/loom-apparatus": "workspace:*",
     "@shardworks/tools-apparatus": "workspace:*",
     "@shardworks/stacks-apparatus": "workspace:*",

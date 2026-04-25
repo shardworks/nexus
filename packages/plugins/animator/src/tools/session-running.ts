@@ -16,6 +16,7 @@ import { guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 import type { SessionDoc } from '../types.ts';
+import { emitSessionStarted } from '../session-emission.ts';
 
 export default tool({
   name: 'session-running',
@@ -95,6 +96,12 @@ export default tool({
     };
 
     await sessions.put(doc);
+
+    // Detached running tool — fire `session.start` for the canonical
+    // first-time pending → running transition. Already-running and
+    // terminal-state guards above return before this point so the
+    // emission only fires once per session.
+    await emitSessionStarted(doc);
 
     return { ok: true, sessionId: params.sessionId };
   },

@@ -24,6 +24,7 @@
   "dependencies": {
     "@shardworks/nexus-core": "workspace:*",
     "@shardworks/nexus-arbor": "workspace:*",
+    "@shardworks/clockworks-apparatus": "workspace:*",
     "@shardworks/tools-apparatus": "workspace:*",
     "commander": "14.0.3",
     "zod": "4.3.6"

@@ -159,6 +159,14 @@ nsg plugin install ./path/to/my-plugin --type link
 
 Plugin install is a pure npm + guild.json operation — it adds the package as a dependency and registers the plugin id. Tool access is controlled by the permission model: tools declare permission levels, and roles grant `plugin:level` permissions via the Loom's configuration. See [The Instrumentarium](../../docs/architecture/apparatus/instrumentarium.md) for the permission model.
 
+After the guild.json write succeeds, the command bootstraps a temporary
+guild runtime, resolves the Clockworks API, emits `tool.installed` (or
+`tool.removed`), and shuts down. This sequence is best-effort: if the
+just-installed plugin throws on start or the Clockworks isn't installed,
+the command logs a `console.warn` breadcrumb and exits successfully —
+the guild.json change is the authoritative outcome and never rolls
+back.
+
 ---
 
 ## Standard Guild Commands

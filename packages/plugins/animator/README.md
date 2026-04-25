@@ -427,5 +427,32 @@ The default export is a pre-created apparatus plugin instance:
 
 ```typescript
 import animator from '@shardworks/animator-apparatus';
-// animator is { apparatus: { requires: ['stacks'], recommends: ['loom'], provides: AnimatorApi, ... } }
+// animator is { apparatus: { requires: ['stacks'], recommends: ['loom', 'oculus', 'clockworks', 'clerk'], provides: AnimatorApi, ... } }
 ```
+
+---
+
+## Framework events
+
+When the Clockworks is installed, every terminal session site fires
+framework events:
+
+- `session.start` — written from every running-state transition site
+  (in-process attached, detached `session-running` ready report).
+- `session.end` — written from every terminal site (in-process
+  attached on completion/failure/timeout/rate-limited, detached
+  `session-record`, in-process `cancel()`, orphan recovery).
+- `commission.session.ended` — fired alongside `session.end` when
+  `metadata.writId` resolves (by walking `parentId`) to a root
+  mandate. The root id is the `commissionId` on the payload.
+- `session.record-failed` — fired from the catch path of session-doc
+  / transcript writes that themselves failed (the only path the CDC
+  observer on the sessions book cannot see). The `phase` field is
+  `'session-doc'` or `'transcript'` mirroring the actual write site.
+
+The rate-limit pre-check rejection path does NOT emit — no SessionDoc
+was authoritatively written.
+
+The Clockworks is in `recommends`, not `requires`: the helpers resolve
+it lazily and silently no-op when it isn't installed, mirroring the
+`summon()` → `LoomApi` resolution pattern.

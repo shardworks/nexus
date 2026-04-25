@@ -275,6 +275,8 @@ describe('Clockworks — emit()', () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
 
+    const before = await fix.eventsBook.count();
+
     await assert.rejects(
       () => fix.clockworks.emit('demo.circular', cyclic, 'framework'),
       (err: unknown) => {
@@ -285,17 +287,19 @@ describe('Clockworks — emit()', () => {
       },
     );
 
-    // The failed emit must not have written anything.
-    assert.equal(await fix.eventsBook.count(), 0);
+    // The failed emit must not have written any new row (the only
+    // pre-existing row is the boot-time `guild.initialized` emission).
+    assert.equal(await fix.eventsBook.count(), before);
   });
 
   it('throws on a BigInt payload before reaching the Stacks layer', async () => {
     const fix = await buildFixture();
+    const before = await fix.eventsBook.count();
     await assert.rejects(
       () => fix.clockworks.emit('demo.bigint', { n: 1n }, 'framework'),
       /not JSON-serializable/,
     );
-    assert.equal(await fix.eventsBook.count(), 0);
+    assert.equal(await fix.eventsBook.count(), before);
   });
 });
 

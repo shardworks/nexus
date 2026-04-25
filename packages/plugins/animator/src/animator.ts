@@ -46,7 +46,12 @@ import {
   validateBackoffConfig,
   type BackoffMachine,
 } from './rate-limit-backoff.ts';
-import { setBackoffMachine } from './session-record-handler.ts';
+import { setBackoffMachine, setEmitter } from './session-record-handler.ts';
+import {
+  emitSessionStarted,
+  emitSessionEnded,
+  emitSessionRecordFailed,
+} from './session-emission.ts';
 
 // ── Session broadcast infrastructure ─────────────────────────────────
 
@@ -308,12 +313,19 @@ async function recordSession(
   result: SessionResult,
   transcript: TranscriptMessage[] | undefined,
 ): Promise<void> {
+  let sessionDocWritten = false;
   try {
     await sessions.put(toSessionDoc(result));
+    sessionDocWritten = true;
   } catch (err) {
     console.warn(
       `[animator] Failed to record session ${result.id}: ${err instanceof Error ? err.message : err}`,
     );
+    // The SessionDoc write failed — fire `session.record-failed` so
+    // standing orders bound to it can react. This is the only path that
+    // CDC on the sessions book cannot observe (the row was never
+    // authoritatively written).
+    await emitSessionRecordFailed(result.id, 'session-doc', err);
   }
 
   if (transcript && transcript.length > 0) {
@@ -323,7 +335,16 @@ async function recordSession(
       console.warn(
         `[animator] Failed to record transcript for ${result.id}: ${err instanceof Error ? err.message : err}`,
       );
+      await emitSessionRecordFailed(result.id, 'transcript', err);
     }
+  }
+
+  // Fire `session.end` (and possibly `commission.session.ended`) for
+  // the in-process attached path. Skip when the SessionDoc write itself
+  // failed — there is no authoritative session-end to announce; the
+  // operator has already received `session.record-failed` instead.
+  if (sessionDocWritten) {
+    await emitSessionEnded(result);
   }
 }
 
@@ -363,10 +384,23 @@ async function recordRunning(
       merged.cancelHandle = { ...(existing?.cancelHandle ?? {}), ...cancelHandle };
     }
     await sessions.put(merged);
+
+    // Emit `session.start` once per running transition. The
+    // already-running guard above means a duplicate ready report on a
+    // session already in `running` returns before this point in the
+    // existing path; for the in-process attached writer (this helper)
+    // this is the canonical first-time write.
+    if (existing?.status !== 'running') {
+      await emitSessionStarted(merged);
+    }
   } catch (err) {
     console.warn(
       `[animator] Failed to write initial session record ${id}: ${err instanceof Error ? err.message : err}`,
     );
+    // Initial running-record write failed — fire `session.record-failed`
+    // so standing orders see the session at all. We tag the phase as
+    // `session-doc` because that is the actual write site (D22).
+    await emitSessionRecordFailed(id, 'session-doc', err);
   }
 }
 
@@ -472,12 +506,15 @@ export function createAnimator(): Plugin {
         ...(options?.reason ? { error: options.reason } : {}),
       };
 
+      let cancelDocWritten = false;
       try {
         await sessions.put(updated);
+        cancelDocWritten = true;
       } catch (err) {
         console.warn(
           `[animator] Failed to patch session ${sessionId} to cancelled: ${err instanceof Error ? err.message : err}`,
         );
+        await emitSessionRecordFailed(sessionId, 'session-doc', err);
       }
 
       // Step 3: If cancelHandle available, delegate to provider
@@ -492,6 +529,14 @@ export function createAnimator(): Plugin {
             `[animator] Failed to cancel provider process for ${sessionId}: ${err instanceof Error ? err.message : err}`,
           );
         }
+      }
+
+      // Cancellation is a terminal session site — fire `session.end`
+      // (and `commission.session.ended` when the writ chain resolves).
+      // Skipped when the SessionDoc write itself failed: the operator
+      // already received `session.record-failed` instead.
+      if (cancelDocWritten) {
+        await emitSessionEnded(updated);
       }
 
       return updated;
@@ -751,7 +796,13 @@ export function createAnimator(): Plugin {
   return {
     apparatus: {
       requires: ['stacks'],
-      recommends: ['loom', 'oculus'],
+      // Clockworks is a soft dependency: when it's installed every
+      // session lifecycle event (session.start / .end / .record-failed,
+      // commission.session.ended) flows into the events book; when it's
+      // not, the helpers no-op silently. Resolution is lazy inside the
+      // helpers so an Animator-without-Clockworks install remains
+      // viable. Mirrors `summon()` → `LoomApi`.
+      recommends: ['loom', 'oculus', 'clockworks', 'clerk'],
 
       supportKit: {
         books: {
@@ -823,6 +874,16 @@ export function createAnimator(): Plugin {
             `[animator] Legacy status-book cleanup failed: ${err instanceof Error ? err.message : err}`,
           );
         }
+
+        // Register the session-lifecycle emitter so the detached
+        // `handleSessionRecord` path can fire `session.end` and
+        // `session.record-failed` without re-resolving `guild()` per
+        // call. Mirrors the `setBackoffMachine` hook just above.
+        setEmitter({
+          emitSessionEnded: (doc) => emitSessionEnded(doc),
+          emitSessionRecordFailed: (sessionId, phase, err) =>
+            emitSessionRecordFailed(sessionId, phase, err),
+        });
 
         // Eager awaited read() of the persisted dispatch-status doc at
         // the very top of start(). Previously this was a fire-and-forget
