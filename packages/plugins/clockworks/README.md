@@ -4,18 +4,20 @@ The Clockworks — Pillar 5 of the guild architecture. The event substrate
 and standing-order engine: declares events, accepts emissions, and fans
 them out to registered handlers (relays, summons, briefs).
 
-**Status:** Write path, event-triggered dispatcher, and CDC auto-wiring
-are live. The Clockworks exposes `ClockworksApi.emit` for trusted
-framework callers, a validated `signal` tool for animas (with an
-operator-facing `nsg signal` CLI counterpart),
-`ClockworksApi.processEvents()` — the bulk-drain dispatcher that
-resolves matching standing orders, invokes their relays, persists one
-dispatch row per invocation, and flips the event's `processed` flag —
-and, at startup, registers a Phase-2 CDC watcher on every
-plugin-declared book (other than `clockworks/events` itself) that
-re-emits each row create/update/delete as a
+**Status:** Write path, event-triggered dispatcher, CDC auto-wiring,
+and the manual operator CLI are live. The Clockworks exposes
+`ClockworksApi.emit` for trusted framework callers, a validated
+`signal` tool for animas (with an operator-facing `nsg signal` CLI
+counterpart), `ClockworksApi.processEvents()` — the bulk-drain
+dispatcher that resolves matching standing orders, invokes their
+relays, persists one dispatch row per invocation, and flips the
+event's `processed` flag — and, at startup, registers a Phase-2 CDC
+watcher on every plugin-declared book (other than `clockworks/events`
+itself) that re-emits each row create/update/delete as a
 `book.<ownerId>.<book>.<verb>` event with emitter `'framework'`. The
-CLI wrapper, daemon, and cron scheduling are still to come.
+operator-facing `nsg clock list/tick/run` CLI composes on top of
+`processEvents()`. The unattended daemon and cron scheduling are
+still to come.
 
 See also: [`docs/architecture/clockworks.md`](../../../docs/architecture/clockworks.md).
 
@@ -189,9 +191,6 @@ going.
   `ClockworksApi.emit` with `emitter` defaulting to `'anima'`.
   `callableBy: ['anima']` — patron callers go through `nsg signal`
   instead.
-- `clock-status`, `clock-list` — CLI stubs that return
-  `{ ok: false, message }`. Real implementations arrive with the runner
-  / dispatcher commissions.
 
 ---
 
@@ -199,12 +198,35 @@ going.
 
 ```sh
 nsg signal <name> [--payload '<json>']
+nsg clock list [--include-processed] [--limit <n>]
+nsg clock tick [id]
+nsg clock run
 ```
 
 The hand-written `nsg signal` command shares the same three-layer
 validation as the `signal` tool but passes `'operator'` as the emitter
 (per commission decision D4). The `--payload` flag accepts a JSON
 string; omit it to record a `null` payload.
+
+`nsg clock` is the operator surface for the event queue (Phase 1 in
+[`docs/architecture/clockworks.md`](../../../docs/architecture/clockworks.md)) —
+manual control before the unattended daemon lands:
+
+- `nsg clock list` — print pending events in id order. With
+  `--include-processed`, processed events are included too. `--limit N`
+  caps the output; without it, every matching event prints.
+- `nsg clock tick [id]` — process a single event. Without an id, the
+  next pending event in id order; with an id, the matching event after
+  a CLI-side pre-check that it exists and is still pending.
+- `nsg clock run` — loop `processEvents()` until the queue drains. No
+  sleep, no daemon — finite drain. Mid-sweep arrivals are picked up on
+  the next iteration. The persistent daemon arrives in a future
+  commission.
+
+`tick` and `run` print one summary line per dispatch — `[<handler>]
+<status> <durationMs>ms`, with `: <error>` appended on the same line
+for failed dispatches — and exit nonzero when at least one dispatch
+recorded `status: error`.
 
 ---
 
@@ -277,7 +299,10 @@ daemon-restart cycle stays idempotent.
 ## Exports
 
 - `createClockworks` — apparatus factory.
-- `clockStatus`, `clockList`, `signal` — the registered tools.
+- `signal` — the anima-facing event emission tool. The
+  operator-facing `nsg clock list/tick/run` surface lives in the
+  framework CLI as a hand-written command (see
+  `packages/framework/cli/src/commands/clock.ts`).
 - `relay`, `isRelayDefinition` — relay SDK factory and structural type guard.
 - `validateSignal`, `RESERVED_EVENT_NAMESPACES`,
   `WRIT_LIFECYCLE_SUFFIXES` — the shared signal validator (re-used by
