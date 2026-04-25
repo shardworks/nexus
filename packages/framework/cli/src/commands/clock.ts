@@ -38,6 +38,13 @@
 
 import { Command } from 'commander';
 import { guild } from '@shardworks/nexus-core';
+import {
+  clockStart,
+  clockStatus,
+  clockStop,
+  runForegroundDaemonFromGuild,
+  type ClockStatus,
+} from '@shardworks/clockworks-apparatus';
 
 // ── Local apparatus interface shims ──────────────────────────────────
 //
@@ -131,6 +138,26 @@ function requireGuild(): ReturnType<typeof guild> {
   } catch {
     throw new Error('Not inside a guild. Run `nsg init` to create one first.');
   }
+}
+
+/**
+ * Build the daemon-coexistence warning when the Clockworks daemon is
+ * already running. Returns `null` when the daemon is not running so
+ * callers can append it conditionally.
+ *
+ * The warning is non-fatal: `nsg clock tick` and `nsg clock run` keep
+ * working even when the daemon is up. SQLite handles concurrent access
+ * safely; the warning exists only so operators understand they may
+ * see the daemon process the same events first.
+ */
+function daemonCoexistenceWarning(home: string): string | null {
+  const status = clockStatus(home);
+  if (!status.running) return null;
+  return (
+    `Warning: clockworks daemon is running (pid ${status.pid}); ` +
+    `this manual invocation will run concurrently. SQLite handles ` +
+    `concurrent access safely.`
+  );
 }
 
 /**
@@ -267,6 +294,12 @@ export interface TickOutput {
   notFound: boolean;
   /** Set when an explicit eventId was supplied but is already processed. */
   alreadyProcessed: boolean;
+  /**
+   * Warning lines to write to stderr before the main output. Currently
+   * carries the daemon-coexistence warning when `nsg clock start` is
+   * already running.
+   */
+  warnings: string[];
 }
 
 /**
@@ -282,6 +315,17 @@ export async function runTick(input: TickInput): Promise<TickOutput> {
   const clockworks = g.apparatus<ClockworksApiLike>('clockworks');
   const stacks = g.apparatus<StacksApiLike>('stacks');
   const events = stacks.book<EventDocLike>('clockworks', 'events');
+
+  // Daemon-coexistence warning — emitted independently of the
+  // dispatch outcome so operators always see whether they're racing
+  // the daemon. Best-effort: a thrown clockStatus must not block tick.
+  const warnings: string[] = [];
+  try {
+    const w = daemonCoexistenceWarning(g.home);
+    if (w) warnings.push(w);
+  } catch {
+    // ignore — diagnostic warning, not load-bearing
+  }
 
   const lines: string[] = [];
 
@@ -299,6 +343,7 @@ export async function runTick(input: TickInput): Promise<TickOutput> {
         empty: false,
         notFound: true,
         alreadyProcessed: false,
+        warnings,
       };
     }
     if (targetEvent.processed) {
@@ -310,6 +355,7 @@ export async function runTick(input: TickInput): Promise<TickOutput> {
         empty: false,
         notFound: false,
         alreadyProcessed: true,
+        warnings,
       };
     }
   } else {
@@ -329,6 +375,7 @@ export async function runTick(input: TickInput): Promise<TickOutput> {
         empty: true,
         notFound: false,
         alreadyProcessed: false,
+        warnings,
       };
     }
   }
@@ -360,6 +407,7 @@ export async function runTick(input: TickInput): Promise<TickOutput> {
       empty: true,
       notFound: false,
       alreadyProcessed: false,
+      warnings,
     };
   }
 
@@ -379,6 +427,7 @@ export async function runTick(input: TickInput): Promise<TickOutput> {
     empty: false,
     notFound: false,
     alreadyProcessed: false,
+    warnings,
   };
 }
 
@@ -393,6 +442,12 @@ export interface RunOutput {
   totalProcessed: number;
   /** Whether the very first iteration found an empty queue. */
   empty: boolean;
+  /**
+   * Warning lines to write to stderr before the main output. Currently
+   * carries the daemon-coexistence warning when `nsg clock start` is
+   * already running.
+   */
+  warnings: string[];
 }
 
 /**
@@ -406,6 +461,16 @@ export async function runRun(): Promise<RunOutput> {
   const clockworks = g.apparatus<ClockworksApiLike>('clockworks');
   const stacks = g.apparatus<StacksApiLike>('stacks');
   const events = stacks.book<EventDocLike>('clockworks', 'events');
+
+  // Daemon-coexistence warning — emitted independently of the drain
+  // outcome.
+  const warnings: string[] = [];
+  try {
+    const w = daemonCoexistenceWarning(g.home);
+    if (w) warnings.push(w);
+  } catch {
+    // ignore — diagnostic warning, not load-bearing
+  }
 
   const lines: string[] = [];
   let totalProcessed = 0;
@@ -455,7 +520,13 @@ export async function runRun(): Promise<RunOutput> {
   }
 
   if (firstIterationEmpty) {
-    return { lines: [EMPTY_RUN], hadError: false, totalProcessed: 0, empty: true };
+    return {
+      lines: [EMPTY_RUN],
+      hadError: false,
+      totalProcessed: 0,
+      empty: true,
+      warnings,
+    };
   }
 
   lines.push(`processed ${totalProcessed} events`);
@@ -465,7 +536,135 @@ export async function runRun(): Promise<RunOutput> {
     hadError: totalErrors > 0,
     totalProcessed,
     empty: false,
+    warnings,
   };
+}
+
+// ── start / stop / status ────────────────────────────────────────────
+
+export interface StartInput {
+  /** Polling interval in milliseconds. Forwarded to `clockStart`. */
+  interval?: number;
+  /**
+   * When `true`, run the inline foreground daemon body instead of
+   * spawning a detached child. The detached `clock start` re-execs
+   * itself with this flag.
+   */
+  foreground?: boolean;
+}
+
+export interface StartOutput {
+  /** Lines to print. */
+  lines: string[];
+}
+
+/**
+ * Handle `nsg clock start`. Without `--foreground`, calls
+ * `clockStart(home)`, which spawns a detached child and blocks until
+ * the daemon is verified running. With `--foreground`, calls
+ * `runForegroundDaemonFromGuild` — the inline daemon body that the
+ * detached spawn re-execs into. The function returns only when the
+ * daemon shuts down (under SIGTERM or SIGINT).
+ */
+export async function runStart(input: StartInput): Promise<StartOutput> {
+  const g = requireGuild();
+
+  if (input.foreground) {
+    // Inline foreground daemon body. `runForegroundDaemonFromGuild`
+    // installs SIGTERM/SIGINT handlers and returns once shutdown is
+    // signaled. Once it returns we exit cleanly.
+    const opts: { intervalMs?: number; onShutdown?: () => void } = {
+      onShutdown: () => process.exit(0),
+    };
+    if (input.interval !== undefined) opts.intervalMs = input.interval;
+    await runForegroundDaemonFromGuild(opts);
+    // Unreachable — onShutdown exits the process.
+    return { lines: [] };
+  }
+
+  const startOpts: { interval?: number } = {};
+  if (input.interval !== undefined) startOpts.interval = input.interval;
+  const result = await clockStart(g.home, startOpts);
+  return {
+    lines: [
+      `Clockworks daemon started (pid: ${result.pid})`,
+      `  Log file: ${result.logFile}`,
+    ],
+  };
+}
+
+export interface StopOutput {
+  /** Lines to print. */
+  lines: string[];
+}
+
+/** Handle `nsg clock stop`. Thin wrapper around `clockStop`. */
+export async function runStop(): Promise<StopOutput> {
+  const g = requireGuild();
+  const result = await clockStop(g.home);
+  return {
+    lines: [`Clockworks daemon stopped (pid: ${result.pid}).`],
+  };
+}
+
+export interface StatusInput {
+  /** Emit JSON instead of multi-line plain text. */
+  json?: boolean;
+}
+
+export interface StatusOutput {
+  /** Lines to print. */
+  lines: string[];
+  /** The structured status, included unconditionally so tests can assert it. */
+  status: ClockStatus;
+}
+
+/**
+ * Handle `nsg clock status`. Defaults to multi-line plain text;
+ * `--json` emits the structured shape verbatim. The output mirrors
+ * the `clock-status` MCP tool's payload so the surfaces stay aligned.
+ */
+export function runStatus(input: StatusInput): StatusOutput {
+  const g = requireGuild();
+  const status = clockStatus(g.home);
+
+  if (input.json) {
+    return { lines: [JSON.stringify(status, null, 2)], status };
+  }
+
+  if (!status.running) {
+    if (status.stalePidfile) {
+      return {
+        lines: [
+          'Clockworks daemon: not running.',
+          '  (Stale pidfile detected and removed.)',
+        ],
+        status,
+      };
+    }
+    return { lines: ['Clockworks daemon: not running.'], status };
+  }
+
+  const lines = [
+    'Clockworks daemon: running',
+    `  PID:       ${status.pid}`,
+    `  Log file:  ${status.logFile}`,
+    `  Uptime:    ${formatUptime(status.uptime ?? 0)}`,
+  ];
+  return { lines, status };
+}
+
+/** Format a millisecond uptime as a short human-readable string. */
+function formatUptime(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  if (minutes < 60) return `${minutes}m${remSeconds}s`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return `${hours}h${remMinutes}m${remSeconds}s`;
 }
 
 // ── Commander Command ────────────────────────────────────────────────
@@ -478,6 +677,18 @@ function parseLimitOption(raw: string): number {
   const n = Number(raw);
   if (!Number.isInteger(n) || n <= 0) {
     throw new Error(`clock list: --limit must be a positive integer, got "${raw}".`);
+  }
+  return n;
+}
+
+/**
+ * Parse and validate the `--interval <ms>` flag for `start`. Mirrors
+ * the fail-loud pattern of `parseLimitOption`.
+ */
+function parseIntervalOption(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`clock start: --interval must be a positive integer (ms), got "${raw}".`);
   }
   return n;
 }
@@ -530,6 +741,9 @@ export function buildClockCommand(): Command {
     .action(async (id: string | undefined) => {
       try {
         const out = await runTick({ eventId: id });
+        // Daemon-coexistence warning(s) go to stderr first so the
+        // operator notices them ahead of the dispatch summary.
+        for (const w of out.warnings) console.error(w);
         // D8: print first, then explicitly exit non-zero — keeps the
         // structured summary intact ahead of any "Error: …" prefix.
         for (const line of out.lines) {
@@ -561,6 +775,7 @@ export function buildClockCommand(): Command {
     .action(async () => {
       try {
         const out = await runRun();
+        for (const w of out.warnings) console.error(w);
         for (const line of out.lines) console.log(line);
         if (out.hadError) {
           process.exit(1);
@@ -572,9 +787,72 @@ export function buildClockCommand(): Command {
       }
     });
 
+  // ── start ─────────────────────────────────────────────────────────
+
+  const start = new Command('start')
+    .description('Start the Clockworks daemon (detached background process).')
+    .option(
+      '--interval <ms>',
+      'Polling interval in milliseconds (default 2000).',
+      parseIntervalOption,
+    )
+    .option(
+      '-f, --foreground',
+      'Run the daemon body inline in this process (used by the detached re-exec).',
+    )
+    .action(async (opts: { interval?: number; foreground?: boolean }) => {
+      try {
+        const input: StartInput = {};
+        if (opts.interval !== undefined) input.interval = opts.interval;
+        if (opts.foreground) input.foreground = true;
+        const out = await runStart(input);
+        for (const line of out.lines) console.log(line);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`Error: ${message}`);
+        process.exit(1);
+      }
+    });
+
+  // ── stop ──────────────────────────────────────────────────────────
+
+  const stop = new Command('stop')
+    .description('Stop the Clockworks daemon (graceful SIGTERM with SIGKILL escalation).')
+    .action(async () => {
+      try {
+        const out = await runStop();
+        for (const line of out.lines) console.log(line);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`Error: ${message}`);
+        process.exit(1);
+      }
+    });
+
+  // ── status ────────────────────────────────────────────────────────
+
+  const status = new Command('status')
+    .description('Show whether the Clockworks daemon is running.')
+    .option('--json', 'Output the structured status as JSON.')
+    .action((opts: { json?: boolean }) => {
+      try {
+        const input: StatusInput = {};
+        if (opts.json) input.json = true;
+        const out = runStatus(input);
+        for (const line of out.lines) console.log(line);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`Error: ${message}`);
+        process.exit(1);
+      }
+    });
+
   cmd.addCommand(list);
   cmd.addCommand(tick);
   cmd.addCommand(run);
+  cmd.addCommand(start);
+  cmd.addCommand(stop);
+  cmd.addCommand(status);
 
   return cmd;
 }

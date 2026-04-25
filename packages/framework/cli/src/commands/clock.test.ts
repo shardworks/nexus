@@ -18,6 +18,9 @@
 
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { setGuild, clearGuild } from '@shardworks/nexus-core';
 import type { Guild, GuildConfig } from '@shardworks/nexus-core';
@@ -29,6 +32,7 @@ import {
   renderPayloadPreview,
   runList,
   runRun,
+  runStatus,
   runTick,
 } from './clock.ts';
 import { customFrameworkCommands } from './index.ts';
@@ -67,7 +71,17 @@ interface StubFixture {
   processCalls: number;
 }
 
-function setupStubGuild(fixture: StubFixture): void {
+/**
+ * Build a temp-dir home — used by tests that exercise the daemon
+ * coexistence warning or `runStatus`. `clockStatus` reads
+ * `<home>/.nexus/clock.pid`, so the path needs to be a real directory
+ * we control.
+ */
+function makeTmpHome(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'cli-clock-test-'));
+}
+
+function setupStubGuild(fixture: StubFixture, home = '/tmp/test-guild'): void {
   const apparatusMap = new Map<string, unknown>();
 
   const eventsBook = {
@@ -185,7 +199,7 @@ function setupStubGuild(fixture: StubFixture): void {
   };
 
   const fakeGuild: Guild = {
-    home: '/tmp/test-guild',
+    home,
     apparatus<T>(name: string): T {
       const api = apparatusMap.get(name);
       if (!api) throw new Error(`Apparatus "${name}" not installed`);
@@ -837,11 +851,11 @@ describe('runRun', () => {
 // ── Commander Command shape ──────────────────────────────────────────
 
 describe('buildClockCommand', () => {
-  it('registers the three subcommands under `clock`', () => {
+  it('registers all six subcommands under `clock`', () => {
     const cmd = buildClockCommand();
     assert.equal(cmd.name(), 'clock');
     const subs = cmd.commands.map((c) => c.name()).sort();
-    assert.deepEqual(subs, ['list', 'run', 'tick']);
+    assert.deepEqual(subs, ['list', 'run', 'start', 'status', 'stop', 'tick']);
   });
 
   it('list exposes --include-processed and --limit', () => {
@@ -991,6 +1005,272 @@ describe('buildClockCommand', () => {
       console.log = origLog;
     }
     assert.equal(lines[lines.length - 1], 'processed 1 events');
+  });
+});
+
+// ── Daemon coexistence warning ───────────────────────────────────────
+
+describe('daemon coexistence warning', () => {
+  /**
+   * Write a pidfile pointing at the live test process so
+   * `clockStatus(home)` returns `running: true`. Returns the file path
+   * for cleanup.
+   */
+  function fakeRunningDaemon(home: string): string {
+    const dir = path.join(home, '.nexus');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'clock.pid');
+    fs.writeFileSync(file, String(process.pid), 'utf-8');
+    return file;
+  }
+
+  it('runTick emits a warning when the daemon is running', async () => {
+    const home = makeTmpHome();
+    fakeRunningDaemon(home);
+    const fix = makeFixture();
+    fix.events.push({
+      id: 'e-1',
+      name: 'demo.x',
+      payload: null,
+      emitter: 'p',
+      firedAt: 't',
+      processed: false,
+    });
+    fix.orders.set('demo.x', [
+      { handler: 'r', status: 'success', error: null, durationMs: 1 },
+    ]);
+    setupStubGuild(fix, home);
+
+    const out = await runTick({});
+    assert.equal(out.warnings.length, 1);
+    assert.match(out.warnings[0], /clockworks daemon is running/);
+    assert.match(out.warnings[0], /pid \d+/);
+    // The dispatch still happened.
+    assert.deepEqual(out.lines, ['[r] success 1ms']);
+  });
+
+  it('runTick emits no warnings when the daemon is not running', async () => {
+    const home = makeTmpHome();
+    setupStubGuild(makeFixture(), home);
+    const out = await runTick({});
+    assert.deepEqual(out.warnings, []);
+  });
+
+  it('runRun emits a warning when the daemon is running', async () => {
+    const home = makeTmpHome();
+    fakeRunningDaemon(home);
+    setupStubGuild(makeFixture(), home);
+    const out = await runRun();
+    assert.equal(out.warnings.length, 1);
+    assert.match(out.warnings[0], /clockworks daemon is running/);
+  });
+
+  it('runRun emits no warnings when the daemon is not running', async () => {
+    const home = makeTmpHome();
+    setupStubGuild(makeFixture(), home);
+    const out = await runRun();
+    assert.deepEqual(out.warnings, []);
+  });
+});
+
+// ── runStatus ────────────────────────────────────────────────────────
+
+describe('runStatus', () => {
+  function fakeRunningDaemon(home: string): void {
+    const dir = path.join(home, '.nexus');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'clock.pid'), String(process.pid), 'utf-8');
+  }
+
+  it('plain text when not running', () => {
+    const home = makeTmpHome();
+    setupStubGuild(makeFixture(), home);
+    const out = runStatus({});
+    assert.deepEqual(out.lines, ['Clockworks daemon: not running.']);
+    assert.equal(out.status.running, false);
+  });
+
+  it('plain text when running with pid/log/uptime', () => {
+    const home = makeTmpHome();
+    fakeRunningDaemon(home);
+    setupStubGuild(makeFixture(), home);
+    const out = runStatus({});
+    assert.equal(out.status.running, true);
+    assert.match(out.lines[0], /running/);
+    assert.match(out.lines[1], new RegExp(`PID:\\s+${process.pid}`));
+    assert.match(out.lines[2], /Log file:.*clock\.log/);
+    assert.match(out.lines[3], /Uptime:\s+\d+/);
+  });
+
+  it('--json emits the structured status as JSON', () => {
+    const home = makeTmpHome();
+    fakeRunningDaemon(home);
+    setupStubGuild(makeFixture(), home);
+    const out = runStatus({ json: true });
+    const parsed = JSON.parse(out.lines[0]);
+    assert.equal(parsed.running, true);
+    assert.equal(parsed.pid, process.pid);
+    assert.match(parsed.logFile, /clock\.log$/);
+    assert.equal(typeof parsed.uptime, 'number');
+  });
+
+  it('reports stale-pidfile cleanup in the not-running branch', () => {
+    const home = makeTmpHome();
+    const dir = path.join(home, '.nexus');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'clock.pid'), '999999999', 'utf-8');
+    setupStubGuild(makeFixture(), home);
+
+    const out = runStatus({});
+    assert.equal(out.status.running, false);
+    assert.equal(out.status.stalePidfile, true);
+    assert.match(out.lines.join('\n'), /Stale pidfile detected and removed/);
+    // Subsequent call no longer reports staleness.
+    setupStubGuild(makeFixture(), home);
+    const followup = runStatus({});
+    assert.equal(followup.status.stalePidfile, undefined);
+  });
+});
+
+// ── Commander integration for new subcommands ────────────────────────
+
+describe('buildClockCommand — start/stop/status', () => {
+  it('start exposes --interval and --foreground', () => {
+    const cmd = buildClockCommand();
+    const start = cmd.commands.find((c) => c.name() === 'start')!;
+    const flags = start.options.map((o) => o.long).sort();
+    assert.deepEqual(flags, ['--foreground', '--interval']);
+  });
+
+  it('start --interval rejects non-integer values', async () => {
+    const home = makeTmpHome();
+    setupStubGuild(makeFixture(), home);
+    const cmd = buildClockCommand();
+    cmd.exitOverride();
+    const errs: string[] = [];
+    const origErr = console.error;
+    console.error = (...args: unknown[]): void => { errs.push(args.map(String).join(' ')); };
+    try {
+      await assert.rejects(
+        () => cmd.parseAsync(['start', '--interval', 'abc'], { from: 'user' }),
+      );
+    } finally {
+      console.error = origErr;
+    }
+  });
+
+  it('status takes no positional and a --json flag', () => {
+    const cmd = buildClockCommand();
+    const status = cmd.commands.find((c) => c.name() === 'status')!;
+    assert.equal(status.registeredArguments.length, 0);
+    const flags = status.options.map((o) => o.long);
+    assert.deepEqual(flags, ['--json']);
+  });
+
+  it('status parseAsync prints the not-running line through the action wrapper', async () => {
+    const home = makeTmpHome();
+    setupStubGuild(makeFixture(), home);
+    const cmd = buildClockCommand();
+    cmd.exitOverride();
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]): void => { lines.push(args.map(String).join(' ')); };
+    try {
+      await cmd.parseAsync(['status'], { from: 'user' });
+    } finally {
+      console.log = origLog;
+    }
+    assert.deepEqual(lines, ['Clockworks daemon: not running.']);
+  });
+
+  it('status --json parseAsync emits the structured payload', async () => {
+    const home = makeTmpHome();
+    setupStubGuild(makeFixture(), home);
+    const cmd = buildClockCommand();
+    cmd.exitOverride();
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]): void => { lines.push(args.map(String).join(' ')); };
+    try {
+      await cmd.parseAsync(['status', '--json'], { from: 'user' });
+    } finally {
+      console.log = origLog;
+    }
+    const parsed = JSON.parse(lines.join('\n'));
+    assert.deepEqual(parsed, { running: false });
+  });
+
+  it('stop parseAsync errors when no daemon is running', async () => {
+    const home = makeTmpHome();
+    setupStubGuild(makeFixture(), home);
+    const cmd = buildClockCommand();
+    cmd.exitOverride();
+    const errs: string[] = [];
+    const origErr = console.error;
+    const origExit = process.exit;
+    let exitCode: number | string | undefined | null = null;
+    // exitOverride doesn't intercept the action wrapper's process.exit;
+    // monkey-patch to capture.
+    process.exit = ((code?: number | string | null) => {
+      exitCode = code;
+      throw new Error('process.exit-stub');
+    }) as never;
+    console.error = (...args: unknown[]): void => { errs.push(args.map(String).join(' ')); };
+    try {
+      await assert.rejects(
+        () => cmd.parseAsync(['stop'], { from: 'user' }),
+        /process\.exit-stub/,
+      );
+      assert.equal(exitCode, 1);
+      assert.ok(
+        errs.some((e) => /not running/i.test(e)),
+        `expected a 'not running' error, got: ${errs.join(' | ')}`,
+      );
+    } finally {
+      console.error = origErr;
+      process.exit = origExit;
+    }
+  });
+
+  it('tick parseAsync writes the daemon-coexistence warning to stderr', async () => {
+    const home = makeTmpHome();
+    const dir = path.join(home, '.nexus');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'clock.pid'), String(process.pid), 'utf-8');
+
+    const fix = makeFixture();
+    fix.events.push({
+      id: 'e-1',
+      name: 'demo.x',
+      payload: null,
+      emitter: 'p',
+      firedAt: 't',
+      processed: false,
+    });
+    fix.orders.set('demo.x', [
+      { handler: 'r', status: 'success', error: null, durationMs: 1 },
+    ]);
+    setupStubGuild(fix, home);
+
+    const cmd = buildClockCommand();
+    cmd.exitOverride();
+    const stderr: string[] = [];
+    const stdout: string[] = [];
+    const origErr = console.error;
+    const origLog = console.log;
+    console.error = (...args: unknown[]): void => { stderr.push(args.map(String).join(' ')); };
+    console.log = (...args: unknown[]): void => { stdout.push(args.map(String).join(' ')); };
+    try {
+      await cmd.parseAsync(['tick'], { from: 'user' });
+    } finally {
+      console.error = origErr;
+      console.log = origLog;
+    }
+    assert.ok(
+      stderr.some((l) => /clockworks daemon is running/.test(l)),
+      `expected daemon warning on stderr, got: ${stderr.join(' | ')}`,
+    );
+    assert.deepEqual(stdout, ['[r] success 1ms']);
   });
 });
 
