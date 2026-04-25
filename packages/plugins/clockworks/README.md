@@ -4,15 +4,18 @@ The Clockworks — Pillar 5 of the guild architecture. The event substrate
 and standing-order engine: declares events, accepts emissions, and fans
 them out to registered handlers (relays, summons, briefs).
 
-**Status:** Write path and CDC auto-wiring are live. The Clockworks
-exposes `ClockworksApi.emit` for trusted framework callers, a validated
-`signal` tool for animas (with an operator-facing `nsg signal` CLI
-counterpart), and — at startup — registers a Phase-2 CDC watcher on
-every plugin-declared book (other than `clockworks/events` itself) that
+**Status:** Write path, event-triggered dispatcher, and CDC auto-wiring
+are live. The Clockworks exposes `ClockworksApi.emit` for trusted
+framework callers, a validated `signal` tool for animas (with an
+operator-facing `nsg signal` CLI counterpart),
+`ClockworksApi.processEvents()` — the bulk-drain dispatcher that
+resolves matching standing orders, invokes their relays, persists one
+dispatch row per invocation, and flips the event's `processed` flag —
+and, at startup, registers a Phase-2 CDC watcher on every
+plugin-declared book (other than `clockworks/events` itself) that
 re-emits each row create/update/delete as a
 `book.<ownerId>.<book>.<verb>` event with emitter `'framework'`. The
-dispatcher, the runner, and the daemon are still to come — events land
-in the `events` book but nothing reads them yet.
+CLI wrapper, daemon, and cron scheduling are still to come.
 
 See also: [`docs/architecture/clockworks.md`](../../../docs/architecture/clockworks.md).
 
@@ -87,8 +90,67 @@ Looks up a registered relay by name. Returns the `RelayDefinition`
 registered under `name` — sourced from either a standalone kit's
 `relays` contribution or the apparatus's own `supportKit.relays` slot —
 or `undefined` when no relay with that name is registered. The
-dispatcher (future task) calls this when resolving a standing order's
-`run:` field.
+dispatcher calls this when resolving a standing order's `run:` field.
+
+### `ClockworksApi.processEvents(): Promise<{ processedEvents, dispatches, errors }>`
+
+Drains every unprocessed event from the `events` book in one pass.
+For each event in id-ascending order, the dispatcher resolves every
+standing order whose `on:` field matches the event name (in
+registration order), invokes the named relay with the event and a
+fresh `RelayContext { home, params: order.with ?? {} }`, and writes
+exactly one `event_dispatches` row per invocation. After all matching
+orders for an event have been attempted, the event is marked
+`processed: true`.
+
+Per-handler isolation: a thrown handler does not block sibling
+handlers or sibling events. Both success and error outcomes are
+recorded as one-phase dispatch rows (no `pending` intermediate state
+written by this dispatcher).
+
+The standing-order array is re-read from `guildConfig().clockworks?.standingOrders`
+on every call, so operators may hot-edit `guild.json` without
+restarting the apparatus. Every entry is validated against the
+canonical shape on every sweep — any malformed order causes the entire
+sweep to throw with an aggregated error message naming every
+offender's index, and no events are processed.
+
+Returned counts:
+
+- `processedEvents` — events whose `processed` flag was flipped this sweep.
+- `dispatches` — total dispatch rows written across every event.
+- `errors` — subset of those rows whose `status` is `'error'`.
+
+Sequential, single-pass — no scheduling, no parallelism, no retry. The
+CLI wrapper, daemon, and cron loop compose on top of this primitive.
+
+---
+
+## Standing orders
+
+Standing orders live under `clockworks.standingOrders` in `guild.json`.
+The canonical shape is:
+
+```json
+{
+  "clockworks": {
+    "standingOrders": [
+      { "on": "demo.thing-happened", "run": "log-event" },
+      {
+        "on": "code.reviewed",
+        "run": "notify-channel",
+        "with": { "channel": "#reviews", "level": "info" }
+      }
+    ]
+  }
+}
+```
+
+Each order names exactly one event (`on:`) and exactly one relay to
+invoke (`run:`); an optional `with:` block is forwarded to the relay
+handler as `RelayContext.params`. Anything else — extra top-level
+keys, a non-object `with:`, the dropped `summon:` / `brief:` sugar
+forms — is rejected at load time with a descriptive error.
 
 ---
 
@@ -153,8 +215,9 @@ string; omit it to record a `null` payload.
   `(processed, firedAt)`.
 - `clockworks/event_dispatches` — one document per handler invocation
   triggered by an event. Indexes: `eventId`, `status`, and the
-  composite `(eventId, status)`. Reserved for the dispatcher / runner
-  commissions; nothing writes to this book yet.
+  composite `(eventId, status)`. Written by `processEvents()` — one
+  row per matching standing order, with `status: 'success' | 'error'`
+  set after the relay settles.
 
 Both are owned by plugin id `clockworks`.
 
@@ -219,6 +282,9 @@ daemon-restart cycle stays idempotent.
 - `validateSignal`, `RESERVED_EVENT_NAMESPACES`,
   `WRIT_LIFECYCLE_SUFFIXES` — the shared signal validator (re-used by
   the framework CLI's hand-written `nsg signal` command).
+- `validateStandingOrders`, `ALLOWED_STANDING_ORDER_KEYS` — the shared
+  standing-order load-time validator and its allowlist of permitted
+  top-level keys.
 - Types: `ClockworksApi`, `ClockworksKit`, `ClockworksConfig`,
   `EventDeclaration`, `StandingOrder`, `EventDoc`, `EventDispatchDoc`,
   `RelayDefinition`, `RelayContext`, `GuildEvent`.

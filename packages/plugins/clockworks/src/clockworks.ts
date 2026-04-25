@@ -4,15 +4,16 @@
  * The factory:
  *
  *   - Declares plugin id `clockworks` (derived from the package name).
- *   - Requires the Stacks; consumes the `relays` kit vocabulary.
+ *   - Requires the Stacks and Clerk; consumes the `relays` kit
+ *     vocabulary.
  *   - Publishes two books (`events`, `event_dispatches`) under owner id
  *     `clockworks`, with the index set anticipated by the runner /
  *     status query patterns in `docs/architecture/clockworks.md`.
- *   - Resolves the Stacks during `start()` and obtains handles on both
- *     books so the `emit()` API and downstream commissions (task 4
- *     runner, task 10 daemon) can read/write them immediately.
- *   - Provides the `ClockworksApi` (`emit()`, `resolveRelay()`) that
- *     downstream tasks extend.
+ *   - Resolves the Stacks during `start()` and obtains writable handles
+ *     on both books so `emit()`, `processEvents()`, and the future
+ *     daemon can use them without re-resolving Stacks.
+ *   - Provides the `ClockworksApi` (`emit()`, `resolveRelay()`,
+ *     `processEvents()`) that downstream tasks extend.
  *   - Builds a name-keyed relay registry from `ctx.kits('relays')`
  *     entries merged with the apparatus's own `supportKit.relays`. The
  *     registry is closure-scoped, cleared at the top of every `start()`
@@ -25,13 +26,17 @@
  *     event with emitter `'framework'`. Standing orders can therefore
  *     bind directly to book mutations without each plugin having to
  *     call `emit()` from every write site.
+ *   - Exposes `processEvents()` — the event-triggered dispatch entry
+ *     point. Each call re-reads `clockworks.standingOrders` from
+ *     `guild.json`, validates them via the standing-order validator,
+ *     and delegates to the pure `runDispatchSweep` primitive in
+ *     `dispatcher.ts`. The CLI (later commission) and daemon (later
+ *     commission) compose on top of the same primitive.
  *
- * There is no dispatcher in this commission: nothing reads from the
- * registry yet. `start()` primes the book handles, the registry, and
- * the CDC watchers; `stop()` is a no-op — its shape exists so task 10's
- * daemon teardown has a drop-in site. Task 4 will add the dispatcher;
- * task 5 will fill the currently-empty `supportKit.relays` slot with
- * the summon relay.
+ * `start()` primes the book handles, the registry, the CDC watchers,
+ * and the dispatch path; `stop()` remains a no-op — its shape exists
+ * so the future daemon teardown has a drop-in site. Task 5 will fill
+ * the currently-empty `supportKit.relays` slot with the summon relay.
  *
  * See: docs/architecture/clockworks.md
  */
@@ -52,6 +57,7 @@ import type {
   EventDoc,
 } from './types.ts';
 
+import { runDispatchSweep, type DispatchSummary } from './dispatcher.ts';
 import { isRelayDefinition, type RelayDefinition } from './relay.ts';
 import { clockList, clockStatus, signal } from './tools/index.ts';
 
@@ -89,7 +95,6 @@ export function createClockworks(): Plugin {
   // closure-scoped api methods (and by downstream commissions that
   // extend this factory with additional runtime behavior).
   let events: Book<EventDoc>;
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let dispatches: Book<EventDispatchDoc>;
 
   // Registered relays keyed by `name` — first writer wins, with a
@@ -180,6 +185,32 @@ export function createClockworks(): Plugin {
       const entry = relays.get(name);
       return entry?.relay;
     },
+
+    async processEvents(): Promise<DispatchSummary> {
+      if (!events || !dispatches) {
+        throw new Error(
+          'clockworks: processEvents() called before start() primed the book handles.',
+        );
+      }
+
+      // D15: re-read the standing-order array per call so operators can
+      // hot-edit guild.json without restarting the apparatus. The
+      // dispatcher then re-validates it via the standing-order
+      // validator on every sweep (D3).
+      const g = guild();
+      const standingOrders = g.guildConfig().clockworks?.standingOrders ?? [];
+
+      // D11: per-call read of `home`. D21: pure dispatcher receives
+      // every dependency by parameter so unit tests can drive it
+      // without booting Stacks.
+      return runDispatchSweep({
+        events,
+        dispatches,
+        resolveRelay: api.resolveRelay,
+        standingOrders,
+        home: g.home,
+      });
+    },
   };
 
   return {
@@ -222,14 +253,11 @@ export function createClockworks(): Plugin {
         const g = guild();
         const stacks = g.apparatus<StacksApi>('stacks');
 
-        // Prime book handles so `emit()` and downstream commissions can
-        // use them without re-resolving Stacks.
+        // Prime book handles so `emit()`, `processEvents()`, and
+        // downstream commissions can use them without re-resolving
+        // Stacks.
         events = stacks.book<EventDoc>('clockworks', 'events');
         dispatches = stacks.book<EventDispatchDoc>('clockworks', 'event_dispatches');
-
-        // Reference the dispatches handle to satisfy the unused-binding
-        // check until the runner / dispatcher commission claims it.
-        void dispatches;
 
         // Rebuild the relay registry from scratch. Arbor wires standalone
         // kits ahead of apparatus supportKits, so honoring the returned

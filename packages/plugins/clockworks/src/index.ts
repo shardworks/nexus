@@ -49,4 +49,12 @@ export {
   validateSignal,
 } from './signal-validator.ts';
 
+// Re-export the standing-order validator so future config-write hooks,
+// CLI linters, and other operator-facing surfaces can run the exact
+// same load-time validation path as the dispatcher.
+export {
+  ALLOWED_STANDING_ORDER_KEYS,
+  validateStandingOrders,
+} from './standing-order-validator.ts';
+
 export default createClockworks();

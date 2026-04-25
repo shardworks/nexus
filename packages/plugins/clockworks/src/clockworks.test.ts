@@ -605,3 +605,249 @@ describe('Clockworks — relay registry', () => {
     );
   });
 });
+
+// ── processEvents integration ─────────────────────────────────────────
+
+import type { StandingOrder } from './types.ts';
+
+interface DispatchFixtureOptions {
+  /** Standing orders injected into the fake guild's `guildConfig().clockworks`. */
+  standingOrders?: StandingOrder[];
+  /** Relays added to `supportKit.relays` before start(). */
+  supportKitRelays?: RelayDefinition[];
+}
+
+interface DispatchFixture {
+  stacks: StacksApi;
+  clockworks: ClockworksApi;
+  guildConfig: GuildConfig;
+  events: Book<EventDoc>;
+  dispatches: Book<EventDispatchDoc>;
+}
+
+/**
+ * End-to-end fixture for the `processEvents` integration test. Boots
+ * Stacks + Clockworks against an in-memory backend, wires the supplied
+ * standing orders into a mutable `GuildConfig`, and registers any
+ * supportKit relays so the dispatcher can resolve them.
+ */
+async function buildDispatchFixture(
+  opts: DispatchFixtureOptions = {},
+): Promise<DispatchFixture> {
+  const backend = new MemoryBackend();
+  const stacksPlugin = createStacksApparatus(backend);
+  const clockworksPlugin = createClockworks();
+  if (!('apparatus' in stacksPlugin)) throw new Error('stacks must be apparatus');
+  if (!('apparatus' in clockworksPlugin)) {
+    throw new Error('clockworks must be apparatus');
+  }
+
+  // Inject supportKit.relays so the registry pulls them in at start().
+  const supportKit = clockworksPlugin.apparatus.supportKit as {
+    relays?: RelayDefinition[];
+  };
+  if (opts.supportKitRelays) {
+    supportKit.relays = opts.supportKitRelays;
+  }
+
+  const apparatusMap = new Map<string, unknown>();
+  const guildConfig: GuildConfig = {
+    name: 'test-guild',
+    nexus: '0.0.0',
+    plugins: [],
+    clockworks: {
+      standingOrders: opts.standingOrders ?? [],
+    },
+  };
+
+  const fakeGuild: Guild = {
+    home: '/tmp/test-guild',
+    apparatus<T>(name: string): T {
+      const apiObj = apparatusMap.get(name);
+      if (!apiObj) throw new Error(`Apparatus "${name}" not installed`);
+      return apiObj as T;
+    },
+    config<T>(_pluginId: string): T { return {} as T; },
+    writeConfig(): void {},
+    guildConfig(): GuildConfig { return guildConfig; },
+    kits(): LoadedKit[] { return []; },
+    apparatuses(): LoadedApparatus[] { return []; },
+    failedPlugins() { return []; },
+    startupWarnings() { return []; },
+  };
+  setGuild(fakeGuild);
+
+  const stacksApparatus = stacksPlugin.apparatus;
+  await stacksApparatus.start(buildCtx());
+  const stacks = stacksApparatus.provides as StacksApi;
+  apparatusMap.set('stacks', stacks);
+
+  const bookSchemas = clockworksPlugin.apparatus.supportKit?.books as
+    | Record<string, { indexes?: (string | string[])[] }>
+    | undefined;
+  if (bookSchemas) {
+    for (const [name, schema] of Object.entries(bookSchemas)) {
+      backend.ensureBook({ ownerId: 'clockworks', book: name }, schema ?? {});
+    }
+  }
+
+  // Build a startup ctx that includes the supportKit.relays (if any)
+  // exactly the way the registry-fixture does, so the dispatcher's
+  // resolveRelay can find them.
+  const ctxEntries: KitEntry[] = [];
+  const supportRelays = supportKit.relays;
+  if (Array.isArray(supportRelays) && supportRelays.length > 0) {
+    ctxEntries.push({
+      pluginId: 'clockworks',
+      packageName: '@shardworks/clockworks-apparatus',
+      type: 'relays',
+      value: supportRelays,
+    });
+  }
+
+  await clockworksPlugin.apparatus.start(buildCtx(ctxEntries));
+  const clockworks = clockworksPlugin.apparatus.provides as ClockworksApi;
+  apparatusMap.set('clockworks', clockworks);
+
+  return {
+    stacks,
+    clockworks,
+    guildConfig,
+    events: stacks.book<EventDoc>('clockworks', 'events'),
+    dispatches: stacks.book<EventDispatchDoc>('clockworks', 'event_dispatches'),
+  };
+}
+
+describe('Clockworks — processEvents integration', () => {
+  afterEach(() => clearGuild());
+
+  it('happy path: emit, processEvents, dispatch row + processed flag round-trip', async () => {
+    let received: { eventName: string; home: string; params: Record<string, unknown> } | null = null;
+    const recorder = relay({
+      name: 'recorder',
+      handler: (event, ctx) => {
+        received = {
+          eventName: event!.name,
+          home: ctx.home,
+          params: ctx.params,
+        };
+      },
+    });
+    const fix = await buildDispatchFixture({
+      standingOrders: [
+        { on: 'demo.thing', run: 'recorder', with: { mode: 'verbose' } },
+      ],
+      supportKitRelays: [recorder],
+    });
+
+    const eventId = await fix.clockworks.emit('demo.thing', { foo: 1 }, 'tester');
+    const summary = await fix.clockworks.processEvents();
+
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 0 });
+    assert.deepEqual(received, {
+      eventName: 'demo.thing',
+      home: '/tmp/test-guild',
+      params: { mode: 'verbose' },
+    });
+
+    // Dispatch row persisted with the expected canonical shape.
+    const dispatchRows = await fix.dispatches.list();
+    assert.equal(dispatchRows.length, 1);
+    const row = dispatchRows[0];
+    assert.equal(row.eventId, eventId);
+    assert.equal(row.handlerType, 'relay');
+    assert.equal(row.handlerName, 'recorder');
+    assert.equal(row.targetRole, null);
+    assert.equal(row.noticeType, null);
+    assert.equal(row.status, 'success');
+    assert.equal(row.error, null);
+    assert.ok(row.startedAt);
+    assert.ok(row.endedAt);
+
+    // Event flipped to processed.
+    const eventRow = await fix.events.get(eventId);
+    assert.equal(eventRow?.processed, true);
+  });
+
+  it('failure path: a throwing relay records an error row and still flips processed', async () => {
+    const boom = relay({
+      name: 'boom',
+      handler: () => { throw new Error('handler exploded'); },
+    });
+    const fix = await buildDispatchFixture({
+      standingOrders: [{ on: 'demo.boom', run: 'boom' }],
+      supportKitRelays: [boom],
+    });
+
+    const eventId = await fix.clockworks.emit('demo.boom', null, 'tester');
+    const summary = await fix.clockworks.processEvents();
+
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 1 });
+    const rows = await fix.dispatches.list();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].status, 'error');
+    assert.equal(rows[0].error, 'handler exploded');
+    const eventRow = await fix.events.get(eventId);
+    assert.equal(eventRow?.processed, true);
+  });
+
+  it('returns zero counts on an empty queue and writes nothing', async () => {
+    const fix = await buildDispatchFixture();
+    const summary = await fix.clockworks.processEvents();
+    assert.deepEqual(summary, { processedEvents: 0, dispatches: 0, errors: 0 });
+    assert.equal(await fix.events.count(), 0);
+    assert.equal(await fix.dispatches.count(), 0);
+  });
+
+  it('throws aggregated when any standing order in guild.json is malformed', async () => {
+    const fix = await buildDispatchFixture({
+      // Manually inject a malformed entry to simulate a hand-edited
+      // guild.json. The `as unknown as StandingOrder` cast bypasses
+      // the type system the same way an out-of-band JSON edit would.
+      standingOrders: [
+        { on: 'demo.x', summon: 'reviewer' } as unknown as StandingOrder,
+      ],
+    });
+    await fix.clockworks.emit('demo.x', null, 'tester');
+
+    await assert.rejects(
+      fix.clockworks.processEvents(),
+      /sugar form has been removed/,
+    );
+
+    // No dispatch rows; event still pending.
+    assert.equal(await fix.dispatches.count(), 0);
+    const rows = await fix.events.list();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].processed, false);
+  });
+
+  it('hot-edits to standing orders take effect on the next sweep', async () => {
+    let invoked = 0;
+    const counter = relay({
+      name: 'counter',
+      handler: () => { invoked += 1; },
+    });
+    const fix = await buildDispatchFixture({
+      standingOrders: [],
+      supportKitRelays: [counter],
+    });
+
+    // First emit + sweep with no orders — the event flips to processed
+    // but no relays fire.
+    await fix.clockworks.emit('demo.x', null, 'tester');
+    await fix.clockworks.processEvents();
+    assert.equal(invoked, 0);
+
+    // Now hot-edit the guild config and emit a fresh event. The next
+    // sweep must pick the order up without restarting the apparatus.
+    fix.guildConfig.clockworks!.standingOrders!.push({
+      on: 'demo.x',
+      run: 'counter',
+    });
+    await fix.clockworks.emit('demo.x', null, 'tester');
+    const summary = await fix.clockworks.processEvents();
+    assert.equal(summary.processedEvents, 1);
+    assert.equal(invoked, 1);
+  });
+});

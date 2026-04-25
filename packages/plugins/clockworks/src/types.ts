@@ -43,18 +43,27 @@ export interface EventDeclaration {
 /**
  * A standing order — a registered response to an event.
  *
- * An order has one `on` field (the event name it listens for) and
- * exactly one action field:
- *   - `run`   — the name of a relay (registered tool-like handler).
- *   - `summon` — a role id; the Clockworks asks the Loom to open a
- *     session in that role, optionally with the given `prompt`.
- *   - `brief` — the path to a brief file; the Clockworks commissions a
- *     writ from it.
+ * Canonical shape per commission decision D5: every standing order
+ * names exactly one event (`on`) and exactly one relay to invoke
+ * (`run`), with an optional parameter object (`with`) handed to the
+ * relay as `RelayContext.params`.
+ *
+ * Earlier sugar forms (`summon:`, `brief:`, flat-spread params) have
+ * been dropped wholesale — see the standing-order validator for the
+ * load-time enforcement.
  */
-export type StandingOrder =
-  | { on: string; run: string }
-  | { on: string; summon: string; prompt?: string }
-  | { on: string; brief: string };
+export interface StandingOrder {
+  /** Event name to subscribe to — exact match against `EventDoc.name`. */
+  on: string;
+  /** Name of the relay to invoke when the event fires. */
+  run: string;
+  /**
+   * Optional parameter object passed through to the relay handler as
+   * `RelayContext.params`. Plain object only; null, arrays, and
+   * primitives are rejected by the validator.
+   */
+  with?: Record<string, unknown>;
+}
 
 /**
  * The Clockworks configuration block in `guild.json` under the
@@ -202,6 +211,42 @@ export interface ClockworksApi {
    * folding is applied.
    */
   resolveRelay(name: string): RelayDefinition | undefined;
+
+  /**
+   * Drain every unprocessed event from the `events` book in one pass:
+   * resolve each event's matching standing orders, invoke each named
+   * relay, persist a dispatch row per invocation, then mark the event
+   * processed.
+   *
+   * The current standing-order array is re-read from
+   * `guildConfig().clockworks?.standingOrders` at the start of every
+   * call so operators can hot-edit `guild.json` without restarting
+   * the apparatus. The full set is validated against the canonical
+   * shape; any malformed order causes the whole sweep to throw and no
+   * events are processed that call.
+   *
+   * Per-handler isolation: a thrown handler does not block sibling
+   * handlers or sibling events. Both success and error outcomes are
+   * recorded as one-phase dispatch rows; the event is marked
+   * `processed: true` after every matching order has been attempted
+   * (regardless of outcome).
+   *
+   * Sequential, single-pass — no scheduling, no parallelism, no retry.
+   * The CLI / daemon / cron loops compose on top of this primitive.
+   *
+   * @returns Counts for the sweep: total events whose `processed`
+   *          flag was flipped, total dispatch rows written, and the
+   *          subset of those rows whose `status` is `'error'`.
+   * @throws  Error from the standing-order validator when any order
+   *          in the current `clockworks.standingOrders` array is
+   *          malformed; in that case no events are processed and no
+   *          rows are written.
+   */
+  processEvents(): Promise<{
+    processedEvents: number;
+    dispatches: number;
+    errors: number;
+  }>;
 }
 
 /**
