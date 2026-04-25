@@ -10,7 +10,7 @@
  *
  * The detached-spawn path of `clockStart` is integration territory —
  * spawning a real `nsg` child requires a booted guild and is covered
- * separately. Here we test the "already running" idempotency branch
+ * separately. Here we test the "already running" refusal branch
  * which doesn't need to spawn anything.
  */
 
@@ -125,21 +125,23 @@ describe('clockStatus', () => {
 // ── clockStop ────────────────────────────────────────────────────────
 
 describe('clockStop', () => {
-  it('throws when no pidfile exists', async () => {
+  it('returns a no-pidfile result when there is nothing to stop', async () => {
     const home = makeTmpHome();
-    await assert.rejects(
-      clockStop(home),
-      /Clockworks daemon is not running/,
-    );
+    const result = await clockStop(home);
+    assert.equal(result.stopped, true);
+    assert.equal(result.reason, 'no-pidfile');
+    assert.equal(result.pid, null);
+    assert.match(result.message, /not running/i);
   });
 
-  it('cleans up and throws when the pidfile is stale', async () => {
+  it('cleans up and returns a stale result when the pidfile is stale', async () => {
     const home = makeTmpHome();
     const file = writePid(home, 999_999_999);
-    await assert.rejects(
-      clockStop(home),
-      /stale pidfile/i,
-    );
+    const result = await clockStop(home);
+    assert.equal(result.stopped, true);
+    assert.equal(result.reason, 'stale');
+    assert.equal(result.pid, 999_999_999);
+    assert.match(result.message, /stale pidfile/i);
     assert.equal(fs.existsSync(file), false);
   });
 
@@ -150,21 +152,27 @@ describe('clockStop', () => {
 
     const file = writePid(home, child.pid);
     const result = await clockStop(home);
-    assert.deepEqual(result, { pid: child.pid, stopped: true });
+    assert.equal(result.stopped, true);
+    assert.equal(result.reason, 'signaled');
+    assert.equal(result.pid, child.pid);
+    assert.match(result.message, /stopped/i);
     assert.equal(fs.existsSync(file), false);
   });
 });
 
-// ── clockStart (idempotency only) ────────────────────────────────────
+// ── clockStart (already-running refusal) ─────────────────────────────
 
-describe('clockStart — idempotency', () => {
-  it('returns the existing pid when a daemon is already running', async () => {
+describe('clockStart — already-running refusal', () => {
+  it('throws when a live daemon is already recorded by the pidfile', async () => {
     const home = makeTmpHome();
     writePid(home, process.pid);
 
-    const result = await clockStart(home);
-    assert.equal(result.pid, process.pid);
-    assert.equal(result.logFile, logFile(home));
+    await assert.rejects(
+      clockStart(home),
+      /already running/i,
+    );
+    // The pidfile is left in place — the existing daemon owns it.
+    assert.equal(fs.existsSync(pidFile(home)), true);
   });
 });
 

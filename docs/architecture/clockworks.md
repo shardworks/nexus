@@ -193,8 +193,8 @@ A background daemon polls the event queue and processes events automatically. Ph
 
 | Command | Behavior |
 |---|---|
-| `nsg clock start [--interval <ms>] [--foreground|-f]` | Start the daemon as a detached background process (default interval: 2000ms). `--foreground` runs the inline daemon body in this process and is the re-exec target the detached spawn uses. |
-| `nsg clock stop` | Send SIGTERM and clean up the PID file. Escalates to SIGKILL after a 5s grace window. |
+| `nsg clock start [--interval <ms>] [--foreground|-f]` | Start the daemon as a detached background process (default interval: 2000ms). Refuses (exits nonzero) when a daemon is already running. Cleans up a stale pidfile and continues. `--foreground` runs the inline daemon body in this process and is the re-exec target the detached spawn uses. |
+| `nsg clock stop` | Send SIGTERM and clean up the PID file. Escalates to SIGKILL after a 5s grace window. Exits zero with a message when there is nothing to stop (no pidfile, or the pidfile was stale). |
 | `nsg clock status [--json]` | Show whether the daemon is running, with PID, uptime, and log file path. `--json` emits the structured payload. |
 
 The daemon spawns as a detached child process by re-execing the same `nsg` binary with `clock start --foreground --guild-root <home>` (plus `--interval <ms>` if supplied). It writes a PID file at `<home>/.nexus/clock.pid` and logs to `<home>/.nexus/clock.log` (append mode). Both stdout and stderr land in the same log file. The detached parent calls `child.unref()` so closing the parent terminal does not take the daemon down.

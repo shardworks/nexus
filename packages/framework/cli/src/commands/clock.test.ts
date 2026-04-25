@@ -1200,17 +1200,80 @@ describe('buildClockCommand — start/stop/status', () => {
     assert.deepEqual(parsed, { running: false });
   });
 
-  it('stop parseAsync errors when no daemon is running', async () => {
+  it('stop parseAsync exits zero with a message when no daemon is running', async () => {
     const home = makeTmpHome();
     setupStubGuild(makeFixture(), home);
+    const cmd = buildClockCommand();
+    cmd.exitOverride();
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    const origExit = process.exit;
+    let exitCode: number | string | undefined | null = null;
+    // Capture process.exit calls (the action wrapper does not call it
+    // on success, but we want to be able to fail the test if it does).
+    process.exit = ((code?: number | string | null) => {
+      exitCode = code;
+      throw new Error('process.exit-stub');
+    }) as never;
+    console.log = (...args: unknown[]): void => { stdout.push(args.map(String).join(' ')); };
+    console.error = (...args: unknown[]): void => { stderr.push(args.map(String).join(' ')); };
+    try {
+      // No throw expected: missing pidfile is exit-zero behavior.
+      await cmd.parseAsync(['stop'], { from: 'user' });
+      assert.equal(exitCode, null, 'process.exit should not be called on the no-pidfile branch');
+      assert.deepEqual(stderr, []);
+      assert.ok(
+        stdout.some((l) => /not running/i.test(l)),
+        `expected a 'not running' message on stdout, got: ${stdout.join(' | ')}`,
+      );
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+      process.exit = origExit;
+    }
+  });
+
+  it('stop parseAsync exits zero with a message when the pidfile is stale', async () => {
+    const home = makeTmpHome();
+    const dir = path.join(home, '.nexus');
+    fs.mkdirSync(dir, { recursive: true });
+    const pidFilePath = path.join(dir, 'clock.pid');
+    fs.writeFileSync(pidFilePath, '999999999', 'utf-8');
+    setupStubGuild(makeFixture(), home);
+
+    const cmd = buildClockCommand();
+    cmd.exitOverride();
+    const stdout: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]): void => { stdout.push(args.map(String).join(' ')); };
+    try {
+      await cmd.parseAsync(['stop'], { from: 'user' });
+      assert.ok(
+        stdout.some((l) => /stale pidfile/i.test(l)),
+        `expected a 'stale pidfile' message, got: ${stdout.join(' | ')}`,
+      );
+      // The stale pidfile should be cleaned up as a side effect.
+      assert.equal(fs.existsSync(pidFilePath), false);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  it('start parseAsync exits nonzero when a daemon is already running', async () => {
+    const home = makeTmpHome();
+    const dir = path.join(home, '.nexus');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'clock.pid'), String(process.pid), 'utf-8');
+    setupStubGuild(makeFixture(), home);
+
     const cmd = buildClockCommand();
     cmd.exitOverride();
     const errs: string[] = [];
     const origErr = console.error;
     const origExit = process.exit;
     let exitCode: number | string | undefined | null = null;
-    // exitOverride doesn't intercept the action wrapper's process.exit;
-    // monkey-patch to capture.
     process.exit = ((code?: number | string | null) => {
       exitCode = code;
       throw new Error('process.exit-stub');
@@ -1218,13 +1281,13 @@ describe('buildClockCommand — start/stop/status', () => {
     console.error = (...args: unknown[]): void => { errs.push(args.map(String).join(' ')); };
     try {
       await assert.rejects(
-        () => cmd.parseAsync(['stop'], { from: 'user' }),
+        () => cmd.parseAsync(['start'], { from: 'user' }),
         /process\.exit-stub/,
       );
       assert.equal(exitCode, 1);
       assert.ok(
-        errs.some((e) => /not running/i.test(e)),
-        `expected a 'not running' error, got: ${errs.join(' | ')}`,
+        errs.some((e) => /already running/i.test(e)),
+        `expected an 'already running' error, got: ${errs.join(' | ')}`,
       );
     } finally {
       console.error = origErr;

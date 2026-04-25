@@ -598,13 +598,19 @@ export interface StopOutput {
   lines: string[];
 }
 
-/** Handle `nsg clock stop`. Thin wrapper around `clockStop`. */
+/**
+ * Handle `nsg clock stop`. Thin wrapper around `clockStop`.
+ *
+ * Per spec: missing-pidfile and stale-pidfile cases exit zero with a
+ * message — they are not errors. The success-path message comes from
+ * the core API result so the three branches (`'signaled'`,
+ * `'no-pidfile'`, `'stale'`) stay aligned across CLI / programmatic
+ * consumers.
+ */
 export async function runStop(): Promise<StopOutput> {
   const g = requireGuild();
   const result = await clockStop(g.home);
-  return {
-    lines: [`Clockworks daemon stopped (pid: ${result.pid}).`],
-  };
+  return { lines: [result.message] };
 }
 
 export interface StatusInput {

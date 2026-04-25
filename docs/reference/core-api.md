@@ -407,18 +407,20 @@ await clockStart(home, { interval: 2000 })
 // => { pid: 12345, logFile: '/path/to/.nexus/clock.log' }
 ```
 
-Options: `{ interval?: number }` — polling interval in ms (default 2000). Idempotent on the live-pid branch (returns the existing pid) and on the stale-pidfile branch (unlinks then continues).
+Options: `{ interval?: number }` — polling interval in ms (default 2000). Throws if the daemon is already running (the pidfile points at a live pid). Cleans up a stale pidfile (the pidfile points at a dead pid) and continues with a fresh spawn.
 
 ### `clockStop(home): Promise<ClockStopResult>`
 
-Stop the running clockworks daemon. Sends SIGTERM, polls for exit, escalates to SIGKILL after a 5s grace window, and unlinks the pidfile once the process is confirmed dead. Blocks until the daemon is verifiably dead.
+Stop the running clockworks daemon. Sends SIGTERM, polls for exit, escalates to SIGKILL after a 5s grace window, and unlinks the pidfile once the process is confirmed dead. Handles stale PID files gracefully — when no pidfile exists or the pidfile points at a dead pid, the function returns successfully (with `reason: 'no-pidfile' | 'stale'`) rather than throwing.
 
 ```typescript
 await clockStop(home)
-// => { pid: 12345, stopped: true }
+// => { pid: 12345, stopped: true, reason: 'signaled', message: 'Clockworks daemon stopped (pid: 12345).' }
+// or { pid: null, stopped: true, reason: 'no-pidfile', message: '...' }
+// or { pid: 999, stopped: true, reason: 'stale', message: '...' }    // stale pidfile cleaned up as a side effect
 ```
 
-Throws when no pidfile exists, when the pidfile points at a dead pid (the function still cleans the pidfile up before throwing), or when the process refuses to exit even after SIGKILL.
+Throws only when the process refuses to exit even after SIGKILL (or when SIGTERM itself fails for an unexpected reason).
 
 ### `clockStatus(home): ClockStatus`
 
@@ -440,7 +442,7 @@ clockStatus(home)
 | `ClockRunResult` | `{ processed: TickResult[], totalEvents }` |
 | `ClockStartOptions` | `{ interval?: number }` |
 | `ClockStartResult` | `{ pid, logFile }` |
-| `ClockStopResult` | `{ pid, stopped: true }` |
+| `ClockStopResult` | `{ pid: number \| null, stopped: true, reason: 'signaled' \| 'no-pidfile' \| 'stale', message }` |
 | `ClockStatus` | `{ running, pid?, logFile?, uptime?, stalePidfile? }` |
 
 ---

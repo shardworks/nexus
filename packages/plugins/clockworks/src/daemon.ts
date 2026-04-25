@@ -65,12 +65,33 @@ export interface ClockStartResult {
   logFile: string;
 }
 
-/** Result of a successful `clockStop` invocation. */
+/** Result of a `clockStop` invocation. */
 export interface ClockStopResult {
-  /** Process id of the daemon that was stopped. */
-  pid: number;
-  /** Always `true` once the function returns — the daemon is confirmed dead. */
+  /**
+   * Process id of the daemon that was stopped, or `null` when there
+   * was nothing to stop (no pidfile, or the pidfile was stale). The
+   * `reason` field discriminates which branch produced the result.
+   */
+  pid: number | null;
+  /**
+   * `true` whenever the call resolves without an error — for the
+   * `'signaled'` branch the daemon is confirmed dead, and for the
+   * `'no-pidfile'` / `'stale'` branches there was nothing alive to
+   * stop in the first place.
+   */
   stopped: true;
+  /**
+   * Discriminator describing which branch produced this result.
+   *
+   *  - `'signaled'` — a live daemon was signaled (SIGTERM, with
+   *    SIGKILL escalation if needed) and is now dead.
+   *  - `'no-pidfile'` — there was no pidfile at all; nothing to stop.
+   *  - `'stale'` — the pidfile pointed at a dead pid; the stale file
+   *    was removed and there was nothing else to do.
+   */
+  reason: 'signaled' | 'no-pidfile' | 'stale';
+  /** Human-readable description for the operator. */
+  message: string;
 }
 
 /** Result of `clockStatus`. */
@@ -158,13 +179,13 @@ export function clockStatus(home: string): ClockStatus {
 /**
  * Spawn the clockworks daemon as a detached background process.
  *
- * Idempotent on the live-pid branch (returns the existing pid) and on
- * the stale-pidfile branch (unlinks then continues). Spawns by
- * re-execing the same `nsg` binary with `clock start --foreground
- * --guild-root <home>` plus `--interval <ms>` if supplied. Both stdout
- * and stderr are piped to a single `clock.log` (append mode). Calls
- * `child.unref()` so the parent terminal can close without taking the
- * daemon down.
+ * Throws if a daemon is already running (the pidfile points at a live
+ * pid). Cleans up a stale pidfile (the pidfile points at a dead pid)
+ * and continues. Spawns by re-execing the same `nsg` binary with
+ * `clock start --foreground --guild-root <home>` plus `--interval
+ * <ms>` if supplied. Both stdout and stderr are piped to a single
+ * `clock.log` (append mode). Calls `child.unref()` so the parent
+ * terminal can close without taking the daemon down.
  *
  * Blocks polling for pidfile presence + named-pid liveness up to a
  * `START_DEADLINE_MS` deadline. On timeout, tails the log to help
@@ -179,10 +200,15 @@ export async function clockStart(
 
   const intervalMs = validateInterval(options.interval);
 
-  // Idempotency: already running.
+  // Refuse if a daemon is already running. Per spec: "If a PID file
+  // already exists and the named PID is alive, `start` refuses with a
+  // message and exits nonzero." Stale pidfiles (named pid is dead) are
+  // cleaned up and we continue with a fresh spawn.
   const existing = readPidFile(pidFile);
   if (existing !== null && isProcessAlive(existing)) {
-    return { pid: existing, logFile };
+    throw new Error(
+      `Clockworks daemon is already running (pid: ${existing}).`,
+    );
   }
   if (existing !== null && !isProcessAlive(existing)) {
     tryUnlink(pidFile);
@@ -250,23 +276,38 @@ export async function clockStart(
  *
  * Reads the pidfile, sends SIGTERM, polls for exit, escalates to
  * SIGKILL after `STOP_TERM_TIMEOUT_MS`, and unlinks the pidfile once
- * the process is confirmed dead. Returns `{ pid, stopped: true }`.
- * Throws when the daemon is not running, when the pidfile points at a
- * dead pid, or when the process refuses to exit even after SIGKILL.
+ * the process is confirmed dead.
+ *
+ * Per spec, the missing-pidfile and stale-pidfile branches are
+ * **non-error** outcomes: there is nothing to stop, so the function
+ * returns successfully with a `reason` discriminator
+ * (`'no-pidfile'` or `'stale'`) plus a human-readable message. The
+ * stale-pidfile branch unlinks the dead-pid pidfile as a side effect.
+ *
+ * Throws only when the process refuses to exit even after SIGKILL or
+ * when the SIGTERM call itself fails for an unexpected reason.
  */
 export async function clockStop(home: string): Promise<ClockStopResult> {
   const pidFile = clockPidPath(home);
   const pid = readPidFile(pidFile);
 
   if (pid === null) {
-    throw new Error('Clockworks daemon is not running (no pidfile).');
+    return {
+      pid: null,
+      stopped: true,
+      reason: 'no-pidfile',
+      message: 'Clockworks daemon is not running (no pidfile).',
+    };
   }
 
   if (!isProcessAlive(pid)) {
     tryUnlink(pidFile);
-    throw new Error(
-      `Clockworks daemon was not running (stale pidfile for pid ${pid} removed).`,
-    );
+    return {
+      pid,
+      stopped: true,
+      reason: 'stale',
+      message: `Clockworks daemon was not running (stale pidfile for pid ${pid} removed).`,
+    };
   }
 
   try {
@@ -292,11 +333,21 @@ export async function clockStop(home: string): Promise<ClockStopResult> {
         `Clockworks daemon (pid ${pid}) did not exit even after SIGKILL.`,
       );
     }
-    return { pid, stopped: true };
+    return {
+      pid,
+      stopped: true,
+      reason: 'signaled',
+      message: `Clockworks daemon stopped (pid: ${pid}).`,
+    };
   }
 
   tryUnlink(pidFile);
-  return { pid, stopped: true };
+  return {
+    pid,
+    stopped: true,
+    reason: 'signaled',
+    message: `Clockworks daemon stopped (pid: ${pid}).`,
+  };
 }
 
 // ── Public API: runForegroundDaemon ──────────────────────────────────

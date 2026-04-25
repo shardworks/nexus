@@ -421,6 +421,21 @@ to a single append-mode log file. The detached spawn calls
 daemon down. Startup blocks until the pidfile is present and the
 named pid is alive — failure tails the log to help debugging.
 
+`clockStart` refuses to run when a daemon is already recorded by a
+live pidfile and throws with an "already running" message; the
+operator-visible `nsg clock start` exits nonzero in that case. A
+stale pidfile (the named pid is dead) is cleaned up as a side effect
+and a fresh spawn proceeds.
+
+`clockStop` is the dual: it gracefully handles the missing-pidfile
+and stale-pidfile cases as exit-zero outcomes (the result carries a
+`reason: 'no-pidfile' | 'stale'` plus a human-readable message)
+rather than treating them as errors. Only the `'signaled'` branch
+actually sends SIGTERM (and escalates to SIGKILL after a short grace
+window). The CLI surface, `nsg clock stop`, prints the message and
+exits zero in every non-signaling branch — there is nothing to fail
+when there is nothing to stop.
+
 The foreground body is the inline daemon loop: writes `clock.pid`
 with its own pid, registers SIGTERM/SIGINT handlers, calls
 `processEvents` every interval (full drain — no per-tick cap),
@@ -547,10 +562,12 @@ daemon-restart cycle stays idempotent.
   can drive it directly.
 - `clockStart`, `clockStop`, `clockStatus` — the unattended-daemon
   lifecycle helpers. `clockStart(home, options?)` spawns the daemon
-  detached, `clockStop(home)` blocks until SIGTERM (with SIGKILL
-  escalation) confirms the process is dead, `clockStatus(home)` reads
-  the pidfile and reports `{ running, pid?, logFile?, uptime?,
-  stalePidfile? }`.
+  detached and throws if a live daemon is already running.
+  `clockStop(home)` sends SIGTERM (with SIGKILL escalation) when a
+  daemon is alive and otherwise returns a non-error result with
+  `reason: 'no-pidfile' | 'stale'` so callers can surface the message
+  and exit zero. `clockStatus(home)` reads the pidfile and reports
+  `{ running, pid?, logFile?, uptime?, stalePidfile? }`.
 - `runForegroundDaemon`, `runForegroundDaemonFromGuild` — the inline
   foreground daemon body. `runForegroundDaemon` accepts every
   dependency by parameter so tests can drive the loop without
