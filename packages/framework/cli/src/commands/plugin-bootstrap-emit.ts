@@ -5,7 +5,9 @@
  * run inside an Arbor-started guild. To honor the brief's
  * apparatus-owns-contract rule (the tool plugin emits its own install
  * event), we bootstrap a temporary guild runtime at the end of the
- * command, resolve the Clockworks API, emit, and then exit.
+ * command, resolve the Clockworks API, emit, then run
+ * `StartedGuild.shutdown()` to release apparatus handles before
+ * returning.
  *
  * Both the bootstrap-emit-shutdown sequence AND the underlying
  * `emit()` call are best-effort:
@@ -15,28 +17,28 @@
  *     returns successfully — the `guild.json` write is the
  *     authoritative outcome and must not roll back (D20).
  *
- *   - If Clockworks isn't installed, the helper warns and exits — the
- *     event is simply not emitted; the install/remove still succeeds
- *     (D20 + D13).
+ *   - If Clockworks isn't installed, the helper warns and shuts down
+ *     anyway — the event is simply not emitted; the install/remove
+ *     still succeeds (D20 + D13).
  *
  *   - An emission failure is caught with a `console.warn` per D13.
  *
+ *   - A shutdown() failure is caught with a `console.warn` so it
+ *     cannot turn an otherwise-successful install/remove into an
+ *     error.
+ *
  * The brief is explicit that no `setTimeout`-style detached background
  * work is acceptable here — we wait for the guild to start, fire the
- * event, then move on.
- *
- * NB: The CLI-side `createGuild()` does not yet have a sibling
- * `stopGuild()` API. The helper relies on the process exiting after
- * the install/remove completes (the `nsg` CLI is a one-shot command).
- * If a long-lived shutdown contract lands later, plumb it through
- * here.
+ * event, run shutdown(), then move on.
  */
 
 import { createGuild } from '@shardworks/nexus-arbor';
+import type { StartedGuild } from '@shardworks/nexus-core';
 import type { ClockworksApi } from '@shardworks/clockworks-apparatus';
 
 /**
- * Spin up the guild, emit the named event, and tear down.
+ * Spin up the guild, emit the named event, and tear down via
+ * `StartedGuild.shutdown()`.
  *
  * @param eventName  Either `'tool.installed'` or `'tool.removed'` —
  *                   the catalog-defined names for plugin lifecycle.
@@ -48,8 +50,9 @@ export async function bootstrapEmitToolEvent(
   payload: Record<string, unknown>,
   guildHome: string,
 ): Promise<void> {
+  let g: StartedGuild | undefined;
   try {
-    const g = await createGuild(guildHome);
+    g = await createGuild(guildHome);
     let clockworks: ClockworksApi | undefined;
     try {
       clockworks = g.apparatus<ClockworksApi>('clockworks');
@@ -83,5 +86,20 @@ export async function bootstrapEmitToolEvent(
       `[nsg plugin] Bootstrap-emit for "${eventName}" failed: ${reason}. ` +
         `The guild.json change has been saved.`,
     );
+  } finally {
+    // Tear down whatever apparatus did manage to start — this is what
+    // the long-standing "no sibling stopGuild API yet" TODO was
+    // waiting on. Now released via StartedGuild.shutdown().
+    if (g !== undefined) {
+      try {
+        await g.shutdown();
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[nsg plugin] Bootstrap teardown reported failures: ${reason}. ` +
+            `The guild.json change has been saved.`,
+        );
+      }
+    }
   }
 }

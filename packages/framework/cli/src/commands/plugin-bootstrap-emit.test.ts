@@ -18,6 +18,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { guild } from '@shardworks/nexus-core';
+
 import { bootstrapEmitToolEvent } from './plugin-bootstrap-emit.ts';
 import { makeTmpDir, makeGuild, cleanupTestState } from './test-helpers.ts';
 
@@ -77,5 +79,31 @@ describe('bootstrap-emit helper — warn-and-succeed contract (D20)', () => {
 
     // No mutation of the guild root happened.
     assert.ok(fs.existsSync(path.join(tmp, 'guild.json')));
+  });
+
+  it('calls shutdown() after the bootstrap emit so the guild() singleton is cleared', async () => {
+    const tmp = makeTmpDir('plugin-bootstrap');
+    makeGuild(tmp, { plugins: [] });
+
+    const warns: string[] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warns.push(args.map(String).join(' '));
+    };
+    try {
+      await bootstrapEmitToolEvent(
+        'tool.installed',
+        { pluginId: 'a-plugin' },
+        tmp,
+      );
+    } finally {
+      console.warn = orig;
+    }
+
+    // After the helper returns, the singleton should be cleared by
+    // StartedGuild.shutdown() — guild() must throw the canonical
+    // "Guild not initialized" error rather than handing out a stale
+    // reference.
+    assert.throws(() => guild(), /Guild not initialized/);
   });
 });
