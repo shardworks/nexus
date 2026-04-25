@@ -2,9 +2,12 @@
  * @shardworks/clerk-apparatus — The Clerk.
  *
  * Writ lifecycle management: post commissions, complete or fail writs, and
- * cancel them at any pre-terminal stage. Writs flow through a fixed phase
- * machine (new → open → completed/failed/cancelled) and are persisted in
- * The Stacks.
+ * cancel them at any pre-terminal stage. Each writ's lifecycle is declared
+ * by a registered `WritTypeConfig`; the Clerk's own built-in type
+ * `mandate` (new → open → completed/failed/cancelled, with `stuck` as a
+ * non-terminal "needs attention" state off `open`) is one example.
+ * Plugins contribute their own writ types and state machines via
+ * `ClerkApi.registerWritType`. Writs are persisted in The Stacks.
  *
  * See: docs/architecture/apparatus/clerk.md
  */
@@ -16,7 +19,6 @@ import { createClerk } from './clerk.ts';
 export {
   type ClerkApi,
   type ClerkConfig,
-  type WritTypeEntry,
   type WritDoc,
   type WritLinkDoc,
   type WritLinks,
@@ -31,7 +33,7 @@ export {
   type WritTreeParams,
 } from './types.ts';
 
-export { createClerk, CASCADE_PARENT_TERMINATION_RESOLUTION } from './clerk.ts';
+export { createClerk } from './clerk.ts';
 export type { ClerkKit } from './clerk.ts';
 
 // ── Writ-type configuration (structural shape + validator) ────────────

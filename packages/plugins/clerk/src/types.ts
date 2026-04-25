@@ -119,7 +119,7 @@ export interface EditWritRequest {
 export interface PostCommissionRequest {
   /**
    * Writ type. Defaults to the guild's configured defaultType, or "mandate"
-   * if no default is configured. Must be a valid declared type.
+   * if no default is configured. Must be a registered writ type.
    */
   type?: string;
   /** Short human-readable title describing the work. */
@@ -129,15 +129,8 @@ export interface PostCommissionRequest {
   /** Optional target codex name. */
   codex?: string;
   /**
-   * When true, the writ is created in 'new' (draft) status instead of 'open'.
-   * Draft writs are invisible to the Spider and must be explicitly published
-   * (new → open) before they can be picked up for execution.
-   * Defaults to false (writ enters the queue immediately).
-   */
-  draft?: boolean;
-  /**
    * Create this writ as a child of the specified parent writ.
-   * The parent must be in new or open status.
+   * The parent must not be in a terminal state.
    */
   parentId?: string;
 }
@@ -213,22 +206,16 @@ export interface WritTreeParams {
 // ── Configuration ───────────────────────────────────────────────
 
 /**
- * A writ type entry declared in clerk config.
- */
-export interface WritTypeEntry {
-  /** The writ type name (e.g. "mandate", "task", "bug"). */
-  name: string;
-  /** Optional human-readable description of this writ type. */
-  description?: string;
-}
-
-/**
  * Clerk apparatus configuration — lives under the `clerk` key in guild.json.
+ *
+ * Writ types are now contributed exclusively via
+ * `ClerkApi.registerWritType` from a plugin's own `start()`. There is no
+ * guild-config `writTypes` field; the operator's only handle on the writ-
+ * type registry from guild config is the `defaultType` selection (which is
+ * validated against the registry once startup seals).
  */
 export interface ClerkConfig {
-  /** Additional writ type declarations. The built-in type "mandate" is always valid. */
-  writTypes?: WritTypeEntry[];
-  /** Default writ type when commission-post is called without a type (default: "mandate"). */
+  /** Default writ type when commission-post is called without a type (default: "mandate"). Validated against the writ-type registry at startup; an unregistered name fails fast. */
   defaultType?: string;
 }
 
@@ -345,10 +332,20 @@ export interface WritLinks {
 export interface WritTypeInfo {
   /** The writ type name. */
   name: string;
-  /** Human-readable description, or null if none was provided. */
+  /**
+   * Reserved for a future config-carried description field. Always `null`
+   * today — `WritTypeConfig` does not currently model a description, and
+   * the legacy guild-config / kit-channel description fields are gone.
+   */
   description: string | null;
-  /** Origin of this type: "builtin", "guild", or the contributing plugin id. */
-  source: string;
+  /**
+   * Origin of this type. `"builtin"` is reserved for `mandate`, which the
+   * Clerk plugin registers from its own `start()`; every other registered
+   * type carries `"plugin"`. The Clerk does not track the calling plugin's
+   * id — there is no implicit hand-off of caller identity into
+   * `registerWritType`.
+   */
+  source: 'builtin' | 'plugin';
   /** Whether this is the guild's default writ type. */
   isDefault: boolean;
 }
@@ -360,10 +357,12 @@ export interface WritTypeInfo {
  */
 export interface ClerkApi {
   /**
-   * Post a new commission, creating a writ in 'open' status by default.
-   * If `request.draft` is true, the writ is created in 'new' status instead
-   * and will not be picked up by the Spider until explicitly published.
-   * Validates the writ type against declared types in guild config.
+   * Post a new commission, creating a writ in its registered type's
+   * declared `initial` state. The writ type must be registered with
+   * `registerWritType`; an unknown type is rejected. The caller decides
+   * whether to advance the writ further (e.g. `commission-post` auto-
+   * publishes mandate writs to `open` by default — see that tool); the
+   * `post()` API itself is type-agnostic and never auto-advances.
    */
   post(request: PostCommissionRequest): Promise<WritDoc>;
 
@@ -487,10 +486,10 @@ export interface ClerkApi {
   edit(request: EditWritRequest): Promise<WritDoc>;
 
   /**
-   * List all registered writ types with metadata.
-   * Returns builtin types, guild-configured types, and kit-contributed types.
-   * Each entry includes the type name, optional description, source, and
-   * whether it is the default type.
+   * List the writ types registered with the Clerk via `registerWritType`,
+   * including the Clerk's own built-in `mandate`. Each entry reports the
+   * name, the (currently-always-null) description, source (`builtin` or
+   * `plugin`), and whether it is the default type.
    */
   listWritTypes(): WritTypeInfo[];
 
