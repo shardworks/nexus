@@ -89,20 +89,40 @@ interface SpiderApi {
 
 type CrawlResult =
   | { action: 'engine-completed'; rigId: string; engineId: string }
-  | { action: 'engine-started'; rigId: string; engineId: string }
-  | { action: 'rig-spawned'; rigId: string; writId: string }
-  | { action: 'rig-completed'; rigId: string; writId: string; outcome: 'completed' | 'stuck' | 'failed' | 'cancelled' }
+  | { action: 'engine-started';   rigId: string; engineId: string }
+  | { action: 'engine-held';      rigId: string; engineId: string; holdReason: string }
+  | { action: 'engine-retrying';  rigId: string; engineId: string; attemptCount: number }
+  | { action: 'engine-skipped';   rigId: string; engineId: string; cascadeSkipped?: string[] }
+  | { action: 'engine-grafted';   rigId: string; engineId: string; graftedEngineIds: string[] }
+  | { action: 'rig-spawned';      rigId: string; writId: string }
+  | { action: 'rig-completed';    rigId: string; writId: string; outcome: 'completed' | 'failed' | 'cancelled' }
+  | { action: 'writ-unstuck';     writId: string }
 ```
 
-Each `crawl()` call does exactly one thing. The priority ordering:
+The variants describe the shapes of the actions the crawl loop reports:
 
-1. **Collect a completed engine.** Scan all running rigs for an engine with `status === 'running'`. Read the session record from the sessions book by `engine.sessionId`. If the session has reached a terminal status (`completed` or `failed`), update the engine: set its status and populate its yields (or error). **Yield assembly:** look up the `EngineDesign` by `designId` from the Fabricator. If the design defines a `collect(sessionId, givens, context)` method, call it to assemble the yields — passing the same givens and context that were passed to `run()`. Otherwise, use the generic default: `{ sessionId, sessionStatus, output? }`. This keeps engine-specific yield logic (e.g. parsing review findings) in the engine, not the Spider. If the engine failed, mark the rig `failed` (same transaction). If the completed engine is the terminal engine (`seal`), mark the rig `completed` (same transaction). Rig status changes trigger the CDC handler (see below). Returns `rig-completed` if the rig transitioned, otherwise `engine-completed`. This is the first priority because it unblocks downstream engines.
-2. **Run a ready engine.** An engine is ready when `status === 'pending'` and all engines in its `upstream` array have `status === 'completed'`. Look up the `EngineDesign` by `designId` from the Fabricator. Assemble givens (from givensSpec) and context (with upstream yields), then call `design.run(givens, context)`. For clockwork engines (`status: 'completed'` result): store the yields on the engine instance, mark it completed, and check for rig completion (same as step 1). Returns `engine-completed` (or `rig-completed` if this was the terminal engine). For quick engines (`status: 'launched'` result): store the `sessionId`, mark the engine `running`. Returns `engine-started`. Completion is collected on subsequent crawl calls via step 1.
-3. **Spawn a rig.** If there's an open writ with no rig, look up its rig template via `rigTemplateMappings` (config or kit) for the writ's type. If a mapping exists, spawn the rig from the mapped template and return `rig-spawned`. If no mapping exists, skip the writ — dispatch is strictly opt-in per writ type, and unmapped types remain in `open` for non-dispatch handling.
+- `engine-completed` — an engine reached `'completed'` (collected from a session terminal, or finished inline as a clockwork run). The rig is still running.
+- `engine-started` — a quick engine's `run()` returned `'launched'`; the engine moved to `'running'` and the loop will poll its session on subsequent ticks.
+- `engine-held` — a pending engine entered (or remained in) a hold; `holdReason` carries the BlockType id or the `'retry-backoff'` sentinel. Other engines in the rig may still be running.
+- `engine-retrying` — a transient failure routed through the unified failure handler's retryable-within-budget branch; the engine is now `'pending'` with `holdReason = 'retry-backoff'` and `attemptCount` reflects the just-incremented value.
+- `engine-skipped` — an engine's `when` expression evaluated false; the engine moved to `'skipped'`. `cascadeSkipped` lists any downstream conditional engines that cascade-skipped on the same tick.
+- `engine-grafted` — an engine's run or collect produced a `graft` request; new engine slots were appended to the rig. `graftedEngineIds` lists the appended engines in declaration order.
+- `rig-spawned` — a new rig was created for a ready writ.
+- `rig-completed` — the tick caused a rig to reach a terminal state. `outcome` is restricted to `'completed' | 'failed' | 'cancelled'` — there is no `'stuck'` outcome (engine-failure terminal goes to `'failed'` directly via the unified failure handler).
+- `writ-unstuck` — the auto-unstick scan returned a writ from `phase = 'stuck'` to `'open'` because every recorded cause cleared (every `failed-blocker` reached `'completed'`, or a `cycle` was broken by external action).
+
+Each `crawl()` call does exactly one thing. The priority ordering, in the six phases the tick walks in turn:
+
+1. **Collect terminal sessions (`tryCollect`).** Scan running engines for sessions that have reached a terminal status. For each, drive the engine's terminal outcome through `collect()` (or the generic default yields) and into the unified failure handler when the session failed; this can leave the engine `'completed'`, `'failed'` (terminal), `'pending'` (rate-limit hold or retry back-off), or — when the rig completes — drive a `rig-completed`. Collection runs first so downstream engines see freed upstreams as soon as possible.
+2. **Process grafts (`tryProcessGrafts`).** Apply any deferred `graft` requests carried out of step 1's collected results, validating against the per-rig engine cap and template constraints before appending. A graft validation failure routes through the unified failure handler's terminal branch.
+3. **Run a ready engine (`tryRun`).** Find the highest-priority engine for which `evaluateDispatchPredicate(engine, rig)` returns true (see [Dispatch predicate](#dispatch-predicate)). Append a fresh `attempts[]` row, then call `design.run()` for clockwork engines or launch a session via `summon` for quick engines. Failures in this phase route through the unified failure handler.
+4. **Auto-unstick (`autoUnstick`).** Scan writs in `phase = 'stuck'` whose `status.spider.stuckCause` is one of the dependency-recovery causes (`'failed-blocker'`, `'cycle'`) and return any whose recorded blockers have all cleared back to `'open'`. Operator-stuck writs and writs with no `status.spider` slot are left alone.
+5. **Animator pause gate.** If the Animator's global pause flag is set (rate-limit ceiling reached), short-circuit before spawning new rigs — running engines and ongoing collection still proceed, but no new dispatch slot is opened. The dispatch predicate in step 3 also honours this gate via the `animator-paused` BlockType.
+6. **Spawn a rig (`trySpawn`).** If an open writ has no rig and a `rigTemplateMappings` entry exists for its type, spawn the rig from the mapped template and return `rig-spawned`. Unmapped writ types remain in `'open'` for non-dispatch handling.
 
 **Dispatch precedence is: config wins over kit; two kits are a hard error.** A config-level `rigTemplateMappings` entry always wins over any kit contribution for the same writ type. Two kits contributing a mapping for the same writ type is a guild-config hazard and fails the guild at startup — the error names both contributing plugins and the conflicting writ type. Operators resolve by removing one of the kit mappings or by overriding via `spider.rigTemplateMappings` in `guild.json`. The winner is never selected by kit load order. This same fail-loud rule applies framework-wide at every kit-vs-kit merge site — Clerk `writTypes`, Spider `blockTypes`, and Fabricator engine designs all refuse to start under a duplicate contribution with the same error shape.
 
-If nothing qualifies at any level, return null (the guild is idle or all work is blocked on running quick engines).
+If nothing qualifies at any level, return null (the guild is idle, every candidate writ is gated on non-terminal `spider.follows` blockers, or all work is blocked on running quick engines).
 
 ### Operational model
 
@@ -122,38 +142,87 @@ The `crawl-continual` loop: call `crawl()`, sleep `pollIntervalMs` (default 5000
 ### Rig
 
 ```typescript
+type RigStatus = 'running' | 'completed' | 'failed' | 'cancelled'
+
 interface Rig {
   id: string
   writId: string
-  status: 'running' | 'completed' | 'failed' | 'stuck' | 'cancelled' | 'blocked'
+  status: RigStatus
   engines: EngineInstance[]
-  createdAt: string       // ISO-8601, written at rig spawn
-  terminalAt?: string     // ISO-8601, written the FIRST time the rig enters a terminal status
+  createdAt: string                // ISO-8601, written at rig spawn
+  terminalAt?: string              // ISO-8601, set the FIRST time the rig enters a terminal status
+  cancelledAt?: string             // ISO-8601, set when an operator cancels the rig via SpiderApi.cancel
+  resolutionEngineId?: string      // engine id whose yields supply the writ's resolution summary
 }
 ```
 
 Stored in the Stacks `rigs` book. One rig per writ. The Spider reads and updates rigs via normal Stacks `put()`/`patch()` operations.
 
-**`terminalAt` — keep-first terminal timestamp.** The Spider writes `terminalAt` in the same transaction as every rig terminal-status transition (`completed`, `failed`, `cancelled`, `stuck`), routed through a single `terminalAtPatch(rig)` helper. The helper returns `{}` if `rig.terminalAt` is already set, pinning the moment the rig first stopped making forward progress. This matters for paths like `stuck → cancelled`: the final state is cancelled, but the rig effectively ended at the stuck transition, and downstream observers (the dashboard's end-time display, the timeseries view) need the earlier timestamp so elapsed-time readings don't jump on each subsequent transition. Rigs persisted before `terminalAt` existed simply omit the field; consumers fall back to `max(engine.completedAt)` and finally to `rig.createdAt`.
+**Rig status is derived.** The Spider never writes `status` independently — it is a pure projection of the rig's engine states plus the operator-cancel marker, recomputed via `deriveRigStatus(rig)` after every engine-state mutation. The rules, in order:
+
+- If `cancelledAt` is set, the rig is `'cancelled'` (operator-cancel short-circuit — the rollup never reverts to `'running'` once the operator has cancelled).
+- Else, if any engine has `status === 'running'`, the rig is `'running'`.
+- Else, if any engine has `status === 'failed'` (and no engine is running), the rig is `'failed'`.
+- Else, if every engine is terminal and at least one engine has `status === 'completed'`, the rig is `'completed'`.
+- Else (every engine is terminal and none completed — i.e. all-skipped or all-cancelled), the rig is `'cancelled'`.
+
+> **Note (legacy tolerance).** Rigs persisted before this reshape may carry the historical `'stuck'` or `'blocked'` status values. The new state machine writes neither — engine failure now retries in place and, on exhaustion, transitions the rig directly to `'failed'` (see [Engine Failure](#engine-failure)). Readers and filters tolerate the legacy strings without crashing; operators can recover lingering pre-reshape stucks via `nsg writ-rescue-stuck`.
+
+**`terminalAt` — keep-first terminal timestamp.** The Spider writes `terminalAt` in the same transaction as every rig terminal-status transition (`completed`, `failed`, `cancelled`), routed through a single `terminalAtPatch(rig)` helper. The helper returns `{}` if `rig.terminalAt` is already set, pinning the moment the rig first stopped making forward progress. Downstream observers (the dashboard's end-time display, the timeseries view) need this earlier timestamp so elapsed-time readings don't jump on subsequent transitions (e.g. `failed → cancelled`). Rigs persisted before `terminalAt` existed simply omit the field; consumers fall back to the latest `attempts[-1].endedAt` across engines and finally to `rig.createdAt`.
+
+**`resolutionEngineId` — resolution summary anchor.** Set at rig spawn time from the rig template's `resolutionEngine` field. Names the engine whose yields the CDC handler reads when composing the writ's resolution message on `rig→completed`. See [CDC Handlers](#cdc-handlers) for the three-step fallback ladder.
 
 ### Engine Instance
 
 ```typescript
+type EngineStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped'
+
+interface EngineAttempt {
+  startedAt: string                   // ISO-8601, written when the dispatcher picks the engine up
+  endedAt?: string                    // ISO-8601, written by the failure / success handler at attempt close
+  status?: 'completed' | 'failed'     // terminal attempt outcome; absent while in-flight
+  error?: string                      // error message if the attempt failed
+  sessionId?: string                  // Animator session id for this attempt, if any
+  yields?: unknown                    // yields produced when the attempt completed
+}
+
 interface EngineInstance {
-  id: string               // unique within the rig, e.g. 'draft', 'implement', 'review', 'revise', 'seal'
-  designId: string         // engine design id — resolved from the Fabricator
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-  upstream: string[]       // ids of engines that must complete first (empty = first engine)
-  givensSpec: Record<string, unknown>  // givens specification — literal values now, templates later
-  yields: unknown          // set on completion — the engine's yields (see Yield Types below)
-  error?: string           // set on failure
-  sessionId?: string       // set when run() returns 'launched' — Spider polls for completion
-  startedAt?: string       // ISO-8601, set when engine begins running (enables future timeout detection)
-  completedAt?: string     // ISO-8601, set when engine reaches terminal status
+  id: string                          // unique within the rig (e.g. 'draft', 'implement')
+  designId: string                    // engine design id — resolved from the Fabricator
+  status: EngineStatus
+  upstream: string[]                  // ids of engines that must complete first (empty = first engine)
+  givensSpec: Record<string, unknown> // spawn-time-resolved givens; ${yields.*} stays literal until run-time
+  when?: string                       // optional conditional activation expression (template syntax)
+
+  // Per-dispatch history — `attempts[attempts.length - 1]` is authoritative for
+  // the latest sessionId, yields, error, and timestamps. Engine-level scalar
+  // `yields` / `error` / `sessionId` / `startedAt` / `completedAt` no longer
+  // exist; downstream code reads through the latest attempt row.
+  attempts?: EngineAttempt[]
+  attemptCount?: number               // retry-budget counter; only the retryable-within-budget branch increments
+
+  // Hold metadata — present only while the engine is `'pending'` due to a
+  // back-off window or an external-gate BlockType. Cleared when the hold
+  // resolves (poll-clear, window expiration, or operator resume).
+  holdUntil?: string                  // ISO-8601 — engine may not dispatch before this stamp
+  holdReason?: string                 // BlockType id ('animator-paused', 'writ-phase', …) or 'retry-backoff'
+  holdCondition?: unknown             // BlockType-specific condition payload (validated by conditionSchema)
+  lastCheckedAt?: string              // ISO-8601 — last dispatch-predicate check, gated by pollIntervalMs
 }
 ```
 
-An engine is **ready** when: `status === 'pending'` and all engines in its `upstream` array have `status === 'completed'`.
+**`EngineStatus` — the six-value engine lifecycle.**
+
+- `'pending'` — awaiting dispatch. Covers both "not yet tried" and "held" engines; a hold is represented as `pending` plus `holdReason` / `holdUntil` / `holdCondition` metadata on the engine instance. The dispatch predicate (see [Dispatch predicate](#dispatch-predicate)) is the sole arbiter of when a pending engine actually runs.
+- `'running'` — currently executing (a clockwork run in progress, or a launched anima session being polled by `tryCollect`).
+- `'completed'` — finished successfully. The latest `attempts[]` row carries the yields.
+- `'failed'` — terminally failed (retry budget exhausted, or the failure was definitional — graft validation, unknown design or block type, non-JSON-serializable yields).
+- `'cancelled'` — cancelled by operator action or by cascade from a failed upstream engine.
+- `'skipped'` — the engine's `when` expression evaluated false; the engine was never run, and its downstream conditional engines may have cascade-skipped in turn.
+
+> **There is no engine-level `'blocked'` value.** Holds live entirely on the `'pending'` row via the hold-metadata fields. Anything a previous design called "blocked" is now "pending with `holdReason`".
+
+An engine is **ready** when: `status === 'pending'`, every upstream engine is in `'completed'` or `'skipped'`, no `holdUntil` is set in the future, and (for an external-gate hold) the registered BlockType's `check()` returns `'cleared'`. See [Dispatch predicate](#dispatch-predicate) for the full check.
 
 ### The Static Graph
 
@@ -163,30 +232,57 @@ Every spawned rig gets this engine list:
 function spawnStaticRig(writ: Writ, config: SpiderConfig): EngineInstance[] {
   return [
     { id: 'draft',     designId: 'draft',     status: 'pending', upstream: [],
-      givensSpec: { writ }, yields: null },
+      givensSpec: { writ }, attempts: [] },
     { id: 'implement', designId: 'implement', status: 'pending', upstream: ['draft'],
-      givensSpec: { writ, role: config.role }, yields: null },
+      givensSpec: { writ, role: config.role }, attempts: [] },
     { id: 'review',    designId: 'review',    status: 'pending', upstream: ['implement'],
-      givensSpec: { writ, role: 'reviewer', buildCommand: config.buildCommand, testCommand: config.testCommand }, yields: null },
+      givensSpec: { writ, role: 'reviewer', buildCommand: config.buildCommand, testCommand: config.testCommand }, attempts: [] },
     { id: 'revise',    designId: 'revise',    status: 'pending', upstream: ['review'],
-      givensSpec: { writ, role: config.role }, yields: null },
+      givensSpec: { writ, role: config.role }, attempts: [] },
     { id: 'seal',      designId: 'seal',      status: 'pending', upstream: ['revise'],
-      givensSpec: {}, yields: null },
+      givensSpec: {}, attempts: [] },
   ]
 }
 ```
 
-The `givensSpec` is populated from the Spider's config at rig spawn time. The rig is self-contained after spawning — no runtime config lookups needed. The `writ` is passed as a given to engines that need it (most do; `seal` doesn't). All engines start with `yields: null` — yields are populated when the engine completes (see [Yield Types](#yield-types-and-data-flow)).
+The `givensSpec` is populated from the Spider's config at rig spawn time. The rig is self-contained after spawning — no runtime config lookups needed. The `writ` is passed as a given to engines that need it (most do; `seal` doesn't). All engines start with `attempts: []` — yields are populated on the latest attempt row when the engine completes (see [Yield Types](#yield-types-and-data-flow)).
 
-The rig is **completed** when the terminal engine (`seal`) has `status === 'completed'`. The rig is **stuck** when any engine has `status === 'failed'` — a non-terminal state that preserves the obligation for future retry. A stuck rig stays stuck for its lifetime; recovery happens by spawning a new rig (future multi-rig work), not by resurrecting a stuck one.
+The rig's status is derived from the engine states by `deriveRigStatus(rig)` after every engine-state mutation — see [Rig status is derived](#rig). When the terminal engine (`seal`) reaches `'completed'`, the rollup yields `'completed'`. When any engine terminally fails and no engine is running, the rollup yields `'failed'`.
+
+### Pending engines and hold metadata
+
+The `'pending'` status carries three operationally distinct shapes that the dispatch predicate distinguishes by hold metadata:
+
+- **Fresh pending.** No hold fields are set. The engine has either never been dispatched or its prior attempt completed and a downstream engine is still propagating. The dispatch predicate runs the upstream / `holdUntil` / BlockType checks against an empty hold; the engine dispatches as soon as upstream is ready.
+- **Rate-limit hold.** The engine returned to `'pending'` from the rate-limit branch of the unified failure handler: `holdReason = 'animator-paused'`, `holdCondition = { sessionId }`, and `holdUntil` is set when the Animator's back-off carries a deadline. **`attemptCount` is NOT incremented** — the engine yielded its slot to the rate limiter, not to a budget-consuming retry. The latest `attempts[]` row is closed without an `error` (the rate-limit terminal is not classified as a retryable failure).
+- **Retry back-off hold.** The engine returned to `'pending'` from the retryable-within-budget branch: `holdReason = 'retry-backoff'`, `holdUntil` is set from the configured back-off, and `attemptCount` IS incremented (this attempt has consumed budget). The latest `attempts[]` row is closed with `status: 'failed'` and the captured `error`.
+
+In all three shapes the latest `attempts[]` row is authoritative for `yields` / `error` / `sessionId` — there are no scalar engine-level mirrors of those fields. `lastCheckedAt` is updated by the dispatch predicate every time it consults a registered BlockType, and `pollIntervalMs` (declared by the BlockType) gates whether `check()` actually re-runs on a given crawl.
+
+### Dispatch predicate
+
+A pending engine is dispatchable when, and only when, **all** of the following hold (`evaluateDispatchPredicate(engine, rig)`):
+
+1. `engine.status === 'pending'`.
+2. Every engine in `engine.upstream` has terminal status `'completed'` or `'skipped'`.
+3. Either `engine.holdUntil` is absent, or its ISO timestamp is in the past (the back-off window has elapsed).
+4. Either no `holdReason` is set (no external gate), or the registered BlockType's `check(holdCondition)` returns `{ status: 'cleared' }` — honouring the BlockType's `pollIntervalMs` against `lastCheckedAt`, so `check()` re-runs at most once per declared interval.
+
+The predicate is the single source of truth for "may this engine run now?" — `tryRun` uses it directly and never recomputes any of the four checks itself.
+
+`'retry-backoff'` is an internal sentinel and is **not** registered as a BlockType — its hold is purely timer-driven, so check 4 is skipped when `holdReason === 'retry-backoff'` and check 3 alone clears the hold. All other registered hold reasons (`'animator-paused'`, `'writ-phase'`, `'scheduled-time'`, `'patron-input'`, `'book-updated'`, …) flow through the BlockType's `check()`.
+
+When a hold clears, the predicate surfaces the cleared hold as a `priorBlock` advisory on `EngineRunContext` — the dispatched engine receives `priorBlock = { reason, condition }` describing what was just released. Engines are not required to consume it; it exists so engines that care (e.g. an idempotency-sensitive run) can branch on the unblock reason.
+
+A `'failed'` result from a BlockType's `check()` is **not** a transient signal — the dispatch predicate routes the engine straight through the unified failure handler's terminal branch with the BlockType's optional `reason` recorded as the engine's error. The engine never runs.
 
 ---
 
 ## Yield Types and Data Flow
 
-Each engine produces typed yields that downstream engines consume. The yields are stored on the `EngineInstance.yields` field in the Stacks.
+Each engine produces typed yields that downstream engines consume. The yields are stored on the latest `EngineInstance.attempts[]` row (`attempts[attempts.length - 1].yields`) — there is no scalar `yields` mirror on the engine instance.
 
-**Serialization constraint:** Because yields are persisted to the Stacks (JSON-backed), all yield values **must be JSON-serializable**. The Spider should validate this at storage time — if an engine returns a non-serializable value (function, circular reference, etc.), the engine fails with a clear error. This is important because engines are a plugin extension point — kit authors need a hard boundary, not a silent corruption.
+**Serialization constraint:** Because yields are persisted to the Stacks (JSON-backed), all yield values **must be JSON-serializable**. The Spider validates this at storage time — if an engine returns a non-serializable value (function, circular reference, etc.), the failure routes through the unified failure handler's terminal branch (definitional failure) and the engine moves to `'failed'`. This is important because engines are a plugin extension point — kit authors need a hard boundary, not a silent corruption.
 
 When the Spider runs an engine, it assembles givens from the givensSpec. Givens template expressions using `${yields.*}` syntax are resolved at engine start time from upstream yields (see [Givens Template Expressions](#givens-template-expressions)). All upstream yields are also available via the `context.upstream` escape hatch:
 
@@ -197,8 +293,9 @@ function assembleGivensAndContext(rig: Rig, engine: EngineInstance) {
   // simpler than chain-walking and equivalent for the static graph.
   const upstream: Record<string, unknown> = {}
   for (const e of rig.engines) {
-    if (e.status === 'completed' && e.yields !== undefined) {
-      upstream[e.id] = e.yields
+    if (e.status === 'completed') {
+      const last = e.attempts?.[e.attempts.length - 1]
+      if (last?.yields !== undefined) upstream[e.id] = last.yields
     }
   }
 
@@ -620,7 +717,7 @@ Closes a draft binding — either sealing (merging inscriptions) or abandoning (
 
 **Happy path.** On successful `scriptorium.seal()`, the engine returns `SealYields` and the rig completes.
 
-**Abandon path.** When `givens.abandon` is truthy, the engine calls `abandonDraft` instead. Abandon failures always re-throw — recovery does not apply, and the rig goes stuck via the standard `failEngine` path.
+**Abandon path.** When `givens.abandon` is truthy, the engine calls `abandonDraft` instead. Abandon failures always re-throw — recovery does not apply, and the engine fails through the unified failure handler, which (after retry budget is exhausted) drives the rig terminally to `'failed'`.
 
 **Rebase-conflict recovery tail.** When `scriptorium.seal()` throws an error whose message starts with `Sealing seized:` (Scriptorium's rebase-conflict signal) **and** `givens.recover !== false`, the engine catches the throw and grafts a two-engine recovery tail instead of failing:
 
@@ -693,7 +790,7 @@ Summoned by the `seal` engine's recovery tail. Runs the `spider.mender` anima in
 - `### Merge: SUCCESS` — reconciliation complete; the draft branch is rebased onto the target and ready for a fast-forward seal.
 - `### Merge: FAILURE` — the mender could not reconcile safely; reason explained in the lines above the marker.
 
-**Collect step.** The custom `collect()` reads `session.output`, matches the marker (case-insensitive, line-anchored), and either returns `ManualMergeYields = { sessionId, merged: true }` on SUCCESS, or throws on FAILURE or missing marker. The Spider's `tryCollect` catches the throw, marks the engine failed, and takes the rig to `stuck` — the retry seal never runs.
+**Collect step.** The custom `collect()` reads `session.output`, matches the marker (case-insensitive, line-anchored), and either returns `ManualMergeYields = { sessionId, merged: true }` on SUCCESS, or throws on FAILURE or missing marker. The Spider's `tryCollect` catches the throw and routes the engine through the unified failure handler — once the retry budget is exhausted the engine moves to `'failed'`, the cascade cancels the queued retry seal, and the rig rolls up to `'failed'`. The retry seal never runs.
 
 The marker prefix (`### Merge:`) deliberately differs from the review engine's `### Overall:` prefix to avoid cross-talk.
 
@@ -709,21 +806,21 @@ The Spider registers two CDC handlers at startup. Both are Phase 1 (cascade) —
 **Phase:** Phase 1 (cascade)
 **Trigger:** writ status transitions to `cancelled`
 
-When a writ is cancelled, the Spider looks up the associated rig via `forWrit()` and cancels it. This ensures rigs don't keep running after their writ is resolved — for example, when a writ is cancelled directly via the Clerk, or when a parent writ's cancellation cascades to its children.
+When a writ is cancelled, the Spider looks up the associated rig via `forWrit()` and cancels it. This ensures rigs don't keep running after their writ is resolved — for example, when a writ is cancelled directly via the Clerk, or when a parent writ's cancellation cascades to its children. The handler routes cancellation through the legacy-tolerant cancel API so that pre-reshape rigs persisted with `'stuck'` or `'blocked'` are cancelled cleanly alongside the four-state machine; there is no `'stuck'` arm or stuck-specific guard.
 
-Silent no-ops: if no rig exists for the writ (writ was never dispatched), or the rig is already terminal or `stuck`, the handler returns without action. Only `cancelled` triggers rig cancellation — writs transitioning to `completed` or `failed` do not cancel the rig.
+Silent no-ops: if no rig exists for the writ (writ was never dispatched), or the rig is already terminal, the handler returns without action. Only `cancelled` triggers rig cancellation — writs transitioning to `completed` or `failed` do not cancel the rig.
 
-### Rig terminal/stuck state → writ transition
+### Rig terminal state → writ transition
 
 **Book:** `spider/rigs`
 **Phase:** Phase 1 (cascade)
-**Trigger:** rig status transitions to `stuck`, `completed`, `failed`, or `cancelled`
+**Trigger:** rig status transitions to `completed`, `failed`, or `cancelled`
 
-When a rig reaches a terminal or `stuck` state, the handler transitions the associated writ to match:
-- `rig.stuck` → `writ: open → stuck` (only if the writ is still `open`)
-- `rig.completed` → `writ: completed`
-- `rig.failed` → `writ: failed`
-- `rig.cancelled` → `writ: cancelled`
+When a rig reaches a terminal state, the handler transitions the associated writ to match. There is no intermediate `'stuck'` arm — the engine-failure path now routes terminal failure through the unified failure handler, which transitions the writ directly to `'failed'`.
+
+- **`rig.completed` → `writ: completed`**, with the writ resolution composed via a three-step fallback ladder: (a) if the rig's `resolutionEngineId` names an engine in `'completed'` state with yields, format the resolution from that engine's yields; (b) otherwise, if the rig has a completed engine with `designId === 'seal'` whose yields satisfy `SealYields`, format from those yields; (c) otherwise, fall back to the most recent completed engine that produced yields. This ladder makes a writ's resolution stable for templates that opt into a custom `resolutionEngine` while still working for the static draft → seal pipeline.
+- **`rig.failed` → `writ: failed`**, with the writ resolution mirroring the failed engine's last-attempt error (`attempts[-1].error` from the engine that drove the rollup to `'failed'`). The writ does not pass through any intermediate `'stuck'` state.
+- **`rig.cancelled` → `writ: cancelled`**, cascading the rig's cancellation onto its writ.
 
 A guard reads the writ's current status first — if the writ is already terminal (e.g., it was cancelled before the rig), the handler skips the `clerk.transition()` call. This breaks the circular cascade path: writ cancelled → rig cancelled → rig CDC fires → writ already terminal → skip.
 
@@ -733,20 +830,42 @@ Because both handlers are Phase 1, their effects are atomic with the triggering 
 
 ## Engine Failure
 
-When any engine fails (throws, or a quick engine's session has `status: 'failed'`):
+When an engine attempt terminates with a non-success outcome — a clockwork `run()` throws, a quick engine's session reaches a `'failed'` terminal, or a registered BlockType returns `{ status: 'failed' }` — the Spider routes the attempt through **the unified failure handler** (`handleEngineFailure`). The handler closes the in-flight `attempts[]` row, classifies the failure into one of three branches, and patches the rig in a single transaction.
 
-1. The engine is marked `status: 'failed'` with the error (detected during "collect completed engines" for quick engines, or directly during execution for clockwork engines)
-2. All engines in the rig with `status === 'pending'` or `'blocked'` are set to `status: 'cancelled'` — they will never run. Engines already in `'running'`, `'completed'`, or `'failed'` are left untouched. Cancelled engines do **not** receive `completedAt` or `error` — cancellation is a consequence, not a failure.
-3. The rig is marked `status: 'stuck'` (same transaction as steps 1 and 2) — a non-terminal "needs attention" state
-4. An observability payload is written to the writ's `status.spider` sub-slot alongside the rig patch: `{ stuckCause: 'engine-failure', retryable: boolean, detail: string, observedAt: string }`. Classification is made at the `failEngine` call site — `retryable: true` for transient failures (session crashes, engine throws), `retryable: false` for definitional failures (graft validation, unknown design/block type, non-JSON-serializable yields). The `detail` string is a freeform human-readable description; sub-taxonomy of engine failures lives there rather than in a growing enum. The retry clockwork (separate commission) is the sole load-bearing consumer of `retryable`.
-5. CDC fires on the rig status change → handler calls Clerk API to transition the writ to `stuck`
-6. The draft is **not** abandoned — preserved for patron inspection
+The three branches are mutually exclusive — every terminal attempt takes exactly one path:
 
-`stuck` is non-terminal: the obligation survives. A stuck rig stays stuck for its lifetime; recovery happens by spawning a new rig (future multi-rig work). The `stuck → failed` and `stuck → cancelled` transitions exist for explicit abandonment. No `stuck → running` — a stuck rig is never resurrected.
+1. **Rate-limit hold.** The Animator reported a rate-limit terminal (`session.terminalReason === 'rate-limit'`). The handler closes the attempt row without an `error`, sets the engine back to `'pending'` with `holdReason = 'animator-paused'` and `holdCondition = { sessionId }`, and copies the Animator's back-off deadline into `holdUntil` when one is provided. **`attemptCount` is NOT incremented** — rate-limit yields the dispatch slot, it does not consume retry budget. The hold clears on the next crawl when the Animator's `isDispatchable` predicate returns true; see `docs/architecture/apparatus/animator.md` for the dispatchability-predicate contract.
+2. **Retryable within budget.** The failure was transient (a clockwork throw classified as retryable, or a non-rate-limit session terminal) **and** `attemptCount < design.retry.maxAttempts`. The handler closes the attempt row with `status: 'failed'` and the captured `error`, increments `attemptCount`, sets the engine back to `'pending'` with `holdReason = 'retry-backoff'`, and computes `holdUntil` from the engine design's back-off config. Downstream engines stay `'pending'`; the rig stays `'running'` (or whatever the rollup yields, given the in-flight peers).
+3. **Exhausted or non-retryable.** Either the retry budget is exhausted (`attemptCount >= maxAttempts`) or the failure is definitional (graft validation, unknown design or block type, non-JSON-serializable yields, BlockType `check()` returning `'failed'`). The handler renders the cascade as:
+   - The failing engine moves to `'failed'`; the in-flight `attempts[]` row is finalised with `status: 'failed'` and the captured `error`.
+   - Every other engine in the rig with `status === 'pending'` is cascade-cancelled to `'cancelled'`. Engines already in `'running'`, `'completed'`, `'failed'`, or `'skipped'` are left untouched; cancelled engines do not receive an `error` (cancellation is a consequence, not a failure).
+   - The rig's status is recomputed via `deriveRigStatus(rig)`, which yields `'failed'` (a failed engine plus no engine still running).
+   - The CDC handler on the rigs book picks up the `rig→failed` transition and transitions the writ directly to `phase = 'failed'`. The writ does not pass through any intermediate `'stuck'` state.
 
-`autoUnstick` only acts on the dependency-recovery causes (`failed-blocker`, `cycle`). `engine-failure` stucks are left for the retry clockwork; operator-stuck writs with no `status.spider` slot are left alone.
+The draft is **not** abandoned by the handler in any branch — it is preserved for patron inspection regardless of which branch fires.
 
-Quick engine "failure" definition: if the Animator session completes with `status: 'failed'`, the engine fails. If the session completes with `status: 'completed'`, the engine succeeds — even if the anima's work is incomplete (that's the review engine's job to catch, not the Spider's).
+A quick engine "failure" is the Animator session reaching `status: 'failed'`. A session reaching `status: 'completed'` succeeds even if the anima's work is incomplete — that's the review engine's job to catch, not the Spider's.
+
+### Engine retry policy
+
+Retry is opt-in per engine design via the design's `retry?: EngineRetryConfig` field, validated by `validateEngineRetryConfig` at registration time (negative or non-finite values throw at startup):
+
+```typescript
+interface EngineRetryConfig {
+  maxAttempts: number              // total retry budget; 0 = fail fast on first error (default)
+  backoff?: Partial<{
+    initialMs: number              // first attempt's hold window (default 30_000)
+    maxMs: number                  // cap on the hold window (default 600_000 — 10 minutes)
+    factor: number                 // multiplicative growth factor, must be > 1 (default 2)
+  }>
+}
+```
+
+When `retry` is absent or `maxAttempts === 0` the handler treats every transient failure as terminal. `maxAttempts: 1` allows one retry (two attempts total), `maxAttempts: 2` allows two retries (three attempts total), and so on — matching the "attempts consumed from budget" semantics. The back-off schedule is `min(initialMs * factor^attemptCount, maxMs)`, applied via `holdUntil` on each retry-back-off transition.
+
+Whichever engine designs opt in to retry are visible at runtime via `nsg engine-designs`; this spec deliberately does not enumerate them, since the set is governed by the kits a guild loads.
+
+> **Note (legacy tolerance).** Operators recovering rigs persisted as `'stuck'` before this reshape — including writs whose pre-reshape `status.spider.stuckCause` recorded `'engine-failure'` — can sweep them via `nsg writ-rescue-stuck`.
 
 ---
 
@@ -773,7 +892,6 @@ These are known directions the Spider and its data model will grow. None are in 
 - **Engine needs declarations.** Engine designs will declare a `needs` specification that controls which upstream yields are included and how they're mapped — making the data flow between engines explicit and type-safe.
 - **Typed engine contracts.** The `Record<string, unknown>` givens map with type assertions is scaffolding. The needs/planning system will introduce typed contracts between engines — defining what each engine requires and provides. This scaffolding gets replaced, not extended.
 - **Dynamic rig extension.** Capability resolution (via the Fabricator) and rig growth at runtime. Engines can declare needs that the Fabricator resolves to additional engine chains, grafted onto the rig mid-execution.
-- **Retry and recovery.** Stuck rigs preserve the obligation; the retry mechanism (CLI command, standing order, patron-facing UX) is future work. When multi-rig lands, rig-level `stuck` becomes the natural input to a computed writ-level "latest rig in trouble" signal, and recovery spawns a new rig rather than resurrecting the stuck one.
 - **Engine timeouts.** Liveness of an engine's underlying session is owned by the Animator's heartbeat reconciler — a session that stops reporting `lastActivityAt` within the staleness window is transitioned to `failed`, and the Spider then picks up the terminal session via `collect` on the next crawl. The Spider itself does not probe process liveness. A future extension may add a hard runtime ceiling that terminates still-heartbeating engines exceeding a configured maximum wall-clock duration.
 - **Unified capability catalog.** The Fabricator may absorb tool designs from the Instrumentarium, becoming the single answer to "what can this guild do?" regardless of whether the answer is an engine or a tool.
 
