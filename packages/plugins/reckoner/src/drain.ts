@@ -1,22 +1,28 @@
 /**
  * Drain detection — the "queue drained" predicate.
  *
- * Per D7 in the brief, the queue is "drained" when:
+ * The queue is "drained" when:
  *
- *   - there are zero writs in `open` phase, AND
+ *   - the Clerk's classification-aware `countActive()` is zero (no writ
+ *     of any registered type is currently in an `active`-classified
+ *     state), AND
  *   - there are zero rigs in `running` or `blocked` status.
  *
- * Stuck writs are excluded: retryable stucks flip back to open within one
- * retry tick; terminal stucks are effectively drained from the
- * auto-dispatcher's viewpoint (Spider will not try to spawn a new rig).
+ * `countActive()` is the post-T4 successor to the prior `phase = 'open'`
+ * count. It is type-agnostic — every registered writ type contributes
+ * its declared `active` states. Mandate's `stuck` is classified
+ * `active`, so a stuck mandate now holds drain back; that is the
+ * intended classification-driven semantic and is a behavior shift from
+ * the pre-T4 phase-literal predicate (covered by `drain.test.ts`).
  *
- * This module owns the definition; the Reckoner's observer calls into it
+ * This module owns the predicate; the Reckoner's observer calls into it
  * after every terminal transition. There is intentionally no dedupe
- * across bursts — false-positive drain pulses are an accepted MVP limit.
+ * across bursts — false-positive drain pulses are an accepted MVP
+ * limit.
  */
 
 import type { ReadOnlyBook } from '@shardworks/stacks-apparatus';
-import type { WritDoc } from '@shardworks/clerk-apparatus';
+import type { ClerkApi } from '@shardworks/clerk-apparatus';
 
 /**
  * Minimal shape of a Spider rig row — the only field we read is `status`.
@@ -31,15 +37,16 @@ interface RigRow extends Record<string, unknown> {
 /**
  * Evaluate the drain predicate.
  *
- * Returns true iff both counts are zero: open writs and active rigs.
+ * Returns true iff both counts are zero: classification-driven active
+ * writs (across every registered writ type) and Spider-side active rigs.
  */
 export async function isQueueDrained(
-  writs: ReadOnlyBook<WritDoc>,
+  clerk: ClerkApi,
   rigs: ReadOnlyBook<RigRow>,
 ): Promise<boolean> {
-  const [openWrits, activeRigs] = await Promise.all([
-    writs.count([['phase', '=', 'open']]),
+  const [activeWrits, activeRigs] = await Promise.all([
+    clerk.countActive(),
     rigs.count([['status', 'IN', ['running', 'blocked']]]),
   ]);
-  return openWrits === 0 && activeRigs === 0;
+  return activeWrits === 0 && activeRigs === 0;
 }

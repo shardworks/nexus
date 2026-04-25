@@ -153,7 +153,6 @@ async function buildFixture(): Promise<Fixture> {
 
   await reckonerPlugin.apparatus.start(buildCtx());
 
-  const writsBook = stacks.readBook<WritDoc>('clerk', 'writs');
   const rigsBook = stacks.readBook<RigRow>('spider', 'rigs');
   const pulsesBook = stacks.readBook<PulseDoc>('lattice', 'pulses');
   const writableRigs = stacks.book<RigRow>('spider', 'rigs');
@@ -176,7 +175,7 @@ async function buildFixture(): Promise<Fixture> {
 
   const deps: ReckonerObserverDeps = {
     lattice,
-    writsBook,
+    clerk,
     rigsBook,
     pulsesBook,
     resolveMaxAttempts: () => 2,
@@ -208,9 +207,7 @@ function makeUpdateEvent(params: {
  * Read a writ from the writs book and guarantee it exists.
  */
 async function mustWrit(fix: Fixture, id: string): Promise<WritDoc> {
-  const writ = await fix.deps.writsBook.get(id);
-  if (!writ) throw new Error(`writ not found: ${id}`);
-  return writ;
+  return fix.deps.clerk.show(id);
 }
 
 // ── Tests ──────────────────────────────────────────────────────
@@ -281,6 +278,7 @@ describe('Reckoner — idempotency under CDC replay', () => {
     // snapshot the pulses book and then replay the synthetic event —
     // the second delivery must NOT add a second drain pulse.
     const writ = await fix.clerk.post({ title: 'draining mandate', body: 'b' });
+    await fix.clerk.transition(writ.id, 'open');
     await fix.clerk.transition(writ.id, 'completed', { resolution: 'done' });
 
     // After the real CDC ran once, there should be exactly one drain
@@ -363,7 +361,7 @@ describe('Reckoner — idempotency under CDC replay', () => {
     // is suppressed exactly as it would be after a process restart.
     const restartedDeps: ReckonerObserverDeps = {
       lattice: fix.deps.lattice,
-      writsBook: fix.deps.writsBook,
+      clerk: fix.deps.clerk,
       rigsBook: fix.deps.rigsBook,
       pulsesBook: fix.deps.pulsesBook,
       resolveMaxAttempts: () => 2,

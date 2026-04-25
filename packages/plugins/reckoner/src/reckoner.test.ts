@@ -93,6 +93,15 @@ interface Fixture {
   stacks: StacksApi;
   clerk: ClerkApi;
   lattice: LatticeApi;
+  /**
+   * Post a mandate writ and immediately publish it to `open` — mirrors
+   * the auto-publish behavior the `commission-post` tool's UX layer
+   * provides on top of the type-agnostic `clerk.post()` API. Tests use
+   * this for the "writ that is queue-runnable" shorthand.
+   */
+  postOpen: (
+    request: { title: string; body: string; type?: string; parentId?: string },
+  ) => Promise<WritDoc>;
   seedRig: (writId: string, status?: RigRow['status']) => Promise<string>;
   rigCount: (writId: string) => Promise<number>;
   pulsesOf: (triggerType?: string) => Promise<PulseDoc[]>;
@@ -186,6 +195,13 @@ async function buildFixture(options: { withRetry?: boolean } = {}): Promise<Fixt
   const rigsBook = stacks.book<RigRow>('spider', 'rigs');
   const pulsesBook = stacks.book<PulseDoc>('lattice', 'pulses');
 
+  async function postOpen(
+    request: { title: string; body: string; type?: string; parentId?: string },
+  ): Promise<WritDoc> {
+    const writ = await clerk.post(request);
+    return clerk.transition(writ.id, 'open');
+  }
+
   async function seedRig(writId: string, status: RigRow['status'] = 'stuck'): Promise<string> {
     const id = generateId('rig', 4);
     await rigsBook.put({ id, writId, status, createdAt: new Date().toISOString() });
@@ -205,7 +221,7 @@ async function buildFixture(options: { withRetry?: boolean } = {}): Promise<Fixt
     });
   }
 
-  return { stacks, clerk, lattice, seedRig, rigCount, pulsesOf };
+  return { stacks, clerk, lattice, postOpen, seedRig, rigCount, pulsesOf };
 }
 
 async function stuckWith(
@@ -233,7 +249,7 @@ describe('Reckoner — writ-stuck emission', () => {
   afterEach(() => clearGuild());
 
   it('emits nothing when a retryable stuck is under the cap', async () => {
-    const writ = await fix.clerk.post({ title: 'w', body: 'b' });
+    const writ = await fix.postOpen({ title: 'w', body: 'b' });
     await fix.seedRig(writ.id, 'stuck');
     await stuckWith(fix, writ.id, {
       stuckCause: 'engine-failure',
@@ -245,7 +261,7 @@ describe('Reckoner — writ-stuck emission', () => {
   });
 
   it('emits exactly one pulse when a retryable stuck is at cap', async () => {
-    const writ = await fix.clerk.post({ title: 'w', body: 'b' });
+    const writ = await fix.postOpen({ title: 'w', body: 'b' });
     // Pre-load cap-many rigs.
     await fix.seedRig(writ.id, 'stuck');
     await fix.seedRig(writ.id, 'stuck');
@@ -262,7 +278,7 @@ describe('Reckoner — writ-stuck emission', () => {
   });
 
   it('emits for non-retryable stuck regardless of rig count', async () => {
-    const writ = await fix.clerk.post({ title: 'w', body: 'b' });
+    const writ = await fix.postOpen({ title: 'w', body: 'b' });
     await fix.seedRig(writ.id, 'stuck');
     await stuckWith(fix, writ.id, {
       stuckCause: 'engine-failure',
@@ -274,7 +290,7 @@ describe('Reckoner — writ-stuck emission', () => {
   });
 
   it('emits for a stuck with no retryable flag (fail-safe terminal)', async () => {
-    const writ = await fix.clerk.post({ title: 'w', body: 'b' });
+    const writ = await fix.postOpen({ title: 'w', body: 'b' });
     await fix.seedRig(writ.id, 'stuck');
     // Stuck with a spider slot that lacks `retryable`.
     await stuckWith(fix, writ.id, { stuckCause: 'cycle' });
@@ -283,15 +299,15 @@ describe('Reckoner — writ-stuck emission', () => {
   });
 
   it('emits for a stuck with no spider slot at all', async () => {
-    const writ = await fix.clerk.post({ title: 'w', body: 'b' });
+    const writ = await fix.postOpen({ title: 'w', body: 'b' });
     await fix.clerk.transition(writ.id, 'stuck', { resolution: 'raw' });
     const pulses = await fix.pulsesOf(TRIGGER_WRIT_STUCK);
     assert.equal(pulses.length, 1);
   });
 
   it('does not emit for a child writ transition (roots-only)', async () => {
-    const parent = await fix.clerk.post({ title: 'parent', body: 'p' });
-    const child = await fix.clerk.post({ title: 'child', body: 'c', parentId: parent.id });
+    const parent = await fix.postOpen({ title: 'parent', body: 'p' });
+    const child = await fix.postOpen({ title: 'child', body: 'c', parentId: parent.id });
     await stuckWith(fix, child.id, { retryable: false });
     const pulses = await fix.pulsesOf(TRIGGER_WRIT_STUCK);
     assert.equal(pulses.length, 0, 'children must not emit their own stuck pulse');
@@ -308,7 +324,7 @@ describe('Reckoner — writ-failed emission', () => {
   afterEach(() => clearGuild());
 
   it('always emits when a root writ enters failed', async () => {
-    const writ = await fix.clerk.post({ title: 'w', body: 'b' });
+    const writ = await fix.postOpen({ title: 'w', body: 'b' });
     await fix.clerk.transition(writ.id, 'failed', { resolution: 'abandoned' });
     const pulses = await fix.pulsesOf(TRIGGER_WRIT_FAILED);
     assert.equal(pulses.length, 1);
@@ -318,10 +334,18 @@ describe('Reckoner — writ-failed emission', () => {
   });
 
   it('surfaces cascaded leaf causes in the summary and context', async () => {
-    const parent = await fix.clerk.post({ title: 'parent', body: 'p' });
-    const child = await fix.clerk.post({ title: 'child', body: 'c', parentId: parent.id });
-    // Cascade path: child → parent via the clerk's CDC cascade handler.
+    // Auto-cascade was retired with the Clerk's children-behavior
+    // refactor; tests now drive both legs of the cascade explicitly
+    // (child fails first, then the caller fails the parent with a
+    // cascade-shaped resolution string). The Reckoner's emit path —
+    // including `parseChildFailures` extracting the leaf id from the
+    // resolution — is what's under test.
+    const parent = await fix.postOpen({ title: 'parent', body: 'p' });
+    const child = await fix.postOpen({ title: 'child', body: 'c', parentId: parent.id });
     await fix.clerk.transition(child.id, 'failed', { resolution: 'engine crashed' });
+    await fix.clerk.transition(parent.id, 'failed', {
+      resolution: `Child "${child.id}" failed: engine crashed`,
+    });
 
     const pulses = await fix.pulsesOf(TRIGGER_WRIT_FAILED);
     assert.equal(pulses.length, 1, 'root failed emits one pulse; child emits none');
@@ -335,14 +359,14 @@ describe('Reckoner — writ-failed emission', () => {
   });
 
   it('does not emit for a child writ transitioning to failed (roots-only)', async () => {
-    const parent = await fix.clerk.post({ title: 'parent', body: 'p' });
-    const child = await fix.clerk.post({ title: 'child', body: 'c', parentId: parent.id });
-    // Only the parent should emit, regardless of the cascade originating from the child.
+    const parent = await fix.postOpen({ title: 'parent', body: 'p' });
+    const child = await fix.postOpen({ title: 'child', body: 'c', parentId: parent.id });
+    // Drive only the child's failure — the parent is left in `open`.
+    // No `writ-failed` pulse should fire for the child (roots-only).
     await fix.clerk.transition(child.id, 'failed', { resolution: 'engine crashed' });
 
     const failedPulses = await fix.pulsesOf(TRIGGER_WRIT_FAILED);
-    assert.equal(failedPulses.length, 1);
-    assert.equal(failedPulses[0]?.writId, parent.id, 'emitter must key on the parent, not the child');
+    assert.equal(failedPulses.length, 0, 'child must not emit its own failed pulse');
   });
 });
 
@@ -351,7 +375,7 @@ describe('Reckoner — clockworks-retry optional', () => {
 
   it('treats every stuck as terminal when clockworks-retry is not installed', async () => {
     const fix = await buildFixture({ withRetry: false });
-    const writ = await fix.clerk.post({ title: 'w', body: 'b' });
+    const writ = await fix.postOpen({ title: 'w', body: 'b' });
     // retryable: true should STILL emit — no retry runs, so every stuck
     // is terminal from the Reckoner's viewpoint.
     await stuckWith(fix, writ.id, { retryable: true, stuckCause: 'engine-failure' });

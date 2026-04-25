@@ -1,11 +1,14 @@
 /**
  * Reckoner — drain emission tests.
  *
- * The drain predicate is documented in D7:
+ * Post-T4 the drain predicate is classification-driven:
  *
- *     `open` writ count === 0  AND  rig count (running | blocked) === 0.
+ *     countActive() === 0  AND  rig count (running | blocked) === 0.
  *
- * Stuck writs are excluded. No dedupe across bursts in MVP.
+ * `countActive()` walks the writ-type registry and returns the number
+ * of writs in any `active`-classified state across every registered
+ * type. Mandate's `stuck` is classified `active`, so a stuck mandate
+ * holds drain back. There is no dedupe across bursts in MVP.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -26,7 +29,7 @@ import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi, BookEntry } from '@shardworks/stacks-apparatus';
 
 import { createClerk } from '@shardworks/clerk-apparatus';
-import type { ClerkApi } from '@shardworks/clerk-apparatus';
+import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 
 import { createLattice } from '@shardworks/lattice-apparatus';
 import type { LatticeApi, PulseDoc } from '@shardworks/lattice-apparatus';
@@ -56,6 +59,13 @@ interface Fixture {
   stacks: StacksApi;
   clerk: ClerkApi;
   lattice: LatticeApi;
+  /**
+   * Post a mandate writ and immediately publish it to `open` — the
+   * "writ that is queue-runnable" shorthand used across the suite.
+   */
+  postOpen: (
+    request: { title: string; body: string; type?: string; parentId?: string },
+  ) => Promise<WritDoc>;
   seedRig: (writId: string, status: RigRow['status']) => Promise<string>;
   pulsesOf: (triggerType?: string) => Promise<PulseDoc[]>;
 }
@@ -123,6 +133,13 @@ async function buildFixture(): Promise<Fixture> {
   const rigsBook = stacks.book<RigRow>('spider', 'rigs');
   const pulsesBook = stacks.book<PulseDoc>('lattice', 'pulses');
 
+  async function postOpen(
+    request: { title: string; body: string; type?: string; parentId?: string },
+  ): Promise<WritDoc> {
+    const writ = await clerk.post(request);
+    return clerk.transition(writ.id, 'open');
+  }
+
   async function seedRig(writId: string, status: RigRow['status']): Promise<string> {
     const id = generateId('rig', 4);
     await rigsBook.put({ id, writId, status, createdAt: new Date().toISOString() });
@@ -137,7 +154,7 @@ async function buildFixture(): Promise<Fixture> {
     });
   }
 
-  return { stacks, clerk, lattice, seedRig, pulsesOf };
+  return { stacks, clerk, lattice, postOpen, seedRig, pulsesOf };
 }
 
 // ── Tests ──────────────────────────────────────────────────────
@@ -152,7 +169,7 @@ describe('Reckoner — queue-drained emission', () => {
   afterEach(() => clearGuild());
 
   it('fires on the terminal transition that takes open to zero', async () => {
-    const writ = await fix.clerk.post({ title: 'w', body: 'b' });
+    const writ = await fix.postOpen({ title: 'w', body: 'b' });
     // Starts in `open`. Complete it → open count becomes 0.
     await fix.clerk.transition(writ.id, 'completed', { resolution: 'done' });
     const pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
@@ -162,16 +179,16 @@ describe('Reckoner — queue-drained emission', () => {
   });
 
   it('does not fire while open > 0 (another writ is still runnable)', async () => {
-    const writA = await fix.clerk.post({ title: 'A', body: '' });
-    const _writB = await fix.clerk.post({ title: 'B', body: '' });
+    const writA = await fix.postOpen({ title: 'A', body: '' });
+    const _writB = await fix.postOpen({ title: 'B', body: '' });
     await fix.clerk.transition(writA.id, 'completed', { resolution: 'done' });
     const pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
     assert.equal(pulses.length, 0);
   });
 
   it('does not fire while active rigs remain (running or blocked)', async () => {
-    const writA = await fix.clerk.post({ title: 'A', body: '' });
-    const writB = await fix.clerk.post({ title: 'B', body: '' });
+    const writA = await fix.postOpen({ title: 'A', body: '' });
+    const writB = await fix.postOpen({ title: 'B', body: '' });
     await fix.seedRig(writB.id, 'running');
     // Finish A; B is in `open` phase with a running rig → not drained.
     await fix.clerk.transition(writA.id, 'completed', { resolution: 'done' });
@@ -183,17 +200,30 @@ describe('Reckoner — queue-drained emission', () => {
     assert.equal(pulses.length, 0, 'running rig holds the drain back');
   });
 
-  it('fires even when stuck writs are present (stuck is not runnable)', async () => {
-    const stuck = await fix.clerk.post({ title: 'stuck', body: '' });
+  it('does not fire while a mandate is parked in stuck (stuck is active-classified)', async () => {
+    // Post-T4, drain reads the Clerk's classification-aware
+    // countActive(). Mandate's `stuck` is classified `active`, so a
+    // stuck mandate holds drain back even when no rigs are running.
+    // (Pre-T4 the predicate keyed on the literal `phase = 'open'`
+    // count and did not block on stuck — that was the mismeasure
+    // T4 closes.)
+    const stuck = await fix.postOpen({ title: 'stuck', body: '' });
     await fix.clerk.transition(stuck.id, 'stuck', { resolution: 'no progress' });
-    const good = await fix.clerk.post({ title: 'good', body: '' });
+    const good = await fix.postOpen({ title: 'good', body: '' });
     await fix.clerk.transition(good.id, 'completed', { resolution: 'done' });
     const pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
-    assert.equal(pulses.length, 1, 'stuck writs do not count as runnable');
+    assert.equal(pulses.length, 0, 'stuck mandate is active and blocks drain');
+
+    // Drive the stuck writ to a terminal state — drain should fire.
+    await fix.clerk.transition(stuck.id, 'failed', { resolution: 'abandoned' });
+    const after = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
+    assert.equal(after.length, 1, 'drain fires once the stuck mandate goes terminal');
+    const ctx = after[0]?.context as { lastTerminalWritId?: string };
+    assert.equal(ctx.lastTerminalWritId, stuck.id);
   });
 
   it('also fires on a cancel transition that drains the queue', async () => {
-    const writ = await fix.clerk.post({ title: 'w', body: '' });
+    const writ = await fix.postOpen({ title: 'w', body: '' });
     await fix.clerk.transition(writ.id, 'cancelled', { resolution: 'withdrawn' });
     const pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
     assert.equal(pulses.length, 1);

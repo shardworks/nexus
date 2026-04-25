@@ -39,7 +39,7 @@ import type {
   ReadOnlyBook,
   StacksApi,
 } from '@shardworks/stacks-apparatus';
-import type { WritDoc } from '@shardworks/clerk-apparatus';
+import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import type { LatticeApi, PulseDoc } from '@shardworks/lattice-apparatus';
 
 import { isQueueDrained } from './drain.ts';
@@ -99,8 +99,15 @@ function resolveMaxAttempts(): number | undefined {
 export interface ReckonerObserverDeps {
   /** Lattice API — used to emit pulses (after the dedupe guard). */
   readonly lattice: LatticeApi;
-  /** Read-only handle on `clerk/writs` — drain count reads. */
-  readonly writsBook: ReadOnlyBook<WritDoc>;
+  /**
+   * Clerk API — drives the classification-aware drain count
+   * (`countActive()`) and the terminal-trigger classification check
+   * (`isTerminal(writ)`). Replaces the prior `writsBook` handle —
+   * the Reckoner reads writ-side state through the Clerk's typed
+   * surface so non-mandate writ types observe the correct drain
+   * moment.
+   */
+  readonly clerk: ClerkApi;
   /** Read-only handle on `spider/rigs` — retry-cap and drain counts. */
   readonly rigsBook: ReadOnlyBook<RigRow>;
   /** Read-only handle on `lattice/pulses` — dedupe lookup. */
@@ -330,17 +337,27 @@ export async function handleWritChange(
 
   const enteredStuck = writ.phase === 'stuck' && prev.phase !== 'stuck';
   const enteredFailed = writ.phase === 'failed' && prev.phase !== 'failed';
-  const enteredTerminal =
-    writ.phase === 'completed' ||
-    writ.phase === 'failed' ||
-    writ.phase === 'cancelled';
+  // Classification-driven terminal gate (D3): no prev comparison
+  // needed because terminal states have no outbound transitions, so
+  // a writ in a terminal state means the transition into it just
+  // fired. A throw from `isTerminal` (unknown type / unknown state)
+  // propagates per D8 — the Phase 2 framework's `failOnError: false`
+  // logs and skips the event so a registry-data-integrity bug is
+  // surfaced loudly without taking the whole watcher down.
+  const enteredTerminal = deps.clerk.isTerminal(writ);
+
+  // Mandate gate for stuck/failed pulses (D4): per the brief, those
+  // pulses stay mandate-only for v0. Computed once and AND'd into
+  // each branch gate below so non-mandate writs short-circuit
+  // before the predicate's Spider-status lookup (D7).
+  const isMandate = writ.type === 'mandate';
 
   // Roots-only gate for the per-writ pulses. Children never emit
   // their own stuck/failed pulses — their cause surfaces in the
   // parent's resolution.
   const isRoot = !writ.parentId;
 
-  if (isRoot && enteredStuck) {
+  if (isMandate && isRoot && enteredStuck) {
     const spiderStatus = writ.status?.spider as SpiderStuckStatus | undefined;
     const maxAttempts = deps.resolveMaxAttempts();
     const rigCount = await deps.rigsBook.count([['writId', '=', writ.id]]);
@@ -349,15 +366,14 @@ export async function handleWritChange(
     }
   }
 
-  if (isRoot && enteredFailed) {
+  if (isMandate && isRoot && enteredFailed) {
     await emitFailed(deps, writ);
   }
 
   // Drain check runs after every terminal transition — even
-  // non-root ones. The drain predicate is independent of the
-  // roots-only gate.
+  // non-root ones, and across every registered writ type.
   if (enteredTerminal) {
-    const drained = await isQueueDrained(deps.writsBook, deps.rigsBook);
+    const drained = await isQueueDrained(deps.clerk, deps.rigsBook);
     if (drained) {
       await emitDrained(deps, writ);
     }
@@ -397,18 +413,18 @@ export function createReckoner(): Plugin {
         const g = guild();
         const stacks = g.apparatus<StacksApi>('stacks');
         const lattice = g.apparatus<LatticeApi>('lattice');
+        const clerk = g.apparatus<ClerkApi>('clerk');
 
         // Read-only handles. Spider's rigs book may not exist if Spider
         // is not installed — readBook still returns a valid handle but
         // find/count calls on it resolve to empty/zero. That is the
         // intended degradation path.
-        const writsBook: ReadOnlyBook<WritDoc> = stacks.readBook<WritDoc>('clerk', 'writs');
         const rigsBook: ReadOnlyBook<RigRow> = stacks.readBook<RigRow>('spider', 'rigs');
         const pulsesBook: ReadOnlyBook<PulseDoc> = stacks.readBook<PulseDoc>('lattice', 'pulses');
 
         const deps: ReckonerObserverDeps = {
           lattice,
-          writsBook,
+          clerk,
           rigsBook,
           pulsesBook,
           resolveMaxAttempts,

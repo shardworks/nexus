@@ -275,6 +275,7 @@ describe('Lattice + Reckoner + Discord — end-to-end', () => {
     const fix = await buildGuild();
     try {
       const writ = await fix.clerk.post({ title: 'root mandate', body: 'b' });
+      await fix.clerk.transition(writ.id, 'open');
       await fix.clerk.transition(writ.id, 'failed', { resolution: 'abandoned' });
 
       // Exactly one pulse (failed). Drain may or may not have fired; assert
@@ -306,6 +307,7 @@ describe('Lattice + Reckoner + Discord — end-to-end', () => {
     const fix = await buildGuild();
     try {
       const writ = await fix.clerk.post({ title: 'stuck mandate', body: 'b' });
+      await fix.clerk.transition(writ.id, 'open');
       await fix.seedRig(writ.id, 'stuck');
       await stuckWith(fix, writ.id, {
         stuckCause: 'engine-failure',
@@ -329,6 +331,7 @@ describe('Lattice + Reckoner + Discord — end-to-end', () => {
     const fix = await buildGuild();
     try {
       const writ = await fix.clerk.post({ title: 'capped mandate', body: 'b' });
+      await fix.clerk.transition(writ.id, 'open');
       // Two prior rigs → cap hit → clockworks-retry will not requeue.
       await fix.seedRig(writ.id, 'stuck');
       await fix.seedRig(writ.id, 'stuck');
@@ -351,6 +354,7 @@ describe('Lattice + Reckoner + Discord — end-to-end', () => {
     try {
       // Create a root writ and transition it to stuck (non-retryable → terminal).
       const writ = await fix.clerk.post({ title: 'live test', body: 'b' });
+      await fix.clerk.transition(writ.id, 'open');
       await stuckWith(fix, writ.id, {
         stuckCause: 'engine-failure',
         retryable: false,
