@@ -1892,7 +1892,7 @@ describe('Clerk', () => {
       const w2 = await postMandate({ title: 'W2', body: 'B' });
       await clerk.link(w1.id, w2.id, 'refines', 'testkit.refines');
 
-      const result = await writShow.handler({ id: w1.id }) as { links: WritLinks };
+      const result = await writShow.handler({ id: w1.id, format: 'json' }) as { links: WritLinks };
       assert.equal(result.links.outbound.length, 1);
       assert.equal(result.links.outbound[0]!.kind, 'testkit.refines');
     });
@@ -2576,7 +2576,7 @@ describe('Clerk', () => {
       const w2 = await postMandate({ title: 'Target writ', body: 'Body' });
       await clerk.link(w1.id, w2.id, 'fixes');
 
-      const result = await writShow.handler({ id: w1.id }) as WritLinkDoc & { links: WritLinks };
+      const result = await writShow.handler({ id: w1.id, format: 'json' }) as WritLinkDoc & { links: WritLinks };
 
       assert.equal(result.id, w1.id);
       assert.equal((result as unknown as { title: string }).title, 'Source writ');
@@ -2591,7 +2591,7 @@ describe('Clerk', () => {
     it('returns empty link arrays for a writ with no links', async () => {
       const w = await postMandate({ title: 'Lone writ', body: 'Body' });
 
-      const result = await writShow.handler({ id: w.id }) as { links: WritLinks };
+      const result = await writShow.handler({ id: w.id, format: 'json' }) as { links: WritLinks };
 
       assert.deepEqual(result.links.outbound, []);
       assert.deepEqual(result.links.inbound, []);
@@ -2599,7 +2599,7 @@ describe('Clerk', () => {
 
     it('throws when the writ does not exist', async () => {
       await assert.rejects(
-        () => writShow.handler({ id: 'w-ghost' }),
+        () => writShow.handler({ id: 'w-ghost', format: 'json' }),
         /No writ found/,
       );
     });
@@ -2609,7 +2609,7 @@ describe('Clerk', () => {
       const w2 = await postMandate({ title: 'Target', body: 'Body' });
       await clerk.link(w1.id, w2.id, 'supersedes');
 
-      const result = await writShow.handler({ id: w2.id }) as { links: WritLinks };
+      const result = await writShow.handler({ id: w2.id, format: 'json' }) as { links: WritLinks };
 
       assert.equal(result.links.outbound.length, 0);
       assert.equal(result.links.inbound.length, 1);
@@ -2792,9 +2792,10 @@ describe('Clerk', () => {
   describe('writ-list tool handler — embeds classification + allowedTransitions', () => {
     beforeEach(async () => { await setup(); });
 
-    it('every row carries classification and allowedTransitions', async () => {
+    it('every row carries classification and allowedTransitions (json format)', async () => {
       const writ = await postMandate({ title: 'Some writ', body: 'Body' });
-      const result = await (await import('./tools/writ-list.ts')).default.handler({}) as Array<{
+      const writList = (await import('./tools/writ-list.ts')).default;
+      const result = await writList.handler({ format: 'json' }) as Array<{
         id: string;
         phase: string;
         classification: string;
@@ -2805,6 +2806,41 @@ describe('Clerk', () => {
       assert.equal(row.phase, 'open');
       assert.equal(row.classification, 'active');
       assert.deepEqual(row.allowedTransitions, ['stuck', 'completed', 'failed', 'cancelled']);
+    });
+
+    it('default format=text renders a tabular view with TYPE | STATE | ID | TITLE | CREATED columns', async () => {
+      await postMandate({ title: 'A writ', body: 'Body' });
+      const writList = (await import('./tools/writ-list.ts')).default;
+      const text = await writList.handler({}) as string;
+      assert.equal(typeof text, 'string', 'text mode should return a string');
+      assert.ok(text.includes('TYPE'));
+      assert.ok(text.includes('STATE'));
+      assert.ok(text.includes('ID'));
+      assert.ok(text.includes('TITLE'));
+      assert.ok(text.includes('CREATED'));
+      assert.ok(text.includes('mandate'));
+      assert.ok(text.includes('open'));
+      assert.ok(text.includes('A writ'));
+    });
+
+    it('text mode renders a non-mandate writ with its declared state name', async () => {
+      await setup({
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
+        ],
+      });
+      await clerk.post({ title: 'An errand', body: 'Body', type: 'errand' });
+      const writList = (await import('./tools/writ-list.ts')).default;
+      const text = await writList.handler({ format: 'text' }) as string;
+      assert.ok(text.includes('errand'));
+      // initial state from mandate-like config = 'new'
+      assert.ok(text.includes('new'));
+    });
+
+    it('text mode prints "No writs found." for an empty result', async () => {
+      const writList = (await import('./tools/writ-list.ts')).default;
+      const text = await writList.handler({}) as string;
+      assert.match(text, /No writs found/);
     });
   });
 
@@ -2817,7 +2853,7 @@ describe('Clerk', () => {
       const parent = await postMandate({ title: 'Parent', body: 'B' });
       const child = await postMandate({ title: 'Child', body: 'B', parentId: parent.id });
 
-      const result = await writShow.handler({ id: child.id }) as {
+      const result = await writShow.handler({ id: child.id, format: 'json' }) as {
         id: string;
         classification: string;
         allowedTransitions: string[];
@@ -2832,13 +2868,63 @@ describe('Clerk', () => {
 
       // Now look at parent — its children.items entries must also carry
       // the projection.
-      const parentResult = await writShow.handler({ id: parent.id }) as {
+      const parentResult = await writShow.handler({ id: parent.id, format: 'json' }) as {
         children: { items: Array<{ id: string; classification: string; allowedTransitions: string[] }> };
       };
       const childItem = parentResult.children.items.find(i => i.id === child.id);
       assert.ok(childItem);
       assert.equal(childItem.classification, 'active');
       assert.deepEqual(childItem.allowedTransitions, ['stuck', 'completed', 'failed', 'cancelled']);
+    });
+
+    it('default format=text renders the lifecycle-aware block with classification + attrs annotation and allowed transitions', async () => {
+      const writ = await postMandate({ title: 'Some writ', body: 'Body content' });
+      // Move into stuck so the attrs annotation surfaces in the rendering.
+      await clerk.transition(writ.id, 'stuck');
+      const text = await writShow.handler({ id: writ.id }) as string;
+      assert.equal(typeof text, 'string', 'text mode should return a string');
+      assert.ok(text.includes('Type:'));
+      assert.ok(text.includes('mandate'));
+      assert.ok(text.includes('State:'));
+      assert.ok(text.includes('stuck'));
+      assert.ok(text.includes('classification: active'));
+      // attrs annotation present for `stuck`.
+      assert.ok(text.includes('attrs: [stuck]'));
+      // Allowed transitions list rendered.
+      assert.ok(text.includes('Transitions:'));
+      assert.ok(text.includes('open'));
+      assert.ok(text.includes('failed'));
+      assert.ok(text.includes('cancelled'));
+    });
+
+    it('text mode renders lifecycle for non-mandate writs using their declared vocabulary', async () => {
+      await setup({
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
+        ],
+      });
+      const e = await clerk.post({ title: 'My errand', body: 'B', type: 'errand' });
+      const text = await writShow.handler({ id: e.id }) as string;
+      assert.ok(text.includes('errand'));
+      assert.ok(text.includes('classification: initial'));
+      // initial state for mandateLikeWritType: 'new', transitions to ['open', 'cancelled']
+      assert.ok(text.includes('open, cancelled') || (text.includes('open') && text.includes('cancelled')));
+    });
+
+    it('text mode renders descendants summary and links section when present', async () => {
+      const root = await postMandate({ title: 'Root', body: 'B' });
+      const child = await postMandate({ title: 'Child', body: 'B', parentId: root.id });
+      void child;
+      // Add a link
+      const target = await postMandate({ title: 'Target', body: 'B' });
+      await clerk.link(root.id, target.id, 'fixes');
+
+      const text = await writShow.handler({ id: root.id }) as string;
+      assert.ok(text.includes('Descendants'));
+      assert.ok(text.includes('open: 1'));
+      assert.ok(text.includes('Children:'));
+      assert.ok(text.includes('Links:'));
+      assert.ok(text.includes('fixes'));
     });
   });
 
@@ -3711,7 +3797,7 @@ describe('Parent/child relationships', () => {
       const parent = await postMandate({ title: 'Parent', body: 'Body' });
       const child = await postMandate({ title: 'Child', body: 'B', parentId: parent.id });
 
-      const result = await writShow.handler({ id: child.id });
+      const result = await writShow.handler({ id: child.id, format: 'json' });
       // Parent reference now embeds presentation projection (classification +
       // allowedTransitions) so renderers can derive badges and action buttons
       // without a second registry lookup.
@@ -3731,7 +3817,7 @@ describe('Parent/child relationships', () => {
       const c1 = await postMandate({ title: 'C1', body: 'B', parentId: parent.id });
       const c2 = await postMandate({ title: 'C2', body: 'B', parentId: parent.id });
 
-      const result = await writShow.handler({ id: parent.id });
+      const result = await writShow.handler({ id: parent.id, format: 'json' });
       assert.equal(result.parent, null);
       assert.equal(result.children.items.length, 2);
       assert.ok(result.children.items.some((i: { id: string }) => i.id === c1.id));
@@ -3742,7 +3828,7 @@ describe('Parent/child relationships', () => {
     it('returns null parent and empty children for root writ without children', async () => {
       const writ = await postMandate({ title: 'Root', body: 'Body' });
 
-      const result = await writShow.handler({ id: writ.id });
+      const result = await writShow.handler({ id: writ.id, format: 'json' });
       assert.equal(result.parent, null);
       assert.deepEqual(result.children, { summary: {}, items: [] });
     });
@@ -3762,7 +3848,7 @@ describe('Parent/child relationships', () => {
       // Nudge g2 into stuck so phases diverge across the subtree.
       await clerk.transition(g2.id, 'stuck');
 
-      const result = await writShow.handler({ id: root.id });
+      const result = await writShow.handler({ id: root.id, format: 'json' });
 
       // Items stay direct-children-only — only c1 and c2 appear.
       assert.equal(result.children.items.length, 2);

@@ -357,7 +357,7 @@
       let children;
       try {
         children = await api('GET',
-          '/api/writ/list?parentId=' + encodeURIComponent(rootId) + '&limit=1000');
+          '/api/writ/list?parentId=' + encodeURIComponent(rootId) + '&limit=1000&format=json');
       } catch (e) {
         console.error('Failed to fetch children for ' + rootId, e);
         return [];
