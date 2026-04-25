@@ -41,6 +41,7 @@ import type {
 } from '@shardworks/animator-apparatus';
 
 import { createSpider } from './spider.ts';
+import animatorPausedBlockType from './block-types/animator-paused.ts';
 import type { SpiderApi, RigDoc, EngineInstance, RigTemplate } from './types.ts';
 
 // Use a single-engine template so rig completion tracks the engine
@@ -394,5 +395,105 @@ describe('Spider — rate-limit integration', () => {
     // What it must NOT be: pending with holdReason='animator-paused'.
     assert.notEqual(impl.holdReason, 'animator-paused',
       'animator-paused hold must be cleared when the predicate sees cleared state');
+  });
+
+  // ── animator-paused — legacy hold tolerance (commission moeffz5k) ───
+  //
+  // The animator-paused BlockType's `conditionSchema` is wrapped with a
+  // top-level `.optional()` so engines persisted under the pre-attempts[]
+  // schema — `holdReason: 'animator-paused'` with no `holdCondition` —
+  // resolve quietly through `check()` instead of throwing a ZodError that
+  // the dispatch predicate's catch logs as a warning. The recurring
+  // daemon.err noise from that ZodError is what this block guards against.
+  describe('animator-paused — legacy hold tolerance (commission moeffz5k)', () => {
+    it('a legacy hold with holdCondition: undefined resolves through check() without warning and stays held while the Animator is paused', async () => {
+      // Seed a rig whose engine is held in the legacy shape (no holdCondition).
+      const writ = await fix.clerk.post({ title: 'legacy hold tolerance' });
+      await fix.spider.crawl(); // spawn
+
+      const rigsBook = fix.stacks.book<RigDoc>('spider', 'rigs');
+      const [rig] = await rigsBook.find({ where: [['writId', '=', writ.id]] });
+      const heldEngines = rig.engines.map((e: EngineInstance) =>
+        e.id === 'impl'
+          ? {
+              ...e,
+              status: 'pending' as const,
+              holdReason: 'animator-paused',
+              // Legacy data shape: no holdCondition at all. Pre-fix this
+              // would throw a ZodError out of `conditionSchema.parse(undefined)`
+              // and the dispatch-predicate catch would log a warning.
+              holdCondition: undefined,
+              // lastCheckedAt at epoch ensures the poll-interval throttle
+              // does not short-circuit check() before it runs.
+              lastCheckedAt: new Date(0).toISOString(),
+            }
+          : e,
+      );
+      await rigsBook.patch(rig.id, { engines: heldEngines });
+
+      // Animator paused → BlockType check() returns 'pending'. Same
+      // animator state the populated-condition regression test exercises
+      // (cf. 'rate-limited engine stays held across crawl ticks…').
+      fix.setStatus({
+        id: 'dispatch-status',
+        state: 'paused',
+        pausedSince: new Date().toISOString(),
+        pausedUntil: new Date(Date.now() + 60_000).toISOString(),
+        pauseReason: 'rate-limit',
+        backoffLevel: 0,
+      });
+
+      // Capture warnings emitted while crawling. The dispatch predicate's
+      // catch emits `Block checker "<reason>" threw …` — that's the
+      // signature we filter on.
+      const originalWarn = console.warn;
+      const captured: string[] = [];
+      console.warn = (...args: unknown[]) => {
+        captured.push(args.map((a) => (a instanceof Error ? a.message : String(a))).join(' '));
+      };
+      try {
+        await fix.spider.crawl();
+      } finally {
+        console.warn = originalWarn;
+      }
+
+      // Engine remains pending+held under the same reason — same outcome
+      // the populated-condition case reaches for the same Animator state.
+      const [after] = await rigsBook.find({ where: [['id', '=', rig.id]] });
+      const impl = after.engines.find((e: EngineInstance) => e.id === 'impl')!;
+      assert.equal(impl.status, 'pending');
+      assert.equal(impl.holdReason, 'animator-paused');
+      // lastCheckedAt advanced past epoch — proves the BlockType's
+      // check() was actually consulted (not a short-circuit) and
+      // resolved cleanly to a 'pending' result.
+      assert.notEqual(impl.lastCheckedAt, new Date(0).toISOString());
+
+      // The dispatch predicate's catch must NOT have emitted a warning
+      // for animator-paused. Other BlockType catches still fire normally
+      // — this filter is BlockType-specific so the assertion stays
+      // precise to the bug being fixed.
+      const noisy = captured.filter((line) =>
+        line.includes('Block checker "animator-paused" threw'),
+      );
+      assert.deepEqual(noisy, [],
+        'animator-paused legacy hold must not trigger the dispatch-predicate catch');
+    });
+
+    it('conditionSchema.parse({ sessionId }) resolves identically to today (parity guard)', () => {
+      // The producer path writes `holdCondition: { sessionId }`. The
+      // outer `.optional()` wrap must not loosen the inner field — the
+      // populated case still round-trips unchanged.
+      const parsed = animatorPausedBlockType.conditionSchema.parse({ sessionId: 'ses-1234' });
+      assert.deepEqual(parsed, { sessionId: 'ses-1234' });
+    });
+
+    it('conditionSchema.parse({ sessionId: 42 }) still throws a ZodError (malformed-rejection guard)', () => {
+      // Typed misuse is still caught — the optional wrap accepts only
+      // `undefined`, never `null` or a malformed inner object.
+      assert.throws(
+        () => animatorPausedBlockType.conditionSchema.parse({ sessionId: 42 }),
+        (err: unknown) => err instanceof Error && err.constructor.name === 'ZodError',
+      );
+    });
   });
 });
