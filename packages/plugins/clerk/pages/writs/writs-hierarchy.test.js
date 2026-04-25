@@ -78,16 +78,95 @@ function createElement(tag) {
 
 // ── Extracted logic (mirrors index.html) ────────────────────────────
 
-function phaseBadge(phase) {
-  const map = {
-    new: 'badge badge--draft',
-    open: 'badge badge--active',
-    stuck: 'badge badge--warning',
-    completed: 'badge badge--success',
-    failed: 'badge badge--error',
-    cancelled: 'badge badge--warning',
+/**
+ * Mandate's WritTypeInfo, byte-faithful to the registered config in
+ * packages/plugins/clerk/src/clerk.ts. Drives the test-side
+ * `derivePresentation` so the page-and-tests pair stays coherent under
+ * the T6 derivation rules.
+ */
+const MANDATE_TYPE_INFO = {
+  name: 'mandate',
+  description: null,
+  source: 'builtin',
+  isDefault: true,
+  states: [
+    { name: 'new', classification: 'initial', attrs: [], allowedTransitions: ['open', 'cancelled'] },
+    { name: 'open', classification: 'active', attrs: [], allowedTransitions: ['stuck', 'completed', 'failed', 'cancelled'] },
+    { name: 'stuck', classification: 'active', attrs: ['stuck'], allowedTransitions: ['open', 'failed', 'cancelled'] },
+    { name: 'completed', classification: 'terminal', attrs: ['success'], allowedTransitions: [] },
+    { name: 'failed', classification: 'terminal', attrs: ['failure'], allowedTransitions: [] },
+    { name: 'cancelled', classification: 'terminal', attrs: ['cancelled'], allowedTransitions: [] },
+  ],
+};
+
+let writTypesByName = new Map([['mandate', MANDATE_TYPE_INFO]]);
+
+/**
+ * Mirror of the page's `derivePresentation` helper (T6/D16). Pure: no
+ * DOM access. The function is exercised directly by the helper-shape
+ * tests below and is the single source feeding `phaseBadge`,
+ * `rowActions`, and the detail-view button generator on this page.
+ */
+function derivePresentation(type, phase) {
+  const typeInfo = writTypesByName.get(type);
+  const state = typeInfo
+    ? typeInfo.states.find((s) => s.name === phase)
+    : undefined;
+
+  if (!state) {
+    return {
+      classification: 'unknown',
+      attrs: [],
+      badgeClass: '',
+      indicator: '?',
+      allowedTransitions: [],
+      isTerminal: false,
+    };
+  }
+
+  const classification = state.classification;
+  const attrs = state.attrs ?? [];
+  const has = (a) => attrs.includes(a);
+
+  let badgeClass = '';
+  let indicator = '';
+  if (classification === 'initial') {
+    indicator = '◌'; badgeClass = 'badge--draft';
+  } else if (classification === 'active') {
+    if (has('stuck')) { indicator = '◇'; badgeClass = 'badge--warning'; }
+    else { indicator = '●'; badgeClass = 'badge--active'; }
+  } else if (classification === 'terminal') {
+    if (has('success')) { indicator = '○'; badgeClass = 'badge--success'; }
+    else if (has('failure')) { indicator = '✕'; badgeClass = 'badge--error'; }
+    else if (has('cancelled')) { indicator = '⊘'; badgeClass = 'badge--warning'; }
+    else { indicator = '○'; badgeClass = ''; }
+  }
+
+  return {
+    classification,
+    attrs,
+    badgeClass,
+    indicator,
+    allowedTransitions: state.allowedTransitions ?? [],
+    isTerminal: classification === 'terminal',
   };
-  const cls = map[phase] ?? 'badge';
+}
+
+function phaseBadge(phaseOrWrit, typeArg) {
+  let type;
+  let phase;
+  if (typeof phaseOrWrit === 'string') {
+    phase = phaseOrWrit;
+    type = typeArg ?? 'mandate';
+  } else if (phaseOrWrit && typeof phaseOrWrit === 'object') {
+    type = phaseOrWrit.type ?? 'mandate';
+    phase = phaseOrWrit.phase ?? '';
+  } else {
+    type = 'mandate';
+    phase = '';
+  }
+  const { badgeClass } = derivePresentation(type, phase);
+  const cls = badgeClass ? `badge ${badgeClass}` : 'badge';
   return `<span class="${cls}">${phase}</span>`;
 }
 
@@ -108,13 +187,31 @@ function compareVal(a, b, col) {
 }
 
 function rowActions(w) {
-  const isTerminal = ['completed', 'failed', 'cancelled'].includes(w.phase);
-  if (isTerminal) return '';
+  const present = derivePresentation(w.type, w.phase);
+  if (present.isTerminal) return '';
+
+  const fromTypeInfo = writTypesByName.get(w.type);
+  const fromState = fromTypeInfo
+    ? fromTypeInfo.states.find((s) => s.name === w.phase)
+    : undefined;
+  const fromClassification = fromState?.classification;
+
   const btns = [];
-  if (w.phase === 'new') {
-    btns.push(`<button class="btn btn--primary row-action-btn" style="padding:0.15rem 0.5rem;font-size:0.8rem" data-action="row-publish" data-id="${w.id}">Start</button>`);
+  for (const dest of present.allowedTransitions) {
+    const destState = fromTypeInfo
+      ? fromTypeInfo.states.find((s) => s.name === dest)
+      : undefined;
+    if (!destState) continue;
+    const destAttrs = destState.attrs ?? [];
+    if (fromClassification === 'initial' && dest === 'open') {
+      btns.push(`<button class="btn btn--primary row-action-btn" style="padding:0.15rem 0.5rem;font-size:0.8rem" data-action="row-publish" data-id="${w.id}">Start</button>`);
+      continue;
+    }
+    if (destAttrs.includes('cancelled')) {
+      btns.push(`<button class="btn btn--danger row-action-btn" style="padding:0.15rem 0.5rem;font-size:0.8rem" data-action="row-cancel" data-id="${w.id}">Cancel</button>`);
+      continue;
+    }
   }
-  btns.push(`<button class="btn btn--danger row-action-btn" style="padding:0.15rem 0.5rem;font-size:0.8rem" data-action="row-cancel" data-id="${w.id}">Cancel</button>`);
   return btns.join(' ');
 }
 
@@ -245,8 +342,13 @@ function chooseEmptyStateMessage(noTypesSelected, forestIsEmpty) {
  * The detail view stays direct-children-only (D20).
  */
 function renderDetail(writ) {
-  const isTerminal = ['completed', 'failed', 'cancelled'].includes(writ.phase);
-  const isDraft = writ.phase === 'new';
+  // Vocabulary derivation — single helper feeds the Edit-form gating
+  // ("draft" surfaces only on initial writs), the action-buttons block
+  // (one per legal transition), and the Repost affordance (terminal +
+  // failure/cancelled). Mirrors the page-side derivation in index.html.
+  const present = derivePresentation(writ.type, writ.phase);
+  const isTerminal = present.isTerminal;
+  const isDraft = present.classification === 'initial';
   let html = '';
 
   html += `<div class="detail-section" id="edit-section-${writ.id}">`;
@@ -266,16 +368,52 @@ function renderDetail(writ) {
   html += `<div class="detail-section"><h4>Details</h4><dl class="detail-grid">`;
   if (writ.codex) html += `<dt>Codex</dt><dd>${escHtml(writ.codex)}</dd>`;
   if (writ.parent) {
-    html += `<dt>Parent</dt><dd><a href="?writ=${encodeURIComponent(writ.parent.id)}" style="color:var(--blue,#7aa2f7);text-decoration:underline;cursor:pointer">${escHtml(writ.parent.title)}</a> ${phaseBadge(writ.parent.phase)}</dd>`;
+    html += `<dt>Parent</dt><dd><a href="?writ=${encodeURIComponent(writ.parent.id)}" style="color:var(--blue,#7aa2f7);text-decoration:underline;cursor:pointer">${escHtml(writ.parent.title)}</a> ${phaseBadge(writ.parent)}</dd>`;
   }
   html += `<dt>Created</dt><dd></dd>`;
   html += `</dl></div>`;
 
+  // Transition actions — one button per allowedTransitions entry, label
+  // and CSS class derived from the destination state's attrs (D10).
+  // Mirrors the page-side renderer.
   if (!isTerminal) {
-    html += `<div class="detail-section action-buttons" id="actions-${writ.id}"></div>`;
+    html += `<div class="detail-section action-buttons" id="actions-${writ.id}">`;
+    const fromTypeInfo = writTypesByName.get(writ.type);
+    const fromClassification = present.classification;
+    for (const dest of present.allowedTransitions) {
+      const destState = fromTypeInfo
+        ? fromTypeInfo.states.find((s) => s.name === dest)
+        : undefined;
+      if (!destState) continue;
+      const destAttrs = destState.attrs ?? [];
+      let label;
+      let cssClass;
+      let action;
+      if (fromClassification === 'initial' && dest === 'open') {
+        label = 'Publish'; cssClass = 'btn--primary'; action = 'publish';
+      } else if (destAttrs.includes('success')) {
+        label = 'Complete'; cssClass = 'btn--success'; action = 'complete';
+      } else if (destAttrs.includes('failure')) {
+        label = 'Fail'; cssClass = 'btn--danger'; action = 'fail';
+      } else if (destAttrs.includes('cancelled')) {
+        label = 'Cancel'; cssClass = 'btn--danger'; action = 'cancel';
+      } else {
+        label = dest; cssClass = ''; action = 'transition';
+      }
+      const dataAttrs = action === 'transition'
+        ? `data-action="transition" data-id="${writ.id}" data-target="${dest}"`
+        : `data-action="${action}" data-id="${writ.id}"`;
+      html += `<button class="btn ${cssClass}" ${dataAttrs}>${label}</button>`;
+    }
+    html += `</div>`;
   }
 
-  if (writ.phase === 'failed' || writ.phase === 'cancelled') {
+  // Repost — D15: surface for any terminal writ whose state attrs
+  // include `failure` or `cancelled`. Recovers mandate's existing UX.
+  if (
+    present.isTerminal &&
+    (present.attrs.includes('failure') || present.attrs.includes('cancelled'))
+  ) {
     html += `<div class="detail-section"><button class="btn" data-action="repost" data-id="${writ.id}">Repost</button></div>`;
   }
 
@@ -298,7 +436,9 @@ function renderDetail(writ) {
       html += `<div class="detail-label" style="margin-bottom:0.25rem;font-size:0.85rem;color:var(--muted,#9aa5ce)">Descendants</div>`;
       html += `<div style="margin-bottom:0.5rem">`;
       for (const [phase, count] of Object.entries(writ.children.summary)) {
-        html += phaseBadge(phase) + ` <span style="margin-right:0.75rem">${count}</span>`;
+        // D14: anchor descendant-summary badges on the parent's type
+        // (no per-row type info available at this granularity).
+        html += phaseBadge(phase, writ.type) + ` <span style="margin-right:0.75rem">${count}</span>`;
       }
       html += `</div>`;
     }
@@ -308,7 +448,7 @@ function renderDetail(writ) {
     html += `</tr></thead><tbody>`;
     for (const { writ: child, depth } of rows) {
       html += `<tr class="writ-row child-detail-row" data-child-id="${child.id}" data-depth="${depth}" style="cursor:pointer">`;
-      html += `<td>${phaseBadge(child.phase)}</td>`;
+      html += `<td>${phaseBadge(child)}</td>`;
       html += `<td style="${depthIndentStyle(depth)}">${escHtml(child.title ?? '')}</td>`;
       html += `<td>${escHtml(child.type ?? '')}</td>`;
       html += `<td><code>${child.id}</code></td>`;
@@ -636,17 +776,138 @@ describe('sortedFilteredWrits — overflow row at depth cap', () => {
   });
 });
 
-describe('phaseBadge — phase → class mapping', () => {
-  it('maps open to badge badge--active', () => {
+describe('phaseBadge — phase → class mapping (derived from writ-type registry)', () => {
+  it('maps mandate "open" to badge badge--active', () => {
     assert.equal(phaseBadge('open'), '<span class="badge badge--active">open</span>');
   });
 
-  it('maps cancelled to badge badge--warning', () => {
+  it('maps mandate "cancelled" to badge badge--warning (cancelled attr)', () => {
     assert.equal(phaseBadge('cancelled'), '<span class="badge badge--warning">cancelled</span>');
   });
 
-  it('maps unknown phase to plain badge', () => {
+  it('maps unknown phase to plain badge (D17 fallback)', () => {
     assert.equal(phaseBadge('unknown'), '<span class="badge">unknown</span>');
+  });
+
+  it('maps mandate "completed" (terminal+success) to badge--success', () => {
+    assert.equal(phaseBadge('completed'), '<span class="badge badge--success">completed</span>');
+  });
+
+  it('maps mandate "failed" (terminal+failure) to badge--error', () => {
+    assert.equal(phaseBadge('failed'), '<span class="badge badge--error">failed</span>');
+  });
+
+  it('maps mandate "stuck" (active+stuck) to badge--warning', () => {
+    assert.equal(phaseBadge('stuck'), '<span class="badge badge--warning">stuck</span>');
+  });
+
+  it('maps mandate "new" (initial) to badge--draft', () => {
+    assert.equal(phaseBadge('new'), '<span class="badge badge--draft">new</span>');
+  });
+});
+
+describe('derivePresentation — single source of vocabulary truth (D16)', () => {
+  it('returns classification + attrs + indicator + transitions for known states', () => {
+    const r = derivePresentation('mandate', 'open');
+    assert.equal(r.classification, 'active');
+    assert.deepEqual(r.attrs, []);
+    assert.equal(r.badgeClass, 'badge--active');
+    assert.equal(r.indicator, '●');
+    assert.deepEqual(r.allowedTransitions, ['stuck', 'completed', 'failed', 'cancelled']);
+    assert.equal(r.isTerminal, false);
+  });
+
+  it('returns terminal=true and empty transitions for terminal states', () => {
+    const r = derivePresentation('mandate', 'completed');
+    assert.equal(r.classification, 'terminal');
+    assert.deepEqual(r.attrs, ['success']);
+    assert.equal(r.badgeClass, 'badge--success');
+    assert.equal(r.indicator, '○');
+    assert.deepEqual(r.allowedTransitions, []);
+    assert.equal(r.isTerminal, true);
+  });
+
+  it('returns unknown classification for unregistered types (D17)', () => {
+    const r = derivePresentation('ghost', 'open');
+    assert.equal(r.classification, 'unknown');
+    assert.equal(r.indicator, '?');
+    assert.equal(r.badgeClass, '');
+  });
+
+  it('returns unknown classification for undeclared states', () => {
+    const r = derivePresentation('mandate', 'fictional-state');
+    assert.equal(r.classification, 'unknown');
+    assert.equal(r.indicator, '?');
+  });
+});
+
+describe('rowActions — derived from allowedTransitions + destination attrs (D10)', () => {
+  it('initial mandate writ — Start (publish) and Cancel buttons surface', () => {
+    const w = { id: 'w', type: 'mandate', phase: 'new' };
+    const html = rowActions(w);
+    assert.match(html, /data-action="row-publish"[^>]*data-id="w"/);
+    assert.match(html, /data-action="row-cancel"[^>]*data-id="w"/);
+  });
+
+  it('active mandate writ — only Cancel surfaces (Complete/Fail are detail-view-only)', () => {
+    const w = { id: 'w', type: 'mandate', phase: 'open' };
+    const html = rowActions(w);
+    assert.match(html, /data-action="row-cancel"/);
+    assert.ok(!html.includes('data-action="row-publish"'));
+  });
+
+  it('terminal writ — no row buttons', () => {
+    const w = { id: 'w', type: 'mandate', phase: 'completed' };
+    assert.equal(rowActions(w), '');
+  });
+
+  it('writ of unregistered type — no row buttons (no allowed transitions known)', () => {
+    const w = { id: 'w', type: 'ghost', phase: 'open' };
+    assert.equal(rowActions(w), '');
+  });
+});
+
+describe('renderDetail action buttons — derived from allowedTransitions (D10)', () => {
+  function dom(html) {
+    return html;
+  }
+
+  it('initial writ renders Publish (label) and Cancel buttons', () => {
+    const writ = { id: 'w', type: 'mandate', phase: 'new', body: '' };
+    const html = dom(renderDetail(writ));
+    assert.match(html, /data-action="publish"[^>]*data-id="w"[^>]*>Publish</);
+    assert.match(html, /data-action="cancel"[^>]*data-id="w"[^>]*>Cancel</);
+    // Complete and Fail are not legal from `new` — must not appear.
+    assert.ok(!/data-action="complete"/.test(html));
+    assert.ok(!/data-action="fail"/.test(html));
+  });
+
+  it('active writ renders Complete, Fail, and Cancel buttons', () => {
+    const writ = { id: 'w', type: 'mandate', phase: 'open', body: '' };
+    const html = dom(renderDetail(writ));
+    assert.match(html, /data-action="complete"[^>]*>Complete</);
+    assert.match(html, /data-action="fail"[^>]*>Fail</);
+    assert.match(html, /data-action="cancel"[^>]*>Cancel</);
+  });
+
+  it('stuck writ renders Fail and Cancel only (no Complete in mandate from stuck)', () => {
+    const writ = { id: 'w', type: 'mandate', phase: 'stuck', body: '' };
+    const html = dom(renderDetail(writ));
+    assert.match(html, /data-action="fail"/);
+    assert.match(html, /data-action="cancel"/);
+    assert.ok(!/data-action="complete"/.test(html));
+  });
+
+  it('Repost surfaces on terminal writs whose attrs include failure or cancelled (D15)', () => {
+    const failed = { id: 'w', type: 'mandate', phase: 'failed', body: '' };
+    assert.match(renderDetail(failed), /data-action="repost"/);
+
+    const cancelled = { id: 'w', type: 'mandate', phase: 'cancelled', body: '' };
+    assert.match(renderDetail(cancelled), /data-action="repost"/);
+
+    // success attr → no Repost
+    const completed = { id: 'w', type: 'mandate', phase: 'completed', body: '' };
+    assert.ok(!/data-action="repost"/.test(renderDetail(completed)));
   });
 });
 
@@ -993,24 +1254,25 @@ describe('Deep descendant rendering in detail view', () => {
     const writ = {
       id: 'p',
       title: 'P',
+      type: 'mandate',
       phase: 'open',
       body: '',
       children: { summary: {}, items: [{ id: 'c', title: 'C', phase: 'new' }] },
       _descendantTree: [
         {
-          writ: { id: 'c', title: 'C', type: 'task', phase: 'new' },
+          writ: { id: 'c', title: 'C', type: 'mandate', phase: 'new' },
           children: [
-            { writ: { id: 'g', title: 'G', type: 'task', phase: 'open' }, children: [] },
+            { writ: { id: 'g', title: 'G', type: 'mandate', phase: 'open' }, children: [] },
           ],
         },
       ],
     };
 
     const html = renderDetail(writ);
-    // Depth 0 (new phase) gets Start + Cancel
+    // Depth 0 (initial classification) gets Start + Cancel
     assert.ok(html.match(/data-action="row-publish"[^>]*data-id="c"/));
     assert.ok(html.match(/data-action="row-cancel"[^>]*data-id="c"/));
-    // Depth 1 (open phase) gets Cancel only
+    // Depth 1 (active classification) gets Cancel only
     assert.ok(html.match(/data-action="row-cancel"[^>]*data-id="g"/));
     assert.ok(!html.match(/data-action="row-publish"[^>]*data-id="g"/));
   });

@@ -82,13 +82,18 @@
     <button class="btn btn--primary" id="btn-new-writ">New Writ</button>
     <button class="btn" id="btn-refresh">Refresh</button>
     <span style="display:inline-flex;gap:0.4rem;flex-wrap:wrap;align-items:center">
-      <span style="font-size:0.875rem;opacity:0.6">Phase:</span>
-      <button class="btn filter-btn active-filter" data-phase="">All</button>
-      <button class="btn filter-btn" data-phase="new">new</button>
-      <button class="btn filter-btn" data-phase="open">open</button>
-      <button class="btn filter-btn" data-phase="completed">completed</button>
-      <button class="btn filter-btn" data-phase="failed">failed</button>
-      <button class="btn filter-btn" data-phase="cancelled">cancelled</button>
+      <!--
+        Classification filter buttons (D9). Type-agnostic by
+        construction: `initial`/`active`/`terminal` map across every
+        registered writ type's state catalogue. Replaces the legacy
+        hardcoded mandate phase buttons (new/open/completed/failed/
+        cancelled) so non-mandate types share the same filter bar.
+      -->
+      <span style="font-size:0.875rem;opacity:0.6">State:</span>
+      <button class="btn filter-btn active-filter" data-classification="">All</button>
+      <button class="btn filter-btn" data-classification="initial">initial</button>
+      <button class="btn filter-btn" data-classification="active">active</button>
+      <button class="btn filter-btn" data-classification="terminal">terminal</button>
     </span>
     <span id="type-filter-bar" style="display:inline-flex;gap:0.4rem;flex-wrap:wrap;align-items:center">
       <span style="font-size:0.875rem;opacity:0.6">Type:</span>
@@ -172,9 +177,21 @@
     // returned by /api/writ/tree. Each node is { writ, children: WritTree[] }.
     let forest = [];
     let offset = 0;
-    let currentPhase = '';   // '' = all
+    // Filter buttons in the toolbar are now keyed by classification (D9):
+    // 'initial' | 'active' | 'terminal' | '' (All). The legacy
+    // mandate-phase strings on these buttons are gone — vocabulary lives
+    // entirely in the writ-type registry returned by /api/writ/types.
+    let currentClassification = '';
     let currentType = new Set();  // Set<string> — empty = no types selected (empty state)
     let knownTypes = [];          // string[] — names of types currently declared (builtins + config + kits)
+    /**
+     * Catalogue of writ types keyed by name. Each entry is a `WritTypeInfo`
+     * (T1 widened shape) carrying its full state catalogue: per-state
+     * classification, attrs, and allowedTransitions. Sourced from
+     * /api/writ/types at page load and consumed by the shared
+     * `derivePresentation` helper below.
+     */
+    let writTypesByName = new Map();
     let searchText = '';
     let sortCol = 'createdAt';
     let sortDir = 'desc';
@@ -203,16 +220,97 @@
       return json;
     }
 
-    function phaseBadge(phase) {
-      const map = {
-        new: 'badge badge--draft',
-        open: 'badge badge--active',
-        stuck: 'badge badge--warning',
-        completed: 'badge badge--success',
-        failed: 'badge badge--error',
-        cancelled: 'badge badge--warning',
+    /**
+     * Single-source-of-truth presentation derivation for any writ.
+     *
+     * Inputs:
+     *   - `type`: the writ's type name (looked up against `writTypesByName`).
+     *   - `phase`: the writ's current state name.
+     *
+     * Returns:
+     *   { classification, attrs, badgeClass, indicator,
+     *     allowedTransitions, isTerminal }
+     *
+     * Mirrors the server-side `deriveStateIndicator` in
+     * packages/plugins/clerk/src/writ-presentation.ts so the two surfaces
+     * stay byte-faithful: mandate's six states recover their pre-T5
+     * glyphs and badge classes, and any plugin-contributed type using
+     * the four well-known attrs (`success`, `failure`, `cancelled`,
+     * `stuck`) inherits the same vocabulary for free. Unknown
+     * classifications surface as `?` / `badge` (no class suffix) per
+     * D17, so a single legacy writ does not abort rendering.
+     */
+    function derivePresentation(type, phase) {
+      const typeInfo = writTypesByName.get(type);
+      const state = typeInfo
+        ? typeInfo.states.find((s) => s.name === phase)
+        : undefined;
+
+      if (!state) {
+        return {
+          classification: 'unknown',
+          attrs: [],
+          badgeClass: '',
+          indicator: '?',
+          allowedTransitions: [],
+          isTerminal: false,
+        };
+      }
+
+      const classification = state.classification;
+      const attrs = state.attrs ?? [];
+      const has = (a) => attrs.includes(a);
+
+      let badgeClass = '';
+      let indicator = '';
+      if (classification === 'initial') {
+        indicator = '◌'; badgeClass = 'badge--draft';
+      } else if (classification === 'active') {
+        if (has('stuck')) { indicator = '◇'; badgeClass = 'badge--warning'; }
+        else { indicator = '●'; badgeClass = 'badge--active'; }
+      } else if (classification === 'terminal') {
+        if (has('success')) { indicator = '○'; badgeClass = 'badge--success'; }
+        else if (has('failure')) { indicator = '✕'; badgeClass = 'badge--error'; }
+        else if (has('cancelled')) { indicator = '⊘'; badgeClass = 'badge--warning'; }
+        else { indicator = '○'; badgeClass = ''; }
+      }
+
+      return {
+        classification,
+        attrs,
+        badgeClass,
+        indicator,
+        allowedTransitions: state.allowedTransitions ?? [],
+        isTerminal: classification === 'terminal',
       };
-      const cls = map[phase] ?? 'badge';
+    }
+
+    /**
+     * Render the badge HTML for a writ. Reads vocabulary from the shared
+     * derivation helper — there are no mandate phase string literals in
+     * this function. The state name is whatever the writ's type config
+     * declares, so plugin-contributed types render with their own labels
+     * for free.
+     */
+    function phaseBadge(phaseOrWrit, typeArg) {
+      // Backward-compatible invocation: phaseBadge('open') still works
+      // (no type → fallback to mandate vocabulary lookup). Prefer
+      // phaseBadge(writ) so the helper can pick up the writ's actual
+      // type vocabulary.
+      let type;
+      let phase;
+      if (typeof phaseOrWrit === 'string') {
+        phase = phaseOrWrit;
+        type = typeArg ?? 'mandate';
+      } else if (phaseOrWrit && typeof phaseOrWrit === 'object') {
+        type = phaseOrWrit.type ?? 'mandate';
+        phase = phaseOrWrit.phase ?? '';
+      } else {
+        type = 'mandate';
+        phase = '';
+      }
+      const { badgeClass } = derivePresentation(type, phase);
+      const cls = badgeClass ? `badge ${badgeClass}` : 'badge';
       return `<span class="${cls}">${phase}</span>`;
     }
 
@@ -403,16 +501,57 @@
 
     // ── Row actions ────────────────────────────────────────────────────
 
-    /** Returns the HTML for the context-aware Actions cell for a writ row. */
+    /**
+     * Returns the HTML for the context-aware Actions cell for a writ row.
+     *
+     * Walks the writ's allowedTransitions (from the shared derivation
+     * helper) and emits one button per legal transition. Labels and
+     * classes are derived from the destination state's attrs per D10:
+     *   - destination state name `open` and source state is initial
+     *     → "Start" (mandate's special case for publish-from-draft).
+     *   - destination attrs include `cancelled` → "Cancel" / btn--danger.
+     *   - destination attrs include `success`   → "Complete" / btn--success.
+     *   - destination attrs include `failure`   → "Fail" / btn--danger.
+     *   - otherwise the destination state name verbatim, plain btn.
+     *
+     * Terminal writs receive no buttons. Cancel is the only row-level
+     * cancel surfaced here (the existing mandate UX); other transitions
+     * (Complete / Fail) live on the detail view because they require a
+     * resolution.
+     */
     function rowActions(w) {
-      const isTerminal = ['completed', 'failed', 'cancelled'].includes(w.phase);
-      const isStuck = w.phase === 'stuck';
-      if (isTerminal) return '';
+      const present = derivePresentation(w.type, w.phase);
+      if (present.isTerminal) return '';
+
+      const fromTypeInfo = writTypesByName.get(w.type);
+      const fromState = fromTypeInfo
+        ? fromTypeInfo.states.find((s) => s.name === w.phase)
+        : undefined;
+      const fromClassification = fromState?.classification;
+
       const btns = [];
-      if (w.phase === 'new') {
-        btns.push(`<button class="btn btn--primary row-action-btn" style="padding:0.15rem 0.5rem;font-size:0.8rem" data-action="row-publish" data-id="${w.id}">Start</button>`);
+      for (const dest of present.allowedTransitions) {
+        const destState = fromTypeInfo
+          ? fromTypeInfo.states.find((s) => s.name === dest)
+          : undefined;
+        if (!destState) continue;
+        const destAttrs = destState.attrs ?? [];
+        // Initial→active publish — mandate's "Start" affordance.
+        if (fromClassification === 'initial' && dest === 'open') {
+          btns.push(`<button class="btn btn--primary row-action-btn" style="padding:0.15rem 0.5rem;font-size:0.8rem" data-action="row-publish" data-id="${w.id}">Start</button>`);
+          continue;
+        }
+        // Cancellation row affordance — emitted at the row level for any
+        // transition that lands in a `cancelled` terminal state. Matches
+        // the existing mandate UX (Cancel from new/open/stuck is row-
+        // accessible; Complete and Fail live in the detail view because
+        // they require a resolution input).
+        if (destAttrs.includes('cancelled')) {
+          btns.push(`<button class="btn btn--danger row-action-btn" style="padding:0.15rem 0.5rem;font-size:0.8rem" data-action="row-cancel" data-id="${w.id}">Cancel</button>`);
+          continue;
+        }
+        // Success/failure transitions are detail-view only.
       }
-      btns.push(`<button class="btn btn--danger row-action-btn" style="padding:0.15rem 0.5rem;font-size:0.8rem" data-action="row-cancel" data-id="${w.id}">Cancel</button>`);
       return btns.join(' ');
     }
 
@@ -527,7 +666,7 @@
           : `<span class="row-toggle row-toggle--placeholder">·</span>`;
 
         tr.innerHTML =
-          '<td>' + phaseBadge(w.phase) + '</td>' +
+          '<td>' + phaseBadge(w) + '</td>' +
           '<td class="title-cell">' + toggleHtml + escHtml(w.title ?? '') + '</td>' +
           '<td>' + (w.type ?? '') + '</td>' +
           '<td class="id-cell"><code>' + w.id + '</code> <button class="btn copy-id-btn" data-copy-id="' + w.id + '" style="padding:0.1rem 0.3rem;font-size:0.7rem;cursor:pointer">📋</button></td>' +
@@ -605,8 +744,14 @@
     // ── Detail row ─────────────────────────────────────────────────────
 
     function renderDetail(writ) {
-      const isTerminal = ['completed', 'failed', 'cancelled'].includes(writ.phase);
-      const isDraft = writ.phase === 'new';
+      // Vocabulary derivation for this writ — single helper feeds the
+      // edit-form gating ("draft" surfaces only on initial writs), the
+      // action-buttons block (one per legal transition), and the Repost
+      // affordance (terminal + failure/cancelled). No mandate phase
+      // literals appear below.
+      const present = derivePresentation(writ.type, writ.phase);
+      const isTerminal = present.isTerminal;
+      const isDraft = present.classification === 'initial';
       let html = '';
 
       // Edit form — title and body are always editable; type and codex only for drafts
@@ -632,7 +777,7 @@
       html += `<div class="detail-section"><h4>Details</h4><dl class="detail-grid">`;
       if (writ.codex) html += `<dt>Codex</dt><dd>${escHtml(writ.codex)}</dd>`;
       if (writ.parent) {
-        html += `<dt>Parent</dt><dd><a href="?writ=${encodeURIComponent(writ.parent.id)}" style="color:var(--blue,#7aa2f7);text-decoration:underline;cursor:pointer">${escHtml(writ.parent.title)}</a> ${phaseBadge(writ.parent.phase)}</dd>`;
+        html += `<dt>Parent</dt><dd><a href="?writ=${encodeURIComponent(writ.parent.id)}" style="color:var(--blue,#7aa2f7);text-decoration:underline;cursor:pointer">${escHtml(writ.parent.title)}</a> ${phaseBadge(writ.parent)}</dd>`;
       }
       html += `<dt>Created</dt><dd>${fmtDate(writ.createdAt)}</dd>`;
       html += `<dt>Updated</dt><dd>${fmtDate(writ.updatedAt)}</dd>`;
@@ -640,27 +785,74 @@
       if (writ.resolution) html += `<dt>Resolution</dt><dd>${escHtml(writ.resolution)}</dd>`;
       html += `</dl></div>`;
 
-      // Transition actions
+      // Transition actions — one button per legal transition, with
+      // labels and CSS classes derived from the destination state's
+      // attrs per D10. The vocabulary table:
+      //   - `open` (publish from initial) → "Publish" / btn--primary
+      //   - destination attrs include `success` → "Complete" / btn--success
+      //   - destination attrs include `failure` → "Fail" / btn--danger
+      //   - destination attrs include `cancelled` → "Cancel" / btn--danger
+      //   - otherwise the destination state name verbatim / plain btn.
+      // Mandate's existing label set (Publish, Complete, Fail, Cancel)
+      // is preserved exactly because mandate's attrs match this table
+      // byte-for-byte.
       if (!isTerminal) {
         html += `<div class="detail-section action-buttons" id="actions-${writ.id}">`;
-        if (writ.phase === 'new') {
-          html += `<button class="btn btn--primary" data-action="publish" data-id="${writ.id}">Start (Publish)</button>`;
-          html += `<button class="btn btn--danger" data-action="cancel" data-id="${writ.id}">Cancel</button>`;
-        } else if (writ.phase === 'open') {
-          html += `<button class="btn btn--success" data-action="complete" data-id="${writ.id}">Complete</button>`;
-          html += `<button class="btn btn--danger" data-action="fail" data-id="${writ.id}">Fail</button>`;
-          html += `<button class="btn btn--danger" data-action="cancel" data-id="${writ.id}">Cancel</button>`;
-        } else if (writ.phase === 'stuck') {
-          html += `<button class="btn btn--danger" data-action="fail" data-id="${writ.id}">Fail</button>`;
-          html += `<button class="btn btn--danger" data-action="cancel" data-id="${writ.id}">Cancel</button>`;
+        const fromTypeInfo = writTypesByName.get(writ.type);
+        const fromClassification = present.classification;
+        for (const dest of present.allowedTransitions) {
+          const destState = fromTypeInfo
+            ? fromTypeInfo.states.find((s) => s.name === dest)
+            : undefined;
+          if (!destState) continue;
+          const destAttrs = destState.attrs ?? [];
+
+          let label;
+          let cssClass;
+          let action;
+          // D10 publish-from-initial special case: render mandate's
+          // "Publish" affordance whenever the source is initial and the
+          // destination is named `open`. (Plugin types that mirror
+          // mandate's `new → open` shape inherit the label for free.)
+          if (fromClassification === 'initial' && dest === 'open') {
+            label = 'Publish';
+            cssClass = 'btn--primary';
+            action = 'publish';
+          } else if (destAttrs.includes('success')) {
+            label = 'Complete';
+            cssClass = 'btn--success';
+            action = 'complete';
+          } else if (destAttrs.includes('failure')) {
+            label = 'Fail';
+            cssClass = 'btn--danger';
+            action = 'fail';
+          } else if (destAttrs.includes('cancelled')) {
+            label = 'Cancel';
+            cssClass = 'btn--danger';
+            action = 'cancel';
+          } else {
+            label = dest;
+            cssClass = '';
+            action = 'transition';
+          }
+          const dataAttrs = action === 'transition'
+            ? `data-action="transition" data-id="${writ.id}" data-target="${dest}"`
+            : `data-action="${action}" data-id="${writ.id}"`;
+          html += `<button class="btn ${cssClass}" ${dataAttrs}>${label}</button>`;
         }
         html += `<div class="error-msg" id="action-error-${writ.id}" style="display:none"></div>`;
         html += `<div id="confirm-area-${writ.id}"></div>`;
         html += `</div>`;
       }
 
-      // Repost for failed/cancelled
-      if (writ.phase === 'failed' || writ.phase === 'cancelled') {
+      // Repost — D15: surface for any terminal writ whose state attrs
+      // include `failure` or `cancelled`. Recovers mandate's existing UX
+      // (Repost on `failed` and `cancelled`; not on `completed`); plugin
+      // types using the same attrs inherit the affordance.
+      if (
+        present.isTerminal &&
+        (present.attrs.includes('failure') || present.attrs.includes('cancelled'))
+      ) {
         html += `<div class="detail-section"><button class="btn" data-action="repost" data-id="${writ.id}">Repost</button></div>`;
       }
 
@@ -697,7 +889,14 @@
           html += `<div class="detail-label" style="margin-bottom:0.25rem;font-size:0.85rem;color:var(--muted,#9aa5ce)">Descendants</div>`;
           html += `<div style="margin-bottom:0.5rem">`;
           for (const [phase, count] of Object.entries(writ.children.summary)) {
-            html += phaseBadge(phase) + ` <span style="margin-right:0.75rem">${count}</span>`;
+            // Descendant phase summary spans every child type. We don't
+            // have per-row type context here, so we render the badge
+            // anchored to the parent's type — which is the most
+            // informative anchor available. Plugin-typed children of a
+            // mandate parent will badge as their phase name with a
+            // mandate-vocabulary fallback; a future enhancement could
+            // group counts by (type, phase) pairs.
+            html += phaseBadge(phase, writ.type) + ` <span style="margin-right:0.75rem">${count}</span>`;
           }
           html += `</div>`;
         }
@@ -708,7 +907,7 @@
         html += `</tr></thead><tbody>`;
         for (const { writ: child, depth } of rows) {
           html += `<tr class="writ-row child-detail-row" data-child-id="${child.id}" data-depth="${depth}" style="cursor:pointer">`;
-          html += `<td>${phaseBadge(child.phase)}</td>`;
+          html += `<td>${phaseBadge(child)}</td>`;
           html += `<td style="${depthIndentStyle(depth)}">${escHtml(child.title ?? '')}</td>`;
           html += `<td>${escHtml(child.type ?? '')}</td>`;
           html += `<td><code>${child.id}</code></td>`;
@@ -767,8 +966,12 @@
     }
 
     function wireDetailEvents(container, writ) {
-      // Populate edit dropdowns for draft writs
-      if (writ.phase === 'new') {
+      // Populate edit dropdowns for draft writs (initial classification).
+      // The mandate-phase literal `'new'` is no longer the gate — any
+      // writ whose current state is initial-classified is editable on
+      // type/codex.
+      const present = derivePresentation(writ.type, writ.phase);
+      if (present.classification === 'initial') {
         populateEditDropdowns(writ);
       }
 
@@ -856,11 +1059,20 @@
       } else if (action === 'publish') {
         doPublish(id, btn, td);
       } else if (action === 'cancel') {
+        // D11 — cancellation transitions take an optional resolution.
         showConfirm(id, 'cancel', btn, td, false);
       } else if (action === 'complete') {
+        // D11 — success transitions require a resolution.
         showConfirm(id, 'complete', btn, td, true);
       } else if (action === 'fail') {
+        // D11 — failure transitions require a resolution.
         showConfirm(id, 'fail', btn, td, true);
+      } else if (action === 'transition') {
+        // Generic transition for plugin-contributed types whose
+        // destination state has no recognized terminal attr (per D10
+        // bottom branch / D11 skipped-confirm). Walks straight to the
+        // tool with no resolution input.
+        doGenericTransition(id, btn.dataset.target, btn, td);
       } else if (action === 'repost') {
         openRepost(writ);
       } else if (action === 'unlink') {
@@ -873,6 +1085,23 @@
         const kindValue = kindSelect ? kindSelect.value : '';
         doAddLink(id, targetInput.value.trim(), labelInput.value.trim(), kindValue, btn, errEl, targetInput, labelInput, kindSelect);
       }
+    }
+
+    /**
+     * Fire a generic transition (no resolution input). Used for
+     * destination states that carry no recognized terminal attr — the
+     * page has no way to derive a confirmation prompt label, so it just
+     * fires the request and refreshes. There is no global
+     * /api/writ/transition route today; routes exist for the named
+     * actions (publish/complete/fail/cancel). When this branch is
+     * reached without a known route, surface an error so the operator
+     * knows the type's machine declared a transition the page does not
+     * yet have a tool for.
+     */
+    async function doGenericTransition(id, target, btn, td) {
+      const errEl = td.querySelector(`#action-error-${id}`);
+      clearError(errEl);
+      showError(errEl, `No client route for transition to "${target}". The Clerk currently exposes per-action routes (publish/complete/fail/cancel); plugin types declaring additional transitions need their own route.`);
     }
 
     async function doSaveEdit(id, btn, td) {
@@ -1083,7 +1312,7 @@
       if (!row) return;
       // Update phase badge cell (1st column, index 0)
       const cells = row.querySelectorAll('td');
-      if (cells[0]) cells[0].innerHTML = phaseBadge(writ.phase);
+      if (cells[0]) cells[0].innerHTML = phaseBadge(writ);
     }
 
     // ── Detail view ──────────────────────────────────────────────────
@@ -1160,7 +1389,7 @@
         depth: String(DEPTH_CAP + 1),
         format: 'json',
       });
-      if (currentPhase) params.set('phase', currentPhase);
+      if (currentClassification) params.set('classification', currentClassification);
       if (currentType.size === 0) {
         // No types selected — show empty state without hitting the API.
         if (replace) { forest = []; }
@@ -1242,6 +1471,15 @@
 
       // Stash declared type names for the "all selected → skip filter" check in loadWrits.
       knownTypes = types.map(t => t.name);
+
+      // Build the type-config map keyed by name. Every entry carries
+      // its full state catalogue (T1 widening) so the shared
+      // derivePresentation helper can resolve classification, attrs,
+      // badge classes, and allowedTransitions for any writ on the page.
+      writTypesByName = new Map();
+      for (const t of types) {
+        writTypesByName.set(t.name, t);
+      }
 
       // Build type-filter buttons
       buildTypeFilterBar(types);
@@ -1451,10 +1689,10 @@
 
     // ── Filter / sort ───────────────────────────────────────────────────
 
-    function setActiveFilter(phase) {
-      currentPhase = phase;
+    function setActiveFilter(classification) {
+      currentClassification = classification;
       document.querySelectorAll('.filter-btn').forEach(btn => {
-        btn.classList.toggle('active-filter', btn.dataset.phase === phase);
+        btn.classList.toggle('active-filter', btn.dataset.classification === classification);
       });
       loadWrits(true);
     }
@@ -1523,7 +1761,7 @@
     document.getElementById('load-more-btn').addEventListener('click', () => loadWrits(false));
 
     document.querySelectorAll('.filter-btn').forEach(btn => {
-      btn.addEventListener('click', () => setActiveFilter(btn.dataset.phase));
+      btn.addEventListener('click', () => setActiveFilter(btn.dataset.classification));
     });
 
     document.getElementById('search-input').addEventListener('input', e => {
