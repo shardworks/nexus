@@ -37,6 +37,12 @@ export {
 
 export { createAnimator } from './animator.ts';
 
+// ── Canonical dispatchability predicate ──────────────────────────────
+// Re-exported so cross-plugin consumers (Spider's crawl gate, the
+// `animator-paused` block-type, etc.) compose against a single source of
+// truth instead of hand-rolling their own equivalent.
+export { isDispatchable } from './rate-limit-backoff.ts';
+
 // ── Default export: the apparatus plugin ──────────────────────────────
 
 export default createAnimator();

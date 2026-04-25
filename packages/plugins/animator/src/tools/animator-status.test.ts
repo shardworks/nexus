@@ -2,8 +2,9 @@
  * Tests for the animator-status tool.
  *
  * The tool is JSON-only: empty params, returns the AnimatorStatusDoc
- * verbatim, CLI auto-printer pretty-prints. No --json flag, no text
- * formatter.
+ * enriched with a server-computed `dispatchable` boolean (derived from
+ * the canonical isDispatchable helper). CLI auto-printer pretty-prints.
+ * No --json flag, no text formatter.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -70,27 +71,46 @@ describe('animator-status tool', () => {
     assert.throws(() => animatorStatus.params.strict().parse({ json: true }));
   });
 
-  it('returns the status doc verbatim (paused shape)', async () => {
+  it('returns the status doc enriched with dispatchable=false (paused, window not yet elapsed)', async () => {
+    // Use a far-future pausedUntil so the canonical predicate evaluates
+    // to false regardless of when the test runs.
+    const farFuture = new Date(Date.now() + 60 * 60_000).toISOString();
     currentStatus = {
       id: 'dispatch-status',
       state: 'paused',
-      pausedSince: '2026-04-24T00:00:00.000Z',
-      pausedUntil: '2026-04-24T00:15:00.000Z',
+      pausedSince: new Date(Date.now() - 60_000).toISOString(),
+      pausedUntil: farFuture,
       pauseReason: 'rate-limit',
       backoffLevel: 1,
       lastTriggeringSession: 'ses-42',
     };
     const result = await animatorStatus.handler({});
-    assert.deepEqual(result, currentStatus);
+    assert.deepEqual(result, { ...currentStatus, dispatchable: false });
   });
 
-  it('returns the default running doc on a fresh install', async () => {
+  it('returns dispatchable=true when paused window has already elapsed', async () => {
+    const pastTime = new Date(Date.now() - 60 * 60_000).toISOString();
+    currentStatus = {
+      id: 'dispatch-status',
+      state: 'paused',
+      pausedSince: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+      pausedUntil: pastTime,
+      pauseReason: 'rate-limit',
+      backoffLevel: 2,
+      lastTriggeringSession: 'ses-99',
+    };
+    const result = await animatorStatus.handler({});
+    assert.deepEqual(result, { ...currentStatus, dispatchable: true });
+  });
+
+  it('returns dispatchable=true for the default running doc on a fresh install', async () => {
     currentStatus = { id: 'dispatch-status', state: 'running', backoffLevel: 0 };
     const result = await animatorStatus.handler({});
     assert.deepEqual(result, {
       id: 'dispatch-status',
       state: 'running',
       backoffLevel: 0,
+      dispatchable: true,
     });
   });
 });

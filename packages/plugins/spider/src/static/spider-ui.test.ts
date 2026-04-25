@@ -1761,18 +1761,38 @@ describe('Animator pause banner', () => {
     assert.match(spiderJs, /startAnimatorStatusPoll\(\)/);
   });
 
-  it('banner hides when the poll returns a non-paused state', () => {
-    // The renderAnimatorBanner function must set display:none when
-    // state !== 'paused' OR when pausedUntil has already elapsed.
+  it('banner gates on the server-supplied dispatchable boolean', () => {
+    // The renderAnimatorBanner function must gate display on the
+    // `dispatchable` field that the `animator-status` tool / route
+    // computes from the canonical isDispatchable(doc) helper. Hand-
+    // composing the predicate in the browser would re-introduce the
+    // duplication that the consolidation commission removes.
     assert.match(
+      spiderJs,
+      /status\.dispatchable/,
+      'banner should consult the server-supplied dispatchable boolean',
+    );
+    // Fail-closed-hide: a missing field is treated as dispatchable
+    // (banner hidden). Concretely: the gate should not be a bare
+    // `=== false` truthy check that hides the banner only when the
+    // server explicitly says false.
+    assert.match(
+      spiderJs,
+      /status\.dispatchable\s*!==\s*false/,
+      'banner should fail-closed-hide when dispatchable is absent',
+    );
+    // No fresh hand-composition of the predicate should remain in the
+    // banner code — neither the state-string comparison nor the
+    // pausedUntil-vs-now arithmetic.
+    assert.doesNotMatch(
       spiderJs,
       /status\.state\s*!==\s*['"]paused['"]/,
-      'banner should hide when the machine is running',
+      'banner must not re-compose the state predicate',
     );
-    assert.match(
+    assert.doesNotMatch(
       spiderJs,
       /untilMs\s*<=\s*Date\.now\(\)/,
-      'banner should hide once pausedUntil has elapsed',
+      'banner must not re-compose the pausedUntil-vs-now predicate',
     );
   });
 });

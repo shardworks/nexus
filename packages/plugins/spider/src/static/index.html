@@ -10,9 +10,12 @@
 <main style="padding: 24px;">
   <!--
     Animator pause banner. Hidden until the independent status poll
-    fetches /api/animator/status and observes state === 'paused' AND
-    a future pausedUntil. Rendered at the very top of <main> so it is
-    visible from every tab (D21 — the "cannot miss" placement).
+    fetches /api/animator/status and observes the server-supplied
+    `dispatchable` boolean is false. The route computes that field
+    from the canonical isDispatchable(doc) helper at request time, so
+    the browser never re-composes the predicate locally. Rendered at
+    the very top of <main> so it is visible from every tab (D21 — the
+    "cannot miss" placement).
   -->
   <div id="animator-pause-banner" class="animator-pause-banner" style="display:none" role="status" aria-live="polite">
     <strong id="animator-pause-banner-title">Animator paused</strong>

@@ -304,9 +304,13 @@ export interface AnimatorApi {
    * Exposes the back-off state machine's persisted state — pause phase,
    * window bounds, back-off level, and triggering session — to callers
    * (Spider's crawl gate, the `animator-status` CLI tool, the
-   * `GET /api/animator/status` HTTP route, the Oculus banner). Consumers
-   * compose their own dispatchability predicate; the Animator does not
-   * decide for them.
+   * `GET /api/animator/status` HTTP route, the Oculus banner). The
+   * dispatchability decision is delegated to the canonical
+   * `isDispatchable(doc)` helper exported from this package; consumers
+   * call that helper rather than re-composing the predicate themselves.
+   * The HTTP route additionally enriches the response with a
+   * server-computed `dispatchable: boolean` field for non-TS consumers
+   * — see the `animator-status` tool.
    *
    * Returns an AnimatorStatusDoc with `state: 'running'` and
    * `backoffLevel: 0` on fresh installs that have never hit a rate
@@ -624,11 +628,14 @@ export type AnimatorPauseReason = 'rate-limit';
  * window ends, and the exponential back-off level that will be applied
  * to the next pause.
  *
- * Consumers (Spider's crawl gate, the Oculus banner, the
- * `animator-status` CLI tool) dispatch sessions only when:
- *   state === 'running' OR pausedUntil <= now
- * The combined check tolerates the "stale running" edge cases — a daemon
- * restart leaves the doc in its last persisted state; the first
+ * Consumers compose against the canonical `isDispatchable(doc)` helper
+ * exported from this package — TypeScript callers (Spider's crawl gate,
+ * the `animator-paused` block-type, the in-process `animate()`
+ * pre-check) import it directly; non-TS callers (the Oculus banner)
+ * read the server-computed `dispatchable` boolean enriched onto the
+ * `animator-status` tool / `/api/animator/status` route response. The
+ * canonical predicate tolerates the "stale running" edge cases — a
+ * daemon restart leaves the doc in its last persisted state; the first
  * successful dispatch naturally flips it back to `'running'` (D24).
  */
 export interface AnimatorStatusDoc {
@@ -639,8 +646,8 @@ export interface AnimatorStatusDoc {
   pausedSince?: string;
   /**
    * ISO timestamp when the current pause window is due to clear.
-   * Consumers must combine this with `state` to decide dispatchability.
-   * Absent when running.
+   * Consumers should call `isDispatchable(doc)` rather than combining
+   * this with `state` directly. Absent when running.
    */
   pausedUntil?: string;
   /** Reason for the current pause. Absent when running. */

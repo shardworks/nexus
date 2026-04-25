@@ -5,7 +5,7 @@ The Animator brings animas to life. It is the guild's session apparatus — the 
 - **`summon()`** — the high-level "make an anima do a thing" call. Passes the role to The Loom for identity composition, then launches a session with the work prompt. This is what the summon relay, the CLI, and most callers use.
 - **`animate()`** — the low-level call for callers that compose their own `AnimaWeave` (e.g. The Parlour for multi-turn conversations). Rejects at the top with a synthesized `SessionResult { status: 'rate-limited', … }` when the rate-limit back-off machine is paused; no SessionDoc is written for the rejected call.
 - **`getSessionCosts()`** — bulk per-session cost/token lookup for read-side consumers. First read-side helper on `AnimatorApi`; used by Spider's rig-view aggregator to compose rig-level totals and per-engine breakdowns without reaching into the `sessions` book directly.
-- **`getStatus()`** — returns the rate-limit back-off state document verbatim (see § Rate-Limit Back-Off). Consumers compose their own dispatchability predicate: `state === 'running' OR pausedUntil <= now`.
+- **`getStatus()`** — returns the rate-limit back-off state document verbatim (see § Rate-Limit Back-Off). The canonical dispatchability predicate is exported as `isDispatchable(doc)` from this package's index; TypeScript callers should import that helper rather than re-composing it. Non-TS consumers (e.g. the Oculus banner) read the server-computed `dispatchable` boolean enriched onto the `animator-status` tool / `/api/animator/status` route response.
 
 Both methods return an `AnimateHandle` synchronously — a `{ chunks, result }` pair. The `result` promise resolves when the session completes. The `chunks` async iterable yields output as the session runs when `streaming: true` is set; otherwise it completes immediately with no items.
 
@@ -372,6 +372,8 @@ State transitions:
 `animate()` pre-checks the cached status at the top of the function. When paused and `pausedUntil > now`, it returns a handle whose `result` resolves to a synthesized `SessionResult { status: 'rate-limited', terminationTag, … }` and no SessionDoc is written. In-flight sessions are not proactively cancelled.
 
 Daemon restarts leave the persisted doc untouched; the first dispatch after `pausedUntil` elapses naturally flips the state back to `running` (the "natural probe" semantic).
+
+**Dispatchability is composed once.** The canonical predicate — `state === 'running' OR pausedUntil <= now` — is implemented as `isDispatchable(doc, nowMs?)` and re-exported from the package index. TypeScript consumers (Spider's crawl gate, the `animator-paused` block-type, the `animate()` pre-check) all import that single helper. Non-TypeScript callers (e.g. the Oculus pause banner) read the server-computed `dispatchable: boolean` field that the `animator-status` tool / auto-registered `/api/animator/status` route enriches onto the response. The persisted doc shape never carries `dispatchable` — it is a presentation-layer field computed from `now()` at request time.
 
 ### SessionDoc — passive termination diagnostic
 

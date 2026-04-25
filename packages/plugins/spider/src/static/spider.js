@@ -1694,12 +1694,14 @@
     var banner = document.getElementById('animator-pause-banner');
     if (!banner) return;
     var detail = document.getElementById('animator-pause-banner-detail');
-    if (!status || status.state !== 'paused' || !status.pausedUntil) {
-      banner.style.display = 'none';
-      return;
-    }
-    var untilMs = new Date(status.pausedUntil).getTime();
-    if (!isFinite(untilMs) || untilMs <= Date.now()) {
+    // Gate solely on the server-supplied `dispatchable` boolean, which is
+    // computed by the `animator-status` tool from the canonical
+    // `isDispatchable(doc)` helper. Fail-closed-hide: if the field is
+    // absent (older server, fetch error path returning a partial shape),
+    // treat as dispatchable and hide the banner. Re-composing the
+    // predicate here would re-introduce the duplication this commission
+    // removes.
+    if (!status || status.dispatchable !== false) {
       banner.style.display = 'none';
       return;
     }
@@ -1707,9 +1709,14 @@
     if (detail) {
       var parts = [];
       parts.push((status.pauseReason || 'rate-limit') + '.');
-      parts.push('Dispatch resumes at ' + status.pausedUntil);
-      var secs = Math.ceil((untilMs - Date.now()) / 1000);
-      if (secs > 0) parts.push('(~' + secs + 's from now)');
+      if (status.pausedUntil) {
+        parts.push('Dispatch resumes at ' + status.pausedUntil);
+        var untilMs = new Date(status.pausedUntil).getTime();
+        if (isFinite(untilMs)) {
+          var secs = Math.ceil((untilMs - Date.now()) / 1000);
+          if (secs > 0) parts.push('(~' + secs + 's from now)');
+        }
+      }
       if (status.lastTriggeringSession) {
         parts.push('- triggered by session ' + status.lastTriggeringSession);
       }

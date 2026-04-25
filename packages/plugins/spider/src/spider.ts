@@ -31,6 +31,7 @@ import { guild, generateId, shortId } from '@shardworks/nexus-core';
 import type { StacksApi, Book, ReadOnlyBook, WhereClause } from '@shardworks/stacks-apparatus';
 import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import type { FabricatorApi } from '@shardworks/fabricator-apparatus';
+import { isDispatchable } from '@shardworks/animator-apparatus';
 import type { SessionDoc, AnimatorApi } from '@shardworks/animator-apparatus';
 import type { KitRoleDefinition } from '@shardworks/loom-apparatus';
 
@@ -2746,20 +2747,21 @@ export function createSpider(): Plugin {
   /**
    * Pause-gate predicate (D14 / D24).
    *
-   * Returns true when the Animator is currently paused AND the persisted
-   * `pausedUntil` window has not yet elapsed — the combined check that
-   * governs dispatchability across the system. The crawl loop uses
-   * this to short-circuit `tryRun` and `trySpawn` while keeping the
-   * collect / graft / checkBlocked / autoUnstick phases running
-   * (the first so we still ingest the triggering rate-limit signals;
-   * the third so the block-type checker can clear engines).
+   * Returns true when the Animator is currently NOT dispatchable — i.e.
+   * paused with a pause window that has not yet elapsed. Delegates to the
+   * canonical `isDispatchable` helper from the animator package so this
+   * gate stays in lockstep with the back-off machine, the
+   * `animator-paused` block-type, and the Oculus banner.
+   *
+   * The crawl loop uses this to short-circuit `trySpawn` while keeping
+   * the collect / graft / checkBlocked / autoUnstick phases running (the
+   * first so we still ingest the triggering rate-limit signals; the
+   * third so the block-type checker can clear engines).
    */
   async function isAnimatorPaused(): Promise<boolean> {
     try {
       const status = await animator.getStatus();
-      if (status.state !== 'paused') return false;
-      if (!status.pausedUntil) return false;
-      return new Date(status.pausedUntil).getTime() > Date.now();
+      return !isDispatchable(status);
     } catch {
       // Animator unavailable → treat as not-paused. Dispatch can then
       // surface its own errors on the normal path.

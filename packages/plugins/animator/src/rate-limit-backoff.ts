@@ -18,9 +18,14 @@
  *          that happens while `pausedUntil <= now` naturally flips the
  *          state to `running`.
  *
- * The machine is intentionally small — consumers (Spider's crawl gate,
- * Oculus banner, CLI tool) compose their own dispatchability predicate
- * over the returned doc.
+ * The machine is intentionally small. Consumers that need a
+ * dispatchability decision (Spider's crawl gate, the `animator-paused`
+ * block-type, the `animate()` pre-check) call the canonical
+ * `isDispatchable(doc)` helper exported below — re-exported from the
+ * package index so cross-plugin callers import a single implementation.
+ * Non-TypeScript consumers (the Oculus banner) read the server-computed
+ * `dispatchable` field enriched onto the `animator-status` tool /
+ * `/api/animator/status` route response at request time.
  */
 
 import type { Book } from '@shardworks/stacks-apparatus';
@@ -443,10 +448,15 @@ export function buildPrecheckRejectionResult(params: {
 }
 
 /**
- * Compute the dispatchability predicate declared by D24: dispatch is
- * allowed when the Animator is running OR the current pause window has
- * already elapsed. Exposed here so callers (Spider's crawl gate, the
- * Oculus banner, the `animator-status` CLI) compose the same rule.
+ * Canonical dispatchability predicate (D24): dispatch is allowed when
+ * the Animator is `state: 'running'` OR the current pause window has
+ * already elapsed (`pausedUntil <= now`). This is the single source of
+ * truth — re-exported from the package index so every TypeScript
+ * consumer (Spider's crawl gate, the `animator-paused` block-type, the
+ * `animate()` pre-check) calls the same function. Non-TypeScript
+ * callers read the server-computed `dispatchable` field that the
+ * `animator-status` tool / `/api/animator/status` route enriches onto
+ * its response.
  */
 export function isDispatchable(doc: AnimatorStatusDoc, nowMs: number = Date.now()): boolean {
   if (doc.state === 'running') return true;

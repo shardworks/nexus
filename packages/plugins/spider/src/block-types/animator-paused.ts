@@ -15,6 +15,7 @@
 
 import { z } from 'zod';
 import { guild } from '@shardworks/nexus-core';
+import { isDispatchable } from '@shardworks/animator-apparatus';
 import type { AnimatorApi } from '@shardworks/animator-apparatus';
 import type { BlockType, CheckResult } from '../types.ts';
 
@@ -50,12 +51,10 @@ const animatorPausedBlockType: BlockType = {
       return { status: 'pending' };
     }
     const status = await animator.getStatus();
-    if (status.state === 'running') return { status: 'cleared' };
-    if (!status.pausedUntil) return { status: 'cleared' };
-    if (new Date(status.pausedUntil).getTime() <= Date.now()) {
-      return { status: 'cleared' };
-    }
-    return { status: 'pending' };
+    // Delegate to the canonical predicate from the animator package so
+    // this checker stays in lockstep with the back-off machine, the
+    // crawl-gate, and the Oculus banner.
+    return { status: isDispatchable(status) ? 'cleared' : 'pending' };
   },
 };
 

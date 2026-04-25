@@ -144,9 +144,14 @@ interface AnimatorApi {
 
   /**
    * Return the Animator's rate-limit status document verbatim.
-   * See § Rate-Limit Back-Off. Consumers (Spider's crawl gate, the
-   * Oculus banner, the `animator-status` CLI) compose their own
-   * dispatchability predicate over the returned doc.
+   * See § Rate-Limit Back-Off. The canonical dispatchability
+   * predicate is exposed as `isDispatchable(doc)` from this
+   * package's index — TypeScript consumers (Spider's crawl gate,
+   * the `animator-paused` block-type, the `animate()` pre-check)
+   * import it directly. Non-TS consumers (e.g. the Oculus banner)
+   * read the server-computed `dispatchable` boolean enriched onto
+   * the `animator-status` tool / `/api/animator/status` route
+   * response.
    */
   getStatus(): Promise<AnimatorStatusDoc>
 }
@@ -487,8 +492,11 @@ Two narrowed book references write to the same underlying `state` book — one t
 
 ### Dispatchability predicate
 
-Consumers that need to decide whether it is safe to dispatch compose the predicate themselves:
-`state === 'running' OR pausedUntil <= now`. The Animator exposes the raw doc via `AnimatorApi.getStatus()` and does not pre-compute the predicate. This is the "natural probe" semantic from decision D24: a daemon restart while the window is still open honours the persisted decision, and the first successful dispatch after `pausedUntil` elapses naturally flips the state back to running via the `onOtherTerminal` reset path.
+The canonical dispatchability predicate — `state === 'running' OR pausedUntil <= now` — is implemented as `isDispatchable(doc, nowMs?)` and re-exported from `@shardworks/animator-apparatus`. TypeScript consumers (Spider's crawl gate, the `animator-paused` block-type, the in-process `animate()` pre-check) all import that single helper, so the predicate has exactly one implementation. The Animator exposes the raw doc via `AnimatorApi.getStatus()` — the persisted shape never carries a pre-computed `dispatchable` flag, because the predicate depends on `now()` and would go stale on the row.
+
+Non-TypeScript consumers (e.g. the Oculus pause banner served from `static/spider.js`) read a server-computed `dispatchable: boolean` field that the `animator-status` tool / auto-registered `/api/animator/status` route enriches onto the response at request time. The banner gates its display on that boolean and never re-composes the predicate locally.
+
+This is the "natural probe" semantic from decision D24: a daemon restart while the window is still open honours the persisted decision, and the first successful dispatch after `pausedUntil` elapses naturally flips the state back to running via the `onOtherTerminal` reset path.
 
 After a restart where the pause window has already elapsed, the animator runs an **eager reconciliation step** at boot so the persisted and observed state don't drift during the startup window. `BackoffMachine.reconcileOnBoot()` runs between DLQ drain and orphan recovery: when the persisted doc is `paused` AND `pausedUntil <= now`, it flips the doc to `state: 'running', backoffLevel: 0` with pause-window fields cleared, preserving `backoffLastHitAt` and `lastTriggeringSession` for audit. Combined with an awaited initial `read()` at the top of `start()`, this guarantees `peek()` reflects a reconciled state before any post-start dispatch fires.
 
