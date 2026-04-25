@@ -8,9 +8,9 @@
  * writ type — any registered type whose config declares a
  * `childrenBehavior` block opts in; types that omit the block are no-ops.
  *
- * Two cascade directions, both driven by the same firing rule (terminal
- * transition on `update` events) and dispatched from the same `handle`
- * function:
+ * Three cascade-engine branches, all driven by the same firing rule
+ * (terminal transition on `update` events) and dispatched from the same
+ * `handle` function:
  *
  *   - **Upward** (terminal child → parent lift). Drives the parent through
  *     the parent type's `allSuccess` / `anyFailure` triggers when the
@@ -22,6 +22,17 @@
  *     `failure`- or `cancelled`-attr terminal state. Recursion to
  *     grandchildren happens via natural CDC re-fire on each child's own
  *     transition, not by an in-handler walk.
+ *   - **Tripwire** (success-attr terminal with non-terminal descendant —
+ *     enforced invariant). Throws when an entry whose type opts into
+ *     `childrenBehavior` reaches a `success`-attr terminal state while
+ *     any non-terminal descendant remains. The throw rolls the entry's
+ *     transition back via Phase 1 atomicity, so the bookkeeping gap is
+ *     unrepresentable in the writs book rather than a log-only signal.
+ *     The cascade engine itself can never produce this state —
+ *     `allSuccess` enumerates every sibling and requires terminal-success
+ *     — so any path that does produce it is upstream-broken (a direct
+ *     `clerk.transition()` caller bypassing the cascade); surfacing it as
+ *     a hard error catches caller bugs early.
  *
  * Upward firing rule (in order — first-fail short-circuits):
  *
@@ -49,9 +60,8 @@
  *   2. The entry's phase actually changed (`entry.phase !== prev.phase`).
  *   3. The entry is in a terminal state carrying the `failure` or
  *      `cancelled` attr (the parent-itself-terminated signal). The
- *      `success` attr — i.e. natural completion — does *not* fire the
- *      downward branch; in healthy mandates a `completed` parent has no
- *      non-terminal children to cancel.
+ *      `success` attr — i.e. natural completion — is handled by the
+ *      tripwire branch instead.
  *   4. The entry's own writ-type is registered.
  *   5. The entry's type declares a `parentTerminal` action. (Silent
  *      no-op when absent.)
@@ -68,6 +78,33 @@
  * `api.transition` throws and the Phase 1 transaction rolls back per the
  * engine's existing fail-loud convention. Already-terminal children are
  * skipped (idempotent on re-fire).
+ *
+ * Tripwire firing rule (in order — first-fail short-circuits):
+ *
+ *   1. Event is an `update`.
+ *   2. The entry's phase actually changed (`entry.phase !== prev.phase`).
+ *   3. The entry is in a terminal state carrying the `success` attr.
+ *   4. The entry's own writ-type is registered.
+ *   5. The entry's type declares a `childrenBehavior` block. (Silent
+ *      no-op when absent — types that decline `childrenBehavior` have
+ *      announced they do not couple parent and child outcomes.)
+ *   6. The entry has at least one non-terminal descendant (direct child
+ *      OR deeper). Descendants are enumerated by walking the subtree
+ *      through the writs book directly (bypassing `api.list`'s 20-row
+ *      default), recursing through terminal nodes too — a terminal
+ *      child can still hide a non-terminal grandchild when an upstream
+ *      caller bypassed the cascade.
+ *
+ * On all six conditions, the tripwire throws a fail-loud error naming
+ * the offending entry id, the `success`-attr terminal state, and the
+ * non-terminal descendants. Phase 1 atomicity rolls the entry's
+ * transition back, so a parent cannot land in a `success`-attr terminal
+ * with open descendants — the gap is unrepresentable in the writs book.
+ * The branch reuses the same enumeration approach as the downward branch
+ * (direct-book read, type-aware `isTerminal` filtering) and stays
+ * idempotent under CDC re-fire: a re-fire with no phase change (rule 2)
+ * short-circuits before evaluation, and a re-fire with all descendants
+ * terminal is a no-op.
  *
  * Cascade ordering when both directions fire on the same chain (e.g. an
  * upward `anyFailure` that lifts a parent into `failed`, which then
@@ -242,6 +279,65 @@ export function createChildrenBehaviorEngine(
             fields.resolution = parentTerminalAction.resolution;
           }
           await transition(child.id, parentTerminalAction.transition as WritPhase, fields);
+        }
+      }
+    }
+
+    // ── Tripwire branch (success-attr terminal + non-terminal descendant)
+    //
+    // Enforced invariant: a writ whose type opts into `childrenBehavior`
+    // cannot reach a `success`-attr terminal state while any non-terminal
+    // descendant remains. The cascade engine's `allSuccess` upward branch
+    // enumerates every direct sibling and requires terminal-success, so a
+    // healthy cascade can never produce this state — but every direct
+    // caller of `clerk.transition()` (the `writ-complete` tool, plugin
+    // code, tests) can bypass the cascade and drive a parent into a
+    // `success`-attr terminal with open descendants. The tripwire surfaces
+    // the bookkeeping gap as a hard error so the rolled-back transition
+    // makes the gap unrepresentable in the writs book.
+    //
+    // The walk recurses through terminal descendants too — a terminal
+    // child can still hide a non-terminal grandchild if an upstream caller
+    // already bypassed the cascade further down the tree.
+    if (entryAttrs.includes('success')) {
+      const entryConfig = getWritTypeConfig(entry.type);
+      if (!entryConfig) {
+        throw new Error(
+          `[clerk] writ "${entry.id}" carries type "${entry.type}" which is not registered.`,
+        );
+      }
+      if (entryConfig.childrenBehavior) {
+        const nonTerminalDescendants: WritDoc[] = [];
+        const queue: string[] = [entry.id];
+        // Defensive cycle guard: parentId is immutable per-writ so no
+        // cycles can exist in well-formed data, but the visited set keeps
+        // the walk bounded against pathological inputs (and against test
+        // fixtures whose `find` mocks ignore the where clause).
+        const visited = new Set<string>([entry.id]);
+        while (queue.length > 0) {
+          const parentId = queue.shift()!;
+          const children = await writs.find({
+            where: [['parentId', '=', parentId]],
+          });
+          for (const child of children) {
+            if (visited.has(child.id)) continue;
+            visited.add(child.id);
+            if (!isTerminal(child)) {
+              nonTerminalDescendants.push(child);
+            }
+            // Recurse through terminal nodes too: a bypass further down
+            // the tree could leave a non-terminal grandchild beneath an
+            // already-terminal child.
+            queue.push(child.id);
+          }
+        }
+        if (nonTerminalDescendants.length > 0) {
+          const descList = nonTerminalDescendants
+            .map((d) => `"${d.id}" (phase "${d.phase}")`)
+            .join(', ');
+          throw new Error(
+            `[clerk] children-behavior engine: writ "${entry.id}" cannot reach success-attr terminal state "${entry.phase}" while ${nonTerminalDescendants.length} non-terminal descendant${nonTerminalDescendants.length === 1 ? '' : 's'} remain: ${descList}. The cascade has been bypassed — a direct caller of clerk.transition() drove the parent to a success-attr terminal without first quiescing its subtree.`,
+          );
         }
       }
     }

@@ -743,10 +743,16 @@ describe('Clerk', () => {
       // Add the grandchild *before* transitioning its parent — the post
       // path rejects parents in terminal phases.
       const grand = await postMandate({ title: 'Grand of completed', body: 'Body', parentId: completed.id });
-      // Transition the completed child after grand exists. The downward
-      // `parentTerminal` cascade only fires on `failure`- or `cancelled`-
-      // attr terminals; reaching `completed` (success attr) leaves
-      // non-terminal descendants alone.
+      // Quiesce the completed-child subtree before driving the child to a
+      // success-attr terminal. The cascade engine's tripwire branch
+      // throws (rolling the transition back via Phase 1 atomicity) when a
+      // cascade-opt-in writ would reach a success-attr terminal with a
+      // non-terminal descendant remaining; mandate is cascade-opt-in, so
+      // the grandchild must terminate first. Cancelling the grandchild
+      // here keeps the test focused on tree-prune semantics — the
+      // child's success-attr terminal is the surface this assertion
+      // cares about.
+      await clerk.transition(grand.id, 'cancelled');
       await clerk.transition(completed.id, 'completed');
 
       const forest = await clerk.tree({ phase: 'open' });
@@ -3951,6 +3957,36 @@ describe('Parent/child relationships', () => {
       // leaf's resolution string.
       assert.equal(afterMiddle.resolution, 'leaf-done');
       assert.equal(afterRoot.resolution, 'leaf-done');
+    });
+
+    // ── Tripwire: success-attr terminal with non-terminal descendant ──
+    //
+    // Mandate opts into childrenBehavior, so a mandate parent cannot
+    // reach a `success`-attr terminal (`completed`) while it has any
+    // non-terminal descendant. The tripwire branch throws inside the
+    // firing transaction so the parent's offending transition rolls
+    // back via Phase 1 atomicity. Drives the parent's
+    // `allSuccess.transition` target directly to demonstrate the gap
+    // and asserts both that the call throws AND that the parent's
+    // phase remains pre-terminal in the book.
+    it('tripwire: throws and rolls back when a mandate parent reaches `completed` with an open direct child', async () => {
+      const parent = await postMandate({ title: 'Parent', body: 'B' });
+      await postMandate({ title: 'Child', body: 'B', parentId: parent.id });
+
+      await assert.rejects(
+        () => clerk.transition(parent.id, 'completed', { resolution: 'forced' }),
+        (err: Error) => {
+          assert.match(err.message, /cannot reach success-attr terminal state "completed"/);
+          assert.match(err.message, /non-terminal descendant/);
+          return true;
+        },
+      );
+
+      // Phase 1 atomicity rolled the transition back — the parent's
+      // phase must remain pre-terminal in the book.
+      const after = await clerk.show(parent.id);
+      assert.equal(after.phase, 'open');
+      assert.equal(after.resolution, undefined);
     });
   });
 

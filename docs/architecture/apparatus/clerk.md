@@ -584,19 +584,28 @@ Upward branch (`allSuccess` / `anyFailure`):
 
 Downward branch (`parentTerminal`):
 
-- **Firing rule** — the triggering writ's new terminal state carries either the `failure` or `cancelled` attr (not `success`), the writ's *own* type is registered, and that type declares a `parentTerminal` action. The branch enumerates the writ's children directly from the writs book (bypassing the default `list` row cap) and skips already-terminal children using the type's classification.
+- **Firing rule** — the triggering writ's new terminal state carries either the `failure` or `cancelled` attr (not `success` — that case is the tripwire branch's domain), the writ's *own* type is registered, and that type declares a `parentTerminal` action. The branch enumerates the writ's children directly from the writs book (bypassing the default `list` row cap) and skips already-terminal children using the type's classification.
 - **Action firing** — for each non-terminal child, the engine calls `api.transition` with the action's configured target and `resolution` string (or the parent's own resolution when `copyResolution: true`).
 - **Idempotency** — already-terminal children are skipped during enumeration. A re-fire of the cascade with no non-terminal children is a silent no-op.
 - **Grandchild cancel** — natural CDC re-fire. When the engine transitions a child into its terminal state, that transition is itself a writ-update event; the watcher re-enters and the downward branch fires on the child's own `parentTerminal` action (if the child's type declares one). For mandate trees this is how grandchildren get cancelled when grandparents terminate.
 - **Heterogeneous children** — every potential child type must declare the configured target state reachable from each non-terminal state via `allowedTransitions`. The validator does *not* enforce this cross-type contract; misconfigured children surface at runtime as fail-loud throws from `api.transition` that roll the cascade back.
 
-Stacks' 16-deep cascade cap bounds combined depth across both directions.
+Tripwire branch (success-attr terminal with non-terminal descendant — enforced invariant):
 
-Fail-loud surface (both directions):
+- **Firing rule** — the triggering writ's new terminal state carries the `success` attr, the writ's *own* type is registered, and that type declares a `childrenBehavior` block (the tripwire is implicit in opting into cascade — there is no separate config field). The branch walks the descendant subtree directly through the writs book (bypassing the default `list` row cap) and recurses through terminal nodes too — a bypass further down the tree could leave a non-terminal grandchild beneath an already-terminal child.
+- **Throw and rollback** — when any non-terminal descendant is found, the engine throws inside the firing transaction. Phase 1 atomicity rolls the entry's transition back, so the bookkeeping gap is unrepresentable in the writs book rather than a log-only signal. The throw message names the offending writ id, the `success`-attr terminal state, and the non-terminal descendants.
+- **Why a hard error** — the cascade engine's own `allSuccess` path enumerates every direct sibling and requires terminal-success, so the cascade itself can never produce a `success`-attr terminal with non-terminal descendants. Any path that does produce it is a direct `ClerkApi.transition` caller bypassing the cascade (the `writ-complete` tool, plugin code, tests). Surfacing the gap as a hard error catches caller bugs early; leaving it silent would let orphaned-children states accumulate without any audit signal.
+- **Idempotency** — a re-fire (e.g. a metadata-only update to the now-terminal entry) short-circuits at the engine's no-phase-change rule before reaching the tripwire. A genuine re-fire of a terminal-transition event with all descendants now terminal is a silent no-op (the walk finds no non-terminal descendants).
+- **Types that decline `childrenBehavior`** — silent no-op. Declining `childrenBehavior` is the type's announcement that it does not couple parent and child outcomes, and the tripwire respects that.
+
+Stacks' 16-deep cascade cap bounds combined depth across all three branches.
+
+Fail-loud surface (all three branches):
 
 - **Dangling `parentId`** (upward) — throws and rolls back the triggering transition.
 - **Unregistered parent or own type** — throws and rolls back.
 - **Misconfigured child target** (downward) — `api.transition` throws when a child cannot reach the configured `parentTerminal.transition` target from its current state, rolling back.
+- **Bypass leaves non-terminal descendants** (tripwire) — throws and rolls the parent's `success`-attr terminal transition back when any non-terminal descendant remains.
 
 #### `WritTypeChildrenBehaviorAction`
 
@@ -902,18 +911,19 @@ Writs form a tree. A writ may be decomposed into child writs (tasks, steps, etc.
 
 ### Children-behavior cascade
 
-The children-behavior engine — a Phase 1 watcher on the `clerk/writs` book registered from `start()` — drives **both** cascade directions from the same `handle` function:
+The children-behavior engine — a Phase 1 watcher on the `clerk/writs` book registered from `start()` — drives **three** cascade-engine branches from the same `handle` function:
 
 - **Upward** (terminal child → parent lift). When a writ transitions to a terminal state, the engine evaluates the *parent's* `WritTypeConfig.childrenBehavior` block. If `allSuccess` or `anyFailure` fires, the parent is driven through `ClerkApi.transition` with the configured target.
 - **Downward** (terminal parent → non-terminal-children cancellation). When a writ transitions to a `failure`- or `cancelled`-attr terminal, the engine evaluates the *writ's own* type's `parentTerminal` action. If declared, every non-terminal descendant is driven through `ClerkApi.transition` with the configured target. Recursion to grandchildren happens via natural CDC re-fire on each child's own transition, not by an in-handler walk.
+- **Tripwire** (success-attr terminal with non-terminal descendant — enforced invariant). When a writ whose type opts into `childrenBehavior` reaches a `success`-attr terminal state and any non-terminal descendant remains, the engine throws and Phase 1 atomicity rolls the offending parent transition back, so the bookkeeping gap is unrepresentable in the writs book rather than a log-only signal. The cascade engine's own `allSuccess` path enumerates every direct sibling and requires terminal-success, so the engine can never produce this state — any path that does is a direct `ClerkApi.transition` caller bypassing the cascade (the `writ-complete` tool, plugin code, tests). The branch walks the descendant subtree directly through the writs book (bypassing the default `list` row cap) and recurses through terminal nodes too — a bypass further down the tree can leave a non-terminal grandchild beneath an already-terminal child. The throw message names the offending writ id, the `success`-attr state, and the non-terminal descendants.
 
-Cascade is opt-in per type. A type whose config omits `childrenBehavior` is a silent no-op, and parent/child lifecycles evolve independently. Mandate opts into all three triggers (both upward + downward); piece and observation-set declare none.
+Cascade is opt-in per type. A type whose config omits `childrenBehavior` is a silent no-op across all three branches, and parent/child lifecycles evolve independently. Mandate opts into all three triggers (both upward + downward) and is therefore covered by the tripwire too; piece and observation-set declare none.
 
 The trigger vocabulary on `WritTypeConfig.childrenBehavior`:
 
 - `allSuccess` (upward) — fires when every sibling under the same parent has reached a terminal state and every one carries the `success` attr.
 - `anyFailure` (upward) — fires when the triggering child's terminal state carries the `failure` attr.
-- `parentTerminal` (downward) — fires when a writ of *this* type transitions into a `failure`- or `cancelled`-attr terminal. Drives every non-terminal descendant to the configured target. Does *not* fire on `success`-attr terminals — a healthy `completed` mandate has no non-terminal children to cancel.
+- `parentTerminal` (downward) — fires when a writ of *this* type transitions into a `failure`- or `cancelled`-attr terminal. Drives every non-terminal descendant to the configured target. The `success`-attr case is the tripwire branch's domain — declaring `childrenBehavior` is itself the opt-in to the tripwire's enforced invariant, so a `success`-attr terminal with non-terminal descendants throws and rolls back rather than silently leaving descendants alone.
 
 Upward trigger evaluation order: `anyFailure` is evaluated first; if it fires, `allSuccess` is skipped on this event. This is the precedence rule a failing child wins over a simultaneously-completing one. Cascade ordering when both directions could fire on the same chain (e.g. an upward `anyFailure` lifts a parent into `failed`, which then needs to push down into the parent's other open siblings) is handled by natural CDC re-fire: the parent's own update event re-enters the handler and the downward branch fires on the parent's now-terminal transition.
 

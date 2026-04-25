@@ -127,6 +127,20 @@ const MANDATE_TYPE_NAME = 'mandate';
  * child type must declare `cancelled` reachable from each non-terminal
  * state via `allowedTransitions`; failures surface as fail-loud throws
  * from `api.transition` and roll back the Phase 1 transaction.
+ *
+ * Opting into `childrenBehavior` is *also* an opt-in to the cascade
+ * engine's tripwire branch: a mandate writ cannot reach `completed`
+ * (the only `success`-attr terminal in mandate's catalogue) while it
+ * has any non-terminal descendant. This is an enforced invariant, not
+ * a postcondition assumption — the engine throws inside the firing
+ * transaction and Phase 1 atomicity rolls the offending transition
+ * back so the bookkeeping gap is unrepresentable in the writs book.
+ * The cascade engine's own `allSuccess` path enumerates every direct
+ * sibling and requires terminal-success, so it can never land mandate
+ * in this state; any path that does is a direct `clerk.transition()`
+ * caller bypassing the cascade (`writ-complete`, plugin code, tests).
+ * See the file-level docstring of `children-behavior-engine.ts` for
+ * the firing rule and message shape.
  */
 const MANDATE_CONFIG: WritTypeConfig = {
   name: MANDATE_TYPE_NAME,

@@ -647,20 +647,27 @@ describe('createChildrenBehaviorEngine() — parentTerminal trigger', () => {
     assert.equal(h.transitionCalls[0].to, 'cancelled');
   });
 
-  it('does not fire on success-attr terminal transitions', async () => {
+  it('does not fire on success-attr terminal transitions when descendants are quiesced', async () => {
+    // Verifies the downward branch's `failure | cancelled` attr gate: a
+    // success-attr terminal must not drive children through the
+    // `parentTerminal` action. With every descendant already terminal,
+    // the tripwire branch is also a no-op (no non-terminal descendants
+    // to flag), so the handler runs to completion with zero transition
+    // calls. Exercising this with a non-terminal descendant is now the
+    // tripwire's domain — see the dedicated tripwire suite below.
     const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
     const parentNext = makeWrit({
       id: 'w-p1', type: 'mandate', phase: 'completed', resolution: 'done',
     });
-    const child = makeWrit({ id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-p1' });
+    const terminatedChild = makeWrit({
+      id: 'w-c1', type: 'mandate', phase: 'completed', parentId: 'w-p1',
+      resolution: 'done',
+    });
     const h = makeHarness({
-      writs: [parentNext, child],
+      writs: [parentNext, terminatedChild],
       configs: [MANDATE_WITH_DOWNWARD],
     });
     await h.handle(makeUpdateEvent(parentNext, parentPrev));
-    // The downward branch must not fire on success — `completed` mandates
-    // do not cancel children. (The upward branch is also a no-op here
-    // because the parent has no parent of its own.)
     assert.equal(h.transitionCalls.length, 0);
   });
 
@@ -847,6 +854,166 @@ describe('createChildrenBehaviorEngine() — parentTerminal trigger', () => {
     assert.deepEqual(h.transitionCalls, [
       { id: 'w-c1', to: 'cancelled', fields: { resolution: 'parent reason' } },
     ]);
+  });
+});
+
+// ── Tripwire branch (success-attr terminal + non-terminal descendant) ──
+//
+// The tripwire enforces an invariant that the cascade engine itself
+// can never violate (allSuccess enumerates every direct sibling and
+// requires terminal-success): a writ whose type opts into
+// `childrenBehavior` cannot reach a `success`-attr terminal state
+// while any non-terminal descendant remains. The branch throws inside
+// the firing transaction so the parent's offending transition rolls
+// back via Phase 1 atomicity. These tests exercise the throw on
+// direct-child and grandchild violations, the success path with all
+// descendants terminated, the no-op on declining types, and idempotent
+// re-fire.
+
+describe('createChildrenBehaviorEngine() — tripwire (success-attr + non-terminal descendant)', () => {
+  // (a) parent of cascade-opt-in type driven directly to a success-attr
+  //     terminal with at least one non-terminal direct child throws.
+  it('throws when a cascade-opt-in writ reaches a success-attr terminal with a non-terminal direct child', async () => {
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const parentNext = makeWrit({
+      id: 'w-p1', type: 'mandate', phase: 'completed', resolution: 'forced',
+    });
+    const openChild = makeWrit({
+      id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-p1',
+    });
+    const h = makeHarness({
+      writs: [parentNext, openChild],
+      configs: [MANDATE_TYPE],
+    });
+    await assert.rejects(
+      () => h.handle(makeUpdateEvent(parentNext, parentPrev)),
+      (err: Error) => {
+        assert.match(err.message, /writ "w-p1" cannot reach success-attr terminal state "completed"/);
+        assert.match(err.message, /"w-c1" \(phase "open"\)/);
+        return true;
+      },
+    );
+    // No transition should have fired before the throw — Phase 1
+    // atomicity rolls the parent's transition back, but at the engine
+    // unit level the harness only records what the engine called.
+    assert.equal(h.transitionCalls.length, 0);
+  });
+
+  // (b) same shape with a non-terminal grandchild (descendant, not
+  //     direct child) throws. The parent's direct child is already
+  //     terminal (cancelled — no upward cascade fires from the
+  //     `cancelled` attr), but a grandchild remains open.
+  it('throws when a cascade-opt-in writ reaches a success-attr terminal with a non-terminal grandchild', async () => {
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const parentNext = makeWrit({
+      id: 'w-p1', type: 'mandate', phase: 'completed', resolution: 'forced',
+    });
+    const cancelledChild = makeWrit({
+      id: 'w-c1', type: 'mandate', phase: 'cancelled', parentId: 'w-p1',
+      resolution: 'preempt',
+    });
+    const openGrandchild = makeWrit({
+      id: 'w-g1', type: 'mandate', phase: 'open', parentId: 'w-c1',
+    });
+    const h = makeHarness({
+      writs: [parentNext, cancelledChild, openGrandchild],
+      configs: [MANDATE_TYPE],
+    });
+    await assert.rejects(
+      () => h.handle(makeUpdateEvent(parentNext, parentPrev)),
+      (err: Error) => {
+        assert.match(err.message, /writ "w-p1" cannot reach success-attr terminal state "completed"/);
+        // The non-terminal descendant named in the message must be the
+        // grandchild — the cancelled child does not flag.
+        assert.match(err.message, /"w-g1" \(phase "open"\)/);
+        assert.ok(!err.message.includes('"w-c1"'),
+          'cancelled (terminal) child must not appear in the descendant list');
+        return true;
+      },
+    );
+  });
+
+  // (c) same shape with all descendants already terminal does NOT
+  //     throw — the tripwire is satisfied and the upward branch can
+  //     proceed normally. Here the parent has no parent of its own, so
+  //     the upward branch is a silent no-op too; the assertion is that
+  //     no transition or status writes fire.
+  it('does not throw when every descendant is already terminal', async () => {
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const parentNext = makeWrit({
+      id: 'w-p1', type: 'mandate', phase: 'completed', resolution: 'all done',
+    });
+    const completedChild = makeWrit({
+      id: 'w-c1', type: 'mandate', phase: 'completed', parentId: 'w-p1',
+      resolution: 'a',
+    });
+    const completedGrandchild = makeWrit({
+      id: 'w-g1', type: 'mandate', phase: 'completed', parentId: 'w-c1',
+      resolution: 'b',
+    });
+    const h = makeHarness({
+      writs: [parentNext, completedChild, completedGrandchild],
+      configs: [MANDATE_TYPE],
+    });
+    await h.handle(makeUpdateEvent(parentNext, parentPrev));
+    assert.equal(h.transitionCalls.length, 0);
+    assert.equal(h.statusCalls.length, 0);
+  });
+
+  // (d) same shape on a writ whose type declines childrenBehavior is a
+  //     no-op — the policy is implicit in opting into childrenBehavior,
+  //     and types that decline have announced they do not couple parent
+  //     and child outcomes.
+  it('is a no-op when the writ\'s type declines childrenBehavior, even with non-terminal descendants', async () => {
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'no-cascade', phase: 'open' });
+    const parentNext = makeWrit({
+      id: 'w-p1', type: 'no-cascade', phase: 'completed', resolution: 'forced',
+    });
+    const openChild = makeWrit({
+      id: 'w-c1', type: 'no-cascade', phase: 'open', parentId: 'w-p1',
+    });
+    const h = makeHarness({
+      writs: [parentNext, openChild],
+      configs: [NO_CASCADE_TYPE],
+    });
+    // No throw; no transition or status writes fire either.
+    await h.handle(makeUpdateEvent(parentNext, parentPrev));
+    assert.equal(h.transitionCalls.length, 0);
+    assert.equal(h.statusCalls.length, 0);
+  });
+
+  // (e) re-firing the cascade engine on the now-terminal parent (the
+  //     idempotency invariant) does not re-throw or duplicate work.
+  //     The simulated re-fire delivers the same terminal-transition
+  //     event a second time after the descendants have been
+  //     terminated; the tripwire walks the subtree again, finds no
+  //     non-terminal descendants, and is a no-op. The downward branch
+  //     similarly skips already-terminal descendants and produces no
+  //     duplicate transition calls.
+  it('is idempotent under CDC re-fire — once descendants are terminal the tripwire is a no-op', async () => {
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const parentNext = makeWrit({
+      id: 'w-p1', type: 'mandate', phase: 'completed', resolution: 'all done',
+    });
+    const completedChild = makeWrit({
+      id: 'w-c1', type: 'mandate', phase: 'completed', parentId: 'w-p1',
+      resolution: 'one',
+    });
+    const h = makeHarness({
+      writs: [parentNext, completedChild],
+      configs: [MANDATE_TYPE],
+    });
+    // First fire: tripwire is satisfied, no calls.
+    await h.handle(makeUpdateEvent(parentNext, parentPrev));
+    assert.equal(h.transitionCalls.length, 0);
+    assert.equal(h.statusCalls.length, 0);
+
+    // Re-fire the same terminal-transition event — the tripwire's
+    // walk re-runs but the subtree is unchanged, so it remains a
+    // no-op. No throw, no duplicate work.
+    await h.handle(makeUpdateEvent(parentNext, parentPrev));
+    assert.equal(h.transitionCalls.length, 0);
+    assert.equal(h.statusCalls.length, 0);
   });
 });
 
