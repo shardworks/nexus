@@ -264,6 +264,17 @@ export interface ClockworksApi {
    * Sequential, single-pass — no scheduling, no parallelism, no retry.
    * The CLI / daemon / cron loops compose on top of this primitive.
    *
+   * **Cross-process delivery.** The read-pending → invoke →
+   * patch-processed sequence is not atomic across processes. When two
+   * callers overlap (e.g. the unattended daemon plus a manual
+   * `nsg clock run`, or two manual runs), both can see the same
+   * unprocessed events and a relay may be invoked more than once for
+   * the same event. Substrate-level row locking is intentionally
+   * deferred; the contract is upheld by relay-author idempotency —
+   * handlers MUST be safe to invoke more than once for the same
+   * triggering event. See `RelayHandler` for the contract and
+   * `docs/guides/building-relays.md` for the worked pattern.
+   *
    * Optional `opts` (all strictly additive — every default-everything
    * call site keeps current behavior):
    *   - `eventId` — process only the matching unprocessed event.

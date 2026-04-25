@@ -224,13 +224,13 @@ The startup banner names the pid, polling interval, and log path; the shutdown b
 
 The poll loop sleeps abortably between ticks (`Promise.race(timeout, shutdownDeferred)`) so SIGTERM is acted on immediately. Per-tick `processEvents` runs as a full drain — no `max` cap — and the post-completion sleep schedules the next tick after the previous one returns.
 
-Phase 1 commands (`list`, `tick`, `run`) continue to work alongside the daemon. If the daemon is running, `tick` and `run` emit a one-line coexistence warning to stderr and still execute — SQLite handles concurrent access safely.
+Phase 1 commands (`list`, `tick`, `run`) continue to work alongside the daemon. If the daemon is running, `tick` and `run` emit a one-line coexistence warning to stderr and still execute. The dispatch sweep (read-pending → invoke → patch-processed) is not atomic across processes, so an overlapping manual invocation and the daemon can each see the same unprocessed events and a relay may be invoked more than once for the same event; the contract is upheld by relay-author idempotency rather than by substrate coordination (see the relay-handler `RelayHandler` JSDoc and `docs/guides/building-relays.md` for the worked pattern).
 
 `clockStatus(home)` cleans up stale pidfiles as a side effect: a pidfile pointing at a dead pid surfaces in the return shape as `stalePidfile: true` and is unlinked, so subsequent calls are silent on staleness.
 
 Core API: `clockStart(home, options?)`, `clockStop(home)`, `clockStatus(home)`, plus `runForegroundDaemon(...)` (the inline daemon body, with every dependency injected for tests) and `runForegroundDaemonFromGuild(...)` (the live-guild convenience wrapper the CLI re-exec target calls). The `clock-status` MCP tool exposes daemon status to animas.
 
-The two-daemon coexistence with `nsg start` (the guild daemon) is intentional. Different pidfiles (`daemon.pid` vs `clock.pid`), different log files, different lifecycles. SQLite handles concurrent access from both.
+The two-daemon coexistence with `nsg start` (the guild daemon) is intentional. Different pidfiles (`daemon.pid` vs `clock.pid`), different log files, different lifecycles. Both processes may dispatch the same event when their sweeps overlap, so relay-author idempotency carries the cross-process contract — relays must be safe to invoke more than once for the same event.
 
 ---
 

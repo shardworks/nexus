@@ -148,17 +148,22 @@ function requireGuild(): ReturnType<typeof guild> {
  * callers can append it conditionally.
  *
  * The warning is non-fatal: `nsg clock tick` and `nsg clock run` keep
- * working even when the daemon is up. SQLite handles concurrent access
- * safely; the warning exists only so operators understand they may
- * see the daemon process the same events first.
+ * working even when the daemon is up. The dispatch sweep
+ * (read-pending → invoke → patch-processed) is not atomic across
+ * processes, so a daemon and a manual invocation that overlap may
+ * each invoke the same relay for the same event. Operators rely on
+ * relay-author idempotency (see `RelayHandler` in
+ * `packages/plugins/clockworks/src/relay.ts`); this warning exists so
+ * they understand the contract is engaged whenever they tick or run
+ * alongside the daemon.
  */
 function daemonCoexistenceWarning(home: string): string | null {
   const status = clockStatus(home);
   if (!status.running) return null;
   return (
     `Warning: clockworks daemon is running (pid ${status.pid}); ` +
-    `this manual invocation will run concurrently. SQLite handles ` +
-    `concurrent access safely.`
+    `this manual invocation will run concurrently — relays may be ` +
+    `invoked more than once for overlapping events.`
   );
 }
 

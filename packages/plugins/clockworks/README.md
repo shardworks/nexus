@@ -177,6 +177,17 @@ Returned counts:
 Sequential, single-pass — no scheduling, no parallelism, no retry. The
 CLI wrapper, daemon, and cron loop compose on top of this primitive.
 
+**Cross-process delivery.** The read-pending → invoke → patch-processed
+sequence is not atomic across processes. When two callers overlap (e.g.
+the unattended daemon plus a manual `nsg clock run`, or two manual
+runs), both can see the same unprocessed events, so a relay
+may be invoked more than once for the same event. Substrate-level row
+locking is intentionally deferred; the contract is upheld by
+relay-author idempotency — handlers must be safe to invoke more than
+once for the same triggering event. See
+[Authoring relays](#authoring-relays) and the
+[Building Relays guide](../../../docs/guides/building-relays.md#best-practices).
+
 ### `ClockworksApi.processSchedules(): Promise<{ fired, errors }>`
 
 Runs one tick of the scheduler pass over the in-memory schedule
@@ -492,8 +503,8 @@ string; omit it to record a `null` payload.
 for failed dispatches — and exit nonzero when at least one dispatch
 recorded `status: error`. When the daemon is up, `tick` and `run`
 emit a one-line coexistence warning to stderr (the manual invocation
-runs concurrently with the daemon; SQLite handles concurrent access
-safely) and execute regardless.
+runs concurrently with the daemon, so relays may be invoked more
+than once for overlapping events) and execute regardless.
 
 The two daemons (`nsg start` for the guild daemon and `nsg clock
 start` for the Clockworks daemon) are independent: different pidfiles
@@ -577,12 +588,18 @@ active ticks; idle ticks are silent.
 ### Daemon coexistence
 
 The Clockworks daemon and the manual `nsg clock tick` / `nsg clock
-run` commands coexist intentionally: SQLite handles concurrent access
-safely, so there is no harm in running both. When the daemon is up,
-manual invocations emit a one-line coexistence warning to stderr and
-then execute regardless. The patron and anima can probe daemon
-liveness via `nsg clock status` and the `clock-status` MCP tool
-respectively.
+run` commands coexist intentionally. The dispatch sweep
+(read-pending → invoke → patch-processed) is not atomic across
+processes: when a manual invocation overlaps the daemon, both can
+see the same unprocessed events, so a relay may be invoked more than
+once for the same event. Substrate-level row locking is intentionally
+deferred; the contract is upheld by relay-author idempotency (see
+[Authoring relays](#authoring-relays) and the
+[Building Relays guide](../../../docs/guides/building-relays.md#best-practices)).
+When the daemon is up, manual invocations emit a one-line coexistence
+warning to stderr and then execute regardless. The patron and anima
+can probe daemon liveness via `nsg clock status` and the
+`clock-status` MCP tool respectively.
 
 ---
 

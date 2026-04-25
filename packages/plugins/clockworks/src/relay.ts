@@ -84,6 +84,19 @@ export interface RelayContext {
  *
  * May be sync or async — the dispatcher always awaits. Signals failure by
  * throwing; return values are not consumed.
+ *
+ * **Idempotency contract.** Handlers MUST be safe to invoke more than
+ * once for the same triggering event. The Clockworks dispatch sweep
+ * (read-pending → invoke → patch-processed) is not atomic across
+ * processes, so when callers overlap (e.g. the unattended daemon and a
+ * manual `nsg clock run`, or a process restart mid-replay) the same
+ * event may be handed to a relay's handler again. Side effects must
+ * tolerate this — guard externally-observable work with a dedupe
+ * identity carried on the event payload, mirror the Reckoner's
+ * `pulse.context` pattern (see
+ * `docs/architecture/apparatus/reckoner.md`), or shape the handler so
+ * a second invocation is a no-op. The contract is qualitative: design
+ * for "may run more than once", not for a specific bound.
  */
 export type RelayHandler = (
   event: GuildEvent | null,

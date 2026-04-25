@@ -27,6 +27,22 @@
  * calls, no `Date.now()` directly. Every dependency is passed in so
  * the dispatcher can be unit-tested without booting Stacks.
  *
+ * Cross-process invariant. Steps 2–5 (read-pending → invoke →
+ * patch-processed) are sequential within a single sweep but **not
+ * atomic across processes**. When two `processEvents` callers overlap
+ * (e.g. the unattended daemon plus a manual `nsg clock run`, or two
+ * manual runs), each can read the same unprocessed events before
+ * either has flipped `processed: true`, and a relay handler may
+ * therefore be invoked more than once for the same event. This is by
+ * design: substrate-level row locking is intentionally deferred (see
+ * the architecture doc's Deferred section). The contract is upheld by
+ * relay-author idempotency, not by dispatcher coordination — relay
+ * handlers MUST be safe to invoke more than once for the same
+ * triggering event (see the `RelayHandler` JSDoc and
+ * `docs/guides/building-relays.md`). Future commissions modifying the
+ * sweep must preserve this contract or coordinate the change with the
+ * relay-author surface.
+ *
  * Commission decisions honored: D1, D2, D8–D14, D17–D26.
  */
 
