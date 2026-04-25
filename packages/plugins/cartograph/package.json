@@ -1,0 +1,43 @@
+{
+  "name": "@shardworks/cartograph-apparatus",
+  "version": "0.0.0",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shardworks/nexus",
+    "directory": "packages/plugins/cartograph"
+  },
+  "description": "The Cartograph — vision/charge/piece decomposition-ladder apparatus",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@shardworks/nexus-core": "0.x"
+  },
+  "dependencies": {
+    "@shardworks/stacks-apparatus": "workspace:*",
+    "@shardworks/clerk-apparatus": "workspace:*"
+  },
+  "devDependencies": {
+    "@shardworks/nexus-core": "workspace:*",
+    "@types/node": "25.5.0"
+  },
+  "files": [
+    "dist",
+    "vision-keeper.md"
+  ],
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  }
+}
