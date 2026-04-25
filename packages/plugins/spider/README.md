@@ -385,6 +385,7 @@ The Spider contributes books, tools, engines, and a role for rig inspection and 
 | `rig-show` | `read` | Show full detail for a rig by id. Default `--format text` renders a human-readable CLI view surfacing per-engine attempt count, hold state (`holdReason` / `holdUntil` / `lastCheckedAt`), and the latest attempt's error — the minimum bar the engine-level retry commission calls for. Pass `--format json` for the raw enriched `RigView`. |
 | `rig-resume` | `write` | Manually clear a hold on a specific pending engine |
 | `rig-cancel` | `write` | Cancel a running rig (also tolerates legacy `'stuck'` / `'blocked'` rigs) |
+| `writ-rescue-stuck` | `write` | List, and with `--apply` requeue, writs still stuck under the legacy `engine-failure` cause that predate the engine-level-retry commission. Default lists candidates without mutating; `--apply` transitions each match `stuck → open`, clears its `status.spider` slot, and cancels every legacy `'stuck'` / `'blocked'` rig for that writ. Operator-stuck writs (no `status.spider` slot) and dependency-cause stucks (`failed-blocker` / `cycle`) are never touched. Pass `--id` to scope to a single writ; `--format json` for machine-readable output. |
 | `crawl` | `write` | Execute a single crawl step |
 | `crawl-continual` | `write` | Poll `crawl()` in a loop until no work remains |
 

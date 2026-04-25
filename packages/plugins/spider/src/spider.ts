@@ -94,6 +94,7 @@ import {
   engineDesignsTool,
   blockTypesTool,
   rigCancelTool,
+  writRescueStuckTool,
 } from './tools/index.ts';
 
 import { spiderRoutes } from './oculus-routes.ts';
@@ -3070,6 +3071,7 @@ export function createSpider(): Plugin {
           engineDesignsTool,
           blockTypesTool,
           rigCancelTool,
+          writRescueStuckTool,
         ],
       },
 

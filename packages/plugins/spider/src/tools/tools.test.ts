@@ -17,6 +17,8 @@ import type { SpiderApi, SpiderConfig, CrawlResult } from '../types.ts';
 import crawlOneTool from './crawl-one.ts';
 import crawlContinualTool from './crawl-continual.ts';
 import rigCancelTool from './rig-cancel.ts';
+import writRescueStuckTool from './writ-rescue-stuck.ts';
+import { createSpider } from '../spider.ts';
 import type { RigDoc } from '../types.ts';
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -617,5 +619,24 @@ describe('rig-cancel tool', () => {
     await rigCancelTool.handler({ rigId: 'rig-2' });
     assert.ok(cancelCalledWith !== null);
     assert.equal(cancelCalledWith!.options, undefined);
+  });
+});
+
+// ── writ-rescue-stuck registration ────────────────────────────────────────
+
+describe('writ-rescue-stuck tool — kit registration', () => {
+  it('is registered in spider supportKit.tools', () => {
+    const spiderPlugin = createSpider();
+    const kit = spiderPlugin.apparatus.supportKit as { tools?: Array<{ name: string }> };
+    const names = (kit.tools ?? []).map((t) => t.name);
+    assert.ok(
+      names.includes('writ-rescue-stuck'),
+      `expected supportKit.tools to include "writ-rescue-stuck"; got ${JSON.stringify(names)}`,
+    );
+  });
+
+  it('has name "writ-rescue-stuck" and write permission', () => {
+    assert.equal(writRescueStuckTool.name, 'writ-rescue-stuck');
+    assert.equal(writRescueStuckTool.permission, 'write');
   });
 });
