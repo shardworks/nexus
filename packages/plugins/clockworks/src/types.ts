@@ -19,8 +19,10 @@
 // TypeScript treats the `declare module` block below as an
 // external-module augmentation (vs. a global augmentation). Without at
 // least one import from the target module TS2664 fires at compile time.
-import type {} from '@shardworks/nexus-core';
+import type { Kit } from '@shardworks/nexus-core';
 import type { BookEntry } from '@shardworks/stacks-apparatus';
+
+import type { RelayDefinition } from './relay.ts';
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -160,9 +162,10 @@ export interface EventDispatchDoc extends BookEntry {
  * The Clockworks' runtime API — retrieved via
  * `guild().apparatus<ClockworksApi>('clockworks')`.
  *
- * The only write path in this commission is `emit()`. The dispatcher,
- * runner, standing-order engine, and CDC auto-wiring arrive in later
- * commissions and will extend this surface as needed.
+ * This commission extends the surface with both `emit()` (the trusted
+ * write path) and `resolveRelay()` (the registry read method). The
+ * dispatcher, runner, standing-order engine, and CDC auto-wiring arrive
+ * in later commissions and will extend this surface as needed.
  */
 export interface ClockworksApi {
   /**
@@ -185,13 +188,54 @@ export interface ClockworksApi {
    * @throws        When `payload` cannot be JSON-serialized.
    */
   emit(name: string, payload: unknown, emitter: string): Promise<string>;
+
+  /**
+   * Look up a registered relay by name.
+   *
+   * Returns the `RelayDefinition` registered under `name` — sourced from
+   * either a standalone kit's `relays` contribution or the apparatus's
+   * own `supportKit.relays` slot — or `undefined` when no relay with that
+   * name is registered. The dispatcher (future task) calls this when
+   * resolving a standing order's `run:` field.
+   *
+   * Lookup is exact-match on the registration name; no prefix or case
+   * folding is applied.
+   */
+  resolveRelay(name: string): RelayDefinition | undefined;
 }
 
 /**
  * Kit contribution interface for plugins that extend the Clockworks.
  *
- * Intentionally empty in this commission. Task 2 (the relay SDK) owns
- * the `relays` contribution shape.
+ * Plugins contribute relays — named event-handler functions resolved by
+ * the dispatcher via a standing order's `run:` field — by exporting a
+ * kit whose `relays` field is an array of `RelayDefinition` values
+ * produced by the `relay()` factory.
+ *
+ * Inherits `requires` / `recommends` from the framework `Kit` base so a
+ * kit can declare that its relay handlers depend on other apparatuses
+ * being installed.
+ *
+ * @example
+ * ```typescript
+ * import { relay } from '@shardworks/clockworks-apparatus';
+ *
+ * export default {
+ *   recommends: ['nexus-clockworks'],
+ *   relays: [
+ *     relay({
+ *       name: 'log-event',
+ *       handler: async (event) => { console.log(event.name); },
+ *     }),
+ *   ],
+ * } satisfies ClockworksKit;
+ * ```
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface ClockworksKit {}
+export interface ClockworksKit extends Kit {
+  /**
+   * Relay handlers contributed under the `relays` kit type. Optional —
+   * a `ClockworksKit` may carry only `requires` / `recommends` from the
+   * framework base, in which case it is a metadata-only contribution.
+   */
+  relays?: RelayDefinition[];
+}

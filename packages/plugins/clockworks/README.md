@@ -78,6 +78,15 @@ validator, so framework callers can record reserved-namespace and
 writ-lifecycle events that animas cannot. Use it from inside plugins
 that own a namespace; use the `signal` tool for everything else.
 
+### `ClockworksApi.resolveRelay(name): RelayDefinition | undefined`
+
+Looks up a registered relay by name. Returns the `RelayDefinition`
+registered under `name` — sourced from either a standalone kit's
+`relays` contribution or the apparatus's own `supportKit.relays` slot —
+or `undefined` when no relay with that name is registered. The
+dispatcher (future task) calls this when resolving a standing order's
+`run:` field.
+
 ---
 
 ## Tools
@@ -120,13 +129,66 @@ Both are owned by plugin id `clockworks`.
 
 ---
 
+## Authoring relays
+
+A relay is a named event-handler function the Clockworks dispatches
+to when a standing order's `run:` field matches. Use the `relay()`
+factory to define one and contribute it under a kit's `relays` field:
+
+```typescript
+import { relay } from '@shardworks/clockworks-apparatus';
+
+export default {
+  relays: [
+    relay({
+      name: 'log-event',
+      description: 'Write the event to stdout.',
+      handler: async (event, { home, params }) => {
+        console.log(`[${home}] ${event.name}`, event.payload, params);
+      },
+    }),
+  ],
+};
+```
+
+Relays may be sync or async — the dispatcher always awaits. Failure is
+signalled by throwing; return values are ignored. The `relay()` factory
+validates `name` and `handler` fail-loud at module load: a missing or
+malformed relay throws synchronously rather than silently registering a
+broken handler.
+
+### Registry semantics
+
+The registry merges relays from every standalone kit's `relays`
+contribution and from the apparatus's own `supportKit.relays`. On
+duplicate names, the **first writer wins** and a warning is logged in
+the lattice format:
+
+```
+[clockworks] Kit "<pluginId>" relays: relay name "<name>" is already
+registered by kit "<existing>" — duplicate skipped.
+```
+
+Standalone kits are wired ahead of apparatus supportKits, so a user kit
+can override a stdlib relay simply by registering one with the same
+name. Malformed contributions (a non-array `relays` field, or an
+individual entry that fails `isRelayDefinition`) are warn-and-skip —
+they cannot crash startup.
+
+The registry is rebuilt from scratch on every `start()` call so a future
+daemon-restart cycle stays idempotent.
+
+---
+
 ## Exports
 
 - `createClockworks` — apparatus factory.
 - `clockStatus`, `clockList`, `signal` — the registered tools.
+- `relay`, `isRelayDefinition` — relay SDK factory and structural type guard.
 - `validateSignal`, `RESERVED_EVENT_NAMESPACES`,
   `WRIT_LIFECYCLE_SUFFIXES` — the shared signal validator (re-used by
   the framework CLI's hand-written `nsg signal` command).
 - Types: `ClockworksApi`, `ClockworksKit`, `ClockworksConfig`,
-  `EventDeclaration`, `StandingOrder`, `EventDoc`, `EventDispatchDoc`.
+  `EventDeclaration`, `StandingOrder`, `EventDoc`, `EventDispatchDoc`,
+  `RelayDefinition`, `RelayContext`, `GuildEvent`.
 - The module augments `GuildConfig` with `clockworks?: ClockworksConfig`.

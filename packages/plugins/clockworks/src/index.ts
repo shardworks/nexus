@@ -22,6 +22,16 @@ export {
   type StandingOrder,
 } from './types.ts';
 
+// Relay authoring SDK — the public contract third-party kits use to
+// contribute relay handlers under the `relays` kit type.
+export {
+  isRelayDefinition,
+  relay,
+  type GuildEvent,
+  type RelayContext,
+  type RelayDefinition,
+} from './relay.ts';
+
 export { createClockworks } from './clockworks.ts';
 
 // Re-export the tools so integration tests (and scripted surfaces that

@@ -1,10 +1,11 @@
 /**
  * The Clockworks — event substrate and standing-order engine (Pillar 5).
  *
- * This commission ships the skeleton only. The factory:
+ * This commission ships the relay registry plumbing on top of the
+ * skeleton. The factory:
  *
  *   - Declares plugin id `clockworks` (derived from the package name).
- *   - Requires the Stacks; consumes the future `relays` kit vocabulary.
+ *   - Requires the Stacks; consumes the `relays` kit vocabulary.
  *   - Publishes two books (`events`, `event_dispatches`) under owner id
  *     `clockworks`, with the index set anticipated by the runner /
  *     status query patterns in `docs/architecture/clockworks.md`.
@@ -12,16 +13,23 @@
  *     books so downstream commissions (task 3 `emit()`, task 4 runner,
  *     task 8 CDC auto-wiring, task 10 daemon) can read/write them
  *     immediately.
- *   - Provides an empty `ClockworksApi` that downstream tasks extend.
+ *   - Builds a name-keyed relay registry from `ctx.kits('relays')`
+ *     entries merged with the apparatus's own `supportKit.relays`. The
+ *     registry is closure-scoped, cleared at the top of every `start()`
+ *     for idempotent restart semantics, and uses first-writer-wins on
+ *     duplicate names with a lattice-format warning. Reachable from the
+ *     api via `resolveRelay(name)`.
  *
- * There is no runtime behavior here: no emission, no dispatch, no relay
- * invocation. `start()` only primes book handles; `stop()` is a no-op
- * — its shape exists so task 10's daemon teardown has a drop-in site.
+ * There is no dispatcher in this commission: nothing reads from the
+ * registry yet. `start()` primes the book handles and the registry;
+ * `stop()` is a no-op — its shape exists so task 10's daemon teardown
+ * has a drop-in site. Task 4 will add the dispatcher; task 5 will fill
+ * the currently-empty `supportKit.relays` slot with the summon relay.
  *
  * See: docs/architecture/clockworks.md
  */
 
-import type { Plugin, StartupContext } from '@shardworks/nexus-core';
+import type { KitEntry, Plugin, StartupContext } from '@shardworks/nexus-core';
 import { generateId, guild } from '@shardworks/nexus-core';
 import type { Book, StacksApi } from '@shardworks/stacks-apparatus';
 
@@ -31,16 +39,24 @@ import type {
   EventDoc,
 } from './types.ts';
 
+import { isRelayDefinition, type RelayDefinition } from './relay.ts';
 import { clockList, clockStatus, signal } from './tools/index.ts';
 
-// ── Kit contribution vocabulary (future) ────────────────────────────
+// ── Kit contribution vocabulary ─────────────────────────────────────
 
-// The `relays` kit type is contributed by task 2 (the relay SDK). The
-// Clockworks declares `consumes: ['relays']` now so the framework's
-// unconsumed-kit warning stays quiet once downstream kits start
-// contributing relays — even though the runtime consumer does not
-// exist yet. `consumes` is zero-cost advisory metadata.
+// The `relays` kit type carries plugin-contributed relay handlers. The
+// Clockworks declares `consumes: [RELAYS_KIT]` so the framework's
+// unconsumed-kit warning stays quiet, and resolves contributions during
+// `start()` into a name-keyed registry. The constant is load-bearing —
+// the existing test asserts the exact string.
 const RELAYS_KIT = 'relays';
+
+// ── Registry ────────────────────────────────────────────────────────
+
+interface RegisteredRelay {
+  pluginId: string;
+  relay: RelayDefinition;
+}
 
 export function createClockworks(): Plugin {
   // Handles primed during start() and retained for the factory's
@@ -49,6 +65,48 @@ export function createClockworks(): Plugin {
   let events: Book<EventDoc>;
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let dispatches: Book<EventDispatchDoc>;
+
+  // Registered relays keyed by `name` — first writer wins, with a
+  // warning for duplicates. Built fresh on every `start()` (so the
+  // future daemon-restart path stays idempotent).
+  const relays = new Map<string, RegisteredRelay>();
+
+  /**
+   * Register a single kit's `relays` contribution. Mirrors the lattice's
+   * factory-registration shape: warn-and-skip on a malformed top-level
+   * entry value, warn-and-skip per-element on a malformed relay, and
+   * warn-and-keep-first on a duplicate name. Survivable — a malformed
+   * third-party kit must not take down Clockworks.
+   */
+  function registerKitRelays(entry: KitEntry): void {
+    const { pluginId } = entry;
+    const raw = entry.value;
+    if (!Array.isArray(raw)) {
+      console.warn(
+        `[clockworks] Kit "${pluginId}" relays: expected an array, got ${typeof raw} — skipped.`,
+      );
+      return;
+    }
+
+    for (const candidate of raw) {
+      if (!isRelayDefinition(candidate)) {
+        console.warn(
+          `[clockworks] Kit "${pluginId}" relays: entry is not a valid RelayDefinition — skipped.`,
+        );
+        continue;
+      }
+      if (relays.has(candidate.name)) {
+        const existing = relays.get(candidate.name)!;
+        console.warn(
+          `[clockworks] Kit "${pluginId}" relays: relay name "${candidate.name}" is already registered by kit "${existing.pluginId}" — duplicate skipped.`,
+        );
+        continue;
+      }
+      relays.set(candidate.name, { pluginId, relay: candidate });
+    }
+  }
+
+  // ── API ────────────────────────────────────────────────────────
 
   const api: ClockworksApi = {
     async emit(name: string, payload: unknown, emitter: string): Promise<string> {
@@ -91,6 +149,11 @@ export function createClockworks(): Plugin {
       await events.put(doc);
       return id;
     },
+
+    resolveRelay(name: string): RelayDefinition | undefined {
+      const entry = relays.get(name);
+      return entry?.relay;
+    },
   };
 
   return {
@@ -123,9 +186,13 @@ export function createClockworks(): Plugin {
           },
         },
         tools: [clockStatus, clockList, signal],
+        // Reserved for task 5 (the summon relay). An empty array is a
+        // cleaner signal than omission and exercises the merge path
+        // through the registry-build code today.
+        relays: [] as RelayDefinition[],
       },
 
-      async start(_ctx: StartupContext): Promise<void> {
+      async start(ctx: StartupContext): Promise<void> {
         const g = guild();
         const stacks = g.apparatus<StacksApi>('stacks');
 
@@ -137,6 +204,15 @@ export function createClockworks(): Plugin {
         // Reference the dispatches handle to satisfy the unused-binding
         // check until the runner / dispatcher commission claims it.
         void dispatches;
+
+        // Rebuild the relay registry from scratch. Arbor wires standalone
+        // kits ahead of apparatus supportKits, so honoring the returned
+        // order naturally gives user-kit relays priority over
+        // stdlib ones contributed by `supportKit.relays`.
+        relays.clear();
+        for (const entry of ctx.kits(RELAYS_KIT)) {
+          registerKitRelays(entry);
+        }
       },
 
       stop(): void {
