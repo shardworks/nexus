@@ -63,7 +63,7 @@ import {
   type DispatchSummary,
 } from './dispatcher.ts';
 import { isRelayDefinition, type RelayDefinition } from './relay.ts';
-import { clockList, clockStatus, signal } from './tools/index.ts';
+import { signal } from './tools/index.ts';
 
 // ── Kit contribution vocabulary ─────────────────────────────────────
 
@@ -253,7 +253,7 @@ export function createClockworks(): Plugin {
             ],
           },
         },
-        tools: [clockStatus, clockList, signal],
+        tools: [signal],
         // Reserved for task 5 (the summon relay). An empty array is a
         // cleaner signal than omission and exercises the merge path
         // through the registry-build code today.

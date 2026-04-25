@@ -38,7 +38,7 @@ export { createClockworks } from './clockworks.ts';
 // Re-export the tools so integration tests (and scripted surfaces that
 // run them programmatically) can import them without reaching into the
 // package's internals.
-export { clockList, clockStatus, signal } from './tools/index.ts';
+export { signal } from './tools/index.ts';
 
 // Re-export the shared signal validator so the framework CLI's
 // hand-written `nsg signal` command can call the exact same three-layer

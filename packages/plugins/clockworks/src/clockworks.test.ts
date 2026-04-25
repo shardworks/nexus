@@ -209,23 +209,22 @@ describe('Clockworks — skeleton', () => {
     assert.equal(typeof api, 'object');
   });
 
-  it('wires clock-* stub tools and the signal tool into supportKit.tools', () => {
+  it('wires the signal tool into supportKit.tools (post stub-tool removal)', () => {
     const plugin = createClockworks();
     if (!('apparatus' in plugin)) throw new Error('clockworks must be apparatus');
     const toolsBag = plugin.apparatus.supportKit?.tools;
     assert.ok(Array.isArray(toolsBag), 'supportKit.tools must be an array');
     const tools = toolsBag as unknown[];
-    assert.equal(tools.length, 3, 'exactly three tools wired');
+    // The `clock-list` and `clock-status` placeholder stubs are deleted —
+    // the real `nsg clock list/tick/run` surface lives in the framework
+    // CLI as a hand-written command. Only the signal tool remains here.
+    assert.equal(tools.length, 1, 'exactly one tool wired');
     assert.ok(
       tools.every((t) => isToolDefinition(t)),
       'every entry must pass isToolDefinition',
     );
     const names = tools.map((t) => (t as { name: string }).name).sort();
-    assert.deepEqual(
-      names,
-      ['clock-list', 'clock-status', 'signal'],
-      'auto-grouping depends on both clock-* tools sharing the prefix; signal stays flat',
-    );
+    assert.deepEqual(names, ['signal']);
   });
 
   it('declares the expected apparatus shape (requires stacks + clerk, consumes relays)', () => {

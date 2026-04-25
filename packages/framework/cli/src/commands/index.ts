@@ -19,6 +19,7 @@ import start from './start.ts';
 import stop from './stop.ts';
 import { pluginList, pluginInstall, pluginRemove, pluginUpgrade } from './plugin.ts';
 import { buildSignalCommand } from './signal.ts';
+import { buildClockCommand } from './clock.ts';
 
 /** All framework commands, typed as the base ToolDefinition for uniform handling. */
 export const frameworkCommands = [
@@ -43,8 +44,10 @@ export const frameworkCommands = [
  * factory that returns a fully-configured Command — the CLI registers
  * them alongside the auto-built framework and plugin commands.
  *
- * Currently: `nsg signal` (see `signal.ts` for the rationale).
+ * Currently: `nsg signal`, `nsg clock` (see those files for the
+ * rationale on each).
  */
 export const customFrameworkCommands: Array<() => Command> = [
   buildSignalCommand,
+  buildClockCommand,
 ];

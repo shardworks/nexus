@@ -390,8 +390,7 @@ describe('buildSignalCommand', () => {
 
 describe('customFrameworkCommands export', () => {
   it('includes the signal command builder', () => {
-    assert.equal(customFrameworkCommands.length, 1);
-    const cmd = customFrameworkCommands[0]();
-    assert.equal(cmd.name(), 'signal');
+    const names = customFrameworkCommands.map((b) => b().name());
+    assert.ok(names.includes('signal'));
   });
 });
