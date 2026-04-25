@@ -43,8 +43,8 @@ describe('Astrolabe supportKit shape', () => {
     assert.deepEqual(apparatus.requires, ['stacks', 'clerk']);
   });
 
-  it('declares recommends: spider, loom, fabricator, oculus, ratchet, animator', () => {
-    assert.deepEqual(apparatus.recommends, ['spider', 'loom', 'fabricator', 'oculus', 'ratchet', 'animator']);
+  it('declares recommends: spider, loom, fabricator, oculus, ratchet, animator, clockworks', () => {
+    assert.deepEqual(apparatus.recommends, ['spider', 'loom', 'fabricator', 'oculus', 'ratchet', 'animator', 'clockworks']);
   });
 
   it('does not declare consumes', () => {

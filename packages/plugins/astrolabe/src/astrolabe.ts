@@ -55,6 +55,38 @@ function resolvePatronRole(): string {
   return typeof config.patronRole === 'string' ? config.patronRole.trim() : '';
 }
 
+/**
+ * Default predicted-files soft-warn threshold when `astrolabe
+ * .predictedFilesThreshold` is unset on `guild.json`. The brief landed
+ * on 15 as the v0 cliff: empirical analysis showed a 3.2× cost step at
+ * 20 files, with 15 chosen as a soft-warn level a few steps below the
+ * cliff so subscribers can act before the cost lands.
+ */
+const DEFAULT_PREDICTED_FILES_THRESHOLD = 15;
+
+/**
+ * Resolves the configured predicted-files-touched soft-warn threshold.
+ * Returns the default of 15 when unset; throws a clear configuration
+ * error when the value is present but malformed (wrong type, NaN,
+ * non-integer, zero, or negative). Fail-loud per D5 — a typo in the
+ * operator's threshold must not silently fall back to the default.
+ */
+function resolvePredictedFilesThreshold(): number {
+  const config = resolveAstrolabeConfig();
+  const raw = config.predictedFilesThreshold;
+  if (raw === undefined || raw === null) {
+    return DEFAULT_PREDICTED_FILES_THRESHOLD;
+  }
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || !Number.isInteger(raw) || raw <= 0) {
+    throw new Error(
+      `astrolabe.predictedFilesThreshold must be a positive integer; got ${JSON.stringify(raw)} (${typeof raw}). ` +
+      `Either remove the key from guild.json to use the default of ${DEFAULT_PREDICTED_FILES_THRESHOLD}, ` +
+      `or supply an integer ≥ 1.`,
+    );
+  }
+  return raw;
+}
+
 // ── Factory ──────────────────────────────────────────────────────────
 
 export function createAstrolabe(): Plugin {
@@ -273,7 +305,7 @@ export function createAstrolabe(): Plugin {
   return {
     apparatus: {
       requires: ['stacks', 'clerk'],
-      recommends: ['spider', 'loom', 'fabricator', 'oculus', 'ratchet', 'animator'],
+      recommends: ['spider', 'loom', 'fabricator', 'oculus', 'ratchet', 'animator', 'clockworks'],
 
       supportKit: {
         books: {
@@ -396,5 +428,6 @@ export function createAstrolabe(): Plugin {
   };
 }
 
-// Export resolveAstrolabeConfig / resolvePatronRole for external use (lazy config access)
-export { resolveAstrolabeConfig, resolvePatronRole };
+// Export resolveAstrolabeConfig / resolvePatronRole / resolvePredictedFilesThreshold
+// for external use (lazy config access).
+export { resolveAstrolabeConfig, resolvePatronRole, resolvePredictedFilesThreshold };

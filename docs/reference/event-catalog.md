@@ -67,6 +67,14 @@ This asymmetry is a feature: the framework controls writ lifecycle events; anima
 | `standing-order.failed` | `{ standingOrder, triggeringEvent: { id, name }, error }` | `framework` | A standing order execution fails (engine throws or anima session fails) |
 | `schedule.fired` | `{ standingOrder, orderIndex, fireTime }` | `framework` | The Clockworks scheduler fires a time-driven standing order — emitted once per fire by the daemon's scheduler pass |
 
+### Astrolabe Events
+
+| Event | Payload | Emitter | When |
+|-------|---------|---------|------|
+| `astrolabe.plan.files-over-threshold` | `{ planId, count, threshold }` | `framework` | The `astrolabe.plan-finalize` engine emits this exactly once per plan when the predicted-files count from the spec's `<task-manifest>` strictly exceeds the configured `astrolabe.predictedFilesThreshold` (default 15). The patch transitioning the plan to `completed` has already landed; the emission is best-effort and a Clockworks failure logs a `[astrolabe]` `console.warn` breadcrumb without failing the engine. |
+
+**Soft-warn semantics:** `astrolabe.plan.files-over-threshold` is a measurement signal, not a gate. The framework does not halt the pipeline; subscribers (sanctum-side instrumentation, future auto-decompose) decide what to do with it. The event is **not** declared in any framework-shipped `guild.json` — wiring a standing order to react to it is the responsibility of whichever guild operationalizes the signal.
+
 **Loop guard:** If a `standing-order.failed` event was itself triggered by another `standing-order.failed` event, the Clockworks runner skips processing to prevent infinite cascades.
 
 **Scheduled fires:** The scheduler pass emits each `schedule.fired` row with `processed: true` so the event-sweep does not re-fire it as if it were a new operator-emitted event. The row is the durable record of the fire; the matching `event_dispatches` row records the relay invocation.

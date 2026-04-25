@@ -249,6 +249,24 @@ describe('plan-finalize engine', () => {
     unlink: async () => {},
   };
 
+  // Clockworks mock — installed when a test wires it. Records every emit
+  // for assertion. The `failNext` toggle simulates an emit error so we can
+  // verify best-effort `console.warn` behaviour and patch durability.
+  type EmitCall = { name: string; payload: unknown; emitter: string };
+  const clockworksEmitCalls: EmitCall[] = [];
+  let clockworksFailNextEmit = false;
+  const mockClockworksApi = {
+    emit: async (name: string, payload: unknown, emitter: string): Promise<string> => {
+      clockworksEmitCalls.push({ name, payload, emitter });
+      if (clockworksFailNextEmit) {
+        clockworksFailNextEmit = false;
+        throw new Error('simulated clockworks emit failure');
+      }
+      return `e-fake-${clockworksEmitCalls.length}`;
+    },
+    resolveRelay: () => undefined,
+  };
+
   function buildStartupCtx(): StartupContext {
     return { on() {}, kits() { return []; } };
   }
@@ -261,7 +279,14 @@ describe('plan-finalize engine', () => {
     };
   }
 
-  function setupGuild(): void {
+  interface SetupOptions {
+    /** Astrolabe-scoped guildConfig overrides (e.g. predictedFilesThreshold). */
+    astrolabeConfig?: { predictedFilesThreshold?: unknown };
+    /** When true, register the Clockworks mock under the apparatus map. */
+    withClockworks?: boolean;
+  }
+
+  function setupGuild(options: SetupOptions = {}): void {
     memBackend = new MemoryBackend();
     const stacksPlugin = createStacksApparatus(memBackend);
     const apparatusMap = new Map<string, unknown>();
@@ -270,6 +295,9 @@ describe('plan-finalize engine', () => {
       name: 'test-guild',
       nexus: '0.0.0',
       plugins: [],
+      ...(options.astrolabeConfig
+        ? { astrolabe: options.astrolabeConfig as Record<string, unknown> }
+        : {}),
     };
 
     const fakeGuild: Guild = {
@@ -303,11 +331,17 @@ describe('plan-finalize engine', () => {
     plansBook = stacks.book<PlanDoc>('astrolabe', 'plans');
     apparatusMap.set('clerk', mockClerkApi);
 
+    if (options.withClockworks) {
+      apparatusMap.set('clockworks', mockClockworksApi);
+    }
+
     engine = createPlanFinalizeEngine(() => plansBook);
     clerkMockCalls.length = 0;
+    clockworksEmitCalls.length = 0;
+    clockworksFailNextEmit = false;
   }
 
-  beforeEach(() => { setupGuild(); });
+  beforeEach(() => { setupGuild({ withClockworks: true }); });
   afterEach(() => { clearGuild(); });
 
   it('yields spec, patches plan to completed, and does NOT post any writ or link', async () => {
@@ -387,6 +421,262 @@ describe('plan-finalize engine', () => {
       engine.run({ planId: 'w-does-not-exist' }, buildRunCtx()),
       /Plan "w-does-not-exist" not found/,
     );
+  });
+
+  // ── Predicted-files count + soft-warn emission ──────────────────────
+
+  /**
+   * Builds a spec containing a `<task-manifest>` with N distinct path
+   * tokens spread across one task per path. Tokens are deterministic so
+   * the assertions can compare exact counts.
+   */
+  function specWithNPaths(n: number): string {
+    const files = Array.from({ length: n }, (_, i) => `<files>packages/zone/file-${i + 1}.ts</files>`);
+    return `# Spec\n\n<task-manifest>\n  <task id="t1">\n    ${files.join('\n    ')}\n  </task>\n</task-manifest>\n`;
+  }
+
+  it('records manifestFilesCount: N when the manifest has N distinct paths', async () => {
+    const now = new Date().toISOString();
+    await plansBook.put({
+      id: 'w-pf-count',
+      codex: 'test-codex',
+      status: 'writing',
+      spec: specWithNPaths(7),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await engine.run({ planId: 'w-pf-count' }, buildRunCtx());
+
+    const patched = await plansBook.get('w-pf-count');
+    assert.equal(patched?.status, 'completed');
+    assert.equal(patched?.manifestFilesCount, 7);
+  });
+
+  it('records manifestFilesCount: 0 when the spec contains no <task-manifest>', async () => {
+    const now = new Date().toISOString();
+    await plansBook.put({
+      id: 'w-pf-no-manifest',
+      codex: 'test-codex',
+      status: 'writing',
+      spec: '# Spec\n\nNo manifest in this one.',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await engine.run({ planId: 'w-pf-no-manifest' }, buildRunCtx());
+
+    const patched = await plansBook.get('w-pf-no-manifest');
+    assert.equal(patched?.status, 'completed');
+    assert.equal(patched?.manifestFilesCount, 0);
+    // No emission for zero counts.
+    assert.equal(clockworksEmitCalls.length, 0);
+  });
+
+  it('emits exactly one files-over-threshold event when count strictly exceeds the default threshold of 15', async () => {
+    const now = new Date().toISOString();
+    await plansBook.put({
+      id: 'w-pf-over',
+      codex: 'test-codex',
+      status: 'writing',
+      spec: specWithNPaths(20),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await engine.run({ planId: 'w-pf-over' }, buildRunCtx());
+
+    // The patch landed first.
+    const patched = await plansBook.get('w-pf-over');
+    assert.equal(patched?.status, 'completed');
+    assert.equal(patched?.manifestFilesCount, 20);
+
+    // Exactly one emission with the prescribed payload.
+    assert.equal(clockworksEmitCalls.length, 1);
+    assert.equal(clockworksEmitCalls[0].name, 'astrolabe.plan.files-over-threshold');
+    assert.equal(clockworksEmitCalls[0].emitter, 'framework');
+    assert.deepEqual(clockworksEmitCalls[0].payload, {
+      planId: 'w-pf-over',
+      count: 20,
+      threshold: 15,
+    });
+  });
+
+  it('does NOT emit when count is exactly at the threshold (strict greater-than per D9)', async () => {
+    const now = new Date().toISOString();
+    await plansBook.put({
+      id: 'w-pf-at',
+      codex: 'test-codex',
+      status: 'writing',
+      spec: specWithNPaths(15),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await engine.run({ planId: 'w-pf-at' }, buildRunCtx());
+
+    const patched = await plansBook.get('w-pf-at');
+    assert.equal(patched?.manifestFilesCount, 15);
+    assert.equal(clockworksEmitCalls.length, 0);
+  });
+
+  it('does NOT emit when count is below the threshold', async () => {
+    const now = new Date().toISOString();
+    await plansBook.put({
+      id: 'w-pf-below',
+      codex: 'test-codex',
+      status: 'writing',
+      spec: specWithNPaths(5),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await engine.run({ planId: 'w-pf-below' }, buildRunCtx());
+
+    const patched = await plansBook.get('w-pf-below');
+    assert.equal(patched?.manifestFilesCount, 5);
+    assert.equal(clockworksEmitCalls.length, 0);
+  });
+
+  it('honours a custom predictedFilesThreshold from guild.json', async () => {
+    // Re-setup with a custom threshold of 3 — and Clockworks installed.
+    clearGuild();
+    setupGuild({
+      withClockworks: true,
+      astrolabeConfig: { predictedFilesThreshold: 3 },
+    });
+
+    const now = new Date().toISOString();
+    await plansBook.put({
+      id: 'w-pf-custom',
+      codex: 'test-codex',
+      status: 'writing',
+      spec: specWithNPaths(5),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await engine.run({ planId: 'w-pf-custom' }, buildRunCtx());
+
+    assert.equal(clockworksEmitCalls.length, 1);
+    assert.deepEqual(clockworksEmitCalls[0].payload, {
+      planId: 'w-pf-custom',
+      count: 5,
+      threshold: 3,
+    });
+  });
+
+  it('throws fail-loud when predictedFilesThreshold is malformed', async () => {
+    // Re-setup with a malformed threshold (negative).
+    clearGuild();
+    setupGuild({
+      withClockworks: true,
+      astrolabeConfig: { predictedFilesThreshold: -1 },
+    });
+
+    const now = new Date().toISOString();
+    await plansBook.put({
+      id: 'w-pf-malformed',
+      codex: 'test-codex',
+      status: 'writing',
+      spec: specWithNPaths(20),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await assert.rejects(
+      engine.run({ planId: 'w-pf-malformed' }, buildRunCtx()),
+      /predictedFilesThreshold must be a positive integer/,
+    );
+  });
+
+  it('completes successfully when Clockworks is not installed (soft-dep contract)', async () => {
+    // Re-setup without the clockworks mock in the apparatus map.
+    clearGuild();
+    setupGuild({ withClockworks: false });
+
+    const now = new Date().toISOString();
+    await plansBook.put({
+      id: 'w-pf-no-cw',
+      codex: 'test-codex',
+      status: 'writing',
+      spec: specWithNPaths(20), // would emit if clockworks were installed
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const result = await engine.run({ planId: 'w-pf-no-cw' }, buildRunCtx());
+
+    assert.equal(result.status, 'completed');
+    const patched = await plansBook.get('w-pf-no-cw');
+    assert.equal(patched?.status, 'completed');
+    assert.equal(patched?.manifestFilesCount, 20);
+    // Without Clockworks there is no event sink — but the engine must not
+    // throw nor leave the plan in an inconsistent state.
+    assert.equal(clockworksEmitCalls.length, 0);
+  });
+
+  it('does not roll back the patch when a Clockworks emit fails (best-effort)', async () => {
+    // Capture console.warn so we can assert the breadcrumb fired.
+    const warnCalls: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnCalls.push(args.map(a => String(a)).join(' '));
+    };
+
+    try {
+      clockworksFailNextEmit = true;
+
+      const now = new Date().toISOString();
+      await plansBook.put({
+        id: 'w-pf-emit-fail',
+        codex: 'test-codex',
+        status: 'writing',
+        spec: specWithNPaths(20),
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Engine must not throw despite the emit failure.
+      const result = await engine.run({ planId: 'w-pf-emit-fail' }, buildRunCtx());
+      assert.equal(result.status, 'completed');
+
+      // Patch still applied — the emit failure does not roll it back.
+      const patched = await plansBook.get('w-pf-emit-fail');
+      assert.equal(patched?.status, 'completed');
+      assert.equal(patched?.manifestFilesCount, 20);
+
+      // The emit was attempted exactly once (the throw counts as a call).
+      assert.equal(clockworksEmitCalls.length, 1);
+
+      // Breadcrumb fired with the [astrolabe] tag and the failure reason.
+      assert.equal(warnCalls.length, 1);
+      assert.match(warnCalls[0], /\[astrolabe\]/);
+      assert.match(warnCalls[0], /astrolabe\.plan\.files-over-threshold/);
+      assert.match(warnCalls[0], /simulated clockworks emit failure/);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it('preserves the no-clerk-call invariant across the new emission paths', async () => {
+    // Run the over-threshold emission path and re-check that no clerk
+    // method was invoked. Belt-and-braces: the emission introduces no new
+    // Clerk dependency.
+    const now = new Date().toISOString();
+    await plansBook.put({
+      id: 'w-pf-no-clerk',
+      codex: 'test-codex',
+      status: 'writing',
+      spec: specWithNPaths(20),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await engine.run({ planId: 'w-pf-no-clerk' }, buildRunCtx());
+
+    assert.deepEqual(clerkMockCalls, [],
+      'plan-finalize must not call any clerk method even when emitting events');
   });
 });
 

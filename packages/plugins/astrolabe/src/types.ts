@@ -53,6 +53,17 @@ export interface PlanDoc {
    * continue to deserialise and render correctly in the Astrolabe page.
    */
   generatedWritId?: string;
+  /**
+   * Count of distinct path tokens predicted by the spec's task-manifest
+   * `<files>` elements at planning time — recorded by the
+   * `astrolabe.plan-finalize` engine on every completed plan as the
+   * predicted-files-touched cost signal. Set to 0 when the spec contains
+   * no `<task-manifest>` block (or no recognisable path tokens). This is
+   * a measurement layer only — the framework records the signal; downstream
+   * subscribers (sanctum-side instrumentation, future auto-decompose) decide
+   * what to do with it.
+   */
+  manifestFilesCount?: number;
 
   createdAt: string;
   updatedAt: string;
@@ -169,6 +180,18 @@ export interface AstrolabeConfig {
    * patron's taste.
    */
   patronRole?: string;
+  /**
+   * Soft-warn threshold for the predicted-files cost signal. The
+   * `astrolabe.plan-finalize` engine emits the
+   * `astrolabe.plan.files-over-threshold` Clockworks event when a plan's
+   * `manifestFilesCount` strictly exceeds this value. Defaults to 15
+   * when unset. Must be a positive integer when supplied — the resolver
+   * fails loud on malformed values (wrong type, NaN, negative, zero,
+   * non-integer) so a typo cannot silently mask the operator's intent.
+   * The framework does not gate the pipeline on this signal; subscribers
+   * decide how to react.
+   */
+  predictedFilesThreshold?: number;
 }
 
 declare module '@shardworks/nexus-core' {

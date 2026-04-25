@@ -95,6 +95,9 @@ importers:
       '@shardworks/clerk-apparatus':
         specifier: workspace:*
         version: link:../clerk
+      '@shardworks/clockworks-apparatus':
+        specifier: workspace:*
+        version: link:../clockworks
       '@shardworks/fabricator-apparatus':
         specifier: workspace:*
         version: link:../fabricator
