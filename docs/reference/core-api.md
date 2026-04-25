@@ -398,34 +398,37 @@ Process a single event. If `eventId` is provided, processes that specific event.
 
 Process all pending events until the queue is empty. Loops because standing order failures may generate new events (`standing-order.failed`).
 
-### `clockStart(home, options?): ClockStartResult`
+### `clockStart(home, options?): Promise<ClockStartResult>`
 
-Start the clockworks daemon as a detached background process. The daemon polls the event queue at the specified interval and processes events automatically.
+Start the clockworks daemon as a detached background process. The daemon polls the event queue at the specified interval and processes events automatically. Re-execs the same `nsg` binary with `clock start --foreground` and pipes both stdout and stderr to a single append-mode `clock.log`. The returned promise resolves once the pidfile is present and the named pid is alive (~10s deadline) — "started" means "verified running". On timeout, the function tails `clock.log` to help debugging and throws.
 
 ```typescript
-clockStart(home, { interval: 2000 })
+await clockStart(home, { interval: 2000 })
 // => { pid: 12345, logFile: '/path/to/.nexus/clock.log' }
 ```
 
-Options: `{ interval?: number }` — polling interval in ms (default 2000). All options are optional. Throws if the daemon is already running.
+Options: `{ interval?: number }` — polling interval in ms (default 2000). Idempotent on the live-pid branch (returns the existing pid) and on the stale-pidfile branch (unlinks then continues).
 
-### `clockStop(home): ClockStopResult`
+### `clockStop(home): Promise<ClockStopResult>`
 
-Stop the running clockworks daemon. Sends SIGTERM and removes the PID file. Handles stale PID files gracefully.
+Stop the running clockworks daemon. Sends SIGTERM, polls for exit, escalates to SIGKILL after a 5s grace window, and unlinks the pidfile once the process is confirmed dead. Blocks until the daemon is verifiably dead.
 
 ```typescript
-clockStop(home)
+await clockStop(home)
 // => { pid: 12345, stopped: true }
 ```
 
+Throws when no pidfile exists, when the pidfile points at a dead pid (the function still cleans the pidfile up before throwing), or when the process refuses to exit even after SIGKILL.
+
 ### `clockStatus(home): ClockStatus`
 
-Check whether the clockworks daemon is running. Cleans up stale PID files automatically.
+Check whether the clockworks daemon is running. Read-mostly: when the pidfile points at a dead pid, the function surfaces `stalePidfile: true` in the return shape and unlinks the pidfile as a side effect. A subsequent call is silent on staleness. Uptime is computed from the pidfile birthtime (`fs.statSync(...).birthtimeMs`) — wall-clock since the pidfile was created.
 
 ```typescript
 clockStatus(home)
 // => { running: true, pid: 12345, logFile: '...', uptime: 360000 }
 // or { running: false }
+// or { running: false, stalePidfile: true }   // first call after a kill -9
 ```
 
 ### Types
@@ -437,8 +440,8 @@ clockStatus(home)
 | `ClockRunResult` | `{ processed: TickResult[], totalEvents }` |
 | `ClockStartOptions` | `{ interval?: number }` |
 | `ClockStartResult` | `{ pid, logFile }` |
-| `ClockStopResult` | `{ pid, stopped }` |
-| `ClockStatus` | `{ running, pid?, logFile?, uptime? }` |
+| `ClockStopResult` | `{ pid, stopped: true }` |
+| `ClockStatus` | `{ running, pid?, logFile?, uptime?, stalePidfile? }` |
 
 ---
 

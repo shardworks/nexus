@@ -189,21 +189,27 @@ No daemon required. The operator decides when and how much the Clockworks runs.
 
 #### Phase 2 — daemon
 
-A background daemon that polls the event queue and processes events automatically.
+A background daemon polls the event queue and processes events automatically. Phase 2 is shipped — see commission c-moe3qifr.
 
 | Command | Behavior |
 |---|---|
-| `nsg clock start [--interval <ms>]` | Start the daemon as a detached background process (default interval: 2000ms) |
-| `nsg clock stop` | Send SIGTERM and clean up the PID file |
-| `nsg clock status` | Show whether the daemon is running, with PID, uptime, and log file path |
+| `nsg clock start [--interval <ms>] [--foreground|-f]` | Start the daemon as a detached background process (default interval: 2000ms). `--foreground` runs the inline daemon body in this process and is the re-exec target the detached spawn uses. |
+| `nsg clock stop` | Send SIGTERM and clean up the PID file. Escalates to SIGKILL after a 5s grace window. |
+| `nsg clock status [--json]` | Show whether the daemon is running, with PID, uptime, and log file path. `--json` emits the structured payload. |
 
-The daemon spawns as a detached child process. It writes a PID file at `<home>/.nexus/clock.pid` and logs to `<home>/.nexus/clock.log` (append mode). Only event-processing cycles are logged; idle polls are silent.
+The daemon spawns as a detached child process by re-execing the same `nsg` binary with `clock start --foreground --guild-root <home>` (plus `--interval <ms>` if supplied). It writes a PID file at `<home>/.nexus/clock.pid` and logs to `<home>/.nexus/clock.log` (append mode). Both stdout and stderr land in the same log file. The detached parent calls `child.unref()` so closing the parent terminal does not take the daemon down.
 
-The daemon registers the session provider at startup, enabling the summon relay to dispatch anima sessions autonomously.
+The startup banner names the pid, polling interval, and log path; the shutdown banner records the signal received. Per-dispatch lines emit on active ticks in the format `<ISO timestamp> <eventId> <eventName> [<handlerName>] <status> <durationMs>ms[: <error>]`. Idle ticks are silent. When `processEvents` itself throws, the loop logs `<ISO timestamp> [error] processEvents threw: <reason>` and continues at the next interval — the daemon stays unattended.
 
-Phase 1 commands (`list`, `tick`, `run`) continue to work alongside the daemon. If the daemon is running, `tick` and `run` print a warning but still execute — SQLite handles concurrent access safely.
+The poll loop sleeps abortably between ticks (`Promise.race(timeout, shutdownDeferred)`) so SIGTERM is acted on immediately. Per-tick `processEvents` runs as a full drain — no `max` cap — and the post-completion sleep schedules the next tick after the previous one returns.
 
-Core API: `clockStart(home, options?)`, `clockStop(home)`, `clockStatus(home)`. The `clock-status` MCP tool exposes daemon status to animas.
+Phase 1 commands (`list`, `tick`, `run`) continue to work alongside the daemon. If the daemon is running, `tick` and `run` emit a one-line coexistence warning to stderr and still execute — SQLite handles concurrent access safely.
+
+`clockStatus(home)` cleans up stale pidfiles as a side effect: a pidfile pointing at a dead pid surfaces in the return shape as `stalePidfile: true` and is unlinked, so subsequent calls are silent on staleness.
+
+Core API: `clockStart(home, options?)`, `clockStop(home)`, `clockStatus(home)`, plus `runForegroundDaemon(...)` (the inline daemon body, with every dependency injected for tests) and `runForegroundDaemonFromGuild(...)` (the live-guild convenience wrapper the CLI re-exec target calls). The `clock-status` MCP tool exposes daemon status to animas.
+
+The two-daemon coexistence with `nsg start` (the guild daemon) is intentional. Different pidfiles (`daemon.pid` vs `clock.pid`), different log files, different lifecycles. SQLite handles concurrent access from both.
 
 ---
 

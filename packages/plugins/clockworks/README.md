@@ -5,24 +5,29 @@ and standing-order engine: declares events, accepts emissions, and fans
 them out to registered handlers (relays, summons, briefs).
 
 **Status:** Write path, event-triggered dispatcher, CDC auto-wiring,
-the manual operator CLI, AND framework-event emission from real
-lifecycle activity are all live. The Clockworks exposes
-`ClockworksApi.emit` for trusted framework callers, a validated
-`signal` tool for animas (with an operator-facing `nsg signal` CLI
-counterpart), `ClockworksApi.processEvents()` — the bulk-drain
-dispatcher that resolves matching standing orders, invokes their
-relays, persists one dispatch row per invocation, and flips the
-event's `processed` flag — and, at startup, registers a Phase-2 CDC
-watcher on every plugin-declared book (other than `clockworks/events`
-itself) that re-emits each row create/update/delete as a
+the manual operator CLI, framework-event emission from real
+lifecycle activity, AND the unattended Clockworks daemon are all
+live. The Clockworks exposes `ClockworksApi.emit` for trusted
+framework callers, a validated `signal` tool for animas (with an
+operator-facing `nsg signal` CLI counterpart),
+`ClockworksApi.processEvents()` — the bulk-drain dispatcher that
+resolves matching standing orders, invokes their relays, persists
+one dispatch row per invocation, and flips the event's `processed`
+flag — and, at startup, registers a Phase-2 CDC watcher on every
+plugin-declared book (other than `clockworks/events` itself) that
+re-emits each row create/update/delete as a
 `book.<ownerId>.<book>.<verb>` event with emitter `'framework'`.
 Startup also registers a CDC observer on `clerk/writs` that emits
 writ-lifecycle (`{type}.{ready|completed|stuck|failed}`) and
 root-mandate `commission.*` events as writs transition, and emits a
 one-shot `guild.initialized` the first time a guild comes up. The
 operator-facing `nsg clock list/tick/run` CLI composes on top of
-`processEvents()`. The unattended daemon and cron scheduling are
-still to come.
+`processEvents()`. The daemon (`nsg clock start/stop/status`,
+plus the matching `clockStart` / `clockStop` / `clockStatus` core
+API and the anima-callable `clock-status` MCP tool) polls the events
+queue at a configurable interval and drains dispatches without an
+operator at the keyboard. Cron-style time-based scheduling is still
+to come.
 
 See also: [`docs/architecture/clockworks.md`](../../../docs/architecture/clockworks.md).
 
@@ -265,6 +270,11 @@ books.
   `ClockworksApi.emit` with `emitter` defaulting to `'anima'`.
   `callableBy: ['anima']` — patron callers go through `nsg signal`
   instead.
+- `clock-status` — anima-facing read of the Clockworks daemon status.
+  Parameterless. Returns `{ running, pid?, logFile?, uptime?,
+  stalePidfile? }` — the same payload shape as `nsg clock status
+  --json`. `callableBy: ['anima']` — patron callers go through `nsg
+  clock status` instead.
 
 ---
 
@@ -342,6 +352,9 @@ nsg signal <name> [--payload '<json>']
 nsg clock list [--include-processed] [--limit <n>]
 nsg clock tick [id]
 nsg clock run
+nsg clock start [--interval <ms>] [--foreground|-f]
+nsg clock stop
+nsg clock status [--json]
 ```
 
 The hand-written `nsg signal` command shares the same three-layer
@@ -349,9 +362,7 @@ validation as the `signal` tool but passes `'operator'` as the emitter
 (per commission decision D4). The `--payload` flag accepts a JSON
 string; omit it to record a `null` payload.
 
-`nsg clock` is the operator surface for the event queue (Phase 1 in
-[`docs/architecture/clockworks.md`](../../../docs/architecture/clockworks.md)) —
-manual control before the unattended daemon lands:
+`nsg clock` is the operator surface for the event queue:
 
 - `nsg clock list` — print pending events in id order. With
   `--include-processed`, processed events are included too. `--limit N`
@@ -361,13 +372,95 @@ manual control before the unattended daemon lands:
   a CLI-side pre-check that it exists and is still pending.
 - `nsg clock run` — loop `processEvents()` until the queue drains. No
   sleep, no daemon — finite drain. Mid-sweep arrivals are picked up on
-  the next iteration. The persistent daemon arrives in a future
-  commission.
+  the next iteration.
+- `nsg clock start` — start the unattended Clockworks daemon as a
+  detached background process. `--interval <ms>` sets the polling
+  interval (default 2000); `--foreground`/`-f` is the inline body the
+  detached spawn re-execs into and is normally not invoked directly.
+  The detached path blocks until the pidfile is present and the named
+  pid is alive (~10s deadline) so "started" means "verified running".
+- `nsg clock stop` — graceful SIGTERM with SIGKILL escalation after a
+  5s grace window. Removes the pidfile once the process is confirmed
+  dead.
+- `nsg clock status` — show whether the daemon is running, with pid,
+  log file path, and uptime. `--json` emits the structured payload.
+  When the pidfile points at a dead pid, the command surfaces
+  `stalePidfile: true` and unlinks the pidfile as a side effect; the
+  next call is silent.
 
 `tick` and `run` print one summary line per dispatch — `[<handler>]
 <status> <durationMs>ms`, with `: <error>` appended on the same line
 for failed dispatches — and exit nonzero when at least one dispatch
-recorded `status: error`.
+recorded `status: error`. When the daemon is up, `tick` and `run`
+emit a one-line coexistence warning to stderr (the manual invocation
+runs concurrently with the daemon; SQLite handles concurrent access
+safely) and execute regardless.
+
+The two daemons (`nsg start` for the guild daemon and `nsg clock
+start` for the Clockworks daemon) are independent: different pidfiles
+(`daemon.pid` vs `clock.pid`), different log files, and different
+lifecycles.
+
+---
+
+## Daemon
+
+The unattended Clockworks daemon is a long-running process that polls
+the events book and drains dispatches automatically. Use it once a
+guild's standing-order set is trusted enough to run without an
+operator at the keyboard.
+
+### Lifecycle
+
+The detached path (`nsg clock start` / `clockStart(home, options?)`)
+spawns the same `nsg` binary with `clock start --foreground
+--guild-root <home>` plus `--interval <ms>` if supplied, fully
+detached from the parent terminal, and pipes both stdout and stderr
+to a single append-mode log file. The detached spawn calls
+`child.unref()` so closing the parent terminal does not take the
+daemon down. Startup blocks until the pidfile is present and the
+named pid is alive — failure tails the log to help debugging.
+
+The foreground body is the inline daemon loop: writes `clock.pid`
+with its own pid, registers SIGTERM/SIGINT handlers, calls
+`processEvents` every interval (full drain — no per-tick cap),
+catches every throw and writes an `[error] ...` line to the log
+before continuing on the next interval, and sleeps abortably between
+ticks so SIGTERM is acted on immediately.
+
+### Files
+
+- `<home>/.nexus/clock.pid` — the pidfile. Written at daemon start;
+  removed on graceful shutdown. A dead pid surfaces as
+  `stalePidfile: true` and is unlinked as a side effect of
+  `clockStatus`.
+- `<home>/.nexus/clock.log` — the append-mode log file. Both stdout
+  and stderr land here. Combined into a single file so operators can
+  grep one place.
+
+### Log shape
+
+Banners frame the daemon's lifetime. Per-dispatch lines appear on
+active ticks; idle ticks are silent.
+
+```
+[clockworks] daemon started — pid=12345 intervalMs=2000 log=/.../clock.log
+2026-04-25T17:30:00.000Z e-aaa demo.thing-happened [log-event] success 12ms
+2026-04-25T17:30:00.001Z e-aaa demo.thing-happened [notify-channel] error 4ms: kaboom
+2026-04-25T17:30:05.123Z [error] processEvents threw: <reason>
+[clockworks] SIGTERM received — shutting down
+[clockworks] daemon stopped
+```
+
+### Daemon coexistence
+
+The Clockworks daemon and the manual `nsg clock tick` / `nsg clock
+run` commands coexist intentionally: SQLite handles concurrent access
+safely, so there is no harm in running both. When the daemon is up,
+manual invocations emit a one-line coexistence warning to stderr and
+then execute regardless. The patron and anima can probe daemon
+liveness via `nsg clock status` and the `clock-status` MCP tool
+respectively.
 
 ---
 
@@ -449,6 +542,24 @@ daemon-restart cycle stays idempotent.
   operator-facing `nsg clock list/tick/run` surface lives in the
   framework CLI as a hand-written command (see
   `packages/framework/cli/src/commands/clock.ts`).
+- `clockStatusTool` — the anima-facing `clock-status` tool. Wired
+  into `supportKit.tools` alongside `signal`; re-exported so tests
+  can drive it directly.
+- `clockStart`, `clockStop`, `clockStatus` — the unattended-daemon
+  lifecycle helpers. `clockStart(home, options?)` spawns the daemon
+  detached, `clockStop(home)` blocks until SIGTERM (with SIGKILL
+  escalation) confirms the process is dead, `clockStatus(home)` reads
+  the pidfile and reports `{ running, pid?, logFile?, uptime?,
+  stalePidfile? }`.
+- `runForegroundDaemon`, `runForegroundDaemonFromGuild` — the inline
+  foreground daemon body. `runForegroundDaemon` accepts every
+  dependency by parameter so tests can drive the loop without
+  spawning a child or booting a Stacks-backed apparatus;
+  `runForegroundDaemonFromGuild` is the convenience wrapper the
+  CLI's `clock start --foreground` re-exec target calls.
+- `formatDispatchLogLine`, `validateInterval` — pure helpers used by
+  the daemon and re-exported so the CLI can share validation /
+  formatting without duplicating it.
 - `relay`, `isRelayDefinition` — relay SDK factory and structural type guard.
 - `createSummonRelay` — factory for the stdlib `summon-relay`. Already
   wired into `supportKit.relays`; re-exported so unit tests and any
@@ -462,5 +573,7 @@ daemon-restart cycle stays idempotent.
   top-level keys.
 - Types: `ClockworksApi`, `ClockworksKit`, `ClockworksConfig`,
   `EventDeclaration`, `StandingOrder`, `EventDoc`, `EventDispatchDoc`,
-  `RelayDefinition`, `RelayContext`, `GuildEvent`.
+  `RelayDefinition`, `RelayContext`, `GuildEvent`, `ClockStartOptions`,
+  `ClockStartResult`, `ClockStopResult`, `ClockStatus`,
+  `ForegroundDaemonInputs`.
 - The module augments `GuildConfig` with `clockworks?: ClockworksConfig`.
