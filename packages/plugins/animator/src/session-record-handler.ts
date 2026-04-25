@@ -14,6 +14,7 @@ import type {
   TranscriptDoc,
   TranscriptMessage,
 } from './types.ts';
+import { TERMINAL_STATUSES, reduceSessionTransition } from './session-reducer.ts';
 
 // ── Back-off machine hook ───────────────────────────────────────────
 
@@ -118,15 +119,6 @@ export interface SessionRecordParams {
   terminationDiagnostic?: TerminationDiagnostic;
 }
 
-/** Terminal statuses recognized by the session-record handler. */
-const TERMINAL_STATUSES: ReadonlySet<SessionDoc['status']> = new Set([
-  'completed',
-  'failed',
-  'timeout',
-  'cancelled',
-  'rate-limited',
-]);
-
 export async function handleSessionRecord(
   params: SessionRecordParams,
 ): Promise<{ ok: boolean; sessionId: string; status: string }> {
@@ -135,6 +127,10 @@ export async function handleSessionRecord(
   const transcripts = stacks.book<TranscriptDoc>('animator', 'transcripts');
 
   // Step 1: Check if session is already in a terminal state — don't overwrite.
+  // Per D16 the early return stays at the call site: the
+  // transcript-write-on-duplicate-terminal branch needs the call site
+  // to know it's on a no-op path. The reducer's terminal-immutability
+  // rule is belt-and-suspenders for direct callers that don't pre-check.
   const currentDoc = await sessions.get(params.sessionId);
   if (currentDoc && TERMINAL_STATUSES.has(currentDoc.status)) {
     // Session already terminal — don't overwrite. Write transcript if provided.
@@ -153,12 +149,13 @@ export async function handleSessionRecord(
     return { ok: true, sessionId: params.sessionId, status: currentDoc.status };
   }
 
-  // Step 2: Build and write the SessionDoc.
+  // Step 2: Build and write the SessionDoc via the reducer.
   const endedAt = new Date().toISOString();
   const startedAt = currentDoc?.startedAt ?? endedAt;
   const durationMs = new Date(endedAt).getTime() - new Date(startedAt).getTime();
 
-  const doc: SessionDoc = {
+  const doc = reduceSessionTransition(currentDoc, {
+    kind: 'terminal',
     id: params.sessionId,
     status: params.status,
     startedAt,
@@ -174,9 +171,6 @@ export async function handleSessionRecord(
     ...(params.output ? { output: params.output } : {}),
     ...(params.providerSessionId ? { providerSessionId: params.providerSessionId } : {}),
     ...(params.conversationId ? { conversationId: params.conversationId } : {}),
-    // Preserve metadata and cancelHandle from the running doc.
-    ...(currentDoc?.metadata ? { metadata: currentDoc.metadata } : {}),
-    ...(currentDoc?.cancelHandle ? { cancelHandle: currentDoc.cancelHandle } : {}),
     // Propagate any structured termination tag — load-bearing signal
     // for the Animator's back-off state machine and Spider's tryCollect
     // branch on rate-limited sessions.
@@ -185,7 +179,7 @@ export async function handleSessionRecord(
     // structured tag. Written through as-is; never read by the back-off
     // machine.
     ...(params.terminationDiagnostic ? { terminationDiagnostic: params.terminationDiagnostic } : {}),
-  };
+  });
 
   let sessionDocWritten = false;
   try {

@@ -17,6 +17,7 @@ import { z } from 'zod';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 import type { SessionDoc } from '../types.ts';
 import { emitSessionStarted } from '../session-emission.ts';
+import { TERMINAL_STATUSES, reduceSessionTransition } from '../session-reducer.ts';
 
 export default tool({
   name: 'session-running',
@@ -42,20 +43,14 @@ export default tool({
     const sessions = stacks.book<SessionDoc>('animator', 'sessions');
 
     // Merge with any pre-existing doc (e.g. the `pending` record written by
-    // launchDetached before the babysitter was spawned). Preserve
-    // authorizedTools, existing metadata, and any other fields the caller
-    // may not have passed.
+    // launchDetached before the babysitter was spawned).
     const existing = await sessions.get(params.sessionId);
 
     // Terminal-state guard: a late or duplicate ready report must not regress
-    // a session that has already reached a terminal state.
-    const TERMINAL_STATUSES: ReadonlySet<SessionDoc['status']> = new Set([
-      'completed',
-      'failed',
-      'timeout',
-      'cancelled',
-      'rate-limited',
-    ]);
+    // a session that has already reached a terminal state. The reducer's
+    // terminal-immutability rule would also produce this no-op, but the
+    // call site needs the early return to keep its `status` in the
+    // response body for callers that branch on it.
     if (existing && TERMINAL_STATUSES.has(existing.status)) {
       console.warn(
         `[animator] Ignoring session-running for ${params.sessionId} (already ${existing.status})`,
@@ -63,45 +58,32 @@ export default tool({
       return { ok: true, sessionId: params.sessionId, status: existing.status };
     }
 
-    // Already-running guard: only refresh lastActivityAt and cancelHandle.
-    // Do not overwrite metadata, startedAt, provider, or other fields that
-    // were set during the initial pending→running transition.
-    if (existing && existing.status === 'running') {
-      const update: SessionDoc = {
-        ...existing,
-        lastActivityAt: new Date().toISOString(),
-        ...(params.cancelHandle
-          ? { cancelHandle: { ...(existing.cancelHandle ?? {}), ...params.cancelHandle } }
-          : {}),
-      };
-      await sessions.put(update);
-      return { ok: true, sessionId: params.sessionId };
-    }
-
-    // Normal path: pending→running transition or cold start (no existing doc).
-    const doc: SessionDoc = {
-      ...(existing ?? {}),
+    // Both the pending→running normal path and the running→running
+    // refresh path go through the reducer's `detached-ready` variant —
+    // the reducer detects the running→running case internally (D9) and
+    // applies the metadata-preserving refresh.
+    const doc = reduceSessionTransition(existing, {
+      kind: 'detached-ready',
       id: params.sessionId,
-      status: 'running',
-      startedAt: existing?.startedAt ?? params.startedAt,
-      provider: existing?.provider ?? params.provider,
-      // Refresh lastActivityAt — the ready report is a lifecycle signal.
-      // Uses guild wall-clock time, not host-supplied timestamp.
+      startedAt: params.startedAt,
+      provider: params.provider,
       lastActivityAt: new Date().toISOString(),
       ...(params.conversationId ? { conversationId: params.conversationId } : {}),
-      ...(params.metadata ? { metadata: { ...(existing?.metadata ?? {}), ...params.metadata } } : {}),
-      ...(params.cancelHandle
-        ? { cancelHandle: { ...(existing?.cancelHandle ?? {}), ...params.cancelHandle } }
-        : {}),
-    };
+      ...(params.metadata ? { metadata: params.metadata } : {}),
+      ...(params.cancelHandle ? { cancelHandle: params.cancelHandle } : {}),
+    });
 
     await sessions.put(doc);
 
     // Detached running tool — fire `session.started` for the canonical
-    // first-time pending → running transition. Already-running and
-    // terminal-state guards above return before this point so the
-    // emission only fires once per session.
-    await emitSessionStarted(doc);
+    // first-time pending → running transition. Compare pre-reducer
+    // existing.status against the post-reducer status: the
+    // running→running refresh path leaves status at `'running'` so the
+    // `existing?.status !== 'running'` guard suppresses the duplicate
+    // emission, exactly as before.
+    if (existing?.status !== 'running' && doc.status === 'running') {
+      await emitSessionStarted(doc);
+    }
 
     return { ok: true, sessionId: params.sessionId };
   },

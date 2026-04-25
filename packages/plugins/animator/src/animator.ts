@@ -52,6 +52,10 @@ import {
   emitSessionEnded,
   emitSessionRecordFailed,
 } from './session-emission.ts';
+import {
+  TERMINAL_STATUSES,
+  reduceSessionTransition,
+} from './session-reducer.ts';
 
 // ── Session broadcast infrastructure ─────────────────────────────────
 
@@ -279,29 +283,6 @@ function buildFailedResult(
 }
 
 /**
- * Convert a SessionResult to a SessionDoc for Stacks storage.
- */
-function toSessionDoc(result: SessionResult): SessionDoc {
-  return {
-    id: result.id,
-    status: result.status,
-    startedAt: result.startedAt,
-    endedAt: result.endedAt,
-    durationMs: result.durationMs,
-    provider: result.provider,
-    exitCode: result.exitCode,
-    error: result.error,
-    conversationId: result.conversationId,
-    providerSessionId: result.providerSessionId,
-    tokenUsage: result.tokenUsage,
-    costUsd: result.costUsd,
-    metadata: result.metadata,
-    output: result.output,
-    ...(result.terminationTag ? { terminationTag: result.terminationTag } : {}),
-  };
-}
-
-/**
  * Record a session result to The Stacks (sessions + transcripts books).
  *
  * Errors are logged but never propagated — session data loss is
@@ -313,9 +294,43 @@ async function recordSession(
   result: SessionResult,
   transcript: TranscriptMessage[] | undefined,
 ): Promise<void> {
+  // Read existing first per D13 — uniform read+reduce+put. Preserves
+  // cancelHandle, authorizedTools, lastActivityAt and any other fields
+  // that the recordRunning() pre-write may have set; those would
+  // previously have been silently dropped on terminal write.
+  const existing = await sessions.get(result.id);
+  // recordSession is only reached after dispatchAnimate's
+  // `currentDoc?.status === 'cancelled'` guard has cleared, so a
+  // cancelled-from-provider terminal here should be vanishingly rare.
+  // If it does happen and the existing doc is already cancelled, the
+  // reducer's terminal-immutability rule no-ops; otherwise we narrow
+  // for the terminal variant and write through.
+  const status = result.status === 'cancelled'
+    ? ('failed' as const)
+    : (result.status as 'completed' | 'failed' | 'timeout' | 'rate-limited');
+  const next = reduceSessionTransition(existing, {
+    kind: 'terminal',
+    id: result.id,
+    status,
+    startedAt: result.startedAt,
+    endedAt: result.endedAt,
+    durationMs: result.durationMs,
+    provider: result.provider,
+    exitCode: result.exitCode,
+    lastActivityAt: new Date().toISOString(),
+    ...(result.error !== undefined ? { error: result.error } : {}),
+    ...(result.costUsd !== undefined ? { costUsd: result.costUsd } : {}),
+    ...(result.tokenUsage !== undefined ? { tokenUsage: result.tokenUsage } : {}),
+    ...(result.output !== undefined ? { output: result.output } : {}),
+    ...(result.providerSessionId !== undefined ? { providerSessionId: result.providerSessionId } : {}),
+    ...(result.conversationId !== undefined ? { conversationId: result.conversationId } : {}),
+    ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
+    ...(result.terminationTag !== undefined ? { terminationTag: result.terminationTag } : {}),
+  });
+
   let sessionDocWritten = false;
   try {
-    await sessions.put(toSessionDoc(result));
+    await sessions.put(next);
     sessionDocWritten = true;
   } catch (err) {
     console.warn(
@@ -364,35 +379,27 @@ async function recordRunning(
   try {
     // Merge with any pre-existing doc (e.g. `pending` pre-written by
     // launchDetached, or `running` already written by the babysitter via
-    // the session-running tool). Preserve authorizedTools and other
-    // fields the caller may not have passed.
+    // the session-running tool). The reducer encodes the merge invariants
+    // (preserve startedAt/provider; deep-merge metadata/cancelHandle;
+    // no-op on terminal-state regression).
     const existing = await sessions.get(id);
-    const merged: SessionDoc = {
-      ...(existing ?? {}),
+    const merged = reduceSessionTransition(existing, {
+      kind: 'attach-running',
       id,
-      status: 'running',
-      startedAt: existing?.startedAt ?? startedAt,
-      provider: existing?.provider ?? providerName,
-    };
-    if (request.conversationId !== undefined) {
-      merged.conversationId = request.conversationId;
-    } else if (existing?.conversationId !== undefined) {
-      merged.conversationId = existing.conversationId;
-    }
-    if (request.metadata !== undefined || existing?.metadata !== undefined) {
-      merged.metadata = { ...(existing?.metadata ?? {}), ...(request.metadata ?? {}) };
-    }
-    if (cancelHandle !== undefined) {
-      merged.cancelHandle = { ...(existing?.cancelHandle ?? {}), ...cancelHandle };
-    }
+      startedAt,
+      provider: providerName,
+      ...(request.conversationId !== undefined ? { conversationId: request.conversationId } : {}),
+      ...(request.metadata !== undefined ? { metadata: request.metadata } : {}),
+      ...(cancelHandle !== undefined ? { cancelHandle } : {}),
+    });
     await sessions.put(merged);
 
-    // Emit `session.started` once per running transition. The
-    // already-running guard above means a duplicate ready report on a
-    // session already in `running` returns before this point in the
-    // existing path; for the in-process attached writer (this helper)
-    // this is the canonical first-time write.
-    if (existing?.status !== 'running') {
+    // Emit `session.started` once per running transition. Compare the
+    // pre-reducer existing.status against the post-reducer status —
+    // the reducer's terminal-immutability rule means existing terminal
+    // docs come back unchanged, and the running → running refresh
+    // suppresses the emission for duplicate ready reports.
+    if (existing?.status !== 'running' && merged.status === 'running') {
       await emitSessionStarted(merged);
     }
   } catch (err) {
@@ -406,15 +413,6 @@ async function recordRunning(
     await emitSessionRecordFailed(id, 'insert', err);
   }
 }
-
-/** Terminal status values — any of these means the session is done. */
-const TERMINAL_STATUSES: ReadonlySet<SessionDoc['status']> = new Set([
-  'completed',
-  'failed',
-  'timeout',
-  'cancelled',
-  'rate-limited',
-]);
 
 // ── Apparatus factory ────────────────────────────────────────────────
 
@@ -492,22 +490,24 @@ export function createAnimator(): Plugin {
         throw new Error(`Session "${sessionId}" not found.`);
       }
 
-      // Idempotent: if already terminal, return as-is
+      // Idempotent: if already terminal, return as-is. The reducer's
+      // terminal-immutability rule would also produce this no-op, but
+      // the call site needs the early return so it doesn't issue a
+      // pointless put() and then call into the provider's cancel().
       if (TERMINAL_STATUSES.has(doc.status)) {
         return doc;
       }
 
-      // Step 2: Patch to cancelled
+      // Step 2: Patch to cancelled via the reducer.
       const endedAt = new Date().toISOString();
       const durationMs = new Date(endedAt).getTime() - new Date(doc.startedAt).getTime();
-
-      const updated: SessionDoc = {
-        ...doc,
-        status: 'cancelled',
+      const updated = reduceSessionTransition(doc, {
+        kind: 'cancel',
+        id: sessionId,
         endedAt,
         durationMs,
-        ...(options?.reason ? { error: options.reason } : {}),
-      };
+        ...(options?.reason ? { reason: options.reason } : {}),
+      });
 
       let cancelDocWritten = false;
       try {

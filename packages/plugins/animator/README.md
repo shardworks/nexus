@@ -468,3 +468,47 @@ was authoritatively written.
 The Clockworks is in `recommends`, not `requires`: the helpers resolve
 it lazily and silently no-op when it isn't installed, mirroring the
 `summon()` → `LoomApi` resolution pattern.
+
+---
+
+## Internal: SessionDoc transition reducer
+
+Every in-package SessionDoc writer funnels through a single pure-function
+reducer in `src/session-reducer.ts`. The reducer encodes the merge
+invariants once — there is no bespoke per-writer merge code anywhere
+else in the package.
+
+The reducer accepts an `existing: SessionDoc | null | undefined` and a
+`SessionTransition` (a discriminated union over a `kind` field) and
+returns the next SessionDoc to write. Variants:
+
+| `kind` | Used by | Notes |
+|---|---|---|
+| `pending-pre-write` | `claude-code` `launchDetached()` (deferred migration) | Authorization anchor; seeds `lastActivityAt`. |
+| `attach-running` | `recordRunning` (in-process attached) | Canonical first-time running write. |
+| `detached-ready` | `session-running` tool | Reducer detects the running → running refresh internally. |
+| `heartbeat-touch` | `session-heartbeat` tool, orphan-recovery legacy backfill | Updates only `lastActivityAt`. |
+| `terminal` | `recordSession`, `handleSessionRecord` | Carries `'completed' | 'failed' | 'timeout' | 'rate-limited'` as a sub-field. |
+| `cancel` | `AnimatorApi.cancel()` | Flips to `'cancelled'`; provider `cancel()` runs at the call site after the put. |
+| `orphan-failed` | startup.ts orphan recovery | Does NOT refresh `lastActivityAt` — the host is presumed dead. |
+
+Invariants encoded once in the reducer:
+
+- **Preserve from existing:** `startedAt`, `provider`, `authorizedTools`.
+- **Deep-merge:** `metadata`, `cancelHandle`.
+- **Refresh `lastActivityAt` only from per-variant payload.** Variants
+  whose payload carries the field write it; others leave it untouched.
+- **No-op on terminal-state regression.** Any transition against a
+  terminal-state existing row returns `existing` unchanged.
+
+The reducer is a pure synchronous function: no I/O, no clock dependency,
+no emission. Lifecycle event emission stays at the call sites — they
+compare pre-reducer `existing?.status` against the post-reducer doc's
+status to decide whether to emit `session.started` / `session.ended` /
+`session.record-failed`.
+
+The reducer module also owns the `TERMINAL_STATUSES` set; the four
+duplicate locals previously scattered across the package are gone, and
+`rate-limit-backoff.ts` derives its `NON_RATE_LIMIT_TERMINAL_STATUSES`
+from this consolidated set rather than maintaining a hand-listed
+inverse.

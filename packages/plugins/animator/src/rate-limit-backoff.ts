@@ -29,6 +29,7 @@ import type {
   AnimatorStatusDoc,
   SessionTerminationTag,
 } from './types.ts';
+import { TERMINAL_STATUSES } from './session-reducer.ts';
 
 /**
  * Well-known document id for the single animator dispatch-status row in
@@ -116,17 +117,19 @@ export function freshStatusDoc(): AnimatorStatusDoc {
  * Terminal statuses that count as "session made it through without a
  * rate-limit termination" for the purposes of the reset rule (D7).
  *
- * Includes `'completed'`, `'failed'`, `'timeout'`, and `'cancelled'`.
+ * Derived from the reducer module's consolidated `TERMINAL_STATUSES`
+ * minus `'rate-limited'`, so the two sets move in lockstep — any future
+ * change to the SessionDoc terminal-status family updates the
+ * consolidated set and the inverse derives automatically. Includes
+ * `'completed'`, `'failed'`, `'timeout'`, and `'cancelled'` today.
+ *
  * Any one of these, when observed after a pause window has opened a
  * resume attempt, counts as a successful probe and resets the level
  * to 0. Observing one of these while running is a no-op.
  */
-const NON_RATE_LIMIT_TERMINAL_STATUSES = new Set<string>([
-  'completed',
-  'failed',
-  'timeout',
-  'cancelled',
-]);
+const NON_RATE_LIMIT_TERMINAL_STATUSES: ReadonlySet<string> = new Set(
+  Array.from(TERMINAL_STATUSES).filter((status) => status !== 'rate-limited'),
+);
 
 export interface BackoffReadConfig {
   /** Read the current back-off config — called at each transition. */

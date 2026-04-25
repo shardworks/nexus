@@ -16,6 +16,7 @@ import type { AnimatorStatusDoc, SessionDoc, TranscriptDoc } from './types.ts';
 import { handleSessionRecord, type SessionRecordParams } from './session-record-handler.ts';
 import { DISPATCH_STATUS_DOC_ID } from './rate-limit-backoff.ts';
 import { emitSessionEnded, emitSessionRecordFailed } from './session-emission.ts';
+import { reduceSessionTransition } from './session-reducer.ts';
 
 // ── DLQ drain ───────────────────────────────────────────────────────
 
@@ -208,10 +209,17 @@ export async function recoverOrphans(
   let recovered = 0;
 
   for (const doc of activeSessions) {
-    // Legacy record without lastActivityAt — backfill and skip this pass.
+    // Legacy record without lastActivityAt — backfill via the reducer's
+    // heartbeat-touch variant (D17). The doc is already in hand from
+    // the find() iteration, so the read+reduce+put is one round-trip.
     if (!doc.lastActivityAt) {
       try {
-        await sessions.patch(doc.id, { lastActivityAt: new Date().toISOString() });
+        const touched = reduceSessionTransition(doc, {
+          kind: 'heartbeat-touch',
+          id: doc.id,
+          lastActivityAt: new Date().toISOString(),
+        });
+        await sessions.put(touched);
         console.log(`[animator] Backfilled lastActivityAt for legacy session ${doc.id}`);
       } catch (err) {
         console.warn(
@@ -228,18 +236,19 @@ export async function recoverOrphans(
       continue;
     }
 
-    // Session is stale — mark as failed.
+    // Session is stale — mark as failed via the reducer's orphan-failed
+    // variant (lastActivityAt is intentionally NOT refreshed: the host
+    // is presumed dead, so the existing field tells the truth).
     const endedAt = new Date().toISOString();
     const durationMs = new Date(endedAt).getTime() - new Date(doc.startedAt).getTime();
-
-    const updated: SessionDoc = {
-      ...doc,
-      status: 'failed',
+    const updated = reduceSessionTransition(doc, {
+      kind: 'orphan-failed',
+      id: doc.id,
       endedAt,
       durationMs,
       exitCode: 1,
       error: `No heartbeat received for ${Math.round(effectiveSilence / 1000)}s — session host presumed dead (reconciled)`,
-    };
+    });
 
     try {
       await sessions.put(updated);

@@ -13,15 +13,7 @@ import { guild } from '@shardworks/nexus-core';
 import { z } from 'zod';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 import type { SessionDoc } from '../types.ts';
-
-/** Terminal status values — any of these means the session is done. */
-const TERMINAL_STATUSES: ReadonlySet<SessionDoc['status']> = new Set([
-  'completed',
-  'failed',
-  'timeout',
-  'cancelled',
-  'rate-limited',
-]);
+import { TERMINAL_STATUSES, reduceSessionTransition } from '../session-reducer.ts';
 
 export default tool({
   name: 'session-heartbeat',
@@ -44,14 +36,23 @@ export default tool({
       return { ok: false, error: 'Session not found' };
     }
 
-    // Only refresh for non-terminal sessions.
+    // Only refresh for non-terminal sessions. The reducer's
+    // terminal-immutability rule would also produce this no-op, but the
+    // call site needs the early return to keep the `status` field in
+    // the response body for callers that branch on it.
     if (TERMINAL_STATUSES.has(doc.status)) {
       return { ok: true, sessionId: params.sessionId, status: doc.status };
     }
 
-    await sessions.patch(params.sessionId, {
+    // Convert from sessions.patch() to read+reduce+put per D5 — uniform
+    // funnel through the reducer module. The extra round-trip on a
+    // ~30s heartbeat cadence is not a hot path.
+    const next = reduceSessionTransition(doc, {
+      kind: 'heartbeat-touch',
+      id: params.sessionId,
       lastActivityAt: new Date().toISOString(),
     });
+    await sessions.put(next);
 
     return { ok: true, sessionId: params.sessionId };
   },
