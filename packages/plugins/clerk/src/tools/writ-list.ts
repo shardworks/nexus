@@ -76,6 +76,16 @@ export default tool({
       .union([z.string(), z.array(z.string()).min(1)])
       .optional()
       .describe('Filter by writ type (repeatable — pass multiple to match any)'),
+    classification: z
+      .union([
+        z.enum(['initial', 'active', 'terminal']),
+        z.array(z.enum(['initial', 'active', 'terminal'])).min(1),
+      ])
+      .optional()
+      .describe(
+        'Filter by state classification (repeatable — pass multiple to match any). ' +
+          'Type-agnostic: matches across every registered writ type.',
+      ),
     parentId: z.string().optional().describe('Filter to children of this parent writ'),
     limit: z.number().optional().default(20).describe('Maximum results (default: 20)'),
     offset: z.number().optional().describe('Number of results to skip'),
@@ -90,6 +100,7 @@ export default tool({
     const writs = await clerk.list({
       phase: params.phase,
       type: params.type,
+      classification: params.classification,
       parentId: params.parentId,
       limit: params.limit,
       offset: params.offset,

@@ -2842,6 +2842,92 @@ describe('Clerk', () => {
       const text = await writList.handler({}) as string;
       assert.match(text, /No writs found/);
     });
+
+    it('--classification active filters across every registered type', async () => {
+      await setup({
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
+        ],
+      });
+      // Drafts (initial classification) — should not match.
+      await clerk.post({ title: 'Draft m', body: 'B' });
+      await clerk.post({ title: 'Draft e', body: 'B', type: 'errand' });
+      // Active writs of both types — should match.
+      const m = await postMandate({ title: 'Active m', body: 'B' });
+      const e = await clerk.post({ title: 'Active e', body: 'B', type: 'errand' });
+      await clerk.transition(e.id, 'open');
+      // Terminal — should not match.
+      const t = await postMandate({ title: 'Terminal m', body: 'B' });
+      await clerk.transition(t.id, 'completed', { resolution: 'done' });
+
+      const writList = (await import('./tools/writ-list.ts')).default;
+      const result = await writList.handler({ format: 'json', classification: 'active', limit: 100 }) as Array<{
+        id: string;
+        type: string;
+        phase: string;
+      }>;
+      const ids = new Set(result.map(r => r.id));
+      assert.ok(ids.has(m.id));
+      assert.ok(ids.has(e.id));
+      // Terminal and initial writs are not in the result.
+      assert.ok(!ids.has(t.id));
+      // Every returned row carries an active-classified state.
+      for (const row of result) {
+        assert.ok(['open', 'stuck'].includes(row.phase), `expected active state, got ${row.phase}`);
+      }
+    });
+
+    it('--phase open without --type implicitly scopes to mandate (D7)', async () => {
+      await setup({
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
+        ],
+      });
+      // Mandate writ in `open` and an errand in its same-named `open` state.
+      const m = await postMandate({ title: 'Mandate open', body: 'B' });
+      const e = await clerk.post({ title: 'Errand open', body: 'B', type: 'errand' });
+      await clerk.transition(e.id, 'open');
+
+      const writList = (await import('./tools/writ-list.ts')).default;
+      // No --type filter; --phase=open must NOT leak the errand writ.
+      const unscoped = await writList.handler({ format: 'json', phase: 'open' }) as Array<{ id: string; type: string }>;
+      const ids = new Set(unscoped.map(r => r.id));
+      assert.ok(ids.has(m.id), 'mandate open writ should be in the result');
+      assert.ok(!ids.has(e.id), 'errand open writ must NOT leak into --phase open without --type');
+      // Every returned row is type=mandate.
+      for (const row of unscoped) {
+        assert.equal(row.type, 'mandate');
+      }
+
+      // Operator passes both --type errand --phase open: now the errand surfaces.
+      const scoped = await writList.handler({ format: 'json', type: 'errand', phase: 'open' }) as Array<{ id: string; type: string }>;
+      const scopedIds = new Set(scoped.map(r => r.id));
+      assert.ok(scopedIds.has(e.id));
+      assert.ok(!scopedIds.has(m.id), 'mandate writ should not leak in when type=errand');
+    });
+
+    it('writ-tree --classification terminal returns only terminal-rooted forests (prune semantics)', async () => {
+      // The tree filter prunes top-down: a root that fails the filter
+      // drops with its entire subtree. So the test seeds two independent
+      // roots — one active, one terminal — and asserts only the terminal
+      // root surfaces under --classification terminal.
+      const writTreeTool = (await import('./tools/writ-tree.ts')).default;
+      const active = await postMandate({ title: 'Active root', body: 'B' });
+      const terminal = await postMandate({ title: 'Terminal root', body: 'B' });
+      await clerk.transition(terminal.id, 'completed', { resolution: 'done' });
+
+      const forest = await writTreeTool.handler({ format: 'json', classification: 'terminal' }) as Array<{
+        writ: { id: string; phase: string; classification: string };
+        children: unknown[];
+      }>;
+      const rootIds = forest.map(n => n.writ.id);
+      assert.ok(rootIds.includes(terminal.id));
+      assert.ok(!rootIds.includes(active.id));
+      // Every root in the result is terminal-classified.
+      for (const node of forest) {
+        assert.equal(node.writ.classification, 'terminal');
+      }
+    });
   });
 
   // ── writ-show tool handler — presentation embedding ───────────────

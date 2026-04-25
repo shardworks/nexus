@@ -114,6 +114,17 @@ export default tool({
       .union([z.string(), z.array(z.string()).min(1)])
       .optional()
       .describe('Filter by writ type (repeatable). Non-matching nodes and their subtrees are pruned.'),
+    classification: z
+      .union([
+        z.enum(['initial', 'active', 'terminal']),
+        z.array(z.enum(['initial', 'active', 'terminal'])).min(1),
+      ])
+      .optional()
+      .describe(
+        'Filter by state classification (repeatable). Non-matching nodes ' +
+          'and their subtrees are pruned. Type-agnostic — matches across ' +
+          'every registered writ type.',
+      ),
     depth: z.number().optional().describe('Maximum tree depth to display (0 = roots only)'),
     rootLimit: z.number().optional().describe('Maximum number of roots to include (forest mode)'),
     rootOffset: z.number().optional().describe('Skip this many roots before slicing (forest mode)'),
@@ -134,6 +145,7 @@ export default tool({
       rootId: resolvedRootId,
       phase: params.phase,
       type: params.type,
+      classification: params.classification,
       depth: params.depth,
       rootLimit: params.rootLimit,
       rootOffset: params.rootOffset,
@@ -144,7 +156,13 @@ export default tool({
     }
 
     if (forest.length === 0) {
-      if (params.rootId || params.phase || params.type || params.depth !== undefined) {
+      if (
+        params.rootId ||
+        params.phase ||
+        params.type ||
+        params.classification ||
+        params.depth !== undefined
+      ) {
         return 'No writs match the given filters.';
       }
       return 'No writs found.';

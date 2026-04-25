@@ -145,10 +145,27 @@ export interface PostCommissionRequest {
  * Filters for listing writs.
  */
 export interface WritFilters {
-  /** Filter by phase. Accepts a single phase or an array of phases (OR). */
+  /**
+   * Filter by phase. Accepts a single phase or an array of phases (OR).
+   *
+   * `phase` is mandate-scoped at the WHERE-clause level: when `phase` is
+   * supplied without `type`, the implementation implicitly adds
+   * `type = 'mandate'` so a non-mandate writ that happens to declare an
+   * `open` state cannot match a `phase: 'open'` filter unscoped to its
+   * type. To query a non-mandate type's same-named state, pass both
+   * `type` and `phase` together (D7).
+   */
   phase?: WritPhase | WritPhase[];
   /** Filter by writ type. Accepts a single type or an array of types (OR). */
   type?: string | string[];
+  /**
+   * Filter by state classification. Accepts a single classification or an
+   * array (OR). Type-agnostic: applies across every registered writ type.
+   * The closed three-value enum mirrors `WritTypeStateClassification`.
+   */
+  classification?:
+    | WritTypeStateClassification
+    | WritTypeStateClassification[];
   /** Filter to children of this parent writ. */
   parentId?: string;
   /** Maximum number of results (default: 20). */
@@ -254,10 +271,22 @@ export interface WritTree {
 export interface WritTreeParams {
   /** Restrict to the subtree rooted at this writ id. */
   rootId?: string;
-  /** Filter by writ phase (single or OR-list); prunes non-matching subtrees. */
+  /**
+   * Filter by writ phase (single or OR-list); prunes non-matching
+   * subtrees. Mandate-scoped at the same level as `WritFilters.phase` —
+   * see that field's docstring (D7).
+   */
   phase?: WritPhase | WritPhase[];
   /** Filter by writ type (single or OR-list); prunes non-matching subtrees. */
   type?: string | string[];
+  /**
+   * Filter by state classification (single or OR-list); prunes
+   * non-matching subtrees. Type-agnostic — applies across every
+   * registered writ type.
+   */
+  classification?:
+    | WritTypeStateClassification
+    | WritTypeStateClassification[];
   /** Maximum recursion depth (0 = roots only). Node at the cap is included. */
   depth?: number;
   /** Root-slice limit for forest mode (default: unbounded). */

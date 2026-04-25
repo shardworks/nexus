@@ -43,7 +43,10 @@ import type {
 
 import { derivePresentation } from './writ-presentation.ts';
 
-import type { WritTypeConfig } from './writ-type-config.ts';
+import type {
+  WritTypeConfig,
+  WritTypeStateClassification,
+} from './writ-type-config.ts';
 import { validateWritTypeConfig } from './writ-type-config.ts';
 import { createChildrenBehaviorEngine } from './children-behavior-engine.ts';
 
@@ -307,8 +310,63 @@ export function createClerk(): Plugin {
     return initial.name;
   }
 
+  /**
+   * Resolve the effective `type` filter according to T5/D7's implicit
+   * mandate-scope rule: when `phase` is supplied without an explicit
+   * `type`, the WHERE clause adds `type = 'mandate'` automatically so a
+   * non-mandate writ that happens to declare an `open` state cannot
+   * match `--phase open` unscoped to its type. The operator can override
+   * by passing both `--type X --phase Y` together.
+   */
+  function resolveTypeFilter(
+    filters?: { phase?: unknown; type?: string | string[] },
+  ): string[] | undefined {
+    if (filters?.type !== undefined) {
+      return Array.isArray(filters.type) ? filters.type : [filters.type];
+    }
+    if (filters?.phase !== undefined) {
+      return [MANDATE_TYPE_NAME];
+    }
+    return undefined;
+  }
+
+  /**
+   * Map a (possibly-array) classification filter to the union of state
+   * names that match it across the named types. Used to translate the
+   * type-agnostic `classification` filter into a SQL-level `phase` IN
+   * predicate. When no concrete types narrow the search, the union spans
+   * every registered type's state catalogue.
+   */
+  function resolveClassificationStates(
+    classification: WritTypeStateClassification | WritTypeStateClassification[],
+    typeFilter?: string[],
+  ): string[] {
+    const requested = Array.isArray(classification) ? classification : [classification];
+    const requestedSet = new Set(requested);
+    const types = typeFilter && typeFilter.length > 0
+      ? typeFilter
+      : [...writTypeRegistry.keys()];
+    const matching = new Set<string>();
+    for (const typeName of types) {
+      const entry = writTypeRegistry.get(typeName);
+      if (!entry) continue;
+      for (const state of entry.config.states) {
+        if (requestedSet.has(state.classification)) {
+          matching.add(state.name);
+        }
+      }
+    }
+    return [...matching];
+  }
+
   function buildWhereClause(filters?: WritFilters): WhereClause | undefined {
     const conditions: WhereClause = [];
+
+    // Resolve `type` first because the classification translator may
+    // need it. Apply T5/D7's implicit mandate-scope rule: when `phase` is
+    // supplied without an explicit `type`, scope to mandate.
+    const effectiveType = resolveTypeFilter(filters);
+
     if (filters?.phase) {
       const phases = Array.isArray(filters.phase) ? filters.phase : [filters.phase];
       if (phases.length === 1) {
@@ -317,14 +375,35 @@ export function createClerk(): Plugin {
         conditions.push(['phase', 'IN', phases]);
       }
     }
-    if (filters?.type) {
-      const types = Array.isArray(filters.type) ? filters.type : [filters.type];
-      if (types.length === 1) {
-        conditions.push(['type', '=', types[0]!]);
-      } else if (types.length > 1) {
-        conditions.push(['type', 'IN', types]);
+
+    if (filters?.classification !== undefined) {
+      const stateNames = resolveClassificationStates(
+        filters.classification,
+        effectiveType,
+      );
+      if (stateNames.length === 0) {
+        // Closed-world: no registered state matches the requested
+        // classification. Emit a sentinel predicate that never matches
+        // (compares the indexed `phase` column to a string that is never
+        // a valid state name). This is rare in practice — every
+        // registered type declares at least one initial and one
+        // terminal state — but the branch keeps the result stable.
+        conditions.push(['phase', '=', '__no_match__']);
+      } else if (stateNames.length === 1) {
+        conditions.push(['phase', '=', stateNames[0]!]);
+      } else {
+        conditions.push(['phase', 'IN', stateNames]);
       }
     }
+
+    if (effectiveType !== undefined) {
+      if (effectiveType.length === 1) {
+        conditions.push(['type', '=', effectiveType[0]!]);
+      } else if (effectiveType.length > 1) {
+        conditions.push(['type', 'IN', effectiveType]);
+      }
+    }
+
     if (filters?.parentId) {
       conditions.push(['parentId', '=', filters.parentId]);
     }
@@ -433,6 +512,7 @@ export function createClerk(): Plugin {
     options?: {
       phaseSet?: Set<WritPhase>;
       typeSet?: Set<string>;
+      classificationSet?: Set<WritTypeStateClassification>;
       depth?: number;
       currentDepth?: number;
     },
@@ -442,12 +522,27 @@ export function createClerk(): Plugin {
 
     const phaseSet = options?.phaseSet;
     const typeSet = options?.typeSet;
+    const classificationSet = options?.classificationSet;
     const maxDepth = options?.depth;
     const currentDepth = options?.currentDepth ?? 0;
 
     // Prune: drop the node and its subtree when it fails any filter.
     if (phaseSet && !phaseSet.has(writ.phase as WritPhase)) return null;
     if (typeSet && !typeSet.has(writ.type)) return null;
+    if (classificationSet) {
+      // Translate the writ's stored phase to its classification through the
+      // registry. Unknown-classification writs (unregistered type / undeclared
+      // state) never satisfy the predicate — they prune.
+      const projection = derivePresentation(writ, (name) =>
+        writTypeRegistry.get(name)?.config,
+      );
+      if (
+        projection.classification === 'unknown' ||
+        !classificationSet.has(projection.classification)
+      ) {
+        return null;
+      }
+    }
 
     // Depth cap: include the node at the cap, but stop recursing.
     if (maxDepth !== undefined && currentDepth >= maxDepth) {
@@ -626,10 +721,24 @@ export function createClerk(): Plugin {
       const phaseSet = params?.phase
         ? new Set(Array.isArray(params.phase) ? params.phase : [params.phase])
         : undefined;
-      const typeSet = params?.type
+      // Apply T5/D7's implicit mandate-scope at the tree layer too: when
+      // `phase` is supplied without `type`, scope the type filter to
+      // mandate so a non-mandate writ sharing a same-named state cannot
+      // leak into the result.
+      let typeSet: Set<string> | undefined = params?.type
         ? new Set(Array.isArray(params.type) ? params.type : [params.type])
         : undefined;
-      const opts = { phaseSet, typeSet, depth: params?.depth };
+      if (typeSet === undefined && phaseSet !== undefined) {
+        typeSet = new Set([MANDATE_TYPE_NAME]);
+      }
+      const classificationSet = params?.classification
+        ? new Set(
+            Array.isArray(params.classification)
+              ? params.classification
+              : [params.classification],
+          )
+        : undefined;
+      const opts = { phaseSet, typeSet, classificationSet, depth: params?.depth };
 
       // Subtree mode — single root, root-slice params ignored.
       if (params?.rootId) {
