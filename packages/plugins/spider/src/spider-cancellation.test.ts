@@ -1409,21 +1409,22 @@ describe('Spider — writ→rig cascade', () => {
     assert.equal(updatedWrit.phase, 'cancelled', 'writ should be cancelled');
   });
 
-  // T2 dropped Clerk's hardcoded parent→child cancellation cascade (it lived
-  // in the now-removed `handleParentTerminal` handler). T3 will reintroduce
-  // it via the children-behavior engine driven by `WritTypeConfig`. Pin the
-  // current "no cascade" contract so we notice when T3 wires it back on.
-  // The two skipped tests below preserve the original cascade scenario
-  // verbatim for resurrection in T3.
+  // Mandate's `parentTerminal` action drives the downward cascade: when a
+  // mandate parent reaches a `failure`- or `cancelled`-attr terminal,
+  // every non-terminal descendant is transitioned to `cancelled` with the
+  // canonical resolution `Automatically cancelled due to parent termination`.
+  // Spider's writ→rig CDC then cancels each child's rig automatically.
+  // The two tests below pin that end-to-end behaviour: child writs are
+  // cancelled via Clerk's downward cascade and child rigs are cancelled
+  // via Spider's existing watcher.
 
-  // [T2 contract — no cascade]: Parent writ cancellation does NOT cascade to child writs or their rigs.
-  it('parent writ cancellation does not cascade to child writ or rig (T2 — cascade dropped, see T3)', async () => {
+  it('parent writ cancellation cascades to child writ and rig', async () => {
     const { clerk, stacks, realClerk } = fix;
 
     // Create parent as a draft via realClerk so the fixture's auto-publish
     // wrapper doesn't move it to `open`. The spider only dispatches `open`
     // writs; a `new` parent keeps its own rig out of the picture so this
-    // test exercises only the (now-absent) parent→child cascade path.
+    // test exercises only the parent→child cascade path.
     const parentWrit = await realClerk.post({ title: 'Parent writ', body: 'parent' });
     assert.equal(parentWrit.phase, 'new', 'parent should be a draft');
 
@@ -1446,19 +1447,22 @@ describe('Spider — writ→rig cascade', () => {
 
     await realClerk.transition(parentWrit.id, 'cancelled');
 
-    // Child writ remains open — Clerk no longer cascades. Child rig is
-    // therefore still running. T3 will restore the cascade via WritTypeConfig.
+    // Clerk's downward cascade transitions the child writ to `cancelled`
+    // with the canonical resolution string. Spider's writ→rig CDC then
+    // cancels the child rig.
     const updatedChildWrit = await clerk.show(childWrit.id);
-    assert.equal(updatedChildWrit.phase, 'open', 'child writ should remain open (no cascade in T2)');
+    assert.equal(updatedChildWrit.phase, 'cancelled', 'child writ should be cancelled via cascade');
+    assert.equal(
+      updatedChildWrit.resolution,
+      'Automatically cancelled due to parent termination',
+      'child writ should carry the canonical cascade resolution',
+    );
 
     const updatedChildRig = await book.get(childRigId);
-    assert.equal(updatedChildRig?.status, 'running', 'child rig should remain running (no cascade in T2)');
+    assert.equal(updatedChildRig?.status, 'cancelled', 'child rig should be cancelled via writ→rig CDC');
   });
 
-  // [T2 contract — no cascade]: Parent cancellation with multiple children
-  // also does not propagate. Mirrors the legacy two-child scenario for
-  // resurrection in T3.
-  it('parent writ cancellation does not cascade to multiple child rigs (T2 — cascade dropped, see T3)', async () => {
+  it('parent writ cancellation cascades to multiple child rigs', async () => {
     const { clerk, stacks, realClerk } = fix;
 
     const parentWrit = await realClerk.post({ title: 'Parent', body: 'parent' });
@@ -1493,15 +1497,18 @@ describe('Spider — writ→rig cascade', () => {
 
     await realClerk.transition(parentWrit.id, 'cancelled');
 
-    // Children stay open, rigs stay running — T3 will restore the cascade.
+    // Both child writs cancelled with the canonical resolution; both rigs
+    // cancelled via Spider's writ→rig CDC.
     const updatedChild1 = await clerk.show(child1.id);
     const updatedChild2 = await clerk.show(child2.id);
-    assert.equal(updatedChild1.phase, 'open', 'child1 writ should remain open (no cascade in T2)');
-    assert.equal(updatedChild2.phase, 'open', 'child2 writ should remain open (no cascade in T2)');
+    assert.equal(updatedChild1.phase, 'cancelled', 'child1 writ should be cancelled via cascade');
+    assert.equal(updatedChild2.phase, 'cancelled', 'child2 writ should be cancelled via cascade');
+    assert.equal(updatedChild1.resolution, 'Automatically cancelled due to parent termination');
+    assert.equal(updatedChild2.resolution, 'Automatically cancelled due to parent termination');
 
     const updatedRig1 = await book.get(child1RigId);
     const updatedRig2 = await book.get(child2RigId);
-    assert.equal(updatedRig1?.status, 'running', 'child1 rig should remain running (no cascade in T2)');
-    assert.equal(updatedRig2?.status, 'running', 'child2 rig should remain running (no cascade in T2)');
+    assert.equal(updatedRig1?.status, 'cancelled', 'child1 rig should be cancelled via writ→rig CDC');
+    assert.equal(updatedRig2?.status, 'cancelled', 'child2 rig should be cancelled via writ→rig CDC');
   });
 });

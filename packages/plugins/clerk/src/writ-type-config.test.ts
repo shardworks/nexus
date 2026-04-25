@@ -330,6 +330,115 @@ describe('validateWritTypeConfig() — childrenBehavior triggers', () => {
   });
 });
 
+// ── parentTerminal trigger (downward cascade) ───────────────────────
+
+describe('validateWritTypeConfig() — parentTerminal trigger', () => {
+  it('accepts a parentTerminal action with transition + static resolution', () => {
+    const config = clone();
+    config.childrenBehavior = {
+      ...config.childrenBehavior,
+      parentTerminal: {
+        transition: 'cancelled',
+        resolution: 'Automatically cancelled due to parent termination',
+      },
+    };
+    assert.doesNotThrow(() => validateWritTypeConfig(config));
+  });
+
+  it('accepts a parentTerminal action with transition only', () => {
+    const config = clone();
+    config.childrenBehavior = {
+      ...config.childrenBehavior,
+      parentTerminal: { transition: 'cancelled' },
+    };
+    assert.doesNotThrow(() => validateWritTypeConfig(config));
+  });
+
+  it('accepts a parentTerminal action whose transition target is unknown to this config', () => {
+    // The downward trigger's target lives in child type configs, so
+    // same-config existence/reachability is not enforced — runtime
+    // fail-loud at api.transition handles per-child enforcement.
+    const config = clone();
+    config.childrenBehavior = {
+      ...config.childrenBehavior,
+      parentTerminal: { transition: 'phantom-state-only-in-child-configs' },
+    };
+    assert.doesNotThrow(() => validateWritTypeConfig(config));
+  });
+
+  it('rejects a parentTerminal action with an empty transition field', () => {
+    const config = clone();
+    (config.childrenBehavior as { parentTerminal?: unknown }).parentTerminal = {
+      transition: '',
+    };
+    assertThrowsWithPath(config, 'childrenBehavior.parentTerminal.transition');
+  });
+
+  it('rejects a parentTerminal action with a non-string resolution', () => {
+    const config = clone();
+    (config.childrenBehavior as { parentTerminal?: unknown }).parentTerminal = {
+      transition: 'cancelled',
+      resolution: 123,
+    };
+    assertThrowsWithPath(config, 'childrenBehavior.parentTerminal.resolution');
+  });
+
+  it('rejects a parentTerminal action with an empty resolution string', () => {
+    const config = clone();
+    (config.childrenBehavior as { parentTerminal?: unknown }).parentTerminal = {
+      transition: 'cancelled',
+      resolution: '',
+    };
+    assertThrowsWithPath(config, 'childrenBehavior.parentTerminal.resolution');
+  });
+
+  it('rejects a parentTerminal action with both copyResolution and resolution set', () => {
+    const config = clone();
+    (config.childrenBehavior as { parentTerminal?: unknown }).parentTerminal = {
+      transition: 'cancelled',
+      copyResolution: true,
+      resolution: 'static',
+    };
+    assert.throws(
+      () => validateWritTypeConfig(config),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /^\[clerk\] writTypeConfig\.childrenBehavior\.parentTerminal:/);
+        assert.match(err.message, /mutually exclusive/);
+        return true;
+      },
+    );
+  });
+
+  it('rejects an upward action with both copyResolution and resolution set', () => {
+    const config = clone();
+    config.childrenBehavior = {
+      allSuccess: {
+        transition: 'completed',
+        copyResolution: true,
+        resolution: 'should not coexist',
+      },
+    };
+    assert.throws(
+      () => validateWritTypeConfig(config),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /^\[clerk\] writTypeConfig\.childrenBehavior\.allSuccess:/);
+        assert.match(err.message, /mutually exclusive/);
+        return true;
+      },
+    );
+  });
+
+  it('accepts an upward trigger with resolution and no copyResolution', () => {
+    const config = clone();
+    config.childrenBehavior = {
+      allSuccess: { transition: 'completed', resolution: 'static-success' },
+    };
+    assert.doesNotThrow(() => validateWritTypeConfig(config));
+  });
+});
+
 // ── attrs field ─────────────────────────────────────────────────────
 
 describe('validateWritTypeConfig() — attrs field', () => {

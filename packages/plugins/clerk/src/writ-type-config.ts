@@ -70,43 +70,91 @@ export type WritTypeStateAttr = KnownWritTypeStateAttr | (string & {});
 /**
  * An action executed when a `childrenBehavior` trigger fires.
  *
- * `transition` is the required target state the parent writ should be
- * moved to when the trigger fires. `copyResolution` is an optional modifier
- * on that transition: when true, the consumer copies the triggering child's
- * resolution string onto the parent as part of the transition.
+ * `transition` is the required target state the writ-being-acted-on (the
+ * parent for upward triggers, each non-terminal child for the downward
+ * `parentTerminal` trigger) should be moved to when the trigger fires.
+ *
+ * The action provides two mutually-exclusive resolution carriers:
+ *
+ *   - `copyResolution: true` — copy the triggering child's resolution
+ *     string onto the parent as part of the transition. Used by upward
+ *     triggers (`allSuccess` / `anyFailure`) to lift the child's outcome
+ *     verbatim.
+ *   - `resolution: string` — a static resolution string written onto each
+ *     transitioned writ. Used by the downward `parentTerminal` trigger to
+ *     stamp every cancelled child with the same canonical reason
+ *     (semantically: "this writ was cancelled because its parent
+ *     terminated, not on its own merits").
+ *
+ * Declaring both `copyResolution: true` and `resolution` on the same action
+ * is rejected by the validator — the two carriers describe different
+ * provenance and a single action cannot mean both at once.
  *
  * Empty action objects and actions without a `transition` field are
  * structurally invalid.
  */
 export interface WritTypeChildrenBehaviorAction {
-  /** State the parent writ transitions to when the trigger fires. */
+  /** State the writ transitions to when the trigger fires. */
   transition: string;
   /**
    * When true, the consumer copies the triggering child's resolution string
-   * onto the parent as part of the transition. Defaults to unset.
+   * onto the parent as part of the transition. Defaults to unset. Mutually
+   * exclusive with `resolution`.
    */
   copyResolution?: boolean;
+  /**
+   * Static resolution string written onto each transitioned writ.
+   * Mutually exclusive with `copyResolution`. Used by the downward
+   * `parentTerminal` trigger to stamp every cancelled child with the same
+   * canonical reason.
+   */
+  resolution?: string;
 }
 
 /**
  * Aggregate-children behaviour for a writ type.
  *
- * The v0 trigger set has exactly two named fields:
+ * The trigger set covers both cascade directions:
  *
- *   - `allSuccess` — fires when *every* child has reached a terminal state
- *     and *all* of them carry the `success` attr.
- *   - `anyFailure` — fires when *any* child reaches a terminal state that
- *     carries the `failure` attr.
+ *   - `allSuccess` (upward) — fires when *every* child has reached a
+ *     terminal state and *all* of them carry the `success` attr. The
+ *     parent is driven to the configured target.
+ *   - `anyFailure` (upward) — fires when *any* child reaches a terminal
+ *     state that carries the `failure` attr. The parent is driven to the
+ *     configured target.
+ *   - `parentTerminal` (downward) — fires when a writ of *this* type
+ *     transitions into a terminal state carrying either the `failure` or
+ *     `cancelled` attr. Every non-terminal descendant is driven to the
+ *     configured target with the configured resolution. (Recursion to
+ *     grandchildren happens via natural CDC re-fire on each child's
+ *     transition, not by in-handler walks.)
  *
- * Both fields are optional. A config that declares neither trigger is
- * well-formed (no children-driven lifting). Adding a future trigger is a
- * pure additive change.
+ * All fields are optional. A config that declares no trigger is well-formed
+ * (no children-driven cascade). Adding a future trigger is a pure additive
+ * change.
+ *
+ * Heterogeneous-children convention: when `parentTerminal` is declared,
+ * every potential child type must reach the configured `transition` target
+ * from every non-terminal state via `allowedTransitions`. The validator
+ * does *not* enforce this cross-type reachability — it cannot, because the
+ * downward trigger's target lives in child types — so the convention is
+ * documented and enforced by runtime fail-loud at the `api.transition` call
+ * site.
  */
 export interface WritTypeChildrenBehavior {
   /** Fires when every child terminated successfully. */
   allSuccess?: WritTypeChildrenBehaviorAction;
   /** Fires when any child terminated in failure. */
   anyFailure?: WritTypeChildrenBehaviorAction;
+  /**
+   * Fires when a writ of this type transitions into a `failure`- or
+   * `cancelled`-attr terminal state. Every non-terminal descendant is
+   * driven to the configured target. The action's `transition` field names
+   * the target state in the *child* type (typically `cancelled`); the
+   * validator does not enforce reachability of that name in this config
+   * because the trigger's downstream target lives in child types.
+   */
+  parentTerminal?: WritTypeChildrenBehaviorAction;
 }
 
 /**
@@ -212,9 +260,16 @@ function fail(path: string, problem: string, received: unknown): never {
  *      some other state.
  *   8. No terminal state declares any outbound transitions.
  *   9. Every `childrenBehavior` trigger carries an action object with a
- *      non-empty `transition` string referencing a state that exists.
- *  10. Each `childrenBehavior` transition target is reachable from every
- *      non-terminal state of the config via `allowedTransitions`.
+ *      non-empty `transition` string. For the upward triggers
+ *      (`allSuccess`, `anyFailure`) the target must reference a state
+ *      that exists in this same config.
+ *  10. Each upward `childrenBehavior` transition target is reachable from
+ *      every non-terminal state of the config via `allowedTransitions`.
+ *      The downward `parentTerminal` trigger is excluded — its target
+ *      lives in child type configs.
+ *  11. Each action's optional `resolution` field is a non-empty string,
+ *      and `copyResolution: true` and `resolution` are mutually exclusive
+ *      on the same action.
  *
  * Error messages take the shape `[clerk] writTypeConfig.<path>: <problem>;
  * received <value>` — e.g. `states[2].classification`,
@@ -379,8 +434,24 @@ export function validateWritTypeConfig(config: WritTypeConfig): void {
       fail('childrenBehavior', 'must be an object when provided', cb);
     }
 
-    const triggerNames = ['allSuccess', 'anyFailure'] as const;
-    for (const triggerName of triggerNames) {
+    // Upward triggers fire on the parent's own state machine — their
+    // `transition` target must reference a state declared in *this*
+    // config and is subject to same-config reachability checking.
+    //
+    // The downward `parentTerminal` trigger drives non-terminal children
+    // through *their* own state machines — its `transition` target lives
+    // in child type configs. This validator is deliberately standalone
+    // and pure (no cross-type registry awareness), so the downward
+    // trigger's target is structurally validated (existence as a string,
+    // non-empty, optional resolution non-empty, mutual exclusion with
+    // copyResolution) but does *not* participate in the same-config
+    // existence or reachability checks. Runtime fail-loud at the
+    // `api.transition` call site enforces the per-child-type contract.
+    const upwardTriggerNames = ['allSuccess', 'anyFailure'] as const;
+    const downwardTriggerNames = ['parentTerminal'] as const;
+    const allTriggerNames = [...upwardTriggerNames, ...downwardTriggerNames] as const;
+
+    for (const triggerName of allTriggerNames) {
       const action = cb[triggerName];
       if (action === undefined) continue;
 
@@ -402,14 +473,6 @@ export function validateWritTypeConfig(config: WritTypeConfig): void {
         );
       }
 
-      if (!stateIndexByName.has(action.transition)) {
-        fail(
-          `${actionPath}.transition`,
-          `references unknown state "${action.transition}"`,
-          action.transition,
-        );
-      }
-
       if (action.copyResolution !== undefined && typeof action.copyResolution !== 'boolean') {
         fail(
           `${actionPath}.copyResolution`,
@@ -417,10 +480,45 @@ export function validateWritTypeConfig(config: WritTypeConfig): void {
           action.copyResolution,
         );
       }
+
+      if (action.resolution !== undefined) {
+        if (typeof action.resolution !== 'string' || action.resolution.length === 0) {
+          fail(
+            `${actionPath}.resolution`,
+            'must be a non-empty string when provided',
+            action.resolution,
+          );
+        }
+      }
+
+      if (action.copyResolution === true && action.resolution !== undefined) {
+        fail(
+          actionPath,
+          'copyResolution and resolution are mutually exclusive — pick one',
+          { copyResolution: action.copyResolution, resolution: action.resolution },
+        );
+      }
     }
 
-    // ── Reachability: each trigger target must be reachable from
-    // every non-terminal state via allowedTransitions. ───────────
+    // Upward triggers only: target must reference a declared state in
+    // this same config.
+    for (const triggerName of upwardTriggerNames) {
+      const action = cb[triggerName];
+      if (action === undefined) continue;
+      if (!stateIndexByName.has(action.transition)) {
+        fail(
+          `childrenBehavior.${triggerName}.transition`,
+          `references unknown state "${action.transition}"`,
+          action.transition,
+        );
+      }
+    }
+
+    // ── Reachability: each upward trigger target must be reachable
+    // from every non-terminal state via allowedTransitions. The
+    // downward `parentTerminal` trigger is excluded — its target
+    // lives in child type configs, not this one, so same-config
+    // reachability is meaningless for it. ────────────────────────
     const nonTerminalStates = config.states.filter(
       (s) => s.classification !== 'terminal',
     );
@@ -458,7 +556,7 @@ export function validateWritTypeConfig(config: WritTypeConfig): void {
       return seen;
     }
 
-    for (const triggerName of triggerNames) {
+    for (const triggerName of upwardTriggerNames) {
       const action = cb[triggerName];
       if (action === undefined) continue;
       const target = action.transition;

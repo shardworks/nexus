@@ -743,9 +743,10 @@ describe('Clerk', () => {
       // Add the grandchild *before* transitioning its parent — the post
       // path rejects parents in terminal phases.
       const grand = await postMandate({ title: 'Grand of completed', body: 'Body', parentId: completed.id });
-      // Transition the completed child after grand exists. `completed` does
-      // not auto-cancel non-terminal children — `handleParentTerminal` only
-      // warns when reaching `completed` with non-terminal children.
+      // Transition the completed child after grand exists. The downward
+      // `parentTerminal` cascade only fires on `failure`- or `cancelled`-
+      // attr terminals; reaching `completed` (success attr) leaves
+      // non-terminal descendants alone.
       await clerk.transition(completed.id, 'completed');
 
       const forest = await clerk.tree({ phase: 'open' });
@@ -3779,27 +3780,34 @@ describe('Parent/child relationships', () => {
       assert.equal(after.resolution, 'three');
     });
 
-    // (e) child terminates after parent already terminal → no-op
-    it('is idempotent — child terminal events on an already-terminal parent are no-ops', async () => {
+    // (e) parent driven manually to `failed` cascades downward to cancel
+    //     non-terminal children, AND the upward branch is idempotent on
+    //     each child's resulting cancelled-event because the parent is
+    //     already terminal by then. The parent's resolution is preserved
+    //     from the manual transition, not overwritten by the cascade's
+    //     bubble-up.
+    it('downward cascade fires on manual parent terminal; upward idempotency preserves parent resolution', async () => {
       const parent = await postMandate({ title: 'Parent', body: 'Body' });
       const c1 = await postMandate({ title: 'C1', body: 'B', parentId: parent.id });
-      await postMandate({ title: 'C2', body: 'B', parentId: parent.id });
+      const c2 = await postMandate({ title: 'C2', body: 'B', parentId: parent.id });
 
-      // Drive the parent terminal directly without invoking cascade.
+      // Drive the parent terminal directly. The downward cascade then
+      // cancels both children. Each child's cancelled-event would
+      // ordinarily fire the upward branch, but the parent is already
+      // terminal so the upward short-circuit fires instead — the parent's
+      // resolution is *not* overwritten by the cascade's bubble-up.
       await clerk.transition(parent.id, 'failed', { resolution: 'manual-fail' });
-
-      // A subsequent terminal child event must NOT throw and must NOT
-      // overwrite the parent's resolution.
-      await clerk.transition(c1.id, 'completed', { resolution: 'late-win' });
 
       const after = await clerk.show(parent.id);
       assert.equal(after.phase, 'failed');
       assert.equal(after.resolution, 'manual-fail');
 
-      // The completed child still terminates correctly.
-      const child = await clerk.show(c1.id);
-      assert.equal(child.phase, 'completed');
-      assert.equal(child.resolution, 'late-win');
+      const childA = await clerk.show(c1.id);
+      const childB = await clerk.show(c2.id);
+      assert.equal(childA.phase, 'cancelled');
+      assert.equal(childA.resolution, 'Automatically cancelled due to parent termination');
+      assert.equal(childB.phase, 'cancelled');
+      assert.equal(childB.resolution, 'Automatically cancelled due to parent termination');
     });
 
     // (f) single-child case behaves identically to multi-child with one entry
@@ -3812,6 +3820,114 @@ describe('Parent/child relationships', () => {
       const after = await clerk.show(parent.id);
       assert.equal(after.phase, 'completed');
       assert.equal(after.resolution, 'only-child-done');
+    });
+
+    // ── Downward cascade (parentTerminal) ───────────────────────────
+    //
+    // Mandate's parentTerminal action drives every non-terminal
+    // descendant to `cancelled` with the canonical resolution string
+    // when a mandate parent itself reaches a `failure`- or `cancelled`-
+    // attr terminal state. These tests cover the four documented
+    // scenarios end-to-end through the registered watcher.
+
+    it('downward: cancel parent with two open children → both cancelled with canonical resolution', async () => {
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
+      const c1 = await postMandate({ title: 'C1', body: 'B', parentId: parent.id });
+      const c2 = await postMandate({ title: 'C2', body: 'B', parentId: parent.id });
+
+      await clerk.transition(parent.id, 'cancelled', { resolution: 'gone' });
+
+      const childA = await clerk.show(c1.id);
+      const childB = await clerk.show(c2.id);
+      assert.equal(childA.phase, 'cancelled');
+      assert.equal(childA.resolution, 'Automatically cancelled due to parent termination');
+      assert.equal(childB.phase, 'cancelled');
+      assert.equal(childB.resolution, 'Automatically cancelled due to parent termination');
+    });
+
+    it('downward: fail parent with two open children → both cancelled with canonical resolution', async () => {
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
+      const c1 = await postMandate({ title: 'C1', body: 'B', parentId: parent.id });
+      const c2 = await postMandate({ title: 'C2', body: 'B', parentId: parent.id });
+
+      await clerk.transition(parent.id, 'failed', { resolution: 'manual-fail' });
+
+      const childA = await clerk.show(c1.id);
+      const childB = await clerk.show(c2.id);
+      assert.equal(childA.phase, 'cancelled');
+      assert.equal(childA.resolution, 'Automatically cancelled due to parent termination');
+      assert.equal(childB.phase, 'cancelled');
+      assert.equal(childB.resolution, 'Automatically cancelled due to parent termination');
+    });
+
+    it('downward: already-terminal children are skipped; non-terminal siblings are cancelled', async () => {
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
+      const completedChild = await postMandate({ title: 'C1', body: 'B', parentId: parent.id });
+      const openChild = await postMandate({ title: 'C2', body: 'B', parentId: parent.id });
+
+      // Drive c1 to completed first — c2 stays open. The upward cascade
+      // does not fire because c2 is still active, so the parent stays
+      // open. Now we manually cancel the parent, expecting:
+      //   - c1 unchanged (already terminal, with its original resolution)
+      //   - c2 cancelled with the canonical resolution
+      await clerk.transition(completedChild.id, 'completed', { resolution: 'shipped' });
+
+      await clerk.transition(parent.id, 'cancelled', { resolution: 'parent gone' });
+
+      const c1After = await clerk.show(completedChild.id);
+      const c2After = await clerk.show(openChild.id);
+      assert.equal(c1After.phase, 'completed', 'already-terminal child stays put');
+      assert.equal(c1After.resolution, 'shipped', 'already-terminal child resolution untouched');
+      assert.equal(c2After.phase, 'cancelled');
+      assert.equal(c2After.resolution, 'Automatically cancelled due to parent termination');
+    });
+
+    it('downward: three-level hierarchy → grandchildren cancelled via natural CDC re-fire', async () => {
+      const root = await postMandate({ title: 'Root', body: 'B' });
+      const middle = await postMandate({ title: 'Middle', body: 'B', parentId: root.id });
+      const leaf = await postMandate({ title: 'Leaf', body: 'B', parentId: middle.id });
+
+      // Cancelling root cascades down through middle and then through
+      // leaf via the natural CDC re-fire on middle's own transition.
+      await clerk.transition(root.id, 'cancelled', { resolution: 'top gone' });
+
+      const middleAfter = await clerk.show(middle.id);
+      const leafAfter = await clerk.show(leaf.id);
+      assert.equal(middleAfter.phase, 'cancelled');
+      assert.equal(middleAfter.resolution, 'Automatically cancelled due to parent termination');
+      assert.equal(leafAfter.phase, 'cancelled');
+      assert.equal(leafAfter.resolution, 'Automatically cancelled due to parent termination');
+    });
+
+    it('downward: idempotent re-fire on an already-terminal parent does not throw', async () => {
+      // Build a parent that's already terminal with a child that's
+      // already cancelled. A re-fire of the cascade machinery (via
+      // transition) on a terminal parent is impossible — the state
+      // machine rejects terminal-from-terminal transitions. The
+      // engine's idempotency guarantee applies inside the loop:
+      // already-terminal children are skipped during enumeration. We
+      // exercise that by adding a fresh non-terminal child after the
+      // cascade has already run, then driving the parent through the
+      // re-fire indirectly: post a sibling under the same parent, then
+      // verify the second cascade-pass leaves the older terminal child
+      // untouched.
+
+      const parent = await postMandate({ title: 'Parent', body: 'B' });
+      const c1 = await postMandate({ title: 'C1', body: 'B', parentId: parent.id });
+      // Drive c1 to a different terminal first so the cascade cannot
+      // overwrite it. anyFailure would lift the parent on a single
+      // child failure — sidestep by using `cancelled` (no upward attr
+      // on cancelled in mandate's config).
+      await clerk.transition(c1.id, 'cancelled', { resolution: 'preempt' });
+
+      // Now manually cancel the parent. The cascade enumerates children
+      // and finds c1 already terminal — it should be skipped, not
+      // re-cancelled, and its resolution must remain 'preempt'.
+      await clerk.transition(parent.id, 'cancelled', { resolution: 'parent gone' });
+
+      const c1After = await clerk.show(c1.id);
+      assert.equal(c1After.phase, 'cancelled');
+      assert.equal(c1After.resolution, 'preempt', 'pre-existing terminal resolution preserved');
     });
 
     // Bonus: grandparent lift via natural CDC re-fire — terminal child

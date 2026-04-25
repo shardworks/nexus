@@ -105,14 +105,28 @@ const MANDATE_TYPE_NAME = 'mandate';
  * this config during its own `start()` so mandate is present in the
  * registry on the same footing as any plugin-registered type.
  *
- * `childrenBehavior` opts mandate into both upward cascade directions:
- *   - allSuccess → completed (copyResolution)
- *   - anyFailure → failed     (copyResolution)
+ * `childrenBehavior` opts mandate into both upward cascade directions
+ * AND the downward parent-terminal cascade:
+ *   - allSuccess     → completed  (copyResolution; upward)
+ *   - anyFailure     → failed     (copyResolution; upward)
+ *   - parentTerminal → cancelled  (static resolution; downward)
  *
- * Both targets are reachable from every non-terminal mandate state
- * (`new`, `open`, `stuck`) via `allowedTransitions`, so the validator's
- * reachability check accepts the configuration. The triggering child's
- * resolution string is copied verbatim onto the parent.
+ * The upward triggers' targets (`completed` / `failed`) are reachable
+ * from every non-terminal mandate state (`new`, `open`, `stuck`) via
+ * `allowedTransitions`, so the validator's reachability check accepts
+ * the configuration. The triggering child's resolution string is
+ * copied verbatim onto the parent.
+ *
+ * The downward `parentTerminal` trigger fires when a mandate parent
+ * itself reaches a `failure`- or `cancelled`-attr terminal state and
+ * cancels every non-terminal descendant with the canonical resolution
+ * `Automatically cancelled due to parent termination`. The string is
+ * declared inline rather than exported as a named constant — the
+ * convention is per-type, not framework-wide. Because the trigger's
+ * downstream target lives in *child* type configs, every potential
+ * child type must declare `cancelled` reachable from each non-terminal
+ * state via `allowedTransitions`; failures surface as fail-loud throws
+ * from `api.transition` and roll back the Phase 1 transaction.
  */
 const MANDATE_CONFIG: WritTypeConfig = {
   name: MANDATE_TYPE_NAME,
@@ -155,6 +169,10 @@ const MANDATE_CONFIG: WritTypeConfig = {
   childrenBehavior: {
     allSuccess: { transition: 'completed', copyResolution: true },
     anyFailure: { transition: 'failed', copyResolution: true },
+    parentTerminal: {
+      transition: 'cancelled',
+      resolution: 'Automatically cancelled due to parent termination',
+    },
   },
 };
 

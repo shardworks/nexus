@@ -535,6 +535,321 @@ describe("createChildrenBehaviorEngine() — status['clerk'] write", () => {
   });
 });
 
+// ── Downward branch (parentTerminal) ─────────────────────────────────
+
+/**
+ * Mandate-shaped config that opts into both upward triggers AND the new
+ * downward `parentTerminal` cascade. This is the primary fixture for the
+ * downward branch tests below.
+ */
+const MANDATE_WITH_DOWNWARD: WritTypeConfig = {
+  ...MANDATE_TYPE,
+  childrenBehavior: {
+    allSuccess: { transition: 'completed', copyResolution: true },
+    anyFailure: { transition: 'failed', copyResolution: true },
+    parentTerminal: {
+      transition: 'cancelled',
+      resolution: 'Automatically cancelled due to parent termination',
+    },
+  },
+};
+
+/**
+ * A heterogeneous-child fixture: same lifecycle as mandate but a distinct
+ * type name. Used to verify the downward cascade handles children of
+ * arbitrary types as long as each type accepts the configured target
+ * transition (here: `cancelled`).
+ */
+const STEP_TYPE: WritTypeConfig = {
+  name: 'step',
+  states: MANDATE_TYPE.states,
+};
+
+/**
+ * A child type that does NOT declare `cancelled` as a reachable state.
+ * Used to exercise the fail-loud rollback when a child type cannot accept
+ * the parent's configured cascade target.
+ */
+const NO_CANCEL_TYPE: WritTypeConfig = {
+  name: 'no-cancel',
+  states: [
+    { name: 'new', classification: 'initial', allowedTransitions: ['done', 'failed'] },
+    { name: 'done', classification: 'terminal', attrs: ['success'], allowedTransitions: [] },
+    { name: 'failed', classification: 'terminal', attrs: ['failure'], allowedTransitions: [] },
+  ],
+};
+
+describe('createChildrenBehaviorEngine() — parentTerminal trigger', () => {
+  it('fires when parent transitions to a failure-attr terminal state', async () => {
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const parentNext = makeWrit({
+      id: 'w-p1', type: 'mandate', phase: 'failed', resolution: 'parent kaboom',
+    });
+    const childA = makeWrit({ id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-p1' });
+    const childB = makeWrit({ id: 'w-c2', type: 'mandate', phase: 'stuck', parentId: 'w-p1' });
+    const h = makeHarness({
+      writs: [parentNext, childA, childB],
+      configs: [MANDATE_WITH_DOWNWARD],
+    });
+    await h.handle(makeUpdateEvent(parentNext, parentPrev));
+
+    // Both non-terminal children should be cancelled with the canonical
+    // resolution string. Order matches the iteration order of writs.find.
+    const callsById = new Map(h.transitionCalls.map((c) => [c.id, c]));
+    assert.equal(h.transitionCalls.length, 2, 'both children should be cancelled');
+    assert.deepEqual(callsById.get('w-c1'), {
+      id: 'w-c1',
+      to: 'cancelled',
+      fields: { resolution: 'Automatically cancelled due to parent termination' },
+    });
+    assert.deepEqual(callsById.get('w-c2'), {
+      id: 'w-c2',
+      to: 'cancelled',
+      fields: { resolution: 'Automatically cancelled due to parent termination' },
+    });
+  });
+
+  it('fires when parent transitions to a cancelled-attr terminal state', async () => {
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const parentNext = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'cancelled' });
+    const child = makeWrit({ id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-p1' });
+    const h = makeHarness({
+      writs: [parentNext, child],
+      configs: [MANDATE_WITH_DOWNWARD],
+    });
+    await h.handle(makeUpdateEvent(parentNext, parentPrev));
+    assert.deepEqual(h.transitionCalls, [
+      {
+        id: 'w-c1',
+        to: 'cancelled',
+        fields: { resolution: 'Automatically cancelled due to parent termination' },
+      },
+    ]);
+  });
+
+  it('skips already-terminal children', async () => {
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const parentNext = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'cancelled' });
+    const completedChild = makeWrit({
+      id: 'w-c1', type: 'mandate', phase: 'completed', parentId: 'w-p1', resolution: 'shipped',
+    });
+    const failedChild = makeWrit({
+      id: 'w-c2', type: 'mandate', phase: 'failed', parentId: 'w-p1', resolution: 'oops',
+    });
+    const openChild = makeWrit({ id: 'w-c3', type: 'mandate', phase: 'open', parentId: 'w-p1' });
+    const h = makeHarness({
+      writs: [parentNext, completedChild, failedChild, openChild],
+      configs: [MANDATE_WITH_DOWNWARD],
+    });
+    await h.handle(makeUpdateEvent(parentNext, parentPrev));
+    assert.equal(h.transitionCalls.length, 1);
+    assert.equal(h.transitionCalls[0].id, 'w-c3');
+    assert.equal(h.transitionCalls[0].to, 'cancelled');
+  });
+
+  it('does not fire on success-attr terminal transitions', async () => {
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const parentNext = makeWrit({
+      id: 'w-p1', type: 'mandate', phase: 'completed', resolution: 'done',
+    });
+    const child = makeWrit({ id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-p1' });
+    const h = makeHarness({
+      writs: [parentNext, child],
+      configs: [MANDATE_WITH_DOWNWARD],
+    });
+    await h.handle(makeUpdateEvent(parentNext, parentPrev));
+    // The downward branch must not fire on success — `completed` mandates
+    // do not cancel children. (The upward branch is also a no-op here
+    // because the parent has no parent of its own.)
+    assert.equal(h.transitionCalls.length, 0);
+  });
+
+  it('does not fire on non-terminal parent transitions', async () => {
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const parentNext = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'stuck' });
+    const child = makeWrit({ id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-p1' });
+    const h = makeHarness({
+      writs: [parentNext, child],
+      configs: [MANDATE_WITH_DOWNWARD],
+    });
+    await h.handle(makeUpdateEvent(parentNext, parentPrev));
+    assert.equal(h.transitionCalls.length, 0);
+  });
+
+  it('does not fire when the parent type omits parentTerminal', async () => {
+    // Use the standard MANDATE_TYPE which only opts into upward triggers.
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const parentNext = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'cancelled' });
+    const child = makeWrit({ id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-p1' });
+    const h = makeHarness({
+      writs: [parentNext, child],
+      configs: [MANDATE_TYPE],
+    });
+    await h.handle(makeUpdateEvent(parentNext, parentPrev));
+    assert.equal(h.transitionCalls.length, 0);
+  });
+
+  it('is idempotent when re-fired on an already-terminal parent', async () => {
+    // Simulate a re-fire of the same terminal-transition event after the
+    // children have already been cancelled. With the children now
+    // already-terminal, the loop should skip every child and produce no
+    // further transitions.
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const parentNext = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'cancelled' });
+    const childA = makeWrit({
+      id: 'w-c1', type: 'mandate', phase: 'cancelled', parentId: 'w-p1',
+      resolution: 'Automatically cancelled due to parent termination',
+    });
+    const childB = makeWrit({
+      id: 'w-c2', type: 'mandate', phase: 'cancelled', parentId: 'w-p1',
+      resolution: 'Automatically cancelled due to parent termination',
+    });
+    const h = makeHarness({
+      writs: [parentNext, childA, childB],
+      configs: [MANDATE_WITH_DOWNWARD],
+    });
+    await h.handle(makeUpdateEvent(parentNext, parentPrev));
+    assert.equal(h.transitionCalls.length, 0, 're-fire should be a no-op');
+  });
+
+  it('three-level hierarchy: grandchildren are cancelled via natural CDC re-fire', async () => {
+    // The handler does NOT walk the tree itself. When the engine cancels
+    // a child, the harness's `transition` mock updates the writ but does
+    // not synthesize a follow-up CDC event. We simulate the natural
+    // re-fire by invoking `handle` again with an update event for the
+    // newly-terminal child as the entry. This matches what the real
+    // stacks book does on writs.patch.
+    const grandpaPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const grandpaNext = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'cancelled' });
+    const parentOpen = makeWrit({ id: 'w-p2', type: 'mandate', phase: 'open', parentId: 'w-p1' });
+    const grandchild = makeWrit({ id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-p2' });
+    const h = makeHarness({
+      writs: [grandpaNext, parentOpen, grandchild],
+      configs: [MANDATE_WITH_DOWNWARD],
+    });
+
+    // First fire: grandpa terminal → cancel parent (the only direct child).
+    await h.handle(makeUpdateEvent(grandpaNext, grandpaPrev));
+    assert.equal(h.transitionCalls.length, 1);
+    assert.equal(h.transitionCalls[0].id, 'w-p2');
+
+    // Re-fire on parent's newly-terminal transition (natural CDC) →
+    // grandchild cancelled.
+    const parentNext = h.writsById.get('w-p2')!;
+    await h.handle(makeUpdateEvent(parentNext, parentOpen));
+    assert.equal(h.transitionCalls.length, 2);
+    assert.equal(h.transitionCalls[1].id, 'w-c1');
+    assert.equal(h.transitionCalls[1].to, 'cancelled');
+  });
+
+  it('heterogeneous children: cancels mandate parent\'s step and observation-set children', async () => {
+    // A mandate parent with two children of different types — both types
+    // independently declare `cancelled` reachable from `open`. The cascade
+    // should drive both children into cancelled regardless of their type.
+    const obsSetType: WritTypeConfig = {
+      name: 'observation-set',
+      states: MANDATE_TYPE.states,
+    };
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const parentNext = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'cancelled' });
+    const stepChild = makeWrit({ id: 'w-s1', type: 'step', phase: 'open', parentId: 'w-p1' });
+    const obsChild = makeWrit({
+      id: 'w-o1', type: 'observation-set', phase: 'open', parentId: 'w-p1',
+    });
+    const h = makeHarness({
+      writs: [parentNext, stepChild, obsChild],
+      configs: [MANDATE_WITH_DOWNWARD, STEP_TYPE, obsSetType],
+    });
+    await h.handle(makeUpdateEvent(parentNext, parentPrev));
+    const callsById = new Map(h.transitionCalls.map((c) => [c.id, c]));
+    assert.equal(h.transitionCalls.length, 2);
+    assert.equal(callsById.get('w-s1')?.to, 'cancelled');
+    assert.equal(callsById.get('w-o1')?.to, 'cancelled');
+  });
+
+  it('throws (rolling back) when a child type lacks the configured target', async () => {
+    // The `no-cancel` type declares only `done` and `failed` as terminals;
+    // it cannot transition into `cancelled` from any state. The cascade
+    // must throw, mirroring the engine's existing fail-loud convention.
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const parentNext = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'cancelled' });
+    const child = makeWrit({ id: 'w-c1', type: 'no-cancel', phase: 'new', parentId: 'w-p1' });
+
+    // Build a harness where the transition fake validates target reachability
+    // against the child's type config — mirrors the runtime behaviour.
+    const writsById = new Map<string, WritDoc>();
+    writsById.set(parentNext.id, parentNext);
+    writsById.set(child.id, child);
+    const configByName = new Map<string, WritTypeConfig>();
+    configByName.set(MANDATE_WITH_DOWNWARD.name, MANDATE_WITH_DOWNWARD);
+    configByName.set(NO_CANCEL_TYPE.name, NO_CANCEL_TYPE);
+
+    const writsBook = {
+      async get(id: string) {
+        return writsById.get(id) ?? null;
+      },
+      async find() {
+        return [...writsById.values()].filter((w) => w.parentId === parentNext.id);
+      },
+    } as unknown as Book<WritDoc>;
+
+    function isTerminal(writ: WritDoc): boolean {
+      const config = configByName.get(writ.type);
+      const state = config?.states.find((s) => s.name === writ.phase);
+      return state?.classification === 'terminal';
+    }
+
+    const handle = createChildrenBehaviorEngine({
+      writs: writsBook,
+      getWritTypeConfig(name) {
+        return configByName.get(name);
+      },
+      isTerminal,
+      async transition(id, to) {
+        const existing = writsById.get(id);
+        if (!existing) throw new Error(`transition: writ "${id}" missing`);
+        const config = configByName.get(existing.type);
+        const currentState = config?.states.find((s) => s.name === existing.phase);
+        if (!currentState?.allowedTransitions.includes(to)) {
+          throw new Error(
+            `Cannot transition writ "${id}" from "${existing.phase}" to "${to}".`,
+          );
+        }
+        const next: WritDoc = { ...existing, phase: to };
+        writsById.set(id, next);
+        return next;
+      },
+    });
+
+    await assert.rejects(
+      () => handle(makeUpdateEvent(parentNext, parentPrev)),
+      /Cannot transition writ "w-c1" from "new" to "cancelled"/,
+    );
+  });
+
+  it('supports copyResolution on parentTerminal: child inherits the parent\'s resolution', async () => {
+    const copyType: WritTypeConfig = {
+      ...MANDATE_TYPE,
+      childrenBehavior: {
+        parentTerminal: { transition: 'cancelled', copyResolution: true },
+      },
+    };
+    const parentPrev = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const parentNext = makeWrit({
+      id: 'w-p1', type: 'mandate', phase: 'cancelled', resolution: 'parent reason',
+    });
+    const child = makeWrit({ id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-p1' });
+    const h = makeHarness({
+      writs: [parentNext, child],
+      configs: [copyType],
+    });
+    await h.handle(makeUpdateEvent(parentNext, parentPrev));
+    assert.deepEqual(h.transitionCalls, [
+      { id: 'w-c1', to: 'cancelled', fields: { resolution: 'parent reason' } },
+    ]);
+  });
+});
+
 describe('createChildrenBehaviorEngine() — fail-loud surface', () => {
   it('throws when the child references a parentId that does not exist', async () => {
     const childPrev = makeWrit({ id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-missing' });

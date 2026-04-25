@@ -468,16 +468,16 @@ describe('implement-loop engine', () => {
     assert.equal(updatedStep.phase, 'completed');
   });
 
-  it('step writ stays open when session fails and mandate reaches failed (T2 — cascade dropped, see T3)', async () => {
+  it('step writ is cancelled when session fails and mandate reaches failed (parent→child cascade)', async () => {
     // Design: Spider's tryCollect() calls failEngine() directly for failed sessions
     // and never invokes the engine's collect() method. This means step-session
     // cannot itself transition the step writ on session failure.
     //
     // In the engine-retry model, engine-failure transitions the mandate writ
-    // directly to `phase='failed'`. Pre-T2 Clerk cascaded that to cancel the
-    // step writ; T2 dropped the hardcoded cascade and T3 will reintroduce
-    // it via WritTypeConfig.childrenBehavior. This test pins the current
-    // contract: step writ is left in `open` because nothing transitions it.
+    // directly to `phase='failed'`. Mandate's `parentTerminal` action then
+    // cascades downward to cancel every non-terminal descendant — the step
+    // writ here transitions to `cancelled` with the canonical resolution
+    // string `Automatically cancelled due to parent termination`.
     const { clerk, spider, stacks: s } = fix;
 
     const mandate = await clerk.post({ title: 'Fail transition', body: 'Spec', codex: 'test' });
@@ -495,14 +495,16 @@ describe('implement-loop engine', () => {
     const lastSession = sessions[sessions.length - 1];
     await sessBook.patch(lastSession.id, { status: 'failed', error: 'Build failed' });
 
-    await spider.crawl(); // failEngine → rig failed → mandate failed (no cascade)
+    await spider.crawl(); // failEngine → rig failed → mandate failed → cascade cancels step
 
     const updatedMandate = await clerk.show(mandate.id);
     assert.equal(updatedMandate.phase, 'failed', 'Mandate transitions to failed via engine-failure path');
 
     const updatedStep = await clerk.show(step.id);
-    assert.equal(updatedStep.phase, 'open',
-      'Step writ is NOT cancelled — T2 dropped the parent→child cancellation cascade. T3 will reintroduce it.');
+    assert.equal(updatedStep.phase, 'cancelled',
+      'Step writ is cancelled by mandate\'s parentTerminal cascade');
+    assert.equal(updatedStep.resolution, 'Automatically cancelled due to parent termination',
+      'Step writ carries the canonical cascade resolution');
   });
 
   it('dynamically added steps are picked up after the current step completes', async () => {
@@ -653,9 +655,11 @@ describe('implement-loop engine', () => {
 //
 // The bug was that step-session `collect()` swallowed every error from its
 // `clerk.transition(step, 'completed')` call with a bare `catch {}`. When
-// that transition failed — typically because the parent's downward cascade
-// beat it to the writ — the failure was invisible, and the step writ ended
-// up misattributed as "sibling failure". The fix:
+// that transition failed — most commonly because the parent's downward
+// cascade beat it to the writ (mandate's `parentTerminal` action cancels
+// every non-terminal descendant when the parent itself reaches a `failure`-
+// or `cancelled`-attr terminal) — the failure was invisible, and the step
+// writ ended up misattributed as "sibling failure". The fix:
 //
 //   (a) Classify caught transition errors: already-terminal is expected and
 //       silent; anything else logs a warning so the race is visible.
@@ -708,9 +712,9 @@ describe('step-session collect() — transition error classification', () => {
     const { clerk, spider, stacks: s } = fix;
     const { mandate, step } = await advanceToStepStarted();
 
-    // Simulate the race: something (e.g. the parent's downward cascade) has
-    // already cancelled the step writ before Spider's tryCollect invokes
-    // step-session's collect().
+    // Simulate the race: the parent mandate's downward cascade has
+    // already cancelled the step writ (or some other path beat us to it)
+    // before Spider's tryCollect invokes step-session's collect().
     await clerk.transition(step.id, 'cancelled', { resolution: 'Pre-race cancel' });
 
     const { warnings, restore } = captureWarnings();

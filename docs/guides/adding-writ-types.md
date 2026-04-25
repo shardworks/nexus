@@ -29,6 +29,10 @@ const proposalReviewConfig: WritTypeConfig = {
   childrenBehavior: {
     allSuccess: { transition: 'approved', copyResolution: true },
     anyFailure: { transition: 'rejected', copyResolution: true },
+    parentTerminal: {
+      transition: 'withdrawn',
+      resolution: 'Parent proposal terminated',
+    },
   },
 };
 
@@ -67,9 +71,9 @@ The `drafting → circulating ↔ revising → approved|rejected` loop captures 
 
 Classifications answer "where does this state sit on the lifecycle?" Attrs answer "what does this terminal outcome *mean*?" The two fields are independent and both matter. The attrs in the example:
 
-- `approved` carries `['success']` — `childrenBehavior.allSuccess` and the Clerk's downward cascade both key on this.
-- `rejected` carries `['failure']` — `childrenBehavior.anyFailure` keys on this.
-- `withdrawn` carries `['cancelled']` — surfaces to observability but triggers no cascade.
+- `approved` carries `['success']` — `childrenBehavior.allSuccess` keys on this when this type is a parent. (Note: success-attr terminals do *not* fire the downward `parentTerminal` cascade.)
+- `rejected` carries `['failure']` — `childrenBehavior.anyFailure` keys on this when this type is a parent, and `childrenBehavior.parentTerminal` keys on this when this type is a parent that itself reaches the terminal state.
+- `withdrawn` carries `['cancelled']` — surfaces to observability and, alongside `failure`, triggers the downward `parentTerminal` cascade when this type is a parent that itself terminates.
 
 The four well-known attrs (`success`, `failure`, `cancelled`, `stuck`) are the vocabulary framework-wired triggers consume. Custom strings (e.g. `'approved-with-conditions'`, `'blocked-on-legal'`) are accepted and preserved, but only your plugin's own consumers will read them. Under-tagging is the common mistake: a terminal state without the `success` attr silently prevents `allSuccess` triggers from firing against this type's children.
 
@@ -80,20 +84,26 @@ Each state's `allowedTransitions` is the outbound edge list — the set of state
 - Every target is a non-empty string referencing a state that exists in the same config.
 - Terminal states declare an empty array (`allowedTransitions: []`).
 - Every non-initial state has at least one inbound transition from some other state. A state with no inbound edges is orphaned — a writ could never reach it.
-- Every `childrenBehavior` transition target is reachable from every non-terminal state via `allowedTransitions`. A trigger that targets a state the parent can't reach from its current state is unreachable and fails registration.
+- Every upward `childrenBehavior` transition target (`allSuccess`, `anyFailure`) is reachable from every non-terminal state via `allowedTransitions`. A trigger that targets a state the parent can't reach from its current state is unreachable and fails registration. The downward `parentTerminal` trigger is exempt from this same-config check — its target lives in *child* type configs, not this one.
 
 In the example, `circulating` can go anywhere useful (`approved`, `rejected`, `revising`, `withdrawn`). `revising` is the odd one — it only goes back to `circulating` (the revised version re-enters review) or `withdrawn` (give up). That asymmetry reflects the real workflow: you don't go straight from `revising` to `approved`; the revised proposal must be re-reviewed first.
 
 ### `childrenBehavior` triggers
 
-When a proposal-review writ has children (for example, per-reviewer child writs), the parent type's `childrenBehavior` declares how to lift aggregate child outcomes onto the parent:
+When a proposal-review writ has children (for example, per-reviewer child writs), the parent type's `childrenBehavior` declares both cascade directions: how to lift aggregate child outcomes upward onto the parent, and how to push parent-terminal events downward onto non-terminal descendants.
+
+Upward triggers (terminal child → parent lift):
 
 - `allSuccess: { transition: 'approved', copyResolution: true }` — when every child is terminal *and* every such state carries the `success` attr, the parent transitions to `approved` with the last triggering child's resolution copied onto the parent.
 - `anyFailure: { transition: 'rejected', copyResolution: true }` — when any child reaches a terminal state carrying the `failure` attr, the parent transitions to `rejected` with that child's resolution copied onto the parent.
 
-The children-behavior engine implements these triggers exactly: `anyFailure` is evaluated first (precedence), `allSuccess` only fires when every sibling is in a `success`-attr terminal state, and `copyResolution: true` copies the triggering child's `resolution` onto the parent through the same `transition` call. When the parent itself is already terminal the engine short-circuits, so a late-arriving terminal child event is a no-op.
+Downward trigger (terminal parent → non-terminal-children cancellation):
 
-The reachability invariant matters here. `approved` and `rejected` must be reachable from *every* non-terminal state — `drafting`, `circulating`, `revising` — otherwise a parent stuck in one of those states couldn't land on the trigger's target. Walk through the graph: from `drafting`, you reach `approved` via `circulating`; from `revising`, you reach `approved` via `circulating`; from `circulating`, directly. Same story for `rejected`. The validator runs this reachability check and fails registration if it doesn't hold.
+- `parentTerminal: { transition: 'withdrawn', resolution: 'Parent proposal withdrawn' }` — when *this* type's writ itself reaches a `failure`- or `cancelled`-attr terminal (`rejected` or `withdrawn` here), every non-terminal descendant is driven to `withdrawn` with the configured static resolution. Use `copyResolution: true` instead if you'd rather propagate the parent's own resolution string to each cancelled child; `copyResolution` and `resolution` are mutually exclusive.
+
+The children-behavior engine implements these triggers exactly: `anyFailure` is evaluated first (upward precedence), `allSuccess` only fires when every sibling is in a `success`-attr terminal state, and `copyResolution: true` copies the triggering writ's `resolution` onto the target through the same `transition` call. When the parent itself is already terminal the upward branch short-circuits, so a late-arriving terminal child event is a no-op. Downward, already-terminal children are skipped (idempotent on re-fire).
+
+The reachability invariant matters for the upward triggers. `approved` and `rejected` must be reachable from *every* non-terminal state — `drafting`, `circulating`, `revising` — otherwise a parent stuck in one of those states couldn't land on the trigger's target. Walk through the graph: from `drafting`, you reach `approved` via `circulating`; from `revising`, you reach `approved` via `circulating`; from `circulating`, directly. Same story for `rejected`. The validator runs this reachability check on upward triggers and fails registration if it doesn't hold. The downward `parentTerminal` trigger is exempt from same-config reachability — its target lives in child type configs and is enforced at runtime by `api.transition`.
 
 ## Registering via a kit
 
@@ -117,6 +127,10 @@ const proposalReviewConfig: WritTypeConfig = {
   childrenBehavior: {
     allSuccess: { transition: 'approved', copyResolution: true },
     anyFailure: { transition: 'rejected', copyResolution: true },
+    parentTerminal: {
+      transition: 'withdrawn',
+      resolution: 'Parent proposal terminated',
+    },
   },
 };
 
@@ -169,7 +183,11 @@ The override path: declare the type in the guild's own `guild.json` under `clerk
         ],
         "childrenBehavior": {
           "allSuccess": { "transition": "approved", "copyResolution": true },
-          "anyFailure": { "transition": "rejected", "copyResolution": true }
+          "anyFailure": { "transition": "rejected", "copyResolution": true },
+          "parentTerminal": {
+            "transition": "withdrawn",
+            "resolution": "Parent proposal terminated"
+          }
         }
       }
     ]
@@ -219,15 +237,19 @@ The most common footgun. `commission-post --type proposal-review` succeeds once 
 
 ### Under-tagging terminal states
 
-If a terminal state lacks the `success` attr, `childrenBehavior.allSuccess` will never fire against children in that state. Similarly for `failure` and `anyFailure`. Tag every terminal state with at least one known attr (`success`, `failure`, `cancelled`, `stuck`) unless you have a specific reason not to — observability surfaces and cascade rules both key on these.
+If a terminal state lacks the `success` attr, `childrenBehavior.allSuccess` will never fire against children in that state. Similarly for `failure` and `anyFailure`. The downward `parentTerminal` trigger reads both the `failure` and `cancelled` attrs — a terminal state representing parent-rejected work that omits both will silently fail to cascade-cancel its non-terminal descendants. Tag every terminal state with at least one known attr (`success`, `failure`, `cancelled`, `stuck`) unless you have a specific reason not to — observability surfaces and cascade rules both key on these.
 
 ### Writ type name format
 
 The validator enforces only non-emptiness on `name`. **Recommendation** (not constraint): use kebab-case, lowercase, and keep the name short and specific (`proposal-review`, `spike`, `bug-triage`). The guild config surfaces and `writ-types` CLI output all render the name as-is.
 
-### `childrenBehavior` reachability
+### `childrenBehavior` reachability (upward triggers)
 
-If you add an active state that can't reach the `childrenBehavior` target, registration fails with an unreachability error. Walk the transition graph from every active state to each trigger target before shipping. The example's `revising` state only connects to `circulating` and `withdrawn` directly, but both triggers still work because the chain `revising → circulating → approved` exists.
+If you add an active state that can't reach an upward `childrenBehavior` target (`allSuccess` or `anyFailure`), registration fails with an unreachability error. Walk the transition graph from every active state to each trigger target before shipping. The example's `revising` state only connects to `circulating` and `withdrawn` directly, but both triggers still work because the chain `revising → circulating → approved` exists.
+
+### Heterogeneous-child convention (downward `parentTerminal`)
+
+If you register a writ type that may sit *beneath* a parent type declaring a `parentTerminal` action, the child type must declare the configured target state reachable from every non-terminal state via `allowedTransitions`. Mandate's `parentTerminal: { transition: 'cancelled' }` is the canonical case: every type that may be a child of a mandate must declare a `cancelled`-equivalent terminal state and make it reachable from each non-terminal state. The validator does *not* enforce this cross-type contract — it cannot, because the trigger's downstream target lives in child type configs — so a misconfigured child surfaces at runtime as a fail-loud throw from `api.transition` that rolls the cascade back. Build your child type's state machine with the parent's downward cascade in mind, and add an integration test that drives a parent of the canonical parent type into a `failure`- or `cancelled`-attr terminal to exercise the path end-to-end.
 
 ## Further reading
 

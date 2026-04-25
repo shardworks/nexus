@@ -14,7 +14,7 @@ The Clerk owns the boundary between "what is asked for" and "how it gets done." 
 
 The Clerk does **not** execute work. It does not launch sessions, manage rigs, or orchestrate engines. It tracks obligations: what has been commissioned, what state each obligation is in, and whether the guild has fulfilled its commitments. When the Clockworks and rigging system exist, the Clerk will integrate with them via lifecycle events and signals.
 
-Writs can be organized into parent/child hierarchies for decomposing complex work. A parent writ stays in its current state while its children are being processed — parent and child lifecycles evolve independently. There is no automatic cascade in this version of the Clerk: a terminal child does not lift its parent, and a terminal parent does not cancel non-terminal children. A children-behavior engine on the roadmap will reintroduce cascade keyed on per-type `WritTypeConfig.childrenBehavior`.
+Writs can be organized into parent/child hierarchies for decomposing complex work. The Clerk's children-behavior engine consumes each type's `WritTypeConfig.childrenBehavior` block to drive both cascade directions automatically: terminal children can lift the parent (upward `allSuccess` / `anyFailure`), and a parent reaching a `failure`- or `cancelled`-attr terminal can cancel every non-terminal descendant (downward `parentTerminal`). Cascade is opt-in per type — a type whose config omits `childrenBehavior` evolves independently from its parent and children. Mandate opts into all three triggers; see [Children-behavior cascade](#children-behavior-cascade).
 
 Writ documents follow a Kubernetes-style spec/status split: **`phase`** is the Clerk-owned lifecycle state (the phase machine below), and **`status`** is a plugin-owned observation slot — a `Record<string, unknown>` keyed by plugin id where apparatuses like Spider record side-channel observations (last rig, stuck cause, progress ratchets). See [Spec/Status Convention](#specstatus-convention).
 
@@ -379,7 +379,7 @@ Writ types are first-class lifecycle descriptors, not a vocabulary list. Each de
 The substrate composes with the rest of the Clerk:
 
 - **Phase machine** — the validated transition graph declared by each type's `allowedTransitions` is the phase machine the Clerk enforces for that type. A writ of type `T` may only transition between states declared by `T`'s config.
-- **Parent/child cascade** — declared on `WritTypeConfig.childrenBehavior` and consumed by the children-behavior engine (see [Parent/Child Hierarchies](#parentchild-hierarchies)) to route terminal-child outcomes back through the parent's declared triggers, mapping "all children succeeded" / "any child failed" events onto the parent's declared target state. The engine itself ships in T3; until it lands, parent and child lifecycles evolve independently and `childrenBehavior` declarations are validated but not yet acted upon.
+- **Parent/child cascade** — declared on `WritTypeConfig.childrenBehavior` and consumed by the children-behavior engine (see [Parent/Child Hierarchies](#parentchild-hierarchies)). The engine routes terminal-child outcomes back through the parent's declared upward triggers (`allSuccess` / `anyFailure`) and routes parent-terminal events down through every non-terminal descendant via the optional downward `parentTerminal` trigger.
 - **Spider dispatch** — the Spider's `rigTemplateMappings` (see [Spider → Configuration → Plugin-default template and mapping](spider.md#plugin-default-template-and-mapping)) keys off the writ's `type` string. Registering a new writ type here does not dispatch it automatically; a matching entry must exist (or be contributed by a kit) in `spider.rigTemplateMappings`.
 
 ### Classification vs. attrs
@@ -522,8 +522,8 @@ Downstream meaning of each known attr:
 | Attr | Meaning |
 |------|---------|
 | `success` | This terminal state represents a successful outcome. `childrenBehavior.allSuccess` fires only when every terminal child carries this attr. |
-| `failure` | This terminal state represents a failure outcome. `childrenBehavior.anyFailure` fires when any terminal child carries this attr. |
-| `cancelled` | This terminal state represents withdrawal — the obligation was neither fulfilled nor failed. Purely descriptive today; consumed by observability surfaces rather than triggers. |
+| `failure` | This terminal state represents a failure outcome. `childrenBehavior.anyFailure` fires when any terminal child carries this attr; `childrenBehavior.parentTerminal` fires when a writ of the cascading type itself transitions into a terminal state carrying this attr. |
+| `cancelled` | This terminal state represents withdrawal — the obligation was neither fulfilled nor failed. Read by `childrenBehavior.parentTerminal` (alongside `failure`) to drive the downward cascade when a writ terminates without success. |
 | `stuck` | This state represents an obligation whose rig hit an engine failure and is awaiting attention. Typically attached to a non-terminal `active` state, not a terminal one. |
 
 **When to add a known attr vs. a custom tag.** Reach for a known attr when the downstream consumer that reads it is already in the framework — `allSuccess` reads `success`, the Spider's observability surface reads `stuck`, etc. Reach for a custom string when your kit is the only consumer and the tag names something domain-specific (e.g. `'approved'`, `'blocked-on-legal'`). Under-tagging is the more common failure mode than over-tagging: a terminal state missing the `success` attr will silently prevent `childrenBehavior.allSuccess` from firing.
@@ -538,20 +538,26 @@ Invalid — empty-string attr entry: `states[<i>].attrs[<a>]: must be a non-empt
 interface WritTypeChildrenBehavior {
   allSuccess?: WritTypeChildrenBehaviorAction;
   anyFailure?: WritTypeChildrenBehaviorAction;
+  parentTerminal?: WritTypeChildrenBehaviorAction;
 }
 ```
 
-Aggregate-children triggers. Both fields are optional; a config with no `childrenBehavior` declares no children-driven lifting. When present, `childrenBehavior` must be an object — strings, numbers, and primitives fail with `childrenBehavior: must be an object when provided`.
+Aggregate-children + downward-cascade triggers. All fields are optional; a config with no `childrenBehavior` declares no children-driven cascade. When present, `childrenBehavior` must be an object — strings, numbers, and primitives fail with `childrenBehavior: must be an object when provided`.
 
-- **`allSuccess`** — fires when every child writ has reached a terminal state *and* every such state carries the `success` attr.
-- **`anyFailure`** — fires when any child writ has reached a terminal state that carries the `failure` attr.
+- **`allSuccess`** (upward) — fires when every child writ has reached a terminal state *and* every such state carries the `success` attr.
+- **`anyFailure`** (upward) — fires when any child writ has reached a terminal state that carries the `failure` attr.
+- **`parentTerminal`** (downward) — fires when a writ of *this* type transitions into a `failure`- or `cancelled`-attr terminal state. Drives every non-terminal descendant through `ClerkApi.transition` with the configured target. Does not fire on `success`-attr terminals.
 
-Valid (both triggers declared, both targeting a `completed`/`failed` pair):
+Valid (all three triggers declared — mandate's full configuration):
 
 ```typescript
 {
   allSuccess: { transition: 'completed', copyResolution: true },
   anyFailure: { transition: 'failed',    copyResolution: true },
+  parentTerminal: {
+    transition: 'cancelled',
+    resolution: 'Automatically cancelled due to parent termination',
+  },
 }
 ```
 
@@ -563,16 +569,37 @@ Valid (single trigger only):
 
 Invalid — non-object `childrenBehavior`: `childrenBehavior: must be an object when provided; received "oops"`.
 
-**Runtime semantics — children-behavior cascade engine.** The children-behavior engine is a Phase 1 watcher on the `clerk/writs` book registered from the Clerk's `start()`. Cascade writes join the triggering transaction; a handler throw rolls the whole commit back. The engine is generic in writ type — any registered type whose config declares a `childrenBehavior` block opts in.
+**Runtime semantics — children-behavior cascade engine.** The children-behavior engine is a Phase 1 watcher on the `clerk/writs` book registered from the Clerk's `start()`. Cascade writes join the triggering transaction; a handler throw rolls the whole commit back. The engine is generic in writ type — any registered type whose config declares a `childrenBehavior` block opts in. Both cascade directions live in the same `handle` function.
 
-- **Firing rule** — the engine fires only on `update` events whose new phase differs from the previous and is classified `terminal`, on a writ that has a parent. Create events never satisfy the rule (the validator forbids initial states from being terminal). A parent type that omits `childrenBehavior` is a silent no-op.
+Common firing-rule prefix (both directions):
+
+- **Update events only** — the engine fires only on `update` events whose new phase differs from the previous and is classified `terminal`. Create events never satisfy the rule (the validator forbids initial states from being terminal).
+
+Upward branch (`allSuccess` / `anyFailure`):
+
+- **Firing rule** — the triggering writ has a parent, the parent writ exists, the parent's type is registered, the parent type declares a `childrenBehavior` block, and the parent itself is non-terminal. (Already-terminal parent → silent idempotent short-circuit.)
 - **Trigger firing** — `allSuccess` fires when every sibling under the same parent is terminal and every one carries the `success` attr (siblings are enumerated directly from the writs book, bypassing the default `list` row cap). `anyFailure` fires when the triggering child's terminal state carries the `failure` attr.
 - **Trigger evaluation order** — `anyFailure` is evaluated first. If it fires, `allSuccess` is skipped on this event. This is the precedence rule: a failing child wins over a simultaneously-completing one.
 - **Idempotency** — when the parent itself is already terminal, the engine short-circuits before evaluating triggers. Repeated child-terminal events on the same already-terminal parent are silent no-ops.
 - **`copyResolution`** — when `true`, the engine copies the triggering child's `resolution` string verbatim onto the parent through the same `transition` call. When `false` or omitted, the parent's resolution is left untouched.
-- **`status['clerk'].triggeringChildId` write** — on every fire, before the parent's `transition()` call, the engine records the immediate triggering child's id on the parent's Clerk-owned status sub-slot via `setWritStatus(parent, 'clerk', { triggeringChildId })`. The ordering is load-bearing for downstream observers: the Reckoner reads the post-commit snapshot of the terminal-transition CDC event, so the slot must be in place before the transition fires. See [Worked example: `status.clerk.triggeringChildId`](#worked-example-statusclerktriggeringchildid).
-- **Grandparent lift** — natural CDC re-fire. When the engine transitions the parent, that transition is itself a writ-update event; the watcher re-enters and evaluates the grandparent's `childrenBehavior`. Stacks' 16-deep cascade cap is the only protection.
-- **Fail-loud surface** — a dangling `parentId`, or a parent writ whose type is not registered, throws (rolling back the triggering transition). These are data-integrity violations.
+- **`status['clerk'].triggeringChildId` write** — on every upward fire, before the parent's `transition()` call, the engine records the immediate triggering child's id on the parent's Clerk-owned status sub-slot via `setWritStatus(parent, 'clerk', { triggeringChildId })`. The ordering is load-bearing for downstream observers: the Reckoner reads the post-commit snapshot of the terminal-transition CDC event, so the slot must be in place before the transition fires. See [Worked example: `status.clerk.triggeringChildId`](#worked-example-statusclerktriggeringchildid).
+- **Grandparent lift** — natural CDC re-fire. When the engine transitions the parent, that transition is itself a writ-update event; the watcher re-enters and evaluates the grandparent's `childrenBehavior`.
+
+Downward branch (`parentTerminal`):
+
+- **Firing rule** — the triggering writ's new terminal state carries either the `failure` or `cancelled` attr (not `success`), the writ's *own* type is registered, and that type declares a `parentTerminal` action. The branch enumerates the writ's children directly from the writs book (bypassing the default `list` row cap) and skips already-terminal children using the type's classification.
+- **Action firing** — for each non-terminal child, the engine calls `api.transition` with the action's configured target and `resolution` string (or the parent's own resolution when `copyResolution: true`).
+- **Idempotency** — already-terminal children are skipped during enumeration. A re-fire of the cascade with no non-terminal children is a silent no-op.
+- **Grandchild cancel** — natural CDC re-fire. When the engine transitions a child into its terminal state, that transition is itself a writ-update event; the watcher re-enters and the downward branch fires on the child's own `parentTerminal` action (if the child's type declares one). For mandate trees this is how grandchildren get cancelled when grandparents terminate.
+- **Heterogeneous children** — every potential child type must declare the configured target state reachable from each non-terminal state via `allowedTransitions`. The validator does *not* enforce this cross-type contract; misconfigured children surface at runtime as fail-loud throws from `api.transition` that roll the cascade back.
+
+Stacks' 16-deep cascade cap bounds combined depth across both directions.
+
+Fail-loud surface (both directions):
+
+- **Dangling `parentId`** (upward) — throws and rolls back the triggering transition.
+- **Unregistered parent or own type** — throws and rolls back.
+- **Misconfigured child target** (downward) — `api.transition` throws when a child cannot reach the configured `parentTerminal.transition` target from its current state, rolling back.
 
 #### `WritTypeChildrenBehaviorAction`
 
@@ -580,17 +607,21 @@ Invalid — non-object `childrenBehavior`: `childrenBehavior: must be an object 
 interface WritTypeChildrenBehaviorAction {
   transition: string;
   copyResolution?: boolean;
+  resolution?: string;
 }
 ```
 
-- **`transition`** — target state name the parent writ transitions to when the trigger fires. Must be a non-empty string referencing a state that exists in the enclosing `WritTypeConfig.states`. Also subject to a reachability check: the target must be reachable from every non-terminal state via `allowedTransitions`, so the trigger can actually move the parent no matter which non-terminal state the parent is currently in. Unreachable targets fail with `childrenBehavior.<trigger>.transition: state "<target>" is not reachable from non-terminal state "<origin>" via allowedTransitions`.
-- **`copyResolution`** — optional boolean. Non-boolean values fail with `childrenBehavior.<trigger>.copyResolution: must be a boolean when provided`.
+- **`transition`** — target state name the writ-being-acted-on transitions to when the trigger fires. Must be a non-empty string. For upward triggers, the target must reference a state declared in the enclosing `WritTypeConfig.states` and is subject to a reachability check: the target must be reachable from every non-terminal state via `allowedTransitions`, so the trigger can actually move the parent no matter which non-terminal state it sits in. The downward `parentTerminal` trigger's target lives in *child* type configs and is therefore exempt from same-config existence and reachability validation — runtime fail-loud at the `api.transition` call site enforces the per-child-type contract.
+- **`copyResolution`** — optional boolean. When `true`, copy the triggering writ's `resolution` string onto the target as part of the transition. Non-boolean values fail with `childrenBehavior.<trigger>.copyResolution: must be a boolean when provided`. Mutually exclusive with `resolution`.
+- **`resolution`** — optional non-empty string. Written verbatim onto every transitioned writ as the static cascade resolution. Used by the downward `parentTerminal` trigger to stamp every cancelled child with the same canonical reason. Empty/non-string values fail with `childrenBehavior.<trigger>.resolution: must be a non-empty string when provided`. Mutually exclusive with `copyResolution: true`.
 
-Empty action objects are rejected — `{}` fails with `childrenBehavior.<trigger>: must not be an empty object`. Actions without a `transition` field (e.g. `{ copyResolution: true }`) fail with `childrenBehavior.<trigger>.transition: must be a non-empty string`.
+Empty action objects are rejected — `{}` fails with `childrenBehavior.<trigger>: must not be an empty object`. Actions without a `transition` field (e.g. `{ copyResolution: true }`) fail with `childrenBehavior.<trigger>.transition: must be a non-empty string`. Actions with both `copyResolution: true` and `resolution` set fail with `childrenBehavior.<trigger>: copyResolution and resolution are mutually exclusive — pick one`.
 
 Valid: `{ transition: 'completed', copyResolution: true }`.
 
-Invalid — target that exists but is not reachable from some non-terminal state:
+Valid: `{ transition: 'cancelled', resolution: 'Automatically cancelled due to parent termination' }`.
+
+Invalid — upward target that exists but is not reachable from some non-terminal state:
 
 ```typescript
 // With an extra `isolated` active state whose only outbound edge is to `cancelled`,
@@ -614,8 +645,9 @@ Top-down ordering of checks (stops at the first failure):
 6. Exactly one state is classified `initial`.
 7. Every non-initial state has at least one inbound transition from some other state.
 8. No terminal state declares any outbound transitions.
-9. Every declared `childrenBehavior` trigger carries an action object with a non-empty `transition` string referencing a state that exists.
-10. Each `childrenBehavior` transition target is reachable from every non-terminal state of the config via `allowedTransitions`.
+9. Every declared `childrenBehavior` trigger carries an action object with a non-empty `transition` string. Upward triggers' targets must reference a state that exists in this same config; the downward `parentTerminal` trigger's target lives in child type configs and is therefore exempt from same-config existence checking.
+10. Each upward `childrenBehavior` transition target is reachable from every non-terminal state of the config via `allowedTransitions`. The downward `parentTerminal` trigger is exempt — its target lives in child type configs.
+11. Each action's optional `resolution` field is a non-empty string, and `copyResolution: true` and `resolution` are mutually exclusive on the same action.
 
 ### Canonical example: mandate
 
@@ -658,6 +690,10 @@ const mandateConfig: WritTypeConfig = {
   childrenBehavior: {
     allSuccess: { transition: 'completed', copyResolution: true },
     anyFailure: { transition: 'failed', copyResolution: true },
+    parentTerminal: {
+      transition: 'cancelled',
+      resolution: 'Automatically cancelled due to parent termination',
+    },
   },
 };
 ```
@@ -666,7 +702,9 @@ Traits worth reading off the fixture:
 
 - **One `initial`, three `terminal`, two `active` states.** The classification partition is explicit.
 - **`stuck` is `active`, not terminal.** Non-terminal means the obligation survives — `stuck → open` is a declared recovery edge.
-- **Every `childrenBehavior` target is reachable from every non-terminal state.** `completed` is reachable from `new` (via `open`), from `open` (directly), and from `stuck` (via `open`). Similarly `failed`. The reachability invariant is what lets the trigger fire regardless of where the parent sits when a child terminates.
+- **Every upward `childrenBehavior` target is reachable from every non-terminal state.** `completed` is reachable from `new` (via `open`), from `open` (directly), and from `stuck` (via `open`). Similarly `failed`. The reachability invariant is what lets the trigger fire regardless of where the parent sits when a child terminates.
+- **The downward `parentTerminal` trigger is exempt from same-config reachability.** `cancelled` happens to be reachable from every non-terminal mandate state — `new`, `open`, and `stuck` all declare `cancelled` outbound — but the validator does not enforce that for the downward trigger because its target lives in child type configs. Plugin authors registering a child type beneath mandate must declare `cancelled` reachable from each non-terminal state of the child type per the heterogeneous-child convention; runtime fail-loud at `api.transition` rolls the cascade back if the contract is violated.
+- **`parentTerminal` uses a static resolution string.** Mandate stamps every cascade-cancelled descendant with `Automatically cancelled due to parent termination`. The string is per-type vocabulary and lives inline in mandate's config — there is no exported framework constant.
 - **Only terminal states carry `attrs`.** Nothing forbids active-state attrs; `mandate` simply has no domain-specific tag for its active states.
 
 ### Cross-reference: Spider dispatch
@@ -677,7 +715,7 @@ Registering a new writ type via `ClerkApi.registerWritType` makes the type valid
 
 ## Writ-Type Registry
 
-The Clerk maintains a runtime registry of writ types keyed by name. Each entry is a fully-validated `WritTypeConfig` that declares the type's states (with classifications `'initial' | 'active' | 'terminal'`, an optional semantic `attrs` vocabulary, and per-state `allowedTransitions`), plus — eventually — `childrenBehavior` triggers that lift terminal-child outcomes back onto the parent.
+The Clerk maintains a runtime registry of writ types keyed by name. Each entry is a fully-validated `WritTypeConfig` that declares the type's states (with classifications `'initial' | 'active' | 'terminal'`, an optional semantic `attrs` vocabulary, and per-state `allowedTransitions`), plus optional `childrenBehavior` triggers that lift terminal-child outcomes back onto the parent (upward `allSuccess` / `anyFailure`) and cascade parent-terminal events down through non-terminal descendants (downward `parentTerminal`).
 
 `ClerkApi.registerWritType(config)` is the single-surface entry point. Plugins call it from their own apparatus's `start()`. Validator errors propagate verbatim; registration-specific failures (duplicate name, late call after the seal) throw with a `[clerk] registerWritType:` prefix. The Clerk itself registers `mandate` through this same path during its own `start()`.
 
@@ -867,27 +905,37 @@ Writs form a tree. A writ may be decomposed into child writs (tasks, steps, etc.
 
 ### Children-behavior cascade
 
-Upward cascade (terminal child → parent lift) is driven by the children-behavior engine — a Phase 1 watcher on the `clerk/writs` book registered from `start()`. When any writ transitions to a terminal state, the engine evaluates the parent's `WritTypeConfig.childrenBehavior` block and, if a trigger fires, drives the parent through `ClerkApi.transition` with the configured target. There is **no downward cascade** — a terminal parent does not cancel non-terminal children.
+The children-behavior engine — a Phase 1 watcher on the `clerk/writs` book registered from `start()` — drives **both** cascade directions from the same `handle` function:
 
-Cascade is opt-in per type. A type whose config omits `childrenBehavior` is a silent no-op, and parent/child lifecycles evolve independently. Mandate opts into both triggers; piece and observation-set declare none.
+- **Upward** (terminal child → parent lift). When a writ transitions to a terminal state, the engine evaluates the *parent's* `WritTypeConfig.childrenBehavior` block. If `allSuccess` or `anyFailure` fires, the parent is driven through `ClerkApi.transition` with the configured target.
+- **Downward** (terminal parent → non-terminal-children cancellation). When a writ transitions to a `failure`- or `cancelled`-attr terminal, the engine evaluates the *writ's own* type's `parentTerminal` action. If declared, every non-terminal descendant is driven through `ClerkApi.transition` with the configured target. Recursion to grandchildren happens via natural CDC re-fire on each child's own transition, not by an in-handler walk.
 
-The v0 trigger vocabulary on `WritTypeConfig.childrenBehavior`:
+Cascade is opt-in per type. A type whose config omits `childrenBehavior` is a silent no-op, and parent/child lifecycles evolve independently. Mandate opts into all three triggers (both upward + downward); piece and observation-set declare none.
 
-- `allSuccess` — fires when every sibling under the same parent has reached a terminal state and every one carries the `success` attr.
-- `anyFailure` — fires when the triggering child's terminal state carries the `failure` attr.
+The trigger vocabulary on `WritTypeConfig.childrenBehavior`:
 
-Trigger evaluation order: `anyFailure` is evaluated first; if it fires, `allSuccess` is skipped on this event. This is the precedence rule a failing child wins over a simultaneously-completing one.
+- `allSuccess` (upward) — fires when every sibling under the same parent has reached a terminal state and every one carries the `success` attr.
+- `anyFailure` (upward) — fires when the triggering child's terminal state carries the `failure` attr.
+- `parentTerminal` (downward) — fires when a writ of *this* type transitions into a `failure`- or `cancelled`-attr terminal. Drives every non-terminal descendant to the configured target. Does *not* fire on `success`-attr terminals — a healthy `completed` mandate has no non-terminal children to cancel.
 
-Each trigger carries a `transition` target and an optional `copyResolution` modifier. When `copyResolution: true`, the engine copies the triggering child's `resolution` string verbatim onto the parent through the same `transition` call.
+Upward trigger evaluation order: `anyFailure` is evaluated first; if it fires, `allSuccess` is skipped on this event. This is the precedence rule a failing child wins over a simultaneously-completing one. Cascade ordering when both directions could fire on the same chain (e.g. an upward `anyFailure` lifts a parent into `failed`, which then needs to push down into the parent's other open siblings) is handled by natural CDC re-fire: the parent's own update event re-enters the handler and the downward branch fires on the parent's now-terminal transition.
 
-The watcher fires inside the transaction that triggered it (Phase 1 atomicity): cascade writes join the same commit, and a handler throw rolls everything back. Grandparent lift falls out naturally — the parent's own update event re-enters the watcher. Stacks' 16-deep cascade cap bounds depth.
+Each trigger carries a `transition` target and one of two mutually-exclusive resolution carriers: `copyResolution: true` copies the triggering writ's `resolution` string onto the target verbatim, while `resolution: '...'` writes a static string onto every transitioned writ. Declaring both on the same action is a validator error.
 
-Mandate's `childrenBehavior` declares both triggers with `copyResolution: true`:
+The watcher fires inside the transaction that triggered it (Phase 1 atomicity): cascade writes join the same commit, and a handler throw rolls everything back — including the misconfigured-child case where a child's type cannot accept the configured `parentTerminal.transition` target. Grandparent lift and grandchild cancel both fall out naturally — the parent's (or child's) own update event re-enters the watcher. Stacks' 16-deep cascade cap bounds depth.
+
+**Heterogeneous-child convention.** Because the downward `parentTerminal` trigger drives non-terminal *children* through their own state machines, every child type that may sit beneath a parent declaring `parentTerminal` must declare the configured target state reachable from each non-terminal state via `allowedTransitions`. The validator does *not* enforce this cross-type contract — it cannot, because the trigger's downstream target lives in child types — so a misconfigured child surfaces at runtime as a fail-loud throw from `api.transition` that rolls the cascade back. Plugins registering child types beneath mandate (or any other downward-cascading parent) must declare the corresponding `cancelled`-equivalent state reachable accordingly.
+
+Mandate's `childrenBehavior` declares all three triggers — the upward pair with `copyResolution: true`, and the downward `parentTerminal` with the canonical static resolution string:
 
 ```typescript
 childrenBehavior: {
   allSuccess: { transition: 'completed', copyResolution: true },
   anyFailure: { transition: 'failed',    copyResolution: true },
+  parentTerminal: {
+    transition: 'cancelled',
+    resolution: 'Automatically cancelled due to parent termination',
+  },
 }
 ```
 
