@@ -6,28 +6,32 @@ them out to registered handlers (relays, summons, briefs).
 
 **Status:** Write path, event-triggered dispatcher, CDC auto-wiring,
 the manual operator CLI, framework-event emission from real
-lifecycle activity, AND the unattended Clockworks daemon are all
-live. The Clockworks exposes `ClockworksApi.emit` for trusted
-framework callers, a validated `signal` tool for animas (with an
-operator-facing `nsg signal` CLI counterpart),
-`ClockworksApi.processEvents()` — the bulk-drain dispatcher that
-resolves matching standing orders, invokes their relays, persists
-one dispatch row per invocation, and flips the event's `processed`
-flag — and, at startup, registers a Phase-2 CDC watcher on every
-plugin-declared book (other than `clockworks/events` itself) that
-re-emits each row create/update/delete as a
-`book.<ownerId>.<book>.<verb>` event with emitter `'framework'`.
-Startup also registers a CDC observer on `clerk/writs` that emits
-writ-lifecycle (`{type}.{ready|completed|stuck|failed}`) and
-root-mandate `commission.*` events as writs transition, and emits a
-one-shot `guild.initialized` the first time a guild comes up. The
+lifecycle activity, the unattended Clockworks daemon, AND the
+time-driven scheduler are all live. The Clockworks exposes
+`ClockworksApi.emit` for trusted framework callers, a validated
+`signal` tool for animas (with an operator-facing `nsg signal` CLI
+counterpart), `ClockworksApi.processEvents()` — the bulk-drain
+dispatcher that resolves matching standing orders, invokes their
+relays, persists one dispatch row per invocation, and flips the
+event's `processed` flag — `ClockworksApi.processSchedules()` — the
+scheduler pass that fires every time-driven standing order whose
+`nextFireTime` has elapsed and synthesizes a `schedule.fired` event
+plus a dispatch row per fire — and, at startup, registers a Phase-2
+CDC watcher on every plugin-declared book (other than
+`clockworks/events` itself) that re-emits each row
+create/update/delete as a `book.<ownerId>.<book>.<verb>` event with
+emitter `'framework'`. Startup also registers a CDC observer on
+`clerk/writs` that emits writ-lifecycle
+(`{type}.{ready|completed|stuck|failed}`) and root-mandate
+`commission.*` events as writs transition, and emits a one-shot
+`guild.initialized` the first time a guild comes up. The
 operator-facing `nsg clock list/tick/run` CLI composes on top of
 `processEvents()`. The daemon (`nsg clock start/stop/status`,
 plus the matching `clockStart` / `clockStop` / `clockStatus` core
 API and the anima-callable `clock-status` MCP tool) polls the events
-queue at a configurable interval and drains dispatches without an
-operator at the keyboard. Cron-style time-based scheduling is still
-to come.
+queue at a configurable interval, runs the scheduler pass before
+each event-processing pass, and drains dispatches without an
+operator at the keyboard.
 
 See also: [`docs/architecture/clockworks.md`](../../../docs/architecture/clockworks.md).
 
@@ -77,9 +81,10 @@ is keyed by the event name with an optional human-readable description:
 
 Names that match a reserved framework namespace
 (`anima.`, `commission.`, `tool.`, `migration.`, `guild.`,
-`standing-order.`, `session.`) or a writ-lifecycle pattern
-(`<type>.{ready,completed,stuck,failed}` for any declared writ type)
-are owned by the framework and cannot be emitted via `signal`.
+`standing-order.`, `session.`, `schedule.`) or a writ-lifecycle
+pattern (`<type>.{ready,completed,stuck,failed}` for any declared
+writ type) are owned by the framework and cannot be emitted via
+`signal`.
 
 ---
 
@@ -172,12 +177,30 @@ Returned counts:
 Sequential, single-pass — no scheduling, no parallelism, no retry. The
 CLI wrapper, daemon, and cron loop compose on top of this primitive.
 
+### `ClockworksApi.processSchedules(): Promise<{ fired, errors }>`
+
+Runs one tick of the scheduler pass over the in-memory schedule
+table populated at apparatus `start()`. Sister to
+`processEvents()` — every detail of the scheduled-fire path
+(persisted-row shape, observer hook, SOF emission) mirrors the
+event-driven path so observers and operators do not need to
+special-case scheduled fires. See the
+[Standing orders](#standing-orders) section for the full schedule
+contract, supported expressions, and lifecycle rules.
+
+The daemon runs `processSchedules()` first on every tick, then
+`processEvents()` — emit-and-pickup latency for events emitted
+from a scheduled handler is one tick rather than two.
+
 ---
 
 ## Standing orders
 
 Standing orders live under `clockworks.standingOrders` in `guild.json`.
-The canonical shape is:
+Each order has exactly one trigger — either `on:` (event-driven) or
+`schedule:` (time-driven) — and exactly one relay to invoke (`run:`),
+with an optional `with:` block forwarded to the relay as
+`RelayContext.params`:
 
 ```json
 {
@@ -188,17 +211,93 @@ The canonical shape is:
         "on": "code.reviewed",
         "run": "notify-channel",
         "with": { "channel": "#reviews", "level": "info" }
-      }
+      },
+      { "schedule": "@every 30s", "run": "reckoner-tick" },
+      { "schedule": "*/5 * * * *", "run": "health-probe" }
     ]
   }
 }
 ```
 
-Each order names exactly one event (`on:`) and exactly one relay to
-invoke (`run:`); an optional `with:` block is forwarded to the relay
-handler as `RelayContext.params`. Anything else — extra top-level
-keys, a non-object `with:`, the dropped `summon:` / `brief:` sugar
-forms — is rejected at load time with a descriptive error.
+`on:` and `schedule:` are mutually exclusive — declaring both, or
+neither, fails load with a descriptive error. Anything else — extra
+top-level keys, a non-object `with:`, the dropped `summon:` /
+`brief:` sugar forms — is rejected at load time too.
+
+### Schedule expressions
+
+Two syntaxes are supported:
+
+- **`@every <N><unit>`** — fixed-interval. Units are `s` (seconds),
+  `m` (minutes), or `h` (hours); the count must be a positive
+  integer. Examples: `@every 30s`, `@every 5m`, `@every 1h`. The
+  first fire lands one full duration after apparatus startup; later
+  fires advance from the prior fire to preserve cadence.
+- **5-field unix cron** — `m h dom mon dow`. Standard ranges, lists,
+  and step expressions are accepted (e.g. `*/5 * * * *`,
+  `0 9 * * 1-5`, `0,15,30,45 9-17 * * *`). 6/7-field forms (with
+  seconds or year) and vendor extensions are rejected. Cron
+  expressions are evaluated in the daemon's local time zone; the
+  first fire is the next boundary after apparatus startup.
+
+Schedule expressions are parse-checked at guild.json load time, so a
+malformed cron or `@every` value fails the apparatus boot with an
+error that names the offending order index and the parser's
+diagnosis.
+
+### Schedule lifecycle and limitations
+
+The schedule table is built once on `start()` and held in memory —
+**operators editing schedule entries in `guild.json` must restart
+the apparatus for the change to take effect.** Event-driven orders
+(`on:`) continue to support hot-edit through the per-call re-read in
+`processEvents()`.
+
+Daemon restarts are cold starts — there is no missed-fire backfill.
+A `@every 5m` order that misses 20 minutes of fires across a
+restart fires once on the next due tick and resumes cadence from
+there.
+
+### `processSchedules()` semantics
+
+Each scheduler pass:
+
+1. Walks the in-memory schedule table in `orderIndex` ascending order.
+2. For each entry whose `nextFireTime <= now`, persists a
+   `schedule.fired` event row with `processed: true` (so the
+   event-sweep does not re-fire it), invokes the resolved relay with
+   a synthesized `GuildEvent`, persists a dispatch row through the
+   shared helper, and advances `nextFireTime` from the parser.
+3. Returns counts: `{ fired, errors }`.
+
+In-tick guard: at most one fire per order per tick, even if many
+intervals have elapsed (e.g. a stalled tick or a paused process).
+The scheduler catches up over subsequent ticks, one fire at a time.
+
+Failure isolation matches the dispatcher:
+
+- A thrown relay produces an `error` dispatch row and a
+  `standing-order.failed` event via the same SOF callback the
+  dispatcher uses — subscribers wiring
+  `{ on: 'standing-order.failed', run: ... }` see scheduled-fire
+  failures and event-driven failures uniformly.
+- An unresolved `run:` name produces an `error` dispatch row with a
+  message naming the offending order index, plus the same SOF event.
+
+### Reckoner-style example
+
+The Reckoner (or any other periodic apparatus) wires its tick
+through Clockworks rather than maintaining its own scheduler:
+
+```json
+{
+  "clockworks": {
+    "standingOrders": [
+      { "schedule": "@every 30s", "run": "reckoner-tick" }
+    ]
+  }
+}
+```
 
 ---
 
