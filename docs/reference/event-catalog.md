@@ -6,7 +6,7 @@ The Clockworks event system — every framework event, custom event rules, and s
 
 ## Framework Events
 
-Framework events are signaled by core modules and the Clockworks runner. They use reserved namespaces (`commission.`, `session.`, `standing-order.`) and **cannot** be signaled by animas or operators.
+Framework events are signaled by core modules and the Clockworks runner. They use reserved namespaces (`commission.`, `session.`, `standing-order.`, `schedule.`) and **cannot** be signaled by animas or operators.
 
 ### Commission Events
 
@@ -65,8 +65,11 @@ This asymmetry is a feature: the framework controls writ lifecycle events; anima
 | Event | Payload | Emitter | When |
 |-------|---------|---------|------|
 | `standing-order.failed` | `{ standingOrder, triggeringEvent: { id, name }, error }` | `framework` | A standing order execution fails (engine throws or anima session fails) |
+| `schedule.fired` | `{ standingOrder, orderIndex, fireTime }` | `framework` | The Clockworks scheduler fires a time-driven standing order — emitted once per fire by the daemon's scheduler pass |
 
 **Loop guard:** If a `standing-order.failed` event was itself triggered by another `standing-order.failed` event, the Clockworks runner skips processing to prevent infinite cascades.
+
+**Scheduled fires:** The scheduler pass emits each `schedule.fired` row with `processed: true` so the event-sweep does not re-fire it as if it were a new operator-emitted event. The row is the durable record of the fire; the matching `event_dispatches` row records the relay invocation.
 
 ### Reserved Namespaces
 
@@ -80,6 +83,7 @@ migration.
 guild.
 standing-order.
 session.
+schedule.
 ```
 
 **Note:** Writ lifecycle events (e.g. `mandate.ready`, `task.completed`) use guild-defined type names as namespaces, which are *not* in this reserved list. They are still framework-only — see [Writ Lifecycle Events](#writ-lifecycle-events) for how validation handles this.
