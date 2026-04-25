@@ -542,6 +542,14 @@ catches every throw and writes an `[error] ...` line to the log
 before continuing on the next interval, and sleeps abortably between
 ticks so SIGTERM is acted on immediately.
 
+On signal, the loop exits, the pidfile is unlinked, and the daemon's
+async `onShutdown` runs to completion before the process exits. When
+the foreground body is wired through `runForegroundDaemonFromGuild`
+with a `StartedGuild` reference, that hook is where Arbor's
+`StartedGuild.shutdown()` runs — firing `guild:shutdown` and walking
+every started apparatus's optional `stop()` in reverse topological
+order — before the eventual `process.exit(0)`.
+
 ### Files
 
 - `<home>/.nexus/clock.pid` — the pidfile. Written at daemon start;

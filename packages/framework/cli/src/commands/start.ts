@@ -34,6 +34,8 @@ import {
   tryUnlink,
 } from '@shardworks/nexus-core';
 
+import { getStartedGuild } from '../started-guild.ts';
+
 // ── Local apparatus interface shims ──────────────────────────────────
 //
 // The CLI package deliberately does not depend on the spider, oculus,
@@ -258,13 +260,27 @@ async function startForeground(home: string): Promise<never> {
   fs.writeFileSync(p.pidFile, String(process.pid), 'utf-8');
 
   // ── Shutdown wiring ────────────────────────────────────────────────
+  //
+  // Teardown order on SIGTERM/SIGINT:
+  //   1. Flip `spiderStop` so the crawl loop exits at its next yield.
+  //   2. Close the tool HTTP server (D7: the daemon owns this handle —
+  //      it is returned by tools.startToolServer() rather than wired
+  //      into the apparatus's stop()).
+  //   3. Call guildInstance.shutdown(), which fires guild:shutdown,
+  //      walks the started apparatus list in reverse topological
+  //      order calling each `stop()` — including Oculus's, so the
+  //      explicit oculus.stopServer() call that used to live here is
+  //      now redundant and removed.
+  //   4. Unlink the pidfile and process.exit(0).
+  //
+  // shutdown() is itself idempotent (D4), so the local "first signal
+  // wins" guard is no longer load-bearing for double-fire safety; we
+  // keep `spiderStop` local because the crawl loop reads it directly.
 
-  let shuttingDown = false;
+  const startedGuild = getStartedGuild();
   let spiderStop = false;
 
   const shutdown = async (signal: string) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
     console.log(`[daemon] ${signal} received — shutting down...`);
 
     spiderStop = true;
@@ -273,13 +289,33 @@ async function startForeground(home: string): Promise<never> {
     } catch (err) {
       console.warn(`[daemon] tool server close failed: ${err instanceof Error ? err.message : err}`);
     }
-    try {
-      const oculus = g.apparatus<OculusApiLike>('oculus');
-      await oculus.stopServer();
-    } catch { /* not installed or already stopped */ }
+
+    if (startedGuild) {
+      try {
+        await startedGuild.shutdown();
+      } catch (err) {
+        // shutdown() throws an aggregate when one or more apparatus
+        // stop()s fail. Surface it but still proceed with pidfile
+        // cleanup and process exit — partial teardown is better than
+        // a stuck process.
+        console.warn(
+          `[daemon] guild shutdown reported failures: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    } else {
+      // No StartedGuild reference — program.ts never deposited one,
+      // which means createGuild() failed during startup. Nothing to
+      // tear down.
+      console.warn(
+        '[daemon] no StartedGuild reference — skipping apparatus stop() pass',
+      );
+    }
 
     tryUnlink(p.pidFile);
     console.log('[daemon] stopped');
+    // D13: explicit exit. The crawl loop and other in-flight timers
+    // may keep the event loop alive even after apparatus stops; force
+    // exit to avoid hangs.
     process.exit(0);
   };
 

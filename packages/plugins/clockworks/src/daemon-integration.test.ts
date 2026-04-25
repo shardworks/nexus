@@ -512,4 +512,43 @@ describe('runForegroundDaemon — integration', () => {
     assert.ok(lines.some((l) => l.includes('e-only-events')));
     assert.ok(!lines.some((l) => l.includes('processSchedules')));
   });
+
+  it('awaits an async onShutdown before returning', async () => {
+    const home = makeTmpHome();
+    const { stub, nextCall } = buildProcessEventsStub();
+    const { log } = buildLog();
+
+    let triggerShutdown!: () => void;
+    const shutdown = new Promise<void>((resolve) => {
+      triggerShutdown = resolve;
+    });
+
+    let onShutdownStarted = false;
+    let onShutdownCompleted = false;
+
+    const daemonRun = runForegroundDaemon({
+      home,
+      intervalMs: 30,
+      processEvents: stub,
+      log,
+      shutdown,
+      skipSignalHandlers: true,
+      onShutdown: async () => {
+        onShutdownStarted = true;
+        // Simulate StartedGuild.shutdown() with a real async pause.
+        await new Promise((r) => setTimeout(r, 30));
+        onShutdownCompleted = true;
+      },
+    });
+
+    await nextCall();
+    triggerShutdown();
+    await daemonRun;
+
+    assert.ok(onShutdownStarted, 'onShutdown should have started');
+    assert.ok(
+      onShutdownCompleted,
+      'runForegroundDaemon should await async onShutdown before returning',
+    );
+  });
 });

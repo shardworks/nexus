@@ -46,6 +46,8 @@ import {
   type ClockStatus,
 } from '@shardworks/clockworks-apparatus';
 
+import { getStartedGuild } from '../started-guild.ts';
+
 // ── Local apparatus interface shims ──────────────────────────────────
 //
 // Matches the surface the CLI actually exercises — a strict subset of
@@ -573,10 +575,17 @@ export async function runStart(input: StartInput): Promise<StartOutput> {
     // Inline foreground daemon body. `runForegroundDaemonFromGuild`
     // installs SIGTERM/SIGINT handlers and returns once shutdown is
     // signaled. Once it returns we exit cleanly.
-    const opts: { intervalMs?: number; onShutdown?: () => void } = {
+    //
+    // Pass the StartedGuild deposited by program.ts so the daemon's
+    // shutdown path runs `guildInstance.shutdown()` — and therefore
+    // every started apparatus's optional `stop()` — before
+    // process.exit(0).
+    const startedGuild = getStartedGuild();
+    const opts: Parameters<typeof runForegroundDaemonFromGuild>[0] = {
       onShutdown: () => process.exit(0),
     };
     if (input.interval !== undefined) opts.intervalMs = input.interval;
+    if (startedGuild) opts.startedGuild = startedGuild;
     await runForegroundDaemonFromGuild(opts);
     // Unreachable — onShutdown exits the process.
     return { lines: [] };

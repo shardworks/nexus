@@ -34,9 +34,11 @@
  *     commission) compose on top of the same primitive.
  *
  * `start()` primes the book handles, the registry, the CDC watchers,
- * and the dispatch path; `stop()` remains a no-op — its shape exists
- * so the future daemon teardown has a drop-in site. Task 5 will fill
- * the currently-empty `supportKit.relays` slot with the summon relay.
+ * and the dispatch path; `stop()` is currently a no-op — Arbor's
+ * `StartedGuild.shutdown()` invokes it during reverse-topo teardown
+ * (the apparatus has no in-flight handles of its own to release; the
+ * Clockworks daemon's poll loop is owned by `runForegroundDaemon`,
+ * not the apparatus).
  *
  * See: docs/architecture/clockworks.md
  */
@@ -517,7 +519,10 @@ export function createClockworks(): Plugin {
       },
 
       stop(): void {
-        // No-op — runtime teardown arrives with task 10's daemon.
+        // No internal handles to release — the Clockworks daemon's
+        // poll loop is owned by `runForegroundDaemon`, not by the
+        // apparatus. Arbor's `StartedGuild.shutdown()` still calls
+        // this for symmetry / future-proofing.
       },
     },
   };

@@ -25,6 +25,7 @@ import type { ToolDefinition, InstrumentariumApi } from '@shardworks/tools-appar
 import { createGuild } from '@shardworks/nexus-arbor';
 import { frameworkCommands, customFrameworkCommands } from './commands/index.ts';
 import { toFlag, isBooleanSchema, isRepeatableSchema, findGroupPrefixes, coerceCliOpts, resolveGuildRoot } from './helpers.ts';
+import { setStartedGuild } from './started-guild.ts';
 
 type ZodShape = Record<string, z.ZodTypeAny>;
 
@@ -243,7 +244,13 @@ export async function main(): Promise<void> {
   // tools are available — only framework commands.
   if (home) {
     try {
-      await createGuild(home);
+      // Retain the StartedGuild so daemon handlers (nsg start
+      // --foreground, nsg clock start --foreground) can call
+      // `shutdown()` on SIGTERM/SIGINT. Plugin code only ever sees
+      // the narrower Guild via `guild()`; this is the bootstrap
+      // caller's reference. (D8: thread-from-program.)
+      const started = await createGuild(home);
+      setStartedGuild(started);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[nsg] Guild failed to load: ${message}`);

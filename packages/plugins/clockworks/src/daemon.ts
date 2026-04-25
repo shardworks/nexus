@@ -42,6 +42,7 @@ import {
   tryUnlink,
   waitForExit,
 } from '@shardworks/nexus-core';
+import type { StartedGuild } from '@shardworks/nexus-core';
 
 import type { ClockworksApi, DispatchObservation } from './types.ts';
 
@@ -406,8 +407,14 @@ export interface ForegroundDaemonInputs {
    * observe the lifecycle without the test process exiting.
    * Production callers that want the daemon to terminate the process
    * pass `() => process.exit(0)`.
+   *
+   * May return `void` or a `Promise<void>`. When async, the daemon
+   * awaits the promise before returning — this is how
+   * `runForegroundDaemonFromGuild` slips in a `StartedGuild.shutdown()`
+   * call (with its apparatus stop() pass) before the eventual
+   * `process.exit(0)`.
    */
-  onShutdown?: () => void;
+  onShutdown?: () => void | Promise<void>;
 }
 
 /**
@@ -554,7 +561,7 @@ export async function runForegroundDaemon(
   tryUnlink(pidFile);
   log(`[clockworks] daemon stopped`);
 
-  if (onShutdown) onShutdown();
+  if (onShutdown) await onShutdown();
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -624,20 +631,64 @@ function tailFile(file: string, lines: number): string {
  * The CLI's `clock start --foreground` handler calls this. Tests
  * usually call `runForegroundDaemon` directly with a fake
  * `processEvents` so they can drive the loop without Stacks.
+ *
+ * When the caller passes a `StartedGuild`, the daemon's shutdown path
+ * runs `guildInstance.shutdown()` after the poll loop exits, before
+ * invoking the caller-supplied `onShutdown`. This drives every
+ * apparatus's optional `stop()` (Stacks closes its sqlite handle,
+ * Oculus closes its HTTP server, etc.) on the way out.
+ *
+ * `shutdown()` is itself idempotent (Arbor commission D4), so the
+ * caller does not need to guard against repeated invocation.
  */
 export async function runForegroundDaemonFromGuild(
-  options: { intervalMs?: number; onShutdown?: () => void } = {},
+  options: {
+    intervalMs?: number;
+    onShutdown?: () => void;
+    /**
+     * The `StartedGuild` returned by `createGuild()`. When supplied,
+     * the daemon calls `startedGuild.shutdown()` after the poll loop
+     * exits. Optional so existing tests that call this helper without
+     * a started guild keep working.
+     */
+    startedGuild?: StartedGuild;
+  } = {},
 ): Promise<void> {
   const g = guild();
   const home = g.home;
   const clockworks = g.apparatus<ClockworksApi>('clockworks');
   const intervalMs = validateInterval(options.intervalMs);
 
+  // Wrap the caller's onShutdown so guildInstance.shutdown() runs
+  // first. The chain is async — runForegroundDaemon now awaits its
+  // onShutdown — so a caller passing `() => process.exit(0)` only
+  // exits once apparatus stops have run (or thrown a captured
+  // aggregate).
+  const startedGuild = options.startedGuild;
+  const callerOnShutdown = options.onShutdown;
+
+  const onShutdown = async (): Promise<void> => {
+    if (startedGuild) {
+      try {
+        await startedGuild.shutdown();
+      } catch (err) {
+        // shutdown() throws an aggregate when one or more apparatus
+        // stop()s fail. Surface it but still let the caller's
+        // onShutdown fire (it usually calls process.exit) — partial
+        // teardown is better than a stuck process.
+        console.error(
+          `[clockworks] guild shutdown reported failures: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+    if (callerOnShutdown) callerOnShutdown();
+  };
+
   await runForegroundDaemon({
     home,
     intervalMs,
     processEvents: clockworks.processEvents.bind(clockworks),
     processSchedules: clockworks.processSchedules.bind(clockworks),
-    ...(options.onShutdown !== undefined ? { onShutdown: options.onShutdown } : {}),
+    onShutdown,
   });
 }
