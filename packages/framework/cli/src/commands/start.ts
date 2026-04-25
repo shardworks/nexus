@@ -27,7 +27,12 @@ import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { tool } from '@shardworks/tools-apparatus';
 import type { InstrumentariumApi } from '@shardworks/tools-apparatus';
-import { guild } from '@shardworks/nexus-core';
+import {
+  guild,
+  isProcessAlive,
+  readPidFile,
+  tryUnlink,
+} from '@shardworks/nexus-core';
 
 // ── Local apparatus interface shims ──────────────────────────────────
 //
@@ -87,36 +92,6 @@ function paths(home: string): {
     outLog: path.join(nexusDir, 'logs', 'daemon.out'),
     errLog: path.join(nexusDir, 'logs', 'daemon.err'),
   };
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ESRCH') return false;
-    // EPERM → exists but we can't signal it. Treat as alive.
-    return true;
-  }
-}
-
-function readPidFile(pidFile: string): number | null {
-  try {
-    const raw = fs.readFileSync(pidFile, 'utf-8').trim();
-    const pid = Number(raw);
-    return Number.isFinite(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
-  }
-}
-
-function tryUnlink(file: string): void {
-  try {
-    fs.unlinkSync(file);
-  } catch {
-    // ignore
-  }
 }
 
 function tailFile(file: string, lines: number): string {

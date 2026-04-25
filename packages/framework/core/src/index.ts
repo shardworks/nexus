@@ -42,6 +42,13 @@ export {
 } from './nexus-home.ts';
 
 export {
+  isProcessAlive,
+  readPidFile,
+  tryUnlink,
+  waitForExit,
+} from './pid-helpers.ts';
+
+export {
   derivePluginId,
   readGuildPackageJson,
   resolvePackageNameForPluginId,

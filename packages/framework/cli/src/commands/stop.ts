@@ -10,50 +10,17 @@
  * the daemon process itself (tool server, oculus, spider crawl loop) stops.
  */
 
-import fs from 'node:fs';
 import path from 'node:path';
 
 import { z } from 'zod';
 import { tool } from '@shardworks/tools-apparatus';
-import { guild } from '@shardworks/nexus-core';
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ESRCH') return false;
-    return true;
-  }
-}
-
-function readPidFile(pidFile: string): number | null {
-  try {
-    const raw = fs.readFileSync(pidFile, 'utf-8').trim();
-    const pid = Number(raw);
-    return Number.isFinite(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
-  }
-}
-
-function tryUnlink(file: string): void {
-  try {
-    fs.unlinkSync(file);
-  } catch {
-    // ignore
-  }
-}
-
-async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!isProcessAlive(pid)) return true;
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  return false;
-}
+import {
+  guild,
+  isProcessAlive,
+  readPidFile,
+  tryUnlink,
+  waitForExit,
+} from '@shardworks/nexus-core';
 
 export default tool({
   name: 'stop',
