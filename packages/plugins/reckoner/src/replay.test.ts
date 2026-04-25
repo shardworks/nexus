@@ -277,6 +277,9 @@ describe('Reckoner — idempotency under CDC replay', () => {
     // may leave a drain pulse behind (open=0, rigs=0 ⇒ drained). We
     // snapshot the pulses book and then replay the synthetic event —
     // the second delivery must NOT add a second drain pulse.
+    //
+    // post() lands the writ in `new`; `new → completed` is illegal in
+    // mandate's state machine, so publish through `open` first.
     const writ = await fix.clerk.post({ title: 'draining mandate', body: 'b' });
     await fix.clerk.transition(writ.id, 'open');
     await fix.clerk.transition(writ.id, 'completed', { resolution: 'done' });
