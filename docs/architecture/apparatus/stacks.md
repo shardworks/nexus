@@ -326,7 +326,7 @@ For v1, the backend is an internal implementation detail — not a public extens
 
 ## Implementation Notes
 
-- **Migration from existing code.** The existing `arbor/src/db/` (`BookStore`, `sqlite-adapter`, `reconcile-books`) moves into `@shardworks/stacks` as the SQLite backend. `Arbor.getDatabase()` (already `@deprecated`) is removed when The Stacks ships. The `core/src/book.ts` types are superseded by this spec's types. Direct database access in `nexus-clockworks` and `nexus-sessions` is replaced with `guild().apparatus<StacksApi>('stacks')` calls.
+- **Migration from existing code.** The existing `arbor/src/db/` (`BookStore`, `sqlite-adapter`, `reconcile-books`) moves into `@shardworks/stacks` as the SQLite backend. `Arbor.getDatabase()` (already `@deprecated`) is removed when The Stacks ships. The `core/src/book.ts` types are superseded by this spec's types. Direct database access in `clockworks` and `animator` is replaced with `guild().apparatus<StacksApi>('stacks')` calls.
 - **Plugin id ownership.** Each plugin hardcodes its own id as a constant (e.g. `const PLUGIN_ID = 'nexus-ledger'`). The framework does not inject it.
 
 See [the full Stacks specification](../../../packages/stacks/docs/stacks.md) for complete type signatures, use case coverage matrix, resolved design questions, and the detailed cascade walkthrough.

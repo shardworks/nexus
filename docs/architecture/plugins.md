@@ -40,14 +40,14 @@ A kit is an open record. The contribution fields (`relays`, `engines`, `tools`, 
 A kit package exports its manifest as the default export:
 
 ```typescript
-import type { ClockworksKit } from "nexus-clockworks"
-import type { SpiderKit }     from "nexus-spider"
-import type { AnimaKit }      from "nexus-sessions"
+import type { ClockworksKit } from "@shardworks/clockworks-apparatus"
+import type { SpiderKit }     from "@shardworks/spider-apparatus"
+import type { AnimaKit }      from "@shardworks/animator-apparatus"
 
 export default {
   kit: {
     requires:   ["nexus-books"],
-    recommends: ["nexus-clockworks", "nexus-spider"],
+    recommends: ["clockworks", "spider"],
     engines: [createBranchEngine, deleteBranchEngine, mergeBranchEngine],
     relays:  [onMergeRelay],
     tools:   [statusTool, diffTool, logTool],
@@ -156,8 +156,8 @@ A stable object reference is created at manifest-definition time and populated d
 Plugin authors ship their API type alongside their package so consumers can import and cast safely:
 
 ```typescript
-import type { ClockworksApi } from "nexus-clockworks"
-const clockworks = guild().apparatus<ClockworksApi>("nexus-clockworks")
+import type { ClockworksApi } from "@shardworks/clockworks-apparatus"
+const clockworks = guild().apparatus<ClockworksApi>("clockworks")
 ```
 
 ---
@@ -208,10 +208,10 @@ Both kits and apparatuses may declare `requires`, but the semantics differ:
 ```typescript
 export default {
   apparatus: {
-    requires: ["nexus-clockworks", "nexus-stacks"],
+    requires: ["clockworks", "stacks"],
     start: (ctx) => {
-      const clockworks = guild().apparatus<ClockworksApi>("nexus-clockworks")
-      const stacks     = guild().apparatus<StacksApi>("nexus-stacks")
+      const clockworks = guild().apparatus<ClockworksApi>("clockworks")
+      const stacks     = guild().apparatus<StacksApi>("stacks")
       // ...
     },
   },
@@ -308,11 +308,11 @@ The Arbor cross-references Kit contributions against installed apparatus `consum
 
 Warning conditions:
 - A kit contributes a type (`relays`, `engines`, `tools`, or a custom token) and no installed apparatus declares `consumes` for that token.
-- A kit declares `recommends: ["nexus-clockworks"]` and that apparatus is not installed.
+- A kit declares `recommends: ["clockworks"]` and that apparatus is not installed.
 
 ```
 warn: nexus-signals contributes relays but no installed apparatus consumes "relays"
-      consider installing nexus-clockworks (recommended by nexus-signals)
+      consider installing clockworks (recommended by nexus-signals)
 
 warn: nexus-git contributes engines but no installed apparatus consumes "engines"
 ```
@@ -518,11 +518,11 @@ The Kit/Apparatus split makes this concrete: everything contributed by a kit is 
 
 ## Failure Modes
 
-**Missing dependency** — a plugin declares `requires: ["nexus-clockworks"]` and that plugin is not installed. Loud startup failure before any apparatus starts: *"nexus-spider requires nexus-clockworks, which is not installed."*
+**Missing dependency** — a plugin declares `requires: ["clockworks"]` and that plugin is not installed. Loud startup failure before any apparatus starts: *"nexus-spider requires clockworks, which is not installed."*
 
 **Plugin provides nothing** — `guild().apparatus("nexus-git")` where the apparatus has no `provides`. Returns a sentinel; throws with a useful message on access.
 
-**Bad cast** — `guild().apparatus<WrongType>("nexus-clockworks")`. Runtime error when the wrong method is called. Accepted tradeoff: the coupling is explicit in `requires` and visible in the type import; the developer takes responsibility for getting the type right.
+**Bad cast** — `guild().apparatus<WrongType>("clockworks")`. Runtime error when the wrong method is called. Accepted tradeoff: the coupling is explicit in `requires` and visible in the type import; the developer takes responsibility for getting the type right.
 
 ---
 
@@ -533,10 +533,10 @@ Installed plugins are declared in `guild.json`:
 ```json
 {
   "plugins": [
-    "nexus-clockworks",
-    "nexus-spider",
-    "nexus-surveyor",
-    "nexus-stacks",
+    "clockworks",
+    "spider",
+    "surveyor",
+    "stacks",
     "nexus-git"
   ]
 }
@@ -549,7 +549,7 @@ The framework loads plugins in declaration order, resolves the dependency graph,
 ### CLI Surface
 
 ```sh
-nsg install nexus-clockworks
+nsg install clockworks
 nsg install nexus-git
 nsg remove  nexus-git
 ```

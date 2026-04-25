@@ -80,7 +80,7 @@ Plugins are listed by their derived plugin id (package name with the `@shardwork
 {
   "name": "my-guild",
   "nexus": "2.1.0",
-  "plugins": ["nexus-stdlib", "nexus-clockworks"],
+  "plugins": ["nexus-stdlib", "clockworks"],
   "baseTools": ["commission", "signal", "list-writs"],
   "roles": { ... },
   "settings": { "model": "claude-opus-4-5" }

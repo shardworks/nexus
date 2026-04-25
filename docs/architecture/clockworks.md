@@ -372,22 +372,22 @@ CREATE TABLE event_dispatches (
 The Clockworks apparatus consumes relay contributions from installed plugins. It publishes a `ClockworksKit` interface that kit authors import for type safety:
 
 ```typescript
-// Published by nexus-clockworks
+// Published by @shardworks/clockworks-apparatus
 interface ClockworksKit {
   relays?: RelayDefinition[]
 }
 ```
 
-A plugin contributing relays declares itself as satisfying `ClockworksKit` and names `nexus-clockworks` in its `recommends`:
+A plugin contributing relays declares itself as satisfying `ClockworksKit` and names `clockworks` in its `recommends`:
 
 ```typescript
-import type { ClockworksKit } from "nexus-clockworks"
+import type { ClockworksKit } from "@shardworks/clockworks-apparatus"
 
 export default {
   name: "nexus-signals",
   kit: {
     relays:     [memberJoinedRelay, memberLeftRelay],
-    recommends: ["nexus-clockworks"],
+    recommends: ["clockworks"],
   } satisfies ClockworksKit,
 } satisfies Plugin
 ```
