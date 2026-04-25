@@ -118,33 +118,39 @@ Every standing order has one canonical form: `{ on, run, ...params }`. The `on` 
 }
 ```
 
-#### The `summon` verb (syntactic sugar)
+#### The summon relay
 
-The `summon` key is shorthand for invoking the **summon relay** — the stdlib relay that handles anima session dispatch. The Clockworks desugars `summon` orders at dispatch time:
+The **summon relay** is the stdlib relay that turns event dispatches into anima sessions. It is wired into the apparatus's `supportKit.relays` so every guild has it available by default, registered under the canonical name `summon-relay`. Operators invoke it like any other relay:
 
 ```json
-// What the operator writes:
-{ "on": "mandate.ready", "summon": "artificer", "prompt": "...", "maxSessions": 5 }
-
-// What the Clockworks dispatches:
-{ "on": "mandate.ready", "run": "summon-relay", "role": "artificer", "prompt": "...", "maxSessions": 5 }
+{
+  "on": "mandate.ready",
+  "run": "summon-relay",
+  "with": {
+    "role": "artificer",
+    "prompt": "Read your writ. Title: {{writ.title}}",
+    "maxSessions": 5
+  }
+}
 ```
 
-The `summon` value becomes the `role` param. All other keys pass through as relay params. This means anima dispatch is handled by a regular relay — replaceable, upgradeable, configurable — not baked into the framework.
+Anima dispatch is therefore handled by a regular relay — replaceable, upgradeable, configurable — not baked into the framework. The standing-order validator's canonical `{ on, run, with? }` shape applies; there is no `summon:` or `brief:` sugar form.
 
-The **summon relay** resolves the role to an active anima, binds or synthesizes a writ, manifests the anima, hydrates the prompt template, launches a session, and handles post-session writ lifecycle. See [Dispatch Integration](writs.md#dispatch-integration) for the full sequence.
-
-**Summon relay params:**
+**`with:` parameters:**
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `role` | string | *(required)* | Role to summon (set automatically from `summon` value) |
-| `prompt` | string | — | Prompt template with `{{writ.title}}`, `{{writ.description}}`, etc. |
-| `maxSessions` | number | 10 | Circuit breaker: max session attempts per writ before auto-fail |
+| `role` | string | *(required)* | Role to summon. Must be registered with the Loom; the relay throws at dispatch time if not. |
+| `prompt` | string | *(required)* | `{{path.with.dots}}` template. Namespaces: `writ.*` (always populated, real or synthetic), `event.*` (id / name / payload / emitter / firedAt), and `params.*` (every `with:` key other than `role`, `prompt`, `maxSessions`). Undefined paths throw. |
+| `maxSessions` | number | 10 | Per-writ circuit breaker. The relay tracks `writ.status.clockworks.sessionAttempts` and fails the writ once the count reaches this cap. `0` disables the breaker; negative values throw. |
 
-**Circuit breaker:** By default, the summon relay will fail a writ after 10 session attempts. This prevents infinite re-dispatch loops when a writ keeps getting interrupted without making progress. Override per standing order with `"maxSessions": 20` or disable with `"maxSessions": 0`.
+**Writ binding:** if `event.payload.writId` is a string, the relay fetches the writ via the Clerk and exposes it as `writ.*`. Otherwise it synthesizes an in-memory writ from the event payload — synthetic writs are never persisted, and the circuit breaker is bypassed entirely (synthetic writs have no durable identity to count against).
 
-**Role resolution:** If no active anima fills the named role, the relay throws and the Clockworks signals `standing-order.failed`.
+**Circuit breaker:** the per-writ counter (`writ.status.clockworks.sessionAttempts`) is incremented before each launch via `clerk.setWritStatus(writId, 'clockworks', …)` so a crashed dispatcher cannot bypass the count. When the cap trips, the relay transitions the writ to `'failed'` via `clerk.transition` with a resolution string identifying the relay, and returns cleanly without throwing to the dispatcher — the writ's resolution is the audit trail.
+
+**Soft dependency on the Animator and the Loom:** both apparatuses are declared under Clockworks's `recommends` (not `requires`) and are resolved lazily at handler-call time. A guild that uses Clockworks for non-anima relays can install the apparatus without dragging in the session-launch stack; if a `summon-relay` standing order fires while the dependencies are missing, the relay throws a clear error naming the missing apparatus.
+
+**Session metadata:** the relay calls `animator.summon` with `cwd: guild().home` and metadata `{ trigger: 'summon-relay', role, writId, eventId, eventName }`, then awaits `AnimateHandle.result` so the dispatcher's `event_dispatches` row reflects real session runtime.
 
 #### Relay params
 

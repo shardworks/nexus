@@ -65,6 +65,7 @@ import {
   type DispatchSummary,
 } from './dispatcher.ts';
 import { isRelayDefinition, type RelayDefinition } from './relay.ts';
+import { createSummonRelay } from './summon-relay.ts';
 import { signal } from './tools/index.ts';
 import { handleWritLifecycle } from './writ-lifecycle-observer.ts';
 
@@ -244,6 +245,11 @@ export function createClockworks(): Plugin {
       // types before rejecting `<type>.{ready,completed,stuck,failed}`
       // patterns.
       requires: ['stacks', 'clerk'],
+      // Animator and Loom are soft dependencies — needed by the stdlib
+      // `summon-relay` (resolved lazily at handler-call time) so a guild
+      // that uses Clockworks for non-anima relays can install Clockworks
+      // without dragging in the session-launch stack.
+      recommends: ['animator', 'loom'],
       consumes: [RELAYS_KIT],
 
       provides: api,
@@ -267,10 +273,11 @@ export function createClockworks(): Plugin {
           },
         },
         tools: [signal],
-        // Reserved for task 5 (the summon relay). An empty array is a
-        // cleaner signal than omission and exercises the merge path
-        // through the registry-build code today.
-        relays: [] as RelayDefinition[],
+        // Stdlib relays. Today this is just the `summon-relay` — the
+        // bridge between event dispatch and anima sessions. Authors of
+        // additional stdlib relays append here; third-party relays use
+        // a standalone `relays` kit.
+        relays: [createSummonRelay()] as RelayDefinition[],
       },
 
       async start(ctx: StartupContext): Promise<void> {

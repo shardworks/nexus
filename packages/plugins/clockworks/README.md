@@ -46,7 +46,11 @@ Register the apparatus in `guild.json`:
 
 The apparatus declares `requires: ['stacks', 'clerk']` — the Stacks
 provides persistence for the two books, and the Clerk supplies the
-writ-type registry the `signal` validator consults.
+writ-type registry the `signal` validator consults. The Animator and
+the Loom appear under `recommends` (not `requires`): the stdlib
+`summon-relay` resolves both lazily at handler-call time, so a guild
+that uses Clockworks for non-anima relays can install the apparatus
+without dragging in the session-launch stack.
 
 ---
 
@@ -264,6 +268,73 @@ books.
 
 ---
 
+## Stdlib relays
+
+### `summon-relay`
+
+The bridge between event dispatch and anima sessions. Wired into
+`supportKit.relays` so every guild gets it for free. Drive it from a
+standing order:
+
+```json
+{
+  "clockworks": {
+    "standingOrders": [
+      {
+        "on": "mandate.ready",
+        "run": "summon-relay",
+        "with": {
+          "role": "artificer",
+          "prompt": "Read your writ. Title: {{writ.title}}",
+          "maxSessions": 5
+        }
+      }
+    ]
+  }
+}
+```
+
+`with:` parameters:
+
+- `role` *(required)* — the role to summon, must already be registered
+  with the Loom (declared under `loom.roles` in `guild.json` or
+  contributed by a kit).
+- `prompt` *(required)* — a `{{path.with.dots}}` mustache template. The
+  recognized namespaces are `writ.*` (always populated, real or
+  synthetic), `event.*` (id / name / payload / emitter / firedAt), and
+  `params.*` (every `with:` key other than `role`, `prompt`,
+  `maxSessions`). Any path that resolves to `undefined` throws — silent
+  empty-string substitution would hide operator drift.
+- `maxSessions` *(optional, default `10`)* — per-writ circuit breaker.
+  Once that many sessions have launched against the same writ, the next
+  invocation transitions the writ to `'failed'` (with a resolution
+  string identifying the relay) and returns cleanly without launching
+  another session. Set to `0` to disable; negative values throw.
+
+Writ binding: when `event.payload.writId` is a string, the relay
+fetches the writ via the Clerk and exposes it as `writ.*`. Otherwise
+it synthesizes an in-memory writ from the event payload — the
+synthetic writ is **never persisted**, and the circuit breaker is
+bypassed entirely for it (synthetic writs have no durable identity to
+count against).
+
+Session metadata recorded on every launched session:
+
+```json
+{
+  "trigger": "summon-relay",
+  "role": "<role>",
+  "writId": "<real or syn-* id>",
+  "eventId": "<triggering event id>",
+  "eventName": "<triggering event name>"
+}
+```
+
+The handler awaits `AnimateHandle.result` before returning, so the
+dispatcher's `event_dispatches` row reflects real session runtime.
+
+---
+
 ## CLI
 
 ```sh
@@ -379,6 +450,10 @@ daemon-restart cycle stays idempotent.
   framework CLI as a hand-written command (see
   `packages/framework/cli/src/commands/clock.ts`).
 - `relay`, `isRelayDefinition` — relay SDK factory and structural type guard.
+- `createSummonRelay` — factory for the stdlib `summon-relay`. Already
+  wired into `supportKit.relays`; re-exported so unit tests and any
+  downstream tooling that needs to drive the relay directly can pull
+  it without reaching into the package's internals.
 - `validateSignal`, `RESERVED_EVENT_NAMESPACES`,
   `WRIT_LIFECYCLE_SUFFIXES` — the shared signal validator (re-used by
   the framework CLI's hand-written `nsg signal` command).

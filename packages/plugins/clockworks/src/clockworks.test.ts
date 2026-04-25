@@ -237,12 +237,12 @@ describe('Clockworks — skeleton', () => {
     assert.deepEqual(names, ['signal']);
   });
 
-  it('declares the expected apparatus shape (requires stacks + clerk, consumes relays)', () => {
+  it('declares the expected apparatus shape (requires stacks + clerk, recommends animator + loom, consumes relays)', () => {
     const plugin = createClockworks();
     if (!('apparatus' in plugin)) throw new Error('clockworks must be apparatus');
     assert.deepEqual(plugin.apparatus.requires, ['stacks', 'clerk']);
+    assert.deepEqual(plugin.apparatus.recommends, ['animator', 'loom']);
     assert.deepEqual(plugin.apparatus.consumes, ['relays']);
-    assert.equal(plugin.apparatus.recommends, undefined);
     assert.equal(typeof plugin.apparatus.start, 'function');
     assert.equal(typeof plugin.apparatus.stop, 'function');
   });
@@ -446,12 +446,14 @@ async function buildRegistryFixture(
 describe('Clockworks — relay registry', () => {
   afterEach(() => clearGuild());
 
-  it('exposes an empty supportKit.relays slot for downstream contribution', () => {
+  it('exposes the stdlib summon-relay on supportKit.relays', () => {
     const plugin = createClockworks();
     if (!('apparatus' in plugin)) throw new Error('clockworks must be apparatus');
     const slot = (plugin.apparatus.supportKit as { relays?: unknown }).relays;
     assert.ok(Array.isArray(slot), 'supportKit.relays must be an array');
-    assert.equal((slot as unknown[]).length, 0, 'starts empty in this commission');
+    const entries = slot as RelayDefinition[];
+    assert.equal(entries.length, 1, 'exactly one stdlib relay wired today');
+    assert.equal(entries[0].name, 'summon-relay');
   });
 
   it('merges multiple relays from a single kit and resolves each by name', async () => {

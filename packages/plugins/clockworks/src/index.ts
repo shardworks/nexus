@@ -33,6 +33,11 @@ export {
   type RelayHandler,
 } from './relay.ts';
 
+// Stdlib `summon-relay` factory. Re-exported so unit tests and any
+// downstream tooling that needs to drive the relay directly can pull it
+// without reaching into the package's internals.
+export { createSummonRelay } from './summon-relay.ts';
+
 export { createClockworks } from './clockworks.ts';
 
 // Re-export the tools so integration tests (and scripted surfaces that
