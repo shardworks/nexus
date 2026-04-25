@@ -390,6 +390,22 @@ export interface ClerkApi {
   count(filters?: WritFilters): Promise<number>;
 
   /**
+   * Count writs currently in any `active`-classified state across every
+   * registered writ type.
+   *
+   * Walks the writ-type registry on each call (no caching) and composes a
+   * per-type OR-form query of the shape `[type, phase IN [active-states-of-type]]`.
+   * Returns `0` when the registry is empty, when no registered type
+   * declares any `active` state, or when no rows match.
+   *
+   * This is the classification-driven primitive behind the Reckoner's
+   * drain detector and any future apparatus that needs a multi-type
+   * "is anything in flight?" count. Existing per-phase counts (e.g.
+   * `count({ phase: 'open' })`) remain available for type-specific reads.
+   */
+  countActive(): Promise<number>;
+
+  /**
    * Walk the writ hierarchy and return a forest (or a single subtree when
    * `rootId` is provided). Mirrors ratchet's `tree()` precedent.
    *

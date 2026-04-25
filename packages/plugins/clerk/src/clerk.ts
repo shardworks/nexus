@@ -566,6 +566,38 @@ export function createClerk(): Plugin {
       return writs.count(where);
     },
 
+    async countActive(): Promise<number> {
+      // Walk the registry per call (D13) — no caching, no
+      // post-seal memo. Drain runs at most once per terminal
+      // transition; the walk is microseconds.
+      //
+      // Compose one OR-branch per registered type, each shaped as
+      // `[type = T, phase IN [...activeStatesOf(T)]]`. The composite
+      // `[type, phase]` index on the writs book serves the lookup.
+      // Types with no `active` state contribute no branch; an empty
+      // `or: []` list collapses to `count() === 0` (D2).
+      const branches: WhereClause[] = [];
+      for (const [typeName, entry] of writTypeRegistry.entries()) {
+        const activeStates = entry.config.states
+          .filter((s) => s.classification === 'active')
+          .map((s) => s.name);
+        if (activeStates.length === 0) continue;
+        if (activeStates.length === 1) {
+          branches.push([
+            ['type', '=', typeName],
+            ['phase', '=', activeStates[0]!],
+          ]);
+        } else {
+          branches.push([
+            ['type', '=', typeName],
+            ['phase', 'IN', activeStates],
+          ]);
+        }
+      }
+      if (branches.length === 0) return 0;
+      return writs.count({ or: branches });
+    },
+
     async tree(params?: WritTreeParams): Promise<WritTree[]> {
       const phaseSet = params?.phase
         ? new Set(Array.isArray(params.phase) ? params.phase : [params.phase])

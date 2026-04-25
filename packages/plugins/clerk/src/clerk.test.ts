@@ -590,6 +590,104 @@ describe('Clerk', () => {
     });
   });
 
+  // ── countActive() ─────────────────────────────────────────────────
+
+  describe('countActive()', () => {
+    it('matches the prior phase=open count on a pure-mandate guild', async () => {
+      await setup();
+      // Two writs published to open.
+      const a = await postMandate({ title: 'A', body: '' });
+      const b = await postMandate({ title: 'B', body: '' });
+      // Mandate's only active states are `open` and `stuck`. Drive
+      // one to `stuck` (still active-classified) and one to a
+      // terminal state.
+      await clerk.transition(a.id, 'stuck', { resolution: 'paused' });
+      const baselineOpen = await clerk.count({ phase: 'open' });
+      // open=1 (b is still open), stuck=1 (a) → countActive=2.
+      assert.equal(await clerk.countActive(), baselineOpen + 1);
+      assert.equal(await clerk.countActive(), 2);
+      // Drive b terminal — only the stuck mandate remains active.
+      await clerk.transition(b.id, 'completed');
+      assert.equal(await clerk.countActive(), 1);
+      // And finally drive a terminal too.
+      await clerk.transition(a.id, 'failed', { resolution: 'abandoned' });
+      assert.equal(await clerk.countActive(), 0);
+    });
+
+    it('counts active writs across multiple types with structurally-different state machines', async () => {
+      // A second writ type whose lifecycle deliberately uses state
+      // names that do not overlap with mandate. Asserts countActive
+      // is classification-driven, not phase-string driven.
+      const taskType: WritTypeConfig = {
+        name: 'task',
+        states: [
+          { name: 'pending', classification: 'initial', allowedTransitions: ['running', 'done'] },
+          { name: 'running', classification: 'active', allowedTransitions: ['done'] },
+          { name: 'done', classification: 'terminal', attrs: ['success'], allowedTransitions: [] },
+        ],
+      };
+      await setup({
+        extraApparatuses: [
+          makeWritTypeApparatus([taskType], { id: 'task-plugin' }),
+        ],
+      });
+
+      // No writs anywhere.
+      assert.equal(await clerk.countActive(), 0);
+
+      // Two mandates → both `open` (mandate active state) → +2.
+      const m1 = await postMandate({ title: 'M1', body: '' });
+      const m2 = await postMandate({ title: 'M2', body: '' });
+      assert.equal(await clerk.countActive(), 2);
+
+      // A task in `pending` (initial — NOT active) does not count.
+      const t1 = await clerk.post({ title: 'T1', body: '', type: 'task' });
+      assert.equal(t1.phase, 'pending');
+      assert.equal(await clerk.countActive(), 2);
+
+      // Transition the task to `running` (active) → +1.
+      await clerk.transition(t1.id, 'running');
+      assert.equal(await clerk.countActive(), 3);
+
+      // Finish the task → terminal → −1.
+      await clerk.transition(t1.id, 'done');
+      assert.equal(await clerk.countActive(), 2);
+
+      // Finish a mandate.
+      await clerk.transition(m1.id, 'completed');
+      assert.equal(await clerk.countActive(), 1);
+
+      // Finish the second mandate.
+      await clerk.transition(m2.id, 'completed');
+      assert.equal(await clerk.countActive(), 0);
+    });
+
+    it('returns 0 when no registered type declares an active state', async () => {
+      // A type whose entire lifecycle is initial → terminal — no
+      // `active` classification. countActive must return 0 even when
+      // writs exist in the initial state.
+      const inertType: WritTypeConfig = {
+        name: 'inert',
+        states: [
+          { name: 'queued', classification: 'initial', allowedTransitions: ['done'] },
+          { name: 'done', classification: 'terminal', attrs: ['success'], allowedTransitions: [] },
+        ],
+      };
+      await setup({
+        clerkConfig: { defaultType: 'inert' },
+        extraApparatuses: [
+          makeWritTypeApparatus([inertType], { id: 'inert-plugin' }),
+        ],
+      });
+
+      // post() yields a writ in `queued` (initial) — not active.
+      // mandate is also registered but no mandate writs exist.
+      const w = await clerk.post({ title: 'W', body: '' });
+      assert.equal(w.phase, 'queued');
+      assert.equal(await clerk.countActive(), 0);
+    });
+  });
+
   // ── tree() ────────────────────────────────────────────────────────
 
   describe('tree()', () => {
