@@ -66,7 +66,7 @@ import {
 } from './dispatcher.ts';
 import { isRelayDefinition, type RelayDefinition } from './relay.ts';
 import { createSummonRelay } from './summon-relay.ts';
-import { signal } from './tools/index.ts';
+import { clockStatusTool, signal } from './tools/index.ts';
 import { handleWritLifecycle } from './writ-lifecycle-observer.ts';
 
 // ── Kit contribution vocabulary ─────────────────────────────────────
@@ -272,7 +272,7 @@ export function createClockworks(): Plugin {
             ],
           },
         },
-        tools: [signal],
+        tools: [signal, clockStatusTool],
         // Stdlib relays. Today this is just the `summon-relay` — the
         // bridge between event dispatch and anima sessions. Authors of
         // additional stdlib relays append here; third-party relays use
