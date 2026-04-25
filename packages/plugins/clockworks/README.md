@@ -4,12 +4,15 @@ The Clockworks — Pillar 5 of the guild architecture. The event substrate
 and standing-order engine: declares events, accepts emissions, and fans
 them out to registered handlers (relays, summons, briefs).
 
-**Status:** Write path is live. The Clockworks now exposes
-`ClockworksApi.emit` for trusted framework callers and a validated
+**Status:** Write path and CDC auto-wiring are live. The Clockworks
+exposes `ClockworksApi.emit` for trusted framework callers, a validated
 `signal` tool for animas (with an operator-facing `nsg signal` CLI
-counterpart). The dispatcher, the runner, CDC auto-wiring, and the
-daemon are still to come — events land in the `events` book but nothing
-reads them yet.
+counterpart), and — at startup — registers a Phase-2 CDC watcher on
+every plugin-declared book (other than `clockworks/events` itself) that
+re-emits each row create/update/delete as a
+`book.<ownerId>.<book>.<verb>` event with emitter `'framework'`. The
+dispatcher, the runner, and the daemon are still to come — events land
+in the `events` book but nothing reads them yet.
 
 See also: [`docs/architecture/clockworks.md`](../../../docs/architecture/clockworks.md).
 
@@ -86,6 +89,34 @@ registered under `name` — sourced from either a standalone kit's
 or `undefined` when no relay with that name is registered. The
 dispatcher (future task) calls this when resolving a standing order's
 `run:` field.
+
+---
+
+## CDC auto-wiring
+
+At `start()`, the Clockworks walks every `books` kit contribution
+collected during the Wire phase and registers a Phase-2 (post-commit)
+Stacks CDC watcher on each declared book. Every `create` / `update` /
+`delete` becomes one row in `clockworks/events`:
+
+- `name`    — `book.<ownerId>.<book>.<created|updated|deleted>`
+- `emitter` — the literal string `'framework'`
+- `payload` — the Stacks CDC event object verbatim
+
+Standing orders can therefore bind to row mutations directly without
+each plugin author having to call `emit()` or `signal()` from every
+write site.
+
+The `clockworks/events` book is the only book excluded from
+auto-wiring — watching it would observe its own emit() write and
+re-emit forever. Everything else, including `clockworks/event_dispatches`,
+is auto-wired. Books contributed by plugins installed *after*
+`start()` are not picked up; the registry seals at `phase:started`.
+
+Auto-wiring runs as Phase 2 (`failOnError: false`), so an
+emit-handler error cannot roll back the triggering row write — Stacks'
+existing Phase-2 error path logs the failure and the system keeps
+going.
 
 ---
 
