@@ -25,28 +25,7 @@ Events are persisted to the Clockworks' own event queue immediately when signale
 
 #### Framework events
 
-Signaled automatically by `nexus-core` operations. Always available; no guild configuration needed.
-
-| Event | Signaled when |
-|---|---|
-| `anima.instantiated` | A new anima is created |
-| `anima.state.changed` | An anima transitions state (aspirant → active, active → retired) |
-| `anima.manifested` | An anima is launched for a session |
-| `anima.session.ended` | A session completes |
-| `commission.posted` | A new commission is posted by the patron |
-| `commission.state.changed` | A commission transitions state |
-| `commission.sealed` | A commission completes successfully |
-| `commission.failed` | A commission fails |
-| `{type}.ready` | A writ transitions to `ready` — available for dispatch (e.g. `mandate.ready`, `task.ready`) |
-| `{type}.completed` | A writ is fulfilled (e.g. `mandate.completed`, `task.completed`) |
-| `{type}.failed` | A writ fails (e.g. `mandate.failed`, `task.failed`) |
-| `tool.installed` | A tool (implement, engine, curriculum, or temperament) is installed |
-| `tool.removed` | A tool is removed |
-| `migration.applied` | A database migration is applied |
-| `guild.initialized` | The guild is first initialized |
-| `standing-order.failed` | A standing order failed during execution (see Error Handling) |
-
-Framework events are signaled from authoritative code paths in `nexus-core`. Animas cannot signal them.
+Framework events are signaled automatically from authoritative code paths in the framework and apparatuses (`commission.*`, `session.*`, `anima.*`, writ-lifecycle `{type}.*`, `standing-order.*`, `schedule.*`, `tool.*`, `migration.*`, `guild.*`). Animas cannot signal them. The full enumeration — every event name, payload shape, emitter site, and "fires when" condition — lives in the [Event Catalog](../reference/event-catalog.md), which is the single source of truth for the framework event surface. Each event listed there is grep-findable in shipped emitter code; this document deliberately does not duplicate the table.
 
 #### Custom guild events
 
@@ -68,7 +47,7 @@ Guilds declare their own events in `guild.json` under the `clockworks` key:
 }
 ```
 
-Custom events use any name not in a reserved framework namespace (`anima.*`, `commission.*`, `tool.*`, `migration.*`, `guild.*`, `standing-order.*`, `session.*`). Writ lifecycle events (e.g. `mandate.ready`, `task.completed`) use guild-defined type names as namespaces — they are framework-emitted but not in the reserved list. See the [Event Catalog](../reference/event-catalog.md#writ-lifecycle-events) for how validation handles this. Bundles may also declare events they introduce; these are merged into `guild.json` on installation.
+Custom events use any name not in a reserved framework namespace. The canonical reserved-prefix list lives in the [Event Catalog → Reserved Namespaces](../reference/event-catalog.md#reserved-namespaces); writ lifecycle events (e.g. `mandate.ready`, `task.completed`) use guild-defined type names as namespaces and live outside that list — they are framework-emitted but rejected by `validateSignal`'s separate writ-lifecycle pattern check. See the [Event Catalog](../reference/event-catalog.md#writ-lifecycle-events) for how validation handles this. Bundles may also declare events they introduce; these are merged into `guild.json` on installation.
 
 Animas signal custom events using the `signal` tool. The tool validates the event name against declared events in `guild.json` before persisting.
 
