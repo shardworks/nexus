@@ -2,18 +2,21 @@
  * Reckoner predicates — the decision logic that selects which writ
  * transitions are pulse-worthy.
  *
- * Kept separate from the CDC wiring so they can be unit-tested directly.
+ * Kept separate from the CDC wiring so it can be unit-tested directly.
  *
- * Two main decisions live here:
+ * One decision lives here:
  *
  *   - `isTerminalStuck` — terminal non-success stuck test. A stuck writ
  *     whose `status.spider.retryable !== true` OR whose rigs-for-writ
  *     count is at or above the clockworks-retry cap is "terminal" from
  *     the Reckoner's viewpoint (clockworks-retry will not requeue it).
  *     This is the complement of clockworks-retry's requeue condition.
- *   - `parseChildFailures` — extract leaf child-writ short ids from a
- *     parent's cascade-built resolution string so the context payload
- *     can surface them.
+ *
+ * Leaf-cause surfacing for cascaded pulses is no longer a predicate
+ * responsibility: the Clerk's children-behavior cascade engine writes the
+ * triggering child id under the parent's `status['clerk']` sub-slot and
+ * the Reckoner walks that chain at emit time (see
+ * `chaseTriggeringChildren` in `reckoner.ts`).
  */
 
 /**
@@ -65,28 +68,3 @@ export function isTerminalStuck(
   return false;
 }
 
-/**
- * Parse the child short-ids out of a Clerk-cascaded resolution string.
- *
- * Clerk's upward cascade writes the parent resolution as:
- *
- *     Child "w-abc123-deadbeef" failed: {child resolution}
- *
- * When a cascade is nested (child of child of root), the resolution text
- * carries the full quoted child id. We extract every distinct `w-…` id
- * that appears inside `Child "…" failed:` segments.
- *
- * Returns an empty array for resolutions that do not follow the cascade
- * pattern (e.g. an operator-supplied resolution string).
- */
-export function parseChildFailures(resolution: string | undefined): string[] {
-  if (!resolution) return [];
-  const ids: string[] = [];
-  const re = /Child "([^"]+)" failed:/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(resolution)) !== null) {
-    const id = m[1];
-    if (id && !ids.includes(id)) ids.push(id);
-  }
-  return ids;
-}

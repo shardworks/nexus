@@ -19,6 +19,7 @@ import { createClerk } from './clerk.ts';
 export {
   type ClerkApi,
   type ClerkConfig,
+  type ClerkWritStatus,
   type WritDoc,
   type WritLinkDoc,
   type WritLinks,
@@ -31,6 +32,7 @@ export {
   type LinkKindDoc,
   type WritTree,
   type WritTreeParams,
+  CLERK_PLUGIN_ID,
 } from './types.ts';
 
 export { createClerk } from './clerk.ts';

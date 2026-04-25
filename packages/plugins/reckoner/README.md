@@ -74,7 +74,8 @@ interface WritFailedContext {
   writType: string;
   writUpdatedAt: string; // dedupe identity
   resolution?: string;
-  childFailures?: string[];
+  childFailures?: string[]; // chase-chain of cascaded leaf-cause short ids
+                            // (outer→inner; populated from status['clerk'])
 }
 
 interface QueueDrainedContext {
@@ -108,10 +109,15 @@ replays (see "Idempotency under replay" below).
 
 ## Behavior
 
-- **Roots-only.** Child-writ transitions never emit their own pulses; the
-  Clerk's cascade rewrites the parent's resolution with the child's cause,
-  and the Reckoner surfaces leaf failures in the parent pulse's
-  `childFailures` context field.
+- **Roots-only.** Child-writ transitions never emit their own pulses;
+  the Clerk's children-behavior cascade engine lifts the parent into its
+  own terminal state and records the immediate triggering child id under
+  `status['clerk'].triggeringChildId` before each cascaded transition.
+  At emit time the Reckoner walks the chain by reading each successive
+  writ's own `status['clerk']` slot until it reaches a writ without one
+  (the leaf), and surfaces the resulting ordered short-id list in the
+  parent pulse's `childFailures` context field plus an "Originated from
+  child …" fragment in the summary.
 - **Phase 2 CDC.** The observer runs post-commit with `failOnError: false`:
   a pulse failure never voids the underlying writ transition.
 - **No startup backfill.** The Reckoner fires on transitions only.

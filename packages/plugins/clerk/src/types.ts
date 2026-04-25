@@ -40,6 +40,47 @@ export type WritPhase = 'new' | 'open' | 'stuck' | 'completed' | 'failed' | 'can
 
 // ── Documents ────────────────────────────────────────────────────────
 
+// ── status['clerk'] sub-slot ─────────────────────────────────────────
+
+/**
+ * The Clerk-owned sub-slot of `WritDoc.status`.
+ *
+ * Written by the children-behavior cascade engine at the moment a parent's
+ * terminal transition fires: the engine records the *immediate* triggering
+ * child's id so downstream observers (notably the Reckoner) can chase the
+ * cascade chain back to the leaf cause without parsing the parent's
+ * resolution string.
+ *
+ * Ownership: Clerk writes; downstream consumers read. Plugin convention is
+ * the same as for any `status[<pluginId>]` sub-slot — see
+ * `setWritStatus()` and the spec/status convention notes on `ClerkApi`.
+ *
+ * The slot is forward-only: there is no migration or backfill for writs
+ * that already terminal'd before this slot existed. Pre-existing terminal
+ * writs do not re-emit pulses, so the absence of a slot on a historical
+ * writ is harmless.
+ */
+export interface ClerkWritStatus {
+  /**
+   * Id of the immediate child whose terminal transition fired the
+   * children-behavior cascade onto this writ. Absent on writs that
+   * reached terminal through a direct transition (no cascade).
+   *
+   * For multi-level cascades (root → mid → leaf), each level's parent
+   * carries its own immediate triggering child id; consumers walk the
+   * chain by reading each successive writ's `status['clerk']
+   * .triggeringChildId`.
+   */
+  triggeringChildId?: string;
+}
+
+/**
+ * Plugin id stamped on the Clerk's own observation sub-slot
+ * (`status['clerk']`). Held as a constant so the engine and the
+ * `setWritStatus` consumer agree on the key.
+ */
+export const CLERK_PLUGIN_ID = 'clerk';
+
 /**
  * A writ document as stored in The Stacks.
  */

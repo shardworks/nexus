@@ -1182,6 +1182,8 @@ export function createClerk(): Plugin {
           getWritTypeConfig: (name: string) => writTypeRegistry.get(name)?.config,
           isTerminal: (writ: WritDoc) => api.isTerminal(writ),
           transition: (id: string, to, fields) => api.transition(id, to, fields),
+          setWritStatus: (writId: string, pluginId: string, value: unknown) =>
+            api.setWritStatus(writId, pluginId, value),
         });
         stacks.watch<WritDoc>('clerk', 'writs', childrenBehaviorHandler, {
           failOnError: true,

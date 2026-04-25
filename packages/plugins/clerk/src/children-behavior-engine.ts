@@ -32,15 +32,26 @@
  * `resolution` string (the writ in the CDC update event) is copied onto
  * the parent through the same `transition` call.
  *
- * The engine never writes to the writ document directly — every parent
- * state change goes through `transition`, so allowedTransitions
- * enforcement, terminal `resolvedAt` tagging, and CDC re-fire all behave
- * identically to a direct caller.
+ * On every fire, before the parent's transition is recorded, the engine
+ * publishes a structured record onto the parent's Clerk-owned status
+ * sub-slot (`status['clerk']`) containing the immediate triggering child's
+ * id. The write must precede the transition: downstream observers (notably
+ * the Reckoner) are CDC-driven from the terminal transition's `updatedAt`,
+ * and they read `status['clerk']` from the post-commit `entry` snapshot at
+ * that moment. Writing the slot *after* the transition would deliver the
+ * pulse against a snapshot that pre-dates the slot's existence and degrade
+ * the leaf-cause surface.
+ *
+ * The engine never writes the phase directly — every parent state change
+ * still goes through `transition`, so allowedTransitions enforcement,
+ * terminal `resolvedAt` tagging, and CDC re-fire all behave identically to
+ * a direct caller.
  */
 
 import type { Book, ChangeEvent } from '@shardworks/stacks-apparatus';
 
-import type { WritDoc, WritPhase } from './types.ts';
+import type { ClerkWritStatus, WritDoc, WritPhase } from './types.ts';
+import { CLERK_PLUGIN_ID } from './types.ts';
 import type {
   WritTypeChildrenBehaviorAction,
   WritTypeConfig,
@@ -54,7 +65,10 @@ import type {
  * limited `api.list` default would silently truncate parents with >20
  * children). `getWritTypeConfig` is the registry accessor.
  * `isTerminal` is the writ-type-classification predicate.
- * `transition` is the sole sanctioned mutation surface.
+ * `transition` is the sole sanctioned phase-change surface.
+ * `setWritStatus` is the sanctioned slot-write path; the engine uses it
+ * to publish `status['clerk']` immediately before the parent's terminal
+ * transition.
  */
 export interface ChildrenBehaviorEngineDeps {
   writs: Book<WritDoc>;
@@ -65,6 +79,11 @@ export interface ChildrenBehaviorEngineDeps {
     to: WritPhase,
     fields?: Partial<WritDoc>,
   ): Promise<WritDoc>;
+  setWritStatus(
+    writId: string,
+    pluginId: string,
+    value: unknown,
+  ): Promise<WritDoc>;
 }
 
 /**
@@ -74,18 +93,32 @@ export interface ChildrenBehaviorEngineDeps {
 export function createChildrenBehaviorEngine(
   deps: ChildrenBehaviorEngineDeps,
 ): (event: ChangeEvent<WritDoc>) => Promise<void> {
-  const { writs, getWritTypeConfig, isTerminal, transition } = deps;
+  const { writs, getWritTypeConfig, isTerminal, transition, setWritStatus } = deps;
 
   /**
    * Drive the parent through `transition` with the configured target,
    * passing the triggering child's resolution when `copyResolution` is
    * truthy.
+   *
+   * Publishes the Clerk-owned status sub-slot (`status['clerk']`) with
+   * the triggering child's id BEFORE the transition fires. The Reckoner's
+   * dedupe identity keys on the terminal transition's `updatedAt` and its
+   * emit-time read sees `event.entry` (the post-commit snapshot at that
+   * instant). Writing the slot after the transition would deliver the
+   * pulse against a snapshot that pre-dates the slot's existence — the
+   * leaf-cause surface would degrade silently. See the engine's top-of-
+   * file commentary for the full ordering rationale.
    */
   async function fireTrigger(
     parent: WritDoc,
     triggeringChild: WritDoc,
     action: WritTypeChildrenBehaviorAction,
   ): Promise<void> {
+    const clerkStatus: ClerkWritStatus = {
+      triggeringChildId: triggeringChild.id,
+    };
+    await setWritStatus(parent.id, CLERK_PLUGIN_ID, clerkStatus);
+
     const fields: Partial<WritDoc> = {};
     if (action.copyResolution && typeof triggeringChild.resolution === 'string') {
       fields.resolution = triggeringChild.resolution;

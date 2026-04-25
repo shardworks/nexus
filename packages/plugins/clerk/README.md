@@ -265,7 +265,7 @@ Throws if the transition is not legal for the writ's current phase. The rejectio
 
 `transition()` strips the phase machine's managed fields from the body — `id`, `createdAt`, `updatedAt`, `resolvedAt`, and `parentId` — and rejects attempts to override `phase` through the `fields` argument with `[clerk] transition: cannot override phase via fields argument`. The observation slot `status` is writable only via `setWritStatus()` (the one sanctioned slot-write path), which performs a transactional read-modify-write on the sub-slot keyed by `pluginId` so sibling sub-slots are preserved under concurrent writers. See [Spec/Status Convention](#specstatus-convention).
 
-Upward cascade (terminal child → parent lift) is driven by the children-behavior engine — a Phase 1 watcher on the writs book that, when any writ transitions to a terminal state, evaluates the parent's `WritTypeConfig.childrenBehavior` block and applies the configured action via `transition`. `anyFailure` is evaluated first; if it fires, `allSuccess` is skipped. When the firing trigger declares `copyResolution: true`, the triggering child's `resolution` string is copied verbatim onto the parent. Types whose configs omit `childrenBehavior` are silent no-ops — there is no downward cascade. Mandate opts into both triggers; piece and observation-set declare none. Cascade writes join the triggering transaction (Phase 1 atomicity); grandparent lift is the natural CDC re-fire on the parent's own update event.
+Upward cascade (terminal child → parent lift) is driven by the children-behavior engine — a Phase 1 watcher on the writs book that, when any writ transitions to a terminal state, evaluates the parent's `WritTypeConfig.childrenBehavior` block and applies the configured action via `transition`. `anyFailure` is evaluated first; if it fires, `allSuccess` is skipped. When the firing trigger declares `copyResolution: true`, the triggering child's `resolution` string is copied verbatim onto the parent. On every fire, the engine *also* publishes the immediate triggering child's id under the parent's Clerk-owned status sub-slot (`status['clerk'].triggeringChildId`) **before** the transition records — see [Worked example: `status.clerk.triggeringChildId`](#worked-example-statusclerktriggeringchildid) — so downstream observers (the Reckoner today) can chase the cascade chain back to the leaf cause without parsing the parent's resolution string. Types whose configs omit `childrenBehavior` are silent no-ops — there is no downward cascade. Mandate opts into both triggers; piece and observation-set declare none. Cascade writes join the triggering transaction (Phase 1 atomicity); grandparent lift is the natural CDC re-fire on the parent's own update event.
 
 ### `setWritStatus(writId, pluginId, value): Promise<WritDoc>`
 
@@ -347,6 +347,50 @@ The slot is a soft convention rather than a hard enforcement boundary:
 - Within a single plugin's sub-slot, concurrent writes are last-writer-wins at the sub-slot level — `setWritStatus()` replaces the plugin's sub-slot value wholesale. Per-key atomicity inside a sub-slot is deferred until real contention appears.
 - Slot writes emit CDC events like any other field change. Downstream observers (page renderers, audits, further observation pipelines) can watch the writs book for `update` events and react to the new `status` contents.
 - Terminal transitions do **not** clear the slot. Observations persist on the writ for post-mortem inspection.
+
+### Worked example: `status.clerk.triggeringChildId`
+
+The Clerk's children-behavior cascade engine writes a sub-slot of its
+own. When a parent writ is lifted into a terminal state by the cascade
+(one of its children's terminal transitions fired the parent's
+`WritTypeConfig.childrenBehavior` trigger), the engine records the
+immediate triggering child's id under `status['clerk']` *before* the
+parent's `transition()` call:
+
+```typescript
+interface ClerkWritStatus {
+  /**
+   * Id of the immediate child whose terminal transition fired the
+   * children-behavior cascade onto this writ. Absent on writs that
+   * reached terminal through a direct (non-cascaded) transition.
+   */
+  triggeringChildId?: string;
+}
+```
+
+The slot is owned by the Clerk; downstream observers (today, the
+Reckoner) read it through the standard plugin convention:
+
+```typescript
+const clerkStatus = writ.status?.clerk as
+  | { triggeringChildId?: string }
+  | undefined;
+```
+
+**Why the ordering matters.** Phase 2 CDC observers read `event.entry`
+(the post-commit snapshot) at emit time, keyed on the terminal-
+transition's `updatedAt`. Writing the slot *after* the transition would
+deliver the pulse against a snapshot that pre-dates the slot's
+existence and degrade the leaf-cause surface. The dual-write sequence
+(`setWritStatus(parent, 'clerk', …)` then `transition(parent, …)`) is
+preserved instead of relaxing `transition()`'s safe-fields strip —
+`status` continues to be writable only through `setWritStatus()`.
+
+**Chase-chain on the consumer side.** Multi-level cascades (root → mid
+→ leaf) leave each parent in the chain carrying its own immediate
+triggering child id; consumers walk the chain by reading each successive
+writ's own `status['clerk'].triggeringChildId`. Cascade depth is bounded
+by Stacks' `MAX_CASCADE_DEPTH = 16` invariant.
 
 ### Worked example: `status.spider.stuckCause`
 
@@ -537,8 +581,16 @@ See `src/types.ts` for the complete type definitions.
 The package exports all public types and the `createClerk()` factory:
 
 ```typescript
-import clerkPlugin, { createClerk, type ClerkApi, type WritTypeInfo } from '@shardworks/clerk-apparatus';
+import clerkPlugin, {
+  createClerk,
+  CLERK_PLUGIN_ID,
+  type ClerkApi,
+  type ClerkWritStatus,
+  type WritTypeInfo,
+} from '@shardworks/clerk-apparatus';
 ```
+
+`CLERK_PLUGIN_ID` is the constant (`'clerk'`) used as the `status` sub-slot key for the Clerk's own observations (see [Worked example: `status.clerk.triggeringChildId`](#worked-example-statusclerktriggeringchildid)). `ClerkWritStatus` is the writer-side shape of that slot.
 
 The default export is a pre-built plugin instance, ready for guild installation.
 

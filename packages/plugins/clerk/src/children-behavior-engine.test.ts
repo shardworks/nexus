@@ -54,10 +54,38 @@ interface TransitionCall {
   fields?: Partial<WritDoc>;
 }
 
+interface SetWritStatusCall {
+  writId: string;
+  pluginId: string;
+  value: unknown;
+}
+
+/**
+ * Unified call log entry. The engine harness records transition and
+ * setWritStatus calls into a single ordered list so tests can assert the
+ * relative ordering between the two (the dedupe-key invariant — the
+ * Reckoner reads `status['clerk']` from the post-commit snapshot of the
+ * terminal-transition CDC event, so the status write must precede the
+ * transition).
+ */
+type EngineCall =
+  | ({ kind: 'transition' } & TransitionCall)
+  | ({ kind: 'setWritStatus' } & SetWritStatusCall);
+
 interface Harness {
   writsById: Map<string, WritDoc>;
   configByName: Map<string, WritTypeConfig>;
+  /**
+   * All engine-driven mutation calls in the order they were issued. Allows
+   * tests to assert the engine's status-write precedes the transition (the
+   * dedupe-key invariant: the Reckoner reads `status['clerk']` from the
+   * post-commit snapshot of the terminal-transition CDC event).
+   */
+  calls: EngineCall[];
+  /** Convenience projection — the transition calls only, in order. */
   transitionCalls: TransitionCall[];
+  /** Convenience projection — the setWritStatus calls only, in order. */
+  statusCalls: SetWritStatusCall[];
   handle: (event: ChangeEvent<WritDoc>) => Promise<void>;
 }
 
@@ -99,7 +127,7 @@ function makeHarness(opts: {
   const configByName = new Map<string, WritTypeConfig>();
   for (const c of opts.configs) configByName.set(c.name, c);
 
-  const transitionCalls: TransitionCall[] = [];
+  const calls: EngineCall[] = [];
 
   const writsBook = {
     async get(id: string) {
@@ -137,7 +165,7 @@ function makeHarness(opts: {
     },
     isTerminal,
     async transition(id, to, fields) {
-      transitionCalls.push({ id, to, fields });
+      calls.push({ kind: 'transition', id, to, fields } as EngineCall);
       const existing = writsById.get(id);
       if (!existing) throw new Error(`transition: writ "${id}" missing`);
       const next: WritDoc = {
@@ -148,9 +176,44 @@ function makeHarness(opts: {
       writsById.set(id, next);
       return next;
     },
+    async setWritStatus(writId, pluginId, value) {
+      calls.push({ kind: 'setWritStatus', writId, pluginId, value } as EngineCall);
+      const existing = writsById.get(writId);
+      if (!existing) throw new Error(`setWritStatus: writ "${writId}" missing`);
+      const prevStatus = (existing.status ?? {}) as Record<string, unknown>;
+      const nextStatus: Record<string, unknown> = { ...prevStatus, [pluginId]: value };
+      const next: WritDoc = { ...existing, status: nextStatus };
+      writsById.set(writId, next);
+      return next;
+    },
   });
 
-  return { writsById, configByName, transitionCalls, handle };
+  // Lazy projections — the tests assert on `transitionCalls`/`statusCalls`
+  // after `handle()` has run, so each access re-filters the unified `calls`
+  // array. Exposed through getters so the existing test syntax
+  // (`h.transitionCalls.length`) continues to read the latest state.
+  return {
+    writsById,
+    configByName,
+    calls,
+    get transitionCalls(): TransitionCall[] {
+      return calls
+        .filter((c) => c.kind === 'transition')
+        .map((c) => {
+          const t = c as { id: string; to: WritPhase; fields?: Partial<WritDoc> };
+          return { id: t.id, to: t.to, fields: t.fields };
+        });
+    },
+    get statusCalls(): SetWritStatusCall[] {
+      return calls
+        .filter((c) => c.kind === 'setWritStatus')
+        .map((c) => {
+          const s = c as { writId: string; pluginId: string; value: unknown };
+          return { writId: s.writId, pluginId: s.pluginId, value: s.value };
+        });
+    },
+    handle,
+  };
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -394,6 +457,84 @@ describe('createChildrenBehaviorEngine() — allSuccess trigger', () => {
   });
 });
 
+describe("createChildrenBehaviorEngine() — status['clerk'] write", () => {
+  it('writes the triggering child id under status.clerk before the anyFailure transition', async () => {
+    const parent = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const childPrev = makeWrit({ id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-p1' });
+    const childNext = makeWrit({
+      id: 'w-c1', type: 'mandate', phase: 'failed', parentId: 'w-p1', resolution: 'kaboom',
+    });
+    const h = makeHarness({ writs: [parent, childNext], configs: [MANDATE_TYPE] });
+    await h.handle(makeUpdateEvent(childNext, childPrev));
+
+    // Both calls fired, and the status write came first.
+    assert.equal(h.calls.length, 2);
+    assert.equal(h.calls[0]?.kind, 'setWritStatus', 'status write must precede transition');
+    assert.equal(h.calls[1]?.kind, 'transition');
+
+    // status['clerk'] carries the triggering child id, keyed under the
+    // 'clerk' plugin id, on the parent writ.
+    const status = h.calls[0] as { writId: string; pluginId: string; value: unknown };
+    assert.equal(status.writId, 'w-p1');
+    assert.equal(status.pluginId, 'clerk');
+    assert.deepEqual(status.value, { triggeringChildId: 'w-c1' });
+  });
+
+  it('writes the triggering child id under status.clerk before the allSuccess transition', async () => {
+    const parent = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const sibA = makeWrit({
+      id: 'w-c2', type: 'mandate', phase: 'completed', parentId: 'w-p1', resolution: 'a',
+    });
+    const childPrev = makeWrit({ id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-p1' });
+    const childNext = makeWrit({
+      id: 'w-c1', type: 'mandate', phase: 'completed', parentId: 'w-p1', resolution: 'b',
+    });
+    const h = makeHarness({
+      writs: [parent, sibA, childNext],
+      configs: [MANDATE_TYPE],
+    });
+    await h.handle(makeUpdateEvent(childNext, childPrev));
+
+    assert.equal(h.calls.length, 2);
+    assert.equal(h.calls[0]?.kind, 'setWritStatus', 'status write must precede transition');
+    assert.equal(h.calls[1]?.kind, 'transition');
+
+    const status = h.calls[0] as { writId: string; pluginId: string; value: unknown };
+    assert.equal(status.writId, 'w-p1');
+    assert.equal(status.pluginId, 'clerk');
+    assert.deepEqual(status.value, { triggeringChildId: 'w-c1' });
+  });
+
+  it('does NOT write status.clerk on the firing-rule short-circuit branches', async () => {
+    // Six firing-rule short-circuits are exercised in earlier suites; pick
+    // a representative one (parent already terminal) and verify no status
+    // write fires.
+    const parent = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'failed' });
+    const childPrev = makeWrit({ id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-p1' });
+    const childNext = makeWrit({
+      id: 'w-c1', type: 'mandate', phase: 'completed', parentId: 'w-p1', resolution: 'done',
+    });
+    const h = makeHarness({ writs: [parent, childNext], configs: [MANDATE_TYPE] });
+    await h.handle(makeUpdateEvent(childNext, childPrev));
+    assert.equal(h.calls.length, 0, 'no engine writes when the parent is already terminal');
+  });
+
+  it('does NOT write status.clerk when allSuccess is gated by a still-active sibling', async () => {
+    const parent = makeWrit({ id: 'w-p1', type: 'mandate', phase: 'open' });
+    const stillOpen = makeWrit({ id: 'w-c2', type: 'mandate', phase: 'open', parentId: 'w-p1' });
+    const childPrev = makeWrit({ id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-p1' });
+    const childNext = makeWrit({
+      id: 'w-c1', type: 'mandate', phase: 'completed', parentId: 'w-p1', resolution: 'done',
+    });
+    const h = makeHarness({
+      writs: [parent, stillOpen, childNext],
+      configs: [MANDATE_TYPE],
+    });
+    await h.handle(makeUpdateEvent(childNext, childPrev));
+    assert.equal(h.calls.length, 0, 'allSuccess did not fire — no status or transition writes');
+  });
+});
+
 describe('createChildrenBehaviorEngine() — fail-loud surface', () => {
   it('throws when the child references a parentId that does not exist', async () => {
     const childPrev = makeWrit({ id: 'w-c1', type: 'mandate', phase: 'open', parentId: 'w-missing' });
@@ -440,6 +581,7 @@ describe('createChildrenBehaviorEngine() — fail-loud surface', () => {
         return MANDATE_TYPE.states.find((s) => s.name === w.phase)?.classification === 'terminal';
       },
       async transition() { throw new Error('should not reach transition'); },
+      async setWritStatus() { throw new Error('should not reach setWritStatus'); },
     });
     await assert.rejects(
       () => handle(makeUpdateEvent(childNext, childPrev)),

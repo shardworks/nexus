@@ -570,6 +570,7 @@ Invalid — non-object `childrenBehavior`: `childrenBehavior: must be an object 
 - **Trigger evaluation order** — `anyFailure` is evaluated first. If it fires, `allSuccess` is skipped on this event. This is the precedence rule: a failing child wins over a simultaneously-completing one.
 - **Idempotency** — when the parent itself is already terminal, the engine short-circuits before evaluating triggers. Repeated child-terminal events on the same already-terminal parent are silent no-ops.
 - **`copyResolution`** — when `true`, the engine copies the triggering child's `resolution` string verbatim onto the parent through the same `transition` call. When `false` or omitted, the parent's resolution is left untouched.
+- **`status['clerk'].triggeringChildId` write** — on every fire, before the parent's `transition()` call, the engine records the immediate triggering child's id on the parent's Clerk-owned status sub-slot via `setWritStatus(parent, 'clerk', { triggeringChildId })`. The ordering is load-bearing for downstream observers: the Reckoner reads the post-commit snapshot of the terminal-transition CDC event, so the slot must be in place before the transition fires. See [Worked example: `status.clerk.triggeringChildId`](#worked-example-statusclerktriggeringchildid).
 - **Grandparent lift** — natural CDC re-fire. When the engine transitions the parent, that transition is itself a writ-update event; the watcher re-enters and evaluates the grandparent's `childrenBehavior`. Stacks' 16-deep cascade cap is the only protection.
 - **Fail-loud surface** — a dangling `parentId`, or a parent writ whose type is not registered, throws (rolling back the triggering transition). These are data-integrity violations.
 
@@ -752,6 +753,70 @@ Writ documents follow a Kubernetes-style spec/status split:
 - **Within a single plugin's sub-slot, writes are last-writer-wins.** `setWritStatus()` replaces the plugin's sub-slot value wholesale — per-key atomicity inside a sub-slot is deferred until real contention appears.
 - **Slot writes emit CDC events.** Changes to the `status` slot propagate through the same `update` events on the `clerk/writs` book as any other field change; downstream watchers can react.
 - **Terminal transitions do not clear the slot.** Observations persist on the writ after `completed`/`failed`/`cancelled` for post-mortem inspection.
+
+### Worked example: `status.clerk.triggeringChildId`
+
+The Clerk's children-behavior cascade engine writes its own observation
+sub-slot. When a parent writ is lifted into a terminal state by the
+cascade — i.e. one of its children's terminal transitions fired the
+parent's `WritTypeConfig.childrenBehavior` trigger — the engine records
+the *immediate* triggering child's id under `status['clerk']` before the
+parent's `transition()` call:
+
+```typescript
+interface ClerkWritStatus {
+  /**
+   * Id of the immediate child whose terminal transition fired the
+   * children-behavior cascade onto this writ. Absent on writs that
+   * reached terminal through a direct (non-cascaded) transition.
+   *
+   * For multi-level cascades (root → mid → leaf), each parent in the
+   * chain carries its own immediate triggering child id; consumers walk
+   * the chain by reading each successive writ's
+   * `status['clerk'].triggeringChildId`.
+   */
+  triggeringChildId?: string;
+}
+```
+
+**Ownership.** The Clerk plugin (specifically the children-behavior
+cascade engine in `children-behavior-engine.ts`) is the sole writer.
+Downstream consumers — today, the Reckoner — read the slot through the
+standard plugin convention:
+
+```typescript
+const clerkStatus = writ.status?.clerk as
+  | { triggeringChildId?: string }
+  | undefined;
+```
+
+Like every other plugin's sub-slot, consumers re-declare the narrow shape
+locally rather than importing a Clerk-side type so that the consumer
+package's import graph stays one-way.
+
+**Write contract.** The engine calls `setWritStatus(parent, 'clerk', …)`
+**before** the parent's `transition()` fires. The ordering is load-
+bearing: the Reckoner is a Phase 2 CDC observer keyed on the terminal-
+transition's `updatedAt` and reads `event.entry` (the post-commit
+snapshot) at emit time. If the slot were written *after* the transition,
+the pulse would fire against a snapshot that pre-dates the slot's
+existence and the leaf-cause surface would degrade silently. This dual-
+write sequence (`setWritStatus` then `transition`) is preserved instead
+of carve-outs to `transition()`'s safe-fields strip — `status` continues
+to be writable only through `setWritStatus()`.
+
+**Chase-chain semantics on the consumer side.** The Reckoner walks the
+chain at emit time: starting from the pulse's writ, it reads
+`status['clerk'].triggeringChildId`, fetches that child via the Clerk,
+reads its slot, and so on until a writ has no triggeringChildId. The
+terminating writ is the leaf cause. Cascade depth is bounded by the
+Stacks `MAX_CASCADE_DEPTH = 16` invariant, so the worst-case walk is
+short and uncached.
+
+**Forward-only.** The slot is forward-only: there is no migration or
+backfill for writs that already terminal'd before the slot existed.
+Pre-existing terminal writs do not re-emit pulses, so the absence of a
+slot on a historical writ is harmless.
 
 ### Worked example: `status.spider.stuckCause`
 

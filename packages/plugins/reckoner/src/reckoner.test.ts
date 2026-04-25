@@ -386,39 +386,82 @@ describe('Reckoner — writ-failed emission', () => {
   });
 
   it('surfaces cascaded leaf causes in the summary and context', async () => {
-    // Auto-cascade was retired with the Clerk's children-behavior
-    // refactor; tests now drive both legs of the cascade explicitly
-    // (child fails first, then the caller fails the parent with a
-    // cascade-shaped resolution string). The Reckoner's emit path —
-    // including `parseChildFailures` extracting the leaf id from the
-    // resolution — is what's under test.
+    // Drive only the child's failure — the Clerk's children-behavior
+    // cascade engine (mandate's `anyFailure → failed` trigger with
+    // `copyResolution: true`) carries the parent's terminal transition
+    // end-to-end. The engine writes the triggering child id under the
+    // parent's `status['clerk']` sub-slot before the cascaded transition,
+    // and the Reckoner's emit path walks that chain at pulse time to
+    // populate `context.childFailures` and the "Originated from child …"
+    // summary fragment.
     const parent = await fix.postOpen({ title: 'parent', body: 'p' });
     const child = await fix.postOpen({ title: 'child', body: 'c', parentId: parent.id });
     await fix.clerk.transition(child.id, 'failed', { resolution: 'engine crashed' });
-    await fix.clerk.transition(parent.id, 'failed', {
-      resolution: `Child "${child.id}" failed: engine crashed`,
-    });
 
     const pulses = await fix.pulsesOf(TRIGGER_WRIT_FAILED);
     assert.equal(pulses.length, 1, 'root failed emits one pulse; child emits none');
     const pulse = pulses[0]!;
-    assert.equal(pulse.writId, parent.id);
+    assert.equal(pulse.writId, parent.id, 'pulse is keyed to the root, not the child');
+
     const ctx = pulse.context as { childFailures?: string[]; resolution?: string };
-    assert.ok(ctx.resolution?.includes(child.id));
-    assert.ok(ctx.childFailures && ctx.childFailures.length > 0);
-    assert.ok(ctx.childFailures?.some((id) => id.startsWith('w-')));
-    assert.ok(pulse.summary.includes('Resolution'));
+    assert.ok(ctx.resolution === 'engine crashed', 'resolution copies through the cascade');
+    assert.ok(ctx.childFailures && ctx.childFailures.length > 0, 'leaf-cause chain is non-empty');
+    // Each chain element is a short id (`w-…`). The chain length matches
+    // the depth of the cascade — one for a single-level cascade.
+    assert.ok(ctx.childFailures!.every((id) => id.startsWith('w-')));
+    assert.ok(
+      pulse.summary.includes('Originated from child'),
+      'summary fragment names the leaf cause',
+    );
+  });
+
+  it('multi-level cascade: chain reflects every triggering child id (root → mid → leaf)', async () => {
+    // Three-level mandate cascade: a leaf grandchild fails, the
+    // children-behavior engine cascades the failure up through the mid-
+    // tier and root mandates. The root pulse's `childFailures` must list
+    // the immediate child first and walk down through the chain.
+    const root = await fix.postOpen({ title: 'root', body: 'r' });
+    const mid = await fix.postOpen({ title: 'mid', body: 'm', parentId: root.id });
+    const leaf = await fix.postOpen({ title: 'leaf', body: 'l', parentId: mid.id });
+
+    await fix.clerk.transition(leaf.id, 'failed', { resolution: 'kaboom' });
+
+    const pulses = await fix.pulsesOf(TRIGGER_WRIT_FAILED);
+    assert.equal(pulses.length, 1, 'only the root mandate emits a writ-failed pulse');
+    const pulse = pulses[0]!;
+    assert.equal(pulse.writId, root.id);
+
+    const ctx = pulse.context as { childFailures?: string[] };
+    assert.ok(ctx.childFailures && ctx.childFailures.length === 2, 'chain holds two ids');
+
+    // The chain walks outer→inner: root.status.clerk.triggeringChildId
+    // is the mid mandate's short id; mid.status.clerk.triggeringChildId
+    // is the leaf grandchild's short id.
+    const [outer, inner] = ctx.childFailures!;
+    assert.ok(mid.id.startsWith(outer!), 'outer chain id is the mid mandate');
+    assert.ok(leaf.id.startsWith(inner!), 'inner chain id is the leaf');
   });
 
   it('does not emit for a child writ transitioning to failed (roots-only)', async () => {
+    // Drive only the child's failure. The cascade engine drives the
+    // parent to `failed`; that transition emits exactly one pulse — for
+    // the parent (which is a root). The child itself emits no pulse, and
+    // the pulse's writId is the parent's, not the child's.
     const parent = await fix.postOpen({ title: 'parent', body: 'p' });
     const child = await fix.postOpen({ title: 'child', body: 'c', parentId: parent.id });
-    // Drive only the child's failure — the parent is left in `open`.
-    // No `writ-failed` pulse should fire for the child (roots-only).
     await fix.clerk.transition(child.id, 'failed', { resolution: 'engine crashed' });
 
     const failedPulses = await fix.pulsesOf(TRIGGER_WRIT_FAILED);
-    assert.equal(failedPulses.length, 0, 'child must not emit its own failed pulse');
+    assert.equal(
+      failedPulses.length,
+      1,
+      'cascade lifts the parent and the parent emits — child itself does not',
+    );
+    assert.equal(
+      failedPulses[0]?.writId,
+      parent.id,
+      'the only pulse is keyed to the root parent — child is not its own emit source',
+    );
   });
 });
 

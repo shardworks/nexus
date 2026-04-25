@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isTerminalStuck, parseChildFailures } from './predicates.ts';
+import { isTerminalStuck } from './predicates.ts';
 
 describe('isTerminalStuck', () => {
   it('treats every stuck as terminal when clockworks-retry is absent', () => {
@@ -30,27 +30,3 @@ describe('isTerminalStuck', () => {
   });
 });
 
-describe('parseChildFailures', () => {
-  it('returns an empty array for undefined / empty strings', () => {
-    assert.deepEqual(parseChildFailures(undefined), []);
-    assert.deepEqual(parseChildFailures(''), []);
-    assert.deepEqual(parseChildFailures('operator-written resolution'), []);
-  });
-
-  it('extracts a single cascade child id', () => {
-    const resolution = 'Child "w-abc123-deadbeef" failed: Broke';
-    assert.deepEqual(parseChildFailures(resolution), ['w-abc123-deadbeef']);
-  });
-
-  it('extracts nested cascade child ids in order', () => {
-    const resolution =
-      'Child "w-parent-11" failed: Child "w-leaf-22" failed: engine crashed';
-    assert.deepEqual(parseChildFailures(resolution), ['w-parent-11', 'w-leaf-22']);
-  });
-
-  it('deduplicates repeated child ids', () => {
-    const resolution =
-      'Child "w-same-11" failed: one thing; Child "w-same-11" failed: another';
-    assert.deepEqual(parseChildFailures(resolution), ['w-same-11']);
-  });
-});

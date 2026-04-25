@@ -110,7 +110,8 @@ interface WritFailedContext {
   writType: string;
   writUpdatedAt: string;      // dedupe identity — see "Idempotency under replay"
   resolution?: string;        // the writ's resolution text
-  childFailures?: string[];   // parsed short-ids of cascaded leaf causes
+  childFailures?: string[];   // chase-chain of cascaded leaf-cause short ids
+                              // (outer→inner; populated from status['clerk'])
 }
 
 interface QueueDrainedContext {
@@ -161,10 +162,9 @@ produces zero pulses, exactly as brief-section D2 prescribes.
 
 Only writs with no `parentId` emit their own stuck / failed pulses. Child
 writs transitioning to stuck or failed do **not** produce per-child pulses
-— the Clerk's upward cascade re-writes the parent's resolution as
-`Child "<child id>" failed: <child resolution>`, and the Reckoner parses
-that string on the parent's emission to surface the leaf cause in the
-pulse's `summary` and `context.childFailures`.
+— the Clerk's children-behavior cascade engine drives the parent's
+terminal transition, and the parent's pulse surfaces the leaf cause via
+the chase-chain mechanism described below.
 
 Net effect: one commission produces at most one pulse per trigger, no
 matter how deep the child tree is.
@@ -172,6 +172,28 @@ matter how deep the child tree is.
 The drain check (below) is exempt from roots-only. It runs on every
 terminal transition — including child transitions — because a child
 completion can genuinely drain the queue.
+
+### Leaf-cause chase-chain
+
+The Clerk's children-behavior cascade engine writes a structured record
+onto the parent's Clerk-owned status sub-slot
+(`status['clerk'].triggeringChildId`) before each cascaded transition.
+The slot carries the *immediate* triggering child id — exactly the writ
+whose terminal transition fired the cascade onto this parent.
+
+At emit time, the Reckoner walks the chain by reading each successive
+writ's own `status['clerk'].triggeringChildId`: starting from the pulse's
+writ, it follows the slot down through one or more cascaded ancestors
+until a writ has no triggeringChildId. The terminating writ is the leaf
+cause; the resulting ordered list of short ids is what populates
+`WritFailedContext.childFailures` and the "Originated from child …"
+fragment in the pulse summary (for both `writ-stuck` and `writ-failed`
+pulses).
+
+Cascade depth is bounded by the Stacks `MAX_CASCADE_DEPTH = 16` invariant.
+The chase-chain walk is bounded above that cap defensively (a corrupt
+forward-cycle in the slot graph would otherwise be unbounded), but a
+legitimate cascade is never truncated.
 
 ---
 
@@ -345,6 +367,11 @@ Reckoner itself; trigger-gating belongs on the Lattice's delivery side
 - The Reckoner re-declares a narrow `SpiderStuckStatus` type locally
   rather than importing from `@shardworks/spider-apparatus`. Spider is a
   recommend, not a require; this keeps the dependency direction one-way.
+- The Reckoner re-declares a narrow `ClerkChildCascadeStatus` shape
+  locally (`{ triggeringChildId?: string }`) and reads
+  `writ.status?.clerk` through that type. This mirrors the Spider
+  precedent — writer-owned shape, consumer-side narrow re-declaration —
+  rather than depending on a Clerk type re-export.
 - Drain detection uses `isQueueDrained(writs, rigs)`, which issues two
   `count` queries in parallel and returns a boolean. The parallelism keeps
   the per-transition overhead small.

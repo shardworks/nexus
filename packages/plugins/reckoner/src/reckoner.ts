@@ -14,8 +14,11 @@
  *     queue has 0 `open` writs and 0 active rigs.
  *
  * Roots-only (D23): non-root writs never emit stuck/failed pulses; leaf
- * cause information is surfaced through the parent's
- * Clerk-cascaded resolution (parsed via `parseChildFailures`).
+ * cause information is surfaced by the Clerk's children-behavior cascade
+ * engine, which records the immediate triggering child id under the
+ * parent's `status['clerk'].triggeringChildId` slot before each cascaded
+ * transition. The Reckoner walks that chain at emit time (chase-chain) to
+ * surface the full leaf-cause list on the parent pulse.
  *
  * Soft clockworks-retry dependency (D16): the retry cap is resolved at
  * emit time via `guild().apparatus<ClockworksRetryApi>('clockworks-retry')`.
@@ -46,7 +49,6 @@ import { isQueueDrained } from './drain.ts';
 import {
   type SpiderStuckStatus,
   isTerminalStuck,
-  parseChildFailures,
 } from './predicates.ts';
 import {
   RECKONER_PLUGIN_ID,
@@ -69,6 +71,24 @@ interface MaxAttemptsApi {
 }
 
 /**
+ * Narrow consumer-side shape of the Clerk-owned `status['clerk']` sub-slot.
+ *
+ * Re-declared locally — mirroring the Spider precedent — to keep the
+ * Reckoner's import graph independent of any specific Clerk type-export
+ * surface beyond `WritDoc`. The Clerk's children-behavior cascade engine
+ * is the producer of this slot; this type captures only the fields the
+ * Reckoner reads.
+ */
+interface ClerkChildCascadeStatus {
+  /**
+   * Id of the immediate child whose terminal transition fired the cascade
+   * onto this writ. Absent on writs that reached a terminal state through
+   * a direct (non-cascaded) transition.
+   */
+  triggeringChildId?: string;
+}
+
+/**
  * Minimal shape of a Spider rig row — only `writId` and `status` are read.
  * Declared locally to avoid a hard Spider dependency.
  */
@@ -86,6 +106,58 @@ function resolveMaxAttempts(): number | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Walk the cascade chain starting at `writ` and return the ordered list of
+ * triggering child ids — outer (closest to `writ`) to inner (the leaf
+ * cause).
+ *
+ * The chain is read directly from each successive writ's
+ * `status['clerk'].triggeringChildId`: starting from `writ`, we read its
+ * own slot, then fetch that child writ via the Clerk and read its slot,
+ * and so on until a writ has no triggeringChildId. That terminal writ is
+ * the leaf cause and is the last id in the returned chain.
+ *
+ * Returns an empty array when the starting writ carries no
+ * `status['clerk'].triggeringChildId` slot — the typical case for a
+ * directly-failed writ that did not result from a cascade.
+ *
+ * Cascade depth is bounded by the Stacks `MAX_CASCADE_DEPTH = 16`
+ * invariant (re-stated in the brief); the loop terminates naturally when
+ * the chain runs out, but we also defensively cap the walk at a small
+ * upper bound to avoid an unbounded read in the presence of a corrupt
+ * forward-cycle, which a future cascade-engine bug could in principle
+ * produce. `MAX_CASCADE_WALK` is set above the framework cap so a
+ * legitimate cascade is never truncated.
+ */
+const MAX_CASCADE_WALK = 32;
+
+async function chaseTriggeringChildren(
+  clerk: ClerkApi,
+  writ: WritDoc,
+): Promise<string[]> {
+  const chain: string[] = [];
+  const visited = new Set<string>();
+  let current: WritDoc | null = writ;
+
+  while (current && chain.length < MAX_CASCADE_WALK) {
+    const status = current.status?.clerk as ClerkChildCascadeStatus | undefined;
+    const next = status?.triggeringChildId;
+    if (typeof next !== 'string' || next.length === 0) break;
+    if (visited.has(next)) break; // defensive — should not happen
+    visited.add(next);
+    chain.push(next);
+    // Read the next writ in the chain. `show` throws on missing writs;
+    // wrap so a corrupt forward reference does not crash the pulse path.
+    try {
+      current = await clerk.show(next);
+    } catch {
+      current = null;
+    }
+  }
+
+  return chain;
 }
 
 // ── Observer helper (exported for unit testing) ────────────────────────
@@ -217,7 +289,7 @@ async function emitStuck(
   if (spiderStatus?.detail) {
     summaryParts.push(`Detail: ${spiderStatus.detail}`);
   }
-  const leafFailures = parseChildFailures(writ.resolution);
+  const leafFailures = await chaseTriggeringChildren(deps.clerk, writ);
   if (leafFailures.length > 0) {
     summaryParts.push(
       `Originated from child ${leafFailures.map(shortId).join(', ')}.`,
@@ -249,7 +321,7 @@ async function emitFailed(
     return;
   }
 
-  const childFailures = parseChildFailures(writ.resolution);
+  const childFailures = await chaseTriggeringChildren(deps.clerk, writ);
   const context: WritFailedContext = {
     writShortId: shortId(writ.id),
     writTitle: writ.title,
@@ -266,6 +338,11 @@ async function emitFailed(
   ];
   if (writ.resolution) {
     summaryParts.push(`Resolution: ${writ.resolution}`);
+  }
+  if (childFailures.length > 0) {
+    summaryParts.push(
+      `Originated from child ${childFailures.map(shortId).join(', ')}.`,
+    );
   }
   await deps.lattice.emit({
     source: RECKONER_PLUGIN_ID,
