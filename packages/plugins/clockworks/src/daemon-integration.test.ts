@@ -345,4 +345,171 @@ describe('runForegroundDaemon — integration', () => {
       /already running/,
     );
   });
+
+  it('runs the scheduler pass before the event-processing pass each tick (D18)', async () => {
+    const home = makeTmpHome();
+    const { stub: eventsStub, callCount: eventsCalls, queueDispatch, nextCall } = buildProcessEventsStub();
+    const { log, lines } = buildLog();
+
+    // Track call order across both stubs.
+    const callOrder: string[] = [];
+
+    const schedulesStub = async (opts?: {
+      onDispatch?: (obs: DispatchObservation) => void;
+    }): Promise<{ fired: number; errors: number }> => {
+      callOrder.push('schedules');
+      // Emit a scheduler dispatch observation so we can verify the
+      // log line goes through the same formatter.
+      opts?.onDispatch?.({
+        eventId: 'e-sched-1',
+        eventName: 'schedule.fired',
+        handlerName: 'reckoner-tick',
+        status: 'success',
+        durationMs: 4,
+        error: null,
+      });
+      return { fired: 1, errors: 0 };
+    };
+
+    // Wrap the events stub so each call records its order too.
+    const wrappedEvents = async (opts?: Parameters<typeof eventsStub>[0]) => {
+      callOrder.push('events');
+      return eventsStub(opts);
+    };
+
+    let triggerShutdown!: () => void;
+    const shutdown = new Promise<void>((resolve) => {
+      triggerShutdown = resolve;
+    });
+
+    queueDispatch({
+      eventId: 'e-event-1',
+      eventName: 'demo.thing',
+      handlerName: 'log-event',
+      status: 'success',
+      durationMs: 2,
+      error: null,
+    });
+
+    const daemonRun = runForegroundDaemon({
+      home,
+      intervalMs: 50,
+      processEvents: wrappedEvents,
+      processSchedules: schedulesStub,
+      log,
+      shutdown,
+      skipSignalHandlers: true,
+    });
+
+    await nextCall();
+    await nextCall();
+    triggerShutdown();
+    await daemonRun;
+
+    // At least one tick — the scheduler pass appears immediately
+    // before the events pass on every tick.
+    assert.ok(eventsCalls() >= 1);
+    for (let i = 0; i < callOrder.length - 1; i += 1) {
+      if (callOrder[i] === 'schedules') {
+        assert.equal(
+          callOrder[i + 1],
+          'events',
+          `expected schedules→events ordering, got ${callOrder.join(',')}`,
+        );
+      }
+    }
+
+    // Both pass observations are formatted by the shared dispatcher
+    // log formatter (D16), so look for both event ids in the log.
+    const schedLine = lines.find((l) => l.includes('e-sched-1'));
+    const eventLine = lines.find((l) => l.includes('e-event-1'));
+    assert.ok(schedLine, `expected scheduler dispatch line, got: ${lines.join(' | ')}`);
+    assert.match(schedLine!, /\[reckoner-tick\] success 4ms/);
+    assert.ok(eventLine, `expected event dispatch line, got: ${lines.join(' | ')}`);
+    assert.match(eventLine!, /\[log-event\] success 2ms/);
+  });
+
+  it('continues the event-processing pass even if the scheduler pass throws', async () => {
+    const home = makeTmpHome();
+    const { stub: eventsStub, queueDispatch, nextCall } = buildProcessEventsStub();
+    const { log, lines } = buildLog();
+
+    const schedulesStub = async (): Promise<{ fired: number; errors: number }> => {
+      throw new Error('scheduler-broken');
+    };
+
+    let triggerShutdown!: () => void;
+    const shutdown = new Promise<void>((resolve) => {
+      triggerShutdown = resolve;
+    });
+
+    queueDispatch({
+      eventId: 'e-after-sched-throw',
+      eventName: 'demo.recovered',
+      handlerName: 'log-event',
+      status: 'success',
+      durationMs: 1,
+      error: null,
+    });
+
+    const daemonRun = runForegroundDaemon({
+      home,
+      intervalMs: 30,
+      processEvents: eventsStub,
+      processSchedules: schedulesStub,
+      log,
+      shutdown,
+      skipSignalHandlers: true,
+    });
+
+    await nextCall();
+    triggerShutdown();
+    await daemonRun;
+
+    const errLine = lines.find((l) => l.includes('processSchedules threw'));
+    assert.ok(errLine, `expected scheduler-throw line, got: ${lines.join(' | ')}`);
+    assert.match(errLine!, /scheduler-broken/);
+
+    // The events pass still ran and produced its dispatch line.
+    const eventLine = lines.find((l) => l.includes('e-after-sched-throw'));
+    assert.ok(eventLine, 'expected event-pass dispatch line after scheduler throw');
+  });
+
+  it('skips the scheduler pass entirely when processSchedules is omitted', async () => {
+    const home = makeTmpHome();
+    const { stub: eventsStub, queueDispatch, nextCall } = buildProcessEventsStub();
+    const { log, lines } = buildLog();
+
+    let triggerShutdown!: () => void;
+    const shutdown = new Promise<void>((resolve) => {
+      triggerShutdown = resolve;
+    });
+
+    queueDispatch({
+      eventId: 'e-only-events',
+      eventName: 'demo.only',
+      handlerName: 'log-event',
+      status: 'success',
+      durationMs: 1,
+      error: null,
+    });
+
+    const daemonRun = runForegroundDaemon({
+      home,
+      intervalMs: 30,
+      processEvents: eventsStub,
+      // no processSchedules
+      log,
+      shutdown,
+      skipSignalHandlers: true,
+    });
+
+    await nextCall();
+    triggerShutdown();
+    await daemonRun;
+
+    // The events line lands; no scheduler-related log lines appear.
+    assert.ok(lines.some((l) => l.includes('e-only-events')));
+    assert.ok(!lines.some((l) => l.includes('processSchedules')));
+  });
 });

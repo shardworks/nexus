@@ -369,6 +369,20 @@ export interface ForegroundDaemonInputs {
    */
   processEvents: ClockworksApi['processEvents'];
   /**
+   * Function that runs one tick of the scheduler pass over the
+   * in-memory schedule table. In production this is
+   * `clockworks.processSchedules`. The pass runs *before* the
+   * event-processing pass each tick so a `schedule.fired` event is
+   * persisted and any subsequent operator-emitted events from inside
+   * the scheduled handler are picked up by the same tick's
+   * event-processing pass (commission decision D18).
+   *
+   * Optional for backward compatibility — older callers and tests
+   * that supplied only `processEvents` continue to work and the
+   * scheduler pass simply does not run.
+   */
+  processSchedules?: ClockworksApi['processSchedules'];
+  /**
    * Optional log writer. When omitted, the daemon writes to
    * `clockLogPath(home)` in append mode. Tests pass an in-memory writer
    * to assert log content without touching the filesystem.
@@ -424,6 +438,7 @@ export async function runForegroundDaemon(
     home,
     intervalMs,
     processEvents,
+    processSchedules,
     log: logOverride,
     shutdown: shutdownPromise,
     skipSignalHandlers = false,
@@ -486,8 +501,29 @@ export async function runForegroundDaemon(
   );
 
   // ── Poll loop ──────────────────────────────────────────────────────
+  //
+  // Order matters (commission decision D18): scheduler pass runs first,
+  // event-processing pass second. A scheduled relay that emits new
+  // events lands in the events book during the scheduler pass; the
+  // following event-processing pass in the *same tick* picks them up,
+  // so cascade latency is one tick instead of two.
 
   while (!shuttingDown) {
+    if (processSchedules) {
+      try {
+        await processSchedules({
+          onDispatch: (obs: DispatchObservation) => {
+            log(formatDispatchLogLine(obs));
+          },
+        });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        log(
+          `${new Date().toISOString()} [error] processSchedules threw: ${reason}`,
+        );
+      }
+    }
+
     try {
       await processEvents({
         onDispatch: (obs: DispatchObservation) => {
@@ -601,6 +637,7 @@ export async function runForegroundDaemonFromGuild(
     home,
     intervalMs,
     processEvents: clockworks.processEvents.bind(clockworks),
+    processSchedules: clockworks.processSchedules.bind(clockworks),
     ...(options.onShutdown !== undefined ? { onShutdown: options.onShutdown } : {}),
   });
 }
