@@ -420,7 +420,7 @@ import {
 
 Every `ClerkApi.registerWritType(config)` call passes a `WritTypeConfig`. The validator `validateWritTypeConfig(config)` throws a plain `Error` on the first structural violation and returns `void` on success. Error messages take the shape `[clerk] writTypeConfig.<path>: <problem>; received <value>` — the `<path>` names the offending field (e.g. `states[2].classification`, `childrenBehavior.anyFailure.transition`).
 
-> **Runtime wiring pending (requires T3).** The per-type `allowedTransitions` graph drives `transition()` enforcement today, and registration runs every config through `validateWritTypeConfig()` before admitting it to the registry. The `childrenBehavior` triggers firing on child-terminal events still await the children-behavior engine; until T3 lands, `childrenBehavior` declarations are validated structurally but no cascade fires. The field-level semantics below are the contract the T3 runtime is written against.
+**Runtime wiring.** The per-type `allowedTransitions` graph drives `transition()` enforcement, registration runs every config through `validateWritTypeConfig()` before admitting it to the registry, and the children-behavior cascade engine fires `childrenBehavior` triggers on child-terminal events as a Phase 1 watcher on the writs book. The field-level semantics below describe the contract the engine implements.
 
 #### `WritTypeConfig`
 
@@ -563,12 +563,15 @@ Valid (single trigger only):
 
 Invalid — non-object `childrenBehavior`: `childrenBehavior: must be an object when provided; received "oops"`.
 
-> **Runtime wiring pending (requires T3).** The semantics below describe the target cascade; today's Clerk no longer wires any cascade — the prior hard-coded mandate-flavored upward-failure path was deleted as part of T2, and the children-behavior engine that consumes these declarations ships in T3.
->
-> - **Trigger firing** — `allSuccess` fires when the last non-terminal child becomes terminal *and* every terminal child carries the `success` attr. `anyFailure` fires when any child reaches a terminal state carrying the `failure` attr.
-> - **Idempotency** — the parent transition driven by a trigger runs at most once per parent. Repeated fires of the same trigger are observed but not re-applied; the parent has already moved to the target state.
-> - **Short-circuit** — when both triggers match against the same child-terminal event, `anyFailure` wins. Only the first trigger to match fires on a given CDC event; the other is skipped for this event and not re-evaluated on later child terminals because the parent has already left its source state.
-> - **`copyResolution`** — when `true`, the consumer copies the triggering child's `resolution` string onto the parent as part of the transition. When `false` or omitted, the parent's resolution is left to the transition call itself (or stays unset).
+**Runtime semantics — children-behavior cascade engine.** The children-behavior engine is a Phase 1 watcher on the `clerk/writs` book registered from the Clerk's `start()`. Cascade writes join the triggering transaction; a handler throw rolls the whole commit back. The engine is generic in writ type — any registered type whose config declares a `childrenBehavior` block opts in.
+
+- **Firing rule** — the engine fires only on `update` events whose new phase differs from the previous and is classified `terminal`, on a writ that has a parent. Create events never satisfy the rule (the validator forbids initial states from being terminal). A parent type that omits `childrenBehavior` is a silent no-op.
+- **Trigger firing** — `allSuccess` fires when every sibling under the same parent is terminal and every one carries the `success` attr (siblings are enumerated directly from the writs book, bypassing the default `list` row cap). `anyFailure` fires when the triggering child's terminal state carries the `failure` attr.
+- **Trigger evaluation order** — `anyFailure` is evaluated first. If it fires, `allSuccess` is skipped on this event. This is the precedence rule: a failing child wins over a simultaneously-completing one.
+- **Idempotency** — when the parent itself is already terminal, the engine short-circuits before evaluating triggers. Repeated child-terminal events on the same already-terminal parent are silent no-ops.
+- **`copyResolution`** — when `true`, the engine copies the triggering child's `resolution` string verbatim onto the parent through the same `transition` call. When `false` or omitted, the parent's resolution is left untouched.
+- **Grandparent lift** — natural CDC re-fire. When the engine transitions the parent, that transition is itself a writ-update event; the watcher re-enters and evaluates the grandparent's `childrenBehavior`. Stacks' 16-deep cascade cap is the only protection.
+- **Fail-loud surface** — a dangling `parentId`, or a parent writ whose type is not registered, throws (rolling back the triggering transition). These are data-integrity violations.
 
 #### `WritTypeChildrenBehaviorAction`
 
@@ -797,16 +800,31 @@ Writs form a tree. A writ may be decomposed into child writs (tasks, steps, etc.
 - Children inherit the parent's `codex` unless explicitly overridden.
 - Parents accept children in any non-terminal state; a parent in a terminal state (as classified by its type config) rejects new children with a clear error.
 
-### No cascade (in this version)
+### Children-behavior cascade
 
-The Clerk's prior parent/child cascade (child terminal → parent lift; parent terminal → child cancellation) has been removed. Parent and child lifecycles evolve independently: a terminal child does not lift its parent, and a terminal parent does not cancel non-terminal children.
+Upward cascade (terminal child → parent lift) is driven by the children-behavior engine — a Phase 1 watcher on the `clerk/writs` book registered from `start()`. When any writ transitions to a terminal state, the engine evaluates the parent's `WritTypeConfig.childrenBehavior` block and, if a trigger fires, drives the parent through `ClerkApi.transition` with the configured target. There is **no downward cascade** — a terminal parent does not cancel non-terminal children.
 
-A children-behavior engine is on the roadmap (T3) and will reintroduce cascade keyed on per-type `WritTypeConfig.childrenBehavior`. The v0 trigger vocabulary is already declared on `WritTypeConfig`:
+Cascade is opt-in per type. A type whose config omits `childrenBehavior` is a silent no-op, and parent/child lifecycles evolve independently. Mandate opts into both triggers; piece and observation-set declare none.
 
-- `allSuccess` — fires when every child has reached a terminal state and all carry the `success` attr.
-- `anyFailure` — fires when any child reaches a terminal state that carries the `failure` attr.
+The v0 trigger vocabulary on `WritTypeConfig.childrenBehavior`:
 
-Each trigger carries a `transition` target and an optional `copyResolution` modifier. Mandate's config does not declare `childrenBehavior` yet; the children-behavior commission will land the engine and patch mandate's config on atomically.
+- `allSuccess` — fires when every sibling under the same parent has reached a terminal state and every one carries the `success` attr.
+- `anyFailure` — fires when the triggering child's terminal state carries the `failure` attr.
+
+Trigger evaluation order: `anyFailure` is evaluated first; if it fires, `allSuccess` is skipped on this event. This is the precedence rule a failing child wins over a simultaneously-completing one.
+
+Each trigger carries a `transition` target and an optional `copyResolution` modifier. When `copyResolution: true`, the engine copies the triggering child's `resolution` string verbatim onto the parent through the same `transition` call.
+
+The watcher fires inside the transaction that triggered it (Phase 1 atomicity): cascade writes join the same commit, and a handler throw rolls everything back. Grandparent lift falls out naturally — the parent's own update event re-enters the watcher. Stacks' 16-deep cascade cap bounds depth.
+
+Mandate's `childrenBehavior` declares both triggers with `copyResolution: true`:
+
+```typescript
+childrenBehavior: {
+  allSuccess: { transition: 'completed', copyResolution: true },
+  anyFailure: { transition: 'failed',    copyResolution: true },
+}
+```
 
 ---
 

@@ -42,6 +42,7 @@ import type {
 
 import type { WritTypeConfig } from './writ-type-config.ts';
 import { validateWritTypeConfig } from './writ-type-config.ts';
+import { createChildrenBehaviorEngine } from './children-behavior-engine.ts';
 
 import {
   commissionPost,
@@ -98,8 +99,14 @@ const MANDATE_TYPE_NAME = 'mandate';
  * this config during its own `start()` so mandate is present in the
  * registry on the same footing as any plugin-registered type.
  *
- * No `childrenBehavior` block in this commission — the children-behavior
- * engine lands separately and patches it on then.
+ * `childrenBehavior` opts mandate into both upward cascade directions:
+ *   - allSuccess → completed (copyResolution)
+ *   - anyFailure → failed     (copyResolution)
+ *
+ * Both targets are reachable from every non-terminal mandate state
+ * (`new`, `open`, `stuck`) via `allowedTransitions`, so the validator's
+ * reachability check accepts the configuration. The triggering child's
+ * resolution string is copied verbatim onto the parent.
  */
 const MANDATE_CONFIG: WritTypeConfig = {
   name: MANDATE_TYPE_NAME,
@@ -139,6 +146,10 @@ const MANDATE_CONFIG: WritTypeConfig = {
       allowedTransitions: [],
     },
   ],
+  childrenBehavior: {
+    allSuccess: { transition: 'completed', copyResolution: true },
+    anyFailure: { transition: 'failed', copyResolution: true },
+  },
 };
 
 // ── Factory ──────────────────────────────────────────────────────────
@@ -978,6 +989,27 @@ export function createClerk(): Plugin {
         stacks = g.apparatus<StacksApi>('stacks');
         writs = stacks.book<WritDoc>('clerk', 'writs');
         links = stacks.book<WritLinkDoc>('clerk', 'links');
+
+        // ── Children-behavior cascade engine ───────────────────────────
+        //
+        // Phase 1 watch on the writs book: when any writ transitions to a
+        // terminal state, evaluate the parent's `WritTypeConfig.children
+        // Behavior` block and apply the configured action via
+        // `api.transition`. The engine is generic in writ type — types
+        // that omit the block are silent no-ops; mandate is the only
+        // built-in opt-in today. failOnError: true means cascade writes
+        // join the triggering transaction, mirroring Spider's writ↔rig
+        // cascade. Grandparent lift is natural recursion via Stacks'
+        // re-fire on the parent's own update event.
+        const childrenBehaviorHandler = createChildrenBehaviorEngine({
+          writs,
+          getWritTypeConfig: (name: string) => writTypeRegistry.get(name)?.config,
+          isTerminal: (writ: WritDoc) => api.isTerminal(writ),
+          transition: (id: string, to, fields) => api.transition(id, to, fields),
+        });
+        stacks.watch<WritDoc>('clerk', 'writs', childrenBehaviorHandler, {
+          failOnError: true,
+        });
 
         // Seal the writ-type registration window on the framework's global
         // `phase:started` signal — that moment fires once, after every

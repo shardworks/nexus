@@ -3199,51 +3199,151 @@ describe('Parent/child relationships', () => {
     });
   });
 
-  // NOTE: The parent/child cascade (child-failed → parent-failed, and
-  // parent-terminal → cancel non-terminal children) has been removed with
-  // this commission's cut-over to the plugin-registered writ-type
-  // registry. The commission's children-behavior engine (a separate
-  // roadmap task) reintroduces equivalent or richer behaviour keyed on
-  // per-type `WritTypeConfig.childrenBehavior`; this test suite's earlier
-  // cascade assertions were deleted intentionally.
+  // ── Children-behavior cascade engine (T3) ─────────────────────────
+  //
+  // The Clerk's children-behavior engine watches the writs book at Phase 1
+  // and, when any writ transitions to a terminal state, evaluates the
+  // parent's `WritTypeConfig.childrenBehavior` block. Mandate opts into
+  // both triggers with `copyResolution: true` — these tests exercise the
+  // brief's six scenarios end-to-end through the registered watcher,
+  // verifying the firing rule, trigger precedence, idempotency, and
+  // resolution-copy semantics.
 
-  // ── Full lifecycle with children (cascade-free) ───────────────────
-
-  describe('full lifecycle with children', () => {
+  describe('children-behavior cascade', () => {
     beforeEach(async () => { await setup(); });
 
-    it('parent and children lifecycle independently (no cascade)', async () => {
+    // (a) all children complete → parent → completed
+    it('lifts the parent to completed when every child reaches a success-attr terminal state', async () => {
       const parent = await postMandate({ title: 'Parent', body: 'Body' });
-      assert.equal(parent.phase, 'open');
+      const c1 = await postMandate({ title: 'C1', body: 'B', parentId: parent.id });
+      const c2 = await postMandate({ title: 'C2', body: 'B', parentId: parent.id });
 
-      const child = await postMandate({ title: 'Child', body: 'B', parentId: parent.id });
-      const p1 = await clerk.show(parent.id);
-      assert.equal(p1.phase, 'open');
+      // First child completing leaves the parent open — the second child
+      // is still active, so allSuccess does not fire.
+      await clerk.transition(c1.id, 'completed', { resolution: 'first' });
+      const mid = await clerk.show(parent.id);
+      assert.equal(mid.phase, 'open');
 
-      await clerk.transition(child.id, 'completed', { resolution: 'Done' });
-
-      // Parent is not lifted by child completion — no cascade lives here.
-      const p2 = await clerk.show(parent.id);
-      assert.equal(p2.phase, 'open');
-
-      await clerk.transition(parent.id, 'completed', { resolution: 'All done' });
-      const p3 = await clerk.show(parent.id);
-      assert.equal(p3.phase, 'completed');
+      // Last child completing fires allSuccess — parent transitions to
+      // `completed` carrying the triggering child's resolution.
+      await clerk.transition(c2.id, 'completed', { resolution: 'second' });
+      const after = await clerk.show(parent.id);
+      assert.equal(after.phase, 'completed');
+      assert.equal(after.resolution, 'second');
     });
 
-    it('children already terminal stay terminal when parent completes', async () => {
+    // (b) one child fails while another is still active → parent → failed
+    it('lifts the parent to failed as soon as any child fails (sibling still active)', async () => {
       const parent = await postMandate({ title: 'Parent', body: 'Body' });
-      const child = await postMandate({ title: 'Child', body: 'B', parentId: parent.id });
+      const c1 = await postMandate({ title: 'C1', body: 'B', parentId: parent.id });
+      await postMandate({ title: 'C2', body: 'B', parentId: parent.id });
 
-      // Complete child — parent stays open
-      await clerk.transition(child.id, 'completed', { resolution: 'Done' });
+      await clerk.transition(c1.id, 'failed', { resolution: 'kaboom' });
 
-      // Parent now open → completed
-      await clerk.transition(parent.id, 'completed', { resolution: 'All done' });
+      const after = await clerk.show(parent.id);
+      assert.equal(after.phase, 'failed');
+      assert.equal(after.resolution, 'kaboom');
+    });
 
-      // Child should still be completed
-      const updatedChild = await clerk.show(child.id);
-      assert.equal(updatedChild.phase, 'completed');
+    // (c) simultaneous mixed terminal events committed in one transaction
+    //     → parent → failed (anyFailure wins)
+    it('anyFailure wins when mixed terminal events commit in the same transaction', async () => {
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
+      const c1 = await postMandate({ title: 'C1', body: 'B', parentId: parent.id });
+      const c2 = await postMandate({ title: 'C2', body: 'B', parentId: parent.id });
+
+      // Two terminal transitions inside a single Stacks transaction —
+      // Phase 1 watchers fire per-event in order. Whichever order the
+      // outcomes commit in, anyFailure must win the parent's terminal
+      // state (idempotency on the second event, when parent is already
+      // terminal).
+      const stacks = guild().apparatus<StacksApi>('stacks');
+      await stacks.transaction(async () => {
+        await clerk.transition(c1.id, 'completed', { resolution: 'success-bro' });
+        await clerk.transition(c2.id, 'failed', { resolution: 'crashed' });
+      });
+
+      const after = await clerk.show(parent.id);
+      assert.equal(after.phase, 'failed');
+      assert.equal(after.resolution, 'crashed');
+    });
+
+    // (d) sequential child completions — parent stays non-terminal until
+    //     the last child completes
+    it('parent stays non-terminal across N-1 sequential completions and lifts on the Nth', async () => {
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
+      const c1 = await postMandate({ title: 'C1', body: 'B', parentId: parent.id });
+      const c2 = await postMandate({ title: 'C2', body: 'B', parentId: parent.id });
+      const c3 = await postMandate({ title: 'C3', body: 'B', parentId: parent.id });
+
+      await clerk.transition(c1.id, 'completed', { resolution: 'one' });
+      assert.equal((await clerk.show(parent.id)).phase, 'open');
+
+      await clerk.transition(c2.id, 'completed', { resolution: 'two' });
+      assert.equal((await clerk.show(parent.id)).phase, 'open');
+
+      await clerk.transition(c3.id, 'completed', { resolution: 'three' });
+      const after = await clerk.show(parent.id);
+      assert.equal(after.phase, 'completed');
+      assert.equal(after.resolution, 'three');
+    });
+
+    // (e) child terminates after parent already terminal → no-op
+    it('is idempotent — child terminal events on an already-terminal parent are no-ops', async () => {
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
+      const c1 = await postMandate({ title: 'C1', body: 'B', parentId: parent.id });
+      await postMandate({ title: 'C2', body: 'B', parentId: parent.id });
+
+      // Drive the parent terminal directly without invoking cascade.
+      await clerk.transition(parent.id, 'failed', { resolution: 'manual-fail' });
+
+      // A subsequent terminal child event must NOT throw and must NOT
+      // overwrite the parent's resolution.
+      await clerk.transition(c1.id, 'completed', { resolution: 'late-win' });
+
+      const after = await clerk.show(parent.id);
+      assert.equal(after.phase, 'failed');
+      assert.equal(after.resolution, 'manual-fail');
+
+      // The completed child still terminates correctly.
+      const child = await clerk.show(c1.id);
+      assert.equal(child.phase, 'completed');
+      assert.equal(child.resolution, 'late-win');
+    });
+
+    // (f) single-child case behaves identically to multi-child with one entry
+    it('single-child parent transitions on the lone child terminal event', async () => {
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
+      const c1 = await postMandate({ title: 'C1', body: 'B', parentId: parent.id });
+
+      await clerk.transition(c1.id, 'completed', { resolution: 'only-child-done' });
+
+      const after = await clerk.show(parent.id);
+      assert.equal(after.phase, 'completed');
+      assert.equal(after.resolution, 'only-child-done');
+    });
+
+    // Bonus: grandparent lift via natural CDC re-fire — terminal child
+    // bubbles up through one level of cascade. Stacks' 16-deep cascade
+    // cap is the only protection and is intentional.
+    it('cascades upward through grandparents via natural CDC re-fire', async () => {
+      const root = await postMandate({ title: 'Root', body: 'B' });
+      const middle = await postMandate({ title: 'Middle', body: 'B', parentId: root.id });
+      const leaf = await postMandate({ title: 'Leaf', body: 'B', parentId: middle.id });
+
+      await clerk.transition(leaf.id, 'completed', { resolution: 'leaf-done' });
+
+      const afterLeaf = await clerk.show(leaf.id);
+      const afterMiddle = await clerk.show(middle.id);
+      const afterRoot = await clerk.show(root.id);
+      assert.equal(afterLeaf.phase, 'completed');
+      assert.equal(afterMiddle.phase, 'completed');
+      assert.equal(afterRoot.phase, 'completed');
+      // Resolution propagates through both levels — the triggering child's
+      // resolution is copied at each cascade hop, so the root carries the
+      // leaf's resolution string.
+      assert.equal(afterMiddle.resolution, 'leaf-done');
+      assert.equal(afterRoot.resolution, 'leaf-done');
     });
   });
 
@@ -3348,13 +3448,17 @@ describe('Parent/child relationships', () => {
     });
 
     it('ClerkApi.countDescendantsByPhase returns subtree-wide phase counts', async () => {
+      // Build a subtree with a sibling that prevents the children-behavior
+      // engine from lifting c1 — g2 stays open, so allSuccess never fires
+      // when g1 completes. Counts: c1 open, g1 completed, g2 open.
       const root = await postMandate({ title: 'Root', body: 'B' });
       const c1 = await postMandate({ title: 'C1', body: 'B', parentId: root.id });
       const g1 = await postMandate({ title: 'G1', body: 'B', parentId: c1.id });
+      await postMandate({ title: 'G2', body: 'B', parentId: c1.id });
       await clerk.transition(g1.id, 'completed', { resolution: 'done' });
 
       const counts = await clerk.countDescendantsByPhase(root.id);
-      assert.equal(counts['open'], 1);
+      assert.equal(counts['open'], 2);
       assert.equal(counts['completed'], 1);
     });
 
