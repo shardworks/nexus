@@ -36,8 +36,7 @@ Guilds declare their own events in `guild.json` under the `clockworks` key:
   "clockworks": {
     "events": {
       "code.reviewed": {
-        "description": "Signaled when an anima completes a code review",
-        "schema": { "pr": "number", "issues_found": "number" }
+        "description": "Signaled when an anima completes a code review"
       },
       "deploy.approved": {
         "description": "Leadership has approved a deployment"
@@ -288,8 +287,7 @@ Animas cannot signal framework events (`anima.*`, `commission.*`, `tool.*`, `ses
   "clockworks": {
     "events": {
       "code.reviewed": {
-        "description": "Signaled when an anima completes a code review",
-        "schema": { "pr": "number", "issues_found": "number" }
+        "description": "Signaled when an anima completes a code review"
       }
     },
     "standingOrders": [
@@ -409,5 +407,4 @@ The Clockworks runner calls `module.default.handler(event, { home, params })`. P
 
 - **Natural language trigger syntax** — `'when a commission is posted'` instead of `'commission.posted'`. Worth pursuing once real guilds have standing orders in production and vocabulary needs are understood. Requires validation tooling to be safe.
 - **Pre-event hooks** — cancellable `before.*` events. Powerful but complex. Start with observation-only (post-facto) events.
-- **Payload schema enforcement** — schema field in custom event declarations is documented but not validated. Enforcement deferred.
 - **Phase 2 daemon enhancements** — external event injection (webhooks, file watchers), log rotation, concurrency.

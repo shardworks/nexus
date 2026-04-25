@@ -36,8 +36,6 @@ import type { RelayDefinition } from './relay.ts';
 export interface EventDeclaration {
   /** Human-readable description of what this event means. */
   description?: string;
-  /** Optional payload schema hint (not enforced in Phase 1). */
-  schema?: Record<string, string>;
 }
 
 /**

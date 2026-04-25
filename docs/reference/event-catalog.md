@@ -186,8 +186,7 @@ Add events to `guild.json` under `clockworks.events`:
   "clockworks": {
     "events": {
       "code.reviewed": {
-        "description": "A code review has been completed",
-        "schema": { "prUrl": "string", "approved": "boolean" }
+        "description": "A code review has been completed"
       },
       "deploy.requested": {
         "description": "A deployment was requested"
@@ -198,7 +197,6 @@ Add events to `guild.json` under `clockworks.events`:
 ```
 
 - `description` — human-readable purpose (optional but recommended)
-- `schema` — payload schema hint (informational only, not enforced at runtime)
 
 Plugins may also declare events in their `guild.json` contribution, which the framework merges into the live config on installation. The astrolabe plugin's `astrolabe.plan.files-over-threshold` event is declared this way — see the example below.
 
