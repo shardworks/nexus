@@ -62,4 +62,25 @@ export {
   validateStandingOrders,
 } from './standing-order-validator.ts';
 
+// Daemon lifecycle — the unattended Clockworks daemon. Standalone
+// functions on the apparatus's public surface (commission decision D1):
+// `clockStart` / `clockStop` / `clockStatus` are the thin lifecycle
+// helpers, `runForegroundDaemon` is the inline daemon body the
+// detached spawn re-execs into, and `runForegroundDaemonFromGuild`
+// is the convenience wrapper the CLI's `--foreground` handler calls.
+export {
+  clockStart,
+  clockStatus,
+  clockStop,
+  formatDispatchLogLine,
+  runForegroundDaemon,
+  runForegroundDaemonFromGuild,
+  validateInterval,
+  type ClockStartOptions,
+  type ClockStartResult,
+  type ClockStatus,
+  type ClockStopResult,
+  type ForegroundDaemonInputs,
+} from './daemon.ts';
+
 export default createClockworks();
