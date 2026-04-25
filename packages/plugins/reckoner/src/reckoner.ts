@@ -7,8 +7,7 @@
  *
  * Three trigger types (D24):
  *
- *   - `reckoner.writ-stuck`  — a root writ enters `stuck` and the stuck
- *     is terminal non-success (clockworks-retry will not requeue it).
+ *   - `reckoner.writ-stuck`  — a root writ enters `stuck`.
  *   - `reckoner.writ-failed` — a root writ enters `failed`.
  *   - `reckoner.queue-drained` — after any terminal writ transition, the
  *     queue has 0 `open` writs and 0 active rigs.
@@ -19,10 +18,6 @@
  * parent's `status['clerk'].triggeringChildId` slot before each cascaded
  * transition. The Reckoner walks that chain at emit time (chase-chain) to
  * surface the full leaf-cause list on the parent pulse.
- *
- * Soft clockworks-retry dependency (D16): the retry cap is resolved at
- * emit time via `guild().apparatus<ClockworksRetryApi>('clockworks-retry')`.
- * When absent every stuck is terminal from the Reckoner's viewpoint.
  *
  * Idempotency under CDC replay: every emission site is routed through a
  * dedupe guard that queries the persisted pulses book for a prior pulse
@@ -48,10 +43,6 @@ import type { LatticeApi, PulseDoc } from '@shardworks/lattice-apparatus';
 import { isQueueDrained } from './drain.ts';
 import { resolveEngineFailureContext } from './engine-context.ts';
 import {
-  type SpiderStuckStatus,
-  isTerminalStuck,
-} from './predicates.ts';
-import {
   RECKONER_PLUGIN_ID,
   TRIGGER_QUEUE_DRAINED,
   TRIGGER_WRIT_FAILED,
@@ -61,15 +52,6 @@ import {
   type WritFailedContext,
   type WritStuckContext,
 } from './types.ts';
-
-/**
- * Minimal shape of the clockworks-retry API surface the Reckoner reads.
- * Re-declared locally so we do not force a hard dependency on
- * `@shardworks/clockworks-retry-apparatus` just to read one field.
- */
-interface MaxAttemptsApi {
-  readonly maxAttempts: number;
-}
 
 /**
  * Narrow consumer-side shape of the Clerk-owned `status['clerk']` sub-slot.
@@ -136,16 +118,6 @@ interface RigRow extends Record<string, unknown> {
   status: string;
   createdAt?: string;
   engines?: EngineInstance[];
-}
-
-/** Resolve the clockworks-retry cap, or undefined if not installed. */
-function resolveMaxAttempts(): number | undefined {
-  try {
-    const api = guild().apparatus<MaxAttemptsApi>('clockworks-retry');
-    return api?.maxAttempts;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -220,15 +192,14 @@ export interface ReckonerObserverDeps {
    * moment.
    */
   readonly clerk: ClerkApi;
-  /** Read-only handle on `spider/rigs` — retry-cap and drain counts. */
+  /**
+   * Read-only handle on `spider/rigs` — consumed by `isQueueDrained`
+   * (in `drain.ts`) to count active rigs. The Reckoner itself does not
+   * read rig counts directly any longer.
+   */
   readonly rigsBook: ReadOnlyBook<RigRow>;
   /** Read-only handle on `lattice/pulses` — dedupe lookup. */
   readonly pulsesBook: ReadOnlyBook<PulseDoc>;
-  /**
-   * Resolve the clockworks-retry `maxAttempts` cap (or `undefined` when
-   * clockworks-retry is not installed). Injected for test-time override.
-   */
-  readonly resolveMaxAttempts: () => number | undefined;
 }
 
 /**
@@ -308,7 +279,7 @@ async function emitStuck(
     return;
   }
 
-  const spiderStatus = writ.status?.spider as SpiderStuckStatus | undefined;
+  const spiderStatus = writ.status?.spider as { stuckCause?: string } | undefined;
   const context: WritStuckContext = {
     writShortId: shortId(writ.id),
     writPhase: 'stuck',
@@ -316,8 +287,6 @@ async function emitStuck(
     writType: writ.type,
     writUpdatedAt: writ.updatedAt,
     ...(typeof spiderStatus?.stuckCause === 'string' ? { stuckCause: spiderStatus.stuckCause } : {}),
-    ...(typeof spiderStatus?.retryable === 'boolean' ? { retryable: spiderStatus.retryable } : {}),
-    ...(typeof spiderStatus?.detail === 'string' ? { detail: spiderStatus.detail } : {}),
   };
   const title = `Writ stuck: ${writ.title}`;
   const summaryParts: string[] = [
@@ -325,9 +294,6 @@ async function emitStuck(
   ];
   if (spiderStatus?.stuckCause) {
     summaryParts.push(`Cause: ${spiderStatus.stuckCause}.`);
-  }
-  if (spiderStatus?.detail) {
-    summaryParts.push(`Detail: ${spiderStatus.detail}`);
   }
   const leafFailures = await chaseTriggeringChildren(deps.clerk, writ);
   if (leafFailures.length > 0) {
@@ -489,12 +455,7 @@ export async function handleWritChange(
   const isRoot = !writ.parentId;
 
   if (isMandate && isRoot && enteredStuck) {
-    const spiderStatus = writ.status?.spider as SpiderStuckStatus | undefined;
-    const maxAttempts = deps.resolveMaxAttempts();
-    const rigCount = await deps.rigsBook.count([['writId', '=', writ.id]]);
-    if (isTerminalStuck(spiderStatus, rigCount, maxAttempts)) {
-      await emitStuck(deps, writ);
-    }
+    await emitStuck(deps, writ);
   }
 
   if (isMandate && isRoot && enteredFailed) {
@@ -528,15 +489,12 @@ export function createReckoner(): Plugin {
   return {
     apparatus: {
       // Lattice and Clerk are hard requires — without them the Reckoner
-      // has nothing to observe or nowhere to emit. Spider and
-      // clockworks-retry are soft dependencies: Spider owns the rigs
-      // book the Reckoner reads for retry-cap and drain evaluation;
-      // clockworks-retry owns the cap constant. Both degrade gracefully:
-      // no Spider → no rigs book → rigs counts return 0; no
-      // clockworks-retry → maxAttempts is undefined → every stuck is
-      // terminal from the Reckoner's viewpoint.
+      // has nothing to observe or nowhere to emit. Spider is a soft
+      // dependency: Spider owns the rigs book the Reckoner reads for
+      // drain-evaluation. The path degrades gracefully — no Spider →
+      // no rigs book → rig counts return 0.
       requires: ['clerk', 'lattice', 'stacks'],
-      recommends: ['spider', 'clockworks-retry', 'oculus'],
+      recommends: ['spider', 'oculus'],
 
       provides: api,
 
@@ -558,7 +516,6 @@ export function createReckoner(): Plugin {
           clerk,
           rigsBook,
           pulsesBook,
-          resolveMaxAttempts,
         };
 
         // ── Observer ────────────────────────────────────────────

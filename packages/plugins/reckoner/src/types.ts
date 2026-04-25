@@ -52,10 +52,6 @@ export interface WritStuckContext {
   writUpdatedAt: string;
   /** Stuck cause written by Spider, when available. */
   stuckCause?: string;
-  /** Spider-reported retryable flag. */
-  retryable?: boolean;
-  /** Human-readable detail string, when available. */
-  detail?: string;
 }
 
 /**

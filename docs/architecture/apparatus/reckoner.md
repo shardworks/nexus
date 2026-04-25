@@ -5,9 +5,9 @@ Status: **Draft**
 Package: `@shardworks/reckoner-apparatus` · Plugin id: `reckoner`
 
 > **⚠️ MVP scope.** MVP ships three trigger types (`writ-stuck`,
-> `writ-failed`, `queue-drained`), roots-only scoping, and the
-> clockworks-retry soft dependency. Every other Reckoner-style trigger
-> (`needs-review`, anima completion, coinmaster alerts, …) is out of scope.
+> `writ-failed`, `queue-drained`) and roots-only scoping. Every other
+> Reckoner-style trigger (`needs-review`, anima completion, coinmaster
+> alerts, …) is out of scope.
 
 ---
 
@@ -34,20 +34,17 @@ here.
 
 ```
 requires:   ['clerk', 'lattice', 'stacks']
-recommends: ['spider', 'clockworks-retry', 'oculus']
+recommends: ['spider', 'oculus']
 ```
 
 - **The Clerk** (required) — source of writ transitions the Reckoner
   watches.
 - **The Lattice** (required) — consumer of every pulse the Reckoner emits.
 - **The Stacks** (required) — CDC substrate plus the rigs book the
-  Reckoner reads for cap evaluation and drain counts.
-- **Spider** (recommended) — owner of the `rigs` book. When Spider is
-  absent the rig counts resolve to zero, `isQueueDrained` degrades
-  gracefully, and retry-cap evaluation falls back to the fail-safe
-  `isTerminalStuck` path.
-- **Clockworks-retry** (recommended) — source of the `maxAttempts` cap. The
-  soft-dependency resolution is described below.
+  Reckoner reads for drain counts.
+- **Spider** (recommended) — owner of the `rigs` book consulted by the
+  drain predicate. When Spider is absent the rig counts resolve to zero,
+  so `isQueueDrained` reduces to `open == 0`.
 - **Oculus** (recommended) — future patron-facing surface for pulse
   inspection.
 
@@ -83,7 +80,7 @@ interface ReckonerApi {
 
 | Trigger | `writId` | Emitted on |
 |---------|----------|-----------|
-| `reckoner.writ-stuck` | root writ id | root writ enters `stuck` and the stuck is terminal non-success (see predicate). |
+| `reckoner.writ-stuck` | root writ id | root writ enters `stuck`. |
 | `reckoner.writ-failed` | root writ id | root writ enters `failed`. When the failure originated in an engine retry-budget exhaustion, the pulse's context carries an additional `engineFailure` block (see "Engine-failure enrichment" below). |
 | `reckoner.queue-drained` | `null` | any terminal writ transition that brings the guild to `open = 0 AND active rigs = 0`. |
 
@@ -100,8 +97,6 @@ interface WritStuckContext {
   writType: string;
   writUpdatedAt: string;      // dedupe identity — see "Idempotency under replay"
   stuckCause?: string;        // from status.spider
-  retryable?: boolean;
-  detail?: string;
 }
 
 interface WritFailedContext {
@@ -173,49 +168,14 @@ context payload but does not affect idempotency.
 The Reckoner re-declares narrow `RigRow` / `EngineInstance` /
 `EngineAttempt` row shapes locally rather than importing from
 `@shardworks/spider-apparatus`, mirroring the existing
-`SpiderStuckStatus` / `ClerkChildCascadeStatus` precedent. Spider
-remains a `recommend`, not a `require`.
+`ClerkChildCascadeStatus` precedent. Spider remains a `recommend`, not
+a `require`.
 
 The enrichment is failed-only: `reckoner.writ-stuck`,
 `reckoner.queue-drained`, and any other trigger are never enriched
 with engine context. Stuck transitions in the post-reshape model carry
 no engine-failure information; adding fields with no producer is
 structure with no consumer.
-
----
-
-## Predicate: terminal non-success stuck (D2)
-
-A stuck transition is pulse-worthy only when clockworks-retry will not
-requeue the writ. Equivalently, the stuck is *terminal non-success* when:
-
-- `status.spider.retryable !== true` (definitional non-retryable OR missing
-  flag — clockworks-retry's fail-safe: stay stuck), OR
-- the rigs-for-writ count is at or above the clockworks-retry cap.
-
-Formally:
-
-```typescript
-function isTerminalStuck(
-  spiderStatus: SpiderStuckStatus | undefined,
-  rigCount: number,
-  maxAttempts: number | undefined,
-): boolean {
-  if (maxAttempts === undefined) return true;       // no retry installed
-  if (spiderStatus?.retryable !== true) return true;
-  if (rigCount >= maxAttempts) return true;
-  return false;
-}
-```
-
-The `maxAttempts` argument resolves to `clockworksRetryApi?.maxAttempts` at
-emit time. When clockworks-retry is not installed, `maxAttempts` is
-`undefined`, and every stuck is terminal from the Reckoner's viewpoint —
-there is no retry to rescue the writ, so a pulse is the correct behavior.
-
-This predicate is the **complement** of clockworks-retry's requeue
-condition. A transient stuck that clockworks-retry will flip back to `open`
-produces zero pulses, exactly as brief-section D2 prescribes.
 
 ---
 
@@ -275,28 +235,6 @@ There is intentionally **no dedupe across bursts** in MVP. If multiple
 terminal transitions land in rapid succession and each sees the drain
 condition, each will emit. The accepted cost is documented here and in the
 brief's primer observations.
-
----
-
-## Soft clockworks-retry dependency (D16)
-
-The Reckoner reads `maxAttempts` via `guild().apparatus('clockworks-retry')`.
-Because `apparatus(name)` throws when the apparatus is not installed, the
-resolver catches the error and returns `undefined`:
-
-```typescript
-function resolveMaxAttempts(): number | undefined {
-  try {
-    const api = guild().apparatus<MaxAttemptsApi>('clockworks-retry');
-    return api?.maxAttempts;
-  } catch {
-    return undefined;
-  }
-}
-```
-
-Duplicating the cap constant would split the source of truth; reading the
-constant from the API keeps it exactly where clockworks-retry declares it.
 
 ---
 
@@ -397,8 +335,7 @@ Reckoner itself; trigger-gating belongs on the Lattice's delivery side
 | Situation | Effect |
 |-----------|--------|
 | Emit call throws | Swallowed by the Phase 2 watcher (`failOnError: false`); writ transition is unaffected. |
-| Rigs book missing (Spider absent) | `readBook` returns a zero-count handle; stuck predicate still evaluates (falls through via maxAttempts path); drain predicate returns `open=0 AND activeRigs=0` whenever there are no open writs. |
-| Clockworks-retry absent | `resolveMaxAttempts` returns `undefined`; every stuck is terminal; `reckoner.writ-stuck` always fires on root stuck transitions. |
+| Rigs book missing (Spider absent) | `readBook` returns a zero-count handle; the drain predicate reduces to `open == 0 AND active rigs == 0` with `active rigs == 0` trivially satisfied. |
 
 ---
 
@@ -425,9 +362,10 @@ Reckoner itself; trigger-gating belongs on the Lattice's delivery side
 
 ## Implementation Notes
 
-- The Reckoner re-declares a narrow `SpiderStuckStatus` type locally
-  rather than importing from `@shardworks/spider-apparatus`. Spider is a
-  recommend, not a require; this keeps the dependency direction one-way.
+- The Reckoner reads `writ.status?.spider` through an inline narrow cast
+  (`as { stuckCause?: string }`) at the single read site rather than
+  naming a shared type. Spider is a recommend, not a require; the inline
+  cast keeps the dependency direction one-way.
 - The Reckoner re-declares a narrow `ClerkChildCascadeStatus` shape
   locally (`{ triggeringChildId?: string }`) and reads
   `writ.status?.clerk` through that type. This mirrors the Spider

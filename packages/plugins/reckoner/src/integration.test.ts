@@ -1,9 +1,9 @@
 /**
  * End-to-end integration — Lattice + Reckoner + Discord kit.
  *
- * Spins a guild with stacks, clerk, lattice, reckoner, clockworks-retry and
- * the Discord channel kit, configures a `discord-webhook` channel pointed at
- * a mocked webhook URL, and drives a root mandate through stuck and failed
+ * Spins a guild with stacks, clerk, lattice, reckoner, and the Discord
+ * channel kit, configures a `discord-webhook` channel pointed at a mocked
+ * webhook URL, and drives a root mandate through stuck and failed
  * transitions plus a drain. Asserts that the correct pulses fire, the
  * dispatcher delivers them, and the CLI tools see them as expected.
  *
@@ -11,8 +11,7 @@
  *
  *   - A root commission entering `failed` produces exactly one pulse,
  *     delivered to Discord, visible in `pulse list`.
- *   - A retry-cap-exhausted stuck produces one `reckoner.writ-stuck`.
- *   - A single transient stuck (retryable, under cap) produces zero pulses.
+ *   - A root mandate entering `stuck` produces one `reckoner.writ-stuck`.
  *   - `pulse list --live` excludes drain pulses and drops writ-scoped
  *     pulses whose referent is no longer stuck/failed.
  *   - `pulse show <id-prefix>` resolves a prefix.
@@ -37,9 +36,6 @@ import type { StacksApi, BookEntry } from '@shardworks/stacks-apparatus';
 
 import { createClerk } from '@shardworks/clerk-apparatus';
 import type { ClerkApi } from '@shardworks/clerk-apparatus';
-
-import { createClockworksRetry } from '@shardworks/clockworks-retry-apparatus';
-import type { ClockworksRetryApi } from '@shardworks/clockworks-retry-apparatus';
 
 import discordKit from '@shardworks/lattice-discord-kit';
 
@@ -115,13 +111,11 @@ async function buildGuild(): Promise<Fixture> {
   const clerkPlugin = createClerk();
   const latticePlugin = createLattice();
   const reckonerPlugin = createReckoner();
-  const retryPlugin = createClockworksRetry();
 
   if (!('apparatus' in stacksPlugin)) throw new Error('stacks');
   if (!('apparatus' in clerkPlugin)) throw new Error('clerk');
   if (!('apparatus' in latticePlugin)) throw new Error('lattice');
   if (!('apparatus' in reckonerPlugin)) throw new Error('reckoner');
-  if (!('apparatus' in retryPlugin)) throw new Error('retry');
 
   const apparatusMap = new Map<string, unknown>();
 
@@ -218,10 +212,6 @@ async function buildGuild(): Promise<Fixture> {
   const lattice = latticePlugin.apparatus.provides as LatticeApi;
   apparatusMap.set('lattice', lattice);
 
-  // Start clockworks-retry so maxAttempts = 2 drives the retry-cap path.
-  await retryPlugin.apparatus.start(buildCtx());
-  apparatusMap.set('clockworks-retry', retryPlugin.apparatus.provides as ClockworksRetryApi);
-
   // Start reckoner — observers fire from here forward.
   await reckonerPlugin.apparatus.start(buildCtx());
 
@@ -245,7 +235,7 @@ async function teardown(fix: Fixture): Promise<void> {
 async function stuckWith(
   fix: Fixture,
   writId: string,
-  spiderStatus: { retryable?: boolean; stuckCause?: string; detail?: string } | undefined,
+  spiderStatus: { stuckCause?: string } | undefined,
 ): Promise<void> {
   await fix.stacks.transaction(async () => {
     await fix.clerk.transition(writId, 'stuck', { resolution: 'test stuck' });
@@ -303,42 +293,13 @@ describe('Lattice + Reckoner + Discord — end-to-end', () => {
     }
   });
 
-  it('produces no pulse for a transient retryable stuck under cap', async () => {
+  it('produces one writ-stuck pulse when a root mandate enters stuck', async () => {
     const fix = await buildGuild();
     try {
       const writ = await fix.clerk.post({ title: 'stuck mandate', body: 'b' });
       await fix.clerk.transition(writ.id, 'open');
-      await fix.seedRig(writ.id, 'stuck');
       await stuckWith(fix, writ.id, {
-        stuckCause: 'engine-failure',
-        retryable: true,
-        detail: 'session crashed',
-      });
-
-      const stuckPulses = await fix.lattice.list({ triggerType: 'reckoner.writ-stuck' });
-      assert.equal(stuckPulses.length, 0);
-      const discordStuckCalls = fix.discordCalls.filter((c) => {
-        const p = c.payload as { embeds?: Array<{ title?: string }> };
-        return p.embeds?.[0]?.title?.includes('stuck');
-      });
-      assert.equal(discordStuckCalls.length, 0);
-    } finally {
-      await teardown(fix);
-    }
-  });
-
-  it('produces one writ-stuck pulse when the retry cap is exhausted', async () => {
-    const fix = await buildGuild();
-    try {
-      const writ = await fix.clerk.post({ title: 'capped mandate', body: 'b' });
-      await fix.clerk.transition(writ.id, 'open');
-      // Two prior rigs → cap hit → clockworks-retry will not requeue.
-      await fix.seedRig(writ.id, 'stuck');
-      await fix.seedRig(writ.id, 'stuck');
-      await stuckWith(fix, writ.id, {
-        stuckCause: 'engine-failure',
-        retryable: true,
-        detail: 'session crashed again',
+        stuckCause: 'failed-blocker',
       });
 
       const stuckPulses = await fix.lattice.list({ triggerType: 'reckoner.writ-stuck' });
@@ -352,13 +313,11 @@ describe('Lattice + Reckoner + Discord — end-to-end', () => {
   it('surfaces pulses through pulse-show and --live filter', async () => {
     const fix = await buildGuild();
     try {
-      // Create a root writ and transition it to stuck (non-retryable → terminal).
+      // Create a root writ and transition it to stuck.
       const writ = await fix.clerk.post({ title: 'live test', body: 'b' });
       await fix.clerk.transition(writ.id, 'open');
       await stuckWith(fix, writ.id, {
-        stuckCause: 'engine-failure',
-        retryable: false,
-        detail: 'bad input',
+        stuckCause: 'failed-blocker',
       });
 
       const pulses = await fix.lattice.list({ triggerType: 'reckoner.writ-stuck' });

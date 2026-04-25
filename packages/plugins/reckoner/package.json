@@ -26,7 +26,6 @@
     "@shardworks/stacks-apparatus": "workspace:*"
   },
   "devDependencies": {
-    "@shardworks/clockworks-retry-apparatus": "workspace:*",
     "@shardworks/lattice-discord-kit": "workspace:*",
     "@shardworks/nexus-core": "workspace:*",
     "@shardworks/spider-apparatus": "workspace:*",

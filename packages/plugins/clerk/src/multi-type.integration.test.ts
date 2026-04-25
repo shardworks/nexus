@@ -112,12 +112,10 @@ const TASK_CONFIG: WritTypeConfig = {
 // ── Fixture ──────────────────────────────────────────────────────────
 //
 // Self-contained boot of a real MemoryBackend, real Stacks apparatus,
-// and real Clerk apparatus. Mirrors the shape of the
-// `clockworks-retry.integration.test.ts` fixture but trims it to the
-// minimum the test type needs: just stacks + clerk + the test-only
-// `task` apparatus. Type registration goes through
-// `makeWritTypeApparatus(...)` fed in via `extraApparatuses`, which is
-// the production-mirror path a real plugin author would follow.
+// and real Clerk apparatus, trimmed to the minimum the test type needs:
+// just stacks + clerk + the test-only `task` apparatus. Type registration
+// goes through `makeWritTypeApparatus(...)` fed in via `extraApparatuses`,
+// which is the production-mirror path a real plugin author would follow.
 //
 // `phase:started` is intentionally not fired — none of the seven
 // scenarios depend on the registration window having sealed.

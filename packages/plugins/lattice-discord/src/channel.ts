@@ -94,8 +94,6 @@ export function contextFields(pulse: PulseDoc): EmbedField[] {
   if (pulse.triggerType === 'reckoner.writ-stuck') {
     if (typeof ctx.writType === 'string') fields.push({ name: 'Type', value: ctx.writType, inline: true });
     if (typeof ctx.stuckCause === 'string') fields.push({ name: 'Cause', value: ctx.stuckCause, inline: true });
-    if (ctx.retryable !== undefined) fields.push({ name: 'Retryable', value: String(ctx.retryable), inline: true });
-    if (typeof ctx.detail === 'string') fields.push({ name: 'Detail', value: truncate(ctx.detail, 800) });
   } else if (pulse.triggerType === 'reckoner.writ-failed') {
     if (typeof ctx.writType === 'string') fields.push({ name: 'Type', value: ctx.writType, inline: true });
     if (typeof ctx.resolution === 'string') fields.push({ name: 'Resolution', value: truncate(ctx.resolution, 800) });

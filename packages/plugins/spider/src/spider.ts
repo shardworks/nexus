@@ -2533,11 +2533,11 @@ export function createSpider(): Plugin {
    * — that signals an operator-stuck writ Spider never touched.
    *
    * Only dependency-recovery causes (`failed-blocker`, `cycle`) participate
-   * here. The engine-cascade cause (`engine-failure`) is written by
-   * `failEngine` for observability and retry-clockwork consumption — it is
-   * a different recovery axis (attempt-shaped, not graph-shaped), so this
-   * loop skips it and leaves those writs stuck until retry clockwork
-   * (a separate commission) acts on them.
+   * here. The engine-failure path no longer writes a stuck cause —
+   * engine-level retry handles that recovery axis (attempt-shaped, not
+   * graph-shaped) inside the rig and on exhaustion transitions the writ
+   * directly to `phase='failed'`. Any legacy `status.spider.stuckCause`
+   * value other than `failed-blocker` / `cycle` is ignored here.
    *
    * Release conditions (D15):
    *   - `failed-blocker`: every recorded blocker id is now in a
@@ -2563,8 +2563,9 @@ export function createSpider(): Plugin {
       const cause = spiderStatus?.stuckCause;
       if (!cause) continue; // operator-stuck — not ours
 
-      // Only the dependency-recovery causes participate here. `engine-failure`
-      // is left for the retry clockwork to act on (or not).
+      // Only the dependency-recovery causes participate here. Any other
+      // recorded cause (legacy writs may carry `engine-failure`) is left
+      // alone — engine-failure recovery now lives inside the rig.
       if (cause !== 'failed-blocker' && cause !== 'cycle') continue;
 
       const blockerIds = spiderStatus?.blockerIds ?? [];

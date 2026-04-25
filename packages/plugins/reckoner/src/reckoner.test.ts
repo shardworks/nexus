@@ -3,14 +3,10 @@
  *
  * Covers the predicate matrix from the commission brief:
  *
- *   - Retryable-under-cap stuck → no pulse.
- *   - Retryable-at-cap stuck → one pulse.
- *   - Non-retryable stuck → one pulse.
- *   - Missing retryable flag → one pulse (fail-safe terminal).
+ *   - Root mandate stuck → one pulse (regardless of `status.spider`).
  *   - Child-writ transitions → no pulse (roots-only).
  *   - Cascaded root transition → one pulse with leaf cause parsed into
  *     the summary / childFailures context.
- *   - clockworks-retry absent → every stuck is terminal.
  *   - No startup backfill of pre-existing stuck / failed writs.
  *   - `failed` transitions always emit.
  */
@@ -40,9 +36,6 @@ import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 
 import { createLattice } from '@shardworks/lattice-apparatus';
 import type { LatticeApi, PulseDoc } from '@shardworks/lattice-apparatus';
-
-import { createClockworksRetry } from '@shardworks/clockworks-retry-apparatus';
-import type { ClockworksRetryApi } from '@shardworks/clockworks-retry-apparatus';
 
 import { createReckoner } from './reckoner.ts';
 import {
@@ -161,7 +154,6 @@ interface Fixture {
 
 async function buildFixture(
   options: {
-    withRetry?: boolean;
     /**
      * Extra apparatuses to start *after* the Clerk but *before* the
      * Reckoner — used by multi-type tests to register a second writ
@@ -177,7 +169,6 @@ async function buildFixture(
   const clerkPlugin = createClerk();
   const latticePlugin = createLattice();
   const reckonerPlugin = createReckoner();
-  const retryPlugin = options.withRetry !== false ? createClockworksRetry() : null;
 
   if (!('apparatus' in stacksPlugin)) throw new Error('stacks must be apparatus');
   if (!('apparatus' in clerkPlugin)) throw new Error('clerk must be apparatus');
@@ -242,16 +233,6 @@ async function buildFixture(
   await latticePlugin.apparatus.start(buildCtx());
   const lattice = latticePlugin.apparatus.provides as LatticeApi;
   apparatusMap.set('lattice', lattice);
-
-  // Optionally start clockworks-retry so the Reckoner can resolve
-  // maxAttempts. When absent, every stuck is terminal from the
-  // Reckoner's viewpoint (D16).
-  if (retryPlugin !== null) {
-    if (!('apparatus' in retryPlugin)) throw new Error('retry must be apparatus');
-    await retryPlugin.apparatus.start(buildCtx());
-    const retry = retryPlugin.apparatus.provides as ClockworksRetryApi;
-    apparatusMap.set('clockworks-retry', retry);
-  }
 
   // Start any extra apparatuses (e.g. test-only writ-type registrars)
   // before the Reckoner so the Clerk's registration window is still
@@ -335,7 +316,7 @@ async function buildFixture(
 async function stuckWith(
   fix: Fixture,
   writId: string,
-  spiderStatus: { retryable?: boolean; stuckCause?: string; detail?: string } | undefined,
+  spiderStatus: { stuckCause?: string } | undefined,
 ): Promise<void> {
   await fix.stacks.transaction(async () => {
     await fix.clerk.transition(writId, 'stuck', { resolution: 'test stuck' });
@@ -356,54 +337,13 @@ describe('Reckoner — writ-stuck emission', () => {
 
   afterEach(() => clearGuild());
 
-  it('emits nothing when a retryable stuck is under the cap', async () => {
+  it('emits one pulse when a root mandate enters stuck (regardless of status.spider)', async () => {
     const writ = await fix.postOpen({ title: 'w', body: 'b' });
-    await fix.seedRig(writ.id, 'stuck');
-    await stuckWith(fix, writ.id, {
-      stuckCause: 'engine-failure',
-      retryable: true,
-      detail: 'session crashed',
-    });
-    const pulses = await fix.pulsesOf(TRIGGER_WRIT_STUCK);
-    assert.equal(pulses.length, 0, 'retryable-under-cap stuck must not emit');
-  });
-
-  it('emits exactly one pulse when a retryable stuck is at cap', async () => {
-    const writ = await fix.postOpen({ title: 'w', body: 'b' });
-    // Pre-load cap-many rigs.
-    await fix.seedRig(writ.id, 'stuck');
-    await fix.seedRig(writ.id, 'stuck');
-    assert.equal(await fix.rigCount(writ.id), 2);
-    await stuckWith(fix, writ.id, {
-      stuckCause: 'engine-failure',
-      retryable: true,
-      detail: 'session crashed',
-    });
+    await stuckWith(fix, writ.id, { stuckCause: 'failed-blocker' });
     const pulses = await fix.pulsesOf(TRIGGER_WRIT_STUCK);
     assert.equal(pulses.length, 1);
     assert.equal(pulses[0]?.writId, writ.id);
     assert.equal(pulses[0]?.source, 'reckoner');
-  });
-
-  it('emits for non-retryable stuck regardless of rig count', async () => {
-    const writ = await fix.postOpen({ title: 'w', body: 'b' });
-    await fix.seedRig(writ.id, 'stuck');
-    await stuckWith(fix, writ.id, {
-      stuckCause: 'engine-failure',
-      retryable: false,
-      detail: 'bad input',
-    });
-    const pulses = await fix.pulsesOf(TRIGGER_WRIT_STUCK);
-    assert.equal(pulses.length, 1);
-  });
-
-  it('emits for a stuck with no retryable flag (fail-safe terminal)', async () => {
-    const writ = await fix.postOpen({ title: 'w', body: 'b' });
-    await fix.seedRig(writ.id, 'stuck');
-    // Stuck with a spider slot that lacks `retryable`.
-    await stuckWith(fix, writ.id, { stuckCause: 'cycle' });
-    const pulses = await fix.pulsesOf(TRIGGER_WRIT_STUCK);
-    assert.equal(pulses.length, 1);
   });
 
   it('emits for a stuck with no spider slot at all', async () => {
@@ -416,7 +356,7 @@ describe('Reckoner — writ-stuck emission', () => {
   it('does not emit for a child writ transition (roots-only)', async () => {
     const parent = await fix.postOpen({ title: 'parent', body: 'p' });
     const child = await fix.postOpen({ title: 'child', body: 'c', parentId: parent.id });
-    await stuckWith(fix, child.id, { retryable: false });
+    await stuckWith(fix, child.id, undefined);
     const pulses = await fix.pulsesOf(TRIGGER_WRIT_STUCK);
     assert.equal(pulses.length, 0, 'children must not emit their own stuck pulse');
   });
@@ -638,20 +578,6 @@ describe('Reckoner — writ-failed emission', () => {
     assert.ok(ctx.engineFailure);
     assert.equal(ctx.engineFailure!.engineId, 'first');
     assert.equal(ctx.engineFailure!.attemptCount, 1);
-  });
-});
-
-describe('Reckoner — clockworks-retry optional', () => {
-  afterEach(() => clearGuild());
-
-  it('treats every stuck as terminal when clockworks-retry is not installed', async () => {
-    const fix = await buildFixture({ withRetry: false });
-    const writ = await fix.postOpen({ title: 'w', body: 'b' });
-    // retryable: true should STILL emit — no retry runs, so every stuck
-    // is terminal from the Reckoner's viewpoint.
-    await stuckWith(fix, writ.id, { retryable: true, stuckCause: 'engine-failure' });
-    const pulses = await fix.pulsesOf(TRIGGER_WRIT_STUCK);
-    assert.equal(pulses.length, 1);
   });
 });
 

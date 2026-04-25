@@ -871,16 +871,11 @@ export type SpiderStuckCause = 'failed-blocker' | 'cycle';
  * touched. For dependency-recovery stucks (`failed-blocker` / `cycle`),
  * the slot carries `stuckCause`, `blockerIds`, and `observedAt`.
  *
- * `retryable` / `detail` remain on the interface for read-compatibility
- * with legacy writs (whose engine-failure stucks carried those fields)
- * but are NOT written by the current Spider's engine-failure path —
- * that path now transitions rigs straight to `failed` and writs straight
- * to `phase='failed'` without a `status.spider.stuckCause='engine-failure'`
- * entry.
- *
  * The slot is written only on stuck transitions via the dependency
  * gating paths and cleared on auto-unstick. Nothing is written while a
- * writ is gated-but-not-stuck or during engine-failure retry.
+ * writ is gated-but-not-stuck or during engine-failure retry — the
+ * engine-failure path transitions rigs straight to `failed` and writs
+ * straight to `phase='failed'` without writing this slot.
  */
 export interface SpiderWritStatus {
   /** Present only while the writ is stuck for a reason Spider recorded. */
@@ -894,19 +889,6 @@ export interface SpiderWritStatus {
   blockerIds?: string[];
   /** ISO timestamp recorded at the moment the stuck transition was taken. */
   observedAt?: string;
-  /**
-   * Retry signal — inert on the engine-failure path in the current Spider
-   * (engine-failure now writes `phase='failed'` directly rather than
-   * stuck with this flag). Retained on the interface so legacy writs
-   * that still carry it round-trip through readers without erroring.
-   */
-  retryable?: boolean;
-  /**
-   * Freeform human-readable failure description — also inert on the
-   * engine-failure path in the current Spider. Retained for legacy
-   * writs and in case future commissions re-enable the slot.
-   */
-  detail?: string;
 }
 
 // Augment GuildConfig so `guild().guildConfig().spider` is typed.

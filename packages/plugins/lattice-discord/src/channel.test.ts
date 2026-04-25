@@ -61,9 +61,7 @@ function pulse(partial: Partial<PulseDoc> = {}): PulseDoc {
       writPhase: 'stuck',
       writTitle: 'A writ',
       writType: 'mandate',
-      stuckCause: 'engine-failure',
-      retryable: false,
-      detail: 'session crashed',
+      stuckCause: 'failed-blocker',
     },
     deliveryState: 'pending',
     createdAt: now,
@@ -97,17 +95,15 @@ describe('context field rendering', () => {
         triggerType: 'reckoner.writ-stuck',
         context: {
           writType: 'step',
-          stuckCause: 'engine-failure',
-          retryable: true,
-          detail: 'timeout',
+          stuckCause: 'failed-blocker',
         },
       }),
     );
     const map = new Map(fields.map((f) => [f.name, f.value]));
     assert.equal(map.get('Type'), 'step');
-    assert.equal(map.get('Cause'), 'engine-failure');
-    assert.equal(map.get('Retryable'), 'true');
-    assert.equal(map.get('Detail'), 'timeout');
+    assert.equal(map.get('Cause'), 'failed-blocker');
+    assert.equal(map.get('Retryable'), undefined);
+    assert.equal(map.get('Detail'), undefined);
   });
 
   it('renders failed context with resolution and childFailures', () => {

@@ -48,7 +48,7 @@ can enumerate the trigger types the Reckoner emits.
 
 | Trigger | `writId` | Emitted on |
 |---|---|---|
-| `reckoner.writ-stuck` | root writ id | root writ enters `stuck` and the stuck is terminal non-success. |
+| `reckoner.writ-stuck` | root writ id | root writ enters `stuck`. |
 | `reckoner.writ-failed` | root writ id | root writ enters `failed`. When an engine exhausted its retry budget, the context carries an additional `engineFailure` block (rig id, engine id, engine design, attempt count, last error, attempts summary). |
 | `reckoner.queue-drained` | `null` | any terminal writ transition that brings the guild to `open = 0 AND active rigs = 0`. |
 
@@ -64,8 +64,6 @@ interface WritStuckContext {
   writType: string;
   writUpdatedAt: string; // dedupe identity (see "Idempotency under replay")
   stuckCause?: string;
-  retryable?: boolean;
-  detail?: string;
 }
 
 interface WritFailedContext {
@@ -120,14 +118,10 @@ replays (see "Idempotency under replay" below).
 ## Dependencies
 
 - **Required:** `@shardworks/clerk-apparatus`, `@shardworks/lattice-apparatus`, `@shardworks/stacks-apparatus`.
-- **Recommended:** `@shardworks/clockworks-retry-apparatus` — the Reckoner reads
-  `maxAttempts` from the retry apparatus's API to decide whether a stuck is
-  terminal. When clockworks-retry is absent, every stuck is terminal from
-  the Reckoner's viewpoint.
 - **Recommended:** `@shardworks/spider-apparatus` — the Reckoner reads
-  `spider/rigs` for retry-cap evaluation and drain counts. Without Spider
-  the rig counts resolve to zero and the Reckoner still emits
-  correctly-shaped pulses.
+  `spider/rigs` for drain-evaluation counts. Without Spider the rig
+  counts resolve to zero and the Reckoner still emits correctly-shaped
+  pulses.
 
 ---
 

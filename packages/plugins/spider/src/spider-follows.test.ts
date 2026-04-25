@@ -540,21 +540,21 @@ describe('Spider — spider.follows gate', () => {
     });
   });
 
-  // ── engine-failure stuck-cause payload ─────────────────────────────
+  // ── engine-failure path: writ goes straight to failed ─────────────
   //
-  // Every `failEngine` call site classifies its failure as retryable
-  // (transient — a fresh attempt may succeed) or non-retryable
-  // (definitional — the same code would reproduce the same failure) and
-  // writes a freeform `detail` string to the writ's `status.spider`
-  // sub-slot. These tests verify the payload shape for representative
-  // paths and confirm that the dependency-recovery causes
-  // (failed-blocker / cycle) remain untouched.
+  // Every `failEngine` call site historically classified its failure
+  // as retryable (transient — a fresh attempt may succeed) or
+  // non-retryable (definitional — the same code would reproduce the
+  // same failure). Spider no longer writes `status.spider.stuckCause`
+  // on the engine-failure path; rigs go terminal and writs transition
+  // directly to `phase='failed'`. These tests verify that dependency-
+  // recovery causes (failed-blocker / cycle) remain untouched and that
+  // engine-failure produces a clean `phase='failed'` outcome.
   describe('engine-failure stuck cause payload', () => {
     // The following engine-failure classification tests were removed —
     // Spider no longer writes status.spider.stuckCause='engine-failure';
     // engine-failure now transitions the writ directly to phase='failed'.
-    // See clockworks-retry dormancy tests for the new behavior. The tests
-    // removed from this block were:
+    // The tests removed from this block were:
     //   - 'session crash classifies retryable:true with a detail...'
     //   - 'graft validation failure classifies retryable:false...'
     //   - 'engine run() throw classifies retryable:true'
@@ -603,7 +603,7 @@ describe('Spider — spider.follows gate', () => {
       assert.notEqual(status?.stuckCause, 'engine-failure', 'Spider must not write stuckCause=engine-failure');
     });
 
-    it('failed-blocker stuck carries no retryable or detail fields', async () => {
+    it('failed-blocker stuck records stuckCause and blockerIds on status.spider', async () => {
       const { clerk, spider } = fix;
       const blocker = await postWrit(clerk, 'Blocker');
       const dependent = await postWrit(clerk, 'Dependent');
@@ -619,11 +619,10 @@ describe('Spider — spider.follows gate', () => {
       const status = w.status?.spider as Record<string, unknown> | undefined;
       assert.ok(status, 'status.spider should be set for failed-blocker stucks');
       assert.equal(status!.stuckCause, 'failed-blocker');
-      assert.equal(status!.retryable, undefined, 'failed-blocker stucks must not carry retryable');
-      assert.equal(status!.detail, undefined, 'failed-blocker stucks must not carry detail');
+      assert.deepEqual(status!.blockerIds, [blocker.id]);
     });
 
-    it('cycle stuck carries no retryable or detail fields', async () => {
+    it('cycle stuck records stuckCause and blockerIds on status.spider', async () => {
       const { clerk, spider } = fix;
       const a = await postWrit(clerk, 'A');
       const b = await postWrit(clerk, 'B');
@@ -639,13 +638,12 @@ describe('Spider — spider.follows gate', () => {
       const status = w.status?.spider as Record<string, unknown> | undefined;
       assert.ok(status, 'status.spider should be set for cycle stucks');
       assert.equal(status!.stuckCause, 'cycle');
-      assert.equal(status!.retryable, undefined, 'cycle stucks must not carry retryable');
-      assert.equal(status!.detail, undefined, 'cycle stucks must not carry detail');
+      const members = status!.blockerIds as string[];
+      assert.ok(members.includes(a.id) && members.includes(b.id), 'cycle members should be recorded');
     });
 
-    // 'autoUnstick leaves engine-failure stucks alone' was removed — Spider
-    // no longer writes status.spider.stuckCause='engine-failure'; engine-failure
-    // now transitions the writ directly to phase='failed'. See
-    // clockworks-retry dormancy tests for the new behavior.
+    // 'autoUnstick leaves engine-failure stucks alone' was removed —
+    // Spider no longer writes status.spider.stuckCause='engine-failure';
+    // engine-failure now transitions the writ directly to phase='failed'.
   });
 });

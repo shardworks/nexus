@@ -6,9 +6,9 @@
 
 ## Methodology
 
-- **Snapshot date (UTC):** 2026-04-25T13:43:24.983Z
-- **Git SHA:** `d6f68e7e001f1b1a6ac06049eeca0b4e6a852389`
-- **Files scanned:** 331 `.ts` files (228 source, 103 test)
+- **Snapshot date (UTC):** 2026-04-25T18:47:36.895Z
+- **Git SHA:** `caf9ecc76b3c2b18916b26d7498547896cfb1305` **(working tree dirty — regenerate from a clean SHA before committing)**
+- **Files scanned:** 333 `.ts` files (229 source, 104 test)
 - **Regeneration command:** `pnpm coupling-audit`
 
 ### Counting rules
@@ -38,28 +38,27 @@
 
 | plugin id | inbound | outbound | total | src in | src out | test in | test out |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| animator | 43 | 77 | 120 | 20 | 34 | 23 | 43 |
-| astrolabe | 0 | 63 | 63 | 0 | 34 | 0 | 29 |
-| claude-code | 0 | 14 | 14 | 0 | 9 | 0 | 5 |
-| clerk | 80 | 46 | 126 | 28 | 35 | 52 | 11 |
-| clockworks | 5 | 81 | 86 | 3 | 20 | 2 | 61 |
-| clockworks-retry | 6 | 23 | 29 | 0 | 6 | 6 | 17 |
+| animator | 44 | 77 | 121 | 21 | 34 | 23 | 43 |
+| astrolabe | 0 | 65 | 65 | 0 | 36 | 0 | 29 |
+| claude-code | 0 | 16 | 16 | 0 | 11 | 0 | 5 |
+| clerk | 77 | 46 | 123 | 28 | 35 | 49 | 11 |
+| clockworks | 6 | 82 | 88 | 4 | 21 | 2 | 61 |
 | codexes | 2 | 22 | 24 | 2 | 20 | 0 | 2 |
 | copilot | 0 | 8 | 8 | 0 | 4 | 0 | 4 |
-| fabricator | 52 | 3 | 55 | 23 | 1 | 29 | 2 |
+| fabricator | 50 | 3 | 53 | 23 | 1 | 27 | 2 |
 | lattice | 12 | 21 | 33 | 3 | 9 | 9 | 12 |
 | lattice-discord | 1 | 4 | 5 | 0 | 3 | 1 | 1 |
 | loom | 9 | 6 | 15 | 6 | 4 | 3 | 2 |
-| nexus | 0 | 31 | 31 | 0 | 26 | 0 | 5 |
+| nexus | 0 | 34 | 34 | 0 | 28 | 0 | 6 |
 | nexus-arbor | 2 | 5 | 7 | 2 | 3 | 0 | 2 |
-| nexus-core | 280 | 0 | 280 | 150 | 0 | 130 | 0 |
+| nexus-core | 282 | 0 | 282 | 153 | 0 | 129 | 0 |
 | oculus | 0 | 13 | 13 | 0 | 5 | 0 | 8 |
 | parlour | 0 | 22 | 22 | 0 | 14 | 0 | 8 |
 | ratchet | 0 | 37 | 37 | 0 | 32 | 0 | 5 |
-| reckoner | 0 | 53 | 53 | 0 | 7 | 0 | 46 |
-| spider | 6 | 247 | 253 | 4 | 114 | 2 | 133 |
-| stacks | 190 | 2 | 192 | 52 | 2 | 138 | 0 |
-| tools | 100 | 10 | 110 | 91 | 2 | 9 | 8 |
+| reckoner | 0 | 47 | 47 | 0 | 7 | 0 | 40 |
+| spider | 3 | 255 | 258 | 2 | 118 | 1 | 137 |
+| stacks | 185 | 2 | 187 | 52 | 2 | 133 | 0 |
+| tools | 102 | 10 | 112 | 93 | 2 | 9 | 8 |
 
 ## Top 10 inbound
 
@@ -67,16 +66,16 @@ Packages most frequently imported _from_ — the universal-substrate signal.
 
 | rank | plugin id | inbound edges |
 | ---: | --- | ---: |
-| 1 | nexus-core | 280 |
-| 2 | stacks | 190 |
-| 3 | tools | 100 |
-| 4 | clerk | 80 |
-| 5 | fabricator | 52 |
-| 6 | animator | 43 |
+| 1 | nexus-core | 282 |
+| 2 | stacks | 185 |
+| 3 | tools | 102 |
+| 4 | clerk | 77 |
+| 5 | fabricator | 50 |
+| 6 | animator | 44 |
 | 7 | lattice | 12 |
 | 8 | loom | 9 |
-| 9 | clockworks-retry | 6 |
-| 10 | spider | 6 |
+| 9 | clockworks | 6 |
+| 10 | spider | 3 |
 
 ## Top 10 outbound
 
@@ -84,16 +83,16 @@ Packages that import _from_ the most other packages — the tangled-client signa
 
 | rank | plugin id | outbound edges |
 | ---: | --- | ---: |
-| 1 | spider | 247 |
-| 2 | clockworks | 81 |
+| 1 | spider | 255 |
+| 2 | clockworks | 82 |
 | 3 | animator | 77 |
-| 4 | astrolabe | 63 |
-| 5 | reckoner | 53 |
+| 4 | astrolabe | 65 |
+| 5 | reckoner | 47 |
 | 6 | clerk | 46 |
 | 7 | ratchet | 37 |
-| 8 | nexus | 31 |
-| 9 | clockworks-retry | 23 |
-| 10 | codexes | 22 |
+| 8 | nexus | 34 |
+| 9 | codexes | 22 |
+| 10 | parlour | 22 |
 
 ## Top 10 pairs
 
@@ -101,12 +100,12 @@ Heaviest directed package pairs A → B, ranked by import-line count.
 
 | rank | from | to | import lines |
 | ---: | --- | --- | ---: |
-| 1 | spider | nexus-core | 68 |
-| 2 | spider | stacks | 59 |
+| 1 | spider | nexus-core | 71 |
+| 2 | spider | stacks | 61 |
 | 3 | spider | fabricator | 39 |
-| 4 | spider | clerk | 36 |
-| 5 | clockworks | stacks | 32 |
-| 6 | clockworks | nexus-core | 31 |
+| 4 | spider | clerk | 38 |
+| 5 | clockworks | nexus-core | 32 |
+| 6 | clockworks | stacks | 32 |
 | 7 | animator | stacks | 30 |
 | 8 | animator | nexus-core | 28 |
 | 9 | spider | animator | 26 |

@@ -286,12 +286,11 @@ The Clockworks, The Surveyor, and The Executor are described elsewhere in this d
 
 ### Opt-in Apparatus
 
-Some opt-ins form coherent stacks that only make sense when installed together — notably the notifications stack (`lattice` + `reckoner` + `clockworks-retry` + `lattice-discord`), which observes guild activity and fans pulses out to external channels.
+Some opt-ins form coherent stacks that only make sense when installed together — notably the notifications stack (`lattice` + `reckoner` + `lattice-discord`), which observes guild activity and fans pulses out to external channels.
 
 | Apparatus | Plugin id | Function |
 |-----------|-----------|----------|
 | **[The Astrolabe](apparatus/astrolabe.md)** | `astrolabe` | Plan-and-ship pipeline — turns patron briefs into structured specs and drives them through implementation |
-| **The Clockworks-Retry** | `clockworks-retry` | Stuck-writ retry observer — part of the opt-in notifications stack |
 | **[The Copilot](apparatus/copilot.md)** | `copilot` | Alternate session provider — launches sessions via the GitHub Models API |
 | **[The Lattice](apparatus/lattice.md)** | `lattice` | Notification substrate — part of the opt-in notifications stack |
 | **The Lattice-Discord** | `lattice-discord` | Discord channel for Lattice pulses — part of the opt-in notifications stack |

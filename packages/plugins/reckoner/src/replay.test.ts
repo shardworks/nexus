@@ -37,9 +37,6 @@ import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import { createLattice } from '@shardworks/lattice-apparatus';
 import type { LatticeApi, PulseDoc } from '@shardworks/lattice-apparatus';
 
-import { createClockworksRetry } from '@shardworks/clockworks-retry-apparatus';
-import type { ClockworksRetryApi } from '@shardworks/clockworks-retry-apparatus';
-
 import {
   createReckoner,
   handleWritChange,
@@ -108,13 +105,11 @@ async function buildFixture(): Promise<Fixture> {
   const clerkPlugin = createClerk();
   const latticePlugin = createLattice();
   const reckonerPlugin = createReckoner();
-  const retryPlugin = createClockworksRetry();
 
   if (!('apparatus' in stacksPlugin)) throw new Error('stacks must be apparatus');
   if (!('apparatus' in clerkPlugin)) throw new Error('clerk must be apparatus');
   if (!('apparatus' in latticePlugin)) throw new Error('lattice must be apparatus');
   if (!('apparatus' in reckonerPlugin)) throw new Error('reckoner must be apparatus');
-  if (!('apparatus' in retryPlugin)) throw new Error('retry must be apparatus');
 
   const apparatusMap = new Map<string, unknown>();
 
@@ -171,9 +166,6 @@ async function buildFixture(): Promise<Fixture> {
   const lattice = latticePlugin.apparatus.provides as LatticeApi;
   apparatusMap.set('lattice', lattice);
 
-  await retryPlugin.apparatus.start(buildCtx());
-  apparatusMap.set('clockworks-retry', retryPlugin.apparatus.provides as ClockworksRetryApi);
-
   await reckonerPlugin.apparatus.start(buildCtx());
 
   const rigsBook = stacks.readBook<RigRow>('spider', 'rigs');
@@ -218,7 +210,6 @@ async function buildFixture(): Promise<Fixture> {
     clerk,
     rigsBook,
     pulsesBook,
-    resolveMaxAttempts: () => 2,
   };
 
   return {
@@ -276,13 +267,13 @@ describe('Reckoner — idempotency under CDC replay', () => {
     // that fires twice — simulating a duplicated Phase 2 delivery.
     const writ = await fix.clerk.post({ title: 'stuck mandate', body: 'b' });
 
-    // Pretend the writ is now in `stuck` phase with a non-retryable spider
-    // status so `isTerminalStuck` returns true.
+    // Pretend the writ is now in `stuck` phase with a recorded
+    // dependency-recovery cause on its `status.spider` slot.
     const entry: WritDoc = {
       ...writ,
       phase: 'stuck',
       updatedAt: '2026-04-23T10:00:00.000Z',
-      status: { spider: { retryable: false, stuckCause: 'engine-failure' } },
+      status: { spider: { stuckCause: 'failed-blocker' } },
     };
     const event = makeUpdateEvent({ entry, prevPhase: 'open' });
 
@@ -430,7 +421,7 @@ describe('Reckoner — idempotency under CDC replay', () => {
       ...writ,
       phase: 'stuck',
       updatedAt: '2026-04-23T12:00:00.000Z',
-      status: { spider: { retryable: false } },
+      status: { spider: { stuckCause: 'failed-blocker' } },
     };
     await handleWritChange(fix.deps, makeUpdateEvent({ entry: firstStuck, prevPhase: 'open' }));
 
@@ -438,7 +429,7 @@ describe('Reckoner — idempotency under CDC replay', () => {
       ...writ,
       phase: 'stuck',
       updatedAt: '2026-04-23T12:05:00.000Z', // fresh updatedAt
-      status: { spider: { retryable: false } },
+      status: { spider: { stuckCause: 'failed-blocker' } },
     };
     await handleWritChange(fix.deps, makeUpdateEvent({ entry: secondStuck, prevPhase: 'open' }));
 
@@ -464,7 +455,7 @@ describe('Reckoner — idempotency under CDC replay', () => {
       ...writ,
       phase: 'stuck',
       updatedAt: '2026-04-23T13:00:00.000Z',
-      status: { spider: { retryable: false } },
+      status: { spider: { stuckCause: 'failed-blocker' } },
     };
     const event = makeUpdateEvent({ entry, prevPhase: 'open' });
 
@@ -478,7 +469,6 @@ describe('Reckoner — idempotency under CDC replay', () => {
       clerk: fix.deps.clerk,
       rigsBook: fix.deps.rigsBook,
       pulsesBook: fix.deps.pulsesBook,
-      resolveMaxAttempts: () => 2,
     };
     await handleWritChange(restartedDeps, event);
 

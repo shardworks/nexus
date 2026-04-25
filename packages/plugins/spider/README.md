@@ -74,7 +74,7 @@ Spider contributes a `spider.follows` link kind and consults outbound `spider.fo
 - If the full transitive `spider.follows` walk from the writ visits a cycle — every cycle member is cascaded to `stuck` with `stuckCause: 'cycle'` and the cycle members as blockers. The resolution text is `Cycle detected in spider.follows graph`. The scan then continues with the next candidate.
 - Only when every direct outbound target is in a terminal-success state (`completed`, or `cancelled`) does the writ proceed to rig spawn.
 
-Before `trySpawn`, each crawl tick runs an `autoUnstick` pass that re-evaluates every writ whose `status.spider.stuckCause` is one of the dependency-recovery causes (`failed-blocker` or `cycle`). When the recorded cause resolves (all `failed-blocker` ids are now `completed`/`cancelled`, or any `cycle` member has moved out of `open`/`stuck`), the writ is returned to `open` and emits a `'writ-unstuck'` result. Writs stuck with other causes — including `engine-failure` writs (see below) and operator-stuck writs with no `status.spider` slot — are left alone; their recovery is owned by a separate retry clockwork, not by `autoUnstick`.
+Before `trySpawn`, each crawl tick runs an `autoUnstick` pass that re-evaluates every writ whose `status.spider.stuckCause` is one of the dependency-recovery causes (`failed-blocker` or `cycle`). When the recorded cause resolves (all `failed-blocker` ids are now `completed`/`cancelled`, or any `cycle` member has moved out of `open`/`stuck`), the writ is returned to `open` and emits a `'writ-unstuck'` result. Writs stuck without a `status.spider` slot (operator-flagged stucks) are left alone — their recovery is owned by the operator, not by `autoUnstick`.
 
 ### Engine-level retry (in-place within the rig)
 
@@ -110,7 +110,7 @@ When an engine exhausts its retry budget (or observes a definitional failure), t
 3. Cascade-cancels every non-terminal engine (both plain pending and pending-with-hold) in one pass.
 4. The `patchRigWithRollup` wrapper projects `rig.status='failed'` as the natural derivation.
 
-The existing rigs→writs CDC handler translates `rig.status='failed'` directly to `writ.phase='failed'` — no intermediate stuck state. Consequently the writ's `status.spider.stuckCause='engine-failure'` slot (and its companion `retryable` / `detail` fields) is **no longer written on the engine-failure path**. It remains on the interface for read-compatibility with legacy writs; the sibling retry clockwork (`clockworks-retry`) reads that flag but its trigger condition simply no longer fires, since writs now skip stuck and go to failed.
+The existing rigs→writs CDC handler translates `rig.status='failed'` directly to `writ.phase='failed'` — no intermediate stuck state. The writ's `status.spider` slot is **not written on the engine-failure path**: that slot is reserved for dependency-recovery causes (`failed-blocker`, `cycle`). Engine-level retry has fully absorbed the retry budget that legacy versions of Spider exposed via stuck-with-`retryable=true`.
 
 ### `show(id): Promise<RigDoc>`
 
