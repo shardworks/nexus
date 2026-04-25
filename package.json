@@ -15,7 +15,8 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "nsg": "node --disable-warning=ExperimentalWarning --experimental-transform-types packages/framework/cli/src/cli.ts"
+    "nsg": "node --disable-warning=ExperimentalWarning --experimental-transform-types packages/framework/cli/src/cli.ts",
+    "coupling-audit": "node --disable-warning=ExperimentalWarning --experimental-transform-types scripts/cross-package-coupling.ts"
   },
   "devDependencies": {
     "@tsconfig/node24": "24.0.4",
