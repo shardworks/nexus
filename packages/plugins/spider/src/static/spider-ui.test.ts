@@ -257,7 +257,13 @@ describe('spider.css cancelled badge styling', () => {
   });
 });
 
-describe('index.html status filter includes cancelled', () => {
+describe('index.html status filter post-reshape options', () => {
+  // After the engine/rig status reshape (commission moeqpd6g), the rig
+  // status enum is `running | completed | failed | cancelled`. The legacy
+  // `'stuck'` and `'blocked'` <option> tags were removed from the
+  // dropdown — operators inspecting persisted legacy rigs go through the
+  // CLI escape hatch (`nsg rig-list --status=stuck`) instead.
+
   it('status filter has cancelled option', () => {
     assert.match(
       indexHtml,
@@ -266,10 +272,37 @@ describe('index.html status filter includes cancelled', () => {
     );
   });
 
-  it('cancelled option appears after blocked', () => {
-    const blockedIdx = indexHtml.indexOf('<option value="blocked">');
-    const cancelledIdx = indexHtml.indexOf('<option value="cancelled">');
-    assert.ok(cancelledIdx > blockedIdx, 'cancelled option should appear after blocked');
+  it('status filter does NOT include the legacy stuck option', () => {
+    assert.doesNotMatch(
+      indexHtml,
+      /<option value="stuck">/,
+      'status filter must not surface the legacy stuck rig status',
+    );
+  });
+
+  it('status filter does NOT include the legacy blocked option', () => {
+    assert.doesNotMatch(
+      indexHtml,
+      /<option value="blocked">/,
+      'status filter must not surface the legacy blocked rig status',
+    );
+  });
+
+  it('status filter enumerates exactly the four current rig values plus all', () => {
+    const expected = ['', 'running', 'completed', 'failed', 'cancelled'];
+    const optionRe = /<option value="([^"]*)">/g;
+    const sliceMatch = indexHtml.match(
+      /<select id="status-filter">([\s\S]*?)<\/select>/,
+    );
+    assert.ok(sliceMatch, 'should find the status-filter <select> block');
+    const observed: string[] = [];
+    let m;
+    while ((m = optionRe.exec(sliceMatch[1])) !== null) observed.push(m[1]);
+    assert.deepStrictEqual(
+      observed,
+      expected,
+      'status filter should expose only the post-reshape values',
+    );
   });
 });
 
@@ -300,16 +333,57 @@ describe('spider.js rig list polling', () => {
     );
   });
 
-  it('defines isRigInFlight helper checking running and blocked', () => {
+  it('defines isRigInFlight helper checking only running (no legacy blocked)', () => {
+    // Post-reshape: 'running' is the only non-terminal rig status. The
+    // legacy `'blocked'` value is no longer honored as in-flight — it
+    // was a hold expressed at the rig level, which the engine-retry
+    // commission moved off the rig and onto pending engines via
+    // holdReason / holdUntil / attemptCount.
     assert.match(
       spiderJs,
       /function isRigInFlight\(rig\)/,
       'should define isRigInFlight helper',
     );
+    const inFlightBlock = spiderJs.match(
+      /function isRigInFlight\(rig\)\s*\{[\s\S]*?\n  \}/,
+    );
+    assert.ok(inFlightBlock, 'should find isRigInFlight body');
     assert.match(
-      spiderJs,
-      /rig\.status === 'running' \|\| rig\.status === 'blocked'/,
-      'isRigInFlight should check running or blocked',
+      inFlightBlock[0],
+      /rig\.status === 'running'/,
+      'isRigInFlight should test for running',
+    );
+    assert.doesNotMatch(
+      inFlightBlock[0],
+      /'blocked'/,
+      'isRigInFlight must not honor the legacy blocked rig status',
+    );
+    assert.doesNotMatch(
+      inFlightBlock[0],
+      /'stuck'/,
+      'isRigInFlight must not honor the legacy stuck rig status',
+    );
+  });
+
+  it('isRigTerminal preserves the deliberate single-value stuck tolerance (D3)', () => {
+    // D3 / asymmetric tolerance: dropping `'stuck'` from isRigTerminal
+    // would leave a legacy `'stuck'` rig polling indefinitely (neither
+    // in-flight per isRigInFlight, nor terminal). The asymmetry between
+    // these two helpers is deliberate; pin it so a future cleanup pass
+    // does not silently align them.
+    const terminalBlock = spiderJs.match(
+      /function isRigTerminal\(rig\)\s*\{[\s\S]*?\n  \}/,
+    );
+    assert.ok(terminalBlock, 'should find isRigTerminal body');
+    assert.match(
+      terminalBlock[0],
+      /'stuck'/,
+      'isRigTerminal must keep its single-value stuck tolerance for legacy rigs',
+    );
+    assert.doesNotMatch(
+      terminalBlock[0],
+      /'blocked'/,
+      'isRigTerminal must not carry the legacy blocked rig status',
     );
   });
 
@@ -476,6 +550,9 @@ describe('spider.js engine-detail stable-skeleton + updater', () => {
     // Per T6/D14 the three old cost rows (ed-cost-input / ed-cost-output /
     // ed-cost-usd) were collapsed into a single `ed-cost` row driven by
     // the enriched rig view — so we only assert the single new id.
+    // Per the post-reshape refresh (commission moeqpd6g) the legacy
+    // `ed-block-*` ids were renamed to `ed-hold-*` and the dead Block
+    // Message row was removed.
     const expectedIds = [
       'ed-status',
       'ed-design-id',
@@ -485,7 +562,7 @@ describe('spider.js engine-detail stable-skeleton + updater', () => {
       'ed-elapsed',
       'ed-error',
       'ed-session-id',
-      'ed-block-type',
+      'ed-hold-reason',
       'ed-cost',
       'ed-givens-code',
       'ed-yields-code',
@@ -496,6 +573,63 @@ describe('spider.js engine-detail stable-skeleton + updater', () => {
         spiderJs,
         new RegExp(`id="${id}"`),
         `skeleton should define a stable id container for ${id}`,
+      );
+    }
+  });
+
+  it('skeleton renames legacy ed-block-* ids to ed-hold-* and drops Block Message', () => {
+    // Post-reshape (commission moeqpd6g): the engine-detail panel uses
+    // hold terminology to match the engine.holdReason / holdUntil /
+    // lastCheckedAt / holdCondition record fields. The dead Block
+    // Message row (no caller, no consumer) was dropped entirely (D11).
+    const newIds = [
+      'ed-hold-reason',
+      'ed-hold-until',
+      'ed-hold-last-checked',
+      'ed-hold-condition',
+      'ed-hold-condition-pre',
+    ];
+    for (const id of newIds) {
+      assert.match(
+        spiderJs,
+        new RegExp(`id="${id}"`),
+        `skeleton should declare new hold-* id ${id}`,
+      );
+    }
+    const removedIds = [
+      'ed-block-type',
+      'ed-block-blocked-at',
+      'ed-block-message',
+      'ed-block-last-checked',
+      'ed-block-condition',
+      'ed-block-condition-pre',
+    ];
+    for (const id of removedIds) {
+      assert.doesNotMatch(
+        spiderJs,
+        new RegExp(`id="${id}"`),
+        `legacy block-* id ${id} must not exist anywhere in spider.js`,
+      );
+    }
+    // Dead Block Message row labels and the dt are gone.
+    for (const label of [
+      'Block Type',
+      'Blocked At',
+      'Block Message',
+      'Block Condition',
+    ]) {
+      assert.doesNotMatch(
+        spiderJs,
+        new RegExp(`>${label}<`),
+        `legacy label "${label}" must not appear in spider.js skeleton`,
+      );
+    }
+    // New labels are present.
+    for (const label of ['Hold Reason', 'Held Until', 'Last Checked', 'Hold Condition']) {
+      assert.match(
+        spiderJs,
+        new RegExp(`>${label}<`),
+        `new hold label "${label}" should appear in spider.js skeleton`,
       );
     }
   });
@@ -934,6 +1068,60 @@ describe('spider.js pipeline keyed update', () => {
       spiderJs,
       /pipeline-node-status/,
       'pipeline-node-status class hook should mark the badge for updates',
+    );
+  });
+
+  it('createPipelineNode appends a hold sub-badge element below the status badge', () => {
+    // Post-reshape (commission moeqpd6g, D6): the pipeline-node carries a
+    // conditional secondary badge that surfaces holdReason / attemptCount
+    // on pending engines, so operators see retry state at-a-glance
+    // without clicking through to the engine-detail panel. Mirrors the
+    // .pipeline-node-upstream conditional-display lifecycle: always
+    // present, display-toggled via inline style. Reuses an existing
+    // oculus badge variant (badge--info or badge--warning) — no new CSS.
+    const block = spiderJs.match(
+      /function createPipelineNode\([\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find createPipelineNode');
+    assert.match(
+      block[0],
+      /pipeline-node-hold/,
+      'createPipelineNode should attach a pipeline-node-hold class hook',
+    );
+    assert.match(
+      block[0],
+      /badge--info|badge--warning/,
+      'hold sub-badge should reuse an existing oculus badge variant',
+    );
+    assert.match(
+      block[0],
+      /holdEl\.style\.display\s*=\s*['"]none['"]/,
+      'hold sub-badge should start hidden — display toggled by updatePipelineNode',
+    );
+  });
+
+  it('updatePipelineNode shows the hold sub-badge on pending engines with hold metadata', () => {
+    // D10: the gate is OR — render whenever the engine is pending and
+    // either holdReason or attemptCount is set. External-gate holds (e.g.
+    // animator-paused) are operationally as significant as retry holds.
+    const block = spiderJs.match(
+      /function updatePipelineNode\(node, engine\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find updatePipelineNode');
+    assert.match(
+      block[0],
+      /pipeline-node-hold/,
+      'updatePipelineNode should target the .pipeline-node-hold element',
+    );
+    assert.match(
+      block[0],
+      /engine\.status === 'pending'\s*&&\s*\(engine\.holdReason\s*\|\|\s*engine\.attemptCount\)/,
+      'hold sub-badge gate must combine pending + (holdReason OR attemptCount)',
+    );
+    assert.match(
+      block[0],
+      /\(attempt '\s*\+\s*engine\.attemptCount\s*\+\s*'\)/,
+      'hold sub-badge label should suffix `(attempt N)` when attemptCount is set',
     );
   });
 });
@@ -1585,6 +1773,123 @@ describe('Animator pause banner', () => {
       spiderJs,
       /untilMs\s*<=\s*Date\.now\(\)/,
       'banner should hide once pausedUntil has elapsed',
+    );
+  });
+});
+
+// ── Engine-detail attempt-history collapsible (D7 / D8) ────────────────
+
+describe('spider.js engine-detail attempt-history details', () => {
+  // Post-reshape (commission moeqpd6g, D7): the engine-detail panel
+  // renders the full attempts[] array in a collapsible <details> element
+  // — one stacked record block (a <dl>) per attempt — so operators can
+  // see retry history without scrolling through transcript output.
+  // D8 hides the <details> entirely when attempts.length <= 1, since
+  // the tail-attempt scalars at the top of the panel already cover the
+  // single-attempt case.
+
+  it('skeleton declares a stable id container for the attempts <details>', () => {
+    assert.match(
+      spiderJs,
+      /id="ed-attempts-details"/,
+      'skeleton should define the ed-attempts-details container',
+    );
+    assert.match(
+      spiderJs,
+      /id="ed-attempts-summary"/,
+      'skeleton should define a stable summary id for the attempts count',
+    );
+    assert.match(
+      spiderJs,
+      /id="ed-attempts-body"/,
+      'skeleton should define a stable body id for the attempts list',
+    );
+  });
+
+  it('skeleton declares the attempts details with the collapsible class', () => {
+    // D7: reuse the existing `<details class="collapsible">` affordance.
+    assert.match(
+      spiderJs,
+      /class="collapsible" id="ed-attempts-details"/,
+      'attempts details must reuse the existing collapsible affordance',
+    );
+  });
+
+  it('attempts details starts hidden (empty / single-attempt is the common case)', () => {
+    // D8: hidden until attempts.length > 1.
+    assert.match(
+      spiderJs,
+      /id="ed-attempts-details"[^>]*style="display:none"/,
+      'attempts details should start hidden in the skeleton',
+    );
+  });
+
+  it('updateEngineDetail hides the details when attempts.length <= 1 (D8)', () => {
+    const block = spiderJs.match(
+      /function updateEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find updateEngineDetail');
+    assert.match(
+      block[0],
+      /attemptsList\.length\s*>\s*1/,
+      'attempts details should only show when more than one attempt exists',
+    );
+    assert.match(
+      block[0],
+      /attemptsDetails\.style\.display\s*=\s*['"]none['"]/,
+      'attempts details should be hidden via inline style when not enough attempts',
+    );
+  });
+
+  it('updateEngineDetail rebuilds one record block per attempt with start/end/status/session', () => {
+    // D7: per-attempt record reuses the `<dl class="engine-detail-field">`
+    // shape already in use elsewhere in the panel; surfaces startedAt,
+    // endedAt, status, sessionId, and (when present) error / yields.
+    const block = spiderJs.match(
+      /function updateEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find updateEngineDetail');
+    assert.match(
+      block[0],
+      /engine\.attempts/,
+      'attempt-history block should iterate engine.attempts',
+    );
+    assert.match(
+      block[0],
+      /att\.startedAt/,
+      'each attempt record should surface startedAt',
+    );
+    assert.match(
+      block[0],
+      /att\.endedAt/,
+      'each attempt record should surface endedAt',
+    );
+    assert.match(
+      block[0],
+      /att\.sessionId/,
+      'each attempt record should surface sessionId',
+    );
+    assert.match(
+      block[0],
+      /att\.status/,
+      'each attempt record should surface status',
+    );
+    assert.match(
+      block[0],
+      /att\.error/,
+      'each attempt record should surface error when present',
+    );
+  });
+
+  it('attempts summary text reads "Attempts (N)" (D7)', () => {
+    const block = spiderJs.match(
+      /function updateEngineDetail\(engine\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find updateEngineDetail');
+    assert.match(
+      block[0],
+      /['"]Attempts \(['"]\s*\+\s*attemptsList\.length/,
+      'attempts summary should compose "Attempts (N)" using the actual count',
     );
   });
 });

@@ -63,12 +63,6 @@
       case 'completed': return 'badge--success';
       case 'running':   return 'badge--active';
       case 'failed':    return 'badge--error';
-      // Legacy tolerance — rigs persisted with 'stuck'/'blocked' predate
-      // the engine-level retry reshape. Render them as warnings so
-      // operators can still see them, but new writes never use these
-      // values on the rig or engine.
-      case 'stuck':     return 'badge--warning';
-      case 'blocked':   return 'badge--warning';
       case 'cancelled': return 'badge--cancelled';
       case 'pending':
       case 'skipped':
@@ -335,6 +329,15 @@
     rigElapsedTimerStartedAt = null;
   }
 
+  // Deliberate single-value legacy tolerance (D3): the post-reshape rig
+  // status enum is `running | completed | failed | cancelled`, but rigs
+  // persisted with the legacy stuck value still exist in stores.
+  // Treating stuck as terminal here is the asymmetric counterpart of
+  // dropping blocked from isRigInFlight — without it, a legacy stuck rig
+  // would be neither in-flight nor terminal and the current-rig poll
+  // plus elapsed ticker would spin indefinitely. The legacy blocked
+  // value is dropped from this branch because no extant data carries
+  // it, and the dashboard dropdown / badge palette no longer surface it.
   function isRigTerminal(rig) {
     return rig && (rig.status === 'completed' || rig.status === 'failed' || rig.status === 'cancelled' || rig.status === 'stuck');
   }
@@ -383,9 +386,10 @@
   // ── Rig polling helpers ────────────────────────────────────────────────
 
   function isRigInFlight(rig) {
-    // New model: 'running' is the only non-terminal rig status. Legacy
-    // tolerance: rigs persisted with 'blocked' still render as in-flight.
-    return rig.status === 'running' || rig.status === 'blocked';
+    // Post-reshape model: running is the only non-terminal rig status.
+    // The legacy blocked value is intentionally NOT honored here — see
+    // D3 for the asymmetric tolerance kept on isRigTerminal.
+    return rig.status === 'running';
   }
 
   function stopRigListPoll() {
@@ -995,6 +999,16 @@
     upEl.style.display = 'none';
     node.appendChild(upEl);
 
+    // Hold / retry sub-badge — rendered below the status badge for pending
+    // engines that carry hold metadata (D6 / D10). Conditional presence
+    // mirrors the .pipeline-node-upstream lifecycle: the element is always
+    // present in the DOM but display-toggled via inline style. Reuses the
+    // existing oculus badge palette (badge--info) — no new CSS class.
+    var holdEl = document.createElement('span');
+    holdEl.className = 'badge badge--info pipeline-node-hold';
+    holdEl.style.display = 'none';
+    node.appendChild(holdEl);
+
     // Stash an engine-ref box on the node so the click handler reads the
     // *latest* engine object after subsequent updates, not a stale closure.
     node.__engineRef = { engine: engine };
@@ -1026,6 +1040,25 @@
         if (upEl.style.display === 'none') upEl.style.display = '';
       } else if (upEl.style.display !== 'none') {
         upEl.style.display = 'none';
+      }
+    }
+
+    // Hold / retry sub-badge \u2014 visible whenever the engine is pending and
+    // carries either holdReason OR attemptCount (D10). Composite label:
+    // hold reason as the primary text, with `(attempt N)` suffix when
+    // attemptCount > 0.
+    var holdEl = node.querySelector('.pipeline-node-hold');
+    if (holdEl) {
+      var showHold = engine.status === 'pending' && (engine.holdReason || engine.attemptCount);
+      if (showHold) {
+        var label = engine.holdReason || '(timer)';
+        if (engine.attemptCount) {
+          label += ' (attempt ' + engine.attemptCount + ')';
+        }
+        if (holdEl.textContent !== label) holdEl.textContent = label;
+        if (holdEl.style.display === 'none') holdEl.style.display = '';
+      } else if (holdEl.style.display !== 'none') {
+        holdEl.style.display = 'none';
       }
     }
 
@@ -1069,7 +1102,7 @@
    *
    * Each value-bearing field has a stable id (#ed-*); the corresponding
    * <dt> labels also have ids so we can hide entire rows when the field is
-   * absent (e.g. block-* rows for non-blocked engines).
+   * absent (e.g. hold-* rows for non-held engines).
    *
    * The cancel button sits inside #ed-cancel-container (toggled via
    * style.display) so we never regenerate it across updates while the
@@ -1094,17 +1127,15 @@
     html += '<dd id="ed-error" style="display:none;color:var(--red,#f55)"></dd>';
     html += '<dt id="ed-session-id-dt" style="display:none">Session ID</dt>';
     html += '<dd id="ed-session-id" style="display:none"></dd>';
-    html += '<dt id="ed-block-type-dt" style="display:none">Block Type</dt>';
-    html += '<dd id="ed-block-type" style="display:none"></dd>';
-    html += '<dt id="ed-block-blocked-at-dt" style="display:none">Blocked At</dt>';
-    html += '<dd id="ed-block-blocked-at" style="display:none"></dd>';
-    html += '<dt id="ed-block-message-dt" style="display:none">Block Message</dt>';
-    html += '<dd id="ed-block-message" style="display:none"></dd>';
-    html += '<dt id="ed-block-last-checked-dt" style="display:none">Last Checked</dt>';
-    html += '<dd id="ed-block-last-checked" style="display:none"></dd>';
-    html += '<dt id="ed-block-condition-dt" style="display:none">Block Condition</dt>';
-    html += '<dd id="ed-block-condition" style="display:none">';
-    html += '<pre id="ed-block-condition-pre" style="margin:0;font-size:11px"></pre></dd>';
+    html += '<dt id="ed-hold-reason-dt" style="display:none">Hold Reason</dt>';
+    html += '<dd id="ed-hold-reason" style="display:none"></dd>';
+    html += '<dt id="ed-hold-until-dt" style="display:none">Held Until</dt>';
+    html += '<dd id="ed-hold-until" style="display:none"></dd>';
+    html += '<dt id="ed-hold-last-checked-dt" style="display:none">Last Checked</dt>';
+    html += '<dd id="ed-hold-last-checked" style="display:none"></dd>';
+    html += '<dt id="ed-hold-condition-dt" style="display:none">Hold Condition</dt>';
+    html += '<dd id="ed-hold-condition" style="display:none">';
+    html += '<pre id="ed-hold-condition-pre" style="margin:0;font-size:11px"></pre></dd>';
     // Cost row — single combined format (`$x.yy (N input, M output)`).
     // Shown only for engines whose rig-show payload reports a per-engine
     // cost entry (anima engines — i.e. engines with a sessionId). Hidden
@@ -1115,6 +1146,16 @@
 
     // Stable <details> nodes — open/closed state and <pre> scroll inside
     // these are preserved across polls because we never replace the nodes.
+
+    // Attempt-history details block (D7). Hidden when attempts.length <= 1
+    // (D8) — the tail-attempt scalars above already cover the
+    // single-attempt case; an empty/duplicate collapsible is busy-work for
+    // the operator's eye. Body is rebuilt via setHtml on the inner
+    // container only; the <details> open/closed state itself survives.
+    html += '<details class="collapsible" id="ed-attempts-details" style="display:none">';
+    html += '<summary id="ed-attempts-summary">Attempts</summary>';
+    html += '<div id="ed-attempts-body"></div></details>';
+
     html += '<details class="collapsible" id="ed-givens-details">';
     html += '<summary>Givens Spec</summary>';
     html += '<pre><code id="ed-givens-code"></code></pre></details>';
@@ -1269,47 +1310,45 @@
     }
 
     // Hold / retry info — shown on pending engines that carry hold
-    // metadata. Reuses the existing block-* row ids (re-labelled for
-    // hold) so DOM wiring keeps working.
+    // metadata. Reads engine.holdReason / engine.holdUntil /
+    // engine.lastCheckedAt / engine.holdCondition off the post-reshape
+    // engine record.
     var hasHold = engine.status === 'pending' && (engine.holdReason || engine.holdUntil || engine.attemptCount);
     if (hasHold) {
       var holdLabel = engine.holdReason || '(timer)';
       if (engine.attemptCount) {
         holdLabel += ' (attempt ' + engine.attemptCount + ')';
       }
-      setText('ed-block-type', holdLabel);
-      setRowDisplay('ed-block-type-dt', 'ed-block-type', true);
+      setText('ed-hold-reason', holdLabel);
+      setRowDisplay('ed-hold-reason-dt', 'ed-hold-reason', true);
 
       if (engine.holdUntil) {
-        setText('ed-block-blocked-at', formatDate(engine.holdUntil) || '');
-        setRowDisplay('ed-block-blocked-at-dt', 'ed-block-blocked-at', true);
+        setText('ed-hold-until', formatDate(engine.holdUntil) || '');
+        setRowDisplay('ed-hold-until-dt', 'ed-hold-until', true);
       } else {
-        setRowDisplay('ed-block-blocked-at-dt', 'ed-block-blocked-at', false);
+        setRowDisplay('ed-hold-until-dt', 'ed-hold-until', false);
       }
 
-      setRowDisplay('ed-block-message-dt', 'ed-block-message', false);
-
       if (engine.lastCheckedAt) {
-        setText('ed-block-last-checked', formatDate(engine.lastCheckedAt));
-        setRowDisplay('ed-block-last-checked-dt', 'ed-block-last-checked', true);
+        setText('ed-hold-last-checked', formatDate(engine.lastCheckedAt));
+        setRowDisplay('ed-hold-last-checked-dt', 'ed-hold-last-checked', true);
       } else {
-        setRowDisplay('ed-block-last-checked-dt', 'ed-block-last-checked', false);
+        setRowDisplay('ed-hold-last-checked-dt', 'ed-hold-last-checked', false);
       }
 
       if (engine.holdCondition !== undefined) {
         var condText = JSON.stringify(engine.holdCondition, null, 2);
-        var condPre = document.getElementById('ed-block-condition-pre');
+        var condPre = document.getElementById('ed-hold-condition-pre');
         if (condPre && condPre.textContent !== condText) condPre.textContent = condText;
-        setRowDisplay('ed-block-condition-dt', 'ed-block-condition', true);
+        setRowDisplay('ed-hold-condition-dt', 'ed-hold-condition', true);
       } else {
-        setRowDisplay('ed-block-condition-dt', 'ed-block-condition', false);
+        setRowDisplay('ed-hold-condition-dt', 'ed-hold-condition', false);
       }
     } else {
-      setRowDisplay('ed-block-type-dt', 'ed-block-type', false);
-      setRowDisplay('ed-block-blocked-at-dt', 'ed-block-blocked-at', false);
-      setRowDisplay('ed-block-message-dt', 'ed-block-message', false);
-      setRowDisplay('ed-block-last-checked-dt', 'ed-block-last-checked', false);
-      setRowDisplay('ed-block-condition-dt', 'ed-block-condition', false);
+      setRowDisplay('ed-hold-reason-dt', 'ed-hold-reason', false);
+      setRowDisplay('ed-hold-until-dt', 'ed-hold-until', false);
+      setRowDisplay('ed-hold-last-checked-dt', 'ed-hold-last-checked', false);
+      setRowDisplay('ed-hold-condition-dt', 'ed-hold-condition', false);
     }
 
     // Givens spec (always present)
@@ -1343,6 +1382,55 @@
     } else {
       setText('ed-cost', '');
       setRowDisplay('ed-cost-dt', 'ed-cost', false);
+    }
+
+    // Attempt history (D7 / D8) — render one stacked record block per
+    // entry in engine.attempts when there is more than one attempt. The
+    // tail-attempt scalars at the top of the panel already cover the
+    // single-attempt case, so we hide the <details> entirely when
+    // attempts.length <= 1. Rebuilding the body's innerHTML each call is
+    // safe because the <details> open/closed state lives on the outer
+    // <details> element, which we never replace.
+    var attemptsList = engine.attempts || [];
+    var attemptsDetails = document.getElementById('ed-attempts-details');
+    var attemptsSummary = document.getElementById('ed-attempts-summary');
+    var attemptsBody = document.getElementById('ed-attempts-body');
+    if (attemptsDetails && attemptsBody) {
+      if (attemptsList.length > 1) {
+        if (attemptsSummary) {
+          var summaryText = 'Attempts (' + attemptsList.length + ')';
+          if (attemptsSummary.textContent !== summaryText) attemptsSummary.textContent = summaryText;
+        }
+        var attemptsHtml = '';
+        for (var ai = 0; ai < attemptsList.length; ai++) {
+          var att = attemptsList[ai] || {};
+          var yieldsCount = '';
+          if (att.yields && typeof att.yields === 'object') {
+            yieldsCount = String(Object.keys(att.yields).length);
+          } else if (Array.isArray(att.yields)) {
+            yieldsCount = String(att.yields.length);
+          }
+          attemptsHtml += '<dl class="engine-detail-field engine-detail-attempt">';
+          attemptsHtml += '<dt>Attempt</dt><dd>' + esc(String(ai + 1)) + ' of ' + esc(String(attemptsList.length)) + '</dd>';
+          attemptsHtml += '<dt>Started</dt><dd>' + esc(formatDate(att.startedAt) || '—') + '</dd>';
+          attemptsHtml += '<dt>Ended</dt><dd>' + esc(formatDate(att.endedAt) || '—') + '</dd>';
+          attemptsHtml += '<dt>Status</dt><dd>' + (att.status ? badgeHtml(att.status) : '—') + '</dd>';
+          attemptsHtml += '<dt>Session</dt><dd>' + esc(att.sessionId || '—') + '</dd>';
+          if (att.error) {
+            attemptsHtml += '<dt>Error</dt><dd style="color:var(--red,#f55)">' + esc(String(att.error)) + '</dd>';
+          }
+          if (yieldsCount !== '') {
+            attemptsHtml += '<dt>Yields</dt><dd>' + esc(yieldsCount) + '</dd>';
+          }
+          attemptsHtml += '</dl>';
+        }
+        if (attemptsBody.innerHTML !== attemptsHtml) {
+          attemptsBody.innerHTML = attemptsHtml;
+        }
+        if (attemptsDetails.style.display === 'none') attemptsDetails.style.display = '';
+      } else if (attemptsDetails.style.display !== 'none') {
+        attemptsDetails.style.display = 'none';
+      }
     }
 
     // Transcript polling target — read from the latest attempt's sessionId.
