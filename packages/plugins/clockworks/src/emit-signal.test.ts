@@ -44,6 +44,7 @@ import type { StacksApi } from '@shardworks/stacks-apparatus';
 
 import { createClerk } from '@shardworks/clerk-apparatus';
 import type { ClerkApi } from '@shardworks/clerk-apparatus';
+import { makeWritTypeApparatus, mandateLikeWritType } from '@shardworks/clerk-apparatus/testing';
 
 import { createClockworks } from './clockworks.ts';
 import type { ClockworksApi, EventDoc } from './types.ts';
@@ -108,11 +109,19 @@ async function buildFixture(options: {
 
   const apparatusMap = new Map<string, unknown>();
 
+  // Build a tiny fake apparatus per requested writ type. Each apparatus
+  // calls clerk.registerWritType from its own start(), mirroring the
+  // production registration path. The legacy `clerk.writTypes` guild-
+  // config channel is gone — registration must flow through
+  // ClerkApi.registerWritType.
+  const writTypeApparatuses = (options.writTypes ?? []).map((entry) =>
+    makeWritTypeApparatus([mandateLikeWritType(entry.name)], { id: `${entry.name}-plugin` }),
+  );
+
   const guildConfig: GuildConfig = {
     name: 'test-guild',
     nexus: '0.0.0',
     plugins: [],
-    clerk: options.writTypes ? { writTypes: options.writTypes } : undefined,
     clockworks: options.declaredEvents
       ? { events: options.declaredEvents }
       : undefined,
@@ -175,6 +184,16 @@ async function buildFixture(options: {
   await clerkApparatus.start(buildCtx(buildKitEntries([], [])));
   const clerk = clerkApparatus.provides as ClerkApi;
   apparatusMap.set('clerk', clerk);
+
+  // Run each fake writ-type apparatus's start() so it registers its writ
+  // type with the now-started Clerk. Mirrors the production ordering for
+  // plugins with `requires: ['clerk']`.
+  for (const app of writTypeApparatuses) {
+    const apparatus = app.apparatus as { start?: (ctx: StartupContext) => void | Promise<void> };
+    if (typeof apparatus.start === 'function') {
+      await apparatus.start(buildCtx());
+    }
+  }
 
   // Start clockworks.
   const clockworksApparatus = clockworksPlugin.apparatus;

@@ -3315,7 +3315,9 @@ describe('Spider tools — handler delegation', () => {
       const rigs = await spider.list();
       const rigId = rigs[0].id;
 
-      const result = await rigShowTool.handler({ id: rigId }) as RigView;
+      // Tool defaults to text format; ask for JSON so the assertions can
+      // read structured fields off the response.
+      const result = await rigShowTool.handler({ id: rigId, format: 'json' }) as RigView;
       assert.equal(result.writId, writ.id);
       assert.equal(result.writTitle, 'A rig title regression guard');
     });
@@ -3333,7 +3335,7 @@ describe('Spider tools — handler delegation', () => {
         createdAt: new Date().toISOString(),
       });
 
-      const result = await rigShowTool.handler({ id: 'rig-orphan' }) as RigView;
+      const result = await rigShowTool.handler({ id: 'rig-orphan', format: 'json' }) as RigView;
       assert.equal(result.writId, 'w-does-not-exist');
       assert.equal(result.writTitle, undefined, 'writTitle must be absent when the writ is missing');
     });

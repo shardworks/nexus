@@ -336,7 +336,10 @@ function buildFixture(template: RigTemplate): Fixture {
 }
 
 async function postMandate(clerk: ClerkApi, title = 'integration writ'): Promise<WritDoc> {
-  return clerk.post({ title, body: 'body', type: 'mandate' });
+  // Mandate writs land in `new` from `post()`; spider's crawl picks up
+  // open writs, so we publish the writ to `open` here.
+  const writ = await clerk.post({ title, body: 'body', type: 'mandate' });
+  return clerk.transition(writ.id, 'open');
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────

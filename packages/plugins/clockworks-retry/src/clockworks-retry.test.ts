@@ -212,7 +212,12 @@ async function stuckWith(
 }
 
 async function postOpenWrit(fix: Fixture): Promise<WritDoc> {
-  return fix.clerk.post({ title: 'test', body: 'test body' });
+  // post() leaves a mandate writ in `new`; mandate's legal transitions
+  // out of `new` are `open` and `cancelled` (no direct `new → stuck`),
+  // so we publish the writ to `open` here. Test cases that need `stuck`
+  // call into stuckWith() against this open writ.
+  const writ = await fix.clerk.post({ title: 'test', body: 'test body' });
+  return fix.clerk.transition(writ.id, 'open');
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
