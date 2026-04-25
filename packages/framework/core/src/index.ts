@@ -28,6 +28,7 @@ export {
 // Guild — the process-level singleton for accessing guild infrastructure.
 export {
   type Guild,
+  type StartedGuild,
   guild,
   setGuild,
   clearGuild,

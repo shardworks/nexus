@@ -371,3 +371,81 @@ export async function fireEvent(
     await h(...args);
   }
 }
+
+// ── Shutdown ─────────────────────────────────────────────────────────
+
+/**
+ * Per-apparatus failure produced by `shutdownStartedApparatuses` when one
+ * or more `stop()` invocations throw. Each entry pairs the apparatus
+ * plugin id with the underlying error so the aggregate caller can
+ * surface every failed teardown.
+ */
+export interface ShutdownFailure {
+  readonly id: string
+  readonly error: Error
+}
+
+/**
+ * Walk the started-apparatus list in reverse topological order, fire
+ * the `guild:shutdown` event before any `stop()` runs, then call each
+ * apparatus's optional `stop()` collecting per-apparatus errors instead
+ * of aborting on the first throw.
+ *
+ * Pure orchestration — receives the started list and event handler map
+ * by reference and does not touch any singleton. The caller (Arbor's
+ * `StartedGuild.shutdown()`) wraps this in idempotency-guard +
+ * `clearGuild()` housekeeping.
+ *
+ * Returns the list of per-apparatus failures (empty when every `stop()`
+ * resolved cleanly). The caller is responsible for re-throwing an
+ * aggregate when the list is non-empty — keeping the helper a pure
+ * "collect failures" function mirrors the codebase's existing
+ * `validateRequires` shape.
+ *
+ * Apparatus that omit `stop()` are skipped silently.
+ *
+ * Iterates `startedApparatuses` only — apparatus whose `start()` never
+ * resolved are not present in the list (Arbor pushes after start
+ * completes), so the symmetric "stop only what started" invariant is
+ * preserved without an extra check here.
+ */
+export async function shutdownStartedApparatuses(
+  startedApparatuses: readonly LoadedApparatus[],
+  eventHandlers:      EventHandlerMap,
+): Promise<ShutdownFailure[]> {
+  // Fire `guild:shutdown` before any `stop()` runs so subscribers see
+  // a consistent snapshot of running apparatus and have a chance to
+  // act before teardown begins.
+  await fireEvent(eventHandlers, 'guild:shutdown');
+
+  const failures: ShutdownFailure[] = [];
+
+  // Reverse iteration: dependents stop before dependencies. The
+  // started list is populated in dependency-resolved order during
+  // start, so walking it in reverse gives us reverse-topo order
+  // without re-running topoSort.
+  for (let i = startedApparatuses.length - 1; i >= 0; i--) {
+    const app  = startedApparatuses[i]!;
+    const stop = app.apparatus.stop;
+    if (typeof stop !== 'function') continue;
+
+    try {
+      await stop();
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      failures.push({ id: app.id, error });
+    }
+  }
+
+  return failures;
+}
+
+/**
+ * Build the aggregate-error message thrown after a shutdown pass that
+ * recorded one or more failures. Public so tests can assert message
+ * shape without re-implementing the formatter.
+ */
+export function formatShutdownFailures(failures: readonly ShutdownFailure[]): string {
+  const lines = failures.map((f) => `  - "${f.id}": ${f.error.message}`);
+  return `[arbor] ${failures.length} apparatus stop() call${failures.length === 1 ? '' : 's'} failed during shutdown:\n${lines.join('\n')}`;
+}

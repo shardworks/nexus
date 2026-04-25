@@ -659,6 +659,255 @@ describe('createGuild — resilience', () => {
   });
 });
 
+// ── createGuild — shutdown() lifecycle ───────────────────────────────
+
+describe('createGuild — shutdown()', () => {
+  it('returns a StartedGuild with a shutdown() method', async () => {
+    const tmp = makeTmpDir();
+    writeGuildJson(tmp, {});
+    writePackageJson(tmp, {});
+
+    const g = await createGuild(tmp);
+    assert.equal(typeof g.shutdown, 'function');
+  });
+
+  it('calls stop() on each started apparatus during shutdown', async () => {
+    const tmp = makeTmpDir();
+    const stopMarker = path.join(tmp, '.stopped');
+
+    // An apparatus whose stop() writes a side-effect marker file.
+    const pkgDir = path.join(tmp, 'node_modules', 'stoppable-apparatus');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'stoppable-apparatus', version: '1.0.0', type: 'module', exports: { '.': './index.js' } }),
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, 'index.js'),
+      `import fs from 'node:fs';
+export default {
+  apparatus: {
+    async start() {},
+    stop() {
+      fs.writeFileSync(${JSON.stringify(stopMarker)}, 'yes');
+    },
+  },
+};\n`,
+    );
+
+    writeGuildJson(tmp, { plugins: ['stoppable'] });
+    writePackageJson(tmp, { 'stoppable-apparatus': '^1.0.0' });
+
+    const g = await createGuild(tmp);
+    assert.ok(!fs.existsSync(stopMarker), 'stop() should not run before shutdown()');
+    await g.shutdown();
+    assert.ok(fs.existsSync(stopMarker), 'stop() should run during shutdown()');
+  });
+
+  it('calls stop() in reverse topological order (Stacks-style chain)', async () => {
+    const tmp = makeTmpDir();
+    const orderFile = path.join(tmp, '.stop-order');
+
+    // db started first, then web; on shutdown web must stop before db.
+    installFakeApparatus(tmp, 'db');
+    installFakeApparatus(tmp, 'web', { requires: ['db'] });
+
+    // Replace with stop-aware versions.
+    fs.writeFileSync(
+      path.join(tmp, 'node_modules', 'db', 'index.js'),
+      `import fs from 'node:fs';
+export default {
+  apparatus: {
+    async start() {},
+    stop() {
+      const prev = fs.existsSync(${JSON.stringify(orderFile)}) ? fs.readFileSync(${JSON.stringify(orderFile)}, 'utf-8') : '';
+      fs.writeFileSync(${JSON.stringify(orderFile)}, prev + 'db\\n');
+    },
+  },
+};\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmp, 'node_modules', 'web', 'index.js'),
+      `import fs from 'node:fs';
+export default {
+  apparatus: {
+    requires: ['db'],
+    async start() {},
+    stop() {
+      const prev = fs.existsSync(${JSON.stringify(orderFile)}) ? fs.readFileSync(${JSON.stringify(orderFile)}, 'utf-8') : '';
+      fs.writeFileSync(${JSON.stringify(orderFile)}, prev + 'web\\n');
+    },
+  },
+};\n`,
+    );
+
+    writeGuildJson(tmp, { plugins: ['db', 'web'] });
+    writePackageJson(tmp, { 'db': '^1.0.0', 'web': '^1.0.0' });
+
+    const g = await createGuild(tmp);
+    await g.shutdown();
+    const order = fs.readFileSync(orderFile, 'utf-8').trim().split('\n');
+    assert.deepEqual(order, ['web', 'db']);
+  });
+
+  it('clears the guild() singleton — subsequent guild() calls throw', async () => {
+    const tmp = makeTmpDir();
+    writeGuildJson(tmp, {});
+    writePackageJson(tmp, {});
+
+    const g = await createGuild(tmp);
+    assert.equal(guild(), g, 'guild() returns the started guild before shutdown');
+    await g.shutdown();
+    assert.throws(() => guild(), /Guild not initialized/);
+  });
+
+  it('is idempotent — second call is a no-op', async () => {
+    const tmp = makeTmpDir();
+    const stopMarker = path.join(tmp, '.stopped-count');
+
+    const pkgDir = path.join(tmp, 'node_modules', 'counted-apparatus');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'counted-apparatus', version: '1.0.0', type: 'module', exports: { '.': './index.js' } }),
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, 'index.js'),
+      `import fs from 'node:fs';
+export default {
+  apparatus: {
+    async start() {},
+    stop() {
+      const n = fs.existsSync(${JSON.stringify(stopMarker)}) ? Number(fs.readFileSync(${JSON.stringify(stopMarker)}, 'utf-8')) : 0;
+      fs.writeFileSync(${JSON.stringify(stopMarker)}, String(n + 1));
+    },
+  },
+};\n`,
+    );
+
+    writeGuildJson(tmp, { plugins: ['counted'] });
+    writePackageJson(tmp, { 'counted-apparatus': '^1.0.0' });
+
+    const g = await createGuild(tmp);
+    await g.shutdown();
+    await g.shutdown();
+    await g.shutdown();
+    assert.equal(fs.readFileSync(stopMarker, 'utf-8'), '1', 'stop() should run exactly once');
+  });
+
+  it('skips apparatus that have no stop()', async () => {
+    const tmp = makeTmpDir();
+    installFakeApparatus(tmp, '@shardworks/tools-apparatus');
+    writeGuildJson(tmp, { plugins: ['tools'] });
+    writePackageJson(tmp, { '@shardworks/tools-apparatus': '^2.0.0' });
+
+    const g = await createGuild(tmp);
+    // Should not throw — apparatus has no stop().
+    await g.shutdown();
+    assert.throws(() => guild(), /Guild not initialized/);
+  });
+
+  it('fires guild:shutdown before any stop() runs', async () => {
+    const tmp = makeTmpDir();
+    const orderFile = path.join(tmp, '.shutdown-order');
+
+    const pkgDir = path.join(tmp, 'node_modules', 'event-apparatus');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'event-apparatus', version: '1.0.0', type: 'module', exports: { '.': './index.js' } }),
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, 'index.js'),
+      `import fs from 'node:fs';
+export default {
+  apparatus: {
+    async start(ctx) {
+      ctx.on('guild:shutdown', () => {
+        const prev = fs.existsSync(${JSON.stringify(orderFile)}) ? fs.readFileSync(${JSON.stringify(orderFile)}, 'utf-8') : '';
+        fs.writeFileSync(${JSON.stringify(orderFile)}, prev + 'event\\n');
+      });
+    },
+    stop() {
+      const prev = fs.existsSync(${JSON.stringify(orderFile)}) ? fs.readFileSync(${JSON.stringify(orderFile)}, 'utf-8') : '';
+      fs.writeFileSync(${JSON.stringify(orderFile)}, prev + 'stop\\n');
+    },
+  },
+};\n`,
+    );
+
+    writeGuildJson(tmp, { plugins: ['event'] });
+    writePackageJson(tmp, { 'event-apparatus': '^1.0.0' });
+
+    const g = await createGuild(tmp);
+    await g.shutdown();
+    const order = fs.readFileSync(orderFile, 'utf-8').trim().split('\n');
+    assert.deepEqual(order, ['event', 'stop']);
+  });
+
+  it('continues iterating when one stop() throws and surfaces a single aggregate error', async () => {
+    const tmp = makeTmpDir();
+    const stopFile = path.join(tmp, '.stop-log');
+
+    const goodDir = path.join(tmp, 'node_modules', 'good-apparatus');
+    fs.mkdirSync(goodDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(goodDir, 'package.json'),
+      JSON.stringify({ name: 'good-apparatus', version: '1.0.0', type: 'module', exports: { '.': './index.js' } }),
+    );
+    fs.writeFileSync(
+      path.join(goodDir, 'index.js'),
+      `import fs from 'node:fs';
+export default {
+  apparatus: {
+    async start() {},
+    stop() {
+      const prev = fs.existsSync(${JSON.stringify(stopFile)}) ? fs.readFileSync(${JSON.stringify(stopFile)}, 'utf-8') : '';
+      fs.writeFileSync(${JSON.stringify(stopFile)}, prev + 'good\\n');
+    },
+  },
+};\n`,
+    );
+
+    const badDir = path.join(tmp, 'node_modules', 'bad-apparatus');
+    fs.mkdirSync(badDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(badDir, 'package.json'),
+      JSON.stringify({ name: 'bad-apparatus', version: '1.0.0', type: 'module', exports: { '.': './index.js' } }),
+    );
+    fs.writeFileSync(
+      path.join(badDir, 'index.js'),
+      `export default {
+  apparatus: {
+    async start() {},
+    stop() {
+      throw new Error('boom-during-stop');
+    },
+  },
+};\n`,
+    );
+
+    writeGuildJson(tmp, { plugins: ['good', 'bad'] });
+    writePackageJson(tmp, { 'good-apparatus': '^1.0.0', 'bad-apparatus': '^1.0.0' });
+
+    const g = await createGuild(tmp);
+    await assert.rejects(
+      () => g.shutdown(),
+      (err) => {
+        const m = err instanceof Error ? err.message : String(err);
+        return /boom-during-stop/.test(m) && /"bad"/.test(m);
+      },
+    );
+
+    // good's stop() must still have run despite bad's throw.
+    assert.ok(fs.existsSync(stopFile), 'good apparatus stop() should still run');
+    assert.match(fs.readFileSync(stopFile, 'utf-8'), /good/);
+
+    // The singleton must still be cleared even when stop() threw.
+    assert.throws(() => guild(), /Guild not initialized/);
+  });
+});
+
 // ── createGuild — snapshot isolation ─────────────────────────────────
 
 describe('createGuild — snapshot isolation', () => {

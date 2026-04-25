@@ -3,19 +3,25 @@
  *
  * `createGuild()` is the single entry point. It reads guild.json, loads all
  * declared plugins, validates dependencies, starts apparatus in order, wires
- * the guild() singleton, and returns the Guild object.
+ * the guild() singleton, and returns the StartedGuild object.
  *
  * The full plugin lifecycle:
  *   1. Load    — imports all declared plugin packages, discriminates kit vs apparatus
  *   2. Validate — checks `requires` declarations, detects circular dependencies
- *   3. Warn    — advisory warnings foyou r mismatched kit contributions / recommends
+ *   3. Warn    — advisory warnings for mismatched kit contributions / recommends
  *   4. Wire    — collects all kit contributions (kits + supportKits) into KitEntry[]
  *   5. Start   — calls start(ctx) on each apparatus in dependency-resolved order;
  *                ctx.kits(type) returns Wire-phase entries; fires `apparatus:started`
  *                after each apparatus; fires `phase:started` when all are done
  *
- * Pure logic (validation, ordering, events) lives in guild-lifecycle.ts.
- * This file handles I/O and orchestration.
+ * Symmetric teardown is exposed on the returned `StartedGuild`:
+ *   - shutdown() fires `guild:shutdown`, walks `startedApparatuses` in
+ *     reverse, calls each apparatus's optional `stop()` (collecting
+ *     errors so every apparatus gets a chance to release its handles),
+ *     then clears the guild() singleton. Idempotent.
+ *
+ * Pure logic (validation, ordering, events, teardown) lives in
+ * guild-lifecycle.ts. This file handles I/O and orchestration.
  */
 
 import { pathToFileURL } from "node:url";
@@ -26,12 +32,13 @@ import {
   isKit,
   isApparatus,
   setGuild,
+  clearGuild,
   resolveGuildPackageEntry,
   resolvePackageNameForPluginId,
   readGuildPackageJson,
 } from "@shardworks/nexus-core";
 import type {
-  Guild,
+  StartedGuild,
   LoadedKit,
   LoadedApparatus,
   FailedPlugin,
@@ -45,6 +52,8 @@ import {
   buildStartupContext,
   fireEvent,
   wireKitEntries,
+  shutdownStartedApparatuses,
+  formatShutdownFailures,
 } from "./guild-lifecycle.ts";
 import type { EventHandlerMap } from "./guild-lifecycle.ts";
 
@@ -54,14 +63,22 @@ import type { EventHandlerMap } from "./guild-lifecycle.ts";
  * Create and start a guild.
  *
  * Reads guild.json, loads all declared plugins, validates dependencies,
- * starts apparatus in dependency order, and returns the Guild object.
+ * starts apparatus in dependency order, and returns the StartedGuild object.
  * Also sets the guild() singleton so apparatus code can access it.
+ *
+ * The returned `StartedGuild` extends `Guild` with `shutdown()` — call
+ * it before exit to fire `guild:shutdown`, run each started
+ * apparatus's optional `stop()` in reverse topological order, and
+ * clear the singleton. Plugin code never sees this method (it queries
+ * the narrower `Guild` via `guild()`); only the bootstrap caller
+ * (CLI, daemon, or one-shot helper) carries the reference.
  *
  * @param root - Absolute path to the guild root. Defaults to auto-detection
  *               by walking up from cwd until guild.json is found.
- * @returns The initialized Guild — the same object guild() returns.
+ * @returns The initialized StartedGuild — `guild()` returns the same
+ *          object cast to `Guild` (without `shutdown()`).
  */
-export async function createGuild(root?: string): Promise<Guild> {
+export async function createGuild(root?: string): Promise<StartedGuild> {
   const guildRoot = root ?? findGuildRoot();
   const config = readGuildConfig(guildRoot);
 
@@ -156,7 +173,13 @@ export async function createGuild(root?: string): Promise<Guild> {
 
   const startupCtx = buildStartupContext(eventHandlers, kitEntries);
 
-  const guildInstance: Guild = {
+  // Idempotency guard for shutdown(). The flag lives in this closure so
+  // a second call short-circuits without iterating the started list
+  // again or re-firing `guild:shutdown`. Mirrors the
+  // Oculus.stopServer / Clockworks triggerShutdown shape.
+  let shuttingDown = false;
+
+  const guildInstance: StartedGuild = {
     home: guildRoot,
 
     apparatus<T>(name: string): T {
@@ -204,6 +227,35 @@ export async function createGuild(root?: string): Promise<Guild> {
     },
     startupWarnings() {
       return [...allWarnings];
+    },
+
+    async shutdown(): Promise<void> {
+      // D4: idempotent — second and subsequent calls are no-ops. The
+      // guard is checked first so a re-entrant caller (e.g. a SIGINT
+      // arriving while a SIGTERM-driven shutdown is in flight) does
+      // not double-fire `guild:shutdown` or double-invoke `stop()`.
+      if (shuttingDown) return;
+      shuttingDown = true;
+
+      const failures = await shutdownStartedApparatuses(
+        startedApparatuses,
+        eventHandlers,
+      );
+
+      // D6: clear the singleton as the last act regardless of whether
+      // any stop() threw. Subsequent guild() calls fail loudly with
+      // the existing "Guild not initialized" error rather than handing
+      // out stale references.
+      clearGuild();
+
+      // D3: re-throw a single aggregate error if any stop() threw,
+      // matching the codebase's "collect failures, then act" pattern.
+      if (failures.length > 0) {
+        const aggregate = new Error(formatShutdownFailures(failures));
+        // Attach the per-apparatus failures so callers can introspect.
+        (aggregate as Error & { failures: typeof failures }).failures = failures;
+        throw aggregate;
+      }
     },
   };
   setGuild(guildInstance);

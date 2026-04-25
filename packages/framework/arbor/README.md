@@ -29,21 +29,31 @@ Plugin authors import from `@shardworks/nexus-core`. The arbor is an internal co
 
 ### `createGuild(root?)`
 
-The single entry point. Creates and starts a guild, returning the `Guild` object.
+The single entry point. Creates and starts a guild, returning a `StartedGuild` — a `Guild` plus a `shutdown()` method.
 
 ```typescript
 import { createGuild } from '@shardworks/nexus-arbor';
 
 const guild = await createGuild('/path/to/guild');
+// ... do work ...
+await guild.shutdown();
 ```
 
 If `root` is omitted, auto-detects by walking up from cwd until `guild.json` is found.
 
-`createGuild()` also sets the `guild()` singleton from `@shardworks/nexus-core`, so apparatus code can call `guild()` immediately after startup.
+`createGuild()` also sets the `guild()` singleton from `@shardworks/nexus-core`, so apparatus code can call `guild()` immediately after startup. Plugin code only ever sees the narrower `Guild` interface — `shutdown()` is intentionally absent there because plugins should never tear down the guild they are running inside. The bootstrap caller (the CLI, a daemon entry point, a one-shot helper) carries the `StartedGuild` reference and is responsible for calling `shutdown()` before exit.
+
+### `StartedGuild`
+
+`StartedGuild extends Guild` and adds:
+
+| Method | Returns | Description |
+|---|---|---|
+| `shutdown()` | `Promise<void>` | Fire `guild:shutdown`, then call each started apparatus's optional `stop()` in reverse topological order (dependents before dependencies), then clear the `guild()` singleton. Idempotent — second and subsequent calls return immediately. Continues iterating even when one `stop()` throws; if any throw, an aggregate `Error` is thrown after every apparatus has been attempted, with per-apparatus failures attached as `.failures`. |
 
 ### `Guild`
 
-The object returned by `createGuild()` — also accessible via `guild()` from `@shardworks/nexus-core`.
+The narrow contract plugin code sees through `guild()` — also returned (via the `StartedGuild` extension) from `createGuild()`.
 
 | Method | Returns | Description |
 |---|---|---|
@@ -95,6 +105,10 @@ Type guards: `isLoadedKit(p)` and `isLoadedApparatus(p)` from `@shardworks/nexus
 
 Apparatus start order is determined by topological sort on `apparatus.requires`. Circular dependencies throw with a descriptive error. Kit `requires` validate that the named apparatus is installed but do not affect start order (kits have no lifecycle).
 
+`StartedGuild.shutdown()` is the symmetric teardown path:
+
+6. **Shutdown** — fires `guild:shutdown` once, then walks the started-apparatus list in reverse topological order (dependents before dependencies — e.g. Oculus closes its HTTP server before Stacks closes the sqlite handle that route handlers might query) and calls each apparatus's optional `stop()`. Errors from individual `stop()` calls are collected, not raised eagerly, so every apparatus gets a chance to release its handles; the aggregate is re-thrown after iteration completes. The call is idempotent (a second invocation is a no-op via an internal flag), and clears the `guild()` singleton as its last act so post-shutdown access fails loudly with the existing "Guild not initialized" error.
+
 ---
 
 ## Guild Lifecycle Internals
@@ -110,6 +124,8 @@ Pure validation and ordering logic lives in `guild-lifecycle.ts`, separated from
 | `collectStartupWarnings(kits, apparatuses)` | Advisory warnings for unconsumed contributions and missing recommends |
 | `buildStartupContext(eventHandlers, kitEntries)` | Creates the `StartupContext` passed to `apparatus.start()` |
 | `fireEvent(eventHandlers, event, ...args)` | Fires lifecycle events to registered handlers |
+| `shutdownStartedApparatuses(startedApparatuses, eventHandlers)` | Fires `guild:shutdown`, walks the started-apparatus list in reverse and calls each `stop()`, returning the per-apparatus failures as an array (the caller wraps with idempotency, `clearGuild()`, and aggregate-throw) |
+| `formatShutdownFailures(failures)` | Render the aggregate-error message thrown when one or more `stop()` calls failed |
 
 These are exported for testing but are not part of the consumer-facing API.
 

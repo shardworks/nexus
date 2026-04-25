@@ -9,6 +9,13 @@
  * it via `setGuild()`. The instance is backed by live data structures
  * (e.g. the provides Map) that are populated progressively as apparatus start.
  *
+ * The `Guild` interface is the contract plugin code sees — it deliberately
+ * does not expose `shutdown()`. Lifecycle teardown is the responsibility
+ * of the bootstrapping process (the CLI, a daemon entry point, a one-shot
+ * helper) that called `createGuild()`. That caller receives a
+ * `StartedGuild` (a `Guild` plus a `shutdown()` method) and is expected
+ * to invoke it before exit. See `StartedGuild` and `clearGuild()` below.
+ *
  * See: docs/architecture/plugins.md
  */
 
@@ -21,7 +28,10 @@ import type { LoadedKit, LoadedApparatus, FailedPlugin } from './plugin.ts';
  * Runtime access to guild infrastructure.
  *
  * Available after Arbor creates the instance (before apparatus start).
- * One instance per process.
+ * One instance per process. Plugin code only ever sees this narrow
+ * interface — `shutdown()` is intentionally not part of it. The
+ * bootstrap caller of `createGuild()` receives the richer
+ * `StartedGuild` and owns the shutdown lifecycle.
  */
 export interface Guild {
   /** Absolute path to the guild root (contains guild.json). */
@@ -78,6 +88,44 @@ export interface Guild {
   startupWarnings(): string[]
 }
 
+/**
+ * Extension of {@link Guild} returned by `createGuild()` — adds the
+ * `shutdown()` method that drives reverse-topo apparatus teardown.
+ *
+ * The `Guild` interface is what plugin code sees through the
+ * process-level singleton; `shutdown()` is deliberately not exposed
+ * there because plugin code has no legitimate reason to tear down the
+ * guild it is running inside. The bootstrap caller of `createGuild()`
+ * — a CLI command, a daemon entry point, or a one-shot helper —
+ * receives this richer type and is responsible for invoking
+ * `shutdown()` on the way out.
+ *
+ * `shutdown()` invokes every started apparatus's optional `stop()` in
+ * reverse topological order, fires the `guild:shutdown` lifecycle
+ * event before any `stop()` runs, collects per-apparatus errors and
+ * surfaces them as a single aggregate (continuing iteration even when
+ * one throws), is idempotent under repeated calls, and clears the
+ * `guild()` singleton as its last act so subsequent `guild()` calls
+ * fail loudly with the existing "Guild not initialized" error rather
+ * than handing out stale references to apparatus whose handles are
+ * already gone.
+ */
+export interface StartedGuild extends Guild {
+  /**
+   * Tear the guild down: fire `guild:shutdown`, call `stop()` on every
+   * started apparatus in reverse topological order, then clear the
+   * `guild()` singleton.
+   *
+   * Idempotent — second and subsequent calls return immediately.
+   *
+   * If one or more `stop()` invocations throw, every remaining
+   * apparatus is still attempted; once iteration completes, an
+   * aggregate `Error` is thrown summarising each failure. The
+   * singleton is cleared regardless of whether any `stop()` threw.
+   */
+  shutdown(): Promise<void>
+}
+
 // ── Singleton ──────────────────────────────────────────────────────────
 
 let _guild: Guild | null = null;
@@ -108,9 +156,16 @@ export function setGuild(g: Guild): void {
 }
 
 /**
- * Clear the guild instance. Called by Arbor at shutdown or in tests.
+ * Clear the guild instance.
  *
- * Not for plugin use — this is framework infrastructure.
+ * Called as the last act of `StartedGuild.shutdown()` after every
+ * apparatus's optional `stop()` has run, so subsequent `guild()` calls
+ * fail loudly with the "Guild not initialized" error rather than
+ * handing out stale references to apparatus whose handles are gone.
+ * Tests call it directly to reset between cases.
+ *
+ * Not for plugin use — this is framework infrastructure. Plugin code
+ * should never need to tear the guild down.
  */
 export function clearGuild(): void {
   _guild = null;
