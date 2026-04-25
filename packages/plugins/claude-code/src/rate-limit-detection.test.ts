@@ -21,7 +21,7 @@ import {
   parseStreamJsonMessage,
   type StreamJsonResult,
 } from './index.ts';
-import { resolveTerminalStatus } from './babysitter.ts';
+import { resolveTerminalStatus } from './runtime.ts';
 import type { SessionTerminationTag } from '@shardworks/animator-apparatus';
 
 function freshAcc(): {
