@@ -758,6 +758,17 @@ export function createClerk(): Plugin {
         description: null,
         source: entry.source,
         isDefault: name === defaultType,
+        // Project the state catalogue so consumers (the writs page, the
+        // `nsg writ types` JSON output, etc.) can derive per-state
+        // vocabulary without a second registry lookup. Attrs default to
+        // an empty array so the projection shape is stable when a state
+        // declares no semantic tags.
+        states: entry.config.states.map((s) => ({
+          name: s.name,
+          classification: s.classification,
+          attrs: [...(s.attrs ?? [])],
+          allowedTransitions: [...s.allowedTransitions],
+        })),
       }));
     },
 

@@ -3085,6 +3085,71 @@ describe('writ-types tool', () => {
       assert.ok(!('default' in entry), `entry "${entry.name}" should not have default field`);
     }
   });
+
+  it('exposes per-type states catalogue (name, classification, attrs, allowedTransitions)', async () => {
+    const plugin = await setupCore();
+    const writTypesTool = getWritTypesTool(plugin);
+    const result = await writTypesTool.handler({}) as Array<{
+      name: string;
+      states: Array<{
+        name: string;
+        classification: 'initial' | 'active' | 'terminal';
+        attrs: string[];
+        allowedTransitions: string[];
+      }>;
+    }>;
+    const mandate = result.find(t => t.name === 'mandate');
+    assert.ok(mandate, 'mandate should be in result');
+    assert.ok(Array.isArray(mandate.states), 'mandate.states should be an array');
+
+    // Six declared states, in the declared order.
+    assert.deepEqual(
+      mandate.states.map(s => s.name),
+      ['new', 'open', 'stuck', 'completed', 'failed', 'cancelled'],
+    );
+
+    const byName = new Map(mandate.states.map(s => [s.name, s]));
+    assert.equal(byName.get('new')!.classification, 'initial');
+    assert.deepEqual(byName.get('new')!.attrs, []);
+    assert.deepEqual(byName.get('new')!.allowedTransitions, ['open', 'cancelled']);
+
+    assert.equal(byName.get('stuck')!.classification, 'active');
+    assert.deepEqual(byName.get('stuck')!.attrs, ['stuck']);
+    assert.deepEqual(byName.get('stuck')!.allowedTransitions, ['open', 'failed', 'cancelled']);
+
+    assert.equal(byName.get('completed')!.classification, 'terminal');
+    assert.deepEqual(byName.get('completed')!.attrs, ['success']);
+    assert.deepEqual(byName.get('completed')!.allowedTransitions, []);
+
+    assert.equal(byName.get('failed')!.classification, 'terminal');
+    assert.deepEqual(byName.get('failed')!.attrs, ['failure']);
+
+    assert.equal(byName.get('cancelled')!.classification, 'terminal');
+    assert.deepEqual(byName.get('cancelled')!.attrs, ['cancelled']);
+  });
+
+  it('exposes states catalogue for plugin-registered types', async () => {
+    const plugin = await setupCore({
+      extraApparatuses: [
+        makeWritTypeApparatus([mandateLikeWritType('task')], { id: 'task-plugin' }),
+      ],
+    });
+    const writTypesTool = getWritTypesTool(plugin);
+    const result = await writTypesTool.handler({}) as Array<{
+      name: string;
+      states: Array<{ name: string; classification: string; attrs: string[]; allowedTransitions: string[] }>;
+    }>;
+    const task = result.find(t => t.name === 'task');
+    assert.ok(task, 'task should be in result');
+    assert.deepEqual(
+      task.states.map(s => s.name),
+      ['new', 'open', 'stuck', 'completed', 'failed', 'cancelled'],
+    );
+    assert.deepEqual(
+      task.states.find(s => s.name === 'completed')!.attrs,
+      ['success'],
+    );
+  });
 });
 
 // ── listWritTypes() API method tests ─────────────────────────────────

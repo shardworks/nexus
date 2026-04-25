@@ -4,7 +4,11 @@
  * All types exported from @shardworks/clerk-apparatus.
  */
 
-import type { WritTypeConfig } from './writ-type-config.ts';
+import type {
+  WritTypeConfig,
+  WritTypeStateAttr,
+  WritTypeStateClassification,
+} from './writ-type-config.ts';
 
 // ── Writ phase ───────────────────────────────────────────────────────
 
@@ -327,6 +331,23 @@ export interface WritLinks {
 // ── Writ type metadata ──────────────────────────────────────────────
 
 /**
+ * Per-state metadata projected from a `WritTypeStateDefinition` for the
+ * `/api/writ/types` and `nsg writ types` surfaces. Carries everything a
+ * presentation layer needs to derive vocabulary, badges, and action
+ * affordances without consulting the type-config registry per row.
+ */
+export interface WritTypeStateInfo {
+  /** State name. */
+  name: string;
+  /** State's role in the lifecycle. */
+  classification: WritTypeStateClassification;
+  /** Per-state attribute tags (e.g. `success`, `failure`, `cancelled`). */
+  attrs: WritTypeStateAttr[];
+  /** Outbound transitions declared on this state. */
+  allowedTransitions: string[];
+}
+
+/**
  * Metadata for a registered writ type, returned by listWritTypes().
  */
 export interface WritTypeInfo {
@@ -348,6 +369,15 @@ export interface WritTypeInfo {
   source: 'builtin' | 'plugin';
   /** Whether this is the guild's default writ type. */
   isDefault: boolean;
+  /**
+   * The full state catalogue for this type — one entry per state declared
+   * in the type's registered `WritTypeConfig`, in the order it was
+   * declared. Each entry projects the state's name, classification, attrs,
+   * and outbound transitions so a presentation layer can derive vocabulary
+   * (badges, indicators, action labels) without a separate registry
+   * lookup.
+   */
+  states: WritTypeStateInfo[];
 }
 
 // ── API ──────────────────────────────────────────────────────────────
