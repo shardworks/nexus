@@ -41,21 +41,36 @@ export interface EventDeclaration {
 }
 
 /**
- * A standing order — a registered response to an event.
+ * A standing order — a registered response to an event or schedule.
  *
- * Canonical shape per commission decision D5: every standing order
- * names exactly one event (`on`) and exactly one relay to invoke
- * (`run`), with an optional parameter object (`with`) handed to the
- * relay as `RelayContext.params`.
+ * A standing order names exactly one trigger (either `on:` for an
+ * event-driven order or `schedule:` for a time-driven order) and
+ * exactly one relay to invoke (`run:`), with an optional parameter
+ * object (`with:`) handed to the relay as `RelayContext.params`.
  *
- * Earlier sugar forms (`summon:`, `brief:`, flat-spread params) have
- * been dropped wholesale — see the standing-order validator for the
- * load-time enforcement.
+ * Per commission decision D1 the TypeScript type leaves both `on:`
+ * and `schedule:` optional — the canonical-shape XOR rule (exactly
+ * one of `on:`/`schedule:` must be present) lives in the
+ * standing-order validator. The same module is the load-time owner
+ * for ruling out earlier sugar forms (`summon:`, `brief:`,
+ * flat-spread params), unknown top-level keys, and invalid `with:`
+ * shapes.
  */
 export interface StandingOrder {
-  /** Event name to subscribe to — exact match against `EventDoc.name`. */
-  on: string;
-  /** Name of the relay to invoke when the event fires. */
+  /**
+   * Event name to subscribe to — exact match against `EventDoc.name`.
+   * Mutually exclusive with `schedule:`; exactly one must be present.
+   */
+  on?: string;
+  /**
+   * Time-trigger expression. Either `@every <N><s|m|h>` or a standard
+   * 5-field unix cron expression. Mutually exclusive with `on:`;
+   * exactly one must be present. The validator parse-checks the value
+   * at guild.json load time using the shared schedule parser, so
+   * malformed expressions fail loud at boot rather than at first fire.
+   */
+  schedule?: string;
+  /** Name of the relay to invoke when the order fires. */
   run: string;
   /**
    * Optional parameter object passed through to the relay handler as

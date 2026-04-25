@@ -10,13 +10,21 @@
  * lists every offender's index and reason (commission decisions
  * D4, D26).
  *
- * Per D5/D6/D7 the canonical shape is exactly
- * `{ on: string; run: string; with?: Record<string, unknown> }`. Any
- * other top-level key, missing required field, or non-plain-object
- * `with:` value is rejected. The dropped sugar forms (`summon:` /
- * `brief:`) and flat-spread param shapes are called out by name in
- * the error message so operators editing legacy configs know exactly
- * what changed.
+ * The canonical shape is exactly one of:
+ *   - `{ on: string; run: string; with?: Record<string, unknown> }`
+ *     for event-driven orders, or
+ *   - `{ schedule: string; run: string; with?: Record<string, unknown> }`
+ *     for time-driven orders (D1 — the XOR rule lives here, not in
+ *     the TypeScript type).
+ *
+ * `on:` and `schedule:` are mutually exclusive: exactly one must be
+ * present. `schedule:` values are parse-checked at load time against
+ * the shared `schedule-parser` so malformed cron / `@every` strings
+ * fail loud at boot (D17). Any other top-level key, missing required
+ * field, or non-plain-object `with:` value is rejected. The dropped
+ * sugar forms (`summon:` / `brief:`) and flat-spread param shapes are
+ * called out by name in the error message so operators editing legacy
+ * configs know exactly what changed.
  *
  * Mirrors the pure-module + descriptive-Error shape of
  * `signal-validator.ts` so future operator-facing surfaces (lint
@@ -24,15 +32,18 @@
  * apparatus.
  */
 
+import { parseSchedule } from './schedule-parser.ts';
+
 /**
  * The canonical top-level keys a standing order may declare. Anything
- * else is a load-time error per decision D6 — reserving keys that this
- * commission does not actually wire (`schedule`, `id`, `enabled`,
- * `description`, …) would silently swallow typos. Future commissions
- * that add such keys will extend this allowlist.
+ * else is a load-time error — reserving keys that this commission
+ * does not actually wire (`id`, `enabled`, `description`, …) would
+ * silently swallow typos. Future commissions that add such keys will
+ * extend this allowlist.
  */
 export const ALLOWED_STANDING_ORDER_KEYS: readonly string[] = Object.freeze([
   'on',
+  'schedule',
   'run',
   'with',
 ]);
@@ -145,12 +156,47 @@ function validateSingleOrder(order: unknown, _index: number): string | null {
     );
   }
 
-  // `on:` must be a non-empty string.
-  if (!('on' in order)) {
-    return 'missing required field "on" (the event name to subscribe to).';
+  // Trigger-shape rule: exactly one of `on:` or `schedule:` must be
+  // present. The XOR check sits before the per-field shape rules so
+  // operators authoring an order with both keys see the dedicated
+  // collision message rather than chained shape errors.
+  const hasOn = 'on' in order && order.on !== undefined;
+  const hasSchedule = 'schedule' in order && order.schedule !== undefined;
+  if (!hasOn && !hasSchedule) {
+    return (
+      'missing trigger: declare exactly one of "on" (event name) or ' +
+      '"schedule" (cron / @every expression).'
+    );
   }
-  if (typeof order.on !== 'string' || order.on.length === 0) {
-    return `"on" must be a non-empty string, got ${describeValue(order.on)}.`;
+  if (hasOn && hasSchedule) {
+    return (
+      'cannot declare both "on" and "schedule": event triggers and ' +
+      'time triggers are mutually exclusive — pick exactly one.'
+    );
+  }
+
+  // `on:` (when present) must be a non-empty string.
+  if (hasOn) {
+    if (typeof order.on !== 'string' || order.on.length === 0) {
+      return `"on" must be a non-empty string, got ${describeValue(order.on)}.`;
+    }
+  }
+
+  // `schedule:` (when present) must be a non-empty string AND must
+  // parse-check via the shared schedule parser (D17). Surfacing the
+  // parser's structured error verbatim keeps the operator-facing
+  // message identical to what the runtime would say if it tried to
+  // evaluate the expression on first fire.
+  if (hasSchedule) {
+    if (typeof order.schedule !== 'string' || order.schedule.length === 0) {
+      return `"schedule" must be a non-empty string, got ${describeValue(
+        order.schedule,
+      )}.`;
+    }
+    const parsed = parseSchedule(order.schedule);
+    if (!parsed.ok) {
+      return `"schedule" is invalid: ${parsed.error}`;
+    }
   }
 
   // `run:` must be a non-empty string.
