@@ -65,6 +65,12 @@ import {
   type DispatchSummary,
 } from './dispatcher.ts';
 import { isRelayDefinition, type RelayDefinition } from './relay.ts';
+import { computeNextFireTime, parseSchedule } from './schedule-parser.ts';
+import {
+  runScheduleSweep,
+  type ScheduleEntry,
+  type ScheduleSweepSummary,
+} from './scheduler.ts';
 import { createSummonRelay } from './summon-relay.ts';
 import { clockStatusTool, signal } from './tools/index.ts';
 import { handleWritLifecycle } from './writ-lifecycle-observer.ts';
@@ -109,6 +115,16 @@ export function createClockworks(): Plugin {
   // warning for duplicates. Built fresh on every `start()` (so the
   // future daemon-restart path stays idempotent).
   const relays = new Map<string, RegisteredRelay>();
+
+  // ── Schedule table ─────────────────────────────────────────────────
+  //
+  // In-memory list of time-driven standing orders. Built once in
+  // `start()` (D4, D11) — operators editing schedule entries in
+  // `guild.json` must restart the apparatus for the change to take
+  // effect. The dispatcher path re-reads `standingOrders` per call so
+  // event-driven hot-edit still works; only the scheduler path is
+  // build-once.
+  const schedule: ScheduleEntry[] = [];
 
   /**
    * Register a single kit's `relays` contribution. Mirrors the lattice's
@@ -192,6 +208,36 @@ export function createClockworks(): Plugin {
     resolveRelay(name: string): RelayDefinition | undefined {
       const entry = relays.get(name);
       return entry?.relay;
+    },
+
+    async processSchedules(opts?: {
+      onDispatch?: (observation: DispatchObservation) => void;
+    }): Promise<ScheduleSweepSummary> {
+      if (!events || !dispatches) {
+        throw new Error(
+          'clockworks: processSchedules() called before start() primed the book handles.',
+        );
+      }
+
+      const g = guild();
+
+      // D4, D11: the schedule table is closure-scoped and built once
+      // in `start()`. We do not re-read `standingOrders` per tick — a
+      // schedule edit requires an apparatus restart. Same SOF lambda
+      // the dispatcher uses (D15) so subscribers see a uniform
+      // `standing-order.failed` shape regardless of trigger source.
+      return runScheduleSweep({
+        schedule,
+        events,
+        dispatches,
+        resolveRelay: api.resolveRelay,
+        home: g.home,
+        now: () => new Date(),
+        signalStandingOrderFailed: async (payload) => {
+          await api.emit('standing-order.failed', payload, 'framework');
+        },
+        ...(opts?.onDispatch !== undefined ? { onDispatch: opts.onDispatch } : {}),
+      });
     },
 
     async processEvents(opts?: {
@@ -297,6 +343,45 @@ export function createClockworks(): Plugin {
         relays.clear();
         for (const entry of ctx.kits(RELAYS_KIT)) {
           registerKitRelays(entry);
+        }
+
+        // ── Schedule table ─────────────────────────────────────────────
+        //
+        // D4, D11: build the in-memory schedule table fresh on every
+        // start. Walk the standing orders array; for each entry with a
+        // `schedule:` key, parse the expression and seed
+        // `nextFireTime` per D8 (`@every`: now + duration) / D9 (cron:
+        // next boundary after now) — both fall out of the same
+        // `computeNextFireTime(parsed, startTime)` call.
+        //
+        // Validation already happened at config load (the shared
+        // standing-order validator runs on every guild boot via the
+        // dispatcher's first sweep, but we're also fail-loud here for
+        // any malformed entry that slipped past — the parser surface
+        // gives an exact-cause error that names the offending index).
+        schedule.length = 0;
+        const standingOrdersForSchedule =
+          g.guildConfig().clockworks?.standingOrders ?? [];
+        const startTime = new Date();
+        for (let index = 0; index < standingOrdersForSchedule.length; index += 1) {
+          const order = standingOrdersForSchedule[index]!;
+          const value = (order as { schedule?: unknown }).schedule;
+          if (typeof value !== 'string' || value.length === 0) continue;
+          const parsed = parseSchedule(value);
+          if (!parsed.ok) {
+            // Fail loud: the validator should have caught this, but
+            // surfacing it again here keeps the message attached to
+            // the apparatus boot rather than the first scheduler tick.
+            throw new Error(
+              `clockworks: standing order #${index} has an invalid schedule (${parsed.error}).`,
+            );
+          }
+          schedule.push({
+            orderIndex: index,
+            order,
+            parsed: parsed.parsed,
+            nextFireTime: computeNextFireTime(parsed.parsed, startTime),
+          });
         }
 
         // ── CDC auto-wiring ───────────────────────────────────────────

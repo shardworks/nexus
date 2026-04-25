@@ -294,6 +294,31 @@ export interface ClockworksApi {
      */
     skipped: number;
   }>;
+
+  /**
+   * Run one tick of the scheduler pass: iterate the in-memory schedule
+   * table populated at apparatus `start()` and fire every entry whose
+   * `nextFireTime <= now`.
+   *
+   * Each fire writes a `schedule.fired` event row (with
+   * `processed: true` so the event-sweep skips it) plus a matching
+   * dispatch row through the same plumbing the event-driven path
+   * uses. Failures (thrown relay or unresolved relay) emit a
+   * `standing-order.failed` event via the same SOF callback the
+   * dispatcher uses, so subscribers do not have to special-case
+   * scheduled fires.
+   *
+   * Sequential by `orderIndex` ascending — multiple-due orders fire
+   * one after another, never via `Promise.all`. The schedule table
+   * itself is built once at startup; operators editing
+   * `clockworks.standingOrders` schedule entries must restart the
+   * apparatus for the change to take effect (commission decision
+   * D11; documented as a follow-up observation).
+   */
+  processSchedules(opts?: ProcessSchedulesOptions): Promise<{
+    fired: number;
+    errors: number;
+  }>;
 }
 
 /**
@@ -334,6 +359,18 @@ export interface ProcessEventsOptions {
   eventId?: string;
   /** Cap on the number of events processed this sweep. */
   max?: number;
+  /** Per-dispatch observer; throwing observers are isolated. */
+  onDispatch?: (observation: DispatchObservation) => void;
+}
+
+/**
+ * Optional knobs accepted by `ClockworksApi.processSchedules`. The
+ * shape mirrors `ProcessEventsOptions` so the daemon's loop can pass
+ * the same observer to both passes, but without the `eventId` / `max`
+ * fields — a scheduler tick has no equivalent of "drain a specific
+ * event" and the in-tick fire ordering is deterministic.
+ */
+export interface ProcessSchedulesOptions {
   /** Per-dispatch observer; throwing observers are isolated. */
   onDispatch?: (observation: DispatchObservation) => void;
 }
