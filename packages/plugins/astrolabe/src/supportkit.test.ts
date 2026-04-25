@@ -3,7 +3,7 @@
  *
  * Verifies that the apparatus's supportKit declares the correct books,
  * roles, engines, rigTemplates, rigTemplateMappings, and tools. Writ
- * types (`piece`, `observation-set`) are now registered with the Clerk
+ * types (`step`, `observation-set`) are now registered with the Clerk
  * via `ClerkApi.registerWritType` from astrolabe's own `start()`, not
  * contributed via the kit channel.
  */
@@ -64,7 +64,7 @@ describe('Astrolabe supportKit shape', () => {
 
   it('does not contribute writTypes via the kit channel', () => {
     const kit = getKit(plugin);
-    // The kit-channel writTypes contribution has been removed; piece and
+    // The kit-channel writTypes contribution has been removed; step and
     // observation-set are registered with the Clerk via
     // `ClerkApi.registerWritType` from astrolabe's own `start()` instead.
     assert.equal(

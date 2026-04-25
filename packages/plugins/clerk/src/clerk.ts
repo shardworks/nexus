@@ -52,7 +52,7 @@ import { createChildrenBehaviorEngine } from './children-behavior-engine.ts';
 
 import {
   commissionPost,
-  pieceAdd,
+  stepAdd,
   writShow,
   writList,
   writTree,
@@ -1138,7 +1138,7 @@ export function createClerk(): Plugin {
         },
         tools: [
           commissionPost,
-          pieceAdd,
+          stepAdd,
           writShow,
           writList,
           writTree,

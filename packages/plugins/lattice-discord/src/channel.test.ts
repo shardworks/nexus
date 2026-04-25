@@ -96,7 +96,7 @@ describe('context field rendering', () => {
       pulse({
         triggerType: 'reckoner.writ-stuck',
         context: {
-          writType: 'piece',
+          writType: 'step',
           stuckCause: 'engine-failure',
           retryable: true,
           detail: 'timeout',
@@ -104,7 +104,7 @@ describe('context field rendering', () => {
       }),
     );
     const map = new Map(fields.map((f) => [f.name, f.value]));
-    assert.equal(map.get('Type'), 'piece');
+    assert.equal(map.get('Type'), 'step');
     assert.equal(map.get('Cause'), 'engine-failure');
     assert.equal(map.get('Retryable'), 'true');
     assert.equal(map.get('Detail'), 'timeout');

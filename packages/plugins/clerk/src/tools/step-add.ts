@@ -33,12 +33,12 @@ function buildTaskXml(params: {
 }
 
 export default tool({
-  name: 'piece-add',
-  description: 'Add a new piece (atomic task) to a mandate for sequential execution',
+  name: 'step-add',
+  description: 'Add a new step (atomic task) to a mandate for sequential execution',
   instructions:
-    'Creates a new piece writ as a child of the specified mandate. The piece is created ' +
+    'Creates a new step writ as a child of the specified mandate. The step is created ' +
     'in open phase and will be picked up by the implement-loop engine after the current ' +
-    'piece session completes. The body is structured as a <task> XML element matching the ' +
+    'step session completes. The body is structured as a <task> XML element matching the ' +
     'task-manifest format used by the spec writer. ' +
     'Requires an explicit mandateId — the mandate must be in new, open, or stuck phase.',
   callableBy: ['anima', 'patron'],
@@ -56,16 +56,16 @@ export default tool({
     const resolvedMandateId = await clerk.resolveId(params.mandateId);
     const body = buildTaskXml(params);
 
-    const piece = await clerk.post({
-      type: 'piece',
+    const step = await clerk.post({
+      type: 'step',
       title: params.name,
       body,
       parentId: resolvedMandateId,
     });
-    // Auto-publish to match the tool's documented behaviour: the piece
+    // Auto-publish to match the tool's documented behaviour: the step
     // enters the queue immediately. `post()` always lands the writ in its
     // type's declared initial state; the tool layer carries the UX
     // auto-advance in the same spirit as `commission-post` for mandates.
-    return clerk.transition(piece.id, 'open');
+    return clerk.transition(step.id, 'open');
   },
 });

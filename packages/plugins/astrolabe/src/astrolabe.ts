@@ -357,7 +357,7 @@ export function createAstrolabe(): Plugin {
 
         // Register astrolabe's writ types with the Clerk's runtime registry.
         // Each config is an independent clone of mandate's six-state machine
-        // (no shared helper) — `piece` and `observation-set` carry the same
+        // (no shared helper) — `step` and `observation-set` carry the same
         // lifecycle as a built-in mandate. Registration must happen during
         // start() so the Clerk's startup-window seal does not slam shut on
         // us; the framework guarantees that astrolabe's start() runs after
@@ -365,8 +365,8 @@ export function createAstrolabe(): Plugin {
         // `requires: ['stacks', 'clerk']`.
         const clerk = guild().apparatus<ClerkApi>('clerk');
 
-        const PIECE_CONFIG: WritTypeConfig = {
-          name: 'piece',
+        const STEP_CONFIG: WritTypeConfig = {
+          name: 'step',
           states: [
             { name: 'new', classification: 'initial', allowedTransitions: ['open', 'cancelled'] },
             { name: 'open', classification: 'active', allowedTransitions: ['stuck', 'completed', 'failed', 'cancelled'] },
@@ -389,7 +389,7 @@ export function createAstrolabe(): Plugin {
           ],
         };
 
-        clerk.registerWritType(PIECE_CONFIG);
+        clerk.registerWritType(STEP_CONFIG);
         clerk.registerWritType(OBSERVATION_SET_CONFIG);
       },
     },

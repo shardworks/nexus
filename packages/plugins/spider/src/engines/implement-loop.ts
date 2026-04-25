@@ -1,20 +1,20 @@
 /**
  * Implement-loop engine — clockwork.
  *
- * Orchestrates sequential execution of piece writs under a mandate.
+ * Orchestrates sequential execution of step writs under a mandate.
  *
  * On run:
- *   1. Queries all open child piece writs of the mandate.
- *   2. If pieces exist, grafts piece-session engines for each piece
+ *   1. Queries all open child step writs of the mandate.
+ *   2. If steps exist, grafts step-session engines for each step
  *      (in mandate child order) with sequential upstream dependencies.
- *   3. If no pieces exist, falls through to legacy single-session behavior
+ *   3. If no steps exist, falls through to legacy single-session behavior
  *      identical to the original implement engine.
  *
  * The engine itself completes immediately with a graft (clockwork engine
  * returning { status: 'completed', yields, graft }). The grafted
- * piece-session engines are then processed sequentially by the Spider.
+ * step-session engines are then processed sequentially by the Spider.
  *
- * For the legacy fallback (no pieces), it launches an anima session
+ * For the legacy fallback (no steps), it launches an anima session
  * directly, same as the original implement engine.
  */
 
@@ -33,16 +33,16 @@ const implementLoopEngine: EngineDesign = {
     const writ = givens.writ as WritDoc;
     const draft = context.upstream['draft'] as DraftYields;
 
-    // Query all open child piece writs of the mandate
-    const pieces = await clerk.list({
+    // Query all open child step writs of the mandate
+    const steps = await clerk.list({
       parentId: writ.id,
-      type: 'piece',
+      type: 'step',
       phase: 'open',
       limit: 100,
     });
 
-    if (pieces.length === 0) {
-      // ── Legacy fallback: no pieces → single-session implement ──
+    if (steps.length === 0) {
+      // ── Legacy fallback: no steps → single-session implement ──
       const animator = guild().apparatus<AnimatorApi>('animator');
       const prompt = `${writ.body}\n${EXECUTION_EPILOGUE}`;
 
@@ -57,28 +57,28 @@ const implementLoopEngine: EngineDesign = {
       return { status: 'launched', sessionId: handle.sessionId };
     }
 
-    // ── Piece-aware path: graft piece-session engines ──
-    // Sort pieces by createdAt to maintain manifest order
-    const sortedPieces = [...pieces].sort((a, b) =>
+    // ── Step-aware path: graft step-session engines ──
+    // Sort steps by createdAt to maintain manifest order
+    const sortedSteps = [...steps].sort((a, b) =>
       a.createdAt.localeCompare(b.createdAt),
     );
 
-    // Build a chain of piece-session engines with sequential dependencies.
-    // Each piece-session depends on the previous one (or on this engine for the first).
+    // Build a chain of step-session engines with sequential dependencies.
+    // Each step-session depends on the previous one (or on this engine for the first).
     const graft: RigTemplateEngine[] = [];
     let previousEngineId = context.engineId; // 'implement-loop' or whatever the instance id is
 
-    for (let i = 0; i < sortedPieces.length; i++) {
-      const piece = sortedPieces[i]!;
-      const engineId = `piece-${i}`;
+    for (let i = 0; i < sortedSteps.length; i++) {
+      const step = sortedSteps[i]!;
+      const engineId = `step-${i}`;
 
       graft.push({
         id: engineId,
-        designId: 'piece-session',
+        designId: 'step-session',
         upstream: [previousEngineId],
         givens: {
           writ: '${writ}',
-          piece: piece, // Pass the piece WritDoc directly as a literal value
+          step: step, // Pass the step WritDoc directly as a literal value
           role: givens.role as string,
           cwd: `\${yields.draft.path}`,
         },
@@ -89,16 +89,16 @@ const implementLoopEngine: EngineDesign = {
 
     // Return as a SpiderEngineRunResult with graft.
     // graftTail tells Spider that any engine downstream of implement-loop
-    // should also wait for the last grafted piece-session to complete.
-    const lastPieceEngineId = `piece-${sortedPieces.length - 1}`;
+    // should also wait for the last grafted step-session to complete.
+    const lastStepEngineId = `step-${sortedSteps.length - 1}`;
     const result: SpiderEngineRunResult = {
       status: 'completed',
       yields: {
-        pieceCount: sortedPieces.length,
-        pieceIds: sortedPieces.map(p => p.id),
+        stepCount: sortedSteps.length,
+        stepIds: sortedSteps.map(p => p.id),
       },
       graft,
-      graftTail: lastPieceEngineId,
+      graftTail: lastStepEngineId,
     };
 
     return result as EngineRunResult;

@@ -3,7 +3,7 @@ export { default as draftEngine } from './draft.ts';
 export { default as implementEngine, EXECUTION_EPILOGUE } from './implement.ts';
 export { default as implementLoopEngine } from './implement-loop.ts';
 export { default as manualMergeEngine } from './manual-merge.ts';
-export { default as pieceSessionEngine, PIECE_EXECUTION_EPILOGUE } from './piece-session.ts';
+export { default as stepSessionEngine, STEP_EXECUTION_EPILOGUE } from './step-session.ts';
 export { default as reviewEngine } from './review.ts';
 export { default as reviseEngine } from './revise.ts';
 export { default as sealEngine } from './seal.ts';

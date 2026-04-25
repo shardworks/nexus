@@ -4048,25 +4048,25 @@ describe('Page file structure', () => {
   });
 });
 
-// ── piece-add tool tests ──────────────────────────────────────────────
+// ── step-add tool tests ──────────────────────────────────────────────
 
-describe('piece-add tool', () => {
+describe('step-add tool', () => {
   afterEach(() => { clearGuild(); });
 
-  it('creates a piece writ as child of a mandate with structured XML body', async () => {
+  it('creates a step writ as child of a mandate with structured XML body', async () => {
     await setup({
       extraApparatuses: [
-        makeWritTypeApparatus([mandateLikeWritType('piece')], { id: 'piece-plugin' }),
+        makeWritTypeApparatus([mandateLikeWritType('step')], { id: 'step-plugin' }),
       ],
     });
 
     // Create a mandate first
     const mandate = await postMandate({ title: 'Parent mandate', body: 'Do all things', type: 'mandate' });
 
-    // Use piece-add handler directly
-    const pieceAddTool = (await import('./tools/piece-add.ts')).default;
-    const handler = pieceAddTool.handler as (params: Record<string, unknown>) => Promise<unknown>;
-    const piece = await handler({
+    // Use step-add handler directly
+    const stepAddTool = (await import('./tools/step-add.ts')).default;
+    const handler = stepAddTool.handler as (params: Record<string, unknown>) => Promise<unknown>;
+    const step = await handler({
       mandateId: mandate.id,
       name: 'First task',
       action: 'Do the first thing',
@@ -4075,51 +4075,51 @@ describe('piece-add tool', () => {
       done: 'Tests pass',
     }) as { id: string; type: string; title: string; body: string; parentId: string; phase: string };
 
-    assert.equal(piece.type, 'piece');
-    assert.equal(piece.title, 'First task');
-    assert.equal(piece.parentId, mandate.id);
-    assert.equal(piece.phase, 'open');
-    assert.ok(piece.body.includes('<task id='));
-    assert.ok(piece.body.includes('<name>First task</name>'));
-    assert.ok(piece.body.includes('<action>Do the first thing</action>'));
-    assert.ok(piece.body.includes('<files>src/app.ts</files>'));
-    assert.ok(piece.body.includes('<verify>pnpm test</verify>'));
-    assert.ok(piece.body.includes('<done>Tests pass</done>'));
+    assert.equal(step.type, 'step');
+    assert.equal(step.title, 'First task');
+    assert.equal(step.parentId, mandate.id);
+    assert.equal(step.phase, 'open');
+    assert.ok(step.body.includes('<task id='));
+    assert.ok(step.body.includes('<name>First task</name>'));
+    assert.ok(step.body.includes('<action>Do the first thing</action>'));
+    assert.ok(step.body.includes('<files>src/app.ts</files>'));
+    assert.ok(step.body.includes('<verify>pnpm test</verify>'));
+    assert.ok(step.body.includes('<done>Tests pass</done>'));
   });
 
-  it('creates a piece with only required fields', async () => {
+  it('creates a step with only required fields', async () => {
     await setup({
       extraApparatuses: [
-        makeWritTypeApparatus([mandateLikeWritType('piece')], { id: 'piece-plugin' }),
+        makeWritTypeApparatus([mandateLikeWritType('step')], { id: 'step-plugin' }),
       ],
     });
 
     const mandate = await postMandate({ title: 'Parent mandate', body: 'Do things', type: 'mandate' });
 
-    const pieceAddTool = (await import('./tools/piece-add.ts')).default;
-    const handler = pieceAddTool.handler as (params: Record<string, unknown>) => Promise<unknown>;
-    const piece = await handler({
+    const stepAddTool = (await import('./tools/step-add.ts')).default;
+    const handler = stepAddTool.handler as (params: Record<string, unknown>) => Promise<unknown>;
+    const step = await handler({
       mandateId: mandate.id,
       name: 'Minimal task',
       action: 'Do something simple',
     }) as { body: string };
 
-    assert.ok(piece.body.includes('<name>Minimal task</name>'));
-    assert.ok(piece.body.includes('<action>Do something simple</action>'));
-    assert.ok(!piece.body.includes('<files>'));
-    assert.ok(!piece.body.includes('<verify>'));
-    assert.ok(!piece.body.includes('<done>'));
+    assert.ok(step.body.includes('<name>Minimal task</name>'));
+    assert.ok(step.body.includes('<action>Do something simple</action>'));
+    assert.ok(!step.body.includes('<files>'));
+    assert.ok(!step.body.includes('<verify>'));
+    assert.ok(!step.body.includes('<done>'));
   });
 
   it('rejects when parent mandate does not exist', async () => {
     await setup({
       extraApparatuses: [
-        makeWritTypeApparatus([mandateLikeWritType('piece')], { id: 'piece-plugin' }),
+        makeWritTypeApparatus([mandateLikeWritType('step')], { id: 'step-plugin' }),
       ],
     });
 
-    const pieceAddTool = (await import('./tools/piece-add.ts')).default;
-    const handler = pieceAddTool.handler as (params: Record<string, unknown>) => Promise<unknown>;
+    const stepAddTool = (await import('./tools/step-add.ts')).default;
+    const handler = stepAddTool.handler as (params: Record<string, unknown>) => Promise<unknown>;
 
     await assert.rejects(
       () => handler({

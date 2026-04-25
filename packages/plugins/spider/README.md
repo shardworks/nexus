@@ -99,7 +99,7 @@ The dispatch predicate picks the engine up again once `holdUntil` elapses; a fre
 
 Retry is **opt-in**. Engine designs without a `retry` block default to `maxAttempts: 0` — the first retryable failure is terminal. Definitional failures (invalid graft, unknown design, unknown block type, non-JSON-serializable yields) fail terminally regardless of budget.
 
-Designs shipping with retry enabled in this commission: `anima-session`, `implement`, `review`, `revise`, `astrolabe.reader-analyst`, `astrolabe.patron-anima`, `astrolabe.decision-review`. All others (including `draft`, `seal`, `manual-merge`, `piece-session`, `implement-loop`, `astrolabe.plan-init`, `astrolabe.inventory-check`, `astrolabe.plan-finalize`, `astrolabe.observation-lift`) default to no retry.
+Designs shipping with retry enabled in this commission: `anima-session`, `implement`, `review`, `revise`, `astrolabe.reader-analyst`, `astrolabe.patron-anima`, `astrolabe.decision-review`. All others (including `draft`, `seal`, `manual-merge`, `step-session`, `implement-loop`, `astrolabe.plan-init`, `astrolabe.inventory-check`, `astrolabe.plan-finalize`, `astrolabe.observation-lift`) default to no retry.
 
 ### Terminal engine-failure cascade
 

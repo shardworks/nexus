@@ -122,7 +122,7 @@ The Astrolabe declares one book in Stacks:
 
 | Name | Description |
 |---|---|
-| `piece` | An atomic task piece within a mandate, executed sequentially |
+| `step` | An atomic step within a mandate, executed sequentially. |
 | `observation-set` | A non-dispatchable container grouping writs lifted from a single planning run. Spider never dispatches this type (no `rigTemplateMappings` entry); it exists so curators can triage related lifted observations as a batch. Created by `astrolabe.observation-lift` when a plan yields two or more observations. |
 
 ### Link Kinds (contributed to Clerk)
