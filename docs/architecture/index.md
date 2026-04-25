@@ -166,7 +166,7 @@ In the standard guild, `clockworks` contains events and standing orders; `codexe
 
 ## Plugin Architecture
 
-The apparatus described in §2 — The Stacks, The Clockworks, The Clerk, The Spider, and the rest — are all plugins. There is no privileged built-in layer. Arbor, the guild runtime, is only a plugin loader, a dependency graph, and the startup/shutdown lifecycle for what gets loaded. Every piece of operational infrastructure is contributed by a plugin package; the standard guild is simply a particular set of those packages.
+The apparatus described in §2 — The Stacks, The Clockworks, The Clerk, The Spider, and the rest — are all plugins. There is no privileged built-in layer. Arbor, the guild runtime, is only a plugin loader, a dependency graph, and the startup/shutdown lifecycle for what gets loaded — startup walks the apparatus dependency graph in topological order calling each `start()`, and shutdown (driven by `StartedGuild.shutdown()`, exposed to the bootstrap caller of `createGuild()`) walks the same graph in reverse calling each `stop()`. Every piece of operational infrastructure is contributed by a plugin package; the standard guild is simply a particular set of those packages.
 
 Plugins come in two kinds: **kits** and **apparatus**. This section introduces them; [Plugin Architecture](plugins.md) is the full specification.
 

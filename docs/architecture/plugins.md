@@ -86,9 +86,15 @@ type Apparatus = {
 
 **`provides`** is the runtime API object this apparatus exposes to other plugins. Retrieved via `guild().apparatus<T>(name)`. The reference is created at manifest-definition time and populated during `start`. See [Providing an API](#providing-an-api).
 
-`start(ctx)` is where the apparatus initialises its internal state, registers lifecycle hooks, and wires up its dependencies. `stop()` tears it down. Both may be async — the framework awaits them in dependency-resolved order.
+`start(ctx)` is where the apparatus initialises its internal state, registers lifecycle hooks, and wires up its dependencies. `stop()` tears it down. Both may be async — the framework awaits them.
 
 `stop` is optional for apparatuses that have no shutdown logic beyond garbage collection.
+
+Shutdown ordering is **reverse topological**: when the bootstrap caller (CLI command, daemon entry point, one-shot helper) invokes `StartedGuild.shutdown()`, Arbor walks the started-apparatus list in reverse so dependents stop before their dependencies. Oculus, for instance, closes its HTTP server before Stacks closes the sqlite handle that route handlers might still be querying. An apparatus that fails its `start()` is not added to the started list, so `stop()` is never called on objects that never finished initialising.
+
+`shutdown()`'s error policy is **continue-collect**: a `stop()` that throws is caught and recorded, iteration continues, and once every apparatus has been attempted a single aggregate `Error` is thrown describing each failure (with per-apparatus failures attached as `.failures`). This maximises the number of handles released — the whole point of running `stop()` — and preserves fail-loud behaviour for the daemon's signal handler. `shutdown()` is also **idempotent**: a second call is a no-op via an internal flag, so a SIGINT racing a SIGTERM cannot double-fire `guild:shutdown` or double-invoke `stop()`. As its last act, `shutdown()` clears the `guild()` singleton so subsequent `guild()` calls fail loudly with the existing "Guild not initialized" error rather than handing out stale references.
+
+Plugin code never sees `shutdown()` — the `Guild` interface returned by `guild()` is intentionally narrow. Only the bootstrap caller carries the richer `StartedGuild` reference returned by `createGuild()`.
 
 A `supportKit` is a Kit that an apparatus composes to expose its capabilities to the rest of the guild — the same open record as any other kit, populated with whatever contribution fields the apparatus's own consuming peers understand. Consuming apparatuses treat `supportKit` contributions identically to standalone kit contributions; the source is an implementation detail callers never see.
 
@@ -479,7 +485,7 @@ apparatus: {
   start: (ctx) => {
     ctx.on("apparatus:started",  (id)  => { ... })  // an apparatus has completed start()
     ctx.on("phase:started",      ()    => { ... })  // all apparatus start() calls complete
-    ctx.on("guild:shutdown",     ()    => { ... })
+    ctx.on("guild:shutdown",     ()    => { ... })  // shutdown about to begin (before any stop() runs)
   },
 }
 ```
@@ -491,6 +497,8 @@ The interface is open-ended — new lifecycle events do not require interface ch
 **`apparatus:started`** fires after each apparatus completes its `start()` call, with the apparatus's plugin id as its argument. Can be used to react to the progressive availability of apparatus APIs.
 
 **`phase:started`** fires once after all apparatus `start()` calls have completed. Useful for work that requires every apparatus to be fully initialised.
+
+**`guild:shutdown`** fires once at the start of `StartedGuild.shutdown()`, before any apparatus's `stop()` is invoked. Subscribers see a consistent snapshot of running apparatus and can act before teardown begins (e.g. flushing buffered state, signalling watchers). The framework currently fires only this guild-scoped shutdown event; per-apparatus `apparatus:stopped` and `phase:stopped` events are deliberately not emitted until a real subscriber motivates the contract.
 
 Kit contributions should be consumed via `ctx.kits(type)` during `start()` rather than via lifecycle events — the Wire phase guarantees the full snapshot is available before any `start()` runs. See [Wire Phase and `ctx.kits(type)`](#wire-phase-and-ctxkitstype).
 
