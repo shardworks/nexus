@@ -99,7 +99,7 @@ registered under `name` — sourced from either a standalone kit's
 or `undefined` when no relay with that name is registered. The
 dispatcher calls this when resolving a standing order's `run:` field.
 
-### `ClockworksApi.processEvents(): Promise<{ processedEvents, dispatches, errors }>`
+### `ClockworksApi.processEvents(): Promise<{ processedEvents, dispatches, errors, skipped }>`
 
 Drains every unprocessed event from the `events` book in one pass.
 For each event in id-ascending order, the dispatcher resolves every
@@ -122,11 +122,43 @@ canonical shape on every sweep — any malformed order causes the entire
 sweep to throw with an aggregated error message naming every
 offender's index, and no events are processed.
 
+#### Standing-order failure signaling
+
+Whenever a relay throws OR an order's `run:` field names a relay that
+is not registered, the dispatcher (after writing the dispatch row)
+emits a `standing-order.failed` event into the `events` book with
+`emitter: 'framework'`. The payload carries the verbatim standing
+order, an `{id, name}` projection of the triggering event, and the
+same error string written to the dispatch row's `error` column:
+
+```typescript
+{
+  name: 'standing-order.failed',
+  emitter: 'framework',
+  payload: {
+    standingOrder: { on, run, with? },
+    triggeringEvent: { id, name },
+    error: '<message>'
+  }
+}
+```
+
+Guilds can wire standing orders against `standing-order.failed` to
+react to failures (notify the patron, summon a steward, etc.). A
+loop guard prevents cascade: when the dispatcher processes an event
+whose `payload.triggeringEvent.name` is `'standing-order.failed'`
+(i.e. a second-generation SOF), every matching standing order is
+recorded as a `'skipped'` dispatch row, the relay is not invoked,
+and no fresh `standing-order.failed` event is emitted.
+
 Returned counts:
 
 - `processedEvents` — events whose `processed` flag was flipped this sweep.
 - `dispatches` — total dispatch rows written across every event.
 - `errors` — subset of those rows whose `status` is `'error'`.
+- `skipped` — subset whose `status` is `'skipped'` (loop-guard
+  suppression). Reported separately from `errors` so policy-driven
+  skips do not flip the CLI exit code.
 
 Sequential, single-pass — no scheduling, no parallelism, no retry. The
 CLI wrapper, daemon, and cron loop compose on top of this primitive.
@@ -276,8 +308,13 @@ recorded `status: error`.
 - `clockworks/event_dispatches` — one document per handler invocation
   triggered by an event. Indexes: `eventId`, `status`, and the
   composite `(eventId, status)`. Written by `processEvents()` — one
-  row per matching standing order, with `status: 'success' | 'error'`
-  set after the relay settles.
+  row per matching standing order, with `status: 'success' | 'error'
+  | 'skipped'` set after the dispatcher settles. The `'skipped'`
+  variant covers loop-guard policy suppression (the relay was not
+  invoked because the triggering event was itself a
+  `standing-order.failed`); skipped rows carry their reason in the
+  `error` column with a `loop-guard:` prefix and do not count toward
+  the `errors` summary counter.
 
 Both are owned by plugin id `clockworks`.
 

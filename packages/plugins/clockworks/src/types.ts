@@ -159,9 +159,26 @@ export interface EventDispatchDoc extends BookEntry {
   startedAt: string | null;
   /** ISO timestamp when handler execution ended, or null if still pending. */
   endedAt: string | null;
-  /** Lifecycle state of this dispatch. */
-  status: 'pending' | 'success' | 'error';
-  /** Error text when `status === 'error'`, null otherwise. */
+  /**
+   * Lifecycle state of this dispatch.
+   *
+   *   - `'pending'` — dispatch row written, handler not yet attempted.
+   *   - `'success'` — handler ran and returned without throwing.
+   *   - `'error'`   — handler threw, OR the standing order's `run:`
+   *     name did not resolve to a registered relay.
+   *   - `'skipped'` — the dispatcher's loop-guard policy elided the
+   *     invocation (e.g. the triggering event was itself a
+   *     `standing-order.failed`). The relay was not called and no
+   *     `standing-order.failed` event was emitted; this is policy
+   *     suppression, not a failure, and must not count toward operator
+   *     error metrics.
+   */
+  status: 'pending' | 'success' | 'error' | 'skipped';
+  /**
+   * Error text when `status === 'error'`, the loop-guard reason
+   * (prefixed with `loop-guard:`) when `status === 'skipped'`, and
+   * null otherwise.
+   */
   error: string | null;
 }
 
@@ -254,6 +271,13 @@ export interface ClockworksApi {
     processedEvents: number;
     dispatches: number;
     errors: number;
+    /**
+     * Subset of `dispatches` whose `status` is `'skipped'` — rows the
+     * dispatcher's loop-guard suppressed without invoking the relay.
+     * Reported separately so callers can surface loop-guard activity
+     * without conflating it with real failures (`errors`).
+     */
+    skipped: number;
   }>;
 }
 
@@ -263,12 +287,23 @@ export interface ClockworksApi {
  * Every field the CLI's per-dispatch summary line needs without
  * forcing a second book read. `durationMs` is `endedAt - startedAt`
  * computed by the dispatcher.
+ *
+ * `status` mirrors the persisted `EventDispatchDoc.status` shape (sans
+ * the `'pending'` variant, which observers never see — observations
+ * fire after the row reaches a terminal state):
+ *
+ *   - `'success'` / `'error'` — relay was invoked; outcome captured.
+ *   - `'skipped'` — dispatcher's loop-guard suppressed the invocation.
+ *     The relay was not called, no `standing-order.failed` event was
+ *     emitted, and `error` carries the loop-guard reason (prefixed
+ *     with `loop-guard:`). Observers that count failures must skip
+ *     this status — it is not a failure.
  */
 export interface DispatchObservation {
   eventId: string;
   eventName: string;
   handlerName: string;
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'skipped';
   durationMs: number;
   error: string | null;
 }

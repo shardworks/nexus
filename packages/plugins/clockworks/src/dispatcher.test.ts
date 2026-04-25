@@ -38,7 +38,10 @@ import { createStacksApparatus } from '@shardworks/stacks-apparatus';
 import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { Book, StacksApi } from '@shardworks/stacks-apparatus';
 
-import { runDispatchSweep } from './dispatcher.ts';
+import {
+  runDispatchSweep,
+  type StandingOrderFailedPayload,
+} from './dispatcher.ts';
 import { relay, type RelayDefinition, type GuildEvent, type RelayContext } from './relay.ts';
 import type { EventDispatchDoc, EventDoc, StandingOrder } from './types.ts';
 
@@ -168,7 +171,7 @@ describe('runDispatchSweep — empty queue', () => {
       home: '/tmp/test-guild',
       now: makeClock(),
     });
-    assert.deepEqual(summary, { processedEvents: 0, dispatches: 0, errors: 0 });
+    assert.deepEqual(summary, { processedEvents: 0, dispatches: 0, errors: 0, skipped: 0 });
     assert.equal((await fix.allDispatches()).length, 0);
     assert.equal((await fix.allEvents()).length, 0);
   });
@@ -203,7 +206,7 @@ describe('runDispatchSweep — happy path', () => {
       now: makeClock('2026-04-25T00:00:00.000Z'),
     });
 
-    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 0 });
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 0, skipped: 0 });
     assert.equal(invoked, 1);
     assert.deepEqual(receivedEvent, {
       id: event.id,
@@ -299,7 +302,7 @@ describe('runDispatchSweep — multiple matching orders', () => {
       now: makeClock(),
     });
 
-    assert.deepEqual(summary, { processedEvents: 1, dispatches: 2, errors: 0 });
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 2, errors: 0, skipped: 0 });
     assert.deepEqual(callLog, ['first', 'second']);
     const rows = await fix.allDispatches();
     assert.equal(rows.length, 2);
@@ -320,7 +323,7 @@ describe('runDispatchSweep — multiple matching orders', () => {
       home: '/h',
       now: makeClock(),
     });
-    assert.deepEqual(summary, { processedEvents: 1, dispatches: 0, errors: 0 });
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 0, errors: 0, skipped: 0 });
     assert.equal((await fix.allDispatches()).length, 0);
     const stored = await fix.events.get(event.id);
     assert.equal(stored?.processed, true);
@@ -343,7 +346,7 @@ describe('runDispatchSweep — error paths', () => {
       now: makeClock(),
     });
 
-    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 1 });
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 1, skipped: 0 });
     const rows = await fix.allDispatches();
     assert.equal(rows.length, 1);
     assert.equal(rows[0].status, 'error');
@@ -406,7 +409,7 @@ describe('runDispatchSweep — error paths', () => {
       now: makeClock(),
     });
 
-    assert.deepEqual(summary, { processedEvents: 1, dispatches: 2, errors: 1 });
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 2, errors: 1, skipped: 0 });
     assert.equal(invoked, 1);
     const stored = await fix.events.get(event.id);
     assert.equal(stored?.processed, true);
@@ -431,7 +434,7 @@ describe('runDispatchSweep — error paths', () => {
       now: makeClock(),
     });
 
-    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 1 });
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 1, skipped: 0 });
     const rows = await fix.allDispatches();
     assert.equal(rows.length, 1);
     assert.equal(rows[0].status, 'error');
@@ -486,7 +489,7 @@ describe('runDispatchSweep — error paths', () => {
       now: makeClock(),
     });
 
-    assert.deepEqual(summary, { processedEvents: 1, dispatches: 2, errors: 1 });
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 2, errors: 1, skipped: 0 });
     assert.equal(goodRan, 1);
     const stored = await fix.events.get(event.id);
     assert.equal(stored?.processed, true);
@@ -527,7 +530,7 @@ describe('runDispatchSweep — N-event ordering', () => {
       now: makeClock(),
     });
 
-    assert.deepEqual(summary, { processedEvents: 3, dispatches: 6, errors: 0 });
+    assert.deepEqual(summary, { processedEvents: 3, dispatches: 6, errors: 0, skipped: 0 });
     // Each event's two invocations must come before the next event's,
     // walking the queue in id-ascending order.
     assert.deepEqual(callOrder, [
@@ -599,7 +602,7 @@ describe('runDispatchSweep — single-event mode (max=1)', () => {
       max: 1,
     });
 
-    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 0 });
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 0, skipped: 0 });
     assert.equal(invoked, 1);
     // First event in id-ascending order is processed; the others stay
     // pending so a follow-up sweep can pick them up.
@@ -677,7 +680,7 @@ describe('runDispatchSweep — eventId filter', () => {
       eventId: e2.id,
     });
 
-    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 0 });
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 0, skipped: 0 });
     assert.equal(invoked, 1);
     // Only e2 was flipped — e1 must remain pending.
     assert.equal((await fix.events.get(e1.id))?.processed, false);
@@ -700,7 +703,7 @@ describe('runDispatchSweep — eventId filter', () => {
       eventId: e.id,
     });
 
-    assert.deepEqual(summary, { processedEvents: 0, dispatches: 0, errors: 0 });
+    assert.deepEqual(summary, { processedEvents: 0, dispatches: 0, errors: 0, skipped: 0 });
   });
 
   it('returns zero when the targeted event id is unknown', async () => {
@@ -718,7 +721,7 @@ describe('runDispatchSweep — eventId filter', () => {
       eventId: 'e-does-not-exist',
     });
 
-    assert.deepEqual(summary, { processedEvents: 0, dispatches: 0, errors: 0 });
+    assert.deepEqual(summary, { processedEvents: 0, dispatches: 0, errors: 0, skipped: 0 });
   });
 });
 
@@ -844,7 +847,7 @@ describe('runDispatchSweep — observer hook', () => {
     // Loop completed — both events processed, both rows written for
     // each event, and the observer was called four times despite
     // throwing on every call.
-    assert.deepEqual(summary, { processedEvents: 2, dispatches: 4, errors: 0 });
+    assert.deepEqual(summary, { processedEvents: 2, dispatches: 4, errors: 0, skipped: 0 });
     assert.equal(invocations, 4);
   });
 
@@ -939,5 +942,278 @@ describe('runDispatchSweep — validator integration', () => {
     assert.equal(rows.length, 1);
     assert.ok(rows[0].startedAt && rows[0].startedAt >= before);
     assert.ok(rows[0].endedAt && rows[0].endedAt <= after);
+  });
+});
+
+// ── standing-order.failed signaling & loop-guard ─────────────────────
+
+describe('runDispatchSweep — standing-order.failed signaling', () => {
+  afterEach(() => clearGuild());
+
+  it('a thrown relay invokes signalStandingOrderFailed once with the verbatim order, {id,name}-only event, and the row error', async () => {
+    const fix = await buildSweepFixture();
+    fix.registerRelay(
+      relay({
+        name: 'boom',
+        handler: () => { throw new Error('relay exploded'); },
+      }),
+    );
+    const event = await fix.emitEvent('demo.boom', { foo: 'bar' }, 'tester');
+
+    const signaled: StandingOrderFailedPayload[] = [];
+    const order: StandingOrder = {
+      on: 'demo.boom',
+      run: 'boom',
+      with: { level: 'info' },
+    };
+    const summary = await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [order],
+      home: '/h',
+      now: makeClock(),
+      signalStandingOrderFailed: async (payload) => {
+        signaled.push(payload);
+      },
+    });
+
+    // Row + summary contracts unchanged from the existing throw test.
+    const rows = await fix.allDispatches();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].status, 'error');
+    assert.equal(rows[0].error, 'relay exploded');
+    assert.deepEqual(summary, {
+      processedEvents: 1,
+      dispatches: 1,
+      errors: 1,
+      skipped: 0,
+    });
+
+    // SOF payload: verbatim order (D5), {id,name}-only triggering
+    // event (D6), error string identical to the dispatch row (D7).
+    assert.equal(signaled.length, 1);
+    assert.deepEqual(signaled[0].standingOrder, order);
+    assert.deepEqual(signaled[0].triggeringEvent, {
+      id: event.id,
+      name: 'demo.boom',
+    });
+    assert.equal(signaled[0].error, 'relay exploded');
+    // No payload / emitter / firedAt leakage in the projection.
+    assert.deepEqual(
+      Object.keys(signaled[0].triggeringEvent).sort(),
+      ['id', 'name'],
+    );
+  });
+
+  it('an unresolved relay invokes signalStandingOrderFailed with the canonical unresolved-relay message', async () => {
+    const fix = await buildSweepFixture();
+    const event = await fix.emitEvent('demo.unresolved');
+
+    const signaled: StandingOrderFailedPayload[] = [];
+    const order: StandingOrder = { on: 'demo.unresolved', run: 'missing-relay' };
+    await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [order],
+      home: '/h',
+      now: makeClock(),
+      signalStandingOrderFailed: async (payload) => {
+        signaled.push(payload);
+      },
+    });
+
+    assert.equal(signaled.length, 1);
+    assert.deepEqual(signaled[0].standingOrder, order);
+    assert.deepEqual(signaled[0].triggeringEvent, {
+      id: event.id,
+      name: 'demo.unresolved',
+    });
+    // The canonical unresolved-relay message — same string as the row.
+    assert.equal(
+      signaled[0].error,
+      'clockworks: relay "missing-relay" referenced by standing order 0 is not registered.',
+    );
+  });
+
+  it('loop-guard: an event whose payload.triggeringEvent.name is "standing-order.failed" produces a skipped row, no relay call, no SOF', async () => {
+    const fix = await buildSweepFixture();
+    let invoked = 0;
+    fix.registerRelay(
+      relay({ name: 'react-to-fail', handler: () => { invoked += 1; } }),
+    );
+
+    // Construct an event that LOOKS like a SOF event — that is the
+    // shape the dispatcher's loop-guard probes for. The payload mirrors
+    // what the apparatus's `signalStandingOrderFailed` lambda forwards
+    // through `api.emit`.
+    const triggering = await fix.emitEvent(
+      'standing-order.failed',
+      {
+        standingOrder: { on: 'whatever', run: 'react-to-fail' },
+        triggeringEvent: { id: 'e-original', name: 'standing-order.failed' },
+        error: 'simulated cascade',
+      },
+      'framework',
+    );
+
+    const signaled: StandingOrderFailedPayload[] = [];
+    const observed: Array<{ status: string; error: string | null; durationMs: number; handlerName: string }> = [];
+    const summary = await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [{ on: 'standing-order.failed', run: 'react-to-fail' }],
+      home: '/h',
+      now: makeClock('2026-01-01T00:00:00.000Z'),
+      onDispatch: (obs) => {
+        observed.push({
+          status: obs.status,
+          error: obs.error,
+          durationMs: obs.durationMs,
+          handlerName: obs.handlerName,
+        });
+      },
+      signalStandingOrderFailed: async (payload) => {
+        signaled.push(payload);
+      },
+    });
+
+    // Relay was NOT called.
+    assert.equal(invoked, 0);
+    // Counters: skipped=1, errors=0, dispatches=1.
+    assert.deepEqual(summary, {
+      processedEvents: 1,
+      dispatches: 1,
+      errors: 0,
+      skipped: 1,
+    });
+    // Persisted row: status=skipped, handlerName=order.run, error
+    // begins with `loop-guard:`, both timestamps equal, durationMs
+    // observed as 0.
+    const rows = await fix.allDispatches();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].status, 'skipped');
+    assert.equal(rows[0].handlerName, 'react-to-fail');
+    assert.ok(rows[0].error?.startsWith('loop-guard:'));
+    assert.equal(rows[0].startedAt, rows[0].endedAt);
+    // Observer fires once per skipped row (D12).
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0].status, 'skipped');
+    assert.equal(observed[0].handlerName, 'react-to-fail');
+    assert.equal(observed[0].durationMs, 0);
+    assert.ok(observed[0].error?.startsWith('loop-guard:'));
+    // No fresh SOF (D14).
+    assert.equal(signaled.length, 0);
+    // Event still flips to processed.
+    assert.equal((await fix.events.get(triggering.id))?.processed, true);
+  });
+
+  it('loop-guard does not engage on the original failure: a non-SOF event whose handler throws DOES emit SOF', async () => {
+    const fix = await buildSweepFixture();
+    fix.registerRelay(
+      relay({
+        name: 'boom',
+        handler: () => { throw new Error('one'); },
+      }),
+    );
+    // A regular event whose payload has nothing resembling
+    // triggeringEvent — the loop-guard must not engage.
+    await fix.emitEvent('demo.regular', { unrelated: true });
+
+    const signaled: StandingOrderFailedPayload[] = [];
+    await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [{ on: 'demo.regular', run: 'boom' }],
+      home: '/h',
+      now: makeClock(),
+      signalStandingOrderFailed: async (payload) => {
+        signaled.push(payload);
+      },
+    });
+
+    // Failure path emitted SOF; the row is an error, not a skip.
+    assert.equal(signaled.length, 1);
+    const rows = await fix.allDispatches();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].status, 'error');
+  });
+
+  it('a throwing signalStandingOrderFailed is caught: the sweep continues, the dispatch row remains persisted, console.warn is called', async () => {
+    const fix = await buildSweepFixture();
+    fix.registerRelay(
+      relay({
+        name: 'boom',
+        handler: () => { throw new Error('first explode'); },
+      }),
+    );
+    fix.registerRelay(
+      relay({
+        name: 'good',
+        handler: () => { /* no-op */ },
+      }),
+    );
+    await fix.emitEvent('demo.first');
+    await fix.emitEvent('demo.second');
+
+    // Capture console.warn so we can assert the dispatcher logged the
+    // emit failure with the triggering event id and the throw message.
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]): void => {
+      warnings.push(args.map(String).join(' '));
+    };
+
+    let signalCalls = 0;
+    let summary;
+    try {
+      summary = await runDispatchSweep({
+        events: fix.events,
+        dispatches: fix.dispatches,
+        resolveRelay: fix.resolveRelay,
+        standingOrders: [
+          { on: 'demo.first', run: 'boom' },
+          { on: 'demo.second', run: 'good' },
+        ],
+        home: '/h',
+        now: makeClock(),
+        signalStandingOrderFailed: async () => {
+          signalCalls += 1;
+          throw new Error('emit blew up');
+        },
+      });
+    } finally {
+      console.warn = origWarn;
+    }
+
+    // Sibling event still processed despite the SOF emit failure on
+    // the first event.
+    assert.deepEqual(summary, {
+      processedEvents: 2,
+      dispatches: 2,
+      errors: 1,
+      skipped: 0,
+    });
+    // Both rows persisted — the emit failure happens AFTER the row
+    // write, so the persisted record of the underlying error stays
+    // intact.
+    const rows = await fix.allDispatches();
+    assert.equal(rows.length, 2);
+    assert.equal(rows.filter((r) => r.status === 'error').length, 1);
+    // Signal callback was invoked exactly once (only the failure path).
+    assert.equal(signalCalls, 1);
+    // The throw was logged via console.warn.
+    assert.ok(
+      warnings.some(
+        (w) =>
+          w.includes('[clockworks]') &&
+          w.includes('standing-order.failed') &&
+          w.includes('emit blew up'),
+      ),
+      `expected dispatcher console.warn for emit failure; got: ${warnings.join(' | ')}`,
+    );
   });
 });

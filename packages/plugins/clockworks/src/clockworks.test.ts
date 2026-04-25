@@ -752,7 +752,7 @@ describe('Clockworks — processEvents integration', () => {
     const eventId = await fix.clockworks.emit('demo.thing', { foo: 1 }, 'tester');
     const summary = await fix.clockworks.processEvents();
 
-    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 0 });
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 0, skipped: 0 });
     assert.deepEqual(received, {
       eventName: 'demo.thing',
       home: '/tmp/test-guild',
@@ -791,7 +791,7 @@ describe('Clockworks — processEvents integration', () => {
     const eventId = await fix.clockworks.emit('demo.boom', null, 'tester');
     const summary = await fix.clockworks.processEvents();
 
-    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 1 });
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 1, skipped: 0 });
     const rows = await fix.dispatches.list();
     assert.equal(rows.length, 1);
     assert.equal(rows[0].status, 'error');
@@ -803,7 +803,7 @@ describe('Clockworks — processEvents integration', () => {
   it('returns zero counts on an empty queue and writes nothing', async () => {
     const fix = await buildDispatchFixture();
     const summary = await fix.clockworks.processEvents();
-    assert.deepEqual(summary, { processedEvents: 0, dispatches: 0, errors: 0 });
+    assert.deepEqual(summary, { processedEvents: 0, dispatches: 0, errors: 0, skipped: 0 });
     assert.equal(await fix.events.count(), 0);
     assert.equal(await fix.dispatches.count(), 0);
   });
@@ -854,7 +854,7 @@ describe('Clockworks — processEvents integration', () => {
       },
     });
 
-    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 0 });
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 0, skipped: 0 });
     assert.deepEqual(observed, [{ eventId: target, status: 'success' }]);
 
     // Now confirm `max` similarly threads through. Two pending events
@@ -890,5 +890,126 @@ describe('Clockworks — processEvents integration', () => {
     const summary = await fix.clockworks.processEvents();
     assert.equal(summary.processedEvents, 1);
     assert.equal(invoked, 1);
+  });
+
+  it('end-to-end SOF emit + loop-guard cycle through the apparatus surface', async () => {
+    // Two relays — both throw — and two standing orders. The second
+    // order is bound to `standing-order.failed`, so when SOF#1 is
+    // dispatched its handler will also throw, emitting SOF#2. Per D9
+    // and the architecture doc, the loop-guard only engages on
+    // SECOND-generation SOFs (whose `payload.triggeringEvent.name`
+    // equals `'standing-order.failed'`). It therefore takes three
+    // sweeps to drive the full cascade-then-suppress cycle:
+    //
+    //   sweep 1: process the original event → boomA throws → SOF#1
+    //            emitted (triggeringEvent.name = 'demo.cycle').
+    //   sweep 2: process SOF#1 → boomB throws → SOF#2 emitted
+    //            (triggeringEvent.name = 'standing-order.failed').
+    //   sweep 3: process SOF#2 → loop-guard engages, `'skipped'` row
+    //            written, no fresh SOF emitted (D14).
+    const boomA = relay({
+      name: 'boomA',
+      handler: () => { throw new Error('first explode'); },
+    });
+    const boomB = relay({
+      name: 'boomB',
+      handler: () => { throw new Error('second explode'); },
+    });
+    const fix = await buildDispatchFixture({
+      standingOrders: [
+        { on: 'demo.cycle', run: 'boomA' },
+        { on: 'standing-order.failed', run: 'boomB' },
+      ],
+      supportKitRelays: [boomA, boomB],
+    });
+
+    // ── Sweep 1 ────────────────────────────────────────────────────
+    const originalId = await fix.clockworks.emit(
+      'demo.cycle',
+      { hello: 'world' },
+      'tester',
+    );
+    const summary1 = await fix.clockworks.processEvents();
+    assert.deepEqual(summary1, {
+      processedEvents: 1,
+      dispatches: 1,
+      errors: 1,
+      skipped: 0,
+    });
+    // A fresh SOF event appears in the events book with the spec'd
+    // payload shape and emitter 'framework' (acceptance signal).
+    const sofAfterSweep1 = await fix.events.find({
+      where: [['name', '=', 'standing-order.failed']],
+      orderBy: [['id', 'asc']],
+    });
+    assert.equal(sofAfterSweep1.length, 1);
+    const sof1 = sofAfterSweep1[0];
+    assert.equal(sof1.emitter, 'framework');
+    const sof1Payload = sof1.payload as {
+      standingOrder: { on: string; run: string; with?: Record<string, unknown> };
+      triggeringEvent: { id: string; name: string };
+      error: string;
+    };
+    assert.deepEqual(sof1Payload.standingOrder, {
+      on: 'demo.cycle',
+      run: 'boomA',
+    });
+    assert.deepEqual(sof1Payload.triggeringEvent, {
+      id: originalId,
+      name: 'demo.cycle',
+    });
+    assert.equal(sof1Payload.error, 'first explode');
+
+    // ── Sweep 2 ────────────────────────────────────────────────────
+    // Process SOF#1 — boomB throws. Loop-guard does NOT engage because
+    // SOF#1's payload.triggeringEvent.name === 'demo.cycle'. A fresh
+    // SOF#2 is emitted whose triggeringEvent.name === 'standing-order.failed'.
+    const summary2 = await fix.clockworks.processEvents();
+    assert.deepEqual(summary2, {
+      processedEvents: 1,
+      dispatches: 1,
+      errors: 1,
+      skipped: 0,
+    });
+    const sofAfterSweep2 = await fix.events.find({
+      where: [['name', '=', 'standing-order.failed']],
+      orderBy: [['id', 'asc']],
+    });
+    assert.equal(sofAfterSweep2.length, 2);
+    // Find the second-generation SOF by content (id ordering is
+    // millisecond-stamped + random-suffixed, so sequential emits
+    // within a single ms collapse to suffix-order — we cannot rely
+    // on chronological order here).
+    const secondGenSof = sofAfterSweep2.find((e) => {
+      const p = e.payload as { triggeringEvent?: { name?: string } };
+      return p?.triggeringEvent?.name === 'standing-order.failed';
+    });
+    assert.ok(secondGenSof, 'a second-generation SOF must be present');
+
+    // ── Sweep 3 ────────────────────────────────────────────────────
+    // SOF#2's loop-guard fires. The relay is NOT invoked (no third
+    // SOF is emitted), a `'skipped'` row lands for the boomB handler,
+    // summary.skipped === 1 and summary.errors === 0.
+    const summary3 = await fix.clockworks.processEvents();
+    assert.deepEqual(summary3, {
+      processedEvents: 1,
+      dispatches: 1,
+      errors: 0,
+      skipped: 1,
+    });
+    const sofAfterSweep3 = await fix.events.find({
+      where: [['name', '=', 'standing-order.failed']],
+      orderBy: [['id', 'asc']],
+    });
+    // Cap the chain at depth 2 (D14) — sweep 3 emits no third SOF.
+    assert.equal(sofAfterSweep3.length, 2);
+    // Inspect the skipped dispatch row directly.
+    const skippedRows = (await fix.dispatches.list({
+      orderBy: [['startedAt', 'asc']],
+    })).filter((r) => r.status === 'skipped');
+    assert.equal(skippedRows.length, 1);
+    assert.equal(skippedRows[0].handlerName, 'boomB');
+    assert.ok(skippedRows[0].error?.startsWith('loop-guard:'));
+    assert.equal(skippedRows[0].startedAt, skippedRows[0].endedAt);
   });
 });

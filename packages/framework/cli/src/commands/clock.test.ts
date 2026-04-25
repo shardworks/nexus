@@ -39,7 +39,7 @@ interface DispatchObservationLike {
   eventId: string;
   eventName: string;
   handlerName: string;
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'skipped';
   durationMs: number;
   error: string | null;
 }
@@ -62,7 +62,7 @@ interface StoredEvent {
 interface StubFixture {
   events: StoredEvent[];
   /** Standing-order map: event name → list of (handlerName, status, error) tuples. */
-  orders: Map<string, Array<{ handler: string; status: 'success' | 'error'; error: string | null; durationMs: number }>>;
+  orders: Map<string, Array<{ handler: string; status: 'success' | 'error' | 'skipped'; error: string | null; durationMs: number }>>;
   /** Total processEvents() invocations — useful for run-loops asserts. */
   processCalls: number;
 }
@@ -140,6 +140,7 @@ function setupStubGuild(fixture: StubFixture): void {
       processedEvents: number;
       dispatches: number;
       errors: number;
+      skipped: number;
     }> {
       fixture.processCalls += 1;
       let candidates = fixture.events.filter((e) => !e.processed);
@@ -153,11 +154,13 @@ function setupStubGuild(fixture: StubFixture): void {
       let processedEvents = 0;
       let dispatches = 0;
       let errors = 0;
+      let skipped = 0;
       for (const ev of candidates) {
         const matchedOrders = fixture.orders.get(ev.name) ?? [];
         for (const order of matchedOrders) {
           dispatches += 1;
           if (order.status === 'error') errors += 1;
+          if (order.status === 'skipped') skipped += 1;
           opts?.onDispatch?.({
             eventId: ev.id,
             eventName: ev.name,
@@ -170,7 +173,7 @@ function setupStubGuild(fixture: StubFixture): void {
         ev.processed = true;
         processedEvents += 1;
       }
-      return { processedEvents, dispatches, errors };
+      return { processedEvents, dispatches, errors, skipped };
     },
   };
   apparatusMap.set('clockworks', clockworks);
@@ -291,6 +294,34 @@ describe('formatDispatchLine', () => {
         error: 'boom',
       }),
       '[r] error 4ms: boom',
+    );
+  });
+
+  it('renders skipped dispatches with the loop-guard reason (no durationMs)', () => {
+    assert.equal(
+      formatDispatchLine({
+        eventId: 'e-1',
+        eventName: 'standing-order.failed',
+        handlerName: 'react-to-fail',
+        status: 'skipped',
+        durationMs: 0,
+        error: 'loop-guard: triggering event was a standing-order.failed',
+      }),
+      '[react-to-fail] skipped: loop-guard: triggering event was a standing-order.failed',
+    );
+  });
+
+  it('renders skipped dispatches with no reason when error is null', () => {
+    assert.equal(
+      formatDispatchLine({
+        eventId: 'e-1',
+        eventName: 'standing-order.failed',
+        handlerName: 'react-to-fail',
+        status: 'skipped',
+        durationMs: 0,
+        error: null,
+      }),
+      '[react-to-fail] skipped',
     );
   });
 });
@@ -566,6 +597,34 @@ describe('runTick', () => {
       '[r2] error 2ms: boom!',
     ]);
   });
+
+  it('renders a skipped dispatch line and reports hadError=false (loop-guard skip stays exit 0)', async () => {
+    const fix = makeFixture();
+    fix.events.push({
+      id: 'e-1',
+      name: 'standing-order.failed',
+      payload: null,
+      emitter: 'framework',
+      firedAt: 't',
+      processed: false,
+    });
+    fix.orders.set('standing-order.failed', [
+      {
+        handler: 'react-to-fail',
+        status: 'skipped',
+        error: 'loop-guard: triggering event was a standing-order.failed',
+        durationMs: 0,
+      },
+    ]);
+    setupStubGuild(fix);
+
+    const out = await runTick({});
+    // hadError stays false for a skip-only sweep (exit 0).
+    assert.equal(out.hadError, false);
+    assert.deepEqual(out.lines, [
+      '[react-to-fail] skipped: loop-guard: triggering event was a standing-order.failed',
+    ]);
+  });
 });
 
 // ── runRun ───────────────────────────────────────────────────────────
@@ -638,7 +697,7 @@ describe('runRun', () => {
     apparatusMap.set('stacks', stacks);
     apparatusMap.set('clockworks', {
       async processEvents(opts?: ProcessEventsOptionsLike): Promise<{
-        processedEvents: number; dispatches: number; errors: number;
+        processedEvents: number; dispatches: number; errors: number; skipped: number;
       }> {
         calls += 1;
         const toProcess = fix.events.filter((e) => !e.processed);
@@ -671,6 +730,7 @@ describe('runRun', () => {
             0,
           ),
           errors: 0,
+          skipped: 0,
         };
       },
     });
@@ -718,6 +778,36 @@ describe('runRun', () => {
     assert.match(out.lines[0], /e-1 orphan\.event \(no matching standing orders\)/);
     assert.equal(out.lines[1], 'processed 1 events');
     assert.equal(out.hadError, false);
+  });
+
+  it('renders a skipped line during run and reports hadError=false (skip-only sweep stays exit 0)', async () => {
+    const fix = makeFixture();
+    fix.events.push({
+      id: 'e-1',
+      name: 'standing-order.failed',
+      payload: null,
+      emitter: 'framework',
+      firedAt: 't',
+      processed: false,
+    });
+    fix.orders.set('standing-order.failed', [
+      {
+        handler: 'react-to-fail',
+        status: 'skipped',
+        error: 'loop-guard: triggering event was a standing-order.failed',
+        durationMs: 0,
+      },
+    ]);
+    setupStubGuild(fix);
+
+    const out = await runRun();
+    assert.equal(out.hadError, false);
+    // Skipped dispatch line followed by the run summary; no error
+    // suffix flips the exit code.
+    assert.deepEqual(out.lines, [
+      '[react-to-fail] skipped: loop-guard: triggering event was a standing-order.failed',
+      'processed 1 events',
+    ]);
   });
 
   it('hadError=true when any dispatch in any iteration was an error', async () => {

@@ -214,12 +214,22 @@ export function createClockworks(): Plugin {
       // D11: per-call read of `home`. D21: pure dispatcher receives
       // every dependency by parameter so unit tests can drive it
       // without booting Stacks.
+      //
+      // The `signalStandingOrderFailed` lambda routes dispatcher
+      // failures back through the apparatus's own `emit()` path —
+      // re-using emit's payload pre-validation and id generation
+      // rather than re-implementing them here. The emitter string
+      // `'framework'` matches the events-table convention used by
+      // the CDC auto-wiring above.
       return runDispatchSweep({
         events,
         dispatches,
         resolveRelay: api.resolveRelay,
         standingOrders,
         home: g.home,
+        signalStandingOrderFailed: async (payload) => {
+          await api.emit('standing-order.failed', payload, 'framework');
+        },
         ...(opts?.eventId !== undefined ? { eventId: opts.eventId } : {}),
         ...(opts?.max !== undefined ? { max: opts.max } : {}),
         ...(opts?.onDispatch !== undefined ? { onDispatch: opts.onDispatch } : {}),

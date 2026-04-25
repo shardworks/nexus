@@ -48,7 +48,14 @@ interface DispatchObservationLike {
   eventId: string;
   eventName: string;
   handlerName: string;
-  status: 'success' | 'error';
+  /**
+   * Mirrors `DispatchObservation.status` from the clockworks
+   * apparatus. The `'skipped'` variant covers loop-guard
+   * suppression — the relay was not invoked, no SOF was emitted, and
+   * `error` carries the loop-guard reason. Skipped rows must not
+   * count toward operator error metrics or the CLI exit code.
+   */
+  status: 'success' | 'error' | 'skipped';
   durationMs: number;
   error: string | null;
 }
@@ -63,6 +70,13 @@ interface ProcessEventsSummaryLike {
   processedEvents: number;
   dispatches: number;
   errors: number;
+  /**
+   * Subset of `dispatches` whose status is `'skipped'`. Reported
+   * separately from `errors` so the CLI exit code stays based on
+   * real failures only — loop-guard skips are policy decisions, not
+   * problems the operator needs to act on.
+   */
+  skipped: number;
 }
 
 interface ClockworksApiLike {
@@ -154,8 +168,19 @@ export function formatEventBlock(event: EventDocLike): string {
  * line emitted by `tick` and `run`. Per D10:
  *   `[<handlerName>] <status> <durationMs>ms`
  * With `: <error>` appended on the same line when `status` is error.
+ *
+ * Loop-guard `'skipped'` rows render as
+ *   `[<handlerName>] skipped: <loop-guard reason>`
+ * — the same colon-then-message convention as the error arm so output
+ * stays parseable. Skipped lines do NOT include a duration (the
+ * dispatcher never invoked the relay; surfacing `0ms` would only
+ * mislead operators).
  */
 export function formatDispatchLine(obs: DispatchObservationLike): string {
+  if (obs.status === 'skipped') {
+    const head = `[${obs.handlerName}] skipped`;
+    return obs.error ? `${head}: ${obs.error}` : head;
+  }
   const head = `[${obs.handlerName}] ${obs.status} ${obs.durationMs}ms`;
   if (obs.status === 'error' && obs.error) {
     return `${head}: ${obs.error}`;

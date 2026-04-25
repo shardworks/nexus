@@ -45,15 +45,26 @@ import type {
 export type { DispatchObservation } from './types.ts';
 
 /**
- * Counts returned by a single sweep. `processedEvents` is the count
- * of events whose `processed` flag was flipped to true; `dispatches`
- * is the total number of dispatch rows written across every event;
- * `errors` is the subset of those rows whose `status` is `'error'`.
+ * Counts returned by a single sweep.
+ *
+ *   - `processedEvents` — events whose `processed` flag was flipped
+ *     to true this sweep.
+ *   - `dispatches` — total number of dispatch rows written across
+ *     every event (every status variant counted).
+ *   - `errors` — subset of `dispatches` whose `status` is `'error'`.
+ *     Loop-guard `'skipped'` rows do NOT increment this counter:
+ *     skips are policy decisions, not failures, and conflating them
+ *     would break exit-code semantics in the CLI.
+ *   - `skipped` — subset of `dispatches` whose `status` is
+ *     `'skipped'`. Surfaced as a distinct counter so operators can
+ *     see loop-guard activity without flipping a non-zero exit code
+ *     on every cascade-suppressed `standing-order.failed` event.
  */
 export interface DispatchSummary {
   processedEvents: number;
   dispatches: number;
   errors: number;
+  skipped: number;
 }
 
 /**
@@ -104,6 +115,39 @@ export interface DispatchSweepInputs {
    * CLI via the events-book read it does either way.
    */
   onDispatch?: (observation: DispatchObservation) => void;
+  /**
+   * Optional callback invoked once per real failure (thrown relay or
+   * unresolved relay) so the apparatus can re-emit the failure as a
+   * `standing-order.failed` event into the events book. The dispatcher
+   * never invokes this for loop-guard `'skipped'` rows — emitting on a
+   * skip would re-open the cascade the guard exists to suppress.
+   *
+   * The callback is wrapped in try/catch by the dispatcher: if the
+   * callback throws, the dispatch row that preceded it stays
+   * persisted, the throw is logged via `console.warn`, and the sweep
+   * continues. This mirrors the per-observer isolation idiom used for
+   * `onDispatch`.
+   */
+  signalStandingOrderFailed?: (
+    payload: StandingOrderFailedPayload,
+  ) => Promise<void> | void;
+}
+
+/**
+ * Payload shape signalled out via `signalStandingOrderFailed`. Mirrors
+ * the field set the apparatus then forwards through `api.emit`. The
+ * triggering-event projection is intentionally narrowed to `id` and
+ * `name` only — the loop-guard reads `payload.triggeringEvent.name`
+ * defensively, so any larger projection would just expand the cost of
+ * a JSON serialize without giving consumers anything actionable.
+ */
+export interface StandingOrderFailedPayload {
+  /** The standing order that failed, verbatim from the config array. */
+  standingOrder: StandingOrder;
+  /** Minimal projection of the event that triggered the failed dispatch. */
+  triggeringEvent: { id: string; name: string };
+  /** The same error string written to the dispatch row's `error` column. */
+  error: string;
 }
 
 /**
@@ -126,6 +170,7 @@ export async function runDispatchSweep(
     eventId,
     max,
     onDispatch,
+    signalStandingOrderFailed,
   } = inputs;
 
   // D3, D4, D26: re-validate every sweep; aggregated throw on any
@@ -160,6 +205,7 @@ export async function runDispatchSweep(
     processedEvents: 0,
     dispatches: 0,
     errors: 0,
+    skipped: 0,
   };
 
   for (const eventDoc of pending) {
@@ -172,6 +218,15 @@ export async function runDispatchSweep(
       emitter: eventDoc.emitter,
       firedAt: eventDoc.firedAt,
     };
+
+    // D9, D15: cheap per-event probe of the loop-guard condition.
+    // We read the persisted payload defensively against arbitrary
+    // shape — `payload` is `unknown` and only the immediate
+    // `triggeringEvent.name` field is consulted (D15 caps the check
+    // at one level, since D14 suppresses dispatcher-emitted SOF on
+    // the skipped row, so chains never exceed depth two via the
+    // dispatcher's own emissions).
+    const isLoopGuardEvent = isStandingOrderFailedTrigger(eventDoc.payload);
 
     // D8: match purely on string equality of `on:`. Undeclared event
     // names naturally match no orders. Orders are visited in
@@ -192,6 +247,8 @@ export async function runDispatchSweep(
         now,
         summary,
         onDispatch,
+        signalStandingOrderFailed,
+        isLoopGuardEvent,
       });
     }
 
@@ -216,6 +273,15 @@ interface DispatchOrderInputs {
   now: () => string;
   summary: DispatchSummary;
   onDispatch?: (observation: DispatchObservation) => void;
+  signalStandingOrderFailed?: (
+    payload: StandingOrderFailedPayload,
+  ) => Promise<void> | void;
+  /**
+   * Pre-computed loop-guard flag (D9, D13). Set per event in
+   * `runDispatchSweep` so the per-order branch is a single boolean
+   * read; D13 puts the branch first inside `dispatchOrder`.
+   */
+  isLoopGuardEvent: boolean;
 }
 
 /**
@@ -236,10 +302,42 @@ async function dispatchOrder(args: DispatchOrderInputs): Promise<void> {
     now,
     summary,
     onDispatch,
+    signalStandingOrderFailed,
+    isLoopGuardEvent,
   } = args;
 
   const handlerName = order.run;
   const params: Record<string, unknown> = order.with ?? {};
+
+  // D13, D14, D18, D19: loop-guard branch sits FIRST so the relay is
+  // never resolved, never invoked, and no SOF event is emitted on
+  // skipped rows. The persisted row carries the loop-guard reason in
+  // its `error` column (D10) and uses the unresolved-relay timestamp
+  // convention (`startedAt = endedAt = now()`, durationMs = 0).
+  if (isLoopGuardEvent) {
+    const ts = now();
+    const reason = 'loop-guard: triggering event was a standing-order.failed';
+    await writeDispatchRow({
+      dispatches,
+      eventId: eventDoc.id,
+      handlerName,
+      startedAt: ts,
+      endedAt: ts,
+      status: 'skipped',
+      error: reason,
+    });
+    summary.dispatches += 1;
+    summary.skipped += 1;
+    notifyObserver(onDispatch, {
+      eventId: eventDoc.id,
+      eventName: eventDoc.name,
+      handlerName,
+      status: 'skipped',
+      durationMs: 0,
+      error: reason,
+    });
+    return;
+  }
 
   // D20: unresolved relay produces one error row with the
   // index-naming message and does not block sibling orders.
@@ -264,6 +362,14 @@ async function dispatchOrder(args: DispatchOrderInputs): Promise<void> {
       handlerName,
       status: 'error',
       durationMs: 0,
+      error: errorMsg,
+    });
+    // D3, D7: SOF emission for the unresolved-relay failure path.
+    // The same string already written to the row's error column is
+    // forwarded so subscribers can correlate (eventId, handlerName).
+    await signalFailure(signalStandingOrderFailed, {
+      standingOrder: order,
+      triggeringEvent: { id: eventDoc.id, name: eventDoc.name },
       error: errorMsg,
     });
     return;
@@ -309,6 +415,16 @@ async function dispatchOrder(args: DispatchOrderInputs): Promise<void> {
     durationMs: computeDurationMs(startedAt, endedAt),
     error,
   });
+  // D3, D7: SOF emission for the thrown-relay failure path. Mirror
+  // the unresolved-relay branch; the same string already written to
+  // the dispatch row is forwarded to the apparatus.
+  if (status === 'error') {
+    await signalFailure(signalStandingOrderFailed, {
+      standingOrder: order,
+      triggeringEvent: { id: eventDoc.id, name: eventDoc.name },
+      error: error ?? '',
+    });
+  }
 }
 
 /**
@@ -345,13 +461,59 @@ function notifyObserver(
   }
 }
 
+/**
+ * Invoke the failure callback with isolation: a thrown callback is
+ * caught and logged via `console.warn`, then the sweep continues. The
+ * dispatch row that triggered the SOF emit is already persisted by
+ * the time we land here, so the operator-visible record of the
+ * underlying failure stays intact even when emission itself misfires
+ * (D4). Mirrors the `notifyObserver` idiom used for the per-dispatch
+ * observer.
+ */
+async function signalFailure(
+  signaler:
+    | ((payload: StandingOrderFailedPayload) => Promise<void> | void)
+    | undefined,
+  payload: StandingOrderFailedPayload,
+): Promise<void> {
+  if (!signaler) return;
+  try {
+    await signaler(payload);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[clockworks] failed to emit standing-order.failed for event "${payload.triggeringEvent.id}": ${message}`,
+    );
+  }
+}
+
+/**
+ * Defensive probe: returns true when `payload` looks like the SOF
+ * payload shape this dispatcher writes. Only `triggeringEvent.name`
+ * is consulted (D15: immediate-parent only); arbitrary payload shapes
+ * (null, primitives, arrays, foreign objects) safely return false.
+ *
+ * Exported for unit-test introspection — the production caller is the
+ * per-event probe in `runDispatchSweep`.
+ */
+export function isStandingOrderFailedTrigger(payload: unknown): boolean {
+  if (typeof payload !== 'object' || payload === null) return false;
+  const triggering = (payload as { triggeringEvent?: unknown }).triggeringEvent;
+  if (typeof triggering !== 'object' || triggering === null) return false;
+  const name = (triggering as { name?: unknown }).name;
+  return name === 'standing-order.failed';
+}
+
 interface WriteDispatchInputs {
   dispatches: Book<EventDispatchDoc>;
   eventId: string;
   handlerName: string;
   startedAt: string;
   endedAt: string;
-  status: 'success' | 'error';
+  // `'pending'` is part of the persisted row's union but the dispatcher
+  // only ever writes terminal rows in this commission, so the input
+  // shape is deliberately narrowed to the terminal subset.
+  status: 'success' | 'error' | 'skipped';
   error: string | null;
 }
 
