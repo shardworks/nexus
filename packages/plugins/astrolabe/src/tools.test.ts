@@ -76,6 +76,11 @@ function setup() {
     indexes: ['status', 'codex', 'createdAt'],
   });
 
+  // Stub clerk apparatus — astrolabe's start() now calls
+  // `clerk.registerWritType(...)` for piece and observation-set, so the
+  // test harness must surface a stub that absorbs those calls.
+  apparatusMap.set('clerk', { registerWritType() {} });
+
   // Start astrolabe
   const astrolabeApparatus = (astrolabePlugin as {
     apparatus: { start: (ctx: StartupContext) => void; provides: unknown };

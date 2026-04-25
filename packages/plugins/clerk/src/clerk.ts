@@ -145,6 +145,37 @@ const MANDATE_CONFIG: WritTypeConfig = {
   ],
 };
 
+/**
+ * Return a deep clone of `MANDATE_CONFIG` rebranded with `name`, with the
+ * `initial` classification moved from `new` to `open` and `new` dropped
+ * entirely. Used by the start()-time bridge that mirrors legacy config/kit-
+ * contributed writ types into the new registry. The pre-refactor implicit
+ * assumption was that every contributed writ type flowed through the same
+ * mandate phase machine *minus* the draft step — kit/guild-config types
+ * posted directly to `open` with no `new` phase. This clone preserves that
+ * behaviour: posts of a bridged type land in `open`, no `new` state exists,
+ * and the remaining transitions are stripped of any reference to `new`.
+ * Only mandate itself keeps `new` as its declared initial state. The bridge
+ * (and this helper) go away once the legacy kit/guild-config writTypes
+ * channels are deleted.
+ */
+function cloneMandateConfigAs(name: string): WritTypeConfig {
+  return {
+    name,
+    states: MANDATE_CONFIG.states
+      .filter((s) => s.name !== 'new')
+      .map((s) => {
+        const classification = s.name === 'open' ? 'initial' : s.classification;
+        return {
+          name: s.name,
+          classification,
+          ...(s.attrs !== undefined ? { attrs: [...s.attrs] } : {}),
+          allowedTransitions: s.allowedTransitions.filter((t) => t !== 'new'),
+        };
+      }),
+  };
+}
+
 // ── Cascade resolution constants ─────────────────────────────────────
 
 /**
@@ -157,23 +188,18 @@ const MANDATE_CONFIG: WritTypeConfig = {
 export const CASCADE_PARENT_TERMINATION_RESOLUTION =
   'Automatically cancelled due to parent termination';
 
-// ── Phase machine ────────────────────────────────────────────────────
+// ── Cascade residue (deleted in T5 alongside the cascade itself) ──────
 
-const ALLOWED_FROM: Record<WritPhase, WritPhase[]> = {
-  open: ['new', 'stuck'],
-  stuck: ['open'],
-  completed: ['open'],
-  failed: ['open', 'stuck'],
-  cancelled: ['new', 'open', 'stuck'],
-  new: [],
-};
-
+/**
+ * Set of mandate-specific terminal phase names still referenced by the CDC
+ * cascade handlers. The cascade is removed in the next task in this
+ * commission; the set goes with it. `post()` and `transition()` no longer
+ * depend on this literal — they route through the new registry-driven
+ * classification predicates.
+ */
 const TERMINAL_PHASES = new Set<WritPhase>(['completed', 'failed', 'cancelled']);
 
 // ── Factory ──────────────────────────────────────────────────────────
-
-/** Parent phases that allow adding children. */
-const CHILD_ALLOWED_PARENT_PHASES = new Set<WritPhase>(['new', 'open', 'stuck']);
 
 export function createClerk(): Plugin {
   let stacks: StacksApi;
@@ -265,6 +291,34 @@ export function createClerk(): Plugin {
       );
     }
     return state.classification;
+  }
+
+  /**
+   * Return the state classified `initial` for a registered writ type, or
+   * throw when the type is not registered. The validator guarantees
+   * exactly-one `initial` state per registered config, so the find() is
+   * total.
+   */
+  function resolveInitialState(typeName: string): string {
+    const config = writTypeRegistry.get(typeName);
+    if (!config) {
+      throw new Error(
+        `Unknown writ type "${typeName}". Registered types: ${
+          writTypeRegistry.size === 0
+            ? '(none)'
+            : [...writTypeRegistry.keys()].join(', ')
+        }.`,
+      );
+    }
+    const initial = config.states.find((s) => s.classification === 'initial');
+    if (!initial) {
+      // validateWritTypeConfig() enforces exactly-one `initial` state, so this
+      // branch is only reachable if the validator's invariants regressed.
+      throw new Error(
+        `[clerk] writ type "${typeName}" has no initial state; the type config is malformed.`,
+      );
+    }
+    return initial.name;
   }
 
   function buildWhereClause(filters?: WritFilters): WhereClause | undefined {
@@ -464,13 +518,11 @@ export function createClerk(): Plugin {
   const api: ClerkApi = {
     async post(request: PostCommissionRequest): Promise<WritDoc> {
       const type = request.type ?? resolveDefaultType();
-      const validTypes = resolveWritTypes();
 
-      if (!validTypes.has(type)) {
-        throw new Error(
-          `Unknown writ type "${type}". Declared types: ${[...validTypes.keys()].join(', ')}.`,
-        );
-      }
+      // Registry lookup is the single source of truth for validity: a
+      // post of an unregistered type fails here with the same message
+      // shape callers expect.
+      const initialPhase = resolveInitialState(type);
 
       const now = new Date().toISOString();
       const childId = generateId('w', 6);
@@ -483,14 +535,17 @@ export function createClerk(): Plugin {
         return stacks.transaction(async (tx) => {
           const txWrits = tx.book<WritDoc>('clerk', 'writs');
 
-          // Validate parent exists and is in an allowed phase
+          // Validate parent exists and is not in a terminal state. Acceptance
+          // of children is now a purely classification-driven check: any
+          // non-terminal state (initial or active) accepts children; terminal
+          // states do not.
           const parent = await txWrits.get(request.parentId!);
           if (!parent) {
             throw new Error(`Parent writ "${request.parentId}" not found.`);
           }
-          if (!CHILD_ALLOWED_PARENT_PHASES.has(parent.phase as WritPhase)) {
+          if (api.isTerminal(parent)) {
             throw new Error(
-              `Cannot add children to writ "${request.parentId}": phase is "${parent.phase}", expected one of: ${[...CHILD_ALLOWED_PARENT_PHASES].join(', ')}.`,
+              `Cannot add children to writ "${request.parentId}": phase is "${parent.phase}" (terminal). Children can only be added to writs in non-terminal states.`,
             );
           }
 
@@ -507,7 +562,7 @@ export function createClerk(): Plugin {
           const writ: WritDoc = {
             id: childId,
             type,
-            phase: request.draft === true ? 'new' : 'open',
+            phase: initialPhase,
             title: request.title,
             body: request.body,
             ...(codex !== undefined ? { codex } : {}),
@@ -525,7 +580,7 @@ export function createClerk(): Plugin {
       const writ: WritDoc = {
         id: childId,
         type,
-        phase: request.draft === true ? 'new' : 'open',
+        phase: initialPhase,
         title: request.title,
         body: request.body,
         ...(codex !== undefined ? { codex } : {}),
@@ -839,15 +894,58 @@ export function createClerk(): Plugin {
         throw new Error(`Writ "${id}" not found.`);
       }
 
-      const allowedFrom = ALLOWED_FROM[to];
-      if (!allowedFrom.includes(writ.phase as WritPhase)) {
+      // `fields.phase` is a caller bug: the state machine owns `phase`.
+      // Silent stripping hides the mistake; throw so the caller sees the
+      // conflict. An empty string is treated as unset.
+      if (fields && typeof (fields as { phase?: unknown }).phase === 'string' && (fields as { phase: string }).phase.length > 0) {
         throw new Error(
-          `Cannot transition writ "${id}" to "${to}": phase is "${writ.phase}", expected one of: ${allowedFrom.join(', ')}.`,
+          `[clerk] transition: cannot override phase via fields argument`,
+        );
+      }
+
+      // Per-type source-keyed enforcement read from the registry: the legal
+      // transitions are those declared on the writ's current state, not a
+      // target-keyed inverse table. Routes through classifyWritState so the
+      // unknown-type / unknown-state diagnostics from D6 surface here too.
+      const config = writTypeRegistry.get(writ.type);
+      if (!config) {
+        throw new Error(
+          `[clerk] writ "${writ.id}" carries type "${writ.type}" which is not registered; registered types are ${
+            writTypeRegistry.size === 0
+              ? '(none)'
+              : [...writTypeRegistry.keys()].map((n) => `"${n}"`).join(', ')
+          }.`,
+        );
+      }
+      const currentState = config.states.find((s) => s.name === writ.phase);
+      if (!currentState) {
+        const legal = config.states.map((s) => `"${s.name}"`).join(', ');
+        throw new Error(
+          `[clerk] writ "${writ.id}" carries state "${writ.phase}" which is not declared in type "${writ.type}" config; legal states are ${legal}.`,
+        );
+      }
+
+      if (!currentState.allowedTransitions.includes(to)) {
+        const legal = currentState.allowedTransitions.length === 0
+          ? 'none (terminal state)'
+          : currentState.allowedTransitions.map((s) => `"${s}"`).join(', ');
+        throw new Error(
+          `Cannot transition writ "${id}" from "${writ.phase}" to "${to}": legal transitions from "${writ.phase}" are ${legal}.`,
+        );
+      }
+
+      const targetState = config.states.find((s) => s.name === to);
+      if (!targetState) {
+        // allowedTransitions entries are validated to reference declared
+        // states, so this branch is unreachable unless the registry was
+        // corrupted post-validate.
+        throw new Error(
+          `[clerk] writ type "${writ.type}" has no state "${to}"; the type config is malformed.`,
         );
       }
 
       const now = new Date().toISOString();
-      const isTerminal = TERMINAL_PHASES.has(to);
+      const isTerminal = targetState.classification === 'terminal';
 
       // Strip managed fields — callers cannot override id, phase, the
       // plugin-owned observation slot `status`, or timestamps controlled
@@ -861,9 +959,12 @@ export function createClerk(): Plugin {
       // sub-slot keyed by pluginId. Because patch() is a top-level
       // shallow merge, a `status` value smuggled through transition()
       // would wholesale-replace the slot and silently clobber sibling
-      // sub-slots — so `status` is silently dropped here alongside the
-      // other managed fields. There is exactly one sanctioned slot-write
+      // sub-slots — so `status` is stripped here alongside the other
+      // managed fields. There is exactly one sanctioned slot-write
       // path, and it is setWritStatus().
+      //
+      // `phase` is also stripped from the remainder (we throw above when
+      // non-empty, but an empty-string phase key is still scrubbed here).
       const { id: _id, phase: _phase, status: _status,
         createdAt: _c, updatedAt: _u,
         resolvedAt: _r, parentId: _p,
@@ -1028,12 +1129,8 @@ export function createClerk(): Plugin {
         });
 
         // Register the built-in `mandate` writ type with the new registry.
-        // The hardcoded phase tables still drive `post()` and `transition()`
-        // — the cut-over to the registry happens in the next task. Seeding
-        // the registry here means the new classification predicates resolve
-        // correctly for mandate writs from this start() forward, and there
-        // is no "one mandate visible through two surfaces" race once the
-        // cut-over lands.
+        // `post()` and `transition()` route through the registry; mandate is
+        // the one type the Clerk plugin contributes for itself.
         api.registerWritType(MANDATE_CONFIG);
 
         // Initialize merged writ types from builtins + config
@@ -1048,6 +1145,23 @@ export function createClerk(): Plugin {
         // Scan all kit-contributed writ types via the Wire-phase snapshot.
         for (const entry of ctx.kits('writTypes')) {
           registerKitWritTypes(entry);
+        }
+
+        // Bridge: every config/kit-contributed writ type that is not the
+        // built-in mandate is mirrored into the new registry with a
+        // mandate-clone state machine. This keeps posts of those types
+        // flowing through `post()` and `transition()` unchanged while the
+        // legacy writTypes channels are still in place. Both channels are
+        // deleted in the next task in this commission; plugins that need
+        // long-term writ types should migrate to `registerWritType()` from
+        // their own apparatus's `start()`.
+        for (const [name, meta] of mergedWritTypes) {
+          if (name === MANDATE_TYPE_NAME) continue;
+          if (writTypeRegistry.has(name)) continue;
+          api.registerWritType(cloneMandateConfigAs(name));
+          // Preserve the merged meta source label — it is surfaced by
+          // `listWritTypes()` independently of the registry shape.
+          void meta;
         }
 
         // Scan all kit-contributed link kinds via the Wire-phase snapshot.

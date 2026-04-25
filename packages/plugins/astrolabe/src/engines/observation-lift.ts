@@ -143,7 +143,6 @@ export function createObservationLiftEngine(getPlansBook: () => Book<PlanDoc>): 
           title: `Observations from "${originatingTitle}"`,
           body: buildGroupBody(originatingTitle, planId, observations),
           codex: plan.codex,
-          draft: true,
         });
         groupParentId = groupParent.id;
 
@@ -170,7 +169,6 @@ export function createObservationLiftEngine(getPlansBook: () => Book<PlanDoc>): 
           title: observation.title,
           body: observation.body,
           codex: plan.codex,
-          draft: true,
         };
         if (groupParentId !== undefined) {
           postRequest.parentId = groupParentId;

@@ -12,6 +12,7 @@ import type { Plugin, StartupContext } from '@shardworks/nexus-core';
 import { guild } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
 import type { StacksApi, Book, WhereClause } from '@shardworks/stacks-apparatus';
+import type { ClerkApi, WritTypeConfig } from '@shardworks/clerk-apparatus';
 import type { KitRoleDefinition } from '@shardworks/loom-apparatus';
 import { z } from 'zod';
 
@@ -279,15 +280,6 @@ export function createAstrolabe(): Plugin {
           plans: { indexes: ['status', 'codex', 'createdAt'] },
         },
 
-        writTypes: [
-          { name: 'piece', description: 'An atomic task piece within a mandate, executed sequentially' },
-          {
-            name: 'observation-set',
-            description:
-              'A non-dispatchable container grouping writs lifted from a single planning run. Spider never dispatches this type (no rig-template mapping); it exists so curators can triage related lifted observations as a batch.',
-          },
-        ],
-
         linkKinds: [
           {
             id: 'astrolabe.lifted-from',
@@ -362,6 +354,43 @@ export function createAstrolabe(): Plugin {
       start(_ctx: StartupContext): void {
         const stacks = guild().apparatus<StacksApi>('stacks');
         plansBook = stacks.book<PlanDoc>('astrolabe', 'plans');
+
+        // Register astrolabe's writ types with the Clerk's runtime registry.
+        // Each config is an independent clone of mandate's six-state machine
+        // (no shared helper) — `piece` and `observation-set` carry the same
+        // lifecycle as a built-in mandate. Registration must happen during
+        // start() so the Clerk's startup-window seal does not slam shut on
+        // us; the framework guarantees that astrolabe's start() runs after
+        // the Clerk's start() because the apparatus declares
+        // `requires: ['stacks', 'clerk']`.
+        const clerk = guild().apparatus<ClerkApi>('clerk');
+
+        const PIECE_CONFIG: WritTypeConfig = {
+          name: 'piece',
+          states: [
+            { name: 'new', classification: 'initial', allowedTransitions: ['open', 'cancelled'] },
+            { name: 'open', classification: 'active', allowedTransitions: ['stuck', 'completed', 'failed', 'cancelled'] },
+            { name: 'stuck', classification: 'active', attrs: ['stuck'], allowedTransitions: ['open', 'failed', 'cancelled'] },
+            { name: 'completed', classification: 'terminal', attrs: ['success'], allowedTransitions: [] },
+            { name: 'failed', classification: 'terminal', attrs: ['failure'], allowedTransitions: [] },
+            { name: 'cancelled', classification: 'terminal', attrs: ['cancelled'], allowedTransitions: [] },
+          ],
+        };
+
+        const OBSERVATION_SET_CONFIG: WritTypeConfig = {
+          name: 'observation-set',
+          states: [
+            { name: 'new', classification: 'initial', allowedTransitions: ['open', 'cancelled'] },
+            { name: 'open', classification: 'active', allowedTransitions: ['stuck', 'completed', 'failed', 'cancelled'] },
+            { name: 'stuck', classification: 'active', attrs: ['stuck'], allowedTransitions: ['open', 'failed', 'cancelled'] },
+            { name: 'completed', classification: 'terminal', attrs: ['success'], allowedTransitions: [] },
+            { name: 'failed', classification: 'terminal', attrs: ['failure'], allowedTransitions: [] },
+            { name: 'cancelled', classification: 'terminal', attrs: ['cancelled'], allowedTransitions: [] },
+          ],
+        };
+
+        clerk.registerWritType(PIECE_CONFIG);
+        clerk.registerWritType(OBSERVATION_SET_CONFIG);
       },
     },
   };

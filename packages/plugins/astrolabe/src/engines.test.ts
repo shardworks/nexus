@@ -1395,7 +1395,10 @@ describe('observation-lift engine', () => {
     assert.equal(call.title, observations[0].title);
     assert.equal(call.body, observations[0].body);
     assert.equal(call.codex, 'my-codex');
-    assert.equal(call.draft, true);
+    // The engine no longer threads `draft` — `PostCommissionRequest.draft`
+    // was removed; posted mandates land in their type's declared initial
+    // state (`new`) by default, which is the draft slot for mandate.
+    assert.equal('draft' in call, false, 'engine must not pass the removed `draft` field');
     assert.equal('parentId' in call, false, 'flat-mode writ must be top-level (no parentId)');
 
     // Two outbound edges, both from the new draft to the originating mandate:
@@ -1562,7 +1565,9 @@ describe('observation-lift engine', () => {
     const groupPost = postCalls[0];
     assert.equal(groupPost.type, 'observation-set');
     assert.equal(groupPost.codex, 'my-codex');
-    assert.equal(groupPost.draft, true);
+    // The engine no longer threads `draft` — posts land in the type's
+    // declared initial state (`new`) by default.
+    assert.equal('draft' in groupPost, false, 'engine must not pass the removed `draft` field');
     assert.equal('parentId' in groupPost, false, 'group parent must be top-level');
     assert.equal(groupPost.title, 'Observations from "Mandate for w-mandate-grouped"');
     const body = groupPost.body as string;
@@ -1585,7 +1590,9 @@ describe('observation-lift engine', () => {
       assert.equal(call.body, obs.body);
       assert.equal(call.codex, 'my-codex');
       assert.equal(call.parentId, 'w-obs-group');
-      assert.equal(call.draft, true);
+      // The engine no longer threads `draft` — posts land in the type's
+      // declared initial state (`new`) by default.
+      assert.equal('draft' in call, false, 'engine must not pass the removed `draft` field');
     }
 
     // Edges: exactly 1 group-parent lifted-from + N child spider.follows

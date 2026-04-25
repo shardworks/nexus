@@ -2,7 +2,10 @@
  * Astrolabe supportKit shape tests.
  *
  * Verifies that the apparatus's supportKit declares the correct books,
- * writTypes, roles, engines, rigTemplates, rigTemplateMappings, and tools.
+ * roles, engines, rigTemplates, rigTemplateMappings, and tools. Writ
+ * types (`piece`, `observation-set`) are now registered with the Clerk
+ * via `ClerkApi.registerWritType` from astrolabe's own `start()`, not
+ * contributed via the kit channel.
  */
 
 import { describe, it } from 'node:test';
@@ -59,19 +62,16 @@ describe('Astrolabe supportKit shape', () => {
 
   // ── R5: writTypes ──────────────────────────────────────────────────
 
-  it('contributes piece and observation-set writTypes and does not contribute brief', () => {
+  it('does not contribute writTypes via the kit channel', () => {
     const kit = getKit(plugin);
-    const writTypes = kit.writTypes as Array<{ name: string; description?: string }>;
-    assert.ok(Array.isArray(writTypes), 'writTypes must be an array');
-    assert.equal(writTypes.length, 2, 'must have exactly two writ types');
-    const piece = writTypes.find(w => w.name === 'piece');
-    assert.ok(piece, 'piece writType must exist');
-    assert.ok(piece.description);
-    const observationSet = writTypes.find(w => w.name === 'observation-set');
-    assert.ok(observationSet, 'observation-set writType must exist');
-    assert.ok(observationSet.description);
-    const brief = writTypes.find(w => w.name === 'brief');
-    assert.equal(brief, undefined, 'brief writType must not be contributed');
+    // The kit-channel writTypes contribution has been removed; piece and
+    // observation-set are registered with the Clerk via
+    // `ClerkApi.registerWritType` from astrolabe's own `start()` instead.
+    assert.equal(
+      (kit as { writTypes?: unknown }).writTypes,
+      undefined,
+      'kit must not declare writTypes',
+    );
   });
 
   // ── linkKinds ──────────────────────────────────────────────────────
@@ -460,10 +460,4 @@ describe('Astrolabe supportKit shape', () => {
     assert.equal(mappings['brief-mra'], undefined, 'brief-mra mapping must not exist');
   });
 
-  it('old identifiers do not appear in writTypes', () => {
-    const kit = getKit(plugin);
-    const writTypes = kit.writTypes as Array<{ name: string }>;
-    const briefMra = writTypes.find(w => w.name === 'brief-mra');
-    assert.equal(briefMra, undefined, 'brief-mra writ type must not exist');
-  });
 });
