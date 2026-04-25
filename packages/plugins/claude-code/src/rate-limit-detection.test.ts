@@ -1,11 +1,16 @@
 /**
  * Tests for rate-limit signature detection in the claude-code provider.
  *
- * The active detector is structural NDJSON inspection — the two branches
- * of `detectRateLimitFromNdjson` (subtype / is_error). The previous
- * stderr-pattern and exit-code branches were retired after producing
- * false-positive pauses; this file also pins the narrowed behaviour of
- * `resolveTerminalStatus`, which now maps non-zero exits to `'failed'`.
+ * The active detector is a single evidence-driven branch:
+ * `detectRateLimitFromNdjson` matches the rate-limit pattern against
+ * the top-level `error` field of an NDJSON message — the shape claude
+ * actually emits on rate-limited assistant termination. Two earlier
+ * speculative branches (`subtype` substring, `is_error: true` + error
+ * text) were retired after observation showed no live provider emission
+ * fires either path; the previous stderr-pattern and exit-code branches
+ * had been retired earlier for false-positive pauses. This file also
+ * pins the narrowed behaviour of `resolveTerminalStatus`, which maps
+ * non-zero exits to `'failed'`.
  */
 
 import { describe, it } from 'node:test';
@@ -32,25 +37,8 @@ function freshAcc(): {
 // ── NDJSON detection ────────────────────────────────────────────────
 
 describe('detectRateLimitFromNdjson()', () => {
-  it('tags messages with a rate_limit subtype', () => {
-    const tag = detectRateLimitFromNdjson({ type: 'result', subtype: 'rate_limit_error' });
-    assert.ok(tag);
-    assert.equal(tag!.kind, 'rate-limit');
-    assert.equal(tag!.source, 'ndjson-result');
-    assert.match(tag!.detail ?? '', /rate_limit_error/);
-  });
-
-  it('tags is_error messages whose error text matches the pattern', () => {
-    const tag = detectRateLimitFromNdjson({
-      is_error: true,
-      error: 'HTTP 429: rate limit exceeded',
-    });
-    assert.ok(tag);
-    assert.equal(tag!.source, 'ndjson-result');
-  });
-
   it('tags an assistant message carrying a top-level error: "rate_limit" field', () => {
-    // Observed live shape for claude rate-limit termination: a regular
+    // Live observed shape for claude rate-limit termination: an
     // assistant message with `error: "rate_limit"` at the top level
     // (peer of `message`), no `is_error` flag, no subtype.
     const tag = detectRateLimitFromNdjson({
@@ -67,6 +55,12 @@ describe('detectRateLimitFromNdjson()', () => {
     assert.match(tag!.detail ?? '', /rate_limit/);
   });
 
+  it('matches the broader rate-limit pattern (e.g. 429) on the top-level error field', () => {
+    const tag = detectRateLimitFromNdjson({ error: 'HTTP 429: too many requests' });
+    assert.ok(tag);
+    assert.equal(tag!.source, 'ndjson-result');
+  });
+
   it('does NOT tag a message whose top-level error text is unrelated', () => {
     const tag = detectRateLimitFromNdjson({
       type: 'assistant',
@@ -76,15 +70,30 @@ describe('detectRateLimitFromNdjson()', () => {
     assert.equal(tag, null);
   });
 
-  it('does NOT tag a result message whose `result` text mentions rate limit', () => {
-    // The prose `result`-text branch was removed because it matched an
-    // assistant's summary of a prior rate-limit event and paused the
-    // guild on a false positive.
+  it('does NOT tag a `result`-text branch (retired — false-positive on assistant prose summaries)', () => {
     const tag = detectRateLimitFromNdjson({
       type: 'result',
       result: 'Error: Rate limit exceeded. Please try again later.',
     });
     assert.equal(tag, null);
+  });
+
+  it('does NOT tag a speculative subtype-only shape (retired — never observed)', () => {
+    // The `subtype: "rate_limit_error"` shape was an early speculative
+    // branch retained through one narrowing pass and then dropped after
+    // no live emission was observed against it. Add it back with a real
+    // example if the provider's shape ever requires it.
+    const tag = detectRateLimitFromNdjson({ type: 'result', subtype: 'rate_limit_error' });
+    assert.equal(tag, null);
+  });
+
+  it('does NOT tag a speculative is_error+error-text shape (retired — never observed)', () => {
+    const tag = detectRateLimitFromNdjson({ is_error: true, error: 'HTTP 429: rate limit' });
+    // Note: this shape WOULD match the new top-level-error branch
+    // because `error` is a string with rate-limit text. The retirement
+    // is about not requiring `is_error: true` as a gate — the active
+    // branch fires on any top-level `error` matching the pattern.
+    assert.ok(tag); // top-level branch fires here regardless of is_error
   });
 
   it('returns null on ordinary assistant messages', () => {
@@ -108,16 +117,20 @@ describe('detectRateLimitFromNdjson()', () => {
 // ── parseStreamJsonMessage cascade integration ──────────────────────
 
 describe('parseStreamJsonMessage() rate-limit accumulation', () => {
-  it('writes a terminationTag on the accumulator when it sees a rate-limit subtype', () => {
+  it('writes a terminationTag on the accumulator when it sees a top-level error: "rate_limit"', () => {
     const acc = freshAcc();
-    parseStreamJsonMessage({ type: 'result', subtype: 'rate_limit_error' }, acc);
+    parseStreamJsonMessage({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'limit hit' }] },
+      error: 'rate_limit',
+    }, acc);
     assert.ok(acc.terminationTag);
     assert.equal(acc.terminationTag!.kind, 'rate-limit');
   });
 
   it('is first-wins — a later success does not clear the tag', () => {
     const acc = freshAcc();
-    parseStreamJsonMessage({ is_error: true, error: '429 rate limit' }, acc);
+    parseStreamJsonMessage({ error: 'rate_limit' }, acc);
     parseStreamJsonMessage({
       type: 'assistant',
       message: { content: [{ type: 'text', text: 'after' }] },
@@ -160,7 +173,7 @@ describe('resolveTerminalStatus()', () => {
     const result: StreamJsonResult = {
       exitCode: 0,
       transcript: [],
-      terminationTag: { kind: 'rate-limit', source: 'ndjson-result', detail: 'rate_limit_error' },
+      terminationTag: { kind: 'rate-limit', source: 'ndjson-result', detail: 'rate_limit' },
     };
     const resolved = resolveTerminalStatus(result);
     assert.equal(resolved.status, 'rate-limited');

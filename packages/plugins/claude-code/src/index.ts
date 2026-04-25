@@ -28,15 +28,20 @@ import { launchDetached } from './detached.ts';
 // ── Rate-limit detection ────────────────────────────────────────────
 
 /**
- * Regex matching common rate-limit phrasings in structured provider
- * error text (not stderr). Applied to the NDJSON branches that inspect
- * an `error` field. The cascade is narrow by design: two retro-reviewed
- * false-positive pauses originated from stderr / exit-code detection,
- * so the detector is scoped to NDJSON-carried structural signals only.
+ * Regex matching the canonical claude rate-limit emission. Applied to
+ * the top-level `error` field of an NDJSON message.
  *
  * Underscore is included alongside hyphen and whitespace because claude
  * emits the canonical token `rate_limit` (not `rate-limit`) on the
  * top-level `error` field of an assistant termination message.
+ *
+ * The detector is intentionally evidence-driven and narrow: branches
+ * are added when a real provider emission is observed, not pre-emptively.
+ * Speculative coverage burned us before (a `result`-text branch matched
+ * an assistant's prose summary of a prior rate-limit and false-paused
+ * the guild; a stderr/exit-code cascade did the same on a generic
+ * non-zero exit), so the discipline is to keep this narrow and add
+ * branches only when their input shape is observed in the wild.
  */
 const RATE_LIMIT_ERROR_TEXT_PATTERN =
   /(rate[-_\s]?limit|429\b|usage[-_\s]?limit|quota[-_\s]?exceeded|too\s+many\s+requests)/i;
@@ -45,59 +50,31 @@ const RATE_LIMIT_ERROR_TEXT_PATTERN =
  * Detect a rate-limit signature on an NDJSON message from the claude
  * `--output-format stream-json` stream.
  *
- * Three branches (all structural, all load-bearing):
- *  - `msg.subtype` containing the substring `rate_limit` / `rate-limit`
- *  - `msg.error` (top-level, peer of `message`) — claude's observed
- *    rate-limit emission is `{type:"assistant", message:{...},
- *    error:"rate_limit"}` with no `is_error` flag and no distinguishing
- *    subtype. The rate-limit pattern must match the field's value.
- *  - `msg.is_error: true` with `msg.error` / `msg.message.error` text
- *    matching the rate-limit pattern (legacy / alternate shape).
+ * One branch, evidence-driven:
+ *  - `msg.error` (top-level, peer of `message`) matches the
+ *    rate-limit pattern. Claude's observed emission is
+ *    `{type:"assistant", message:{...}, error:"rate_limit"}` with no
+ *    `is_error` flag, no distinguishing `subtype`, no signal in
+ *    `subtype`/`is_error` shape — so the only reliable tag is the
+ *    top-level `error` value matching the rate-limit pattern.
  *
- * Returns null when the message does not indicate rate limiting. The
- * previous `msg.type === 'result'` + prose-text branch was removed
- * because it matched an assistant's summary of a prior rate-limit event,
- * producing false-positive pauses.
+ * Two earlier speculative branches (`subtype` containing `rate_limit`,
+ * and `is_error: true` carrying error text) were removed because no
+ * live provider emission was ever observed against them; they were
+ * inherited from an early speculative cascade. If a future provider
+ * shape requires either, add it back with a real example.
+ *
+ * Returns null when the message does not indicate rate limiting.
  */
 export function detectRateLimitFromNdjson(
   msg: Record<string, unknown>,
 ): SessionTerminationTag | null {
-  const subtype = typeof msg.subtype === 'string' ? msg.subtype : undefined;
-  if (subtype && /rate[-_ ]?limit/i.test(subtype)) {
-    return {
-      kind: 'rate-limit',
-      source: 'ndjson-result',
-      detail: `NDJSON subtype: ${subtype}`,
-    };
-  }
-
-  // Top-level `error` field — peer of `message` on an assistant-typed
-  // NDJSON termination. Observed shape from live transcripts:
-  //   {"type":"assistant","message":{...},"error":"rate_limit"}
-  // No `is_error: true` flag; no distinguishing `subtype`. The detector
-  // must consult `msg.error` directly. Test the rate-limit pattern
-  // against the field value to keep the cascade narrow.
   if (typeof msg.error === 'string' && RATE_LIMIT_ERROR_TEXT_PATTERN.test(msg.error)) {
     return {
       kind: 'rate-limit',
       source: 'ndjson-result',
       detail: msg.error.slice(0, 200),
     };
-  }
-
-  if (msg.is_error === true) {
-    const errText =
-      (typeof msg.error === 'string' ? msg.error : undefined) ??
-      (typeof (msg as { message?: { error?: unknown } }).message?.error === 'string'
-        ? ((msg as { message: { error: string } }).message.error)
-        : undefined);
-    if (errText && RATE_LIMIT_ERROR_TEXT_PATTERN.test(errText)) {
-      return {
-        kind: 'rate-limit',
-        source: 'ndjson-result',
-        detail: errText.slice(0, 200),
-      };
-    }
   }
 
   return null;
