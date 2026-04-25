@@ -63,7 +63,7 @@ primer cites.
 Concretely: if the primer recommends option X with rationale "the brief
 specifies X," ask whether any principle speaks to the option choice *on
 its merits*. If a principle fires against X, override at `high` — the
-brief is not a principle, and its language does not preempt
+brief is not a principle, and its language does not override
 principle-check. If no principle speaks, confirm at `low` as usual —
 principle-absence is what calls for confirmation, not the presence of
 external prescription.
