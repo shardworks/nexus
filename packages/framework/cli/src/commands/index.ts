@@ -9,6 +9,7 @@
  * when a guild is present and the tools apparatus is installed.
  */
 
+import type { Command } from 'commander';
 import type { ToolDefinition } from '@shardworks/tools-apparatus';
 import init from './init.ts';
 import version from './version.ts';
@@ -17,6 +18,7 @@ import upgrade from './upgrade.ts';
 import start from './start.ts';
 import stop from './stop.ts';
 import { pluginList, pluginInstall, pluginRemove, pluginUpgrade } from './plugin.ts';
+import { buildSignalCommand } from './signal.ts';
 
 /** All framework commands, typed as the base ToolDefinition for uniform handling. */
 export const frameworkCommands = [
@@ -31,3 +33,18 @@ export const frameworkCommands = [
   pluginRemove,
   pluginUpgrade,
 ] as ToolDefinition[];
+
+/**
+ * Hand-written Commander commands that bypass the tool auto-builder.
+ *
+ * These exist for commands whose CLI shape (positional arguments,
+ * locally-parsed flag values, custom emitter defaults, …) does not fit
+ * the Zod-driven option generator in `program.ts`. Each entry is a
+ * factory that returns a fully-configured Command — the CLI registers
+ * them alongside the auto-built framework and plugin commands.
+ *
+ * Currently: `nsg signal` (see `signal.ts` for the rationale).
+ */
+export const customFrameworkCommands: Array<() => Command> = [
+  buildSignalCommand,
+];

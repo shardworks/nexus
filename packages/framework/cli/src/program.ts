@@ -23,7 +23,7 @@ import { z } from 'zod';
 import { findGuildRoot, guild } from '@shardworks/nexus-core';
 import type { ToolDefinition, InstrumentariumApi } from '@shardworks/tools-apparatus';
 import { createGuild } from '@shardworks/nexus-arbor';
-import { frameworkCommands } from './commands/index.ts';
+import { frameworkCommands, customFrameworkCommands } from './commands/index.ts';
 import { toFlag, isBooleanSchema, isRepeatableSchema, findGroupPrefixes, coerceCliOpts, resolveGuildRoot } from './helpers.ts';
 
 type ZodShape = Record<string, z.ZodTypeAny>;
@@ -227,6 +227,15 @@ export async function main(): Promise<void> {
   // Always register framework commands (init, status, version, upgrade,
   // plugin management). These work with or without a guild.
   registerTools(program, frameworkCommands);
+
+  // Register hand-written framework commands that bypass the
+  // tool→Commander auto-builder (e.g. `nsg signal`). Each factory
+  // returns a fully-configured Command. These are always available so
+  // their --help text is reachable even outside a guild; the handler
+  // itself errors out if a guild is required.
+  for (const buildCommand of customFrameworkCommands) {
+    program.addCommand(buildCommand());
+  }
 
   // Load plugin-contributed tools when inside a guild.
   // Tools are discovered via The Instrumentarium (tools apparatus).

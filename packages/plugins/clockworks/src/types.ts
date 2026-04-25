@@ -160,11 +160,32 @@ export interface EventDispatchDoc extends BookEntry {
  * The Clockworks' runtime API — retrieved via
  * `guild().apparatus<ClockworksApi>('clockworks')`.
  *
- * Intentionally empty in this commission. Task 3 adds `emit()`;
- * subsequent tasks extend the surface as needed.
+ * The only write path in this commission is `emit()`. The dispatcher,
+ * runner, standing-order engine, and CDC auto-wiring arrive in later
+ * commissions and will extend this surface as needed.
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface ClockworksApi {}
+export interface ClockworksApi {
+  /**
+   * Persist an event into the `clockworks/events` book and return the
+   * generated event id.
+   *
+   * The Clockworks eagerly attempts `JSON.stringify` on the payload
+   * before writing so non-serializable values (circular references,
+   * `BigInt`, functions, …) are surfaced as a descriptive error at the
+   * API boundary rather than as an opaque failure inside the Stacks
+   * persistence layer. An `undefined` payload is coerced to `null` so
+   * the stored row shape stays predictable.
+   *
+   * @param name    Event name — framework events use `{pluginId}.{suffix}`;
+   *                operator-defined events follow the same grammar.
+   * @param payload JSON-serializable payload, or `null`/`undefined`.
+   * @param emitter Identifier of the caller that produced this event —
+   *                plugin id, anima name, `'framework'`, `'operator'`, etc.
+   * @returns       The generated event id (`e-<base36_ts>-<hex>`).
+   * @throws        When `payload` cannot be JSON-serialized.
+   */
+  emit(name: string, payload: unknown, emitter: string): Promise<string>;
+}
 
 /**
  * Kit contribution interface for plugins that extend the Clockworks.

@@ -207,13 +207,13 @@ describe('Clockworks — skeleton', () => {
     assert.equal(typeof api, 'object');
   });
 
-  it('wires both clock-* stub tools into supportKit.tools', () => {
+  it('wires clock-* stub tools and the signal tool into supportKit.tools', () => {
     const plugin = createClockworks();
     if (!('apparatus' in plugin)) throw new Error('clockworks must be apparatus');
     const toolsBag = plugin.apparatus.supportKit?.tools;
     assert.ok(Array.isArray(toolsBag), 'supportKit.tools must be an array');
     const tools = toolsBag as unknown[];
-    assert.equal(tools.length, 2, 'exactly two stub tools wired');
+    assert.equal(tools.length, 3, 'exactly three tools wired');
     assert.ok(
       tools.every((t) => isToolDefinition(t)),
       'every entry must pass isToolDefinition',
@@ -221,15 +221,15 @@ describe('Clockworks — skeleton', () => {
     const names = tools.map((t) => (t as { name: string }).name).sort();
     assert.deepEqual(
       names,
-      ['clock-list', 'clock-status'],
-      'auto-grouping depends on both tools sharing the clock- prefix',
+      ['clock-list', 'clock-status', 'signal'],
+      'auto-grouping depends on both clock-* tools sharing the prefix; signal stays flat',
     );
   });
 
-  it('declares the expected apparatus shape (requires stacks, consumes relays)', () => {
+  it('declares the expected apparatus shape (requires stacks + clerk, consumes relays)', () => {
     const plugin = createClockworks();
     if (!('apparatus' in plugin)) throw new Error('clockworks must be apparatus');
-    assert.deepEqual(plugin.apparatus.requires, ['stacks']);
+    assert.deepEqual(plugin.apparatus.requires, ['stacks', 'clerk']);
     assert.deepEqual(plugin.apparatus.consumes, ['relays']);
     assert.equal(plugin.apparatus.recommends, undefined);
     assert.equal(typeof plugin.apparatus.start, 'function');

@@ -22,7 +22,7 @@
  */
 
 import type { Plugin, StartupContext } from '@shardworks/nexus-core';
-import { guild } from '@shardworks/nexus-core';
+import { generateId, guild } from '@shardworks/nexus-core';
 import type { Book, StacksApi } from '@shardworks/stacks-apparatus';
 
 import type {
@@ -31,7 +31,7 @@ import type {
   EventDoc,
 } from './types.ts';
 
-import { clockList, clockStatus } from './tools/index.ts';
+import { clockList, clockStatus, signal } from './tools/index.ts';
 
 // ── Kit contribution vocabulary (future) ────────────────────────────
 
@@ -43,20 +43,63 @@ import { clockList, clockStatus } from './tools/index.ts';
 const RELAYS_KIT = 'relays';
 
 export function createClockworks(): Plugin {
-  // Handles primed during start() and retained for downstream use when
-  // subsequent tasks extend this factory with runtime behavior.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // Handles primed during start() and retained for the factory's
+  // closure-scoped api methods (and by downstream commissions that
+  // extend this factory with additional runtime behavior).
   let events: Book<EventDoc>;
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let dispatches: Book<EventDispatchDoc>;
 
-  // Empty api surface for this commission — task 3 replaces this with
-  // the real shape (`emit()` and friends).
-  const api: ClockworksApi = {};
+  const api: ClockworksApi = {
+    async emit(name: string, payload: unknown, emitter: string): Promise<string> {
+      if (!events) {
+        throw new Error(
+          'clockworks: emit() called before start() primed the events book handle.',
+        );
+      }
+
+      // Coerce undefined to null so the stored row shape is predictable
+      // — decision D8 in the commission spec. null is valid JSON and
+      // matches the optional payload type signature.
+      const storedPayload = payload === undefined ? null : payload;
+
+      // Pre-serialize-check (D2, D11) — fail loud at the API boundary
+      // rather than surfacing an obscure SQLite-layer throw later.
+      // The attempted serialize value is discarded; Stacks owns the
+      // final persistence-format decision.
+      try {
+        JSON.stringify(storedPayload);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `clockworks: event "${name}" payload is not JSON-serializable: ${reason}`,
+        );
+      }
+
+      const id = generateId('e');
+      const firedAt = new Date().toISOString();
+
+      const doc: EventDoc = {
+        id,
+        name,
+        payload: storedPayload,
+        emitter,
+        firedAt,
+        processed: false,
+      };
+
+      await events.put(doc);
+      return id;
+    },
+  };
 
   return {
     apparatus: {
-      requires: ['stacks'],
+      // Clerk is required because the `signal` tool's writ-lifecycle
+      // validator (D3) resolves `ClerkApi` to enumerate declared writ
+      // types before rejecting `<type>.{ready,completed,stuck,failed}`
+      // patterns.
+      requires: ['stacks', 'clerk'],
       consumes: [RELAYS_KIT],
 
       provides: api,
@@ -79,21 +122,20 @@ export function createClockworks(): Plugin {
             ],
           },
         },
-        tools: [clockStatus, clockList],
+        tools: [clockStatus, clockList, signal],
       },
 
       async start(_ctx: StartupContext): Promise<void> {
         const g = guild();
         const stacks = g.apparatus<StacksApi>('stacks');
 
-        // Prime book handles so downstream commissions — once they
-        // extend `api` — can use them without re-resolving Stacks.
+        // Prime book handles so `emit()` and downstream commissions can
+        // use them without re-resolving Stacks.
         events = stacks.book<EventDoc>('clockworks', 'events');
         dispatches = stacks.book<EventDispatchDoc>('clockworks', 'event_dispatches');
 
-        // Reference the handles to satisfy the unused-binding check
-        // until a subsequent task introduces their first real reader.
-        void events;
+        // Reference the dispatches handle to satisfy the unused-binding
+        // check until the runner / dispatcher commission claims it.
         void dispatches;
       },
 

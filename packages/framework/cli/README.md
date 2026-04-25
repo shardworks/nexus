@@ -119,6 +119,21 @@ Framework commands are defined in the CLI package itself (`src/commands/`). They
 | `nsg plugin remove <name>` | Remove a plugin |
 | `nsg plugin upgrade <name>` | Upgrade a plugin to a newer version *(stub)* |
 
+### Event Emission
+
+| Command | Description |
+|---|---|
+| `nsg signal <name> [--payload '<json>']` | Emit a custom event into the Clockworks events book with `emitter='operator'` |
+
+`nsg signal` is hand-written rather than auto-generated from the
+clockworks `signal` tool — the auto-builder cannot JSON-parse a
+record-shaped `--payload` flag, and the operator emitter default
+differs from the tool's `'anima'` default. The event name must be
+declared under `clockworks.events` in `guild.json`; reserved framework
+namespaces (`anima.`, `commission.`, `tool.`, `migration.`, `guild.`,
+`standing-order.`, `session.`) and writ-lifecycle patterns
+(`<type>.{ready,completed,stuck,failed}`) are rejected.
+
 #### `nsg init`
 
 Writes the minimum viable guild. Does not run `git init`, create the database, or instantiate animas — those are separate steps.
@@ -248,7 +263,6 @@ The following commands are planned but not yet implemented. No plugin currently 
 | `nsg anima update` | — | *(Planned)* Update anima configuration |
 | `nsg anima remove` | — | *(Planned)* Retire an anima |
 | `nsg anima manifest` | — | *(Planned)* Preview the manifest for an anima |
-| `nsg signal` | — | *(Planned)* Signal a custom event |
 | `nsg event list` | — | *(Planned)* List recent events |
 | `nsg event show` | — | *(Planned)* Show event detail |
 | `nsg dispatch list` | — | *(Planned)* List recent dispatches |
