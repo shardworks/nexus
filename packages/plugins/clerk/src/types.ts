@@ -157,6 +157,60 @@ export interface WritFilters {
   offset?: number;
 }
 
+// ── Presentation projections ─────────────────────────────────────────
+
+/**
+ * Classification value as embedded on writ-bearing tool responses.
+ *
+ * Domain-side classifier helpers (`ClerkApi.isInitial`/`isActive`/
+ * `isTerminal`) throw on an unregistered type or undeclared state — the
+ * classifier preserves its fail-loud contract. The presentation projection
+ * is tolerant and surfaces `'unknown'` for the same conditions so a single
+ * legacy row cannot crash a list/tree/show response.
+ */
+export type WritPresentationClassification = 'initial' | 'active' | 'terminal' | 'unknown';
+
+/**
+ * Per-row presentation projection. `writ-list` returns rows of this
+ * shape; `writ-tree`'s `WritTree.writ` and `writ-show`'s top-level writ
+ * extend `WritDoc` with the same two derived fields.
+ */
+export interface WritWithPresentation extends WritDoc {
+  /**
+   * Classification of the writ's current state in its type config.
+   * `'unknown'` indicates the writ's type is unregistered or its phase
+   * is not declared in the registered config (presentation tolerance).
+   */
+  classification: WritPresentationClassification;
+  /**
+   * Outbound transition names declared on the writ's current state in
+   * its type config. Empty for terminal states and for unknown
+   * classifications.
+   */
+  allowedTransitions: string[];
+}
+
+/**
+ * Compact parent/child reference shape used on `writ-show`'s `parent`
+ * field and `children.items` entries. Carries the same `classification`
+ * and `allowedTransitions` derivations as a full row so a renderer can
+ * pick badge classes and action affordances uniformly.
+ */
+export interface WritReferenceWithPresentation {
+  /** Writ id. */
+  id: string;
+  /** Writ title. */
+  title: string;
+  /** Writ type. */
+  type: string;
+  /** Current lifecycle state name. */
+  phase: string;
+  /** Classification of the writ's current state in its type config. */
+  classification: WritPresentationClassification;
+  /** Outbound transitions from the writ's current state. */
+  allowedTransitions: string[];
+}
+
 // ── Tree shapes ──────────────────────────────────────────────────────
 
 /**
@@ -165,10 +219,15 @@ export interface WritFilters {
  * The shape is the writ document plus a recursively-typed `children` array
  * of further `WritTree` nodes. Mirrors ratchet's `ClickTree` so the same
  * mental model and rendering idioms apply across apparatus.
+ *
+ * Each node's `writ` carries the standard `WritDoc` fields plus the
+ * presentation projection (`classification`, `allowedTransitions`) so
+ * tree renderers can pick glyphs and action affordances per node without
+ * reaching back into the type-config registry.
  */
 export interface WritTree {
-  /** The writ document at this node. */
-  writ: WritDoc;
+  /** The writ document at this node, with embedded presentation fields. */
+  writ: WritWithPresentation;
   /** Direct children, each shaped as a `WritTree`. */
   children: WritTree[];
 }

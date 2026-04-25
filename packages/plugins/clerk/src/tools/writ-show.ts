@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { guild } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
-import type { ClerkApi } from '../types.ts';
+import type { ClerkApi, WritReferenceWithPresentation } from '../types.ts';
+import { derivePresentation } from '../writ-presentation.ts';
 
 export default tool({
   name: 'writ-show',
@@ -25,23 +26,49 @@ export default tool({
       clerk.countDescendantsByPhase(resolvedId),
     ]);
 
+    const lookupConfig = (name: string) => clerk.getWritTypeConfig(name);
+
+    /**
+     * Project a writ-shaped record onto the parent/child reference shape
+     * with embedded presentation fields. Used both for the `parent`
+     * context and each entry in `children.items` so a renderer can pick
+     * badge classes uniformly without a second registry lookup.
+     */
+    function presentReference(
+      ref: { id: string; title: string; type: string; phase: string },
+    ): WritReferenceWithPresentation {
+      const projection = derivePresentation(ref, lookupConfig);
+      return {
+        id: ref.id,
+        title: ref.title,
+        type: ref.type,
+        phase: ref.phase,
+        classification: projection.classification,
+        allowedTransitions: projection.allowedTransitions,
+      };
+    }
+
     // Parent context
-    let parent: { id: string; title: string; phase: string } | null = null;
+    let parent: WritReferenceWithPresentation | null = null;
     if (writ.parentId) {
       const parentWrit = await clerk.show(writ.parentId);
-      parent = { id: parentWrit.id, title: parentWrit.title, phase: parentWrit.phase };
+      parent = presentReference(parentWrit);
     }
 
     // Direct-children list — `items` stays direct-children-only. The subtree-wide
     // phase tally lives in `summary` (computed via clerk.countDescendantsByPhase).
     const childWrits = await clerk.list({ parentId: writ.id, limit: 1000 });
-    const items: Array<{ id: string; title: string; phase: string }> = [];
-    for (const child of childWrits) {
-      items.push({ id: child.id, title: child.title, phase: child.phase });
-    }
+    const items: WritReferenceWithPresentation[] = childWrits.map(presentReference);
+
+    // Top-level writ also carries classification + allowedTransitions so
+    // the detail-view renderer can derive its action buttons from a
+    // single shape.
+    const topProjection = derivePresentation(writ, lookupConfig);
 
     return {
       ...writ,
+      classification: topProjection.classification,
+      allowedTransitions: topProjection.allowedTransitions,
       links,
       parent,
       children: { summary, items },

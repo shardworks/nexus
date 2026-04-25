@@ -2684,6 +2684,92 @@ describe('Clerk', () => {
       assert.equal(onlyMandate.length, 1);
       assert.equal(onlyMandate[0].children.length, 0);
     });
+
+    it('embeds classification + allowedTransitions on every node in the tree', async () => {
+      // Mixed-type tree exercises both mandate and a plugin-registered
+      // type so the assertion can prove non-mandate transitions surface.
+      await setup({
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('task')], { id: 'task-plugin' }),
+        ],
+      });
+      const root = await postMandate({ title: 'Root', body: 'Body', type: 'mandate' });
+      const child = await postMandate({ title: 'Child', body: 'Body', parentId: root.id, type: 'task' });
+
+      const forest = await writTree.handler({ format: 'json' }) as Array<{
+        writ: { id: string; phase: string; classification: string; allowedTransitions: string[] };
+        children: Array<{ writ: { id: string; phase: string; classification: string; allowedTransitions: string[] } }>;
+      }>;
+      const rootNode = forest.find(n => n.writ.id === root.id);
+      assert.ok(rootNode);
+      assert.equal(rootNode.writ.classification, 'active');
+      assert.deepEqual(rootNode.writ.allowedTransitions, ['stuck', 'completed', 'failed', 'cancelled']);
+
+      // Plugin-registered type's transitions surface as declared in its config —
+      // no mandate-specific literals required. The child task stays in `new`
+      // (postMandate's auto-publish only fires for mandate type), so the
+      // initial-state transitions (open, cancelled) are what surface here.
+      const childNode = rootNode.children.find(n => n.writ.id === child.id);
+      assert.ok(childNode);
+      assert.equal(childNode.writ.phase, 'new');
+      assert.equal(childNode.writ.classification, 'initial');
+      assert.deepEqual(childNode.writ.allowedTransitions, ['open', 'cancelled']);
+    });
+  });
+
+  // ── writ-list tool handler — presentation embedding ───────────────
+
+  describe('writ-list tool handler — embeds classification + allowedTransitions', () => {
+    beforeEach(async () => { await setup(); });
+
+    it('every row carries classification and allowedTransitions', async () => {
+      const writ = await postMandate({ title: 'Some writ', body: 'Body' });
+      const result = await (await import('./tools/writ-list.ts')).default.handler({}) as Array<{
+        id: string;
+        phase: string;
+        classification: string;
+        allowedTransitions: string[];
+      }>;
+      const row = result.find(r => r.id === writ.id);
+      assert.ok(row);
+      assert.equal(row.phase, 'open');
+      assert.equal(row.classification, 'active');
+      assert.deepEqual(row.allowedTransitions, ['stuck', 'completed', 'failed', 'cancelled']);
+    });
+  });
+
+  // ── writ-show tool handler — presentation embedding ───────────────
+
+  describe('writ-show tool handler — embeds classification + allowedTransitions', () => {
+    beforeEach(async () => { await setup(); });
+
+    it('top-level writ, parent reference, and children.items entries all carry presentation projection', async () => {
+      const parent = await postMandate({ title: 'Parent', body: 'B' });
+      const child = await postMandate({ title: 'Child', body: 'B', parentId: parent.id });
+
+      const result = await writShow.handler({ id: child.id }) as {
+        id: string;
+        classification: string;
+        allowedTransitions: string[];
+        parent: { classification: string; allowedTransitions: string[] };
+        children: { items: Array<{ id: string; classification: string; allowedTransitions: string[] }> };
+      };
+
+      assert.equal(result.classification, 'active');
+      assert.deepEqual(result.allowedTransitions, ['stuck', 'completed', 'failed', 'cancelled']);
+      assert.equal(result.parent.classification, 'active');
+      assert.deepEqual(result.parent.allowedTransitions, ['stuck', 'completed', 'failed', 'cancelled']);
+
+      // Now look at parent — its children.items entries must also carry
+      // the projection.
+      const parentResult = await writShow.handler({ id: parent.id }) as {
+        children: { items: Array<{ id: string; classification: string; allowedTransitions: string[] }> };
+      };
+      const childItem = parentResult.children.items.find(i => i.id === child.id);
+      assert.ok(childItem);
+      assert.equal(childItem.classification, 'active');
+      assert.deepEqual(childItem.allowedTransitions, ['stuck', 'completed', 'failed', 'cancelled']);
+    });
   });
 
   // ── writ-link tool handler ────────────────────────────────────────
@@ -3556,7 +3642,17 @@ describe('Parent/child relationships', () => {
       const child = await postMandate({ title: 'Child', body: 'B', parentId: parent.id });
 
       const result = await writShow.handler({ id: child.id });
-      assert.deepEqual(result.parent, { id: parent.id, title: 'Parent', phase: 'open' });
+      // Parent reference now embeds presentation projection (classification +
+      // allowedTransitions) so renderers can derive badges and action buttons
+      // without a second registry lookup.
+      assert.deepEqual(result.parent, {
+        id: parent.id,
+        title: 'Parent',
+        type: 'mandate',
+        phase: 'open',
+        classification: 'active',
+        allowedTransitions: ['stuck', 'completed', 'failed', 'cancelled'],
+      });
       assert.deepEqual(result.children, { summary: {}, items: [] });
     });
 

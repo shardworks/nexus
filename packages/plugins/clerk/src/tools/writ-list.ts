@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { guild } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
-import type { ClerkApi } from '../types.ts';
+import type { ClerkApi, WritWithPresentation } from '../types.ts';
+import { derivePresentation } from '../writ-presentation.ts';
 
 export default tool({
   name: 'writ-list',
@@ -30,12 +31,26 @@ export default tool({
   permission: 'read',
   handler: async (params) => {
     const clerk = guild().apparatus<ClerkApi>('clerk');
-    return clerk.list({
+    const writs = await clerk.list({
       phase: params.phase,
       type: params.type,
       parentId: params.parentId,
       limit: params.limit,
       offset: params.offset,
     });
+    // Embed the presentation projection on every row so renderers (the
+    // CLI text mode, the Oculus page) can pick badge classes / glyphs /
+    // action affordances without consulting the type-config registry per
+    // row. T2 contract: every shape that carries a writ phase also
+    // carries `classification` and `allowedTransitions`.
+    const rows: WritWithPresentation[] = writs.map((w) => {
+      const projection = derivePresentation(w, (name) => clerk.getWritTypeConfig(name));
+      return {
+        ...w,
+        classification: projection.classification,
+        allowedTransitions: projection.allowedTransitions,
+      };
+    });
+    return rows;
   },
 });

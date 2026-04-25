@@ -38,7 +38,10 @@ import type {
   LinkKindDoc,
   WritTree,
   WritTreeParams,
+  WritWithPresentation,
 } from './types.ts';
+
+import { derivePresentation } from './writ-presentation.ts';
 
 import type { WritTypeConfig } from './writ-type-config.ts';
 import { validateWritTypeConfig } from './writ-type-config.ts';
@@ -393,6 +396,27 @@ export function createClerk(): Plugin {
     }
   }
 
+  // ── Presentation helpers ──────────────────────────────────────────
+
+  /**
+   * Project a stored `WritDoc` onto its presentation shape — same fields,
+   * plus the derived `classification` and `allowedTransitions`. Reads the
+   * type-config registry through the closure; tolerant of unregistered
+   * types and undeclared states (presentation-side fallback to
+   * `'unknown'` per `derivePresentation`'s contract).
+   */
+  function presentWrit(writ: WritDoc): WritWithPresentation {
+    const projection = derivePresentation(
+      writ,
+      (name) => writTypeRegistry.get(name)?.config,
+    );
+    return {
+      ...writ,
+      classification: projection.classification,
+      allowedTransitions: projection.allowedTransitions,
+    };
+  }
+
   // ── Tree walker ──────────────────────────────────────────────────
 
   /**
@@ -427,7 +451,7 @@ export function createClerk(): Plugin {
 
     // Depth cap: include the node at the cap, but stop recursing.
     if (maxDepth !== undefined && currentDepth >= maxDepth) {
-      return { writ, children: [] };
+      return { writ: presentWrit(writ), children: [] };
     }
 
     const children = await writs.find({ where: [['parentId', '=', writId]] });
@@ -443,7 +467,7 @@ export function createClerk(): Plugin {
       });
       if (childTree) childTrees.push(childTree);
     }
-    return { writ, children: childTrees };
+    return { writ: presentWrit(writ), children: childTrees };
   }
 
   // ── API ──────────────────────────────────────────────────────────
