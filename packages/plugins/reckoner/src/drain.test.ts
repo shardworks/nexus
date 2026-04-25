@@ -29,7 +29,8 @@ import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi, BookEntry } from '@shardworks/stacks-apparatus';
 
 import { createClerk } from '@shardworks/clerk-apparatus';
-import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
+import type { ClerkApi, WritDoc, WritTypeConfig } from '@shardworks/clerk-apparatus';
+import { makeWritTypeApparatus } from '@shardworks/clerk-apparatus/testing';
 
 import { createLattice } from '@shardworks/lattice-apparatus';
 import type { LatticeApi, PulseDoc } from '@shardworks/lattice-apparatus';
@@ -70,7 +71,16 @@ interface Fixture {
   pulsesOf: (triggerType?: string) => Promise<PulseDoc[]>;
 }
 
-async function buildFixture(): Promise<Fixture> {
+async function buildFixture(
+  options: {
+    /**
+     * Extra apparatuses to start *after* the Clerk but *before* the
+     * Reckoner — the multi-type test path uses
+     * `makeWritTypeApparatus` here to register a second writ type.
+     */
+    extraApparatuses?: LoadedApparatus[];
+  } = {},
+): Promise<Fixture> {
   const backend = new MemoryBackend();
   const stacksPlugin = createStacksApparatus(backend);
   const clerkPlugin = createClerk();
@@ -128,6 +138,15 @@ async function buildFixture(): Promise<Fixture> {
   const lattice = latticePlugin.apparatus.provides as LatticeApi;
   apparatusMap.set('lattice', lattice);
 
+  for (const app of options.extraApparatuses ?? []) {
+    const apparatus = app.apparatus as {
+      start?: (ctx: StartupContext) => void | Promise<void>;
+    };
+    if (typeof apparatus.start === 'function') {
+      await apparatus.start(buildCtx());
+    }
+  }
+
   await reckonerPlugin.apparatus.start(buildCtx());
 
   const rigsBook = stacks.book<RigRow>('spider', 'rigs');
@@ -137,7 +156,10 @@ async function buildFixture(): Promise<Fixture> {
     request: { title: string; body: string; type?: string; parentId?: string },
   ): Promise<WritDoc> {
     const writ = await clerk.post(request);
-    return clerk.transition(writ.id, 'open');
+    if (writ.type === 'mandate') {
+      return clerk.transition(writ.id, 'open');
+    }
+    return writ;
   }
 
   async function seedRig(writId: string, status: RigRow['status']): Promise<string> {
@@ -227,5 +249,56 @@ describe('Reckoner — queue-drained emission', () => {
     await fix.clerk.transition(writ.id, 'cancelled', { resolution: 'withdrawn' });
     const pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
     assert.equal(pulses.length, 1);
+  });
+});
+
+describe('Reckoner — drain on a multi-type guild', () => {
+  // A second writ type whose state names are deliberately
+  // non-overlapping with mandate (`pending` initial, `running`
+  // active, `done` terminal-success) so the test proves the drain
+  // predicate keys on classification — not on the literal `open`.
+  const TASK_TYPE_CONFIG: WritTypeConfig = {
+    name: 'task',
+    states: [
+      { name: 'pending', classification: 'initial', allowedTransitions: ['running', 'cancelled'] },
+      { name: 'running', classification: 'active', allowedTransitions: ['done', 'failed', 'cancelled'] },
+      { name: 'done', classification: 'terminal', attrs: ['success'], allowedTransitions: [] },
+      { name: 'failed', classification: 'terminal', attrs: ['failure'], allowedTransitions: [] },
+      { name: 'cancelled', classification: 'terminal', attrs: ['cancelled'], allowedTransitions: [] },
+    ],
+  };
+
+  let fix: Fixture;
+
+  beforeEach(async () => {
+    fix = await buildFixture({
+      extraApparatuses: [
+        makeWritTypeApparatus([TASK_TYPE_CONFIG], { id: 'task-plugin' }),
+      ],
+    });
+  });
+
+  afterEach(() => clearGuild());
+
+  it('does not fire while a structurally-different type has any active-classified writ', async () => {
+    // Mandate is in `open` (active). Task is in `running` (active
+    // on the task type). Drive the mandate terminal — drain must
+    // not fire because the task is still active-classified, even
+    // though no mandate writ is in `open` anymore.
+    const mandate = await fix.postOpen({ title: 'mandate', body: '' });
+    const task = await fix.clerk.post({ title: 'task', body: '', type: 'task' });
+    await fix.clerk.transition(task.id, 'running');
+
+    await fix.clerk.transition(mandate.id, 'completed', { resolution: 'done' });
+    let pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
+    assert.equal(pulses.length, 0, 'task `running` is active-classified and blocks drain');
+
+    // Now drive the task to its terminal. countActive() drops to 0
+    // → drain fires, with the non-mandate writ as the trigger.
+    await fix.clerk.transition(task.id, 'done');
+    pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
+    assert.equal(pulses.length, 1);
+    const ctx = pulses[0]?.context as { lastTerminalWritId?: string };
+    assert.equal(ctx.lastTerminalWritId, task.id);
   });
 });

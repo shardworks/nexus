@@ -28,6 +28,9 @@ import type {
   StartupContext,
 } from '@shardworks/nexus-core';
 
+import { makeWritTypeApparatus } from '@shardworks/clerk-apparatus/testing';
+import type { WritTypeConfig } from '@shardworks/clerk-apparatus';
+
 import { createStacksApparatus } from '@shardworks/stacks-apparatus';
 import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi, BookEntry } from '@shardworks/stacks-apparatus';
@@ -43,9 +46,28 @@ import type { ClockworksRetryApi } from '@shardworks/clockworks-retry-apparatus'
 
 import { createReckoner } from './reckoner.ts';
 import {
+  TRIGGER_QUEUE_DRAINED,
   TRIGGER_WRIT_FAILED,
   TRIGGER_WRIT_STUCK,
 } from './types.ts';
+
+// ── Hand-rolled non-mandate writ type ─────────────────────────────
+//
+// Used by the multi-type test scenarios below. State names are
+// deliberately non-overlapping with mandate (`pending` initial,
+// `running` active, `done` terminal-success) so the tests prove the
+// observer keys on classification — not on the literal `open`/
+// `stuck`/`completed` strings.
+const TASK_TYPE_CONFIG: WritTypeConfig = {
+  name: 'task',
+  states: [
+    { name: 'pending', classification: 'initial', allowedTransitions: ['running', 'cancelled'] },
+    { name: 'running', classification: 'active', allowedTransitions: ['done', 'failed', 'cancelled'] },
+    { name: 'done', classification: 'terminal', attrs: ['success'], allowedTransitions: [] },
+    { name: 'failed', classification: 'terminal', attrs: ['failure'], allowedTransitions: [] },
+    { name: 'cancelled', classification: 'terminal', attrs: ['cancelled'], allowedTransitions: [] },
+  ],
+};
 
 // ── Test bootstrap ──────────────────────────────────────────────
 
@@ -107,7 +129,19 @@ interface Fixture {
   pulsesOf: (triggerType?: string) => Promise<PulseDoc[]>;
 }
 
-async function buildFixture(options: { withRetry?: boolean } = {}): Promise<Fixture> {
+async function buildFixture(
+  options: {
+    withRetry?: boolean;
+    /**
+     * Extra apparatuses to start *after* the Clerk but *before* the
+     * Reckoner — used by multi-type tests to register a second writ
+     * type via `makeWritTypeApparatus`. The apparatus's `start()`
+     * runs while the Clerk's writ-type registration window is still
+     * open, mirroring the production framework ordering.
+     */
+    extraApparatuses?: LoadedApparatus[];
+  } = {},
+): Promise<Fixture> {
   const backend = new MemoryBackend();
   const stacksPlugin = createStacksApparatus(backend);
   const clerkPlugin = createClerk();
@@ -189,6 +223,18 @@ async function buildFixture(options: { withRetry?: boolean } = {}): Promise<Fixt
     apparatusMap.set('clockworks-retry', retry);
   }
 
+  // Start any extra apparatuses (e.g. test-only writ-type registrars)
+  // before the Reckoner so the Clerk's registration window is still
+  // open and the Reckoner sees the full registry on first read.
+  for (const app of options.extraApparatuses ?? []) {
+    const apparatus = app.apparatus as {
+      start?: (ctx: StartupContext) => void | Promise<void>;
+    };
+    if (typeof apparatus.start === 'function') {
+      await apparatus.start(buildCtx());
+    }
+  }
+
   // Start reckoner
   await reckonerPlugin.apparatus.start(buildCtx());
 
@@ -199,7 +245,13 @@ async function buildFixture(options: { withRetry?: boolean } = {}): Promise<Fixt
     request: { title: string; body: string; type?: string; parentId?: string },
   ): Promise<WritDoc> {
     const writ = await clerk.post(request);
-    return clerk.transition(writ.id, 'open');
+    // Mandate's only legal transition out of `new` is `open`. Non-
+    // mandate writs are returned as-is in their declared initial
+    // state — callers drive them forward explicitly.
+    if (writ.type === 'mandate') {
+      return clerk.transition(writ.id, 'open');
+    }
+    return writ;
   }
 
   async function seedRig(writId: string, status: RigRow['status'] = 'stuck'): Promise<string> {
@@ -475,5 +527,109 @@ describe('Reckoner — no startup backfill', () => {
     assert.equal(count, 0, 'Reckoner must not backfill pulses from pre-existing writs');
 
     clearGuild();
+  });
+});
+
+describe('Reckoner — multi-type guild', () => {
+  let fix: Fixture;
+
+  beforeEach(async () => {
+    fix = await buildFixture({
+      extraApparatuses: [
+        makeWritTypeApparatus([TASK_TYPE_CONFIG], { id: 'task-plugin' }),
+      ],
+    });
+  });
+
+  afterEach(() => clearGuild());
+
+  it('drain stays false while a non-mandate writ is active-classified, then fires when it goes terminal', async () => {
+    // A mandate plus a task; mandate goes terminal first. The task
+    // is in `running` (active) — drain must not fire yet. Drive the
+    // task to `done` (terminal-success) and drain fires, with
+    // `lastTerminalWritId` naming the non-mandate writ.
+    const mandate = await fix.postOpen({ title: 'mandate', body: '' });
+    const task = await fix.clerk.post({ title: 'task', body: '', type: 'task' });
+    await fix.clerk.transition(task.id, 'running');
+
+    await fix.clerk.transition(mandate.id, 'completed', { resolution: 'done' });
+    let pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
+    assert.equal(pulses.length, 0, 'task is still active — drain must not fire');
+
+    await fix.clerk.transition(task.id, 'done');
+    pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
+    assert.equal(pulses.length, 1, 'drain fires when the last active writ goes terminal');
+    const ctx = pulses[0]?.context as { lastTerminalWritId?: string };
+    assert.equal(ctx.lastTerminalWritId, task.id, 'lastTerminalWritId names the non-mandate writ');
+  });
+
+  it('drain fires correctly on a non-mandate terminal transition (writ-failed cascade-shape)', async () => {
+    // A task that fails — `failed` is a terminal-classified state on
+    // the task type. countActive() drops to 0 → drain fires.
+    const task = await fix.clerk.post({ title: 'orphan task', body: '', type: 'task' });
+    await fix.clerk.transition(task.id, 'running');
+
+    await fix.clerk.transition(task.id, 'failed', { resolution: 'task abandoned' });
+    const drainPulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
+    assert.equal(drainPulses.length, 1);
+    const ctx = drainPulses[0]?.context as { lastTerminalWritId?: string };
+    assert.equal(ctx.lastTerminalWritId, task.id);
+  });
+
+  it('non-mandate writs do not emit writ-stuck or writ-failed pulses', async () => {
+    // A task type does not even declare a state named `stuck`, but
+    // it does declare `failed`. The brief mandates the stuck/failed
+    // pulses stay mandate-only for v0 — verify the gate by driving a
+    // task through its `failed` terminal.
+    const task = await fix.clerk.post({ title: 'failing task', body: '', type: 'task' });
+    await fix.clerk.transition(task.id, 'running');
+    await fix.clerk.transition(task.id, 'failed', { resolution: 'engine crashed' });
+
+    const failedPulses = await fix.pulsesOf(TRIGGER_WRIT_FAILED);
+    assert.equal(failedPulses.length, 0, 'non-mandate failed must not emit writ-failed');
+
+    const stuckPulses = await fix.pulsesOf(TRIGGER_WRIT_STUCK);
+    assert.equal(stuckPulses.length, 0, 'non-mandate has no stuck phase to emit on');
+  });
+
+  it('pure-mandate parity: drain still fires when only mandates exist', async () => {
+    // No task writs exist; a single mandate completes → drain fires
+    // exactly as on a pure-mandate guild pre-T4.
+    const mandate = await fix.postOpen({ title: 'lone mandate', body: '' });
+    await fix.clerk.transition(mandate.id, 'completed', { resolution: 'done' });
+
+    const pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
+    assert.equal(pulses.length, 1);
+    const ctx = pulses[0]?.context as { lastTerminalWritId?: string };
+    assert.equal(ctx.lastTerminalWritId, mandate.id);
+  });
+
+  it('orphan child blocks drain past parent cancellation, then drains on its own terminal', async () => {
+    // Per the primer's obs-8 / brief: a cancelled mandate parent
+    // with a non-mandate child whose type does not declare a
+    // cascade-cancel transition leaves the child active. Drain must
+    // remain false while the orphan is active and fire when the
+    // orphan reaches its own terminal.
+    const parent = await fix.postOpen({ title: 'parent mandate', body: '' });
+    const child = await fix.clerk.post({
+      title: 'orphan task',
+      body: '',
+      type: 'task',
+      parentId: parent.id,
+    });
+    await fix.clerk.transition(child.id, 'running');
+
+    // Cancel the parent. The task type has no cascade-cancel
+    // transition, so the child stays in `running` (active).
+    await fix.clerk.transition(parent.id, 'cancelled', { resolution: 'withdrawn' });
+    let pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
+    assert.equal(pulses.length, 0, 'orphan child holds drain back past parent cancellation');
+
+    // Drive the child to its own terminal. Drain should fire.
+    await fix.clerk.transition(child.id, 'done');
+    pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
+    assert.equal(pulses.length, 1);
+    const ctx = pulses[0]?.context as { lastTerminalWritId?: string };
+    assert.equal(ctx.lastTerminalWritId, child.id);
   });
 });
