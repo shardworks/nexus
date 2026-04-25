@@ -103,20 +103,34 @@ A standing order is a registered response to an event. Standing orders are **gui
 
 #### Canonical form
 
-Every standing order has one canonical form: `{ on, run, ...params }`. The `on` key names the event to respond to. The `run` key names the relay to invoke. Any additional keys are **params** passed to the relay via `RelayContext.params`.
+Every standing order has one canonical form: `{ on, run, with? }`. The `on` key names the event to respond to. The `run` key names the relay to invoke. The optional `with` block is a plain object passed to the relay as `RelayContext.params`. A peer `schedule` key swaps the trigger from event-driven to time-driven (see [Scheduled Standing Orders](#scheduled-standing-orders) below); exactly one of `on:` or `schedule:` must be present.
+
+```typescript
+interface StandingOrder {
+  on?: string;                       // event-trigger; XOR with schedule
+  schedule?: string;                 // time-trigger; XOR with on
+  run: string;                       // relay name
+  with?: Record<string, unknown>;    // forwarded as RelayContext.params
+}
+```
 
 ```json
 {
   "clockworks": {
     "standingOrders": [
-      { "on": "commission.sealed",  "run": "cleanup-worktree" },
-      { "on": "mandate.ready",      "summon": "artificer", "prompt": "..." },
-      { "on": "code.reviewed",      "run": "notify-patron" },
-      { "on": "deploy.requested",   "run": "deploy", "environment": "staging", "dryRun": true }
+      { "on": "commission.sealed", "run": "cleanup-worktree" },
+      { "on": "code.reviewed",     "run": "notify-patron" },
+      {
+        "on": "deploy.requested",
+        "run": "deploy",
+        "with": { "environment": "staging", "dryRun": true }
+      }
     ]
   }
 }
 ```
+
+**Why nested `with:`.** The four canonical top-level keys (`on`, `schedule`, `run`, `with`) are reserved for Clockworks metadata; nesting params under `with:` keeps that namespace open for future Clockworks-owned fields without colliding with operator-chosen param names. The shape mirrors GitHub Actions' `with:` block on workflow steps — same separation between the runner's trigger / handler metadata and the handler's own inputs. The standing-order validator enforces the allowlist at guild.json load time and rejects any unknown top-level key.
 
 #### The summon relay
 
@@ -134,7 +148,7 @@ The **summon relay** is the stdlib relay that turns event dispatches into anima 
 }
 ```
 
-Anima dispatch is therefore handled by a regular relay — replaceable, upgradeable, configurable — not baked into the framework. The standing-order validator's canonical `{ on, run, with? }` shape applies; there is no `summon:` or `brief:` sugar form.
+Anima dispatch is therefore handled by a regular relay — replaceable, upgradeable, configurable — not baked into the framework.
 
 **`with:` parameters:**
 
@@ -154,7 +168,7 @@ Anima dispatch is therefore handled by a regular relay — replaceable, upgradea
 
 #### Relay params
 
-Any key on a standing order that isn't `on` or `run` (or `summon`/`brief` for sugar forms) is extracted as a param and passed to the relay:
+The `with:` block on a standing order is forwarded verbatim to the relay as `RelayContext.params`. The relay handler reads its inputs off `params`:
 
 ```typescript
 export default relay({
@@ -167,7 +181,36 @@ export default relay({
 });
 ```
 
-Params default to `{}` when no extra keys are present. Existing relays that destructure only `{ home }` from context are unaffected.
+Params default to `{}` when the order omits `with:`. Existing relays that destructure only `{ home }` from context are unaffected.
+
+---
+
+### Scheduled Standing Orders
+
+A standing order may swap its `on:` trigger for a `schedule:` expression to fire on a wall-clock cadence rather than on an event. The two trigger keys are mutually exclusive — a standing order with both, or with neither, is rejected at guild.json load time. Everything downstream of the trigger (the `run:` relay, the `with:` params block, the dispatch row written per fire, the SOF callback on failure) is shared with the event-driven path.
+
+```json
+{ "schedule": "*/5 * * * *", "run": "reckoner-tick" }
+```
+
+```json
+{ "schedule": "@every 1h", "run": "tech-debt-scan", "with": { "depth": "full" } }
+```
+
+**Schedule expressions.** Two syntaxes are accepted:
+
+- **Standard 5-field unix cron** — `m h dom mon dow`. Six- and seven-field forms (with seconds or year) and vendor extensions are rejected. Cron expressions are evaluated in the daemon's local time zone.
+- **`@every <N><unit>`** — fixed interval. The unit suffix is one of `s` (seconds), `m` (minutes), or `h` (hours), and the count is a positive integer. Compound durations (e.g. `1m30s`), fractional values, and other unit suffixes are rejected.
+
+Schedule values are parse-checked at guild.json load time alongside the rest of the standing-order validator, so a malformed cron or `@every` value fails the apparatus boot with an error that names the offending order index.
+
+**The `schedule.fired` event.** Every fire writes a synthesized `schedule.fired` event row into the `events` book (with `processed: true` so the event-sweep does not re-fire it) plus a matching dispatch row through the same plumbing the event-driven path uses. `schedule.` is a reserved framework namespace — only the daemon's scheduler pass is authorized to emit it; animas calling the `signal` tool with a `schedule.*` name are rejected.
+
+**Per-tick ordering.** The daemon runs `processSchedules()` first on every tick and `processEvents()` second, so events emitted from a scheduled relay are picked up on the same tick they are produced.
+
+**Missed fires and restart semantics.** A daemon cold start fires each scheduled order at the next boundary after start — there is no missed-fire backfill. When the scheduler is catching up (a stalled tick, a paused process, or many intervals elapsed at once), an in-tick guard limits each order to at most one fire per tick; subsequent overdue fires are picked up one-per-tick on later passes.
+
+**Lifecycle constraint.** The schedule table is built once on apparatus `start()` and held in memory for the life of the daemon. Operators editing `schedule:` entries in `guild.json` must restart the apparatus for the change to take effect — distinct from event-driven (`on:`) orders, which the dispatcher re-reads from the config on every sweep and so support hot-edit.
 
 ---
 
@@ -221,9 +264,9 @@ Standing order failures signal a `standing-order.failed` event:
 {
   name: "standing-order.failed",
   payload: {
-    standingOrder: { on: "commission.failed", summon: "steward" },
+    standingOrder: { on: "commission.failed", run: "notify-patron" },
     triggeringEvent: { id: 42, name: "commission.failed", ... },
-    error: "No active anima fills role 'steward'"
+    error: "relay 'notify-patron' threw: SMTP connect ECONNREFUSED"
   }
 }
 ```
@@ -271,11 +314,22 @@ Animas cannot signal framework events (`anima.*`, `commission.*`, `tool.*`, `ses
       }
     },
     "standingOrders": [
-      { "on": "commission.sealed",     "run": "cleanup-worktree" },
-      { "on": "commission.failed",     "run": "notify-patron" },
-      { "on": "commission.failed",     "summon": "steward" },
-      { "on": "code.reviewed",         "run": "post-review-summary" },
-      { "on": "standing-order.failed", "summon": "steward" }
+      { "on": "commission.sealed", "run": "cleanup-worktree" },
+      {
+        "on": "mandate.ready",
+        "run": "summon-relay",
+        "with": {
+          "role": "artificer",
+          "prompt": "Read your writ. Title: {{writ.title}}",
+          "maxSessions": 5
+        }
+      },
+      {
+        "on": "code.reviewed",
+        "run": "notify-channel",
+        "with": { "channel": "#reviews", "level": "info" }
+      },
+      { "schedule": "@every 30s", "run": "reckoner-tick" }
     ]
   }
 }
@@ -351,12 +405,12 @@ export default relay({
   handler: async (event: GuildEvent | null, { home, params }) => {
     // event  — the triggering GuildEvent when invoked by a standing order (null for direct invocation)
     // home   — absolute path to the guild root
-    // params — extra keys from the standing order (empty object when none)
+    // params — the standing order's `with:` block (empty object when absent)
   }
 });
 ```
 
-The Clockworks runner calls `module.default.handler(event, { home, params })`. Params are extracted from the standing order at dispatch time — any key that isn't `on` or `run` becomes a param. Relays can be named in `run:` standing orders; bespoke framework processes cannot.
+The Clockworks runner calls `module.default.handler(event, { home, params })`. Params come from `order.with ?? {}` — the standing order's `with:` block, or an empty object when absent. Relays can be named in `run:` standing orders; bespoke framework processes cannot.
 
 ---
 
@@ -378,4 +432,3 @@ The Clockworks runner calls `module.default.handler(event, { home, params })`. P
 - **Pre-event hooks** — cancellable `before.*` events. Powerful but complex. Start with observation-only (post-facto) events.
 - **Payload schema enforcement** — schema field in custom event declarations is documented but not validated. Enforcement deferred.
 - **Phase 2 daemon enhancements** — external event injection (webhooks, file watchers), log rotation, concurrency.
-- **Scheduled standing orders** — time-triggered rather than event-triggered. Deferred.
