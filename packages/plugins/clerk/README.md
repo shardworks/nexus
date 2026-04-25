@@ -1,6 +1,6 @@
 # `@shardworks/clerk-apparatus`
 
-The Clerk manages the lifecycle of **writs** — lightweight work orders that flow through a fixed phase machine. Writs are created as commissions and ultimately completed, failed, or cancelled. Writs may also enter a `stuck` phase when their rig encounters an engine failure — a non-terminal "needs attention" phase that preserves the obligation for future retry. Writs can be organized into parent/child hierarchies for decomposing complex work.
+The Clerk manages the lifecycle of **writs** — lightweight work orders whose state machine is declared per writ type via a `WritTypeConfig`. The Clerk's own built-in `mandate` type flows through a six-state lifecycle (below); other plugin-registered types declare their own states and transitions. Writs can be organized into parent/child hierarchies for decomposing complex work.
 
 Writ documents follow a Kubernetes-style spec/status split: **`phase`** is the Clerk-owned lifecycle state (the phase machine below), and **`status`** is a plugin-owned observation slot keyed by plugin id — a place for apparatuses like Spider to record side-channel observations (last rig, stuck cause, progress ratchets) without mutating the phase. See [Spec/Status Convention](#specstatus-convention) below.
 
@@ -34,7 +34,7 @@ const clerk = guild().apparatus<ClerkApi>('clerk');
 
 ### `post(request): Promise<WritDoc>`
 
-Post a new commission, creating a writ in `open` phase.
+Post a new commission, creating a writ in its registered type's declared `initial` state. For mandate that's `new` (a draft); the `commission-post` tool auto-publishes mandate writs to `open` by default.
 
 ```typescript
 const writ = await clerk.post({
@@ -50,16 +50,16 @@ const writ = await clerk.post({
 |---|---|---|
 | `title` | `string` | Short human-readable title |
 | `body` | `string` | Detail text (required) |
-| `type` | `string` | Writ type — must be declared or built-in (optional) |
+| `type` | `string` | Writ type — must be a registered type (optional) |
 | `codex` | `string` | Target codex name (optional, inherited from parent if omitted) |
 | `parentId` | `string` | Parent writ id for hierarchical decomposition (optional) |
 
 When `parentId` is provided:
-- The parent must exist and be in `new`, `open`, or `stuck` phase.
+- The parent must exist and not be in a terminal state (as classified by its type config).
 - The child inherits the parent's `codex` if no explicit codex is provided.
 - The entire operation is atomic.
 
-Throws if the writ type is not declared in the guild config and is not a built-in type (`mandate`, `summon`).
+Throws if the writ type is not registered — register types with [`registerWritType`](#registerwrittypeconfig-void) from your plugin's `start()`.
 
 ### `show(id): Promise<WritDoc>`
 
@@ -118,14 +118,13 @@ const total = await clerk.count({ phase: 'open' });
 
 ### `listWritTypes(): WritTypeInfo[]`
 
-List all registered writ types with full metadata — descriptions, source tracking, and default flag.
+List all registered writ types. Returns an entry for each type registered via [`registerWritType`](#registerwrittypeconfig-void), including the Clerk's own `mandate`.
 
 ```typescript
 const types = clerk.listWritTypes();
 // [
 //   { name: 'mandate', description: null, source: 'builtin', isDefault: true },
-//   { name: 'task', description: 'A task', source: 'guild', isDefault: false },
-//   { name: 'quality-audit', description: 'Code quality audit', source: 'my-kit', isDefault: false },
+//   { name: 'piece',   description: null, source: 'plugin',  isDefault: false },
 // ]
 ```
 
@@ -134,11 +133,47 @@ Each entry includes:
 | Field | Type | Description |
 |---|---|---|
 | `name` | `string` | The writ type name |
-| `description` | `string \| null` | Human-readable description, or `null` if none was provided |
-| `source` | `string` | Origin: `"builtin"`, `"guild"`, or the contributing plugin's id |
+| `description` | `string \| null` | Reserved; always `null` today — `WritTypeConfig` does not currently model a description field |
+| `source` | `"builtin" \| "plugin"` | `"builtin"` for mandate (registered by the Clerk plugin itself); `"plugin"` for every other registered type |
 | `isDefault` | `boolean` | Whether this is the guild's default writ type |
 
-Source precedence: guild config entries fully shadow kit contributions with the same name (including description).
+Use [`getWritTypeConfig(name)`](#getwrittypeconfigname-writtypeconfig--undefined) when you need the full `WritTypeConfig` (states, transitions, etc.).
+
+### `registerWritType(config): void`
+
+Register a writ type's state machine with the Clerk. The config is validated via `validateWritTypeConfig` (validator errors propagate verbatim); registration-specific failures — duplicate names, or calls after the startup window has closed — throw with a `[clerk] registerWritType:` prefix.
+
+```typescript
+// From a plugin's own start():
+const clerk = guild().apparatus<ClerkApi>('clerk');
+clerk.registerWritType({
+  name: 'audit',
+  states: [
+    { name: 'new', classification: 'initial', allowedTransitions: ['open', 'cancelled'] },
+    { name: 'open', classification: 'active', allowedTransitions: ['completed', 'failed', 'cancelled'] },
+    { name: 'completed', classification: 'terminal', attrs: ['success'], allowedTransitions: [] },
+    { name: 'failed', classification: 'terminal', attrs: ['failure'], allowedTransitions: [] },
+    { name: 'cancelled', classification: 'terminal', attrs: ['cancelled'], allowedTransitions: [] },
+  ],
+});
+```
+
+`registerWritType` is the only path for a plugin to contribute a writ type. The registry is sealed at the framework's global `phase:started` signal — call it from your apparatus's `start()`. There is no guild-config writTypes field and no kit-contribution channel.
+
+### `getWritTypeConfig(name): WritTypeConfig | undefined`
+
+Return the registered `WritTypeConfig` for a writ type, or `undefined` when the name is not registered. Use this accessor when composing higher-level predicates or inspecting a type abstractly (e.g. to render a state-machine diagram).
+
+### `isInitial(writ): boolean` / `isActive(writ): boolean` / `isTerminal(writ): boolean`
+
+Classify a writ's current state by consulting its type's registered `WritTypeConfig`. Each predicate throws the fail-loud diagnostic when the writ's type is not registered, or when its stored state is not declared in that type's config.
+
+```typescript
+const writ = await clerk.show(id);
+if (clerk.isTerminal(writ)) { /* ... */ }
+```
+
+The three predicates partition registered states cleanly — every state in a validated `WritTypeConfig` carries exactly one classification.
 
 ### `link(sourceId, targetId, label, kind?): Promise<WritLinkDoc>`
 
@@ -219,11 +254,11 @@ await clerk.transition(id, 'failed', { resolution: 'Build pipeline broke' });
 await clerk.transition(id, 'cancelled', { resolution: 'No longer needed' });
 ```
 
-Throws if the transition is not legal for the writ's current phase.
+Throws if the transition is not legal for the writ's current phase. The rejection message carries the writ id, current state, attempted target, and the list of legal transitions declared by the writ's type config (or `none (terminal state)` when the current state is terminal).
 
-`transition()` silently strips the phase machine's managed fields from the body — `id`, `phase`, `status`, `createdAt`, `updatedAt`, `resolvedAt`, and `parentId`. The observation slot `status` is writable only via `setWritStatus()` (the one sanctioned slot-write path), which performs a transactional read-modify-write on the sub-slot keyed by `pluginId` so sibling sub-slots are preserved under concurrent writers. See [Spec/Status Convention](#specstatus-convention).
+`transition()` strips the phase machine's managed fields from the body — `id`, `createdAt`, `updatedAt`, `resolvedAt`, and `parentId` — and rejects attempts to override `phase` through the `fields` argument with `[clerk] transition: cannot override phase via fields argument`. The observation slot `status` is writable only via `setWritStatus()` (the one sanctioned slot-write path), which performs a transactional read-modify-write on the sub-slot keyed by `pluginId` so sibling sub-slots are preserved under concurrent writers. See [Spec/Status Convention](#specstatus-convention).
 
-**Cascade behavior:** When a writ with children transitions to `failed` or `cancelled`, all non-terminal children are automatically cancelled with resolution `'Automatically cancelled due to parent termination'` (exported as `CASCADE_PARENT_TERMINATION_RESOLUTION`). When a parent transitions to `completed`, non-terminal children are **not** cancelled — instead a warning is logged (their existence indicates an upstream bookkeeping gap). When a child fails and its parent is `open` or `stuck`, the parent is failed and remaining siblings are cancelled.
+Parent/child lifecycles are independent in this version — there is no automatic cascade from a terminal child to its parent, and no downward cancellation of non-terminal children when the parent reaches a terminal state. A forthcoming children-behavior engine (roadmap task) will reintroduce cascade keyed on `WritTypeConfig.childrenBehavior`.
 
 ### `setWritStatus(writId, pluginId, value): Promise<WritDoc>`
 
@@ -243,7 +278,9 @@ Throws if `writId` or `pluginId` is missing, or if the writ does not exist.
 
 ---
 
-## Phase Machine
+## Mandate's lifecycle (an example registered type)
+
+Mandate is the one writ type the Clerk plugin registers for itself. Its lifecycle — six states, the transitions below — is just one example of a `WritTypeConfig`; other plugin-registered types declare their own state machines.
 
 ```
 new ──► open ──┬──► completed
@@ -260,10 +297,10 @@ new ──► open ──┬──► completed
   └───────┴────┴──► cancelled
 ```
 
-- `completed`, `failed`, and `cancelled` are **terminal** — no transitions out.
-- `stuck` is **non-terminal** — a "needs attention" phase for writs whose rig hit an engine failure. Recovery (future retry) transitions back to `open`; giving up transitions to `failed` or `cancelled`.
+- `completed`, `failed`, and `cancelled` are **terminal** (classification: `terminal`) — no transitions out.
+- `stuck` is **non-terminal** (classification: `active`) — a "needs attention" phase for writs whose rig hit an engine failure. Recovery transitions back to `open`; giving up transitions to `failed` or `cancelled`.
 
-### Allowed transitions
+### Mandate's allowed transitions
 
 | To | From |
 |---|---|
@@ -273,15 +310,16 @@ new ──► open ──┬──► completed
 | `failed` | `open`, `stuck` |
 | `cancelled` | `new`, `open`, `stuck` |
 
+The same table is carried as `allowedTransitions` on each state in mandate's `WritTypeConfig`. Other types (`piece`, `observation-set`, your own) live alongside mandate in the Clerk's runtime registry — their allowed transitions come from their own configs, not this table.
+
 ---
 
 ## Parent/Child Hierarchies
 
 Writs can be organized into parent/child relationships for decomposing complex work:
 
-- **Creating children:** Pass `parentId` to `post()`. The parent stays in its current phase. Parents in `new`, `open`, or `stuck` phase accept children.
-- **Failure cascade:** When a child fails and the parent is `open` or `stuck`, the parent is failed and remaining non-terminal siblings are cancelled.
-- **Cancellation cascade:** When a parent reaches `failed` or `cancelled`, all non-terminal children are cancelled. When a parent reaches `completed` with non-terminal children still present, the Clerk logs a warning and leaves the children alone — this signals an upstream bookkeeping gap rather than normal flow.
+- **Creating children:** Pass `parentId` to `post()`. The parent stays in its current phase. Parents accept children in any non-terminal state; a parent in a terminal state (as classified by its type config) rejects new children with a clear error.
+- **No cascade (in this version):** parent and child lifecycles evolve independently. A terminal child does not lift its parent, and a terminal parent does not cancel non-terminal children. A children-behavior engine on the roadmap will reintroduce cascade keyed on `WritTypeConfig.childrenBehavior`.
 - **Codex inheritance:** Children inherit the parent's codex if none is specified.
 - **Immutability:** `parentId` cannot be changed after creation.
 
@@ -347,18 +385,9 @@ Configure The Clerk under the `"clerk"` key in your guild config:
 }
 ```
 
-Writ types are declared at the top level of the guild config:
+Only `defaultType` is honored. It must name a writ type registered with the Clerk (via `registerWritType` from a plugin's `start()`); an unregistered default fails the guild's startup with a clear `[clerk] guild config:` error.
 
-```json
-{
-  "writTypes": {
-    "epic": { "description": "A significant multi-step task" },
-    "errand": { "description": "A small one-off task" }
-  }
-}
-```
-
-The built-in types `mandate` and `summon` are always available without declaration.
+There is no guild-config `writTypes` field. Plugins contribute writ types via `ClerkApi.registerWritType(config)` from their own apparatus's `start()`. The Clerk itself registers `mandate` the same way.
 
 ---
 
@@ -397,12 +426,15 @@ The Clerk contributes books, tools, and pages to the guild:
 ## Key Types
 
 ```typescript
+// Mandate-specific state union (kept for callers that knowingly downcast).
+// The structural type of WritDoc.phase is `string` so any plugin-registered
+// writ type's state name round-trips through the book.
 type WritPhase = 'new' | 'open' | 'stuck' | 'completed' | 'failed' | 'cancelled';
 
 interface WritDoc {
   id: string;           // ULID-like, prefixed "w-"
-  type: string;         // declared or built-in type
-  phase: WritPhase;     // Clerk-owned lifecycle state
+  type: string;         // a registered writ type
+  phase: string;        // Clerk-owned lifecycle state (any registered type's state name)
   title: string;
   body: string;
   codex?: string;       // target codex name
@@ -454,10 +486,10 @@ interface WritTreeParams {
 }
 
 interface WritTypeInfo {
-  name: string;              // writ type name
-  description: string | null; // human-readable description
-  source: string;            // "builtin", "guild", or plugin id
-  isDefault: boolean;        // whether this is the default type
+  name: string;                       // writ type name
+  description: string | null;         // reserved; always null today
+  source: 'builtin' | 'plugin';       // "builtin" for mandate; "plugin" otherwise
+  isDefault: boolean;                 // whether this is the default type
 }
 
 interface WritLinkDoc {

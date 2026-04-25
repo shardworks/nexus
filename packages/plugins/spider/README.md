@@ -360,8 +360,9 @@ Two kits contributing overlapping entries to a merge registry refuse to start th
 
 - `rigTemplateMappings` — two kits mapping the same writ type (including Spider's own plugin-default `mandate → default`)
 - `blockTypes` — two kits contributing the same block-type id
-- Clerk `writTypes` — two kits contributing the same writ type
 - Fabricator `engines` — two kits contributing the same engine-design id
+
+(Writ types are no longer kit-merged — every plugin registers its own writ types via `ClerkApi.registerWritType` from its own apparatus's `start()`. A second registration of the same name throws at registration time with `[clerk] registerWritType: duplicate writ type "<name>"`.)
 
 When a collision is detected the guild fails to start with an error naming both contributing plugins and the conflicting key. Operators resolve by removing one of the kit contributions, or — for the Spider sites that support it — by declaring a config-level override in `guild.json["spider"]` (config always wins over any kit contribution, silently). The winner is never selected by kit load order.
 

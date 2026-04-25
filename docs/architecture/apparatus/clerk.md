@@ -14,7 +14,7 @@ The Clerk owns the boundary between "what is asked for" and "how it gets done." 
 
 The Clerk does **not** execute work. It does not launch sessions, manage rigs, or orchestrate engines. It tracks obligations: what has been commissioned, what state each obligation is in, and whether the guild has fulfilled its commitments. When the Clockworks and rigging system exist, the Clerk will integrate with them via lifecycle events and signals.
 
-Writs can be organized into parent/child hierarchies for decomposing complex work. A parent writ stays in `open` phase while its children are being processed. Failure cascades upward (child failure fails the parent) and cancellation cascades downward when a parent reaches `failed` or `cancelled` (its non-terminal children are auto-cancelled). When a parent reaches `completed`, any still-open children are left as-is and a warning is logged — see [CDC Cascade Behavior](#cdc-cascade-behavior).
+Writs can be organized into parent/child hierarchies for decomposing complex work. A parent writ stays in its current state while its children are being processed — parent and child lifecycles evolve independently. There is no automatic cascade in this version of the Clerk: a terminal child does not lift its parent, and a terminal parent does not cancel non-terminal children. A children-behavior engine on the roadmap will reintroduce cascade keyed on per-type `WritTypeConfig.childrenBehavior`.
 
 Writ documents follow a Kubernetes-style spec/status split: **`phase`** is the Clerk-owned lifecycle state (the phase machine below), and **`status`** is a plugin-owned observation slot — a `Record<string, unknown>` keyed by plugin id where apparatuses like Spider record side-channel observations (last rig, stuck cause, progress ratchets). See [Spec/Status Convention](#specstatus-convention).
 
@@ -34,15 +34,11 @@ recommends: ['oculus']
 
 ## Kit Interface
 
-The Clerk consumes `writTypes` and `linkKinds` kit contributions. Kits may declare writ types that are merged into the guild's type vocabulary at startup, and link kinds that seed the kit-contributed link-kind registry.
+The Clerk consumes `linkKinds` kit contributions — link kinds seed the kit-contributed link-kind registry at startup. Writ types are **not** a kit contribution; every plugin contributes its writ types by calling `ClerkApi.registerWritType` from its own apparatus's `start()` (see [Writ-Type Registry](#writ-type-registry) below).
 
 ```typescript
-consumes: ['writTypes', 'linkKinds']
+consumes: ['linkKinds']
 ```
-
-### `writTypes` contributions
-
-Kits contribute writ types via the `writTypes` field on `ClerkKit` (or on an apparatus's `supportKit`). Each entry is a complete `WritTypeConfig` — see [Writ-Types Substrate](#writ-types-substrate) for the shape, per-field rules, and the mandate canonical example. Source precedence (built-in > guild config > kit) and the kit-vs-kit collision hard-fail are described there. A fresh-domain plugin-author walkthrough lives in [Adding writ types](../../guides/adding-writ-types.md).
 
 ### `linkKinds` registry
 
@@ -348,22 +344,6 @@ All Clerk configuration lives under the `clerk` key in `guild.json`. The Clerk u
 ```json
 {
   "clerk": {
-    "writTypes": [
-      {
-        "name": "task",
-        "states": [
-          { "name": "new",       "classification": "initial",  "allowedTransitions": ["open", "cancelled"] },
-          { "name": "open",      "classification": "active",   "allowedTransitions": ["completed", "failed", "cancelled"] },
-          { "name": "completed", "classification": "terminal", "attrs": ["success"],   "allowedTransitions": [] },
-          { "name": "failed",    "classification": "terminal", "attrs": ["failure"],   "allowedTransitions": [] },
-          { "name": "cancelled", "classification": "terminal", "attrs": ["cancelled"], "allowedTransitions": [] }
-        ],
-        "childrenBehavior": {
-          "allSuccess": { "transition": "completed", "copyResolution": true },
-          "anyFailure": { "transition": "failed",    "copyResolution": true }
-        }
-      }
-    ],
     "defaultType": "mandate"
   }
 }
@@ -371,7 +351,6 @@ All Clerk configuration lives under the `clerk` key in `guild.json`. The Clerk u
 
 ```typescript
 interface ClerkConfig {
-  writTypes?: WritTypeConfig[]
   defaultType?: string
 }
 
@@ -385,12 +364,11 @@ declare module '@shardworks/nexus-core' {
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `writTypes` | `WritTypeConfig[]` | `[]` | Guild-declared writ types. Each entry is a complete `WritTypeConfig` — see [Writ-Types Substrate](#writ-types-substrate). The built-in type `mandate` is always valid regardless of this list. |
-| `defaultType` | `string` | `"mandate"` | Default type when `commission-post` is called without a type. |
+| `defaultType` | `string` | `"mandate"` | Default writ type for `commission-post` when called without an explicit type. Validated against the Clerk's writ-type registry on the framework's `phase:started` event — an unregistered name fails startup with `[clerk] guild config: defaultType "<name>" is not a registered writ type`. |
 
-Both fields are optional. A guild with no `clerk` config (or an empty one) gets only the built-in `mandate` type with `defaultType: "mandate"` — enough to post commissions with no configuration.
+Guild-config `writTypes` is **gone**. Writ types are contributed exclusively via `ClerkApi.registerWritType(config)` from a plugin's own `start()`. See [Writ-Type Registry](#writ-type-registry).
 
-> **Runtime wiring pending (requires T2/T3).** The `WritTypeConfig` shape and its validator are the authoritative description of a writ type. The runtime that promotes `ClerkConfig.writTypes` from the legacy `{ name, description }` entries into full `WritTypeConfig` lifecycle enforcement lands in the T2/T3 refactor. Until then, the Clerk treats `writTypes` entries as a vocabulary list: the `name` field gates posts, and the rest of each entry is preserved in config but not yet consulted by the phase machine. New code that declares types should use the `WritTypeConfig` shape today so no migration is needed once the runtime catches up.
+Writ types are the guild's vocabulary — not a framework-imposed hierarchy. A guild that does only implementation work might use only `mandate`. A guild with planning animas might register `piece`, `observation-set` via the astrolabe apparatus. The Clerk validates that posted writs use a registered type but assigns no behavioral semantics to the type name — that meaning lives in role instructions and (when available) standing orders and engine designs.
 
 ---
 
@@ -401,8 +379,8 @@ Writ types are first-class lifecycle descriptors, not a vocabulary list. Each de
 The substrate composes with the rest of the Clerk:
 
 - **Phase machine** — the validated transition graph declared by each type's `allowedTransitions` is the phase machine the Clerk enforces for that type. A writ of type `T` may only transition between states declared by `T`'s config.
-- **Parent/child cascade** — the CDC cascade on the `clerk/writs` book (see [Parent/Child Hierarchies](#parentchild-hierarchies)) routes terminal-child outcomes back through the parent's declared `childrenBehavior` triggers, mapping "all children succeeded" / "any child failed" events onto the parent's declared target state.
-- **Spider dispatch** — the Spider's `rigTemplateMappings` (see [Spider → Configuration → Plugin-default template and mapping](spider.md#plugin-default-template-and-mapping)) keys off the writ's `type` string. Declaring a new writ type here does not dispatch it automatically; a matching entry must exist (or be contributed by a kit) in `spider.rigTemplateMappings`.
+- **Parent/child cascade** — declared on `WritTypeConfig.childrenBehavior` and consumed by the children-behavior engine (see [Parent/Child Hierarchies](#parentchild-hierarchies)) to route terminal-child outcomes back through the parent's declared triggers, mapping "all children succeeded" / "any child failed" events onto the parent's declared target state. The engine itself ships in T3; until it lands, parent and child lifecycles evolve independently and `childrenBehavior` declarations are validated but not yet acted upon.
+- **Spider dispatch** — the Spider's `rigTemplateMappings` (see [Spider → Configuration → Plugin-default template and mapping](spider.md#plugin-default-template-and-mapping)) keys off the writ's `type` string. Registering a new writ type here does not dispatch it automatically; a matching entry must exist (or be contributed by a kit) in `spider.rigTemplateMappings`.
 
 ### Classification vs. attrs
 
@@ -423,22 +401,6 @@ A state's **attrs** answer "what does this terminal outcome *mean*?" — `succes
 
 A state may carry zero, one, or many attrs. An `active` state may still carry attrs if downstream consumers want to tag it — the validator places no attrs-only restriction.
 
-### Source precedence
-
-Writ types come from three sources, in precedence order:
-
-1. **Built-in.** The framework's sole built-in type is `mandate`. It is always valid and cannot be shadowed out of existence. Its name is exported as `BUILTIN_WRIT_TYPE`.
-2. **Guild config.** Entries declared in `clerk.writTypes` in `guild.json`. Guild config wins over any kit contribution claiming the same name — the guild operator's declared vocabulary is authoritative.
-3. **Kit.** Entries contributed through a plugin's `ClerkKit.writTypes` (see [Kit Interface](#kit-interface)). Scanned at startup via the Wire-phase kit snapshot.
-
-Resolution rules:
-
-- **Built-in vs. kit.** A kit that re-declares the built-in `mandate` type is silently skipped — the built-in is already valid, the contribution is redundant but harmless.
-- **Config vs. kit.** A kit whose type name matches a `clerk.writTypes` entry is silently skipped. Operators override kit contributions by declaring the same name in config.
-- **Kit vs. kit.** Two kits contributing a type with the same name is a hard startup failure. The Clerk throws, naming both kits and the conflicting type; the error instructs the operator to remove one contribution or override via `clerk.writTypes`. A colliding type that silently resolved one way or the other would be worse than a boot failure — downstream consumers key on the lifecycle declared by the winner, and kit load order is not a stable resolution signal. This same fail-loud rule applies framework-wide at every kit-vs-kit merge site (Clerk `writTypes`, Spider `rigTemplateMappings` and `blockTypes`, Fabricator engine designs).
-
-`ClerkApi.listWritTypes()` surfaces the merged registry with each entry's `source` field set to `"builtin"`, `"guild"`, or the contributing plugin id.
-
 ### Schema reference
 
 The structural shape is exported from `@shardworks/clerk-apparatus`:
@@ -456,9 +418,9 @@ import {
 } from '@shardworks/clerk-apparatus';
 ```
 
-Every kit contribution and every guild-config entry is a `WritTypeConfig`. The validator `validateWritTypeConfig(config)` throws a plain `Error` on the first structural violation and returns `void` on success. Error messages take the shape `[clerk] writTypeConfig.<path>: <problem>; received <value>` — the `<path>` names the offending field (e.g. `states[2].classification`, `childrenBehavior.anyFailure.transition`).
+Every `ClerkApi.registerWritType(config)` call passes a `WritTypeConfig`. The validator `validateWritTypeConfig(config)` throws a plain `Error` on the first structural violation and returns `void` on success. Error messages take the shape `[clerk] writTypeConfig.<path>: <problem>; received <value>` — the `<path>` names the offending field (e.g. `states[2].classification`, `childrenBehavior.anyFailure.transition`).
 
-> **Runtime wiring pending (requires T2/T3).** The per-type `allowedTransitions` graph driving `transition()` enforcement, the `childrenBehavior` triggers firing on child-terminal events, and kit contributions running through `validateWritTypeConfig()` at registration time are the target behaviour. Today's Clerk enforces a single hard-coded `mandate`-shaped transition table (`ALLOWED_FROM` in `clerk.ts`) and a hard-coded upward-failure cascade. The field-level semantics below are the contract the T2/T3 runtime is written against; the validator rules are already shipped and enforced at the structural level.
+> **Runtime wiring pending (requires T3).** The per-type `allowedTransitions` graph drives `transition()` enforcement today, and registration runs every config through `validateWritTypeConfig()` before admitting it to the registry. The `childrenBehavior` triggers firing on child-terminal events still await the children-behavior engine; until T3 lands, `childrenBehavior` declarations are validated structurally but no cascade fires. The field-level semantics below are the contract the T3 runtime is written against.
 
 #### `WritTypeConfig`
 
@@ -472,7 +434,7 @@ interface WritTypeConfig {
 }
 ```
 
-- **`name`** — the writ type name. Must be a non-empty string; no format rules beyond non-emptiness are imposed by the validator. Uniqueness across the merged registry is enforced by the source-precedence rules above, not by `validateWritTypeConfig`.
+- **`name`** — the writ type name. Must be a non-empty string; no format rules beyond non-emptiness are imposed by the validator. Uniqueness across the runtime registry is enforced at registration time — a duplicate `registerWritType` call throws — not by `validateWritTypeConfig`.
 - **`states`** — the lifecycle states for this type. Must be a non-empty array. Validator rules: exactly one state classified `initial`; every non-initial state must have at least one inbound transition from some other state; terminal states must declare no outbound transitions.
 - **`childrenBehavior`** — optional aggregate-children triggers. When absent, the type declares no children-driven lifting.
 
@@ -601,7 +563,7 @@ Valid (single trigger only):
 
 Invalid — non-object `childrenBehavior`: `childrenBehavior: must be an object when provided; received "oops"`.
 
-> **Runtime wiring pending (requires T2/T3).** The semantics below describe the target cascade; today's Clerk wires only the hard-coded mandate-flavored behaviour (upward failure only, resolution `'Child "<id>" failed: <resolution>'`).
+> **Runtime wiring pending (requires T3).** The semantics below describe the target cascade; today's Clerk no longer wires any cascade — the prior hard-coded mandate-flavored upward-failure path was deleted as part of T2, and the children-behavior engine that consumes these declarations ships in T3.
 >
 > - **Trigger firing** — `allSuccess` fires when the last non-terminal child becomes terminal *and* every terminal child carries the `success` attr. `anyFailure` fires when any child reaches a terminal state carrying the `failure` attr.
 > - **Idempotency** — the parent transition driven by a trigger runs at most once per parent. Repeated fires of the same trigger are observed but not re-applied; the parent has already moved to the target state.
@@ -705,13 +667,25 @@ Traits worth reading off the fixture:
 
 ### Cross-reference: Spider dispatch
 
-Declaring a new writ type through `clerk.writTypes` (or a kit) makes the type valid for `commission-post` but does not dispatch it. Dispatch is opt-in per type and is owned by the Spider's `rigTemplateMappings`. A writ whose type has no mapping sits in `open` indefinitely until a mapping is added (or the writ is cancelled / completed manually). The recommended reading order for plugin authors declaring a new type is: declare the type here → register (or declare) a mapping in [Spider → `rigTemplateMappings`](spider.md#plugin-default-template-and-mapping) → only then does posting a writ of that type spawn a rig. See also the [plugin-author walkthrough](../../guides/adding-writ-types.md) for an end-to-end kit example.
+Registering a new writ type via `ClerkApi.registerWritType` makes the type valid for `commission-post` but does not dispatch it. Dispatch is opt-in per type and is owned by the Spider's `rigTemplateMappings`. A writ whose type has no mapping sits in `open` indefinitely until a mapping is added (or the writ is cancelled / completed manually). The recommended reading order for plugin authors registering a new type is: register the type here → register (or declare) a mapping in [Spider → `rigTemplateMappings`](spider.md#plugin-default-template-and-mapping) → only then does posting a writ of that type spawn a rig. See also the [plugin-author walkthrough](../../guides/adding-writ-types.md) for an end-to-end example.
 
 ---
 
-## Phase Machine (mandate)
+## Writ-Type Registry
 
-The mandate type's phase machine — the canonical worked example of the substrate above, and the set of transitions the Clerk currently hard-enforces via `ALLOWED_FROM`. Other writ types declare their own; this diagram is mandate-specific.
+The Clerk maintains a runtime registry of writ types keyed by name. Each entry is a fully-validated `WritTypeConfig` that declares the type's states (with classifications `'initial' | 'active' | 'terminal'`, an optional semantic `attrs` vocabulary, and per-state `allowedTransitions`), plus — eventually — `childrenBehavior` triggers that lift terminal-child outcomes back onto the parent.
+
+`ClerkApi.registerWritType(config)` is the single-surface entry point. Plugins call it from their own apparatus's `start()`. Validator errors propagate verbatim; registration-specific failures (duplicate name, late call after the seal) throw with a `[clerk] registerWritType:` prefix. The Clerk itself registers `mandate` through this same path during its own `start()`.
+
+The registry seals on the framework's global `phase:started` signal — the moment every apparatus's `start()` has finished. Registration calls after the seal throw a clear error; `post()` of an unregistered type also fails fast at the registry lookup.
+
+A writ's current state is classified by consulting its type's registered config. The predicates `isInitial(writ)`, `isActive(writ)`, `isTerminal(writ)` return a boolean keyed on the type's classification vocabulary; `getWritTypeConfig(name)` returns the full config for abstract callers. All of these throw the fail-loud diagnostic when a writ carries a state not declared in its type config or an unregistered type — these are data-integrity or registration-ordering bugs and should surface loudly.
+
+---
+
+## Mandate's lifecycle (an example registered type)
+
+Mandate is the one writ type the Clerk plugin registers for itself. The six-state lifecycle below — the canonical worked example of the substrate above — is just one example of a `WritTypeConfig`; other plugin-registered types declare their own state machines via `ClerkApi.registerWritType` (see [Writ-Type Registry](#writ-type-registry)). The Clerk enforces every transition against the writ's own type config — invalid transitions throw.
 
 ```
             ┌──────────────┐
@@ -756,7 +730,7 @@ The `new` state is a pre-queue holding state. A mandate in `new` phase:
 - Must be explicitly published (`new → open`) via the `writ-publish` tool before it will be picked up
 - Can be cancelled directly from `new` without ever entering the queue
 
-Types that declare their own lifecycle may adopt the same `new → open → terminal` skeleton or diverge (a pure-planning type might drop `stuck`; a long-running type might add additional active states). The Clerk enforces whatever transitions the type's `WritTypeConfig` declares once T2/T3 wiring lands; until then, non-mandate types share the mandate transition table.
+Types that declare their own lifecycle may adopt the same `new → open → terminal` skeleton or diverge (a pure-planning type might drop `stuck`; a long-running type might add additional active states). The Clerk enforces whatever transitions the type's `WritTypeConfig` declares; per-type lifecycles are no longer constrained to the mandate transition table.
 
 ---
 
@@ -813,8 +787,6 @@ The spec/status split is guild-wide in intent, not a writs-only pattern. Other r
 Writs form a tree. A writ may be decomposed into child writs (tasks, steps, etc.) by creating children with `parentId`. The hierarchy enables:
 
 - **Decomposition** — a broad commission broken into concrete tasks
-- **Failure propagation** — child failure can be lifted onto the parent via the parent type's `childrenBehavior.anyFailure` trigger
-- **Cancellation cascade** — when a parent terminates in a state carrying the `failure` or `cancelled` attr, its non-terminal children are auto-cancelled (a successful terminal leaves them in place and warns instead)
 - **Scope tracking** — the patron sees one writ; the guild sees the tree
 
 ### Hierarchy Rules
@@ -823,25 +795,18 @@ Writs form a tree. A writ may be decomposed into child writs (tasks, steps, etc.
 - A writ may have zero or many children.
 - Depth is not limited (but deep hierarchies are a design smell).
 - Children inherit the parent's `codex` unless explicitly overridden.
-- Parents must be in a non-terminal state to accept new children (for mandate: `new`, `open`, or `stuck`).
+- Parents accept children in any non-terminal state; a parent in a terminal state (as classified by its type config) rejects new children with a clear error.
 
-### CDC Cascade Behavior
+### No cascade (in this version)
 
-The Clerk registers a Phase 1 CDC watcher on the `clerk/writs` book. When a writ's phase changes:
+The Clerk's prior parent/child cascade (child terminal → parent lift; parent terminal → child cancellation) has been removed. Parent and child lifecycles evolve independently: a terminal child does not lift its parent, and a terminal parent does not cancel non-terminal children.
 
-**Upward cascade (child → parent).** Child-terminal events are routed through the parent type's [`childrenBehavior`](#writtypechildrenbehavior) triggers.
+A children-behavior engine is on the roadmap (T3) and will reintroduce cascade keyed on per-type `WritTypeConfig.childrenBehavior`. The v0 trigger vocabulary is already declared on `WritTypeConfig`:
 
-> **Runtime wiring pending (requires T2/T3).** The cascade currently hard-codes mandate-flavored upward failure: when a child terminates in `failed` and the parent is in `open` or `stuck`, the parent transitions to `failed` with resolution `'Child "<childId>" failed: <childResolution>'`. The target behaviour: the CDC handler reads the parent type's `childrenBehavior`; `anyFailure` fires when the terminating child's state carries the `failure` attr, and `allSuccess` fires when every child is terminal and every such state carries the `success` attr. The parent transitions to the action's declared `transition` target state; if `copyResolution: true`, the child's resolution is copied onto the parent transition. Triggers are idempotent per parent (at most one cascade fire per parent), and `anyFailure` short-circuits against `allSuccess` when both would match the same event.
+- `allSuccess` — fires when every child has reached a terminal state and all carry the `success` attr.
+- `anyFailure` — fires when any child reaches a terminal state that carries the `failure` attr.
 
-**Downward cascade (parent → children).** When a parent reaches a terminal state, behavior depends on which attrs that state carries:
-- If the parent's terminal state carries the `failure` or `cancelled` attr (for mandate: `failed` or `cancelled`): all non-terminal children are cancelled with resolution `'Automatically cancelled due to parent termination'` (exported from `clerk.ts` as `CASCADE_PARENT_TERMINATION_RESOLUTION`).
-- If the parent's terminal state carries the `success` attr (for mandate: `completed`): non-terminal children are **not** cancelled. Their existence at this point indicates an upstream bookkeeping gap (typically a child-writ transition that lost a race against the parent's terminal write); the cascade logs a warning naming the parent and each non-terminal child rather than masking the discrepancy with a cancellation.
-
-> **Runtime wiring pending (requires T2/T3).** The downward cascade currently keys on the raw mandate phase names (`completed` vs. `failed`/`cancelled`). The target behaviour reads the parent's terminal-state attrs from the type config, so a type that declares its own terminal names (`shipped`, `killed`, …) participates in the same cascade without the Clerk growing a type-aware switch.
-
-### Cascade Depth
-
-A failure at leaf level cascades as: child fails (depth 1) → parent fails (depth 2) → siblings cancelled (depth 3 each) → each sibling's upward check returns early (depth 4). Well within the Stacks CDC cascade depth limit for reasonable hierarchies.
+Each trigger carries a `transition` target and an optional `copyResolution` modifier. Mandate's config does not declare `childrenBehavior` yet; the children-behavior commission will land the engine and patch mandate's config on atomically.
 
 ---
 
@@ -852,12 +817,15 @@ Commission intake is a single synchronous step:
 ```
 ├─ 1. Patron calls commission-post (or ClerkApi.post())
 ├─ 2. Clerk validates input, generates ULID, creates WritDoc
-├─ 3a. draft: false (default) → Clerk writes WritDoc with phase: open
-│       └─ Spider will pick up on next crawl tick
-├─ 3b. draft: true → Clerk writes WritDoc with phase: new
-│       └─ Held out of queue; patron calls writ-publish to enter queue
-└─ 3c. parentId provided → Clerk validates parent, creates child atomically
-        └─ Parent stays in its current phase (new or open)
+├─ 3a. ClerkApi.post() always lands the writ in its type's declared initial state
+│       └─ For mandate that is `new`; for other registered types, whatever
+│          state their `WritTypeConfig` declares as the initial classification
+├─ 3b. commission-post auto-publishes mandate writs when draft !== true
+│       └─ The tool calls transition(writ.id, 'open') after the post
+│       └─ The auto-advance is mandate-specific; other registered types
+│          stay in their declared initial state
+└─ 3c. parentId provided → Clerk validates parent is non-terminal, creates child atomically
+        └─ Parent stays in its current phase (any non-terminal state)
 ```
 
 ---
@@ -953,9 +921,9 @@ The patron's experience doesn't change — they still call `commission-post`. Th
 ## Implementation Notes
 
 - Standalone apparatus package at `packages/plugins/clerk/`. Requires only the Stacks.
-- `WritDoc.type` uses a guild-defined vocabulary, not a framework enum. The Clerk validates against `clerk.writTypes` in the apparatus config section but the framework imposes no meaning on the type name.
+- `WritDoc.type` uses a guild-defined vocabulary, not a framework enum. The Clerk validates that the type is registered in its runtime writ-type registry (see [Writ-Type Registry](#writ-type-registry)) but the framework imposes no meaning on the type name.
 - Writ ids use the format `w-{base36_timestamp}-{hex_random}`, produced by `generateId('w', 6)` — sortable by creation time, unique without coordination. Not a formal ULID, but provides the same useful properties (temporal ordering, no coordination).
-- The `transition()` method is the single choke point for all phase changes. All tools and future integrations go through it. This is where validation, timestamp setting, event emission, and hierarchy cascade happen. The observation slot `status` is a managed field stripped from the body alongside `id`, `phase`, timestamps, and `parentId`; the one sanctioned slot-write path is `setWritStatus()`, which performs a transactional read-modify-write on the sub-slot keyed by `pluginId` so sibling sub-slots are preserved under concurrent writers.
+- `WritDoc.phase` is structurally typed as `string` so any plugin-registered writ type's state name round-trips through the book. `WritPhase` remains exported as the mandate-specific six-state union for callers that knowingly downcast.
+- The `transition()` method is the single choke point for all phase changes. All tools go through it. This is where validation, timestamp setting, and managed-field stripping happen. The observation slot `status` is a managed field stripped from the body alongside `id`, `createdAt`, `updatedAt`, `resolvedAt`, and `parentId`; the one sanctioned slot-write path is `setWritStatus()`, which performs a transactional read-modify-write on the sub-slot keyed by `pluginId` so sibling sub-slots are preserved under concurrent writers. Attempts to smuggle `phase` through `fields` are rejected with `[clerk] transition: cannot override phase via fields argument`.
 - When the Clockworks is eventually added as a recommended dependency, resolve it at emit time via `guild().apparatus()`, not at startup — so the Clerk functions with or without it.
-- Parent/child cascade uses a Phase 1 CDC watcher (`failOnError: true`) so cascade operations are transactional — if a cascade step fails, the triggering transition rolls back.
 - `parentId` is immutable: stripped from managed fields in `transition()`, preventing mutation through the API.

@@ -404,25 +404,25 @@ describe('collectStartupWarnings', () => {
   it('warns when an apparatus supportKit contributes a type no apparatus consumes', () => {
     const apps = [
       makeApparatus('clerk', {
-        supportKit: { writTypes: ['mandate'] },
+        supportKit: { customChannel: ['item-a'] },
       }),
     ];
     const warnings = collectStartupWarnings([], apps);
     assert.ok(
-      warnings.some((w) => w.includes('writTypes')),
-      `Expected warning about "writTypes", got: ${JSON.stringify(warnings)}`,
+      warnings.some((w) => w.includes('customChannel')),
+      `Expected warning about "customChannel", got: ${JSON.stringify(warnings)}`,
     );
   });
 
   it('does not warn when apparatus supportKit contribution type IS consumed', () => {
     const apps = [
       makeApparatus('clerk', {
-        supportKit: { writTypes: ['mandate'] },
-        consumes: ['writTypes'],
+        supportKit: { customChannel: ['item-a'] },
+        consumes: ['customChannel'],
       }),
     ];
     const warnings = collectStartupWarnings([], apps);
-    const contribution = warnings.filter((w) => w.includes('writTypes'));
+    const contribution = warnings.filter((w) => w.includes('customChannel'));
     assert.equal(contribution.length, 0);
   });
 
@@ -471,18 +471,18 @@ describe('wireKitEntries', () => {
   it('collects contribution types from apparatus supportKits', () => {
     const apps = [
       makeApparatus('clerk', {
-        supportKit: { writTypes: ['mandate'], pages: [{ id: 'writs' }] },
+        supportKit: { customChannel: ['item-a'], pages: [{ id: 'writs' }] },
       }),
     ];
     const entries = wireKitEntries([], apps);
     assert.equal(entries.length, 2);
     const types = entries.map((e) => e.type).sort();
-    assert.deepEqual(types, ['pages', 'writTypes']);
+    assert.deepEqual(types, ['customChannel', 'pages']);
   });
 
   it('sets pluginId and packageName from the apparatus for supportKit entries', () => {
     const apps = [
-      makeApparatus('clerk', { supportKit: { writTypes: ['mandate'] } }),
+      makeApparatus('clerk', { supportKit: { customChannel: ['item-a'] } }),
     ];
     const entries = wireKitEntries([], apps);
     assert.equal(entries[0]!.pluginId, 'clerk');
@@ -492,12 +492,12 @@ describe('wireKitEntries', () => {
   it('excludes framework fields from apparatus supportKits', () => {
     const apps = [
       makeApparatus('clerk', {
-        supportKit: { requires: ['tools'], writTypes: ['mandate'] },
+        supportKit: { requires: ['tools'], customChannel: ['item-a'] },
       }),
     ];
     const entries = wireKitEntries([], apps);
     assert.equal(entries.length, 1);
-    assert.equal(entries[0]!.type, 'writTypes');
+    assert.equal(entries[0]!.type, 'customChannel');
   });
 
   it('skips apparatus with no supportKit', () => {
@@ -514,7 +514,7 @@ describe('wireKitEntries', () => {
 
   it('orders entries: standalone kits first, then apparatus supportKits', () => {
     const kits = [makeKit('relay-kit', { tools: ['relay-send'] })];
-    const apps = [makeApparatus('clerk', { supportKit: { writTypes: ['mandate'] } })];
+    const apps = [makeApparatus('clerk', { supportKit: { customChannel: ['item-a'] } })];
     const entries = wireKitEntries(kits, apps);
     assert.equal(entries.length, 2);
     assert.equal(entries[0]!.pluginId, 'relay-kit');
@@ -565,7 +565,7 @@ describe('buildStartupContext', () => {
     const handlers: EventHandlerMap = new Map();
     const entries = [
       { pluginId: 'relay-kit', packageName: '@test/relay-kit', type: 'tools', value: ['relay-send'] },
-      { pluginId: 'clerk', packageName: '@test/clerk', type: 'writTypes', value: ['mandate'] },
+      { pluginId: 'clerk', packageName: '@test/clerk', type: 'customChannel', value: ['item-a'] },
     ];
     const ctx = buildStartupContext(handlers, entries);
     const tools = ctx.kits('tools');

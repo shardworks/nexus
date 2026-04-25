@@ -101,7 +101,6 @@ writeGuildConfig(home, config);
 | `name` | `string` | Guild name |
 | `nexus` | `string` | Framework version at last init/upgrade |
 | `plugins` | `string[]` | Installed plugin ids |
-| `writTypes?` | `Record<string, WritTypeDeclaration>` | Guild-declared writ types |
 | `settings?` | `GuildSettings` | Operational flags including default `model` |
 
 All other top-level keys are plugin configuration sections, keyed by derived
@@ -115,7 +114,6 @@ apparatus package; the shape of those sections lives with the plugin, not here.
 |---|---|
 | `createInitialGuildConfig(name, version, model)` | Default config for `nsg init` |
 | `guildConfigPath(home)` | Resolve path to `guild.json` |
-| `WritTypeDeclaration` | Writ type: `description` |
 | `GuildSettings` | Settings: `model`, `autoMigrate` |
 
 ---
