@@ -29,23 +29,30 @@ import { launchDetached } from './detached.ts';
 
 /**
  * Regex matching common rate-limit phrasings in structured provider
- * error text (not stderr). Applied only to the NDJSON `is_error` branch
- * where claude surfaces a structured error payload. The cascade is
- * narrow by design: two retro-reviewed false-positive pauses originated
- * from stderr / exit-code detection, so the detector is scoped to
- * NDJSON-carried structural signals only.
+ * error text (not stderr). Applied to the NDJSON branches that inspect
+ * an `error` field. The cascade is narrow by design: two retro-reviewed
+ * false-positive pauses originated from stderr / exit-code detection,
+ * so the detector is scoped to NDJSON-carried structural signals only.
+ *
+ * Underscore is included alongside hyphen and whitespace because claude
+ * emits the canonical token `rate_limit` (not `rate-limit`) on the
+ * top-level `error` field of an assistant termination message.
  */
 const RATE_LIMIT_ERROR_TEXT_PATTERN =
-  /(rate[-\s]?limit|429\b|usage[-\s]?limit|quota[-\s]?exceeded|too\s+many\s+requests)/i;
+  /(rate[-_\s]?limit|429\b|usage[-_\s]?limit|quota[-_\s]?exceeded|too\s+many\s+requests)/i;
 
 /**
  * Detect a rate-limit signature on an NDJSON message from the claude
  * `--output-format stream-json` stream.
  *
- * Two branches (both structural, both load-bearing):
+ * Three branches (all structural, all load-bearing):
  *  - `msg.subtype` containing the substring `rate_limit` / `rate-limit`
- *  - `msg.is_error` true with `msg.error` / `msg.message.error` text
- *    matching the rate-limit pattern
+ *  - `msg.error` (top-level, peer of `message`) — claude's observed
+ *    rate-limit emission is `{type:"assistant", message:{...},
+ *    error:"rate_limit"}` with no `is_error` flag and no distinguishing
+ *    subtype. The rate-limit pattern must match the field's value.
+ *  - `msg.is_error: true` with `msg.error` / `msg.message.error` text
+ *    matching the rate-limit pattern (legacy / alternate shape).
  *
  * Returns null when the message does not indicate rate limiting. The
  * previous `msg.type === 'result'` + prose-text branch was removed
@@ -61,6 +68,20 @@ export function detectRateLimitFromNdjson(
       kind: 'rate-limit',
       source: 'ndjson-result',
       detail: `NDJSON subtype: ${subtype}`,
+    };
+  }
+
+  // Top-level `error` field — peer of `message` on an assistant-typed
+  // NDJSON termination. Observed shape from live transcripts:
+  //   {"type":"assistant","message":{...},"error":"rate_limit"}
+  // No `is_error: true` flag; no distinguishing `subtype`. The detector
+  // must consult `msg.error` directly. Test the rate-limit pattern
+  // against the field value to keep the cascade narrow.
+  if (typeof msg.error === 'string' && RATE_LIMIT_ERROR_TEXT_PATTERN.test(msg.error)) {
+    return {
+      kind: 'rate-limit',
+      source: 'ndjson-result',
+      detail: msg.error.slice(0, 200),
     };
   }
 

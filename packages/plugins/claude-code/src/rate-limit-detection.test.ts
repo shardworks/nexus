@@ -49,6 +49,33 @@ describe('detectRateLimitFromNdjson()', () => {
     assert.equal(tag!.source, 'ndjson-result');
   });
 
+  it('tags an assistant message carrying a top-level error: "rate_limit" field', () => {
+    // Observed live shape for claude rate-limit termination: a regular
+    // assistant message with `error: "rate_limit"` at the top level
+    // (peer of `message`), no `is_error` flag, no subtype.
+    const tag = detectRateLimitFromNdjson({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: "You've hit your limit · resets 11:20pm (UTC)" }],
+      },
+      error: 'rate_limit',
+    });
+    assert.ok(tag);
+    assert.equal(tag!.kind, 'rate-limit');
+    assert.equal(tag!.source, 'ndjson-result');
+    assert.match(tag!.detail ?? '', /rate_limit/);
+  });
+
+  it('does NOT tag a message whose top-level error text is unrelated', () => {
+    const tag = detectRateLimitFromNdjson({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'oops' }] },
+      error: 'invalid_request',
+    });
+    assert.equal(tag, null);
+  });
+
   it('does NOT tag a result message whose `result` text mentions rate limit', () => {
     // The prose `result`-text branch was removed because it matched an
     // assistant's summary of a prior rate-limit event and paused the
