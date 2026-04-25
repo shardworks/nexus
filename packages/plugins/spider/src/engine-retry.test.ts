@@ -194,7 +194,23 @@ function buildFixture(
 
   if (!('apparatus' in clerkPlugin)) throw new Error('clerk must be apparatus');
   clerkPlugin.apparatus.start(noopCtx);
-  const clerk = clerkPlugin.apparatus.provides as ClerkApi;
+  const realClerk = clerkPlugin.apparatus.provides as ClerkApi;
+
+  // Fixture wrapper — auto-publish mandate writs to `open`. The legacy
+  // ClerkApi.post() auto-published to `open`; the post-registry refactor
+  // routes posts through the type's declared initial state (`new` for
+  // mandate). The wrapper preserves the spider tests' prior expectation
+  // that a posted writ is immediately dispatchable.
+  const clerk: ClerkApi = {
+    ...realClerk,
+    async post(request) {
+      const writ = await realClerk.post(request);
+      if (writ.type === 'mandate' && writ.phase === 'new') {
+        return realClerk.transition(writ.id, 'open');
+      }
+      return writ;
+    },
+  };
   apparatusMap.set('clerk', clerk);
 
   // Fabricator — register both the spider default engines AND our test engines.

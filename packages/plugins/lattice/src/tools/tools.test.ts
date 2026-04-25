@@ -259,6 +259,7 @@ describe('pulse-list — --live filtering', () => {
   it('excludes drain pulses (null writId) entirely', async () => {
     const fix = await buildFixture();
     const writ = await fix.clerk.post({ title: 'w', body: 'b' });
+    await fix.clerk.transition(writ.id, 'open');
     await fix.clerk.transition(writ.id, 'stuck', { resolution: 'test' });
 
     await seedPulseFor(fix, 'reckoner.queue-drained', null, 'drained');
@@ -271,8 +272,10 @@ describe('pulse-list — --live filtering', () => {
   it('includes pulses whose writ is currently stuck or failed', async () => {
     const fix = await buildFixture();
     const stuckWrit = await fix.clerk.post({ title: 's', body: 'b' });
+    await fix.clerk.transition(stuckWrit.id, 'open');
     await fix.clerk.transition(stuckWrit.id, 'stuck', { resolution: 'test' });
     const failedWrit = await fix.clerk.post({ title: 'f', body: 'b' });
+    await fix.clerk.transition(failedWrit.id, 'open');
     await fix.clerk.transition(failedWrit.id, 'failed', { resolution: 'test' });
 
     const stuckPulse = await seedPulseFor(fix, 'reckoner.writ-stuck', stuckWrit.id);
@@ -288,6 +291,7 @@ describe('pulse-list — --live filtering', () => {
   it('excludes pulses whose writ has since moved to a non-live phase', async () => {
     const fix = await buildFixture();
     const writ = await fix.clerk.post({ title: 'w', body: 'b' });
+    await fix.clerk.transition(writ.id, 'open');
     await fix.clerk.transition(writ.id, 'stuck', { resolution: 'test' });
     await seedPulseFor(fix, 'reckoner.writ-stuck', writ.id);
 

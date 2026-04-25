@@ -113,9 +113,6 @@ function buildFixture(
       rigTemplateMappings: { mandate: 'default' },
       variables: { role: 'artificer' },
     },
-    clerk: {
-      writTypes: [{ name: 'piece', description: 'task piece' }],
-    },
   };
 
   const fakeGuild: Guild = {
@@ -203,6 +200,25 @@ function buildFixture(
   clerkApparatus.start(noopCtx);
   const clerk = clerkApparatus.provides as ClerkApi;
   apparatusMap.set('clerk', clerk);
+
+  // Register `piece` with the Clerk's runtime registry. The legacy
+  // `clerk.writTypes` guild-config channel and the kit-channel scan have
+  // both been retired; this is the only path. The state machine is a
+  // mandate clone (D17 in the Clerk-refactor commission). Register from
+  // here while the registry's startup window is still open — the test
+  // harness never fires `phase:started`, so the registry stays open for
+  // the lifetime of the fixture.
+  clerk.registerWritType({
+    name: 'piece',
+    states: [
+      { name: 'new', classification: 'initial', allowedTransitions: ['open', 'cancelled'] },
+      { name: 'open', classification: 'active', allowedTransitions: ['stuck', 'completed', 'failed', 'cancelled'] },
+      { name: 'stuck', classification: 'active', attrs: ['stuck'], allowedTransitions: ['open', 'failed', 'cancelled'] },
+      { name: 'completed', classification: 'terminal', attrs: ['success'], allowedTransitions: [] },
+      { name: 'failed', classification: 'terminal', attrs: ['failure'], allowedTransitions: [] },
+      { name: 'cancelled', classification: 'terminal', attrs: ['cancelled'], allowedTransitions: [] },
+    ],
+  });
 
   const { ctx: fabricatorCtx } = buildCtx(fabricatorKitEntries);
   fabricatorApparatus.start(fabricatorCtx);
@@ -314,7 +330,7 @@ describe('implement-loop engine', () => {
     const { clerk, spider, stacks: s, summonCalls } = fix;
 
     // Post a mandate in draft state
-    const mandate = await clerk.post({ title: 'Piece mandate', body: 'Main spec', codex: 'test', draft: true });
+    const mandate = await clerk.post({ title: 'Piece mandate', body: 'Main spec', codex: 'test' });
 
     // Create child pieces
     await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>Task 1</name></task>', parentId: mandate.id });
@@ -358,7 +374,7 @@ describe('implement-loop engine', () => {
   it('processes pieces sequentially — second piece waits for first', async () => {
     const { clerk, spider, stacks: s, summonCalls } = fix;
 
-    const mandate = await clerk.post({ title: 'Sequential', body: 'Spec', codex: 'test', draft: true });
+    const mandate = await clerk.post({ title: 'Sequential', body: 'Spec', codex: 'test' });
     await clerk.post({ type: 'piece', title: 'Task A', body: '<task id="ta"><name>A</name></task>', parentId: mandate.id });
     await clerk.post({ type: 'piece', title: 'Task B', body: '<task id="tb"><name>B</name></task>', parentId: mandate.id });
     await clerk.transition(mandate.id, 'open');
@@ -386,7 +402,7 @@ describe('implement-loop engine', () => {
   it('halts rig when a piece session fails', async () => {
     const { clerk, spider, stacks: s } = fix;
 
-    const mandate = await clerk.post({ title: 'Fail test', body: 'Spec', codex: 'test', draft: true });
+    const mandate = await clerk.post({ title: 'Fail test', body: 'Spec', codex: 'test' });
     await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
     await clerk.post({ type: 'piece', title: 'Task 2', body: '<task id="t2"><name>T2</name></task>', parentId: mandate.id });
     await clerk.transition(mandate.id, 'open');
@@ -419,7 +435,7 @@ describe('implement-loop engine', () => {
   it('piece-session transitions piece writs on completion', async () => {
     const { clerk, spider, stacks: s } = fix;
 
-    const mandate = await clerk.post({ title: 'Transition test', body: 'Spec', codex: 'test', draft: true });
+    const mandate = await clerk.post({ title: 'Transition test', body: 'Spec', codex: 'test' });
     const piece = await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
     await clerk.transition(mandate.id, 'open');
 
@@ -446,7 +462,7 @@ describe('implement-loop engine', () => {
     // remaining open child writs, so the piece ends up `cancelled`.
     const { clerk, spider, stacks: s } = fix;
 
-    const mandate = await clerk.post({ title: 'Fail transition', body: 'Spec', codex: 'test', draft: true });
+    const mandate = await clerk.post({ title: 'Fail transition', body: 'Spec', codex: 'test' });
     const piece = await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
     await clerk.transition(mandate.id, 'open');
 
@@ -473,7 +489,7 @@ describe('implement-loop engine', () => {
   it('dynamically added pieces are picked up after the current piece completes', async () => {
     const { clerk, spider, stacks: s } = fix;
 
-    const mandate = await clerk.post({ title: 'Dynamic pieces', body: 'Spec', codex: 'test', draft: true });
+    const mandate = await clerk.post({ title: 'Dynamic pieces', body: 'Spec', codex: 'test' });
     await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
     await clerk.transition(mandate.id, 'open');
 
@@ -520,7 +536,7 @@ describe('implement-loop engine', () => {
   it('dynamically added pieces delay seal via graftTail', async () => {
     const { clerk, spider, stacks: s } = fix;
 
-    const mandate = await clerk.post({ title: 'Dynamic graftTail', body: 'Spec', codex: 'test', draft: true });
+    const mandate = await clerk.post({ title: 'Dynamic graftTail', body: 'Spec', codex: 'test' });
     await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
     await clerk.transition(mandate.id, 'open');
 
@@ -558,7 +574,7 @@ describe('implement-loop engine', () => {
   it('literal WritDoc givens survive yield resolution in piece-session engines', async () => {
     const { clerk, spider, stacks: s, summonCalls } = fix;
 
-    const mandate = await clerk.post({ title: 'Givens test', body: 'Spec body', codex: 'test', draft: true });
+    const mandate = await clerk.post({ title: 'Givens test', body: 'Spec body', codex: 'test' });
     const piece = await clerk.post({ type: 'piece', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
     await clerk.transition(mandate.id, 'open');
 
@@ -591,7 +607,7 @@ describe('implement-loop engine', () => {
   it('full pipeline: pieces complete → seal runs → rig completes', async () => {
     const { clerk, spider, stacks: s } = fix;
 
-    const mandate = await clerk.post({ title: 'Full pipeline', body: 'Spec', codex: 'test', draft: true });
+    const mandate = await clerk.post({ title: 'Full pipeline', body: 'Spec', codex: 'test' });
     await clerk.post({ type: 'piece', title: 'Only task', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
     await clerk.transition(mandate.id, 'open');
 
@@ -651,7 +667,7 @@ describe('piece-session collect() — transition error classification', () => {
    */
   async function advanceToPieceStarted(): Promise<{ mandate: WritDoc; piece: WritDoc }> {
     const { clerk, spider, stacks: s } = fix;
-    const mandate = await clerk.post({ title: 'Race', body: 'Spec', codex: 'test', draft: true });
+    const mandate = await clerk.post({ title: 'Race', body: 'Spec', codex: 'test' });
     const piece = await clerk.post({
       type: 'piece',
       title: 'Task 1',

@@ -18,7 +18,7 @@ import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 
 import { createClerk } from '@shardworks/clerk-apparatus';
-import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
+import type { ClerkApi, WritDoc, WritTypeConfig } from '@shardworks/clerk-apparatus';
 
 import { createFabricator } from '@shardworks/fabricator-apparatus';
 import type { FabricatorApi, EngineDesign, EngineRunContext } from '@shardworks/fabricator-apparatus';
@@ -163,7 +163,20 @@ function mergeCustomEnginesIntoSpider(
 function buildFixture(
   guildConfig: Partial<GuildConfig> = {},
   initialSessionOutcome: { status: 'completed' | 'failed'; error?: string; output?: string } = { status: 'completed' },
-  extra: { kits?: LoadedKit[]; apparatuses?: LoadedApparatus[]; customEngines?: Record<string, unknown> } = {},
+  extra: {
+    kits?: LoadedKit[];
+    apparatuses?: LoadedApparatus[];
+    customEngines?: Record<string, unknown>;
+    /**
+     * Additional writ-type configs to register with the Clerk after its
+     * `start()` returns. The legacy `clerk.writTypes` guild-config channel
+     * and kit-channel scan have both been retired; tests that need
+     * non-mandate writ types register them here. Each config is a full
+     * `WritTypeConfig`; common test types (`triage`, `audit`) clone
+     * mandate's six-state machine.
+     */
+    extraWritTypes?: WritTypeConfig[];
+  } = {},
 ): {
   stacks: StacksApi;
   clerk: ClerkApi;
@@ -356,7 +369,35 @@ function buildFixture(
   // registry and becomes acceptable to `clerk.link(_, _, _, 'spider.follows')`.
   const { ctx: clerkCtx } = buildCtx(spiderKitEntries);
   clerkApparatus.start(clerkCtx);
-  const clerk = clerkApparatus.provides as ClerkApi;
+  const realClerk = clerkApparatus.provides as ClerkApi;
+
+  // Register any extra writ types this test needs. The harness never fires
+  // `phase:started`, so the Clerk's registration window stays open.
+  for (const config of extra.extraWritTypes ?? []) {
+    realClerk.registerWritType(config);
+  }
+
+  // Fixture wrapper: most legacy spider tests post a writ and expect it to
+  // be in `open` (dispatchable) immediately — that was the
+  // pre-registry-refactor auto-publish semantics. The post-refactor
+  // ClerkApi.post() lands the writ in its declared initial state (`new`
+  // for mandate). The wrapper preserves the fixture's prior behaviour by
+  // auto-publishing mandate writs (and only mandate, and only when not
+  // explicitly created with a draft-style request via the now-removed
+  // `draft` param) — this is a test-fixture concession, not an API
+  // change. Tests that need a mandate writ to stay in `new` can post a
+  // type other than mandate or call `realClerk` directly via
+  // `(fix as { realClerk: ClerkApi }).realClerk`.
+  const clerk: ClerkApi = {
+    ...realClerk,
+    async post(request) {
+      const writ = await realClerk.post(request);
+      if (writ.type === 'mandate' && writ.phase === 'new') {
+        return realClerk.transition(writ.id, 'open');
+      }
+      return writ;
+    },
+  };
   apparatusMap.set('clerk', clerk);
 
   // Start fabricator with kit entries from Spider's engines
@@ -386,7 +427,32 @@ function rigsBook(stacks: StacksApi) {
   return stacks.book<RigDoc>('spider', 'rigs');
 }
 
-/** Post a writ. */
+/**
+ * Build a `WritTypeConfig` that clones mandate's six-state machine under a
+ * different name. Used by tests that previously declared throwaway writ
+ * types via the legacy `clerk.writTypes` guild-config channel.
+ */
+function mandateLikeWritType(name: string): WritTypeConfig {
+  return {
+    name,
+    states: [
+      { name: 'new', classification: 'initial', allowedTransitions: ['open', 'cancelled'] },
+      { name: 'open', classification: 'active', allowedTransitions: ['stuck', 'completed', 'failed', 'cancelled'] },
+      { name: 'stuck', classification: 'active', attrs: ['stuck'], allowedTransitions: ['open', 'failed', 'cancelled'] },
+      { name: 'completed', classification: 'terminal', attrs: ['success'], allowedTransitions: [] },
+      { name: 'failed', classification: 'terminal', attrs: ['failure'], allowedTransitions: [] },
+      { name: 'cancelled', classification: 'terminal', attrs: ['cancelled'], allowedTransitions: [] },
+    ],
+  };
+}
+
+/**
+ * Post a mandate writ. The fixture's clerk wrapper auto-publishes mandate
+ * writs to `open`, so this helper is now a thin convenience that just sets
+ * a default title and body. (The auto-publish lives in the wrapper, not
+ * this helper, so callers that go through `fix.clerk.post(...)` directly
+ * get the same `open`-on-arrival behaviour.)
+ */
 async function postWrit(clerk: ClerkApi, title = 'Test writ', codex?: string): Promise<WritDoc> {
   return clerk.post({ title, body: 'Test body', codex });
 }
@@ -2198,12 +2264,15 @@ describe('Spider — template dispatch', () => {
     // builtin fallback (mandate → default/spider.default) whenever a
     // `default` template is registered. An unmapped custom writ type is
     // the cleanest way to exercise the "no dispatch" branch.
-    const fix = buildFixture({
-      spider: {
-        rigTemplates: { hotfix: { engines: [{ id: 'x', designId: 'seal', givens: {} }] } },
+    const fix = buildFixture(
+      {
+        spider: {
+          rigTemplates: { hotfix: { engines: [{ id: 'x', designId: 'seal', givens: {} }] } },
+        },
       },
-      clerk: { writTypes: [{ name: 'triage' }] },
-    });
+      { status: 'completed' },
+      { extraWritTypes: [mandateLikeWritType('triage')] },
+    );
     const { clerk, spider, stacks } = fix;
 
     const posted = await clerk.post({ title: 'Triage writ', body: 'test', type: 'triage' });
@@ -2241,10 +2310,13 @@ describe('Spider — template dispatch', () => {
     // instead of `mandate` because the registry's narrow mandate-builtin
     // fallback (mandate → default/spider.default) would otherwise dispatch
     // when the spider.default kit template is still registered.
-    const fix = buildFixture({
-      spider: { rigTemplates: undefined },
-      clerk: { writTypes: [{ name: 'triage' }] },
-    });
+    const fix = buildFixture(
+      {
+        spider: { rigTemplates: undefined },
+      },
+      { status: 'completed' },
+      { extraWritTypes: [mandateLikeWritType('triage')] },
+    );
     const { clerk, spider, stacks } = fix;
 
     const posted = await clerk.post({ title: 'Test writ', body: 'test', type: 'triage' });
@@ -3626,7 +3698,21 @@ describe('Spider — engine blocking on external conditions', () => {
     apparatusMap.set('animator', mockAnimatorApi);
 
     clerkApparatus.start(noopCtx);
-    const clerk = clerkApparatus.provides as ClerkApi;
+    const realClerk = clerkApparatus.provides as ClerkApi;
+
+    // Fixture wrapper around clerk.post — auto-publishes mandate writs to
+    // `open` so legacy spider tests that post-and-expect-dispatchable
+    // continue to work. See buildFixture's wrapper for the rationale.
+    const clerk: ClerkApi = {
+      ...realClerk,
+      async post(request) {
+        const writ = await realClerk.post(request);
+        if (writ.type === 'mandate' && writ.phase === 'new') {
+          return realClerk.transition(writ.id, 'open');
+        }
+        return writ;
+      },
+    };
     apparatusMap.set('clerk', clerk);
 
     // Both Fabricator and Spider get real ctxs with Wire-phase kit entries.
@@ -5278,11 +5364,13 @@ describe('Kit contributions — rig templates and mappings', () => {
       // Spider's plugin-default `mandate → default` kit mapping, which would
       // otherwise be a kit-vs-kit collision and throw at startup.
       const kit = makeKit('quality-tools', {
-        writTypes: [{ name: 'audit' }],
         rigTemplates: { audit: SIMPLE_TEMPLATE },
         rigTemplateMappings: { audit: 'quality-tools.audit' },
       });
-      const fix = buildFixture({}, { status: 'completed' }, { kits: [kit] });
+      const fix = buildFixture({}, { status: 'completed' }, {
+        kits: [kit],
+        extraWritTypes: [mandateLikeWritType('audit')],
+      });
 
       const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'audit' });
       const result = await fix.spider.crawl();
@@ -5358,7 +5446,6 @@ describe('Kit contributions — rig templates and mappings', () => {
         });
         const goodKit = makeKit('quality-tools', {
           requires: ['fabricator'],
-          writTypes: [{ name: 'audit' }],
           rigTemplates: {
             audit: {
               engines: [{ id: 'step1', designId: 'custom-engine', givens: {} }],
@@ -5368,7 +5455,10 @@ describe('Kit contributions — rig templates and mappings', () => {
           // plugin-default `mandate → default` mapping.
           rigTemplateMappings: { audit: 'quality-tools.audit' },
         });
-        buildFixture({}, { status: 'completed' }, { kits: [customEngineKit, goodKit] });
+        buildFixture({}, { status: 'completed' }, {
+          kits: [customEngineKit, goodKit],
+          extraWritTypes: [mandateLikeWritType('audit')],
+        });
         assert.ok(
           !warnings.some(w => w.includes('quality-tools') && w.includes('rigTemplates.audit')),
           `Unexpected warning: ${JSON.stringify(warnings)}`
@@ -5383,13 +5473,15 @@ describe('Kit contributions — rig templates and mappings', () => {
       try {
         const kit = makeKit('quality-tools', {
           // No requires — but uses built-in 'draft' engine
-          writTypes: [{ name: 'audit' }],
           rigTemplates: { audit: SIMPLE_TEMPLATE },
           // Custom writ type avoids kit-vs-kit collision with Spider's
           // plugin-default `mandate → default` mapping.
           rigTemplateMappings: { audit: 'quality-tools.audit' },
         });
-        buildFixture({}, { status: 'completed' }, { kits: [kit] });
+        buildFixture({}, { status: 'completed' }, {
+          kits: [kit],
+          extraWritTypes: [mandateLikeWritType('audit')],
+        });
         assert.ok(
           !warnings.some(w => w.includes('quality-tools') && w.includes('rigTemplates')),
           `Unexpected warning: ${JSON.stringify(warnings)}`
@@ -5405,14 +5497,13 @@ describe('Kit contributions — rig templates and mappings', () => {
       // Custom writ type avoids kit-vs-kit collision with Spider's
       // plugin-default `mandate → default` mapping.
       const kit = makeKit('quality-tools', {
-        writTypes: [{ name: 'audit' }],
         rigTemplates: { audit: SIMPLE_TEMPLATE },
         rigTemplateMappings: { audit: 'quality-tools.audit' },
       });
       const fix = buildFixture(
         { spider: { variables: { role: 'artificer' } } },
         { status: 'completed' },
-        { kits: [kit] }
+        { kits: [kit], extraWritTypes: [mandateLikeWritType('audit')] }
       );
 
       const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'audit' });
@@ -5459,7 +5550,6 @@ describe('Kit contributions — rig templates and mappings', () => {
       // not also report a collision; the rigTemplateMappings throw is the
       // one under test here.
       const kitA = makeKit('kit-a', {
-        writTypes: [{ name: 'audit' }],
         rigTemplates: { tmpl: SIMPLE_TEMPLATE },
         rigTemplateMappings: { audit: 'kit-a.tmpl' },
       });
@@ -5468,7 +5558,10 @@ describe('Kit contributions — rig templates and mappings', () => {
         rigTemplateMappings: { audit: 'kit-b.tmpl' },
       });
       assert.throws(
-        () => buildFixture({}, { status: 'completed' }, { kits: [kitA, kitB] }),
+        () => buildFixture({}, { status: 'completed' }, {
+          kits: [kitA, kitB],
+          extraWritTypes: [mandateLikeWritType('audit')],
+        }),
         (err: Error) => {
           // Error must name both contributing plugins and the conflicting writ type.
           return (
@@ -5506,14 +5599,17 @@ describe('Kit contributions — rig templates and mappings', () => {
       // Dispatch is strictly opt-in per writ type. A custom writ type with
       // no explicit mapping in rigTemplateMappings is not dispatched; the
       // writ remains in 'open' status for non-dispatch handling.
-      const fix = buildFixture({
-        spider: {
-          rigTemplates: { standard: { engines: [{ id: 'std', designId: 'draft', givens: {} }] } },
-          rigTemplateMappings: { mandate: 'standard' },
-          variables: {},
+      const fix = buildFixture(
+        {
+          spider: {
+            rigTemplates: { standard: { engines: [{ id: 'std', designId: 'draft', givens: {} }] } },
+            rigTemplateMappings: { mandate: 'standard' },
+            variables: {},
+          },
         },
-        clerk: { writTypes: [{ name: 'custom-type' }] },
-      });
+        { status: 'completed' },
+        { extraWritTypes: [mandateLikeWritType('custom-type')] },
+      );
 
       const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'custom-type' });
       const result = await fix.spider.crawl();
@@ -5533,11 +5629,13 @@ describe('Kit contributions — rig templates and mappings', () => {
           // Custom writ type avoids kit-vs-kit collision with Spider's
           // plugin-default `mandate → default` mapping — the dangling-mapping
           // warn is the behavior under test here, not the collision throw.
-          writTypes: [{ name: 'audit' }],
           // No rigTemplates contributed, but mapping points to kit-a.nonexistent
           rigTemplateMappings: { audit: 'kit-a.nonexistent' },
         });
-        buildFixture({}, { status: 'completed' }, { kits: [kit] });
+        buildFixture({}, { status: 'completed' }, {
+          kits: [kit],
+          extraWritTypes: [mandateLikeWritType('audit')],
+        });
         assert.ok(
           warnings.some(w => w.includes('kit-a.nonexistent') || w.includes('template not found')),
           `Expected dangling mapping warning, got: ${JSON.stringify(warnings)}`
@@ -5676,10 +5774,12 @@ describe('Kit contributions — rig templates and mappings', () => {
         rigTemplates: { pipeline: SIMPLE_TEMPLATE },
       });
       const kitB = makeKit('kit-b', {
-        writTypes: [{ name: 'audit' }],
         rigTemplateMappings: { audit: 'kit-a.pipeline' },
       });
-      const fix = buildFixture({}, { status: 'completed' }, { kits: [kitA, kitB] });
+      const fix = buildFixture({}, { status: 'completed' }, {
+        kits: [kitA, kitB],
+        extraWritTypes: [mandateLikeWritType('audit')],
+      });
 
       const writ = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'audit' });
       const result = await fix.spider.crawl();
@@ -5694,10 +5794,13 @@ describe('Kit contributions — rig templates and mappings', () => {
     it('leaves a writ in open when no template, mapping, or default exists', async () => {
       // Config has no templates, no mappings, no default
       // Set rigTemplates to undefined to override the buildFixture default
-      const fix = buildFixture({
-        spider: { rigTemplates: undefined, variables: {} },
-        clerk: { writTypes: [{ name: 'orphan-type' }] },
-      });
+      const fix = buildFixture(
+        {
+          spider: { rigTemplates: undefined, variables: {} },
+        },
+        { status: 'completed' },
+        { extraWritTypes: [mandateLikeWritType('orphan-type')] },
+      );
 
       const posted = await fix.clerk.post({ title: 'Test', body: 'Body', type: 'orphan-type' });
       const result = await fix.spider.crawl();
@@ -9864,7 +9967,7 @@ describe('Spider — writ→rig cascade', () => {
     // for dispatch. Under the new vocabulary the spider only dispatches
     // writs in 'open' phase; a draft parent keeps its own rig out of the
     // picture so this test exercises only the parent→child cascade path.
-    const parentWrit = await clerk.post({ title: 'Parent writ', body: 'parent', draft: true });
+    const parentWrit = await clerk.post({ title: 'Parent writ', body: 'parent' });
     assert.equal(parentWrit.phase, 'new', 'parent should be a draft');
 
     // Create child writ — parent does not auto-transition (R5); child is 'open'
@@ -9900,7 +10003,7 @@ describe('Spider — writ→rig cascade', () => {
     const { clerk, stacks } = fix;
 
     // Draft parent so spider doesn't dispatch it
-    const parentWrit = await clerk.post({ title: 'Parent', body: 'parent', draft: true });
+    const parentWrit = await clerk.post({ title: 'Parent', body: 'parent' });
 
     // Two children
     const child1 = await clerk.post({ title: 'Child 1', body: 'c1', parentId: parentWrit.id });
