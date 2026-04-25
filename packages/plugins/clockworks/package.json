@@ -24,6 +24,7 @@
     "@shardworks/clerk-apparatus": "workspace:*",
     "@shardworks/stacks-apparatus": "workspace:*",
     "@shardworks/tools-apparatus": "workspace:*",
+    "cron-parser": "^5.5.0",
     "zod": "4.3.6"
   },
   "devDependencies": {
