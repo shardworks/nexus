@@ -330,12 +330,26 @@ export function createBackoffMachine(params: {
   }
 
   async function onOtherTerminal(): Promise<void> {
-    // Any non-rate-limit terminal counts as a successful probe from the
-    // back-off machine's perspective (D7): reset the level and, if
-    // paused, return to running.
+    // D7: a non-rate-limit terminal resets the back-off level only when
+    // it counts as a successful resume probe — i.e. the session was
+    // dispatched AFTER the current pause opened. Symmetric with D8's
+    // rate-limit gate: a terminal from a session that was already in
+    // flight when the pause opened (an "in-flight straggler") tells us
+    // nothing about the provider's current state and must not clear
+    // the pause. Without this gate, high-concurrency dispatch can mask
+    // every pause — an in-flight straggler completing seconds after a
+    // rate-limit hit would reset the level, and Spider would happily
+    // dispatch fresh sessions into the same exhausted-token window.
     const prev = await read();
     if (prev.state === 'running' && prev.backoffLevel === 0) {
       // Nothing to do — already reset.
+      return;
+    }
+    if (prev.state === 'paused' && !probe.hasDispatchedSinceLastPause()) {
+      // In-flight straggler from before the pause — not a probe.
+      // Leave the pause window alone; the next dispatch-after-resume
+      // (post pausedUntil elapsing, isDispatchable=true) will be the
+      // real probe that decides whether to reset or escalate.
       return;
     }
     await resetToRunning(prev);

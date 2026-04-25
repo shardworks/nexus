@@ -1738,39 +1738,46 @@ describe('Animator', () => {
       await setup();
     });
 
-    it('paused → running after a completed terminal reset (D7)', async () => {
+    it('paused → paused when a non-rate-limit terminal arrives without a dispatch since pause (D7 gate, in-flight straggler)', async () => {
+      // Regression: with high-concurrency dispatch, an in-flight session
+      // dispatched BEFORE the pause opened can complete shortly after a
+      // rate-limit hit. Its completion is not a resume probe — it tells
+      // us nothing about the provider's current state — and must NOT
+      // clear the pause. The back-off machine gates `onOtherTerminal`
+      // on `probe.hasDispatchedSinceLastPause()` (symmetric with D8's
+      // rate-limit gate).
       const stateBook = stacks.book('animator', 'state');
+      const pausedUntil = new Date(Date.now() + 60_000).toISOString();
       await stateBook.put({
         id: 'dispatch-status',
         state: 'paused',
         pausedSince: new Date().toISOString(),
-        pausedUntil: new Date(Date.now() + 60_000).toISOString(),
+        pausedUntil,
         pauseReason: 'rate-limit',
         backoffLevel: 2,
       });
-      // Reload cache.
-      await animator.getStatus();
+      await animator.getStatus(); // reload cache
 
-      // Simulate a completed session-record firing through the
-      // session-record handler (which invokes the back-off observer
-      // registered by animator.start()).
+      // Fire a completed session-record. No dispatch has happened
+      // since the pause was opened (the test seeded the doc directly).
       const { handleSessionRecord } = await import('./session-record-handler.ts');
       const sessions = stacks.book<SessionDoc>('animator', 'sessions');
       await sessions.put({
-        id: 'ses-reset',
+        id: 'ses-straggler',
         status: 'running',
         startedAt: new Date().toISOString(),
         provider: 'fake',
       });
       await handleSessionRecord({
-        sessionId: 'ses-reset',
+        sessionId: 'ses-straggler',
         status: 'completed',
         exitCode: 0,
       });
 
       const status = await animator.getStatus();
-      assert.equal(status.state, 'running');
-      assert.equal(status.backoffLevel, 0);
+      assert.equal(status.state, 'paused');
+      assert.equal(status.backoffLevel, 2);
+      assert.equal(status.pausedUntil, pausedUntil);
     });
   });
 

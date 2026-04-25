@@ -220,10 +220,13 @@ describe('BackoffMachine', () => {
     assert.ok(window <= 3000, `window ${window}ms should be capped at 3000ms`);
   });
 
-  it('resets on a completed terminal (D7)', async () => {
+  it('resets on a completed resume-probe terminal (D7)', async () => {
     const bm = make();
     await bm.read();
     await bm.observeTerminal({ sessionId: 'ses-1', status: 'rate-limited' });
+    // A real resume probe — dispatch happens AFTER the pause opens,
+    // then completes successfully.
+    bm.noteDispatch();
     await bm.observeTerminal({ sessionId: 'ses-2', status: 'completed' });
     const doc = await bm.read();
     assert.equal(doc.state, 'running');
@@ -231,14 +234,46 @@ describe('BackoffMachine', () => {
     assert.equal(doc.pausedUntil, undefined);
   });
 
-  it('resets on a failed terminal (non-rate-limit)', async () => {
+  it('resets on a failed resume-probe terminal (non-rate-limit, post-dispatch)', async () => {
     const bm = make();
     await bm.read();
     await bm.observeTerminal({ sessionId: 'ses-1', status: 'rate-limited' });
+    bm.noteDispatch();
     await bm.observeTerminal({ sessionId: 'ses-2', status: 'failed' });
     const doc = await bm.read();
     assert.equal(doc.state, 'running');
     assert.equal(doc.backoffLevel, 0);
+  });
+
+  it('does NOT reset on an in-flight straggler (no dispatch since pause)', async () => {
+    // Regression: under high concurrency, an in-flight session can
+    // complete shortly after a rate-limit hit. That session was
+    // dispatched BEFORE the pause opened — its success tells us
+    // nothing about the provider's current state. Without this gate,
+    // it would clear the pause and let Spider redispatch into the
+    // same exhausted-token window.
+    const bm = make();
+    await bm.read();
+    await bm.observeTerminal({ sessionId: 'ses-1', status: 'rate-limited' });
+    const paused = await bm.read();
+    assert.equal(paused.state, 'paused');
+    // No noteDispatch() — the next terminal is an in-flight straggler.
+    await bm.observeTerminal({ sessionId: 'ses-2', status: 'completed' });
+    const after = await bm.read();
+    assert.equal(after.state, 'paused', 'pause must survive an in-flight-straggler completion');
+    assert.equal(after.pausedUntil, paused.pausedUntil, 'window end unchanged');
+    assert.equal(after.backoffLevel, paused.backoffLevel);
+  });
+
+  it('does NOT reset on an in-flight straggler that failed (no dispatch since pause)', async () => {
+    const bm = make();
+    await bm.read();
+    await bm.observeTerminal({ sessionId: 'ses-1', status: 'rate-limited' });
+    const paused = await bm.read();
+    await bm.observeTerminal({ sessionId: 'ses-2', status: 'failed' });
+    const after = await bm.read();
+    assert.equal(after.state, 'paused');
+    assert.equal(after.pausedUntil, paused.pausedUntil);
   });
 
   it('is a no-op when already running and a non-rate-limit terminal arrives', async () => {
@@ -255,6 +290,7 @@ describe('BackoffMachine', () => {
     assert.equal(bm.peek().state, 'running');
     await bm.observeTerminal({ sessionId: 'ses-1', status: 'rate-limited' });
     assert.equal(bm.peek().state, 'paused');
+    bm.noteDispatch();
     await bm.observeTerminal({ sessionId: 'ses-2', status: 'completed' });
     assert.equal(bm.peek().state, 'running');
   });
