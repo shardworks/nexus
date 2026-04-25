@@ -346,7 +346,7 @@ describe('Clockworks — signal tool', () => {
     assert.equal(stored.emitter, 'reviewer-anima');
   });
 
-  it('rejects reserved framework namespaces (each of seven)', async () => {
+  it('rejects reserved framework namespaces (each of eight)', async () => {
     await buildFixture({
       declaredEvents: { 'demo.thing': {} },
     });
@@ -359,6 +359,7 @@ describe('Clockworks — signal tool', () => {
       'guild.initialized',
       'standing-order.created',
       'session.start',
+      'schedule.fired',
     ];
 
     for (const name of reserved) {
@@ -370,6 +371,24 @@ describe('Clockworks — signal tool', () => {
           return true;
         },
         `"${name}" should be rejected as a reserved namespace`,
+      );
+    }
+  });
+
+  it('rejects arbitrary `schedule.*` names through the shared constant', async () => {
+    // The reserved-namespace check is a prefix match, so any
+    // sub-name under `schedule.` must be rejected — not just
+    // `schedule.fired`. This guards against any future consumer that
+    // hard-codes the literal name instead of using the prefix.
+    await buildFixture({
+      declaredEvents: { 'demo.thing': {} },
+    });
+
+    for (const name of ['schedule.fired', 'schedule.skipped', 'schedule.anything']) {
+      await assert.rejects(
+        () => invokeSignal({ name, payload: {} }),
+        /reserved framework namespace "schedule\."/,
+        `"${name}" should be rejected via the schedule. prefix`,
       );
     }
   });

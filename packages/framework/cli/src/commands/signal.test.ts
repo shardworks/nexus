@@ -138,6 +138,7 @@ describe('validateSignal', () => {
       'guild.',
       'standing-order.',
       'session.',
+      'schedule.',
     ]);
   });
 
@@ -262,6 +263,18 @@ describe('runSignal — error surfaces', () => {
       () => runSignal({ name: 'guild.initialized', payloadJson: '{}' }),
       /reserved framework namespace/,
     );
+  });
+
+  it('rejects `schedule.fired` and any `schedule.*` name via the shared constant', async () => {
+    setupStubGuild({ declaredEvents: { 'demo.thing': {} } });
+
+    for (const name of ['schedule.fired', 'schedule.skipped', 'schedule.anything']) {
+      await assert.rejects(
+        () => runSignal({ name, payloadJson: '{}' }),
+        /reserved framework namespace "schedule\."/,
+        `"${name}" should be rejected as a reserved schedule. name`,
+      );
+    }
   });
 
   it('rejects writ-lifecycle patterns', async () => {

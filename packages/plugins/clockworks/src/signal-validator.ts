@@ -22,12 +22,16 @@
  */
 
 /**
- * The seven reserved framework namespaces catalogued in
+ * The reserved framework namespaces catalogued in
  * `docs/reference/core-api.md`'s `isFrameworkEvent` section. Writ
  * lifecycle events deliberately live outside this list; they are
  * handled by the separate writ-lifecycle check in
  * {@link validateSignal} so custom events can coexist with user-defined
  * writ types.
+ *
+ * `schedule.` is the synthesized namespace for time-driven standing
+ * orders — only the daemon's scheduler pass is authorized to emit
+ * `schedule.fired` events into the events book.
  */
 export const RESERVED_EVENT_NAMESPACES: readonly string[] = Object.freeze([
   'anima.',
@@ -37,6 +41,7 @@ export const RESERVED_EVENT_NAMESPACES: readonly string[] = Object.freeze([
   'guild.',
   'standing-order.',
   'session.',
+  'schedule.',
 ]);
 
 /**

@@ -70,6 +70,7 @@ export const RESERVED_EVENT_NAMESPACES: readonly string[] = Object.freeze([
   'guild.',
   'standing-order.',
   'session.',
+  'schedule.',
 ]);
 
 export const WRIT_LIFECYCLE_SUFFIXES: readonly string[] = Object.freeze([
