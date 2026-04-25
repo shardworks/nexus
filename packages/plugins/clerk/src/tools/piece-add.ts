@@ -56,11 +56,16 @@ export default tool({
     const resolvedMandateId = await clerk.resolveId(params.mandateId);
     const body = buildTaskXml(params);
 
-    return clerk.post({
+    const piece = await clerk.post({
       type: 'piece',
       title: params.name,
       body,
       parentId: resolvedMandateId,
     });
+    // Auto-publish to match the tool's documented behaviour: the piece
+    // enters the queue immediately. `post()` always lands the writ in its
+    // type's declared initial state; the tool layer carries the UX
+    // auto-advance in the same spirit as `commission-post` for mandates.
+    return clerk.transition(piece.id, 'open');
   },
 });

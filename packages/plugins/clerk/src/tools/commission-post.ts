@@ -40,13 +40,26 @@ export default tool({
     const resolvedParentId = params.parentId
       ? await clerk.resolveId(params.parentId)
       : undefined;
-    return clerk.post({
+    const writ = await clerk.post({
       title: params.title,
       body: params.body,
       type: params.type,
       codex: params.codex,
-      draft: params.draft,
       parentId: resolvedParentId,
     });
+
+    // Auto-publish for mandate writs: `post()` always lands the writ in its
+    // type's declared initial state, which for mandate is `new` (draft).
+    // The commission-post tool preserves its prior UX — by default the
+    // posted writ enters the queue immediately — by transitioning the
+    // writ to `open` here when the caller did not request a draft. The
+    // auto-advance is deliberately confined to mandate: for other
+    // plugin-registered types the initial state is the caller's only
+    // landing spot, and advancing without a type-specific tool would be
+    // silent coupling.
+    if (params.draft !== true && writ.type === 'mandate') {
+      return clerk.transition(writ.id, 'open');
+    }
+    return writ;
   },
 });

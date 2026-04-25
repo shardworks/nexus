@@ -17,9 +17,11 @@ import { createStacksApparatus } from '@shardworks/stacks-apparatus';
 import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
 
-import { createClerk, CASCADE_PARENT_TERMINATION_RESOLUTION } from './clerk.ts';
+import { createClerk } from './clerk.ts';
 import type { ClerkKit } from './clerk.ts';
 import type { ClerkApi, ClerkConfig, WritDoc, WritLinkDoc, LinkKindDoc } from './types.ts';
+import type { WritTypeConfig } from './writ-type-config.ts';
+import { makeWritTypeApparatus, mandateLikeWritType } from './testing.ts';
 import type { WritLinks } from './index.ts';
 import writShow from './tools/writ-show.ts';
 import writTree from './tools/writ-tree.ts';
@@ -32,6 +34,29 @@ import writLinkKindsShow from './tools/writ-link-kinds-show.ts';
 // ── Test harness ─────────────────────────────────────────────────────
 
 let clerk: ClerkApi;
+
+/**
+ * Legacy-semantics wrapper around `clerk.post()` — posts a writ and, for
+ * mandate types, immediately transitions it from the declared initial
+ * state (`new`) to `open`. Mirrors the old `clerk.post({draft: false})`
+ * default: many existing tests expect a mandate writ to land in `open`
+ * after a single call. Per D19/D20, `post()` itself always lands in the
+ * declared initial state; the `commission-post` tool (and this helper)
+ * carry the auto-publish UX.
+ *
+ * Callers that want the raw initial state should continue to call
+ * `clerk.post()` directly.
+ */
+async function postMandate(
+  request: { title: string; body: string; type?: string; codex?: string; parentId?: string; draft?: boolean }
+): Promise<import('./types.ts').WritDoc> {
+  const { draft, ...postRequest } = request;
+  const writ = await clerk.post(postRequest);
+  if (draft !== true && writ.type === 'mandate') {
+    return clerk.transition(writ.id, 'open');
+  }
+  return writ;
+}
 
 interface SetupOptions {
   clerkConfig?: ClerkConfig;
@@ -168,6 +193,20 @@ async function setupCore(options: SetupOptions = {}, clerkCtx?: StartupContext):
   // Expose clerk as an apparatus so tool handlers can resolve it via guild()
   apparatusMap.set('clerk', clerk);
 
+  // Start each extraApparatus after clerk — mirrors the production
+  // ordering where plugins with `requires: ['clerk']` register their
+  // writ types from their own `start()`. The helper
+  // `makeWritTypeApparatus` returns apparatuses shaped for exactly this
+  // path.
+  for (const app of options.extraApparatuses ?? []) {
+    const apparatus = (app.apparatus as {
+      start?: (ctx: unknown) => void | Promise<void>;
+    });
+    if (typeof apparatus.start === 'function') {
+      await apparatus.start({ on: () => {}, kits: () => [] });
+    }
+  }
+
   return clerkPlugin;
 }
 
@@ -188,7 +227,7 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('creates a writ with open status and mandate type by default', async () => {
-      const writ = await clerk.post({ title: 'Fix the bug', body: 'Details here' });
+      const writ = await postMandate({ title: 'Fix the bug', body: 'Details here' });
 
       assert.ok(writ.id.startsWith('w-'));
       assert.equal(writ.type, 'mandate');
@@ -204,17 +243,17 @@ describe('Clerk', () => {
 
     it('requires body field', async () => {
       // TypeScript enforces this at compile time; at runtime the field is required
-      const writ = await clerk.post({ title: 'Has body', body: 'Required content' });
+      const writ = await postMandate({ title: 'Has body', body: 'Required content' });
       assert.equal(writ.body, 'Required content');
     });
 
     it('accepts explicit type when it is a built-in type', async () => {
-      const writ = await clerk.post({ title: 'A mandate', body: 'Do it', type: 'mandate' });
+      const writ = await postMandate({ title: 'A mandate', body: 'Do it', type: 'mandate' });
       assert.equal(writ.type, 'mandate');
     });
 
     it('persists codex field', async () => {
-      const writ = await clerk.post({
+      const writ = await postMandate({
         title: 'Do the thing',
         body: 'Detailed instructions here',
         codex: 'artificer',
@@ -224,62 +263,70 @@ describe('Clerk', () => {
     });
 
     it('omits codex when not provided', async () => {
-      const writ = await clerk.post({ title: 'No codex', body: 'Details' });
+      const writ = await postMandate({ title: 'No codex', body: 'Details' });
       assert.equal(writ.codex, undefined);
     });
 
     it('uses guild defaultType from clerk config when provided', async () => {
       // mandate is a built-in, so it's always valid as a defaultType
       await setup({ clerkConfig: { defaultType: 'mandate' } });
-      const writ = await clerk.post({ title: 'Default mandate', body: 'Body' });
+      const writ = await postMandate({ title: 'Default mandate', body: 'Body' });
       assert.equal(writ.type, 'mandate');
     });
 
     it('rejects an unknown writ type', async () => {
       await assert.rejects(
-        () => clerk.post({ title: 'Test', body: 'Body', type: 'unknown-type' }),
+        () => postMandate({ title: 'Test', body: 'Body', type: 'unknown-type' }),
         /Unknown writ type/,
       );
     });
 
-    it('accepts a type declared in clerk writTypes config', async () => {
-      await setup({ clerkConfig: { writTypes: [{ name: 'errand', description: 'A small errand' }] } });
-      const writ = await clerk.post({ title: 'Run errand', body: 'Do it', type: 'errand' });
+    it('accepts a type contributed via registerWritType', async () => {
+      await setup({
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
+        ],
+      });
+      const writ = await postMandate({ title: 'Run errand', body: 'Do it', type: 'errand' });
       assert.equal(writ.type, 'errand');
     });
 
-    it('rejects a type that is not in clerk writTypes', async () => {
-      await setup({ clerkConfig: { writTypes: [{ name: 'errand', description: 'A small errand' }] } });
+    it('rejects a type that has not been registered', async () => {
+      await setup({
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
+        ],
+      });
       await assert.rejects(
-        () => clerk.post({ title: 'Test', body: 'Body', type: 'epic' }),
+        () => postMandate({ title: 'Test', body: 'Body', type: 'epic' }),
         /Unknown writ type/,
       );
     });
 
     it('generates unique ids for each writ', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
       assert.notEqual(w1.id, w2.id);
     });
 
     it('sets createdAt and updatedAt to the same value on creation', async () => {
-      const writ = await clerk.post({ title: 'Timestamps', body: 'Body' });
+      const writ = await postMandate({ title: 'Timestamps', body: 'Body' });
       assert.equal(writ.createdAt, writ.updatedAt);
     });
 
     it('creates a writ in new (draft) status when draft: true', async () => {
-      const writ = await clerk.post({ title: 'Draft writ', body: 'Details', draft: true });
+      const writ = await postMandate({ title: 'Draft writ', body: 'Details', draft: true });
       assert.equal(writ.phase, 'new');
       assert.equal(writ.resolvedAt, undefined);
     });
 
     it('creates a writ in open status when draft: false (explicit)', async () => {
-      const writ = await clerk.post({ title: 'Explicit open', body: 'Body', draft: false });
+      const writ = await postMandate({ title: 'Explicit open', body: 'Body', draft: false });
       assert.equal(writ.phase, 'open');
     });
 
     it('creates a writ in open status when draft is omitted (backward compat)', async () => {
-      const writ = await clerk.post({ title: 'Default open', body: 'Body' });
+      const writ = await postMandate({ title: 'Default open', body: 'Body' });
       assert.equal(writ.phase, 'open');
     });
   });
@@ -297,7 +344,7 @@ describe('Clerk', () => {
     });
 
     it('retrieves a writ that was just posted', async () => {
-      const posted = await clerk.post({ title: 'Show me', body: 'Body' });
+      const posted = await postMandate({ title: 'Show me', body: 'Body' });
       const fetched = await clerk.show(posted.id);
 
       assert.equal(fetched.id, posted.id);
@@ -312,13 +359,13 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('returns the full id unchanged when given an exact match', async () => {
-      const posted = await clerk.post({ title: 'Exact', body: 'Body' });
+      const posted = await postMandate({ title: 'Exact', body: 'Body' });
       const resolved = await clerk.resolveId(posted.id);
       assert.equal(resolved, posted.id);
     });
 
     it('resolves a short id prefix to the full id', async () => {
-      const posted = await clerk.post({ title: 'Prefix', body: 'Body' });
+      const posted = await postMandate({ title: 'Prefix', body: 'Body' });
       // Writ ids are `w-{base36_timestamp}-{hex_random}` — the `w-{timestamp}`
       // segment before the final hyphen is the short display form.
       const shortId = posted.id.slice(0, posted.id.lastIndexOf('-'));
@@ -368,21 +415,25 @@ describe('Clerk', () => {
 
   describe('list()', () => {
     beforeEach(async () => {
-      await setup({ clerkConfig: { writTypes: [{ name: 'errand', description: 'A small errand' }] } });
+      await setup({
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
+        ],
+      });
     });
 
     it('returns all writs when no filters given', async () => {
-      await clerk.post({ title: 'Writ A', body: 'Body' });
-      await clerk.post({ title: 'Writ B', body: 'Body' });
-      await clerk.post({ title: 'Writ C', body: 'Body' });
+      await postMandate({ title: 'Writ A', body: 'Body' });
+      await postMandate({ title: 'Writ B', body: 'Body' });
+      await postMandate({ title: 'Writ C', body: 'Body' });
 
       const all = await clerk.list();
       assert.equal(all.length, 3);
     });
 
     it('filters by status', async () => {
-      const w1 = await clerk.post({ title: 'Open writ', body: 'Body' });
-      const w2 = await clerk.post({ title: 'New writ', body: 'Body', draft: true });
+      const w1 = await postMandate({ title: 'Open writ', body: 'Body' });
+      const w2 = await postMandate({ title: 'New writ', body: 'Body', draft: true });
 
       const openWrits = await clerk.list({ phase: 'open' });
       const newWrits = await clerk.list({ phase: 'new' });
@@ -394,8 +445,8 @@ describe('Clerk', () => {
     });
 
     it('filters by type', async () => {
-      await clerk.post({ title: 'Mandate writ', body: 'Body', type: 'mandate' });
-      await clerk.post({ title: 'Errand writ', body: 'Body', type: 'errand' });
+      await postMandate({ title: 'Mandate writ', body: 'Body', type: 'mandate' });
+      await postMandate({ title: 'Errand writ', body: 'Body', type: 'errand' });
 
       const mandates = await clerk.list({ type: 'mandate' });
       const errands = await clerk.list({ type: 'errand' });
@@ -407,8 +458,8 @@ describe('Clerk', () => {
     });
 
     it('filters by multiple types (OR)', async () => {
-      await clerk.post({ title: 'Mandate writ', body: 'Body', type: 'mandate' });
-      await clerk.post({ title: 'Errand writ', body: 'Body', type: 'errand' });
+      await postMandate({ title: 'Mandate writ', body: 'Body', type: 'mandate' });
+      await postMandate({ title: 'Errand writ', body: 'Body', type: 'errand' });
 
       const result = await clerk.list({ type: ['mandate', 'errand'] });
       assert.equal(result.length, 2);
@@ -418,8 +469,8 @@ describe('Clerk', () => {
     });
 
     it('single-element type array behaves like a scalar filter', async () => {
-      await clerk.post({ title: 'Mandate writ', body: 'Body', type: 'mandate' });
-      await clerk.post({ title: 'Errand writ', body: 'Body', type: 'errand' });
+      await postMandate({ title: 'Mandate writ', body: 'Body', type: 'mandate' });
+      await postMandate({ title: 'Errand writ', body: 'Body', type: 'errand' });
 
       const result = await clerk.list({ type: ['mandate'] });
       assert.equal(result.length, 1);
@@ -428,7 +479,7 @@ describe('Clerk', () => {
 
     it('respects the limit parameter', async () => {
       for (let i = 0; i < 5; i++) {
-        await clerk.post({ title: `Writ ${i}`, body: 'Body' });
+        await postMandate({ title: `Writ ${i}`, body: 'Body' });
       }
 
       const limited = await clerk.list({ limit: 3 });
@@ -437,7 +488,7 @@ describe('Clerk', () => {
 
     it('respects the offset parameter', async () => {
       for (let i = 0; i < 5; i++) {
-        await clerk.post({ title: `Writ ${i}`, body: 'Body' });
+        await postMandate({ title: `Writ ${i}`, body: 'Body' });
       }
 
       const all = await clerk.list();
@@ -447,14 +498,14 @@ describe('Clerk', () => {
     });
 
     it('returns an empty array when no writs match filters', async () => {
-      await clerk.post({ title: 'One open writ', body: 'Body' });
+      await postMandate({ title: 'One open writ', body: 'Body' });
       const completed = await clerk.list({ phase: 'completed' });
       assert.equal(completed.length, 0);
     });
 
     it('filters by new status', async () => {
-      await clerk.post({ title: 'Draft writ', body: 'Body', draft: true });
-      await clerk.post({ title: 'Open writ', body: 'Body' });
+      await postMandate({ title: 'Draft writ', body: 'Body', draft: true });
+      await postMandate({ title: 'Open writ', body: 'Body' });
 
       const newWrits = await clerk.list({ phase: 'new' });
       const openWrits = await clerk.list({ phase: 'open' });
@@ -466,9 +517,9 @@ describe('Clerk', () => {
     });
 
     it('filters by multiple statuses (OR)', async () => {
-      const w1 = await clerk.post({ title: 'Open writ', body: 'Body' });
-      const w2 = await clerk.post({ title: 'New writ', body: 'Body', draft: true });
-      const w3 = await clerk.post({ title: 'Completed writ', body: 'Body' });
+      const w1 = await postMandate({ title: 'Open writ', body: 'Body' });
+      const w2 = await postMandate({ title: 'New writ', body: 'Body', draft: true });
+      const w3 = await postMandate({ title: 'Completed writ', body: 'Body' });
       await clerk.transition(w3.id, 'completed');
 
       const result = await clerk.list({ phase: ['open', 'new'] });
@@ -480,9 +531,9 @@ describe('Clerk', () => {
     });
 
     it('filters by stuck status', async () => {
-      const writ = await clerk.post({ title: 'Stuck writ', body: 'Body' });
+      const writ = await postMandate({ title: 'Stuck writ', body: 'Body' });
       await clerk.transition(writ.id, 'stuck');
-      await clerk.post({ title: 'Open writ', body: 'Body' });
+      await postMandate({ title: 'Open writ', body: 'Body' });
 
       const result = await clerk.list({ phase: 'stuck' });
       assert.equal(result.length, 1);
@@ -490,8 +541,8 @@ describe('Clerk', () => {
     });
 
     it('single-element status array behaves like a scalar filter', async () => {
-      await clerk.post({ title: 'Open writ', body: 'Body' });
-      const w2 = await clerk.post({ title: 'New writ', body: 'Body', draft: true });
+      await postMandate({ title: 'Open writ', body: 'Body' });
+      const w2 = await postMandate({ title: 'New writ', body: 'Body', draft: true });
 
       const result = await clerk.list({ phase: ['open'] });
       assert.equal(result.length, 1);
@@ -505,8 +556,8 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('returns total count with no filters', async () => {
-      await clerk.post({ title: 'Writ A', body: 'Body' });
-      await clerk.post({ title: 'Writ B', body: 'Body' });
+      await postMandate({ title: 'Writ A', body: 'Body' });
+      await postMandate({ title: 'Writ B', body: 'Body' });
       assert.equal(await clerk.count(), 2);
     });
 
@@ -515,7 +566,7 @@ describe('Clerk', () => {
     });
 
     it('filters by status', async () => {
-      const w = await clerk.post({ title: 'Writ', body: 'Body' });
+      const w = await postMandate({ title: 'Writ', body: 'Body' });
       await clerk.transition(w.id, 'completed');
 
       assert.equal(await clerk.count({ phase: 'completed' }), 1);
@@ -523,9 +574,13 @@ describe('Clerk', () => {
     });
 
     it('filters by type', async () => {
-      await setup({ clerkConfig: { writTypes: [{ name: 'errand', description: 'A small errand' }] } });
-      await clerk.post({ title: 'Mandate', body: 'Body', type: 'mandate' });
-      await clerk.post({ title: 'Errand', body: 'Body', type: 'errand' });
+      await setup({
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
+        ],
+      });
+      await postMandate({ title: 'Mandate', body: 'Body', type: 'mandate' });
+      await postMandate({ title: 'Errand', body: 'Body', type: 'errand' });
 
       assert.equal(await clerk.count({ type: 'mandate' }), 1);
       assert.equal(await clerk.count({ type: 'errand' }), 1);
@@ -537,19 +592,19 @@ describe('Clerk', () => {
   describe('tree()', () => {
     beforeEach(async () => {
       await setup({
-        clerkConfig: {
-          writTypes: [
-            { name: 'errand', description: 'A small errand' },
-            { name: 'task', description: 'A task' },
-          ],
-        },
+        extraApparatuses: [
+          makeWritTypeApparatus(
+            [mandateLikeWritType('errand'), mandateLikeWritType('task')],
+            { id: 'tree-types' },
+          ),
+        ],
       });
     });
 
     it('returns a forest of all roots with their direct + recursive children', async () => {
-      const a = await clerk.post({ title: 'Root A', body: 'Body' });
-      const b = await clerk.post({ title: 'Root B', body: 'Body' });
-      await clerk.post({ title: 'Child of A', body: 'Body', parentId: a.id });
+      const a = await postMandate({ title: 'Root A', body: 'Body' });
+      const b = await postMandate({ title: 'Root B', body: 'Body' });
+      await postMandate({ title: 'Child of A', body: 'Body', parentId: a.id });
 
       const forest = await clerk.tree();
       assert.equal(forest.length, 2);
@@ -563,9 +618,9 @@ describe('Clerk', () => {
     });
 
     it('returns a single subtree when rootId is supplied', async () => {
-      const root = await clerk.post({ title: 'Root', body: 'Body' });
-      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: root.id });
-      await clerk.post({ title: 'Grandchild', body: 'Body', parentId: child.id });
+      const root = await postMandate({ title: 'Root', body: 'Body' });
+      const child = await postMandate({ title: 'Child', body: 'Body', parentId: root.id });
+      await postMandate({ title: 'Grandchild', body: 'Body', parentId: child.id });
 
       const forest = await clerk.tree({ rootId: root.id });
       assert.equal(forest.length, 1);
@@ -581,12 +636,12 @@ describe('Clerk', () => {
     });
 
     it('filters by phase with prune semantics', async () => {
-      const root = await clerk.post({ title: 'Root', body: 'Body' });
-      const open = await clerk.post({ title: 'Open child', body: 'Body', parentId: root.id });
-      const completed = await clerk.post({ title: 'Completed child', body: 'Body', parentId: root.id });
+      const root = await postMandate({ title: 'Root', body: 'Body' });
+      const open = await postMandate({ title: 'Open child', body: 'Body', parentId: root.id });
+      const completed = await postMandate({ title: 'Completed child', body: 'Body', parentId: root.id });
       // Add the grandchild *before* transitioning its parent — the post
       // path rejects parents in terminal phases.
-      const grand = await clerk.post({ title: 'Grand of completed', body: 'Body', parentId: completed.id });
+      const grand = await postMandate({ title: 'Grand of completed', body: 'Body', parentId: completed.id });
       // Transition the completed child after grand exists. `completed` does
       // not auto-cancel non-terminal children — `handleParentTerminal` only
       // warns when reaching `completed` with non-terminal children.
@@ -607,9 +662,9 @@ describe('Clerk', () => {
     it('filters by multiple phases (OR)', async () => {
       // No parents — the cascade machinery only cares about parent/child
       // failures, so flat roots keep this test clean.
-      const a = await clerk.post({ title: 'A', body: 'Body' });
-      const b = await clerk.post({ title: 'B', body: 'Body' });
-      const c = await clerk.post({ title: 'C (open)', body: 'Body' });
+      const a = await postMandate({ title: 'A', body: 'Body' });
+      const b = await postMandate({ title: 'B', body: 'Body' });
+      const c = await postMandate({ title: 'C (open)', body: 'Body' });
       await clerk.transition(a.id, 'completed');
       await clerk.transition(b.id, 'failed', { resolution: 'nope' });
 
@@ -621,9 +676,9 @@ describe('Clerk', () => {
     });
 
     it('filters by type with prune semantics', async () => {
-      const root = await clerk.post({ title: 'Root', body: 'Body', type: 'mandate' });
-      const errand = await clerk.post({ title: 'Errand', body: 'Body', type: 'errand', parentId: root.id });
-      await clerk.post({ title: 'Task', body: 'Body', type: 'task', parentId: root.id });
+      const root = await postMandate({ title: 'Root', body: 'Body', type: 'mandate' });
+      const errand = await postMandate({ title: 'Errand', body: 'Body', type: 'errand', parentId: root.id });
+      await postMandate({ title: 'Task', body: 'Body', type: 'task', parentId: root.id });
 
       const forest = await clerk.tree({ type: ['mandate', 'errand'] });
       assert.equal(forest.length, 1);
@@ -632,9 +687,9 @@ describe('Clerk', () => {
     });
 
     it('caps depth — node at depth N included, descendants pruned', async () => {
-      const root = await clerk.post({ title: 'Root', body: 'Body' });
-      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: root.id });
-      await clerk.post({ title: 'Grand', body: 'Body', parentId: child.id });
+      const root = await postMandate({ title: 'Root', body: 'Body' });
+      const child = await postMandate({ title: 'Child', body: 'Body', parentId: root.id });
+      await postMandate({ title: 'Grand', body: 'Body', parentId: child.id });
 
       const forest = await clerk.tree({ depth: 1 });
       assert.equal(forest.length, 1);
@@ -644,8 +699,8 @@ describe('Clerk', () => {
     });
 
     it('depth 0 returns roots only', async () => {
-      const root = await clerk.post({ title: 'Root', body: 'Body' });
-      await clerk.post({ title: 'Child', body: 'Body', parentId: root.id });
+      const root = await postMandate({ title: 'Root', body: 'Body' });
+      await postMandate({ title: 'Child', body: 'Body', parentId: root.id });
 
       const forest = await clerk.tree({ depth: 0 });
       assert.equal(forest.length, 1);
@@ -654,10 +709,10 @@ describe('Clerk', () => {
     });
 
     it('children are returned in createdAt asc order under each parent', async () => {
-      const root = await clerk.post({ title: 'Root', body: 'Body' });
-      const c1 = await clerk.post({ title: 'C1', body: 'Body', parentId: root.id });
-      const c2 = await clerk.post({ title: 'C2', body: 'Body', parentId: root.id });
-      const c3 = await clerk.post({ title: 'C3', body: 'Body', parentId: root.id });
+      const root = await postMandate({ title: 'Root', body: 'Body' });
+      const c1 = await postMandate({ title: 'C1', body: 'Body', parentId: root.id });
+      const c2 = await postMandate({ title: 'C2', body: 'Body', parentId: root.id });
+      const c3 = await postMandate({ title: 'C3', body: 'Body', parentId: root.id });
 
       const forest = await clerk.tree({ rootId: root.id });
       assert.deepEqual(
@@ -671,11 +726,11 @@ describe('Clerk', () => {
       // timestamp; otherwise multiple posts in a single ms can collide and
       // the desc sort becomes implementation-defined.
       const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-      const r1 = await clerk.post({ title: 'R1', body: 'Body' }); await sleep(2);
-      const r2 = await clerk.post({ title: 'R2', body: 'Body' }); await sleep(2);
-      const r3 = await clerk.post({ title: 'R3', body: 'Body' });
+      const r1 = await postMandate({ title: 'R1', body: 'Body' }); await sleep(2);
+      const r2 = await postMandate({ title: 'R2', body: 'Body' }); await sleep(2);
+      const r3 = await postMandate({ title: 'R3', body: 'Body' });
       // Each root has a child to verify children are still expanded under the slice.
-      await clerk.post({ title: 'R1c', body: 'Body', parentId: r1.id });
+      await postMandate({ title: 'R1c', body: 'Body', parentId: r1.id });
 
       // Roots are returned newest-first (createdAt desc) to match list().
       const page1 = await clerk.tree({ rootLimit: 2, rootOffset: 0 });
@@ -693,17 +748,17 @@ describe('Clerk', () => {
 
     it('roots are ordered createdAt desc (newest first), matching list()', async () => {
       const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-      const a = await clerk.post({ title: 'A', body: 'Body' }); await sleep(2);
-      const b = await clerk.post({ title: 'B', body: 'Body' }); await sleep(2);
-      const c = await clerk.post({ title: 'C', body: 'Body' });
+      const a = await postMandate({ title: 'A', body: 'Body' }); await sleep(2);
+      const b = await postMandate({ title: 'B', body: 'Body' }); await sleep(2);
+      const c = await postMandate({ title: 'C', body: 'Body' });
 
       const forest = await clerk.tree();
       assert.deepEqual(forest.map((t) => t.writ.id), [c.id, b.id, a.id]);
     });
 
     it('rootLimit and rootOffset are ignored when rootId is set', async () => {
-      const root = await clerk.post({ title: 'Root', body: 'Body' });
-      await clerk.post({ title: 'C', body: 'Body', parentId: root.id });
+      const root = await postMandate({ title: 'Root', body: 'Body' });
+      await postMandate({ title: 'C', body: 'Body', parentId: root.id });
 
       const forest = await clerk.tree({ rootId: root.id, rootLimit: 0, rootOffset: 99 });
       assert.equal(forest.length, 1);
@@ -721,44 +776,48 @@ describe('Clerk', () => {
 
   describe('edit()', () => {
     beforeEach(async () => {
-      await setup({ clerkConfig: { writTypes: [{ name: 'errand', description: 'A small errand' }] } });
+      await setup({
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
+        ],
+      });
     });
 
     it('updates the title of a draft writ', async () => {
-      const writ = await clerk.post({ title: 'Old title', body: 'Body', draft: true });
+      const writ = await postMandate({ title: 'Old title', body: 'Body', draft: true });
       const edited = await clerk.edit({ id: writ.id, title: 'New title' });
       assert.equal(edited.title, 'New title');
       assert.equal(edited.body, 'Body'); // unchanged
     });
 
     it('updates the body of a draft writ', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Old body', draft: true });
+      const writ = await postMandate({ title: 'Title', body: 'Old body', draft: true });
       const edited = await clerk.edit({ id: writ.id, body: 'New body' });
       assert.equal(edited.body, 'New body');
       assert.equal(edited.title, 'Title'); // unchanged
     });
 
     it('updates the type of a draft writ', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body', draft: true });
+      const writ = await postMandate({ title: 'Title', body: 'Body', draft: true });
       assert.equal(writ.type, 'mandate');
       const edited = await clerk.edit({ id: writ.id, type: 'errand' });
       assert.equal(edited.type, 'errand');
     });
 
     it('updates the codex of a draft writ', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body', codex: 'alpha', draft: true });
+      const writ = await postMandate({ title: 'Title', body: 'Body', codex: 'alpha', draft: true });
       const edited = await clerk.edit({ id: writ.id, codex: 'beta' });
       assert.equal(edited.codex, 'beta');
     });
 
     it('clears codex when empty string is passed', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body', codex: 'alpha', draft: true });
+      const writ = await postMandate({ title: 'Title', body: 'Body', codex: 'alpha', draft: true });
       const edited = await clerk.edit({ id: writ.id, codex: '' });
       assert.equal(edited.codex, undefined);
     });
 
     it('updates multiple fields at once', async () => {
-      const writ = await clerk.post({ title: 'Old', body: 'Old body', draft: true });
+      const writ = await postMandate({ title: 'Old', body: 'Old body', draft: true });
       const edited = await clerk.edit({
         id: writ.id,
         title: 'New',
@@ -773,33 +832,33 @@ describe('Clerk', () => {
     });
 
     it('updates updatedAt timestamp', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body', draft: true });
+      const writ = await postMandate({ title: 'Title', body: 'Body', draft: true });
       const edited = await clerk.edit({ id: writ.id, title: 'Updated' });
       assert.ok(edited.updatedAt >= writ.updatedAt);
     });
 
     it('preserves status as new', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body', draft: true });
+      const writ = await postMandate({ title: 'Title', body: 'Body', draft: true });
       const edited = await clerk.edit({ id: writ.id, title: 'Updated' });
       assert.equal(edited.phase, 'new');
     });
 
     it('allows editing title of a writ in open status', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body' }); // open
+      const writ = await postMandate({ title: 'Title', body: 'Body' }); // open
       const edited = await clerk.edit({ id: writ.id, title: 'Changed' });
       assert.equal(edited.title, 'Changed');
       assert.equal(edited.phase, 'open');
     });
 
     it('allows editing body of an open writ', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body' });
+      const writ = await postMandate({ title: 'Title', body: 'Body' });
       const edited = await clerk.edit({ id: writ.id, body: 'New body' });
       assert.equal(edited.body, 'New body');
       assert.equal(edited.phase, 'open');
     });
 
     it('allows editing title of a completed writ', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body' });
+      const writ = await postMandate({ title: 'Title', body: 'Body' });
       await clerk.transition(writ.id, 'completed', { resolution: 'Done' });
       const edited = await clerk.edit({ id: writ.id, title: 'Changed' });
       assert.equal(edited.title, 'Changed');
@@ -807,7 +866,7 @@ describe('Clerk', () => {
     });
 
     it('rejects changing type on a non-draft writ', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body' }); // open
+      const writ = await postMandate({ title: 'Title', body: 'Body' }); // open
       await assert.rejects(
         () => clerk.edit({ id: writ.id, type: 'errand' }),
         /Cannot change type.*phase is "open"/,
@@ -815,7 +874,7 @@ describe('Clerk', () => {
     });
 
     it('rejects changing codex on a non-draft writ', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body' }); // open
+      const writ = await postMandate({ title: 'Title', body: 'Body' }); // open
       await assert.rejects(
         () => clerk.edit({ id: writ.id, codex: 'gamma' }),
         /Cannot change codex.*phase is "open"/,
@@ -830,7 +889,7 @@ describe('Clerk', () => {
     });
 
     it('rejects an invalid writ type', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body', draft: true });
+      const writ = await postMandate({ title: 'Title', body: 'Body', draft: true });
       await assert.rejects(
         () => clerk.edit({ id: writ.id, type: 'nonexistent' }),
         /Unknown writ type/,
@@ -838,7 +897,7 @@ describe('Clerk', () => {
     });
 
     it('persists edits so show() returns updated values', async () => {
-      const writ = await clerk.post({ title: 'Original', body: 'Original body', draft: true });
+      const writ = await postMandate({ title: 'Original', body: 'Original body', draft: true });
       await clerk.edit({ id: writ.id, title: 'Edited', body: 'Edited body' });
       const fetched = await clerk.show(writ.id);
       assert.equal(fetched.title, 'Edited');
@@ -852,7 +911,7 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('publishes a new (draft) writ to open status', async () => {
-      const writ = await clerk.post({ title: 'Draft writ', body: 'Body', draft: true });
+      const writ = await postMandate({ title: 'Draft writ', body: 'Body', draft: true });
       assert.equal(writ.phase, 'new');
 
       const published = await clerk.transition(writ.id, 'open');
@@ -861,14 +920,14 @@ describe('Clerk', () => {
     });
 
     it('updates updatedAt on publish', async () => {
-      const writ = await clerk.post({ title: 'Draft', body: 'Body', draft: true });
+      const writ = await postMandate({ title: 'Draft', body: 'Body', draft: true });
       await new Promise(r => setTimeout(r, 2));
       const published = await clerk.transition(writ.id, 'open');
       assert.ok(published.updatedAt >= writ.updatedAt);
     });
 
     it('throws when publishing a writ that is already open', async () => {
-      const writ = await clerk.post({ title: 'Already open', body: 'Body' });
+      const writ = await postMandate({ title: 'Already open', body: 'Body' });
       await assert.rejects(
         () => clerk.transition(writ.id, 'open'),
         /Cannot transition/,
@@ -876,7 +935,7 @@ describe('Clerk', () => {
     });
 
     it('throws when publishing a cancelled writ', async () => {
-      const writ = await clerk.post({ title: 'Cancelled', body: 'Body', draft: true });
+      const writ = await postMandate({ title: 'Cancelled', body: 'Body', draft: true });
       await clerk.transition(writ.id, 'cancelled');
       await assert.rejects(
         () => clerk.transition(writ.id, 'open'),
@@ -891,7 +950,7 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('transitions an open writ to completed', async () => {
-      const writ = await clerk.post({ title: 'Complete me', body: 'Body' });
+      const writ = await postMandate({ title: 'Complete me', body: 'Body' });
       const completed = await clerk.transition(writ.id, 'completed', { resolution: 'All done' });
 
       assert.equal(completed.phase, 'completed');
@@ -900,13 +959,13 @@ describe('Clerk', () => {
     });
 
     it('sets resolution on completed', async () => {
-      const writ = await clerk.post({ title: 'With resolution', body: 'Body' });
+      const writ = await postMandate({ title: 'With resolution', body: 'Body' });
       const completed = await clerk.transition(writ.id, 'completed', { resolution: 'Task fulfilled' });
       assert.equal(completed.resolution, 'Task fulfilled');
     });
 
     it('throws when completing a cancelled writ', async () => {
-      const writ = await clerk.post({ title: 'Cancelled', body: 'Body' });
+      const writ = await postMandate({ title: 'Cancelled', body: 'Body' });
       await clerk.transition(writ.id, 'cancelled');
 
       await assert.rejects(
@@ -922,7 +981,7 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('transitions an open writ to failed', async () => {
-      const writ = await clerk.post({ title: 'Fail me', body: 'Body' });
+      const writ = await postMandate({ title: 'Fail me', body: 'Body' });
       const failed = await clerk.transition(writ.id, 'failed', { resolution: 'Ran out of time' });
 
       assert.equal(failed.phase, 'failed');
@@ -931,13 +990,13 @@ describe('Clerk', () => {
     });
 
     it('sets resolution on failed', async () => {
-      const writ = await clerk.post({ title: 'Will fail', body: 'Body' });
+      const writ = await postMandate({ title: 'Will fail', body: 'Body' });
       const failed = await clerk.transition(writ.id, 'failed', { resolution: 'Something broke' });
       assert.equal(failed.resolution, 'Something broke');
     });
 
     it('throws when failing a new writ', async () => {
-      const writ = await clerk.post({ title: 'Not open', body: 'Body', draft: true });
+      const writ = await postMandate({ title: 'Not open', body: 'Body', draft: true });
 
       await assert.rejects(
         () => clerk.transition(writ.id, 'failed'),
@@ -946,7 +1005,7 @@ describe('Clerk', () => {
     });
 
     it('throws when failing a completed writ', async () => {
-      const writ = await clerk.post({ title: 'Already done', body: 'Body' });
+      const writ = await postMandate({ title: 'Already done', body: 'Body' });
       await clerk.transition(writ.id, 'completed', { resolution: 'Done' });
 
       await assert.rejects(
@@ -962,7 +1021,7 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('cancels a new (draft) writ', async () => {
-      const writ = await clerk.post({ title: 'Cancel me (new)', body: 'Body', draft: true });
+      const writ = await postMandate({ title: 'Cancel me (new)', body: 'Body', draft: true });
       const cancelled = await clerk.transition(writ.id, 'cancelled');
 
       assert.equal(cancelled.phase, 'cancelled');
@@ -970,7 +1029,7 @@ describe('Clerk', () => {
     });
 
     it('cancels an open writ', async () => {
-      const writ = await clerk.post({ title: 'Cancel me (open)', body: 'Body' });
+      const writ = await postMandate({ title: 'Cancel me (open)', body: 'Body' });
       const cancelled = await clerk.transition(writ.id, 'cancelled');
 
       assert.equal(cancelled.phase, 'cancelled');
@@ -978,13 +1037,13 @@ describe('Clerk', () => {
     });
 
     it('sets resolution on cancelled when provided', async () => {
-      const writ = await clerk.post({ title: 'Cancel with reason', body: 'Body' });
+      const writ = await postMandate({ title: 'Cancel with reason', body: 'Body' });
       const cancelled = await clerk.transition(writ.id, 'cancelled', { resolution: 'No longer needed' });
       assert.equal(cancelled.resolution, 'No longer needed');
     });
 
     it('throws when cancelling a completed writ', async () => {
-      const writ = await clerk.post({ title: 'Done', body: 'Body' });
+      const writ = await postMandate({ title: 'Done', body: 'Body' });
       await clerk.transition(writ.id, 'completed', { resolution: 'Done' });
 
       await assert.rejects(
@@ -994,7 +1053,7 @@ describe('Clerk', () => {
     });
 
     it('throws when cancelling a failed writ', async () => {
-      const writ = await clerk.post({ title: 'Failed', body: 'Body' });
+      const writ = await postMandate({ title: 'Failed', body: 'Body' });
       await clerk.transition(writ.id, 'failed', { resolution: 'Broke' });
 
       await assert.rejects(
@@ -1004,7 +1063,7 @@ describe('Clerk', () => {
     });
 
     it('throws when cancelling an already-cancelled writ', async () => {
-      const writ = await clerk.post({ title: 'Cancelled twice', body: 'Body' });
+      const writ = await postMandate({ title: 'Cancelled twice', body: 'Body' });
       await clerk.transition(writ.id, 'cancelled');
 
       await assert.rejects(
@@ -1020,7 +1079,7 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('transitions an open writ to stuck', async () => {
-      const writ = await clerk.post({ title: 'Stuck writ', body: 'Body' });
+      const writ = await postMandate({ title: 'Stuck writ', body: 'Body' });
       const stuck = await clerk.transition(writ.id, 'stuck', { resolution: 'Engine failure' });
 
       assert.equal(stuck.phase, 'stuck');
@@ -1030,13 +1089,13 @@ describe('Clerk', () => {
     });
 
     it('stuck is non-terminal — resolvedAt is not set', async () => {
-      const writ = await clerk.post({ title: 'Non-terminal', body: 'Body' });
+      const writ = await postMandate({ title: 'Non-terminal', body: 'Body' });
       const stuck = await clerk.transition(writ.id, 'stuck');
       assert.equal(stuck.resolvedAt, undefined);
     });
 
     it('throws when transitioning new → stuck', async () => {
-      const writ = await clerk.post({ title: 'Draft', body: 'Body', draft: true });
+      const writ = await postMandate({ title: 'Draft', body: 'Body', draft: true });
       await assert.rejects(
         () => clerk.transition(writ.id, 'stuck'),
         /Cannot transition/,
@@ -1044,7 +1103,7 @@ describe('Clerk', () => {
     });
 
     it('throws when transitioning completed → stuck', async () => {
-      const writ = await clerk.post({ title: 'Done', body: 'Body' });
+      const writ = await postMandate({ title: 'Done', body: 'Body' });
       await clerk.transition(writ.id, 'completed', { resolution: 'Done' });
       await assert.rejects(
         () => clerk.transition(writ.id, 'stuck'),
@@ -1053,7 +1112,7 @@ describe('Clerk', () => {
     });
 
     it('throws when transitioning failed → stuck', async () => {
-      const writ = await clerk.post({ title: 'Failed', body: 'Body' });
+      const writ = await postMandate({ title: 'Failed', body: 'Body' });
       await clerk.transition(writ.id, 'failed', { resolution: 'Broke' });
       await assert.rejects(
         () => clerk.transition(writ.id, 'stuck'),
@@ -1062,7 +1121,7 @@ describe('Clerk', () => {
     });
 
     it('throws when transitioning cancelled → stuck', async () => {
-      const writ = await clerk.post({ title: 'Cancelled', body: 'Body' });
+      const writ = await postMandate({ title: 'Cancelled', body: 'Body' });
       await clerk.transition(writ.id, 'cancelled');
       await assert.rejects(
         () => clerk.transition(writ.id, 'stuck'),
@@ -1077,7 +1136,7 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('transitions stuck → open (recovery)', async () => {
-      const writ = await clerk.post({ title: 'Recoverable', body: 'Body' });
+      const writ = await postMandate({ title: 'Recoverable', body: 'Body' });
       await clerk.transition(writ.id, 'stuck');
       const reopened = await clerk.transition(writ.id, 'open');
       assert.equal(reopened.phase, 'open');
@@ -1085,7 +1144,7 @@ describe('Clerk', () => {
     });
 
     it('transitions stuck → failed (abandon)', async () => {
-      const writ = await clerk.post({ title: 'Abandoned', body: 'Body' });
+      const writ = await postMandate({ title: 'Abandoned', body: 'Body' });
       await clerk.transition(writ.id, 'stuck');
       const failed = await clerk.transition(writ.id, 'failed', { resolution: 'Giving up' });
       assert.equal(failed.phase, 'failed');
@@ -1094,7 +1153,7 @@ describe('Clerk', () => {
     });
 
     it('transitions stuck → cancelled (withdrawn)', async () => {
-      const writ = await clerk.post({ title: 'Withdrawn', body: 'Body' });
+      const writ = await postMandate({ title: 'Withdrawn', body: 'Body' });
       await clerk.transition(writ.id, 'stuck');
       const cancelled = await clerk.transition(writ.id, 'cancelled', { resolution: 'No longer needed' });
       assert.equal(cancelled.phase, 'cancelled');
@@ -1102,7 +1161,7 @@ describe('Clerk', () => {
     });
 
     it('throws when transitioning stuck → completed', async () => {
-      const writ = await clerk.post({ title: 'Cannot complete from stuck', body: 'Body' });
+      const writ = await postMandate({ title: 'Cannot complete from stuck', body: 'Body' });
       await clerk.transition(writ.id, 'stuck');
       await assert.rejects(
         () => clerk.transition(writ.id, 'completed'),
@@ -1111,7 +1170,7 @@ describe('Clerk', () => {
     });
 
     it('throws when transitioning stuck → stuck (no self-transition)', async () => {
-      const writ = await clerk.post({ title: 'Already stuck', body: 'Body' });
+      const writ = await postMandate({ title: 'Already stuck', body: 'Body' });
       await clerk.transition(writ.id, 'stuck');
       await assert.rejects(
         () => clerk.transition(writ.id, 'stuck'),
@@ -1126,7 +1185,7 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('happy path: open → completed', async () => {
-      const writ = await clerk.post({ title: 'Full lifecycle', body: 'Do it all' });
+      const writ = await postMandate({ title: 'Full lifecycle', body: 'Do it all' });
       assert.equal(writ.phase, 'open');
 
       const done = await clerk.transition(writ.id, 'completed', { resolution: 'All finished' });
@@ -1139,7 +1198,7 @@ describe('Clerk', () => {
     });
 
     it('failure path: open → failed', async () => {
-      const writ = await clerk.post({ title: 'Will fail', body: 'Body' });
+      const writ = await postMandate({ title: 'Will fail', body: 'Body' });
       const failed = await clerk.transition(writ.id, 'failed', { resolution: 'Something broke' });
 
       assert.equal(failed.phase, 'failed');
@@ -1150,13 +1209,13 @@ describe('Clerk', () => {
     });
 
     it('cancellation path: open → cancelled', async () => {
-      const writ = await clerk.post({ title: 'Cancelled early', body: 'Body' });
+      const writ = await postMandate({ title: 'Cancelled early', body: 'Body' });
       const cancelled = await clerk.transition(writ.id, 'cancelled');
       assert.equal(cancelled.phase, 'cancelled');
     });
 
     it('stuck path: open → stuck → failed', async () => {
-      const writ = await clerk.post({ title: 'Stuck then failed', body: 'Body' });
+      const writ = await postMandate({ title: 'Stuck then failed', body: 'Body' });
       const stuck = await clerk.transition(writ.id, 'stuck', { resolution: 'Engine failure' });
       assert.equal(stuck.phase, 'stuck');
       assert.equal(stuck.resolvedAt, undefined, 'stuck is non-terminal');
@@ -1167,7 +1226,7 @@ describe('Clerk', () => {
     });
 
     it('stuck recovery path: open → stuck → open → completed', async () => {
-      const writ = await clerk.post({ title: 'Recovered', body: 'Body' });
+      const writ = await postMandate({ title: 'Recovered', body: 'Body' });
       await clerk.transition(writ.id, 'stuck');
       await clerk.transition(writ.id, 'open');
       const completed = await clerk.transition(writ.id, 'completed', { resolution: 'Recovered and done' });
@@ -1176,7 +1235,7 @@ describe('Clerk', () => {
     });
 
     it('updatedAt changes on each mutation', async () => {
-      const writ = await clerk.post({ title: 'Track updates', body: 'Body' });
+      const writ = await postMandate({ title: 'Track updates', body: 'Body' });
       const t0 = writ.updatedAt;
 
       await new Promise(r => setTimeout(r, 2));
@@ -1187,12 +1246,14 @@ describe('Clerk', () => {
     });
 
     it('transition() strips managed fields from caller-supplied fields', async () => {
-      const writ = await clerk.post({ title: 'Sanitize test', body: 'Body' });
+      const writ = await postMandate({ title: 'Sanitize test', body: 'Body' });
 
+      // Note: `phase` in fields is rejected outright (D29 — smuggling a phase
+      // via fields is a caller bug) and is tested separately below. Other
+      // managed fields are silently stripped.
       const done = await clerk.transition(writ.id, 'completed', {
         resolution: 'Legit resolution',
         id: 'w-evil',
-        phase: 'open' as const,
         status: { evil: { injected: true } },
         createdAt: '1999-01-01T00:00:00Z',
         updatedAt: '1999-01-01T00:00:00Z',
@@ -1208,6 +1269,18 @@ describe('Clerk', () => {
       assert.notEqual(done.resolvedAt, '1999-01-01T00:00:00Z');
       assert.equal(done.resolution, 'Legit resolution');
     });
+
+    it('transition() throws when fields.phase is supplied (D29)', async () => {
+      const writ = await postMandate({ title: 'Phase conflict', body: 'Body' });
+
+      await assert.rejects(
+        () => clerk.transition(writ.id, 'completed', {
+          resolution: 'Done',
+          phase: 'open' as const,
+        }),
+        /\[clerk\] transition: cannot override phase via fields argument/,
+      );
+    });
   });
 
   // ── setWritStatus() — plugin-owned observation slot ───────────────
@@ -1216,12 +1289,12 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('returns an empty status slot for a freshly created writ', async () => {
-      const writ = await clerk.post({ title: 'No slot yet', body: 'Body' });
+      const writ = await postMandate({ title: 'No slot yet', body: 'Body' });
       assert.equal(writ.status, undefined, 'new writs have no status slot by default');
     });
 
     it('writes a sub-slot under the provided pluginId', async () => {
-      const writ = await clerk.post({ title: 'Observed', body: 'Body' });
+      const writ = await postMandate({ title: 'Observed', body: 'Body' });
       const updated = await clerk.setWritStatus(writ.id, 'spider', { stuckCause: 'await-graft' });
 
       assert.ok(updated.status, 'status slot should exist after setWritStatus');
@@ -1229,7 +1302,7 @@ describe('Clerk', () => {
     });
 
     it('disjoint sub-slot writes from different plugins do not clobber each other', async () => {
-      const writ = await clerk.post({ title: 'Two observers', body: 'Body' });
+      const writ = await postMandate({ title: 'Two observers', body: 'Body' });
 
       await clerk.setWritStatus(writ.id, 'spider', { stuckCause: 'engine-failed' });
       const afterSecond = await clerk.setWritStatus(writ.id, 'ratchet', { progress: 0.5 });
@@ -1239,7 +1312,7 @@ describe('Clerk', () => {
     });
 
     it('overwrites its own sub-slot but preserves sibling sub-slots', async () => {
-      const writ = await clerk.post({ title: 'Own overwrite', body: 'Body' });
+      const writ = await postMandate({ title: 'Own overwrite', body: 'Body' });
 
       await clerk.setWritStatus(writ.id, 'spider', { stuckCause: 'first' });
       await clerk.setWritStatus(writ.id, 'ratchet', { progress: 0.1 });
@@ -1250,7 +1323,7 @@ describe('Clerk', () => {
     });
 
     it('survives terminal transitions — slot is not cleared on completed/failed/cancelled', async () => {
-      const writ = await clerk.post({ title: 'Terminal survivor', body: 'Body' });
+      const writ = await postMandate({ title: 'Terminal survivor', body: 'Body' });
       await clerk.setWritStatus(writ.id, 'spider', { lastRig: 'rig-1' });
 
       const done = await clerk.transition(writ.id, 'completed', { resolution: 'ok' });
@@ -1269,7 +1342,7 @@ describe('Clerk', () => {
       // in its body (the same treatment as the other managed fields) so
       // that a smuggled slot-write through the generic shallow-merge
       // path cannot clobber sibling sub-slots.
-      const writ = await clerk.post({ title: 'Strip status on transition', body: 'Body' });
+      const writ = await postMandate({ title: 'Strip status on transition', body: 'Body' });
       await clerk.setWritStatus(writ.id, 'spider', { stuckCause: 'original' });
       await clerk.setWritStatus(writ.id, 'ratchet', { progress: 0.2 });
 
@@ -1293,7 +1366,7 @@ describe('Clerk', () => {
     });
 
     it('throws when pluginId is missing', async () => {
-      const writ = await clerk.post({ title: 'No plugin', body: 'Body' });
+      const writ = await postMandate({ title: 'No plugin', body: 'Body' });
       await assert.rejects(
         () => clerk.setWritStatus(writ.id, '', {}),
         /pluginId is required/,
@@ -1308,7 +1381,7 @@ describe('Clerk', () => {
     });
 
     it('emits a CDC update event carrying the new status sub-slot', async () => {
-      const writ = await clerk.post({ title: 'CDC emit', body: 'Body' });
+      const writ = await postMandate({ title: 'CDC emit', body: 'Body' });
 
       // Subscribe to the writs book before invoking setWritStatus so the
       // handler captures the event it fires.
@@ -1330,7 +1403,7 @@ describe('Clerk', () => {
     });
 
     it('supports an arbitrary JSON-compatible value in the sub-slot', async () => {
-      const writ = await clerk.post({ title: 'Any value', body: 'Body' });
+      const writ = await postMandate({ title: 'Any value', body: 'Body' });
 
       // Strings, arrays, numbers, nested objects — all valid.
       const stringValue = await clerk.setWritStatus(writ.id, 'a', 'just-a-string');
@@ -1350,8 +1423,8 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('creates a link between two writs and returns a WritLinkDoc', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
 
       const link = await clerk.link(w1.id, w2.id, 'fixes');
 
@@ -1363,8 +1436,8 @@ describe('Clerk', () => {
     });
 
     it('is idempotent — calling twice returns the same link', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
 
       const first = await clerk.link(w1.id, w2.id, 'fixes');
       const second = await clerk.link(w1.id, w2.id, 'fixes');
@@ -1378,7 +1451,7 @@ describe('Clerk', () => {
     });
 
     it('throws for self-link', async () => {
-      const w = await clerk.post({ title: 'Solo', body: 'Body' });
+      const w = await postMandate({ title: 'Solo', body: 'Body' });
       await assert.rejects(
         () => clerk.link(w.id, w.id, 'fixes'),
         /Cannot link a writ to itself/,
@@ -1386,7 +1459,7 @@ describe('Clerk', () => {
     });
 
     it('throws when source writ does not exist', async () => {
-      const w2 = await clerk.post({ title: 'Target', body: 'Body' });
+      const w2 = await postMandate({ title: 'Target', body: 'Body' });
       await assert.rejects(
         () => clerk.link('w-ghost', w2.id, 'fixes'),
         /not found/,
@@ -1394,7 +1467,7 @@ describe('Clerk', () => {
     });
 
     it('throws when target writ does not exist', async () => {
-      const w1 = await clerk.post({ title: 'Source', body: 'Body' });
+      const w1 = await postMandate({ title: 'Source', body: 'Body' });
       await assert.rejects(
         () => clerk.link(w1.id, 'w-ghost', 'fixes'),
         /not found/,
@@ -1402,8 +1475,8 @@ describe('Clerk', () => {
     });
 
     it('throws for empty label string', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
       await assert.rejects(
         () => clerk.link(w1.id, w2.id, ''),
         /non-empty/,
@@ -1411,8 +1484,8 @@ describe('Clerk', () => {
     });
 
     it('throws for whitespace-only label string', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
       await assert.rejects(
         () => clerk.link(w1.id, w2.id, '   '),
         /non-empty/,
@@ -1420,8 +1493,8 @@ describe('Clerk', () => {
     });
 
     it('accepts various non-empty label strings', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
 
       const l1 = await clerk.link(w1.id, w2.id, 'fixes');
       const l2 = await clerk.link(w1.id, w2.id, 'retries');
@@ -1434,8 +1507,8 @@ describe('Clerk', () => {
     });
 
     it('creates separate links for same pair with different labels', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
 
       await clerk.link(w1.id, w2.id, 'fixes');
       await clerk.link(w1.id, w2.id, 'supersedes');
@@ -1445,9 +1518,9 @@ describe('Clerk', () => {
     });
 
     it('creates links to multiple targets', async () => {
-      const w1 = await clerk.post({ title: 'Source', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Target 2', body: 'Body' });
-      const w3 = await clerk.post({ title: 'Target 3', body: 'Body' });
+      const w1 = await postMandate({ title: 'Source', body: 'Body' });
+      const w2 = await postMandate({ title: 'Target 2', body: 'Body' });
+      const w3 = await postMandate({ title: 'Target 3', body: 'Body' });
 
       await clerk.link(w1.id, w2.id, 'fixes');
       await clerk.link(w1.id, w3.id, 'retries');
@@ -1463,8 +1536,8 @@ describe('Clerk', () => {
     });
 
     it('does not update writ timestamps when linking', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
       const before1 = w1.updatedAt;
       const before2 = w2.updatedAt;
 
@@ -1483,9 +1556,9 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('returns outbound and inbound links', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
-      const w3 = await clerk.post({ title: 'Writ 3', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
+      const w3 = await postMandate({ title: 'Writ 3', body: 'Body' });
 
       await clerk.link(w1.id, w2.id, 'fixes');
       await clerk.link(w3.id, w1.id, 'supersedes');
@@ -1498,7 +1571,7 @@ describe('Clerk', () => {
     });
 
     it('returns empty arrays for a writ with no links', async () => {
-      const w = await clerk.post({ title: 'Lonely writ', body: 'Body' });
+      const w = await postMandate({ title: 'Lonely writ', body: 'Body' });
       const result = await clerk.links(w.id);
       assert.deepEqual(result, { outbound: [], inbound: [] });
     });
@@ -1515,8 +1588,8 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('removes an existing link', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
       await clerk.link(w1.id, w2.id, 'fixes');
 
       await clerk.unlink(w1.id, w2.id, 'fixes');
@@ -1526,16 +1599,16 @@ describe('Clerk', () => {
     });
 
     it('is idempotent — no error when link does not exist', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
 
       // No error — link was never created
       await clerk.unlink(w1.id, w2.id, 'fixes');
     });
 
     it('is idempotent — no error when called twice', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
       await clerk.link(w1.id, w2.id, 'fixes');
 
       await clerk.unlink(w1.id, w2.id, 'fixes');
@@ -1543,8 +1616,8 @@ describe('Clerk', () => {
     });
 
     it('does not affect other links', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
       await clerk.link(w1.id, w2.id, 'fixes');
       await clerk.link(w1.id, w2.id, 'retries');
 
@@ -1556,8 +1629,8 @@ describe('Clerk', () => {
     });
 
     it('does not update writ timestamps when unlinking', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
       await clerk.link(w1.id, w2.id, 'fixes');
       const before1 = (await clerk.show(w1.id)).updatedAt;
       const before2 = (await clerk.show(w2.id)).updatedAt;
@@ -1582,8 +1655,8 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('stores the canonicalized label on the link row', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
 
       const link = await clerk.link(w1.id, w2.id, 'DependsOn');
 
@@ -1592,8 +1665,8 @@ describe('Clerk', () => {
     });
 
     it('variant spellings of the same label collapse to a single link', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
 
       const a = await clerk.link(w1.id, w2.id, 'depends-on');
       const b = await clerk.link(w1.id, w2.id, 'dependsOn');
@@ -1606,8 +1679,8 @@ describe('Clerk', () => {
     });
 
     it('unlink() normalizes its label argument before deletion', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
       await clerk.link(w1.id, w2.id, 'depends-on');
 
       // Unlink using a differently-spelled variant of the same label.
@@ -1618,8 +1691,8 @@ describe('Clerk', () => {
     });
 
     it('keeps distinct labels distinct (not synonymy)', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
 
       await clerk.link(w1.id, w2.id, 'requires');
       await clerk.link(w1.id, w2.id, 'depends-on');
@@ -1630,8 +1703,8 @@ describe('Clerk', () => {
     });
 
     it('rejects a whitespace-only label (canonicalizes to empty)', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
       await assert.rejects(
         () => clerk.link(w1.id, w2.id, '   \t\n  '),
         /non-empty/,
@@ -1639,8 +1712,8 @@ describe('Clerk', () => {
     });
 
     it('keeps the existing builtin `fixes` composite-id shape stable', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
       const link = await clerk.link(w1.id, w2.id, 'fixes');
       // `fixes` is already canonical — the existing assertion shape still holds.
       assert.equal(link.id, `${w1.id}:${w2.id}:fixes`);
@@ -1666,22 +1739,22 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup({ extraKits: [kindKit] }); });
 
     it('defaults kind to null when no kind is provided', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
       const link = await clerk.link(w1.id, w2.id, 'fixes');
       assert.equal(link.kind, null);
     });
 
     it('stores the supplied kind on the new row', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
       const link = await clerk.link(w1.id, w2.id, 'refines', 'testkit.refines');
       assert.equal(link.kind, 'testkit.refines');
     });
 
     it('upserts kind onto an existing link on a subsequent call', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
 
       const first = await clerk.link(w1.id, w2.id, 'supersedes');
       assert.equal(first.kind, null);
@@ -1696,8 +1769,8 @@ describe('Clerk', () => {
     });
 
     it('leaves existing kind untouched when a subsequent call omits it', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
 
       await clerk.link(w1.id, w2.id, 'refines', 'testkit.refines');
       const again = await clerk.link(w1.id, w2.id, 'refines');
@@ -1705,8 +1778,8 @@ describe('Clerk', () => {
     });
 
     it('rejects an unknown kind id', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
       await assert.rejects(
         () => clerk.link(w1.id, w2.id, 'fixes', 'nonexistent.meaning'),
         /Unknown link kind/,
@@ -1714,8 +1787,8 @@ describe('Clerk', () => {
     });
 
     it('writ-show surfaces kind on each link row', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
       await clerk.link(w1.id, w2.id, 'refines', 'testkit.refines');
 
       const result = await writShow.handler({ id: w1.id }) as { links: WritLinks };
@@ -1869,8 +1942,8 @@ describe('Clerk', () => {
 
     it('link() rejects a kind not present in the registry', async () => {
       await setup();
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
       await assert.rejects(
         () => clerk.link(w1.id, w2.id, 'fixes', 'ghost.meaning'),
         /Unknown link kind/,
@@ -2231,8 +2304,8 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup({ extraKits: [kindKit] }); });
 
     it('attaches the supplied kind to the created link', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
       const result = (await writLink.handler({
         sourceId: w1.id,
         targetId: w2.id,
@@ -2244,8 +2317,8 @@ describe('Clerk', () => {
     });
 
     it('rejects with a clear error when the kind id is unknown', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
       await assert.rejects(
         () => writLink.handler({
           sourceId: w1.id,
@@ -2258,8 +2331,8 @@ describe('Clerk', () => {
     });
 
     it('still works without --kind (casual label path)', async () => {
-      const w1 = await clerk.post({ title: 'W1', body: 'B' });
-      const w2 = await clerk.post({ title: 'W2', body: 'B' });
+      const w1 = await postMandate({ title: 'W1', body: 'B' });
+      const w2 = await postMandate({ title: 'W2', body: 'B' });
       const result = (await writLink.handler({
         sourceId: w1.id,
         targetId: w2.id,
@@ -2358,8 +2431,8 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('includes links key with outbound and inbound arrays', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
       await clerk.link(w1.id, w2.id, 'fixes');
 
       // Call clerk.show() and clerk.links() like the tool handler does
@@ -2379,7 +2452,7 @@ describe('Clerk', () => {
     });
 
     it('returns empty link arrays for a writ with no links', async () => {
-      const w = await clerk.post({ title: 'Solo', body: 'Body' });
+      const w = await postMandate({ title: 'Solo', body: 'Body' });
 
       const [writ, links] = await Promise.all([
         clerk.show(w.id),
@@ -2398,8 +2471,8 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('returns all writ fields plus a links key with outbound and inbound arrays', async () => {
-      const w1 = await clerk.post({ title: 'Source writ', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Target writ', body: 'Body' });
+      const w1 = await postMandate({ title: 'Source writ', body: 'Body' });
+      const w2 = await postMandate({ title: 'Target writ', body: 'Body' });
       await clerk.link(w1.id, w2.id, 'fixes');
 
       const result = await writShow.handler({ id: w1.id }) as WritLinkDoc & { links: WritLinks };
@@ -2415,7 +2488,7 @@ describe('Clerk', () => {
     });
 
     it('returns empty link arrays for a writ with no links', async () => {
-      const w = await clerk.post({ title: 'Lone writ', body: 'Body' });
+      const w = await postMandate({ title: 'Lone writ', body: 'Body' });
 
       const result = await writShow.handler({ id: w.id }) as { links: WritLinks };
 
@@ -2431,8 +2504,8 @@ describe('Clerk', () => {
     });
 
     it('returns inbound links when the writ is a target', async () => {
-      const w1 = await clerk.post({ title: 'Source', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Target', body: 'Body' });
+      const w1 = await postMandate({ title: 'Source', body: 'Body' });
+      const w2 = await postMandate({ title: 'Target', body: 'Body' });
       await clerk.link(w1.id, w2.id, 'supersedes');
 
       const result = await writShow.handler({ id: w2.id }) as { links: WritLinks };
@@ -2449,8 +2522,8 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('returns the structured forest in json format', async () => {
-      const root = await clerk.post({ title: 'Root', body: 'Body' });
-      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: root.id });
+      const root = await postMandate({ title: 'Root', body: 'Body' });
+      const child = await postMandate({ title: 'Child', body: 'Body', parentId: root.id });
 
       const forest = await writTree.handler({ format: 'json' }) as Array<{ writ: WritDoc; children: unknown[] }>;
       assert.equal(forest.length, 1);
@@ -2466,14 +2539,14 @@ describe('Clerk', () => {
     });
 
     it('returns a filter-aware placeholder when filters match nothing (text format)', async () => {
-      await clerk.post({ title: 'Root', body: 'Body' });
+      await postMandate({ title: 'Root', body: 'Body' });
       const result = await writTree.handler({ format: 'text', phase: 'completed' }) as string;
       assert.match(result, /No writs match the given filters/);
     });
 
     it('renders the box-drawing tree in text format', async () => {
-      const root = await clerk.post({ title: 'Root', body: 'Body' });
-      await clerk.post({ title: 'Child', body: 'Body', parentId: root.id });
+      const root = await postMandate({ title: 'Root', body: 'Body' });
+      await postMandate({ title: 'Child', body: 'Body', parentId: root.id });
 
       const result = await writTree.handler({ format: 'text' }) as string;
       // Box-drawing connector for the only child.
@@ -2483,7 +2556,7 @@ describe('Clerk', () => {
     });
 
     it('honors --root-id with prefix resolution', async () => {
-      const root = await clerk.post({ title: 'Solo', body: 'Body' });
+      const root = await postMandate({ title: 'Solo', body: 'Body' });
       // Use a prefix of the id to verify resolveId is called.
       const prefix = root.id.slice(0, 12);
       const forest = await writTree.handler({ format: 'json', rootId: prefix }) as Array<{ writ: WritDoc }>;
@@ -2493,11 +2566,13 @@ describe('Clerk', () => {
 
     it('honors --depth and --type filters', async () => {
       await setup({
-        clerkConfig: { writTypes: [{ name: 'task', description: 't' }] },
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('task')], { id: 'task-plugin' }),
+        ],
       });
-      const root = await clerk.post({ title: 'Root', body: 'Body', type: 'mandate' });
-      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: root.id, type: 'task' });
-      await clerk.post({ title: 'Grand', body: 'Body', parentId: child.id, type: 'task' });
+      const root = await postMandate({ title: 'Root', body: 'Body', type: 'mandate' });
+      const child = await postMandate({ title: 'Child', body: 'Body', parentId: root.id, type: 'task' });
+      await postMandate({ title: 'Grand', body: 'Body', parentId: child.id, type: 'task' });
 
       const depth1 = await writTree.handler({ format: 'json', depth: 1 }) as Array<{ children: unknown[] }>;
       assert.equal(depth1.length, 1);
@@ -2516,8 +2591,8 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('creates a link and returns a WritLinkDoc', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
 
       const result = await writLink.handler({ sourceId: w1.id, targetId: w2.id, label: 'fixes' }) as WritLinkDoc;
 
@@ -2529,8 +2604,8 @@ describe('Clerk', () => {
     });
 
     it('is idempotent — returns the same link on duplicate call', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
 
       const r1 = await writLink.handler({ sourceId: w1.id, targetId: w2.id, label: 'fixes' }) as WritLinkDoc;
       const r2 = await writLink.handler({ sourceId: w1.id, targetId: w2.id, label: 'fixes' }) as WritLinkDoc;
@@ -2540,7 +2615,7 @@ describe('Clerk', () => {
     });
 
     it('propagates self-link error from clerk.link()', async () => {
-      const w = await clerk.post({ title: 'Solo', body: 'Body' });
+      const w = await postMandate({ title: 'Solo', body: 'Body' });
       await assert.rejects(
         () => writLink.handler({ sourceId: w.id, targetId: w.id, label: 'fixes' }),
         /Cannot link a writ to itself/,
@@ -2548,7 +2623,7 @@ describe('Clerk', () => {
     });
 
     it('propagates missing source error from clerk.link()', async () => {
-      const w2 = await clerk.post({ title: 'Target', body: 'Body' });
+      const w2 = await postMandate({ title: 'Target', body: 'Body' });
       await assert.rejects(
         () => writLink.handler({ sourceId: 'w-ghost', targetId: w2.id, label: 'fixes' }),
         /No writ found/,
@@ -2562,8 +2637,8 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('removes an existing link and returns { ok: true }', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
       await clerk.link(w1.id, w2.id, 'fixes');
 
       const result = await writUnlink.handler({ sourceId: w1.id, targetId: w2.id, label: 'fixes' });
@@ -2575,8 +2650,8 @@ describe('Clerk', () => {
     });
 
     it('is idempotent — returns { ok: true } when link does not exist', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
 
       // Link was never created — no error
       const result = await writUnlink.handler({ sourceId: w1.id, targetId: w2.id, label: 'fixes' });
@@ -2584,8 +2659,8 @@ describe('Clerk', () => {
     });
 
     it('does not remove other links when unlinking by label', async () => {
-      const w1 = await clerk.post({ title: 'Writ 1', body: 'Body' });
-      const w2 = await clerk.post({ title: 'Writ 2', body: 'Body' });
+      const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
+      const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
       await clerk.link(w1.id, w2.id, 'fixes');
       await clerk.link(w1.id, w2.id, 'retries');
 
@@ -2601,17 +2676,21 @@ describe('Clerk', () => {
 
   describe('writ-edit tool handler (via guild apparatus)', () => {
     beforeEach(async () => {
-      await setup({ clerkConfig: { writTypes: [{ name: 'errand', description: 'A small errand' }] } });
+      await setup({
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
+        ],
+      });
     });
 
     it('edits title of a draft writ via the tool handler', async () => {
-      const writ = await clerk.post({ title: 'Old', body: 'Body', draft: true });
+      const writ = await postMandate({ title: 'Old', body: 'Body', draft: true });
       const result = await writEdit.handler({ id: writ.id, title: 'New' }) as { title: string };
       assert.equal(result.title, 'New');
     });
 
     it('edits multiple fields via the tool handler', async () => {
-      const writ = await clerk.post({ title: 'Old', body: 'Old body', draft: true });
+      const writ = await postMandate({ title: 'Old', body: 'Old body', draft: true });
       const result = await writEdit.handler({
         id: writ.id,
         title: 'New',
@@ -2627,7 +2706,7 @@ describe('Clerk', () => {
     });
 
     it('rejects when no editable fields are provided', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body', draft: true });
+      const writ = await postMandate({ title: 'Title', body: 'Body', draft: true });
       await assert.rejects(
         () => writEdit.handler({ id: writ.id }),
         /At least one field/,
@@ -2635,14 +2714,14 @@ describe('Clerk', () => {
     });
 
     it('allows editing title/body of a non-draft writ via the tool handler', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body' }); // open
+      const writ = await postMandate({ title: 'Title', body: 'Body' }); // open
       const edited = await writEdit.handler({ id: writ.id, title: 'Changed', body: 'New body' });
       assert.equal(edited.title, 'Changed');
       assert.equal(edited.body, 'New body');
     });
 
     it('rejects changing type on a non-draft writ via the tool handler', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body' }); // open
+      const writ = await postMandate({ title: 'Title', body: 'Body' }); // open
       await assert.rejects(
         () => writEdit.handler({ id: writ.id, type: 'errand' }),
         /Cannot change type/,
@@ -2650,7 +2729,7 @@ describe('Clerk', () => {
     });
 
     it('rejects changing codex on a non-draft writ via the tool handler', async () => {
-      const writ = await clerk.post({ title: 'Title', body: 'Body' }); // open
+      const writ = await postMandate({ title: 'Title', body: 'Body' }); // open
       await assert.rejects(
         () => writEdit.handler({ id: writ.id, codex: 'gamma' }),
         /Cannot change codex/,
@@ -2672,220 +2751,130 @@ describe('Clerk', () => {
 
   // ── Config validation ────────────────────────────────────────────
 
-  describe('config: writTypes validation', () => {
-    it('built-in type mandate is always valid regardless of writTypes config', async () => {
-      await setup({ clerkConfig: { writTypes: [] } }); // empty writTypes — built-in still works
-      const w1 = await clerk.post({ title: 'Mandate', body: 'Body', type: 'mandate' });
-      assert.equal(w1.type, 'mandate');
+  describe('config: defaultType validation', () => {
+    it('built-in type mandate is always available', async () => {
+      await setup();
+      const w = await postMandate({ title: 'Mandate', body: 'Body', type: 'mandate' });
+      assert.equal(w.type, 'mandate');
     });
 
-    it('summon is not a built-in type (must be declared)', async () => {
-      await setup({ clerkConfig: { writTypes: [] } });
+    it('rejects an unregistered writ type at post time', async () => {
+      await setup();
       await assert.rejects(
-        () => clerk.post({ title: 'Summon', body: 'Body', type: 'summon' }),
+        () => postMandate({ title: 'Summon', body: 'Body', type: 'summon' }),
         /Unknown writ type/,
       );
     });
 
-    it('declared custom types are accepted', async () => {
+    it('plugin-registered custom types are accepted', async () => {
       await setup({
-        clerkConfig: {
-          writTypes: [
-            { name: 'epic', description: 'A significant task' },
-            { name: 'errand', description: 'A small errand' },
-          ],
-        },
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
+        ],
       });
-      const w = await clerk.post({ title: 'Start an epic', body: 'Body', type: 'epic' });
-      assert.equal(w.type, 'epic');
+      const w = await postMandate({ title: 'Start an errand', body: 'Body', type: 'errand' });
+      assert.equal(w.type, 'errand');
     });
 
-    it('undeclared types are rejected even when other custom types exist', async () => {
-      await setup({ clerkConfig: { writTypes: [{ name: 'epic', description: 'An epic' }] } });
-      await assert.rejects(
-        () => clerk.post({ title: 'Test', body: 'Body', type: 'unknown' }),
-        /Unknown writ type/,
-      );
-    });
-
-    it('defaultType from clerk config is validated against declared types', async () => {
+    it('defaultType is honored when its writ type is registered', async () => {
       await setup({
-        clerkConfig: {
-          writTypes: [{ name: 'errand', description: 'A small errand' }],
-          defaultType: 'errand',
-        },
+        clerkConfig: { defaultType: 'errand' },
+        extraApparatuses: [
+          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
+        ],
       });
-      const w = await clerk.post({ title: 'Default errand', body: 'Body' });
+      const w = await postMandate({ title: 'Default errand', body: 'Body' });
       assert.equal(w.type, 'errand');
     });
   });
 
-  // ── Kit-contributed writ types ────────────────────────────────────
+  // ── registerWritType API ─────────────────────────────────────────
 
-  describe('Kit-contributed writ types', () => {
-    describe('V3 — basic kit writ type', () => {
-      it('allows posting with kit-contributed writ type', async () => {
-        const kit: LoadedKit = {
-          packageName: '@test/quality-tools',
-          id: 'quality-tools',
-          version: '0.0.0',
-          kit: { writTypes: [{ name: 'quality-audit' }] },
-        };
-        await setup({ extraKits: [kit] });
-
-        const writ = await clerk.post({ title: 'Audit', body: 'Run audit', type: 'quality-audit' });
-        assert.equal(writ.type, 'quality-audit');
-      });
-
-      it('config writType with same name silently skips kit contribution', async () => {
-        const kit: LoadedKit = {
-          packageName: '@test/quality-tools',
-          id: 'quality-tools',
-          version: '0.0.0',
-          kit: { writTypes: [{ name: 'quality-audit' }] },
-        };
-        await setup({
-          clerkConfig: { writTypes: [{ name: 'quality-audit' }] },
-          extraKits: [kit],
-        });
-        // No warning should be emitted; posting should still work
-        const writ = await clerk.post({ title: 'Audit', body: 'Run audit', type: 'quality-audit' });
-        assert.equal(writ.type, 'quality-audit');
-      });
-
-      it('throws when two kits contribute the same writ type (kit-vs-kit collision is fatal)', async () => {
-        const kitA: LoadedKit = {
-          packageName: '@test/kit-a',
-          id: 'kit-a',
-          version: '0.0.0',
-          kit: { writTypes: [{ name: 'quality-audit' }] },
-        };
-        const kitB: LoadedKit = {
-          packageName: '@test/kit-b',
-          id: 'kit-b',
-          version: '0.0.0',
-          kit: { writTypes: [{ name: 'quality-audit' }] },
-        };
-        await assert.rejects(
-          () => setup({ extraKits: [kitA, kitB] }),
-          (err: Error) => {
-            // Error must name both contributing plugins and the conflicting writ type.
-            return (
-              /writTypes/.test(err.message) &&
-              /quality-audit/.test(err.message) &&
-              /kit-a/.test(err.message) &&
-              /kit-b/.test(err.message)
-            );
-          },
-          'kit-vs-kit writ-type collision must throw and name both plugins + the writ type',
-        );
-      });
-
-      it('built-in mandate type still works even if kit contributes it', async () => {
-        const kit: LoadedKit = {
-          packageName: '@test/kit-a',
-          id: 'kit-a',
-          version: '0.0.0',
-          kit: { writTypes: [{ name: 'mandate' }] },
-        };
-        await setup({ extraKits: [kit] });
-        // mandate is built-in, kit contribution is harmless but redundant
-        const writ = await clerk.post({ title: 'Mandate', body: 'Body', type: 'mandate' });
-        assert.equal(writ.type, 'mandate');
-      });
-
-      it('rejects unknown type even with kits loaded', async () => {
-        const kit: LoadedKit = {
-          packageName: '@test/kit-a',
-          id: 'kit-a',
-          version: '0.0.0',
-          kit: { writTypes: [{ name: 'known-type' }] },
-        };
-        await setup({ extraKits: [kit] });
-        await assert.rejects(
-          () => clerk.post({ title: 'Test', body: 'Body', type: 'unknown-type' }),
-          /Unknown writ type/
-        );
-      });
-
-      it('warns on malformed writTypes entry missing name field', async () => {
-        const warnings: string[] = [];
-        const original = console.warn;
-        console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
-
-        try {
-          const kit: LoadedKit = {
-            packageName: '@test/bad-kit',
-            id: 'bad-kit',
-            version: '0.0.0',
-            kit: { writTypes: [{ notName: 'bad' }] },
-          };
-          await setup({ extraKits: [kit] });
-          assert.ok(
-            warnings.some(w => w.includes('bad-kit') && w.includes('writTypes')),
-            `Expected warning about bad-kit writTypes, got: ${JSON.stringify(warnings)}`
-          );
-        } finally {
-          console.warn = original;
-        }
-      });
+  describe('registerWritType API', () => {
+    it('throws on duplicate registration', async () => {
+      await setup();
+      // mandate is already registered by clerk.start(); a second
+      // registration of mandate is a duplicate.
+      assert.throws(
+        () => clerk.registerWritType(mandateLikeWritType('mandate')),
+        (err: Error) =>
+          /\[clerk\] registerWritType:/.test(err.message) &&
+          /duplicate writ type/.test(err.message) &&
+          /"mandate"/.test(err.message),
+        'duplicate writ type registration must throw with the [clerk] registerWritType: prefix',
+      );
     });
 
-    describe('V9 — Clerk consumes declaration', () => {
-      it('declares consumes with writTypes', () => {
-        const plugin = createClerk();
-        assert.ok('apparatus' in plugin);
-        const apparatus = (plugin as { apparatus: { consumes?: string[] } }).apparatus;
-        assert.ok(Array.isArray(apparatus.consumes));
-        assert.ok(apparatus.consumes!.includes('writTypes'));
-      });
+    it('rejects late registration after the startup window has sealed', async () => {
+      const { ctx, fire } = buildClerkCtx();
+      await setupCore({}, ctx);
+      // Fire the framework's global phase:started event — the Clerk seals
+      // the registration window on this signal.
+      await fire('phase:started');
+      assert.throws(
+        () => clerk.registerWritType(mandateLikeWritType('late-type')),
+        (err: Error) =>
+          /\[clerk\] registerWritType:/.test(err.message) &&
+          /startup registration window has closed/.test(err.message),
+      );
     });
 
-    describe('V11 — exports', () => {
-      it('ClerkKit is exported from clerk module', async () => {
-        // Just verify the import works — if it compiles, the export exists
-        const mod = await import('./clerk.ts');
-        // ClerkKit is a type export; we can't check it at runtime directly,
-        // but we verify createClerk is still exported
-        assert.ok(typeof mod.createClerk === 'function');
-      });
+    it('propagates validator errors verbatim with the writTypeConfig path', async () => {
+      await setup();
+      assert.throws(
+        () =>
+          clerk.registerWritType({
+            // Invalid: empty states array.
+            name: 'broken',
+            states: [],
+          }),
+        (err: Error) =>
+          /\[clerk\] writTypeConfig\.states/.test(err.message) &&
+          // The validator's prefix should NOT be wrapped — registration-
+          // specific failures use [clerk] registerWritType:; validator
+          // failures use [clerk] writTypeConfig.<path>:.
+          !/registerWritType/.test(err.message),
+      );
     });
 
-    describe('V13 — resolveWritTypes uses in-memory set', () => {
-      it('kit-contributed type is valid for posting without re-reading config', async () => {
-        const kit: LoadedKit = {
-          packageName: '@test/quality-tools',
-          id: 'quality-tools',
-          version: '0.0.0',
-          kit: { writTypes: [{ name: 'quality-audit' }] },
-        };
-        await setup({ extraKits: [kit] });
-
-        // Post multiple writs to confirm the set is stable
-        const w1 = await clerk.post({ title: 'Audit 1', body: 'Body', type: 'quality-audit' });
-        const w2 = await clerk.post({ title: 'Audit 2', body: 'Body', type: 'quality-audit' });
-        assert.equal(w1.type, 'quality-audit');
-        assert.equal(w2.type, 'quality-audit');
-      });
+    it('post() of an unregistered type fails with the registry error', async () => {
+      await setup();
+      await assert.rejects(
+        () => clerk.post({ title: 'X', body: 'Y', type: 'never-registered' }),
+        /Unknown writ type "never-registered"/,
+      );
     });
 
-    describe('V25 — apparatus supportKit writ type via Wire phase', () => {
-      it('apparatus supportKit writ type is valid for posting (via Wire phase)', async () => {
-        const lateApp: LoadedApparatus = {
-          packageName: '@test/late-app',
-          id: 'late-app',
-          version: '0.0.0',
-          apparatus: {
-            requires: [],
-            start: () => {},
-            supportKit: { writTypes: [{ name: 'late-type' }] },
-          },
-        };
-        await setup({ extraApparatuses: [lateApp] });
+    it('rejects child creation on a parent in a terminal state', async () => {
+      await setup();
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
+      // Drive the parent into a terminal state.
+      await clerk.transition(parent.id, 'completed', { resolution: 'done' });
+      await assert.rejects(
+        () => postMandate({ title: 'Child', body: 'Body', parentId: parent.id }),
+        (err: Error) =>
+          /Cannot add children to writ/.test(err.message) &&
+          /terminal/.test(err.message),
+      );
+    });
 
-        const writ = await clerk.post({ title: 'Late', body: 'Body', type: 'late-type' });
-        assert.equal(writ.type, 'late-type');
-      });
+    it('classification predicates reflect the registered config for known types', async () => {
+      await setup();
+      const w = await clerk.post({ title: 'X', body: 'Y' });
+      // mandate's `new` is initial.
+      assert.equal(clerk.isInitial(w), true);
+      assert.equal(clerk.isActive(w), false);
+      assert.equal(clerk.isTerminal(w), false);
+
+      const opened = await clerk.transition(w.id, 'open');
+      assert.equal(clerk.isInitial(opened), false);
+      assert.equal(clerk.isActive(opened), true);
+      assert.equal(clerk.isTerminal(opened), false);
+
+      const completed = await clerk.transition(opened.id, 'completed');
+      assert.equal(clerk.isInitial(completed), false);
+      assert.equal(clerk.isActive(completed), false);
+      assert.equal(clerk.isTerminal(completed), true);
     });
   });
 });
@@ -2908,7 +2897,7 @@ function getWritTypesTool(plugin: ClerkPlugin): AnyTool {
 describe('writ-types tool', () => {
   afterEach(() => { clearGuild(); });
 
-  it('returns builtin type with default config', async () => {
+  it('returns builtin mandate with source "builtin" and isDefault true', async () => {
     const plugin = await setupCore();
     const writTypesTool = getWritTypesTool(plugin);
     const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; source: string; isDefault: boolean }>;
@@ -2919,21 +2908,30 @@ describe('writ-types tool', () => {
     assert.equal(mandate.source, 'builtin');
   });
 
-  it('returns config-declared types with description', async () => {
-    const plugin = await setupCore({ clerkConfig: { writTypes: [{ name: 'task', description: 'A task' }] } });
+  it('returns plugin-registered types with source "plugin"', async () => {
+    const plugin = await setupCore({
+      extraApparatuses: [
+        makeWritTypeApparatus([mandateLikeWritType('task')], { id: 'task-plugin' }),
+      ],
+    });
     const writTypesTool = getWritTypesTool(plugin);
     const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; source: string; isDefault: boolean }>;
     const task = result.find(t => t.name === 'task');
     assert.ok(task, 'task should be in result');
-    assert.equal(task.description, 'A task');
+    assert.equal(task.description, null);
     assert.equal(task.isDefault, false);
-    assert.equal(task.source, 'guild');
+    assert.equal(task.source, 'plugin');
     // mandate should still be there
     assert.ok(result.find(t => t.name === 'mandate'), 'mandate should still appear');
   });
 
-  it('marks configured defaultType as default', async () => {
-    const plugin = await setupCore({ clerkConfig: { writTypes: [{ name: 'task' }], defaultType: 'task' } });
+  it('marks configured defaultType as default when the type is registered', async () => {
+    const plugin = await setupCore({
+      clerkConfig: { defaultType: 'task' },
+      extraApparatuses: [
+        makeWritTypeApparatus([mandateLikeWritType('task')], { id: 'task-plugin' }),
+      ],
+    });
     const writTypesTool = getWritTypesTool(plugin);
     const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; source: string; isDefault: boolean }>;
     const task = result.find(t => t.name === 'task');
@@ -2942,23 +2940,6 @@ describe('writ-types tool', () => {
     assert.equal(task.isDefault, true);
     assert.ok(mandate, 'mandate should be in result');
     assert.equal(mandate.isDefault, false);
-  });
-
-  it('includes kit-contributed types', async () => {
-    const kit: LoadedKit = {
-      packageName: '@test/kit-a',
-      id: 'kit-a',
-      version: '0.0.0',
-      kit: { writTypes: [{ name: 'quality-audit' }] },
-    };
-    const plugin = await setupCore({ extraKits: [kit] });
-    const writTypesTool = getWritTypesTool(plugin);
-    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; source: string; isDefault: boolean }>;
-    const qa = result.find(t => t.name === 'quality-audit');
-    assert.ok(qa, 'quality-audit should be in result');
-    assert.equal(qa.description, null);
-    assert.equal(qa.isDefault, false);
-    assert.equal(qa.source, 'kit-a');
   });
 
   it('tool is registered in supportKit.tools', () => {
@@ -2979,71 +2960,14 @@ describe('writ-types tool', () => {
     assert.equal(t.callableBy, undefined);
   });
 
-  it('preserves kit-contributed description', async () => {
-    const kit: LoadedKit = {
-      packageName: '@test/kit-desc',
-      id: 'kit-desc',
-      version: '0.0.0',
-      kit: { writTypes: [{ name: 'quality-audit', description: 'Code quality audit' }] },
-    };
-    const plugin = await setupCore({ extraKits: [kit] });
-    const writTypesTool = getWritTypesTool(plugin);
-    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; source: string; isDefault: boolean }>;
-    const qa = result.find(t => t.name === 'quality-audit');
-    assert.ok(qa, 'quality-audit should be in result');
-    assert.equal(qa.description, 'Code quality audit');
-    assert.equal(qa.source, 'kit-desc');
-    assert.equal(qa.isDefault, false);
-  });
-
-  it('guild config shadows kit description', async () => {
-    const kit: LoadedKit = {
-      packageName: '@test/kit-shadow',
-      id: 'kit-shadow',
-      version: '0.0.0',
-      kit: { writTypes: [{ name: 'quality-audit', description: 'Kit version' }] },
-    };
-    const plugin = await setupCore({
-      clerkConfig: { writTypes: [{ name: 'quality-audit', description: 'Guild version' }] },
-      extraKits: [kit],
-    });
-    const writTypesTool = getWritTypesTool(plugin);
-    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; source: string; isDefault: boolean }>;
-    const qa = result.find(t => t.name === 'quality-audit');
-    assert.ok(qa, 'quality-audit should be in result');
-    assert.equal(qa.description, 'Guild version');
-    assert.equal(qa.source, 'guild');
-  });
-
-  it('guild config shadows kit with no description', async () => {
-    const kit: LoadedKit = {
-      packageName: '@test/kit-shadow2',
-      id: 'kit-shadow2',
-      version: '0.0.0',
-      kit: { writTypes: [{ name: 'quality-audit', description: 'Kit version' }] },
-    };
-    const plugin = await setupCore({
-      clerkConfig: { writTypes: [{ name: 'quality-audit' }] },
-      extraKits: [kit],
-    });
-    const writTypesTool = getWritTypesTool(plugin);
-    const result = await writTypesTool.handler({}) as Array<{ name: string; description: string | null; source: string; isDefault: boolean }>;
-    const qa = result.find(t => t.name === 'quality-audit');
-    assert.ok(qa, 'quality-audit should be in result');
-    assert.equal(qa.description, null);
-    assert.equal(qa.source, 'guild');
-  });
-
   it('tool delegates to api.listWritTypes()', async () => {
-    const kit: LoadedKit = {
-      packageName: '@test/kit-delegate',
-      id: 'kit-delegate',
-      version: '0.0.0',
-      kit: { writTypes: [{ name: 'quality-audit', description: 'QA' }] },
-    };
     const plugin = await setupCore({
-      clerkConfig: { writTypes: [{ name: 'task', description: 'A task' }] },
-      extraKits: [kit],
+      extraApparatuses: [
+        makeWritTypeApparatus(
+          [mandateLikeWritType('task'), mandateLikeWritType('quality-audit')],
+          { id: 'types-plugin' },
+        ),
+      ],
     });
     const writTypesTool = getWritTypesTool(plugin);
     const toolResult = await writTypesTool.handler({});
@@ -3067,7 +2991,7 @@ describe('writ-types tool', () => {
 describe('listWritTypes()', () => {
   afterEach(() => { clearGuild(); });
 
-  it('returns builtin type with source and isDefault', async () => {
+  it('returns builtin mandate with source and isDefault', async () => {
     await setupCore();
     const result = clerk.listWritTypes();
     const mandate = result.find(t => t.name === 'mandate');
@@ -3077,33 +3001,27 @@ describe('listWritTypes()', () => {
     assert.equal(mandate.description, null);
   });
 
-  it('returns guild config types with source guild', async () => {
-    await setupCore({ clerkConfig: { writTypes: [{ name: 'task', description: 'A task' }] } });
+  it('returns plugin-registered types with source "plugin"', async () => {
+    await setupCore({
+      extraApparatuses: [
+        makeWritTypeApparatus([mandateLikeWritType('task')], { id: 'task-plugin' }),
+      ],
+    });
     const result = clerk.listWritTypes();
     const task = result.find(t => t.name === 'task');
     assert.ok(task);
-    assert.equal(task.source, 'guild');
-    assert.equal(task.description, 'A task');
+    assert.equal(task.source, 'plugin');
+    assert.equal(task.description, null);
+    assert.equal(task.isDefault, false);
   });
 
-  it('returns kit types with pluginId as source', async () => {
-    const kit: LoadedKit = {
-      packageName: '@test/kit-src',
-      id: 'kit-src',
-      version: '0.0.0',
-      kit: { writTypes: [{ name: 'quality-audit', description: 'Code quality audit' }] },
-    };
-    await setupCore({ extraKits: [kit] });
-    const result = clerk.listWritTypes();
-    const qa = result.find(t => t.name === 'quality-audit');
-    assert.ok(qa);
-    assert.equal(qa.source, 'kit-src');
-    assert.equal(qa.description, 'Code quality audit');
-    assert.equal(qa.isDefault, false);
-  });
-
-  it('guild config default override changes isDefault', async () => {
-    await setupCore({ clerkConfig: { writTypes: [{ name: 'task' }], defaultType: 'task' } });
+  it('defaultType override changes isDefault when the type is registered', async () => {
+    await setupCore({
+      clerkConfig: { defaultType: 'task' },
+      extraApparatuses: [
+        makeWritTypeApparatus([mandateLikeWritType('task')], { id: 'task-plugin' }),
+      ],
+    });
     const result = clerk.listWritTypes();
     const task = result.find(t => t.name === 'task');
     const mandate = result.find(t => t.name === 'mandate');
@@ -3111,29 +3029,6 @@ describe('listWritTypes()', () => {
     assert.equal(task.isDefault, true);
     assert.ok(mandate);
     assert.equal(mandate.isDefault, false);
-  });
-
-  it('apparatus supportKit writ type has pluginId source', async () => {
-    const apparatusPlugin = createClerk();
-    const fakeApparatus: LoadedApparatus = {
-      packageName: '@test/apparatus-contrib',
-      id: 'apparatus-contrib',
-      version: '0.0.0',
-      apparatus: {
-        ...((apparatusPlugin as { apparatus: Record<string, unknown> }).apparatus),
-        supportKit: {
-          writTypes: [{ name: 'late-type', description: 'Late' }],
-        },
-        provides: {},
-        start() {},
-      },
-    };
-    await setupCore({ extraApparatuses: [fakeApparatus] });
-    const result = clerk.listWritTypes();
-    const late = result.find(t => t.name === 'late-type');
-    assert.ok(late, 'late-type should be in result');
-    assert.equal(late.description, 'Late');
-    assert.equal(late.source, 'apparatus-contrib');
   });
 });
 
@@ -3170,8 +3065,8 @@ describe('Parent/child relationships', () => {
     beforeEach(async () => { await setup(); });
 
     it('creates a child writ with parentId set', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Parent body' });
-      const child = await clerk.post({ title: 'Child', body: 'Child body', parentId: parent.id });
+      const parent = await postMandate({ title: 'Parent', body: 'Parent body' });
+      const child = await postMandate({ title: 'Child', body: 'Child body', parentId: parent.id });
 
       assert.equal(child.parentId, parent.id);
       assert.ok(child.id.startsWith('w-'));
@@ -3179,60 +3074,60 @@ describe('Parent/child relationships', () => {
     });
 
     it('parent stays in open when child is added', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
       assert.equal(parent.phase, 'open');
 
-      await clerk.post({ title: 'Child', body: 'Body', parentId: parent.id });
+      await postMandate({ title: 'Child', body: 'Body', parentId: parent.id });
 
       const updated = await clerk.show(parent.id);
       assert.equal(updated.phase, 'open');
     });
 
     it('parent stays in new when child is added', async () => {
-      const parent = await clerk.post({ title: 'Draft parent', body: 'Body', draft: true });
+      const parent = await postMandate({ title: 'Draft parent', body: 'Body', draft: true });
       assert.equal(parent.phase, 'new');
 
-      await clerk.post({ title: 'Child', body: 'Body', parentId: parent.id });
+      await postMandate({ title: 'Child', body: 'Body', parentId: parent.id });
 
       const updated = await clerk.show(parent.id);
       assert.equal(updated.phase, 'new');
     });
 
     it('parent stays in open when a second child is added', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      await clerk.post({ title: 'Child 1', body: 'Body', parentId: parent.id });
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
+      await postMandate({ title: 'Child 1', body: 'Body', parentId: parent.id });
 
       const midState = await clerk.show(parent.id);
       assert.equal(midState.phase, 'open');
 
-      await clerk.post({ title: 'Child 2', body: 'Body', parentId: parent.id });
+      await postMandate({ title: 'Child 2', body: 'Body', parentId: parent.id });
 
       const endState = await clerk.show(parent.id);
       assert.equal(endState.phase, 'open');
     });
 
     it('creates root writ without parentId', async () => {
-      const writ = await clerk.post({ title: 'Root', body: 'Body' });
+      const writ = await postMandate({ title: 'Root', body: 'Body' });
       assert.equal(writ.parentId, undefined);
     });
 
     it('inherits codex from parent when child codex is not specified', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body', codex: 'parent-codex' });
-      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: parent.id });
+      const parent = await postMandate({ title: 'Parent', body: 'Body', codex: 'parent-codex' });
+      const child = await postMandate({ title: 'Child', body: 'Body', parentId: parent.id });
 
       assert.equal(child.codex, 'parent-codex');
     });
 
     it('uses child explicit codex over parent codex', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body', codex: 'parent-codex' });
-      const child = await clerk.post({ title: 'Child', body: 'Body', codex: 'child-codex', parentId: parent.id });
+      const parent = await postMandate({ title: 'Parent', body: 'Body', codex: 'parent-codex' });
+      const child = await postMandate({ title: 'Child', body: 'Body', codex: 'child-codex', parentId: parent.id });
 
       assert.equal(child.codex, 'child-codex');
     });
 
     it('child has no codex when neither parent nor child specify one', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: parent.id });
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
+      const child = await postMandate({ title: 'Child', body: 'Body', parentId: parent.id });
 
       assert.equal(child.codex, undefined);
     });
@@ -3245,17 +3140,17 @@ describe('Parent/child relationships', () => {
 
     it('rejects child creation with non-existent parentId', async () => {
       await assert.rejects(
-        () => clerk.post({ title: 'Child', body: 'Body', parentId: 'w-nonexistent' }),
+        () => postMandate({ title: 'Child', body: 'Body', parentId: 'w-nonexistent' }),
         { message: 'Parent writ "w-nonexistent" not found.' },
       );
     });
 
     it('rejects child creation when parent is completed', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
       await clerk.transition(parent.id, 'completed', { resolution: 'Done' });
 
       await assert.rejects(
-        () => clerk.post({ title: 'Child', body: 'Body', parentId: parent.id }),
+        () => postMandate({ title: 'Child', body: 'Body', parentId: parent.id }),
         (err: Error) => {
           assert.ok(err.message.includes('Cannot add children to writ'));
           assert.ok(err.message.includes('"completed"'));
@@ -3265,11 +3160,11 @@ describe('Parent/child relationships', () => {
     });
 
     it('rejects child creation when parent is failed', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
       await clerk.transition(parent.id, 'failed', { resolution: 'Broke' });
 
       await assert.rejects(
-        () => clerk.post({ title: 'Child', body: 'Body', parentId: parent.id }),
+        () => postMandate({ title: 'Child', body: 'Body', parentId: parent.id }),
         (err: Error) => {
           assert.ok(err.message.includes('Cannot add children to writ'));
           assert.ok(err.message.includes('"failed"'));
@@ -3279,11 +3174,11 @@ describe('Parent/child relationships', () => {
     });
 
     it('rejects child creation when parent is cancelled', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
       await clerk.transition(parent.id, 'cancelled');
 
       await assert.rejects(
-        () => clerk.post({ title: 'Child', body: 'Body', parentId: parent.id }),
+        () => postMandate({ title: 'Child', body: 'Body', parentId: parent.id }),
         (err: Error) => {
           assert.ok(err.message.includes('Cannot add children to writ'));
           assert.ok(err.message.includes('"cancelled"'));
@@ -3293,332 +3188,38 @@ describe('Parent/child relationships', () => {
     });
 
     it('allows child creation when parent is stuck', async () => {
-      const parent = await clerk.post({ title: 'Stuck parent', body: 'Body' });
+      const parent = await postMandate({ title: 'Stuck parent', body: 'Body' });
       await clerk.transition(parent.id, 'stuck');
 
-      const child = await clerk.post({ title: 'Child of stuck', body: 'Body', parentId: parent.id });
+      const child = await postMandate({ title: 'Child of stuck', body: 'Body', parentId: parent.id });
       assert.equal(child.parentId, parent.id);
     });
   });
 
-  // ── Child failure cascade ──────────────────────────────────────────
-
-  describe('child failure cascade', () => {
-    beforeEach(async () => { await setup(); });
-
-    it('transitions open parent to failed when child fails', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: parent.id });
-
-      await clerk.transition(child.id, 'failed', { resolution: 'Broke' });
-
-      const updated = await clerk.show(parent.id);
-      assert.equal(updated.phase, 'failed');
-      assert.ok(updated.resolution?.includes('Child'));
-      assert.ok(updated.resolution?.includes('Broke'));
-    });
-
-    it('transitions stuck parent to failed when child fails', async () => {
-      const parent = await clerk.post({ title: 'Stuck Parent', body: 'Body' });
-      await clerk.transition(parent.id, 'stuck');
-      const child = await clerk.post({ title: 'Child of stuck', body: 'Body', parentId: parent.id });
-
-      await clerk.transition(child.id, 'failed', { resolution: 'Broke too' });
-
-      const updated = await clerk.show(parent.id);
-      assert.equal(updated.phase, 'failed');
-      assert.ok(updated.resolution?.includes('Child'));
-    });
-
-    it('does not cascade failure when parent is in new status', async () => {
-      const parent = await clerk.post({ title: 'Draft Parent', body: 'Body', draft: true });
-      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: parent.id });
-
-      await clerk.transition(child.id, 'failed', { resolution: 'Broke' });
-
-      const updated = await clerk.show(parent.id);
-      assert.equal(updated.phase, 'new');
-    });
-
-    it('parent stays open when child completes', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const child = await clerk.post({ title: 'Child', body: 'Body', parentId: parent.id });
-
-      await clerk.transition(child.id, 'completed', { resolution: 'Done' });
-
-      const updated = await clerk.show(parent.id);
-      assert.equal(updated.phase, 'open');
-    });
-
-    it('parent stays open when all children complete', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
-      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
-
-      await clerk.transition(c1.id, 'completed', { resolution: 'Done' });
-      await clerk.transition(c2.id, 'completed', { resolution: 'Done' });
-
-      const updated = await clerk.show(parent.id);
-      assert.equal(updated.phase, 'open');
-    });
-
-    it('two children: first completes, second fails → parent transitions to failed', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
-      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
-
-      await clerk.transition(c1.id, 'completed', { resolution: 'Done' });
-      await clerk.transition(c2.id, 'failed', { resolution: 'Broke' });
-
-      const updated = await clerk.show(parent.id);
-      assert.equal(updated.phase, 'failed');
-    });
-  });
-
-  // ── Failure cascade ───────────────────────────────────────────────
-
-  describe('failure cascade', () => {
-    beforeEach(async () => { await setup(); });
-
-    it('fails parent when child fails, cancels remaining siblings', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
-      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
-      const c3 = await clerk.post({ title: 'C3', body: 'B', parentId: parent.id });
-
-      await clerk.transition(c1.id, 'failed', { resolution: 'Broke' });
-
-      const updatedParent = await clerk.show(parent.id);
-      assert.equal(updatedParent.phase, 'failed');
-      assert.ok(updatedParent.resolution?.includes(`Child "${c1.id}" failed: Broke`));
-
-      const updatedC2 = await clerk.show(c2.id);
-      assert.equal(updatedC2.phase, 'cancelled');
-      assert.equal(updatedC2.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
-
-      const updatedC3 = await clerk.show(c3.id);
-      assert.equal(updatedC3.phase, 'cancelled');
-      assert.equal(updatedC3.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
-    });
-
-    it('fails parent when single child fails', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const child = await clerk.post({ title: 'Child', body: 'B', parentId: parent.id });
-
-      await clerk.transition(child.id, 'failed', { resolution: 'Error occurred' });
-
-      const updated = await clerk.show(parent.id);
-      assert.equal(updated.phase, 'failed');
-      assert.ok(updated.resolution?.includes('Error occurred'));
-    });
-
-    it('cascades failure through 3-level hierarchy', async () => {
-      const grandparent = await clerk.post({ title: 'GP', body: 'B' });
-      const parent = await clerk.post({ title: 'P', body: 'B', parentId: grandparent.id });
-      const child = await clerk.post({ title: 'C', body: 'B', parentId: parent.id });
-
-      await clerk.transition(child.id, 'failed', { resolution: 'Leaf failed' });
-
-      const updatedChild = await clerk.show(child.id);
-      assert.equal(updatedChild.phase, 'failed');
-
-      const updatedParent = await clerk.show(parent.id);
-      assert.equal(updatedParent.phase, 'failed');
-
-      const updatedGP = await clerk.show(grandparent.id);
-      assert.equal(updatedGP.phase, 'failed');
-    });
-
-    it('uses "unknown" when child has no resolution', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const child = await clerk.post({ title: 'Child', body: 'B', parentId: parent.id });
-
-      // Fail child without resolution
-      await clerk.transition(child.id, 'failed');
-
-      const updated = await clerk.show(parent.id);
-      assert.ok(updated.resolution?.includes('unknown'));
-    });
-  });
-
-  // ── Downward cancellation cascade ─────────────────────────────────
-
-  describe('cancellation cascade (downward)', () => {
-    beforeEach(async () => { await setup(); });
-
-    it('cancels non-terminal children when parent is cancelled', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
-      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
-
-      await clerk.transition(parent.id, 'cancelled');
-
-      const updatedC1 = await clerk.show(c1.id);
-      assert.equal(updatedC1.phase, 'cancelled');
-      assert.equal(updatedC1.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
-
-      const updatedC2 = await clerk.show(c2.id);
-      assert.equal(updatedC2.phase, 'cancelled');
-    });
-
-    it('does not cancel already-terminal children', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
-      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
-
-      // Complete c1 first
-      await clerk.transition(c1.id, 'completed', { resolution: 'Done' });
-
-      // Now cancel parent
-      await clerk.transition(parent.id, 'cancelled');
-
-      const updatedC1 = await clerk.show(c1.id);
-      assert.equal(updatedC1.phase, 'completed'); // already terminal, unchanged
-
-      const updatedC2 = await clerk.show(c2.id);
-      assert.equal(updatedC2.phase, 'cancelled');
-    });
-
-    it('cancels non-terminal children when parent is failed directly', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
-      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
-
-      // Transition parent directly to failed (no child failure driving it).
-      await clerk.transition(parent.id, 'failed', { resolution: 'Parent-level failure' });
-
-      const updatedC1 = await clerk.show(c1.id);
-      assert.equal(updatedC1.phase, 'cancelled');
-      assert.equal(updatedC1.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
-
-      const updatedC2 = await clerk.show(c2.id);
-      assert.equal(updatedC2.phase, 'cancelled');
-      assert.equal(updatedC2.resolution, CASCADE_PARENT_TERMINATION_RESOLUTION);
-    });
-  });
-
-  // ── Downward completion cascade (warn, do not cancel) ────────────
-
-  describe('completion cascade (downward)', () => {
-    beforeEach(async () => { await setup(); });
-
-    it('does not cancel non-terminal children when parent completes; warns for each', async () => {
-      const warnings: string[] = [];
-      const original = console.warn;
-      console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
-
-      try {
-        const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-        const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
-        const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
-
-        // Transition the parent straight to completed while children are still open.
-        // This simulates the race the commission is defending against: parent
-        // reaches `completed` before child-writ bookkeeping has caught up.
-        await clerk.transition(parent.id, 'completed', { resolution: 'Parent completed early' });
-
-        // Children must remain non-terminal — the cascade must not mask the gap.
-        const updatedC1 = await clerk.show(c1.id);
-        assert.equal(updatedC1.phase, 'open');
-        assert.equal(updatedC1.resolution, undefined);
-
-        const updatedC2 = await clerk.show(c2.id);
-        assert.equal(updatedC2.phase, 'open');
-        assert.equal(updatedC2.resolution, undefined);
-
-        // A warning must be emitted referencing each non-terminal child so the
-        // bookkeeping gap is visible to operators.
-        assert.ok(
-          warnings.some((w) => w.includes(c1.id) && w.includes(parent.id) && w.includes('completed')),
-          `Expected warning referencing c1 (${c1.id}) and parent (${parent.id}), got: ${JSON.stringify(warnings)}`,
-        );
-        assert.ok(
-          warnings.some((w) => w.includes(c2.id) && w.includes(parent.id) && w.includes('completed')),
-          `Expected warning referencing c2 (${c2.id}) and parent (${parent.id}), got: ${JSON.stringify(warnings)}`,
-        );
-      } finally {
-        console.warn = original;
-      }
-    });
-
-    it('does not warn when all children are already terminal at parent completion', async () => {
-      const warnings: string[] = [];
-      const original = console.warn;
-      console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
-
-      try {
-        const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-        const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
-
-        await clerk.transition(c1.id, 'completed', { resolution: 'Done' });
-        await clerk.transition(parent.id, 'completed', { resolution: 'All done' });
-
-        const updatedC1 = await clerk.show(c1.id);
-        assert.equal(updatedC1.phase, 'completed');
-
-        assert.ok(
-          !warnings.some((w) => w.includes('non-terminal')),
-          `Expected no non-terminal child warnings, got: ${JSON.stringify(warnings)}`,
-        );
-      } finally {
-        console.warn = original;
-      }
-    });
-
-    it('does not cancel non-terminal children when parent completes, regardless of child count', async () => {
-      const warnings: string[] = [];
-      const original = console.warn;
-      console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
-
-      try {
-        const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-        const openChild = await clerk.post({ title: 'Open', body: 'B', parentId: parent.id });
-        const stuckChild = await clerk.post({ title: 'Stuck', body: 'B', parentId: parent.id });
-        await clerk.transition(stuckChild.id, 'stuck');
-        const doneChild = await clerk.post({ title: 'Done', body: 'B', parentId: parent.id });
-        await clerk.transition(doneChild.id, 'completed', { resolution: 'Done' });
-
-        await clerk.transition(parent.id, 'completed', { resolution: 'Parent done' });
-
-        // Terminal child stays terminal; non-terminal children stay non-terminal.
-        assert.equal((await clerk.show(openChild.id)).phase, 'open');
-        assert.equal((await clerk.show(stuckChild.id)).phase, 'stuck');
-        assert.equal((await clerk.show(doneChild.id)).phase, 'completed');
-
-        // Cascade must have warned for both non-terminal children, but not the terminal one.
-        assert.ok(
-          warnings.some((w) => w.includes(openChild.id) && w.includes('non-terminal')),
-          `Expected warning for open child, got: ${JSON.stringify(warnings)}`,
-        );
-        assert.ok(
-          warnings.some((w) => w.includes(stuckChild.id) && w.includes('non-terminal')),
-          `Expected warning for stuck child, got: ${JSON.stringify(warnings)}`,
-        );
-        assert.ok(
-          !warnings.some((w) => w.includes(doneChild.id) && w.includes('non-terminal')),
-          `Did not expect warning for already-terminal child, got: ${JSON.stringify(warnings)}`,
-        );
-      } finally {
-        console.warn = original;
-      }
-    });
-  });
-
-  // ── Full lifecycle with children ──────────────────────────────────
+  // NOTE: The parent/child cascade (child-failed → parent-failed, and
+  // parent-terminal → cancel non-terminal children) has been removed with
+  // this commission's cut-over to the plugin-registered writ-type
+  // registry. The commission's children-behavior engine (a separate
+  // roadmap task) reintroduces equivalent or richer behaviour keyed on
+  // per-type `WritTypeConfig.childrenBehavior`; this test suite's earlier
+  // cascade assertions were deleted intentionally.
+
+  // ── Full lifecycle with children (cascade-free) ───────────────────
 
   describe('full lifecycle with children', () => {
     beforeEach(async () => { await setup(); });
 
-    it('parent flows: open → completed (children do not change parent status)', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
+    it('parent and children lifecycle independently (no cascade)', async () => {
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
       assert.equal(parent.phase, 'open');
 
-      const child = await clerk.post({ title: 'Child', body: 'B', parentId: parent.id });
+      const child = await postMandate({ title: 'Child', body: 'B', parentId: parent.id });
       const p1 = await clerk.show(parent.id);
       assert.equal(p1.phase, 'open');
 
       await clerk.transition(child.id, 'completed', { resolution: 'Done' });
 
+      // Parent is not lifted by child completion — no cascade lives here.
       const p2 = await clerk.show(parent.id);
       assert.equal(p2.phase, 'open');
 
@@ -3627,9 +3228,9 @@ describe('Parent/child relationships', () => {
       assert.equal(p3.phase, 'completed');
     });
 
-    it('children already terminal are not cancelled when parent completes normally', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const child = await clerk.post({ title: 'Child', body: 'B', parentId: parent.id });
+    it('children already terminal stay terminal when parent completes', async () => {
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
+      const child = await postMandate({ title: 'Child', body: 'B', parentId: parent.id });
 
       // Complete child — parent stays open
       await clerk.transition(child.id, 'completed', { resolution: 'Done' });
@@ -3649,8 +3250,8 @@ describe('Parent/child relationships', () => {
     beforeEach(async () => { await setup(); });
 
     it('transition does not change parentId even if passed in fields', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const child = await clerk.post({ title: 'Child', body: 'B', parentId: parent.id });
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
+      const child = await postMandate({ title: 'Child', body: 'B', parentId: parent.id });
 
       const updated = await clerk.transition(child.id, 'completed', { parentId: 'w-other' } as Partial<import('./types.ts').WritDoc>);
       assert.equal(updated.parentId, parent.id);
@@ -3663,11 +3264,11 @@ describe('Parent/child relationships', () => {
     beforeEach(async () => { await setup(); });
 
     it('returns only children of the specified parent', async () => {
-      const parent1 = await clerk.post({ title: 'P1', body: 'B' });
-      const parent2 = await clerk.post({ title: 'P2', body: 'B' });
-      await clerk.post({ title: 'C1', body: 'B', parentId: parent1.id });
-      await clerk.post({ title: 'C2', body: 'B', parentId: parent1.id });
-      await clerk.post({ title: 'C3', body: 'B', parentId: parent2.id });
+      const parent1 = await postMandate({ title: 'P1', body: 'B' });
+      const parent2 = await postMandate({ title: 'P2', body: 'B' });
+      await postMandate({ title: 'C1', body: 'B', parentId: parent1.id });
+      await postMandate({ title: 'C2', body: 'B', parentId: parent1.id });
+      await postMandate({ title: 'C3', body: 'B', parentId: parent2.id });
 
       const children1 = await clerk.list({ parentId: parent1.id });
       assert.equal(children1.length, 2);
@@ -3685,8 +3286,8 @@ describe('Parent/child relationships', () => {
     beforeEach(async () => { await setup(); });
 
     it('includes parent context for a child writ', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const child = await clerk.post({ title: 'Child', body: 'B', parentId: parent.id });
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
+      const child = await postMandate({ title: 'Child', body: 'B', parentId: parent.id });
 
       const result = await writShow.handler({ id: child.id });
       assert.deepEqual(result.parent, { id: parent.id, title: 'Parent', phase: 'open' });
@@ -3694,9 +3295,9 @@ describe('Parent/child relationships', () => {
     });
 
     it('includes children context for a parent writ', async () => {
-      const parent = await clerk.post({ title: 'Parent', body: 'Body' });
-      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: parent.id });
-      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: parent.id });
+      const parent = await postMandate({ title: 'Parent', body: 'Body' });
+      const c1 = await postMandate({ title: 'C1', body: 'B', parentId: parent.id });
+      const c2 = await postMandate({ title: 'C2', body: 'B', parentId: parent.id });
 
       const result = await writShow.handler({ id: parent.id });
       assert.equal(result.parent, null);
@@ -3707,7 +3308,7 @@ describe('Parent/child relationships', () => {
     });
 
     it('returns null parent and empty children for root writ without children', async () => {
-      const writ = await clerk.post({ title: 'Root', body: 'Body' });
+      const writ = await postMandate({ title: 'Root', body: 'Body' });
 
       const result = await writShow.handler({ id: writ.id });
       assert.equal(result.parent, null);
@@ -3721,11 +3322,11 @@ describe('Parent/child relationships', () => {
       //   │  ├─ g1 (open)    — grandchild
       //   │  └─ g2 (stuck)   — grandchild
       //   └─ c2 (open)       — direct child
-      const root = await clerk.post({ title: 'Root', body: 'Body' });
-      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: root.id });
-      const c2 = await clerk.post({ title: 'C2', body: 'B', parentId: root.id });
-      const g1 = await clerk.post({ title: 'G1', body: 'B', parentId: c1.id });
-      const g2 = await clerk.post({ title: 'G2', body: 'B', parentId: c1.id });
+      const root = await postMandate({ title: 'Root', body: 'Body' });
+      const c1 = await postMandate({ title: 'C1', body: 'B', parentId: root.id });
+      const c2 = await postMandate({ title: 'C2', body: 'B', parentId: root.id });
+      const g1 = await postMandate({ title: 'G1', body: 'B', parentId: c1.id });
+      const g2 = await postMandate({ title: 'G2', body: 'B', parentId: c1.id });
       // Nudge g2 into stuck so phases diverge across the subtree.
       await clerk.transition(g2.id, 'stuck');
 
@@ -3744,9 +3345,9 @@ describe('Parent/child relationships', () => {
     });
 
     it('ClerkApi.countDescendantsByPhase returns subtree-wide phase counts', async () => {
-      const root = await clerk.post({ title: 'Root', body: 'B' });
-      const c1 = await clerk.post({ title: 'C1', body: 'B', parentId: root.id });
-      const g1 = await clerk.post({ title: 'G1', body: 'B', parentId: c1.id });
+      const root = await postMandate({ title: 'Root', body: 'B' });
+      const c1 = await postMandate({ title: 'C1', body: 'B', parentId: root.id });
+      const g1 = await postMandate({ title: 'G1', body: 'B', parentId: c1.id });
       await clerk.transition(g1.id, 'completed', { resolution: 'done' });
 
       const counts = await clerk.countDescendantsByPhase(root.id);
@@ -3755,7 +3356,7 @@ describe('Parent/child relationships', () => {
     });
 
     it('ClerkApi.countDescendantsByPhase returns empty object for leaf writs', async () => {
-      const leaf = await clerk.post({ title: 'Leaf', body: 'B' });
+      const leaf = await postMandate({ title: 'Leaf', body: 'B' });
       const counts = await clerk.countDescendantsByPhase(leaf.id);
       assert.deepEqual(counts, {});
     });
@@ -3846,13 +3447,13 @@ describe('piece-add tool', () => {
 
   it('creates a piece writ as child of a mandate with structured XML body', async () => {
     await setup({
-      clerkConfig: {
-        writTypes: [{ name: 'piece', description: 'task piece' }],
-      },
+      extraApparatuses: [
+        makeWritTypeApparatus([mandateLikeWritType('piece')], { id: 'piece-plugin' }),
+      ],
     });
 
     // Create a mandate first
-    const mandate = await clerk.post({ title: 'Parent mandate', body: 'Do all things', type: 'mandate' });
+    const mandate = await postMandate({ title: 'Parent mandate', body: 'Do all things', type: 'mandate' });
 
     // Use piece-add handler directly
     const pieceAddTool = (await import('./tools/piece-add.ts')).default;
@@ -3880,12 +3481,12 @@ describe('piece-add tool', () => {
 
   it('creates a piece with only required fields', async () => {
     await setup({
-      clerkConfig: {
-        writTypes: [{ name: 'piece', description: 'task piece' }],
-      },
+      extraApparatuses: [
+        makeWritTypeApparatus([mandateLikeWritType('piece')], { id: 'piece-plugin' }),
+      ],
     });
 
-    const mandate = await clerk.post({ title: 'Parent mandate', body: 'Do things', type: 'mandate' });
+    const mandate = await postMandate({ title: 'Parent mandate', body: 'Do things', type: 'mandate' });
 
     const pieceAddTool = (await import('./tools/piece-add.ts')).default;
     const handler = pieceAddTool.handler as (params: Record<string, unknown>) => Promise<unknown>;
@@ -3904,9 +3505,9 @@ describe('piece-add tool', () => {
 
   it('rejects when parent mandate does not exist', async () => {
     await setup({
-      clerkConfig: {
-        writTypes: [{ name: 'piece', description: 'task piece' }],
-      },
+      extraApparatuses: [
+        makeWritTypeApparatus([mandateLikeWritType('piece')], { id: 'piece-plugin' }),
+      ],
     });
 
     const pieceAddTool = (await import('./tools/piece-add.ts')).default;
