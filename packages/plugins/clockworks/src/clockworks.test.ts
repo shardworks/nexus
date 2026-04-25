@@ -822,6 +822,38 @@ describe('Clockworks — processEvents integration', () => {
     assert.equal(rows[0].processed, false);
   });
 
+  it('threads optional eventId, max, and onDispatch through to the dispatcher', async () => {
+    const observed: Array<{ eventId: string; status: string }> = [];
+    const recorder = relay({
+      name: 'recorder',
+      handler: () => {},
+    });
+    const fix = await buildDispatchFixture({
+      standingOrders: [{ on: 'demo.x', run: 'recorder' }],
+      supportKitRelays: [recorder],
+    });
+
+    // Three events; only one is targeted via eventId.
+    await fix.clockworks.emit('demo.x', null, 'tester');
+    const target = await fix.clockworks.emit('demo.x', null, 'tester');
+    await fix.clockworks.emit('demo.x', null, 'tester');
+
+    const summary = await fix.clockworks.processEvents({
+      eventId: target,
+      onDispatch: (obs) => {
+        observed.push({ eventId: obs.eventId, status: obs.status });
+      },
+    });
+
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 0 });
+    assert.deepEqual(observed, [{ eventId: target, status: 'success' }]);
+
+    // Now confirm `max` similarly threads through. Two pending events
+    // remain; max=1 should process exactly one of them.
+    const summary2 = await fix.clockworks.processEvents({ max: 1 });
+    assert.equal(summary2.processedEvents, 1);
+  });
+
   it('hot-edits to standing orders take effect on the next sweep', async () => {
     let invoked = 0;
     const counter = relay({

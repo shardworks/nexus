@@ -31,11 +31,18 @@
  */
 
 import { generateId } from '@shardworks/nexus-core';
-import type { Book } from '@shardworks/stacks-apparatus';
+import type { Book, BookQuery, WhereClause } from '@shardworks/stacks-apparatus';
 
 import type { GuildEvent, RelayContext, RelayDefinition } from './relay.ts';
 import { validateStandingOrders } from './standing-order-validator.ts';
-import type { EventDispatchDoc, EventDoc, StandingOrder } from './types.ts';
+import type {
+  DispatchObservation,
+  EventDispatchDoc,
+  EventDoc,
+  StandingOrder,
+} from './types.ts';
+
+export type { DispatchObservation } from './types.ts';
 
 /**
  * Counts returned by a single sweep. `processedEvents` is the count
@@ -73,6 +80,30 @@ export interface DispatchSweepInputs {
   home: string;
   /** ISO-string clock — defaults to `() => new Date().toISOString()`. */
   now?: () => string;
+  /**
+   * Optional event-id filter. When supplied, the sweep processes only
+   * the matching event (still subject to the `processed: false`
+   * predicate). Defaults to the full unprocessed queue.
+   */
+  eventId?: string;
+  /**
+   * Optional cap on the number of events processed in this sweep.
+   * Defaults to no cap (full drain). When set to a positive integer
+   * the dispatcher reads at most this many events from the queue.
+   */
+  max?: number;
+  /**
+   * Optional per-dispatch observer. Invoked once per dispatch row
+   * after the row is persisted, regardless of status. The dispatcher
+   * wraps the call in try/catch — a throwing observer cannot break
+   * the dispatch loop or block sibling rows.
+   *
+   * Observers that need null-handler-match visibility should look at
+   * the per-event diff in `summary.dispatches` between successive
+   * sweeps; the events with zero rows are surfaced separately by the
+   * CLI via the events-book read it does either way.
+   */
+  onDispatch?: (observation: DispatchObservation) => void;
 }
 
 /**
@@ -92,6 +123,9 @@ export async function runDispatchSweep(
     standingOrders,
     home,
     now = () => new Date().toISOString(),
+    eventId,
+    max,
+    onDispatch,
   } = inputs;
 
   // D3, D4, D26: re-validate every sweep; aggregated throw on any
@@ -102,10 +136,25 @@ export async function runDispatchSweep(
   // ids (`e-<base36_ts>-<hex>`) sort roughly chronologically, so id
   // ascending matches firedAt ascending closely enough for this
   // commission's purposes.
-  const pending = await events.find({
-    where: [['processed', '=', false]],
+  //
+  // The new optional fields add to the query without changing the
+  // default-everything behavior:
+  //   - `eventId` narrows the scan via an additional WHERE clause so
+  //     only the targeted (still-unprocessed) row is read.
+  //   - `max`, when provided as a positive integer, applies a `limit`
+  //     so the dispatcher reads only what it will process.
+  const where: WhereClause = [['processed', '=', false]];
+  if (eventId !== undefined) {
+    where.push(['id', '=', eventId]);
+  }
+  const query: BookQuery = {
+    where,
     orderBy: [['id', 'asc']],
-  });
+  };
+  if (typeof max === 'number' && max > 0 && Number.isFinite(max)) {
+    (query as { limit?: number }).limit = max;
+  }
+  const pending = await events.find(query);
 
   const summary: DispatchSummary = {
     processedEvents: 0,
@@ -142,6 +191,7 @@ export async function runDispatchSweep(
         home,
         now,
         summary,
+        onDispatch,
       });
     }
 
@@ -165,6 +215,7 @@ interface DispatchOrderInputs {
   home: string;
   now: () => string;
   summary: DispatchSummary;
+  onDispatch?: (observation: DispatchObservation) => void;
 }
 
 /**
@@ -184,6 +235,7 @@ async function dispatchOrder(args: DispatchOrderInputs): Promise<void> {
     home,
     now,
     summary,
+    onDispatch,
   } = args;
 
   const handlerName = order.run;
@@ -194,6 +246,7 @@ async function dispatchOrder(args: DispatchOrderInputs): Promise<void> {
   const relay = resolveRelay(handlerName);
   if (!relay) {
     const ts = now();
+    const errorMsg = `clockworks: relay "${handlerName}" referenced by standing order ${index} is not registered.`;
     await writeDispatchRow({
       dispatches,
       eventId: eventDoc.id,
@@ -201,10 +254,18 @@ async function dispatchOrder(args: DispatchOrderInputs): Promise<void> {
       startedAt: ts,
       endedAt: ts,
       status: 'error',
-      error: `clockworks: relay "${handlerName}" referenced by standing order ${index} is not registered.`,
+      error: errorMsg,
     });
     summary.dispatches += 1;
     summary.errors += 1;
+    notifyObserver(onDispatch, {
+      eventId: eventDoc.id,
+      eventName: eventDoc.name,
+      handlerName,
+      status: 'error',
+      durationMs: 0,
+      error: errorMsg,
+    });
     return;
   }
 
@@ -240,6 +301,48 @@ async function dispatchOrder(args: DispatchOrderInputs): Promise<void> {
   });
   summary.dispatches += 1;
   if (status === 'error') summary.errors += 1;
+  notifyObserver(onDispatch, {
+    eventId: eventDoc.id,
+    eventName: eventDoc.name,
+    handlerName,
+    status,
+    durationMs: computeDurationMs(startedAt, endedAt),
+    error,
+  });
+}
+
+/**
+ * Compute the wall-clock interval between two ISO timestamps in
+ * milliseconds. Returns 0 when either timestamp is unparseable; the
+ * dispatcher's clock fixture always supplies parseable strings, so
+ * the fallback only matters under hand-injected pathological inputs.
+ */
+function computeDurationMs(startedAt: string, endedAt: string): number {
+  const start = Date.parse(startedAt);
+  const end = Date.parse(endedAt);
+  if (Number.isNaN(start) || Number.isNaN(end)) return 0;
+  // Clamp negative deltas (out-of-order clock) to 0; surfacing a
+  // negative duration would only confuse operators.
+  return Math.max(0, end - start);
+}
+
+/**
+ * Invoke the per-dispatch observer with isolation: a thrown observer
+ * is caught and ignored so it cannot block the dispatch loop. This
+ * mirrors the per-handler isolation idiom used for relays themselves
+ * (D24 in the dispatcher commission).
+ */
+function notifyObserver(
+  observer: ((observation: DispatchObservation) => void) | undefined,
+  observation: DispatchObservation,
+): void {
+  if (!observer) return;
+  try {
+    observer(observation);
+  } catch {
+    // Intentionally swallow — observer errors are operator-side
+    // formatting concerns, not dispatch-loop concerns.
+  }
 }
 
 interface WriteDispatchInputs {

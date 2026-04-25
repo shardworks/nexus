@@ -57,7 +57,11 @@ import type {
   EventDoc,
 } from './types.ts';
 
-import { runDispatchSweep, type DispatchSummary } from './dispatcher.ts';
+import {
+  runDispatchSweep,
+  type DispatchObservation,
+  type DispatchSummary,
+} from './dispatcher.ts';
 import { isRelayDefinition, type RelayDefinition } from './relay.ts';
 import { clockList, clockStatus, signal } from './tools/index.ts';
 
@@ -186,7 +190,11 @@ export function createClockworks(): Plugin {
       return entry?.relay;
     },
 
-    async processEvents(): Promise<DispatchSummary> {
+    async processEvents(opts?: {
+      eventId?: string;
+      max?: number;
+      onDispatch?: (observation: DispatchObservation) => void;
+    }): Promise<DispatchSummary> {
       if (!events || !dispatches) {
         throw new Error(
           'clockworks: processEvents() called before start() primed the book handles.',
@@ -209,6 +217,9 @@ export function createClockworks(): Plugin {
         resolveRelay: api.resolveRelay,
         standingOrders,
         home: g.home,
+        ...(opts?.eventId !== undefined ? { eventId: opts.eventId } : {}),
+        ...(opts?.max !== undefined ? { max: opts.max } : {}),
+        ...(opts?.onDispatch !== undefined ? { onDispatch: opts.onDispatch } : {}),
       });
     },
   };

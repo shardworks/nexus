@@ -576,6 +576,319 @@ describe('runDispatchSweep — N-event ordering', () => {
   });
 });
 
+describe('runDispatchSweep — single-event mode (max=1)', () => {
+  afterEach(() => clearGuild());
+
+  it('processes only the first pending event when max=1, leaves the rest pending', async () => {
+    const fix = await buildSweepFixture();
+    let invoked = 0;
+    fix.registerRelay(
+      relay({ name: 'r', handler: () => { invoked += 1; } }),
+    );
+    const e1 = await fix.emitEvent('demo.x');
+    const e2 = await fix.emitEvent('demo.x');
+    const e3 = await fix.emitEvent('demo.x');
+
+    const summary = await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      home: '/h',
+      now: makeClock(),
+      max: 1,
+    });
+
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 0 });
+    assert.equal(invoked, 1);
+    // First event in id-ascending order is processed; the others stay
+    // pending so a follow-up sweep can pick them up.
+    const ids = [e1.id, e2.id, e3.id].sort();
+    assert.equal((await fix.events.get(ids[0]))?.processed, true);
+    assert.equal((await fix.events.get(ids[1]))?.processed, false);
+    assert.equal((await fix.events.get(ids[2]))?.processed, false);
+  });
+
+  it('treats max=0 as no cap (default-everything), processes the full queue', async () => {
+    const fix = await buildSweepFixture();
+    fix.registerRelay(relay({ name: 'r', handler: () => {} }));
+    await fix.emitEvent('demo.x');
+    await fix.emitEvent('demo.x');
+
+    const summary = await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      home: '/h',
+      now: makeClock(),
+      // max=0 / non-positive falls through to the unlimited path —
+      // matches the apparatus's default-everything behavior on
+      // explicit-zero callers.
+      max: 0,
+    });
+
+    assert.equal(summary.processedEvents, 2);
+  });
+
+  it('processes a larger queue with max=2, leaves the rest pending', async () => {
+    const fix = await buildSweepFixture();
+    fix.registerRelay(relay({ name: 'r', handler: () => {} }));
+    for (let i = 0; i < 5; i += 1) {
+      await fix.emitEvent('demo.x');
+    }
+
+    const summary = await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      home: '/h',
+      now: makeClock(),
+      max: 2,
+    });
+
+    assert.equal(summary.processedEvents, 2);
+    const all = await fix.allEvents();
+    const processedCount = all.filter((e) => e.processed).length;
+    assert.equal(processedCount, 2);
+  });
+});
+
+describe('runDispatchSweep — eventId filter', () => {
+  afterEach(() => clearGuild());
+
+  it('processes only the targeted event', async () => {
+    const fix = await buildSweepFixture();
+    let invoked = 0;
+    fix.registerRelay(
+      relay({ name: 'r', handler: () => { invoked += 1; } }),
+    );
+    const e1 = await fix.emitEvent('demo.x');
+    const e2 = await fix.emitEvent('demo.x');
+
+    const summary = await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      home: '/h',
+      now: makeClock(),
+      eventId: e2.id,
+    });
+
+    assert.deepEqual(summary, { processedEvents: 1, dispatches: 1, errors: 0 });
+    assert.equal(invoked, 1);
+    // Only e2 was flipped — e1 must remain pending.
+    assert.equal((await fix.events.get(e1.id))?.processed, false);
+    assert.equal((await fix.events.get(e2.id))?.processed, true);
+  });
+
+  it('returns zero when the targeted event is already processed', async () => {
+    const fix = await buildSweepFixture();
+    fix.registerRelay(relay({ name: 'r', handler: () => {} }));
+    const e = await fix.emitEvent('demo.x');
+    await fix.events.patch(e.id, { processed: true });
+
+    const summary = await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      home: '/h',
+      now: makeClock(),
+      eventId: e.id,
+    });
+
+    assert.deepEqual(summary, { processedEvents: 0, dispatches: 0, errors: 0 });
+  });
+
+  it('returns zero when the targeted event id is unknown', async () => {
+    const fix = await buildSweepFixture();
+    fix.registerRelay(relay({ name: 'r', handler: () => {} }));
+    await fix.emitEvent('demo.x');
+
+    const summary = await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      home: '/h',
+      now: makeClock(),
+      eventId: 'e-does-not-exist',
+    });
+
+    assert.deepEqual(summary, { processedEvents: 0, dispatches: 0, errors: 0 });
+  });
+});
+
+describe('runDispatchSweep — observer hook', () => {
+  afterEach(() => clearGuild());
+
+  it('invokes the observer once per dispatch row, in dispatch order', async () => {
+    const fix = await buildSweepFixture();
+    fix.registerRelay(relay({ name: 'a', handler: () => {} }));
+    fix.registerRelay(relay({ name: 'b', handler: () => {} }));
+    const e1 = await fix.emitEvent('demo.x');
+    const e2 = await fix.emitEvent('demo.x');
+
+    const observed: Array<{ eventId: string; handlerName: string; status: string }> = [];
+    await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [
+        { on: 'demo.x', run: 'a' },
+        { on: 'demo.x', run: 'b' },
+      ],
+      home: '/h',
+      now: makeClock(),
+      onDispatch: (obs) => {
+        observed.push({
+          eventId: obs.eventId,
+          handlerName: obs.handlerName,
+          status: obs.status,
+        });
+      },
+    });
+
+    // Two events × two orders = 4 observer calls; per-event ordering
+    // is preserved.
+    assert.equal(observed.length, 4);
+    const ids = [e1.id, e2.id].sort();
+    assert.deepEqual(observed, [
+      { eventId: ids[0], handlerName: 'a', status: 'success' },
+      { eventId: ids[0], handlerName: 'b', status: 'success' },
+      { eventId: ids[1], handlerName: 'a', status: 'success' },
+      { eventId: ids[1], handlerName: 'b', status: 'success' },
+    ]);
+  });
+
+  it('reports error status with the handler error message', async () => {
+    const fix = await buildSweepFixture();
+    fix.registerRelay(
+      relay({
+        name: 'boom',
+        handler: () => { throw new Error('relay exploded'); },
+      }),
+    );
+    await fix.emitEvent('demo.boom');
+
+    const observed: Array<{ status: string; error: string | null }> = [];
+    await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [{ on: 'demo.boom', run: 'boom' }],
+      home: '/h',
+      now: makeClock(),
+      onDispatch: (obs) => {
+        observed.push({ status: obs.status, error: obs.error });
+      },
+    });
+
+    assert.deepEqual(observed, [{ status: 'error', error: 'relay exploded' }]);
+  });
+
+  it('reports error status for unresolved-relay dispatches', async () => {
+    const fix = await buildSweepFixture();
+    await fix.emitEvent('demo.x');
+
+    const observed: Array<{ status: string; handlerName: string; error: string | null }> = [];
+    await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [{ on: 'demo.x', run: 'ghost' }],
+      home: '/h',
+      now: makeClock(),
+      onDispatch: (obs) => {
+        observed.push({
+          status: obs.status,
+          handlerName: obs.handlerName,
+          error: obs.error,
+        });
+      },
+    });
+
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0].status, 'error');
+    assert.equal(observed[0].handlerName, 'ghost');
+    assert.match(observed[0].error ?? '', /not registered/);
+  });
+
+  it('throwing observer is isolated; loop continues, every row still observed', async () => {
+    const fix = await buildSweepFixture();
+    fix.registerRelay(relay({ name: 'a', handler: () => {} }));
+    fix.registerRelay(relay({ name: 'b', handler: () => {} }));
+    await fix.emitEvent('demo.x');
+    await fix.emitEvent('demo.x');
+
+    let invocations = 0;
+    const summary = await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [
+        { on: 'demo.x', run: 'a' },
+        { on: 'demo.x', run: 'b' },
+      ],
+      home: '/h',
+      now: makeClock(),
+      onDispatch: () => {
+        invocations += 1;
+        throw new Error('observer cannot block the loop');
+      },
+    });
+
+    // Loop completed — both events processed, both rows written for
+    // each event, and the observer was called four times despite
+    // throwing on every call.
+    assert.deepEqual(summary, { processedEvents: 2, dispatches: 4, errors: 0 });
+    assert.equal(invocations, 4);
+  });
+
+  it('computes durationMs as endedAt - startedAt for successful dispatches', async () => {
+    const fix = await buildSweepFixture();
+    fix.registerRelay(relay({ name: 'r', handler: () => {} }));
+    await fix.emitEvent('demo.x');
+
+    const observed: number[] = [];
+    await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      home: '/h',
+      // Each call advances 1 second; startedAt and endedAt straddle
+      // exactly one tick → 1000 ms.
+      now: makeClock('2026-01-01T00:00:00.000Z'),
+      onDispatch: (obs) => { observed.push(obs.durationMs); },
+    });
+
+    assert.deepEqual(observed, [1000]);
+  });
+
+  it('reports eventName so observers can render headers without re-reading the events book', async () => {
+    const fix = await buildSweepFixture();
+    fix.registerRelay(relay({ name: 'r', handler: () => {} }));
+    await fix.emitEvent('demo.named-event', { x: 1 }, 'tester');
+
+    const observed: string[] = [];
+    await runDispatchSweep({
+      events: fix.events,
+      dispatches: fix.dispatches,
+      resolveRelay: fix.resolveRelay,
+      standingOrders: [{ on: 'demo.named-event', run: 'r' }],
+      home: '/h',
+      now: makeClock(),
+      onDispatch: (obs) => { observed.push(obs.eventName); },
+    });
+
+    assert.deepEqual(observed, ['demo.named-event']);
+  });
+});
+
 describe('runDispatchSweep — validator integration', () => {
   afterEach(() => clearGuild());
 

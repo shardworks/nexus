@@ -234,6 +234,14 @@ export interface ClockworksApi {
    * Sequential, single-pass — no scheduling, no parallelism, no retry.
    * The CLI / daemon / cron loops compose on top of this primitive.
    *
+   * Optional `opts` (all strictly additive — every default-everything
+   * call site keeps current behavior):
+   *   - `eventId` — process only the matching unprocessed event.
+   *   - `max` — cap the number of events processed in this sweep.
+   *   - `onDispatch` — observer invoked once per dispatch row after
+   *     it is persisted; throwing observers are caught so they cannot
+   *     break the dispatch loop.
+   *
    * @returns Counts for the sweep: total events whose `processed`
    *          flag was flipped, total dispatch rows written, and the
    *          subset of those rows whose `status` is `'error'`.
@@ -242,11 +250,42 @@ export interface ClockworksApi {
    *          malformed; in that case no events are processed and no
    *          rows are written.
    */
-  processEvents(): Promise<{
+  processEvents(opts?: ProcessEventsOptions): Promise<{
     processedEvents: number;
     dispatches: number;
     errors: number;
   }>;
+}
+
+/**
+ * Per-dispatch observation passed to `ProcessEventsOptions.onDispatch`.
+ *
+ * Every field the CLI's per-dispatch summary line needs without
+ * forcing a second book read. `durationMs` is `endedAt - startedAt`
+ * computed by the dispatcher.
+ */
+export interface DispatchObservation {
+  eventId: string;
+  eventName: string;
+  handlerName: string;
+  status: 'success' | 'error';
+  durationMs: number;
+  error: string | null;
+}
+
+/**
+ * Optional knobs accepted by `ClockworksApi.processEvents`. All three
+ * fields are strictly additive — any combination (including the
+ * empty-options call) preserves the legacy drain-everything contract
+ * for callers who omit the options.
+ */
+export interface ProcessEventsOptions {
+  /** Process only the matching unprocessed event. */
+  eventId?: string;
+  /** Cap on the number of events processed this sweep. */
+  max?: number;
+  /** Per-dispatch observer; throwing observers are isolated. */
+  onDispatch?: (observation: DispatchObservation) => void;
 }
 
 /**
