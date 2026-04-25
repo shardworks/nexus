@@ -18,10 +18,18 @@ import { guild } from '@shardworks/nexus-core';
 import type { AnimatorApi } from '@shardworks/animator-apparatus';
 import type { BlockType, CheckResult } from '../types.ts';
 
-const conditionSchema = z.object({
-  /** Session id that triggered the pause — informational. */
-  sessionId: z.string().optional(),
-});
+// The outer object is `.optional()` so legacy engines persisted under
+// the pre-`attempts[]` schema — `holdReason: 'animator-paused'` with no
+// `holdCondition` — resolve quietly through `check()` instead of
+// throwing a ZodError that the dispatch predicate's catch logs as a
+// warning. Populated conditions still validate against the inner shape;
+// malformed payloads (e.g. `{ sessionId: 42 }`) are still rejected.
+const conditionSchema = z
+  .object({
+    /** Session id that triggered the pause — informational. */
+    sessionId: z.string().optional(),
+  })
+  .optional();
 
 const animatorPausedBlockType: BlockType = {
   id: 'animator-paused',
