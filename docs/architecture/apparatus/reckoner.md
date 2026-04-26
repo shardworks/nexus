@@ -2,7 +2,7 @@
 
 Status: **Draft**
 
-Package: `@shardworks/reckoner-apparatus` · Plugin id: `reckoner`
+Package: `@shardworks/sentinel-apparatus` · Plugin id: `reckoner`
 
 > **⚠️ MVP scope.** MVP ships three trigger types (`writ-stuck`,
 > `writ-failed`, `queue-drained`) and roots-only scoping. Every other

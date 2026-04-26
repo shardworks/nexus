@@ -10,12 +10,12 @@ Owner plugin: `reckoner` · Book name: `reckonings` · Sibling docs:
 > **⚠️ Forward-looking design.** This document specifies the
 > Reckoner's evaluation-log book before the Reckoner core itself is
 > commissioned. The plugin id `reckoner` and the existing
-> `@shardworks/reckoner-apparatus` (a narrow queue-observer that emits
-> Lattice pulses for `writ-stuck` / `writ-failed` / `queue-drained`)
-> are being renamed in a separate in-flight commission so this id can
-> be reused for the new petition-scheduling Reckoner. Nothing in
-> `packages/plugins/reckoner/` is touched by this design — see Open
-> Questions for the integration once the rename lands.
+> `@shardworks/sentinel-apparatus` (formerly `@shardworks/reckoner-apparatus`;
+> a narrow queue-observer that emits Lattice pulses for `writ-stuck` /
+> `writ-failed` / `queue-drained`) have been renamed in a separate
+> commission so this id can be reused for the new petition-scheduling
+> Reckoner. Nothing in `packages/plugins/sentinel/` is touched by this
+> design — see Open Questions for the integration.
 
 ---
 
@@ -774,16 +774,15 @@ resolution.
   the design.
 
 - **Queue-observer fold-back.** The existing
-  `@shardworks/reckoner-apparatus` is a narrow CDC observer that
+  `@shardworks/sentinel-apparatus` is a narrow CDC observer that
   emits `reckoner.writ-stuck` / `reckoner.writ-failed` /
   `reckoner.queue-drained` Lattice pulses (see
-  [apparatus/reckoner.md](apparatus/reckoner.md)). A separate
-  in-flight commission renames it so the `reckoner` plugin id can be
-  reused for the new petition-scheduling Reckoner. Once the rename
-  lands, an open question is whether the queue-observer's
-  responsibilities (writ-lifecycle observation feeding Lattice
-  pulses) fold back into the new Reckoner core, or stay in the
-  renamed sibling. The Reckonings book is unaffected either way —
+  [apparatus/reckoner.md](apparatus/reckoner.md)). It was renamed
+  out of the `reckoner` plugin id so that id can be reused for the
+  new petition-scheduling Reckoner. An open question is whether the
+  queue-observer's responsibilities (writ-lifecycle observation
+  feeding Lattice pulses) fold back into the new Reckoner core, or
+  stay in the renamed sibling. The Reckonings book is unaffected either way —
   the queue-observer's pulses go to the Lattice, not to the
   Reckonings book — but the conceptual seam between "petition
   evaluation" and "writ-lifecycle observation" wants to be settled

@@ -1,4 +1,4 @@
-# `@shardworks/reckoner-apparatus`
+# `@shardworks/sentinel-apparatus`
 
 The Reckoner — a narrow observer that emits Lattice pulses when a
 root writ stalls, fails, or when the guild's work queue drains. It is the
@@ -12,7 +12,7 @@ See also: [`docs/architecture/apparatus/reckoner.md`](../../../docs/architecture
 ## Installation
 
 ```sh
-pnpm add @shardworks/reckoner-apparatus
+pnpm add @shardworks/sentinel-apparatus
 ```
 
 Register the apparatus in `guild.json`:
@@ -21,7 +21,7 @@ Register the apparatus in `guild.json`:
 {
   "plugins": [
     "@shardworks/lattice-apparatus",
-    "@shardworks/reckoner-apparatus"
+    "@shardworks/sentinel-apparatus"
   ]
 }
 ```

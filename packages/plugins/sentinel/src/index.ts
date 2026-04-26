@@ -1,5 +1,5 @@
 /**
- * @shardworks/reckoner-apparatus — The Reckoner.
+ * @shardworks/sentinel-apparatus — The Reckoner.
  *
  * A Phase 2 CDC observer on `clerk/writs` that emits Lattice pulses when
  * commissions stall, fail, or when the guild's work queue drains.

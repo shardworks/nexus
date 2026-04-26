@@ -1,13 +1,13 @@
 {
-  "name": "@shardworks/reckoner-apparatus",
+  "name": "@shardworks/sentinel-apparatus",
   "version": "0.0.0",
   "license": "ISC",
   "repository": {
     "type": "git",
     "url": "https://github.com/shardworks/nexus",
-    "directory": "packages/plugins/reckoner"
+    "directory": "packages/plugins/sentinel"
   },
-  "description": "The Reckoner — observer that emits Lattice pulses when commissions stall, fail, or when the guild's work queue drains.",
+  "description": "The Sentinel — observer that emits Lattice pulses when commissions stall, fail, or when the guild's work queue drains.",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
