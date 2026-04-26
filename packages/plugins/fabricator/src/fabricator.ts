@@ -222,6 +222,61 @@ export function resolveEngineRetryConfig(
   return validateEngineRetryConfig(design.id, design.retry);
 }
 
+/**
+ * Resolve an engine design's effective retry config, layering an optional
+ * deployment-level override on top. Pure — Fabricator does not read guild
+ * config; the caller (Spider) is responsible for handing in the override
+ * map fetched from `g.guildConfig().spider?.engineRetryOverrides`.
+ *
+ * Three-layer overlay (highest wins):
+ *
+ *     override > design.retry > built-in defaults
+ *
+ * The override is treated as "fields the operator chose to change":
+ *  - If `override.maxAttempts` is set, it replaces the design's value.
+ *  - Each `override.backoff.<field>` independently replaces the
+ *    corresponding design backoff field.
+ *  - Unspecified fields fall through to `design.retry`, then to
+ *    `DEFAULT_ENGINE_RETRY_BACKOFF` for backoff sub-fields.
+ *
+ * When the design declares no `retry`, the design layer is `{ maxAttempts: 0,
+ * backoff: DEFAULT }` — so an override that specifies only `maxAttempts: N`
+ * enables retry on a previously fail-fast design with the default backoff.
+ *
+ * The override is assumed already-validated (Spider runs the validation
+ * pass at startup via `validateEngineRetryConfig`). Passing an undefined
+ * or empty override returns the same value `resolveEngineRetryConfig`
+ * would.
+ *
+ * Throws if the merged result is internally inconsistent (e.g. an
+ * override that drops `maxMs` below the design's `initialMs`) — the same
+ * cross-field invariants `validateEngineRetryConfig` enforces.
+ */
+export function resolveEngineRetryConfigWithOverrides(
+  design: EngineDesign,
+  override: Partial<EngineRetryConfig> | undefined,
+): { maxAttempts: number; backoff: EngineRetryBackoffConfig } {
+  const baseline = resolveEngineRetryConfig(design);
+  if (override === undefined) return baseline;
+
+  // Build a merged raw shape and run it through the same validator the
+  // design path uses, so the cross-field invariants (maxMs >= initialMs,
+  // factor > 1, etc.) are checked on the merged result. The override is
+  // already validated for per-field shape at startup; the validator call
+  // here is the canonical merge-of-fields-and-cross-field-check.
+  const mergedMaxAttempts =
+    override.maxAttempts !== undefined ? override.maxAttempts : baseline.maxAttempts;
+  const mergedBackoff: EngineRetryBackoffConfig = {
+    initialMs: override.backoff?.initialMs ?? baseline.backoff.initialMs,
+    maxMs: override.backoff?.maxMs ?? baseline.backoff.maxMs,
+    factor: override.backoff?.factor ?? baseline.backoff.factor,
+  };
+  return validateEngineRetryConfig(design.id, {
+    maxAttempts: mergedMaxAttempts,
+    backoff: mergedBackoff,
+  });
+}
+
 /** Summary info for a registered engine design. */
 export interface EngineDesignInfo {
   /** Engine design id. */

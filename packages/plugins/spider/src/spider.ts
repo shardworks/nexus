@@ -55,8 +55,11 @@ import type {
   SpiderWritStatus,
   SpiderStuckCause,
 } from './types.ts';
-import { resolveEngineRetryConfig } from '@shardworks/fabricator-apparatus';
-import type { EngineDesign } from '@shardworks/fabricator-apparatus';
+import {
+  resolveEngineRetryConfigWithOverrides,
+  validateEngineRetryConfig,
+} from '@shardworks/fabricator-apparatus';
+import type { EngineDesign, EngineRetryConfig } from '@shardworks/fabricator-apparatus';
 
 import {
   animaSessionEngine,
@@ -622,6 +625,84 @@ function validateTemplates(
           `[spider] rigTemplates.${templateKey}: engine "${engine.id}" when references \${yields.${refEngineId}.${yieldProp}} but "${refEngineId}" is not upstream of "${engine.id}"`
         );
       }
+    }
+  }
+}
+
+/**
+ * Validate the `spider.engineRetryOverrides` config block fail-loud at
+ * startup (D3, D7). Throws on any unknown designId or any malformed
+ * override field; the caller (Spider's start()) discards the resolved
+ * value because the failure handler re-reads the live override map at
+ * retry-decision time (D5).
+ *
+ * Per-entry checks:
+ *  - The designId must resolve against `fabricator.listEngineDesigns()`
+ *    — Spider's start() runs after Fabricator's, so the registry is
+ *    populated. The error message lists every registered designId so
+ *    operators can spot typos at a glance.
+ *  - The override shape is validated via `validateEngineRetryConfig`,
+ *    which throws a descriptive error for every malformed scalar
+ *    (negative `maxAttempts`, `maxMs < initialMs`, `factor <= 1`, etc.).
+ *    The override may omit `maxAttempts` — operators may want to tune
+ *    only `backoff` — so we substitute `0` for the validator call when
+ *    it is absent. The substitute is purely a validation helper; it does
+ *    not affect the runtime resolution path, which lives in
+ *    `resolveEngineRetryConfigWithOverrides`.
+ *
+ * No-op when the block is absent or empty.
+ */
+function validateEngineRetryOverrides(
+  overrides: Record<string, Partial<EngineRetryConfig>> | undefined,
+  fabricator: FabricatorApi,
+): void {
+  if (overrides === undefined) return;
+  if (typeof overrides !== 'object' || overrides === null) {
+    throw new Error(
+      `[spider] spider.engineRetryOverrides must be an object; received ${typeof overrides}`,
+    );
+  }
+
+  const designs = fabricator.listEngineDesigns();
+  const knownIds = new Set(designs.map((d) => d.id));
+
+  for (const [designId, raw] of Object.entries(overrides)) {
+    if (!knownIds.has(designId)) {
+      const known = [...knownIds].sort().join(', ') || '(none registered)';
+      throw new Error(
+        `[spider] spider.engineRetryOverrides.${designId} names an unknown engine design; ` +
+        `registered designIds are: ${known}`,
+      );
+    }
+    if (typeof raw !== 'object' || raw === null) {
+      throw new Error(
+        `[spider] spider.engineRetryOverrides.${designId} must be an object; received ${typeof raw}`,
+      );
+    }
+
+    // Run the override through the canonical retry validator, substituting
+    // a dummy `maxAttempts: 0` when the operator omitted it (overrides may
+    // tune backoff alone). The validator's `[fabricator]` prefix on its
+    // error messages is rewrapped here so operators see the override slot
+    // path the brief promised — `[spider] spider.engineRetryOverrides.<id>`.
+    const probeMaxAttempts = raw.maxAttempts !== undefined ? raw.maxAttempts : 0;
+    try {
+      validateEngineRetryConfig(designId, {
+        maxAttempts: probeMaxAttempts,
+        backoff: raw.backoff,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Strip the `[fabricator] engine "<id>": ` prefix the validator
+      // emits and rewrap with the spider override-slot path so operators
+      // get a single coherent error breadcrumb.
+      const stripped = message.replace(
+        /^\[fabricator\] engine "[^"]+":\s*/,
+        '',
+      );
+      throw new Error(
+        `[spider] spider.engineRetryOverrides.${designId}: ${stripped}`,
+      );
     }
   }
 }
@@ -1567,7 +1648,15 @@ export function createSpider(): Plugin {
 
     // ── Branch 2: retryable within budget ──────────────────────────
     const design = fabricator.getEngineDesign(target.designId);
-    const retry = design ? resolveEngineRetryConfig(design) : { maxAttempts: 0, backoff: { initialMs: 30_000, maxMs: 600_000, factor: 2 } };
+    // Live-read the override map from guild config — re-resolution is
+    // cheap on the rare retry path and gives operators live-reload of
+    // retry tuning without restarting the daemon. Per-entry value
+    // validation is not re-run here; that ran fail-loud at startup.
+    const overrideMap = guild().guildConfig().spider?.engineRetryOverrides;
+    const override = overrideMap?.[target.designId];
+    const retry = design
+      ? resolveEngineRetryConfigWithOverrides(design, override)
+      : { maxAttempts: 0, backoff: { initialMs: 30_000, maxMs: 600_000, factor: 2 } };
     const currentAttemptCount = target.attemptCount ?? 0;
     const budgetRemaining = currentAttemptCount < retry.maxAttempts;
 
@@ -3120,6 +3209,18 @@ export function createSpider(): Plugin {
 
         // 7. Validate all mappings (single pass — no late arrivals)
         rigTemplateRegistry.validateDeferredMappings();
+
+        // 8. Fail-loud validation pass over engineRetryOverrides (D3, D7).
+        //    Spider's start() runs after Fabricator's, so the engine-design
+        //    registry is fully populated; we can safely cross-check designIds
+        //    against `fabricator.listEngineDesigns()`. The pass throws on
+        //    unknown designIds and on any malformed override field
+        //    (negative maxAttempts, maxMs < initialMs, factor <= 1, etc.)
+        //    via `validateEngineRetryConfig`. The validator's resolved value
+        //    is intentionally discarded — per D5, the failure handler
+        //    re-reads the live override map at retry-decision time so
+        //    operators get live-reload of retry tuning without a restart.
+        validateEngineRetryOverrides(spiderConfig.engineRetryOverrides, fabricator);
 
         rigsBook = stacks.book<RigDoc>('spider', 'rigs');
         inputRequestsBook = stacks.book<InputRequestDoc>('spider', 'input-requests');

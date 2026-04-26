@@ -36,8 +36,13 @@ import {
   createFabricator,
   validateEngineRetryConfig,
   resolveEngineRetryConfig,
+  resolveEngineRetryConfigWithOverrides,
 } from '@shardworks/fabricator-apparatus';
-import type { EngineDesign, FabricatorApi } from '@shardworks/fabricator-apparatus';
+import type {
+  EngineDesign,
+  EngineRetryConfig,
+  FabricatorApi,
+} from '@shardworks/fabricator-apparatus';
 
 import type { AnimatorApi, AnimatorStatusDoc } from '@shardworks/animator-apparatus';
 
@@ -83,7 +88,27 @@ interface Fixture {
 }
 
 function buildFixture(
-  options: { retryMaxAttempts?: number } = {},
+  options: {
+    retryMaxAttempts?: number;
+    /**
+     * When true, the flakey engine is registered with NO declared `retry`
+     * block — used by the D6 override tests to verify that an override
+     * may enable retry on a previously fail-fast design.
+     */
+    flakeyHasNoRetry?: boolean;
+    /**
+     * Optional `spider.engineRetryOverrides` block surfaced into the fake
+     * guild config. Threaded through to Spider's start() validation pass
+     * and read live by the failure handler.
+     */
+    engineRetryOverrides?: Record<string, Partial<EngineRetryConfig>>;
+    /**
+     * Inject a malformed override map without typechecking — exercises
+     * the malformed-shape error paths in the startup validator. Bypasses
+     * the typed `engineRetryOverrides` field.
+     */
+    rawEngineRetryOverrides?: unknown;
+  } = {},
 ): Fixture {
   const memBackend = new MemoryBackend();
   const stacksPlugin = createStacksApparatus(memBackend);
@@ -104,7 +129,9 @@ function buildFixture(
   // from run() which tryRun classifies as retryable:true.
   const flakeyEngine: EngineDesign = {
     id: 'flakey-quick',
-    retry: { maxAttempts: options.retryMaxAttempts ?? 2 },
+    ...(options.flakeyHasNoRetry
+      ? {}
+      : { retry: { maxAttempts: options.retryMaxAttempts ?? 2 } }),
     async run(_givens, context) {
       const n = (attemptsByEngine.get(context.engineId) ?? 0) + 1;
       attemptsByEngine.set(context.engineId, n);
@@ -135,12 +162,23 @@ function buildFixture(
     resolutionEngine: 'tail',
   };
 
+  // Choose which engineRetryOverrides slot to surface into the fake
+  // config. The `rawEngineRetryOverrides` escape hatch lets the
+  // malformed-input tests inject ill-typed values without fighting the
+  // type system; otherwise we use the typed `engineRetryOverrides`.
+  const overridesSlot = options.rawEngineRetryOverrides !== undefined
+    ? options.rawEngineRetryOverrides
+    : options.engineRetryOverrides;
+
   const fakeGuildConfig: GuildConfig = {
     name: 'retry-test',
     nexus: '0.0.0',
     plugins: [],
     spider: {
       rigTemplates: { default: template },
+      ...(overridesSlot !== undefined
+        ? { engineRetryOverrides: overridesSlot as Record<string, Partial<EngineRetryConfig>> }
+        : {}),
     } as never,
   };
 
@@ -542,5 +580,359 @@ describe('Retry config validation', () => {
     };
     if (!('apparatus' in fab)) throw new Error('fabricator must be apparatus');
     assert.throws(() => fab.apparatus.start(ctx), /retry\.maxAttempts must be a non-negative integer/);
+  });
+});
+
+// ── engineRetryOverrides — pure resolver tests (D2, D6) ──────────────
+
+describe('resolveEngineRetryConfigWithOverrides()', () => {
+  /** A design with an explicit retry block and explicit backoff. */
+  const designWithRetry: EngineDesign = {
+    id: 'with-retry',
+    retry: {
+      maxAttempts: 2,
+      backoff: { initialMs: 100, maxMs: 800, factor: 2 },
+    },
+    async run() { return { status: 'completed', yields: {} }; },
+  };
+
+  /** A design with no `retry` block — fail-fast by default. */
+  const designNoRetry: EngineDesign = {
+    id: 'no-retry',
+    async run() { return { status: 'completed', yields: {} }; },
+  };
+
+  it('returns the design baseline when override is undefined', () => {
+    const resolved = resolveEngineRetryConfigWithOverrides(designWithRetry, undefined);
+    assert.equal(resolved.maxAttempts, 2);
+    assert.deepEqual(resolved.backoff, { initialMs: 100, maxMs: 800, factor: 2 });
+  });
+
+  it('returns the design baseline when override is the empty object', () => {
+    const resolved = resolveEngineRetryConfigWithOverrides(designWithRetry, {});
+    assert.equal(resolved.maxAttempts, 2);
+    assert.deepEqual(resolved.backoff, { initialMs: 100, maxMs: 800, factor: 2 });
+  });
+
+  it('overrides only maxAttempts, preserving the design backoff (D2)', () => {
+    const resolved = resolveEngineRetryConfigWithOverrides(
+      designWithRetry,
+      { maxAttempts: 5 },
+    );
+    assert.equal(resolved.maxAttempts, 5);
+    assert.deepEqual(resolved.backoff, { initialMs: 100, maxMs: 800, factor: 2 });
+  });
+
+  it('overrides only a backoff sub-field, preserving the others (D2)', () => {
+    const resolved = resolveEngineRetryConfigWithOverrides(
+      designWithRetry,
+      { backoff: { initialMs: 250 } },
+    );
+    assert.equal(resolved.maxAttempts, 2, 'design maxAttempts preserved');
+    assert.equal(resolved.backoff.initialMs, 250, 'override applied');
+    assert.equal(resolved.backoff.maxMs, 800, 'design maxMs preserved');
+    assert.equal(resolved.backoff.factor, 2, 'design factor preserved');
+  });
+
+  it('overrides both maxAttempts and a backoff sub-field together (D2)', () => {
+    const resolved = resolveEngineRetryConfigWithOverrides(
+      designWithRetry,
+      { maxAttempts: 7, backoff: { factor: 3 } },
+    );
+    assert.equal(resolved.maxAttempts, 7);
+    assert.equal(resolved.backoff.initialMs, 100);
+    assert.equal(resolved.backoff.maxMs, 800);
+    assert.equal(resolved.backoff.factor, 3);
+  });
+
+  it('enables retry on a design with no declared retry block (D6)', () => {
+    const resolved = resolveEngineRetryConfigWithOverrides(
+      designNoRetry,
+      { maxAttempts: 4 },
+    );
+    assert.equal(resolved.maxAttempts, 4, 'override raises previously fail-fast design');
+    // Backoff falls through to DEFAULT_ENGINE_RETRY_BACKOFF.
+    assert.equal(resolved.backoff.initialMs, 30_000);
+    assert.equal(resolved.backoff.maxMs, 600_000);
+    assert.equal(resolved.backoff.factor, 2);
+  });
+
+  it('enables retry on a fail-fast design with a partial backoff override (D6)', () => {
+    const resolved = resolveEngineRetryConfigWithOverrides(
+      designNoRetry,
+      { maxAttempts: 2, backoff: { initialMs: 500 } },
+    );
+    assert.equal(resolved.maxAttempts, 2);
+    assert.equal(resolved.backoff.initialMs, 500);
+    // Other backoff sub-fields fall through to defaults.
+    assert.equal(resolved.backoff.maxMs, 600_000);
+    assert.equal(resolved.backoff.factor, 2);
+  });
+
+  it('throws when the merged backoff violates maxMs >= initialMs', () => {
+    // Design: initialMs=100, maxMs=800. Override drops maxMs below
+    // initialMs → cross-field invariant fails.
+    assert.throws(
+      () => resolveEngineRetryConfigWithOverrides(
+        designWithRetry,
+        { backoff: { maxMs: 50 } },
+      ),
+      /maxMs.*must be >= initialMs/,
+    );
+  });
+});
+
+// ── engineRetryOverrides — Spider startup validation (D3, malformed) ─
+
+describe('Spider startup — engineRetryOverrides validation', () => {
+  let fix: Fixture;
+
+  afterEach(() => {
+    clearGuild();
+  });
+
+  it('accepts a valid override and starts silently', () => {
+    fix = buildFixture({
+      retryMaxAttempts: 2,
+      engineRetryOverrides: { 'flakey-quick': { maxAttempts: 5 } },
+    });
+    // Spider started; the registered overrides survived the validation pass.
+    assert.ok(fix.spider, 'spider must initialise when overrides are valid');
+  });
+
+  it('accepts an override on a design with no declared retry (D6)', () => {
+    fix = buildFixture({
+      flakeyHasNoRetry: true,
+      engineRetryOverrides: { 'flakey-quick': { maxAttempts: 2 } },
+    });
+    assert.ok(fix.spider);
+  });
+
+  it('throws at startup when an override names an unregistered designId (D3)', () => {
+    assert.throws(
+      () => buildFixture({
+        engineRetryOverrides: { 'no-such-design': { maxAttempts: 3 } },
+      }),
+      (err: Error) => {
+        // Error must surface the override slot path AND name registered designIds
+        // so the operator can spot a typo at a glance.
+        return (
+          /\[spider\] spider\.engineRetryOverrides\.no-such-design/.test(err.message) &&
+          /unknown engine design/.test(err.message) &&
+          /flakey-quick/.test(err.message)
+        );
+      },
+    );
+  });
+
+  it('throws at startup on negative maxAttempts', () => {
+    assert.throws(
+      () => buildFixture({
+        engineRetryOverrides: { 'flakey-quick': { maxAttempts: -1 } },
+      }),
+      /\[spider\] spider\.engineRetryOverrides\.flakey-quick.*maxAttempts must be a non-negative integer/,
+    );
+  });
+
+  it('throws at startup on non-integer maxAttempts', () => {
+    assert.throws(
+      () => buildFixture({
+        engineRetryOverrides: { 'flakey-quick': { maxAttempts: 1.5 } },
+      }),
+      /\[spider\] spider\.engineRetryOverrides\.flakey-quick.*maxAttempts must be a non-negative integer/,
+    );
+  });
+
+  it('throws at startup when maxMs < initialMs', () => {
+    assert.throws(
+      () => buildFixture({
+        engineRetryOverrides: {
+          'flakey-quick': {
+            maxAttempts: 2,
+            backoff: { initialMs: 1000, maxMs: 500 },
+          },
+        },
+      }),
+      /\[spider\] spider\.engineRetryOverrides\.flakey-quick.*maxMs.*must be >= initialMs/,
+    );
+  });
+
+  it('throws at startup on factor <= 1', () => {
+    assert.throws(
+      () => buildFixture({
+        engineRetryOverrides: {
+          'flakey-quick': {
+            maxAttempts: 2,
+            backoff: { factor: 1 },
+          } as never,
+        },
+      }),
+      /\[spider\] spider\.engineRetryOverrides\.flakey-quick.*factor must be a finite number greater than 1/,
+    );
+  });
+
+  it('throws at startup on a non-positive backoff.initialMs', () => {
+    assert.throws(
+      () => buildFixture({
+        engineRetryOverrides: {
+          'flakey-quick': {
+            maxAttempts: 2,
+            backoff: { initialMs: 0 } as never,
+          },
+        },
+      }),
+      /\[spider\] spider\.engineRetryOverrides\.flakey-quick.*initialMs must be a positive integer/,
+    );
+  });
+
+  it('throws at startup on a non-positive backoff.maxMs', () => {
+    assert.throws(
+      () => buildFixture({
+        engineRetryOverrides: {
+          'flakey-quick': {
+            maxAttempts: 2,
+            backoff: { maxMs: -10 } as never,
+          },
+        },
+      }),
+      /\[spider\] spider\.engineRetryOverrides\.flakey-quick.*maxMs must be a positive integer/,
+    );
+  });
+
+  it('throws when a per-design override slot is not an object', () => {
+    assert.throws(
+      () => buildFixture({
+        rawEngineRetryOverrides: { 'flakey-quick': 'not-an-object' },
+      }),
+      /\[spider\] spider\.engineRetryOverrides\.flakey-quick must be an object/,
+    );
+  });
+
+  it('throws when the engineRetryOverrides block itself is not an object', () => {
+    assert.throws(
+      () => buildFixture({
+        rawEngineRetryOverrides: 'not-an-object',
+      }),
+      /\[spider\] spider\.engineRetryOverrides must be an object/,
+    );
+  });
+
+  // Note (D7): a live-reload regression — that mutating the guild config
+  // mid-test is honoured on the next retry decision — is intentionally
+  // deferred. The current fixture wires `fakeGuildConfig` as a closed-over
+  // constant inside `buildFixture` with no public mutation seam, so the
+  // regression cannot be expressed without adding fixture machinery that
+  // is out of scope for this commission. The behavioural contract is
+  // covered by the documented invariant in `spider.md` and by the live
+  // `guild().guildConfig()` re-read at the failure-handler call site.
+});
+
+// ── engineRetryOverrides — end-to-end (override consulted at retry) ──
+
+describe('engineRetryOverrides — runtime behaviour', () => {
+  let fix: Fixture;
+
+  afterEach(() => {
+    clearGuild();
+  });
+
+  it('honours the override ceiling — engine retries up to override.maxAttempts', async () => {
+    // Design declares maxAttempts=1 (one retry); override raises to 3
+    // (three retries / four attempts total). Verify the engine consumes
+    // the override budget — i.e. attemptCount climbs past the design value.
+    fix = buildFixture({
+      retryMaxAttempts: 1,
+      engineRetryOverrides: { 'flakey-quick': { maxAttempts: 3 } },
+    });
+    const writ = await fix.clerk.post({ title: 'override-budget' });
+
+    // Spawn.
+    await fix.spider.crawl();
+
+    const rigsBook = fix.stacks.book<RigDoc>('spider', 'rigs');
+
+    // Helper: fast-forward the retry hold and re-crawl.
+    const advanceOnce = async (): Promise<void> => {
+      const [rig] = await rigsBook.find({ where: [['writId', '=', writ.id]] });
+      const updated = rig.engines.map((e) =>
+        e.id === 'flakey'
+          ? { ...e, holdUntil: new Date(Date.now() - 1000).toISOString() }
+          : e,
+      );
+      await rigsBook.patch(rig.id, { engines: updated });
+      await fix.spider.crawl();
+    };
+
+    // First crawl after spawn → first attempt → retryable (count=1).
+    let result = await fix.spider.crawl();
+    assert.equal(result?.action, 'engine-retrying');
+    assert.equal((result as { attemptCount: number }).attemptCount, 1);
+
+    // Crawl-after-hold → second attempt → still within override budget (count=2).
+    await advanceOnce();
+    let [rig] = await rigsBook.find({ where: [['writId', '=', writ.id]] });
+    let flakey = rig.engines.find((e) => e.id === 'flakey')!;
+    assert.equal(flakey.attemptCount, 2,
+      'override raised the ceiling — second retry consumed without exhaustion');
+    assert.equal(flakey.status, 'pending', 'still pending — budget remains');
+
+    // Third retry — still within budget.
+    await advanceOnce();
+    [rig] = await rigsBook.find({ where: [['writId', '=', writ.id]] });
+    flakey = rig.engines.find((e) => e.id === 'flakey')!;
+    assert.equal(flakey.attemptCount, 3);
+    assert.equal(flakey.status, 'pending');
+
+    // Fourth dispatch (4th total attempt) → budget exhausted → terminal.
+    await advanceOnce();
+    [rig] = await rigsBook.find({ where: [['writId', '=', writ.id]] });
+    flakey = rig.engines.find((e) => e.id === 'flakey')!;
+    assert.equal(flakey.status, 'failed', 'budget exhausted at override.maxAttempts');
+    assert.equal(rig.status, 'failed');
+  });
+
+  it('preserves the design backoff for fields the override does not specify', async () => {
+    // Override sets only maxAttempts; the design's default backoff
+    // (built-in DEFAULT_ENGINE_RETRY_BACKOFF — initialMs=30_000) survives.
+    // Verify by inspecting the holdUntil delta on the first retry.
+    fix = buildFixture({
+      retryMaxAttempts: 1,
+      engineRetryOverrides: { 'flakey-quick': { maxAttempts: 3 } },
+    });
+    await fix.clerk.post({ title: 'override-preserves-backoff' });
+
+    await fix.spider.crawl(); // spawn
+    const before = Date.now();
+    const result = await fix.spider.crawl(); // first attempt → retryable
+    assert.equal(result?.action, 'engine-retrying');
+
+    const writs = await fix.clerk.list({ limit: 1 });
+    const rig = await fix.spider.forWrit(writs[0].id);
+    assert.ok(rig);
+    const flakey = rig!.engines.find((e) => e.id === 'flakey')!;
+    assert.ok(flakey.holdUntil);
+    const holdMs = new Date(flakey.holdUntil!).getTime() - before;
+    // Default initialMs is 30_000 — the override didn't touch backoff,
+    // so the first retry hold should sit in that range (with a small
+    // slack for clock skew).
+    assert.ok(holdMs >= 30_000 - 500 && holdMs <= 30_000 + 500,
+      `expected ~30_000ms hold (default backoff preserved), got ${holdMs}ms`);
+  });
+
+  it('enables retry on a fail-fast design (D6 — runtime path)', async () => {
+    // Flakey is registered without a `retry` block — fail-fast by default.
+    // The override grants it a budget of 2 retries.
+    fix = buildFixture({
+      flakeyHasNoRetry: true,
+      engineRetryOverrides: { 'flakey-quick': { maxAttempts: 2 } },
+    });
+    await fix.clerk.post({ title: 'override-enables-retry' });
+
+    await fix.spider.crawl(); // spawn
+    const result = await fix.spider.crawl(); // first attempt → retryable (would be terminal without override)
+
+    assert.equal(result?.action, 'engine-retrying',
+      'override enabled retry on a previously fail-fast design');
+    assert.equal((result as { attemptCount: number }).attemptCount, 1);
   });
 });

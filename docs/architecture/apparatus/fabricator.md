@@ -146,7 +146,7 @@ interface FabricatorApi {
 
 ## Configuration
 
-None. No `guild.json` entry needed.
+None. No `guild.json` entry needed. Note: the per-design `retry` policy declared on `EngineDesign` can be overridden at the deployment layer via Spider's `spider.engineRetryOverrides` config block — see `spider.md` for the full shape, validation rules, and example. The Fabricator itself stays config-blind; the override-aware resolver `resolveEngineRetryConfigWithOverrides` takes the override map as a parameter.
 
 ---
 

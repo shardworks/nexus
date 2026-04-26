@@ -809,6 +809,77 @@ All fields optional. `pollIntervalMs` defaults to `5000`. `buildCommand` and `te
 
 The `variables` dict contains user-defined values available in rig template givens via `${vars.<path>}`. For example, `"${vars.role}"` in a template givens entry resolves to `variables.role` at rig spawn time.
 
+### `engineRetryOverrides`
+
+Per-design overrides for engine retry policy. Lets operators tune `maxAttempts` and the back-off shape on any registered engine design without forking kit code or republishing the apparatus package — useful when responding to flaky infra, transient upstream-API failures, or when adopting a more aggressive autonomy posture for a specific deployment.
+
+```json
+{
+  "spider": {
+    "engineRetryOverrides": {
+      "implement": { "maxAttempts": 5 },
+      "review": {
+        "maxAttempts": 3,
+        "backoff": { "initialMs": 60000, "maxMs": 1800000, "factor": 3 }
+      },
+      "seal": { "maxAttempts": 2 }
+    }
+  }
+}
+```
+
+**Shape.** A record from `EngineDesign.id` (the string the kit registered, e.g. `"implement"`, `"review"`, `"seal"`) to a partial `EngineRetryConfig`:
+
+```typescript
+{
+  maxAttempts?: number;
+  backoff?: {
+    initialMs?: number;
+    maxMs?: number;
+    factor?: number;
+  };
+}
+```
+
+Operators name only the fields they want to change; everything else falls through.
+
+**Layering.** Three-layer overlay, highest wins:
+
+```
+override > design.retry > built-in defaults (DEFAULT_ENGINE_RETRY_BACKOFF)
+```
+
+- If `override.maxAttempts` is set it replaces the design's value.
+- Each `override.backoff.<field>` independently replaces the corresponding design back-off field.
+- Unspecified fields inherit from `design.retry`, then from the built-in defaults (`initialMs: 30_000`, `maxMs: 600_000`, `factor: 2` — see `DEFAULT_ENGINE_RETRY_BACKOFF` in `@shardworks/fabricator-apparatus`).
+
+**Override on a fail-fast design.** An override is allowed on a design that declares no `retry` block. The absent design retry is treated as `{ maxAttempts: 0, backoff: DEFAULT }`, so an override of `{ maxAttempts: N }` enables retry on a previously fail-fast engine using the default back-off shape. The framework does not supply taste here — operator agency is the correct default.
+
+**Validation.** The block is validated **fail-loud at Spider startup**, before any engines are scheduled. Spider's `start()` runs after Fabricator's, so the engine-design registry is populated and every `designId` is checked against `fabricator.listEngineDesigns()`. Failures throw with a `[spider] spider.engineRetryOverrides.<designId>` prefix:
+
+- An unknown `designId` (typo, deleted engine, etc.) throws an error that lists every registered designId so the typo is obvious at a glance.
+- Each per-entry override is run through the same `validateEngineRetryConfig` shape check the kit uses at registration: `maxAttempts` must be a non-negative integer; `backoff.initialMs` and `backoff.maxMs` must be positive integers with `maxMs >= initialMs`; `backoff.factor` must be a finite number greater than 1.
+- A non-object override slot or a non-object `engineRetryOverrides` block throws synchronously with a descriptive message.
+
+**Live re-read.** The override map is **re-read live from guild config on each retry decision** — the failure handler does not snapshot it at startup. This means edits to `guild.json` take effect on the next retry without restarting the daemon. Per-entry shape validation does not re-run at retry time; that ran fail-loud at startup (so the live read is a cheap Map lookup, not a re-validation). If an operator edits `guild.json` to introduce a malformed entry mid-flight, the failure handler will throw at retry time — which is the deliberate trade-off for live-reload over snapshot-at-start.
+
+**Worked example.** A guild that wants to bump `implement` from the kit-default `maxAttempts: 2` to `5` and double the initial back-off, while leaving `review`'s declared retry policy untouched:
+
+```json
+{
+  "spider": {
+    "engineRetryOverrides": {
+      "implement": {
+        "maxAttempts": 5,
+        "backoff": { "initialMs": 60000 }
+      }
+    }
+  }
+}
+```
+
+After this is in place, a transient failure of the `implement` engine permits up to five retries (six attempts total). The first retry holds for 60 s, the second for 120 s, the third for 240 s, and so on, capped at the kit-default `maxMs: 600000` (10 min). All other registered engines are unaffected.
+
 ### Plugin-default template and mapping
 
 The Spider's apparatus contributes a plugin-level rig template and mapping via its own supportKit:

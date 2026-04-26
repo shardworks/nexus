@@ -615,6 +615,30 @@ export interface SpiderConfig {
    * Default: 1.
    */
   maxConcurrentEnginesPerRig?: number;
+  /**
+   * Per-design overrides for engine retry policy. Keyed by `EngineDesign.id`.
+   *
+   * The override layers on top of the design's declared `retry`, which in
+   * turn layers on top of the kit's built-in defaults
+   * (`DEFAULT_ENGINE_RETRY_BACKOFF`). Effective resolution order is:
+   *
+   *     override > design.retry > built-in defaults
+   *
+   * Operators name only the fields they want to change. An override may
+   * change `maxAttempts`, any subset of `backoff` fields, or both. An
+   * override on a design that declares no `retry` is permitted — the
+   * absent design retry is treated as `{ maxAttempts: 0, backoff: DEFAULT }`,
+   * so the override's `maxAttempts` enables retry on a previously
+   * fail-fast design.
+   *
+   * Validated fail-loud at Spider startup: an unknown `designId` (one that
+   * does not appear in `fabricator.listEngineDesigns()`) or any malformed
+   * field (`maxAttempts < 0`, `maxMs < initialMs`, `factor <= 1`, etc.)
+   * throws before any engines are scheduled. The override map is re-read
+   * live from guild config on each retry decision, so guild.json edits
+   * take effect on the next retry without restarting the daemon.
+   */
+  engineRetryOverrides?: Record<string, Partial<EngineRetryConfig>>;
 }
 
 // ── Engine yield shapes ───────────────────────────────────────────────

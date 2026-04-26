@@ -32,6 +32,7 @@ export {
   DEFAULT_ENGINE_RETRY_BACKOFF,
   validateEngineRetryConfig,
   resolveEngineRetryConfig,
+  resolveEngineRetryConfigWithOverrides,
 } from './fabricator.ts';
 
 // ── Default export: the apparatus plugin ──────────────────────────────
