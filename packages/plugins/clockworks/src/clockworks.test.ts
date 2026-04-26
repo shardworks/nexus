@@ -720,11 +720,24 @@ async function buildDispatchFixture(
   const clockworks = clockworksPlugin.apparatus.provides as ClockworksApi;
   apparatusMap.set('clockworks', clockworks);
 
+  // Drain the boot-time `guild.initialized` row(s) so the dispatcher
+  // tests below see an empty pending queue. The skeleton-suite fixture
+  // (`buildFixture` above) deliberately keeps this row and asserts on
+  // it; this dispatch-suite fixture must not — its tests count rows
+  // and queue length, and a stray boot event inflates both.
+  const eventsBook = stacks.book<EventDoc>('clockworks', 'events');
+  const bootRows = await eventsBook.find({
+    where: [['name', '=', 'guild.initialized']],
+  });
+  for (const row of bootRows) {
+    await eventsBook.delete(row.id);
+  }
+
   return {
     stacks,
     clockworks,
     guildConfig,
-    events: stacks.book<EventDoc>('clockworks', 'events'),
+    events: eventsBook,
     dispatches: stacks.book<EventDispatchDoc>('clockworks', 'event_dispatches'),
   };
 }

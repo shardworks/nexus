@@ -180,7 +180,8 @@ describe('Clockworks — end-to-end framework event emission', () => {
     const fix = await buildGuild();
 
     const writ = await fix.clerk.post({ title: 'do work', body: 'b' });
-    assert.equal(writ.phase, 'open');
+    const opened = await fix.clerk.transition(writ.id, 'open');
+    assert.equal(opened.phase, 'open');
 
     const names = await fix.eventNames();
     assert.ok(names.includes('mandate.ready'));
@@ -213,6 +214,8 @@ describe('Clockworks — end-to-end framework event emission', () => {
     const fix = await buildGuild();
 
     const writ = await fix.clerk.post({ title: 'multi-step', body: 'b' });
+    // new → open (publish)
+    await fix.clerk.transition(writ.id, 'open');
     // open → stuck
     await fix.clerk.transition(writ.id, 'stuck', { resolution: 'jammed' });
     // stuck → open (re-entry)
@@ -225,7 +228,7 @@ describe('Clockworks — end-to-end framework event emission', () => {
     // mandate-lifecycle suffix sequence
     const lifecycle = all.filter((n) => n.startsWith('mandate.'));
     assert.deepEqual(lifecycle, [
-      'mandate.ready',     // initial post into open
+      'mandate.ready',     // new → open transition
       'mandate.stuck',     // open → stuck
       'mandate.ready',     // stuck → open (D21 re-entry)
       'mandate.completed', // open → completed
@@ -236,7 +239,7 @@ describe('Clockworks — end-to-end framework event emission', () => {
     // commission.posted fires twice — once per entry into open (D15).
     assert.equal(commission.filter((n) => n === 'commission.posted').length, 2);
     // commission.state.changed fires once per phase change (4 transitions
-    // total: post into open, open→stuck, stuck→open, open→completed).
+    // total: new→open, open→stuck, stuck→open, open→completed).
     assert.equal(commission.filter((n) => n === 'commission.state.changed').length, 4);
     // sealed AND completed both fire on entry into completed (D5).
     assert.equal(commission.filter((n) => n === 'commission.sealed').length, 1);
@@ -266,6 +269,7 @@ describe('Clockworks — end-to-end framework event emission', () => {
     const fix = await buildGuild();
 
     const root = await fix.clerk.post({ title: 'parent', body: 'b' });
+    await fix.clerk.transition(root.id, 'open');
     // Child of type 'mandate' — but parentId is set, so commission.* gates off (D5).
     const child = await fix.clerk.post({
       title: 'child',
@@ -273,6 +277,7 @@ describe('Clockworks — end-to-end framework event emission', () => {
       type: 'mandate',
       parentId: root.id,
     });
+    await fix.clerk.transition(child.id, 'open');
 
     const childReady = await fix.byName('mandate.ready');
     // mandate.ready fires for both root and child.
