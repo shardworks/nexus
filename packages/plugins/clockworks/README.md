@@ -328,10 +328,19 @@ each plugin author having to call `emit()` or `signal()` from every
 write site.
 
 The `clockworks/events` book is the only book excluded from
-auto-wiring — watching it would observe its own emit() write and
-re-emit forever. Everything else, including `clockworks/event_dispatches`,
-is auto-wired. Books contributed by plugins installed *after*
-`start()` are not picked up; the registry seals at `phase:started`.
+auto-wiring. The carve-out is an *architectural boundary* — auto-wiring
+the events book would re-emit every emission as a `book.clockworks.
+events.created` event, polluting the framework event stream with
+self-feedback that has no consumer. The Stacks substrate now enforces
+a Phase-2 cross-transaction re-entry depth bound that would terminate
+any runaway chain at 16 hops, so the carve-out is no longer the
+load-bearing safety net it once was — but it stays in place to keep
+the events book free of self-feedback in the first place. Future
+maintainers: do not remove the carve-out on the assumption that the
+substrate now covers it. Everything else, including
+`clockworks/event_dispatches`, is auto-wired. Books contributed by
+plugins installed *after* `start()` are not picked up; the registry
+seals at `phase:started`.
 
 Auto-wiring runs as Phase 2 (`failOnError: false`), so an
 emit-handler error cannot roll back the triggering row write — Stacks'

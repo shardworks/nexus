@@ -10,6 +10,34 @@
 
 import type { BookEntry, ChangeEvent, ChangeHandler, WatchOptions } from './types.ts';
 
+// ── Phase-2 re-entry depth error ──────────────────────────────────────
+
+/**
+ * Thrown when the substrate-level Phase-2 cross-transaction re-entry
+ * depth bound trips. Distinct from the Phase-1 cascade-depth error so
+ * log filtering and the conformance regex can route operators to the
+ * correct remediation path (D8): break a Phase-2 cycle by writing to a
+ * non-watched book, or add a state-machine guard so the handler stops
+ * calling itself.
+ *
+ * Re-thrown by `firePhase2`'s per-handler catch (rather than swallowed
+ * with the usual handler-error log) so the bound surfaces past the
+ * registry's catch-and-log block to the original `runTransaction`
+ * caller (D6).
+ */
+export class Phase2DepthExceededError extends Error {
+  constructor(limit: number) {
+    super(
+      `[stacks] Maximum Phase-2 re-entry depth (${limit}) exceeded. ` +
+      `A Phase-2 handler chain re-entered Phase-2 across transaction ` +
+      `boundaries past the substrate bound. Break the cycle by writing ` +
+      `to a non-watched book, or add an in-handler state-machine guard ` +
+      `so the handler stops calling itself.`,
+    );
+    this.name = 'Phase2DepthExceededError';
+  }
+}
+
 // ── Registry entry ────────────────────────────────────────────────────
 
 interface WatcherEntry {
@@ -196,7 +224,14 @@ export class CdcRegistry {
   }
 
   /**
-   * Fire Phase 2 handlers for coalesced events. Errors are logged, not thrown.
+   * Fire Phase 2 handlers for coalesced events. Errors are logged, not
+   * thrown — except for `Phase2DepthExceededError`, which is re-thrown
+   * so the substrate-level cross-transaction re-entry bound surfaces
+   * past this catch-and-log block to the original `runTransaction`
+   * caller (D6). Callers should wrap this invocation with depth
+   * tracking (`enterPhase2Hop` / `exitPhase2Hop` on `StacksCore`); the
+   * gate check itself fires inside `runTransaction` before any backend
+   * transaction is opened.
    */
   async firePhase2(events: ChangeEvent<BookEntry>[]): Promise<void> {
     for (const event of events) {
@@ -204,6 +239,13 @@ export class CdcRegistry {
         try {
           await entry.handler(event);
         } catch (err) {
+          // Phase-2 re-entry bound: surface past the per-handler catch
+          // so the original runTransaction caller sees the failure
+          // rather than having it swallowed and logged like a normal
+          // handler error.
+          if (err instanceof Phase2DepthExceededError) {
+            throw err;
+          }
           const msg = err instanceof Error ? err.message : String(err);
           console.warn(`[stacks] Phase 2 handler error (${event.ownerId}/${event.book}): ${msg}`);
         }

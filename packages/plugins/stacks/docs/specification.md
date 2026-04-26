@@ -402,6 +402,22 @@ This is a safety net, not a design constraint — legitimate cascade trees are u
 
 `MAX_CASCADE_DEPTH` is a hardcoded constant (16). Making it configurable via guild.json is deferred — there is no current use case that requires a different value.
 
+#### Phase-2 cross-transaction re-entry depth limiting
+
+The Phase-1 cascade-depth bound caps handler nesting *within* a single transaction. Phase 2 handlers run *after* commit and each post-commit write opens its own fresh transaction, which resets the Phase-1 counter — so the Phase-1 bound cannot detect a Phase-2 chain that re-enters Phase-2 across transaction boundaries (handler A writes book B, B's Phase-2 handler writes book A, repeat). The Stacks enforces a separate **Phase-2 re-entry depth** that counts post-commit hops in such a chain.
+
+A hop is one invocation of `firePhase2`. The depth counter increments at the firePhase2 boundary and decrements when that hop returns. Before opening any new transaction, the substrate gate-checks the current depth: if a write attempts to open a transaction while the chain is already at the limit, the write is rejected at entry — before the backend transaction is opened — so the write does not commit. The error surfaces past the Phase-2 catch-and-log block to the original `runTransaction` caller.
+
+The default limit is `MAX_PHASE2_REENTRY_DEPTH` (16) — symmetric with the Phase-1 cascade bound and well above the deepest legitimate Phase-2 self-write chain in the framework today (Lattice's pulse dispatcher reaches depth 2 before its in-handler state-machine guard terminates the chain). The Phase-1 and Phase-2 bounds are intentionally orthogonal: they measure different dimensions (handler nesting within a transaction vs. post-commit hops across transactions), and sharing a single budget would false-positive deep cascade graphs.
+
+The error literal mentions **"Phase-2 re-entry depth"** — distinct from the Phase-1 cascade-depth wording so log filtering and the conformance regex can route operators to the correct remediation path. Phase-1 trips usually mean "break a cascade cycle"; Phase-2 trips usually mean "introduce a state-machine guard, or move the write off a watched book."
+
+When a Phase-2 chain trips this bound, **the partial-commit semantics of the chain are preserved**: hops 1..N-1 each committed their own transaction durably and those writes remain. Hop N's write is the one that was rejected by the gate check, so it never commits. This is intentional — Phase 2 commits are independent per hop, and quietly buffering Phase-2 writes into a single rollback unit would change the durability contract.
+
+`MAX_PHASE2_REENTRY_DEPTH` is a hardcoded constant (16), mirroring the Phase-1 precedent. Making it configurable via guild.json is deferred for the same reason — there is no current use case that requires a different value.
+
+**Guideline for handler authors.** The Phase-2 re-entry bound is a *safety net*, not a design constraint. The preferred way to write a Phase-2 handler is to write to a **non-watched book** so no chain can form. If a handler must self-write to its own watched book (for example, a dispatcher that updates its own work item to record delivery state), the handler **owns termination**: it must implement an in-handler state-machine guard so the chain stops calling itself within a small, bounded number of hops. The canonical example is Lattice's pulse dispatcher (`packages/plugins/lattice/src/lattice.ts`), which transitions a pulse from `pending` to a terminal `delivered`/`failed` state and ignores updates that arrive in any non-`pending` state — so the chain terminates at depth 2 by construction. Authors should treat the substrate bound as a CPU-pin guard, not as license to write chains that approach 16 hops.
+
 #### Example: transactional writ status cascade
 
 A parent writ is cancelled. The cascade handler cancels all non-terminal children. All changes commit atomically — if any child update fails, the parent cancellation is also rolled back.
@@ -851,3 +867,6 @@ The Stacks tracks a `locked` flag on the CDC registry. Arbor fires `phase:starte
 
 **Q: Cascade cycle detection?**
 Handled via cascade depth limiting (§6.3). A counter in the transaction context is incremented on each nested Phase 1 handler invocation. If it exceeds `MAX_CASCADE_DEPTH` (hardcoded at 16), the write throws and the entire transaction rolls back. This catches accidental cycles without requiring graph analysis.
+
+**Q: What about Phase-2 chains that re-enter Phase 2 across transaction boundaries?**
+Handled via the **Phase-2 re-entry depth bound** (§6.3). The Phase-1 cascade-depth counter resets when each Phase-2 handler opens its own post-commit transaction, so it cannot detect a chain that loops across transactions (a Phase-2 handler whose write triggers another Phase-2 hop, indefinitely). A separate counter tracks `firePhase2` hops at the substrate level; if a write attempts to open a new transaction while the chain has already reached `MAX_PHASE2_REENTRY_DEPTH` (hardcoded at 16) hops, the gate check rejects the write before it commits. The error message mentions **"Phase-2 re-entry depth"** — distinct from the Phase-1 wording — so log filtering and conformance assertions can route to the right remediation path. Hops 1..N-1 commit durably (Phase 2 commits are independent per hop); only hop N's write is rejected. This is a safety net beneath the spec's preferred design — write to a non-watched book, or guard the self-write with an in-handler state machine (see Lattice's pulse dispatcher for the canonical example).

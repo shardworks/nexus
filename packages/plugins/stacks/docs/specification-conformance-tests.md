@@ -417,6 +417,41 @@ Note: the handler fires on *every* event type (create, update, delete) — there
 
 This is a **required** test, not optional. Cascade depth limiting is a safety invariant.
 
+### 2.14a-phase2 Phase-2 cross-transaction re-entry depth limiting prevents infinite chains
+
+```
+// Pre-seed a document so the put triggers an update (not a create)
+put({ id: 'a', counter: 0 })
+
+// Phase-2 handler self-cycles: each post-commit hop opens a fresh
+// transaction that triggers the next hop. The Phase-1 cascade-depth
+// counter resets at every hop, so the Phase-2 bound is the only thing
+// that can terminate the chain.
+watch('owner', 'book', async (event) => {
+  if (event.type === 'delete') return
+  const stacks = guild().apparatus<StacksApi>('stacks')
+  const book = stacks.book('owner', 'book')
+  await book.put({ ...event.entry, counter: (event.entry.counter ?? 0) + 1 })
+}, { failOnError: false })
+
+put({ id: 'a', counter: 1 })
+  → should reject with an error mentioning "Phase-2 re-entry depth"
+  (NOT the Phase-1 cascade-depth wording — distinct error literal per D8)
+
+get('a') → counter advanced past the seed, but stopped at the substrate
+  bound (e.g., counter === MAX_PHASE2_REENTRY_DEPTH) — hops 1..N-1
+  committed durably; hop N's write was rejected at the gate check
+  before its transaction was opened (D10 partial-commit)
+```
+
+Sibling to **2.14a**. The Phase-1 cascade bound caps handler nesting *within* a transaction; this test exercises the orthogonal **Phase-2 re-entry depth bound** that caps post-commit hops *across* transactions. The two bounds are intentionally separate — a single handler chain that writes back to its own watched book through Phase 2 can re-enter Phase 2 indefinitely, and the per-transaction Phase-1 counter resets at every hop.
+
+The error literal must mention **"Phase-2 re-entry depth"** and must not collide with the Phase-1 cascade-depth wording — distinct messages let log filtering and operators route to the correct remediation path (Phase 1 → break the cycle; Phase 2 → introduce a state-machine guard or move off a watched book).
+
+The partial-commit assertion is load-bearing: Phase-2 commits are independent per hop, and the test's pre-seeded counter advances past its initial value because each hop's write does commit before the next hop is rejected. A future implementation that quietly buffers Phase-2 writes into a single rollback unit would break this assertion — and would change the durability contract.
+
+This is a **required** test, not optional. The Phase-2 re-entry bound is a safety invariant — without it, a handler that accidentally self-writes through Phase 2 will pin the CPU rather than failing loud.
+
 ### 2.14b Transaction context survives across await boundaries in Phase 1 handlers
 
 ```

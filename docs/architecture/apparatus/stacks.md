@@ -250,7 +250,15 @@ Handlers access the Stacks through the normal `guild().apparatus<StacksApi>('sta
 
 ### Cascade depth limiting
 
-A depth counter prevents infinite recursion from accidental handler cycles. Default limit is 16, configurable via `"stacks": { "maxCascadeDepth": 32 }` in `guild.json`. Exceeding the limit throws and rolls back the entire transaction.
+The substrate enforces **two independent depth bounds** to catch handler chains that would otherwise pin the CPU. They measure orthogonal dimensions and use distinct error literals so log filtering and operators can route to the correct remediation path.
+
+**Phase-1 cascade depth (`MAX_CASCADE_DEPTH`, default 16).** A counter in the *transaction context* increments each time a Phase 1 handler triggers a nested write *within* the same transaction. Exceeding the limit throws and rolls back the entire transaction. Catches cycles like "A's handler updates B, B's handler updates A" that would otherwise recurse forever inside one atomic unit.
+
+**Phase-2 cross-transaction re-entry depth (`MAX_PHASE2_REENTRY_DEPTH`, default 16).** A separate counter on the substrate tracks the number of `firePhase2` hops in a single chain. Phase 2 handlers run *after* commit, and each handler write opens its own fresh transaction — which resets the Phase-1 counter — so the Phase-1 bound cannot detect a Phase-2 chain that re-enters Phase 2 across transaction boundaries. The substrate gate-checks this counter when a write attempts to open a new transaction inside a Phase-2 chain: if the chain has already reached the limit, the write is rejected at entry and never commits. The error message mentions **"Phase-2 re-entry depth"** — distinct from the Phase-1 wording per the spec's D8.
+
+**Partial-commit semantics on a Phase-2 trip.** Phase-2 commits are independent per hop: hops 1..N-1 each committed their own transaction durably and those writes remain. Only hop N's write — the one that would have launched a hop past the limit — is rejected. The error surfaces past the Phase-2 catch-and-log block to the original `runTransaction` caller. A future implementation must preserve this partial-commit shape; quietly buffering Phase-2 writes into a single rollback unit would change the durability contract.
+
+Both limits are hardcoded constants in the Stacks core. The vestigial `maxCascadeDepth` configuration row above is a documentation artifact — neither bound is wired into `guild.json` today.
 
 ### CDC event coalescing
 

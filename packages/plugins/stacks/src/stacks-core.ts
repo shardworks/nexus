@@ -30,13 +30,37 @@ import type {
   ChangeHandler,
 } from './types.ts';
 
-import { CdcRegistry, coalesceEvents, type BufferedEvent } from './cdc.ts';
+import {
+  CdcRegistry,
+  coalesceEvents,
+  Phase2DepthExceededError,
+  type BufferedEvent,
+} from './cdc.ts';
 import { translateQuery, translateWhereClause } from './query.ts';
 import { normalizeOrderBy, compareByOrderEntries } from './field-utils.ts';
 
 // ── Constants ────────────────────────────────────────────────────────
 
+/**
+ * Phase-1 cascade-depth bound — caps in-transaction handler nesting so
+ * a Phase-1 watcher that re-triggers itself cannot pin the CPU. Counted
+ * per-transaction inside `ActiveTransaction.depth`.
+ */
 const MAX_CASCADE_DEPTH = 16;
+
+/**
+ * Phase-2 cross-transaction re-entry depth bound — caps the number of
+ * post-commit handler hops in a single Phase-2 chain. The Phase-1 guard
+ * resets when each Phase-2 handler opens its own transaction, so a
+ * separate counter is required to bound Phase-2 cycles. Counted at the
+ * `firePhase2` boundary inside `phase2Depth` (D3, D4, D5).
+ *
+ * The two bounds are intentionally orthogonal: Phase-1 measures handler
+ * nesting within one transaction; Phase-2 measures post-commit hops
+ * across transactions. Sharing a single budget would false-positive
+ * deep cascade graphs.
+ */
+const MAX_PHASE2_REENTRY_DEPTH = 16;
 
 // ── Active transaction state ──────────────────────────────────────────
 
@@ -104,6 +128,17 @@ export class StacksCore {
   private readonly cdc = new CdcRegistry();
   private activeTx: ActiveTransaction | null = null;
 
+  /**
+   * Phase-2 cross-transaction re-entry depth (D2). Mirrors the
+   * `activeTx` instance-field pattern — single-flight per apparatus
+   * instance, no AsyncLocalStorage. Incremented when entering a
+   * `firePhase2` invocation and decremented on exit; gate-checked at
+   * the next `runTransaction` entry so a runaway Phase-2 self-write
+   * chain fails loud rather than pinning the CPU. See `runTransaction`
+   * for the gate check (D6) and the firePhase2 wrapper (D5).
+   */
+  private phase2Depth = 0;
+
   constructor(readonly backend: StacksBackend) {}
 
   /**
@@ -160,6 +195,18 @@ export class StacksCore {
       return fn(txCtx);
     }
 
+    // Phase-2 cross-transaction re-entry bound (gate-entry, D5/D6).
+    // If we're being entered from within a Phase-2 handler chain that
+    // has already accumulated MAX_PHASE2_REENTRY_DEPTH hops, refuse to
+    // open a new backend transaction so the offending handler write is
+    // rejected (D10 partial-commit) and the chain terminates loud.
+    // The throw fires before the try/catch below so the existing
+    // rollback path — which only handles tx-level failures — is not
+    // engaged for a transaction that was never opened.
+    if (this.phase2Depth >= MAX_PHASE2_REENTRY_DEPTH) {
+      throw new Phase2DepthExceededError(MAX_PHASE2_REENTRY_DEPTH);
+    }
+
     // Create new transaction
     const backendTx = this.backend.beginTransaction();
     const eventBuffer: BufferedEvent[] = [];
@@ -173,8 +220,18 @@ export class StacksCore {
       const coalesced = coalesceEvents(eventBuffer);
       this.activeTx = null;
 
-      // Fire Phase 2 handlers (after commit)
-      await this.cdc.firePhase2(coalesced);
+      // Fire Phase 2 handlers (after commit). Wrap with depth tracking
+      // so the substrate-level cross-transaction re-entry bound (D5)
+      // sees the correct hop count when a handler triggers another
+      // Phase-2 chain. The increment must happen even though the gate
+      // check fires in the *next* runTransaction call — that next call
+      // reads `phase2Depth` to decide whether to refuse the write.
+      this.phase2Depth++;
+      try {
+        await this.cdc.firePhase2(coalesced);
+      } finally {
+        this.phase2Depth--;
+      }
 
       return result;
     } catch (err) {

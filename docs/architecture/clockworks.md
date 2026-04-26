@@ -73,6 +73,8 @@ This means any book mutation from any plugin is observable via standing orders w
 { "on": "book.clerk.writs.updated", "run": "audit-writ-changes" }
 ```
 
+**Carve-out: `clockworks/events` is intentionally not auto-wired.** A watcher on the events book would observe its own `emit()` write and re-emit it as `book.clockworks.events.created`, polluting the framework event stream with feedback noise that has no consumer. The carve-out is an *architectural boundary* that keeps the events book clean — it is **not** the loop-protection mechanism. The Stacks substrate now enforces a Phase-2 cross-transaction re-entry depth bound (`MAX_PHASE2_REENTRY_DEPTH`, default 16; see [Cascade depth limiting](apparatus/stacks.md#cascade-depth-limiting)) that would catch any runaway Phase-2 self-write chain — including the events-book scenario — at the substrate level. Future maintainers: do not remove the Clockworks carve-out on the assumption that the substrate now covers it. The two serve different purposes — the substrate caps depth as a CPU-pin guard; the carve-out keeps the events book free of self-feedback in the first place. Removing the carve-out would buy nothing and would lose a useful boundary.
+
 ---
 
 ### Standing Orders

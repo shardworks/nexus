@@ -384,6 +384,75 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       assert.deepStrictEqual(result, { id: 'a', counter: 0 });
     });
 
+    it('2.14a-phase2 Phase-2 cross-transaction re-entry depth limiting prevents infinite chains', async () => {
+      // Sibling to 2.14a: the Phase-1 cascade-depth bound caps handler
+      // nesting *within* a transaction. The Phase-2 bound caps chains
+      // of post-commit hops where each handler's write opens a fresh
+      // transaction (so the Phase-1 counter resets at each hop). The
+      // test installs a self-cycling Phase-2 watcher and verifies:
+      //   (a) the substrate-level Phase-2 bound trips with a distinct
+      //       error literal mentioning "Phase-2 re-entry depth" (D8),
+      //   (b) hops 1..N-1 committed durably (D10 partial-commit) — the
+      //       counter advances past the seeded value but stops at the
+      //       last successfully committed hop,
+      //   (c) the chain terminates within bounded wall time (the test
+      //       runner's per-test timeout asserts this implicitly — an
+      //       unbounded chain would hang forever).
+      seedDocument(t.backend, REF, { id: 'a', counter: 0 });
+
+      t.stacks.watch(OWNER, BOOK, async (event) => {
+        if (event.type !== 'delete') {
+          const book = t.stacks.book<BookEntry>(OWNER, BOOK);
+          await book.put({
+            ...event.entry,
+            counter: ((event.entry as any).counter ?? 0) + 1,
+          });
+        }
+      }, { failOnError: false });
+
+      const book = t.stacks.book<BookEntry>(OWNER, BOOK);
+      const start = Date.now();
+
+      // (a) Distinct error literal — must mention "Phase-2 re-entry depth"
+      // and must NOT match the Phase-1 cascade-depth wording. The Phase-1
+      // regex from 2.14a is /cascade depth|Maximum cascade depth/ — the
+      // Phase-2 regex below is intentionally disjoint.
+      await assert.rejects(
+        () => book.put({ id: 'a', counter: 1 }),
+        /Phase-2 re-entry depth/,
+      );
+
+      // (c) Bounded wall time — guard against a future implementation
+      // accidentally letting the chain run further than expected (a
+      // tighter local bound than the test runner's default).
+      const elapsed = Date.now() - start;
+      assert.ok(
+        elapsed < 5000,
+        `Phase-2 chain should terminate within bounded wall time; took ${elapsed}ms`,
+      );
+
+      // (b) Partial-commit semantics — the initial trigger committed
+      // (counter=1), then N-1 successful Phase-2 hops each advanced the
+      // counter by 1 before hop N's write was rejected. The exact final
+      // value depends on the substrate's MAX_PHASE2_REENTRY_DEPTH. We
+      // assert the *shape* (advanced past seed, well below an unbounded
+      // run) rather than pinning the exact constant — that lives in
+      // stacks-core.ts and is intentionally not re-exported.
+      const result = await book.get('a');
+      assert.notStrictEqual(result, null, 'document should still exist');
+      const finalCounter = (result as any).counter as number;
+      assert.ok(
+        finalCounter > 1,
+        `expected counter to advance past seed via committed Phase-2 hops, ` +
+        `got ${finalCounter}`,
+      );
+      assert.ok(
+        finalCounter < 1000,
+        `expected counter to stop at the substrate bound, but it ran to ${finalCounter} — ` +
+        `the Phase-2 re-entry bound did not contain the chain`,
+      );
+    });
+
     it('2.14b Transaction context survives across await boundaries in Phase 1 handlers', async () => {
       const bookNameA = 'booksa';
       const bookNameB = 'booksb';

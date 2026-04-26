@@ -399,10 +399,20 @@ export function createClockworks(): Plugin {
         // the Stacks CDC registry seals at `phase:started`; no later
         // registration is possible.
         //
-        // Carve-out: `clockworks/events` is excluded. A watcher on the
-        // events book would observe its own emit() write and re-emit
-        // forever — Stacks' per-transaction cascade-depth guard does
-        // not protect across transactions. Every other book — including
+        // Carve-out: `clockworks/events` is excluded. This is an
+        // *architectural boundary* — auto-wiring the events book would
+        // pollute the framework event stream with `book.clockworks.
+        // events.created` rows describing the very acts of emission,
+        // which is feedback noise without a consumer. The Stacks
+        // substrate now enforces a Phase-2 cross-transaction re-entry
+        // depth bound (`MAX_PHASE2_REENTRY_DEPTH` in `stacks-core.ts`)
+        // that would terminate any runaway loop, so this carve-out is
+        // no longer the load-bearing safety net it once was — the
+        // substrate is. Future maintainers: do not remove the carve-out
+        // on the assumption that the substrate now covers it. The two
+        // serve different purposes: the substrate caps depth; the
+        // carve-out keeps the events book free of self-feedback in the
+        // first place. Every other book — including
         // `clockworks/event_dispatches` — is auto-wired.
         //
         // Phase 2 (failOnError: false): the handler runs after the
