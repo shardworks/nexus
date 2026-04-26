@@ -49,7 +49,7 @@
  */
 
 import type { ChangeEvent, ReadOnlyBook } from '@shardworks/stacks-apparatus';
-import type { WritDoc, WritPhase } from '@shardworks/clerk-apparatus';
+import type { WritDoc } from '@shardworks/clerk-apparatus';
 
 import type { ClockworksApi } from './types.ts';
 
@@ -61,10 +61,19 @@ const FRAMEWORK_EMITTER = 'framework';
 /**
  * Map a writ target phase to the writ-lifecycle suffix from the catalog.
  *
- * Returns null for phases that are not part of the catalog
- * (`new`, `cancelled`).
+ * Accepts any phase string — `WritDoc.phase` is structurally typed as
+ * `string` since plugin-registered writ types may carry non-canonical
+ * state names (commit b98151f). Returns null for phases that are not
+ * part of the catalog (`new`, `cancelled`, and any non-canonical phase
+ * registered by a plugin), which the caller treats as "emit nothing".
+ *
+ * Non-canonical phases will need their own observation story (catalog
+ * expansion, plugin-specific observer, etc.); silently ignoring them
+ * here preserves the universal-lifecycle contract for canonical-phase
+ * writs (mandate plus any plugin type that adopts the canonical state
+ * names) while staying safe for the rest.
  */
-function lifecycleSuffix(phase: WritPhase): string | null {
+function lifecycleSuffix(phase: string): string | null {
   switch (phase) {
     case 'open':
       return 'ready';
@@ -76,6 +85,8 @@ function lifecycleSuffix(phase: WritPhase): string | null {
       return 'failed';
     case 'new':
     case 'cancelled':
+      return null;
+    default:
       return null;
   }
 }
