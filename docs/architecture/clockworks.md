@@ -21,7 +21,7 @@ An event is an immutable fact: *this happened*.
 }
 ```
 
-Events are persisted to the Clockworks' own event queue immediately when signaled. They do not carry intent — they carry record. An event says "this occurred"; it does not say "therefore do this." That causal link lives in standing orders. The event and dispatch tables are internal Clockworks operational state — not part of the guild's Books (Register, Ledger, Daybook).
+Events are persisted to the Clockworks' own event queue immediately when signaled. They do not carry intent — they carry record. An event says "this occurred"; it does not say "therefore do this." That causal link lives in standing orders. The event and dispatch books are internal Clockworks operational state — Stacks books contributed by the apparatus's `supportKit`, distinct from the guild's curated Books (Register, Ledger, Daybook). The distinction is curatorial, not architectural: every persistent collection in the guild is a Stacks book; the curated trio is the human-readable surface, while the Clockworks' two books are operational machinery.
 
 #### Framework events
 
@@ -316,33 +316,76 @@ Animas cannot signal framework events (`anima.*`, `commission.*`, `tool.*`, `ses
 
 ---
 
-## Clockworks Schema
+## Clockworks Books
 
-```sql
--- Event log: immutable fact record
-CREATE TABLE events (
-  id         INTEGER PRIMARY KEY,
-  name       TEXT NOT NULL,
-  payload    TEXT,                    -- JSON
-  emitter    TEXT NOT NULL,           -- anima name, engine name, or 'framework'
-  fired_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  processed  INTEGER NOT NULL DEFAULT 0   -- 0=pending, 1=processed
-);
+The Clockworks apparatus contributes two books to The Stacks via its `supportKit.books` block: `events` (the immutable fact record) and `event_dispatches` (the per-handler execution log). Both are Stacks-owned books in the literal sense — JSON documents addressed by `id`, queried through the `Book` interface, and observable through CDC. There is no per-field SQL surface to bind against; field-level access happens through the `BookQuery` language documented in [stacks.md](apparatus/stacks.md#query-language), and only declared indexes are guaranteed to be efficient.
 
--- Execution log: what ran in response to each event
-CREATE TABLE event_dispatches (
-  id           INTEGER PRIMARY KEY,
-  event_id     INTEGER NOT NULL REFERENCES events(id),
-  handler_type TEXT NOT NULL,          -- 'relay' or 'anima' (relays are stored as 'engine' in older schemas)
-  handler_name TEXT NOT NULL,          -- relay name or resolved anima name
-  target_role  TEXT,                   -- role name (anima orders only; handler_name is the resolved anima)
-  notice_type  TEXT,                   -- 'summon' | null (historical; present on summon relay dispatches)
-  started_at   DATETIME,
-  ended_at     DATETIME,
-  status       TEXT,                   -- 'success' | 'error'
-  error        TEXT
-);
+### `events`
+
+One document per emission. The Clockworks assigns the id, records the emitter and fire time, and flips `processed` to `true` once every matching standing order has been dispatched (or the event has been found to match no order).
+
+```typescript
+interface EventDoc extends BookEntry {
+  /** Unique event id (`e-<base36_ts>-<hex>`). Sortable by creation time. */
+  id: string;
+  /** Event name — `{pluginId}.{kebab-suffix}` for framework events; same grammar for operator-defined events. */
+  name: string;
+  /** Structured payload. Shape is keyed by event name; the Clockworks does not enforce a schema in Phase 1. */
+  payload: unknown;
+  /** Plugin id of the emitter that produced this event. */
+  emitter: string;
+  /** ISO timestamp when the event was emitted. */
+  firedAt: string;
+  /** Whether every matching standing order has been dispatched. The runner flips this to true after dispatch. */
+  processed: boolean;
+}
 ```
+
+**Declared indexes:** `name`, `processed`, `firedAt`, and the compound `['processed', 'firedAt']` (used by the dispatcher to drain pending events oldest-first).
+
+### `event_dispatches`
+
+One document per handler invocation triggered by an event. Each standing order that matches an event produces exactly one dispatch document; the document carries its own lifecycle from `pending` through one of the three terminal states.
+
+```typescript
+interface EventDispatchDoc extends BookEntry {
+  /** Unique dispatch id (`d-<base36_ts>-<hex>`). */
+  id: string;
+  /** Id of the event that produced this dispatch — references an `EventDoc.id`. */
+  eventId: string;
+  /** Whether this dispatch runs a relay or summons an anima session. */
+  handlerType: 'relay' | 'anima';
+  /** Relay name for `handlerType: 'relay'`; resolved role id for `handlerType: 'anima'`. */
+  handlerName: string;
+  /** Role id the anima session is opened in; always null for `handlerType: 'relay'`. */
+  targetRole: string | null;
+  /** Emitted pulse kind, if the dispatcher raised a notice (e.g. a summon invitation); null otherwise. */
+  noticeType: 'summon' | null;
+  /** ISO timestamp when handler execution began, or null while pending. */
+  startedAt: string | null;
+  /** ISO timestamp when handler execution ended, or null if still pending. */
+  endedAt: string | null;
+  /** Lifecycle state of this dispatch — see the four-state table below. */
+  status: 'pending' | 'success' | 'error' | 'skipped';
+  /** Error text when `status === 'error'`; loop-guard reason (prefixed `loop-guard:`) when `status === 'skipped'`; null otherwise. */
+  error: string | null;
+}
+```
+
+**Status lifecycle.** The dispatcher writes one of four states:
+
+| State | When the dispatcher writes it |
+|---|---|
+| `pending` | Dispatch row created; handler not yet attempted. |
+| `success` | Handler ran and returned without throwing. |
+| `error` | Handler threw, or the standing order's `run:` name did not resolve to a registered relay. |
+| `skipped` | The dispatcher's loop-guard policy elided the invocation (e.g. the triggering event was itself a `standing-order.failed`). The relay was not called and no `standing-order.failed` event was emitted; this is policy suppression, not a failure, and must not count toward operator error metrics. |
+
+**Declared indexes:** `eventId`, `status`, and the compound `['eventId', 'status']`.
+
+### Source of truth
+
+The interface declarations above mirror `EventDoc` and `EventDispatchDoc` in `packages/plugins/clockworks/src/types.ts` (exported from `@shardworks/clockworks-apparatus`) — that file is the field-level source of truth, and any divergence here is a defect against it. The index sets mirror the `supportKit.books` block in `packages/plugins/clockworks/src/clockworks.ts`. For the Book API, query language, CDC semantics, and backing store, see [The Stacks — API Contract](apparatus/stacks.md).
 
 ---
 
