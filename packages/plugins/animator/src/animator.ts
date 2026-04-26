@@ -35,7 +35,7 @@ import type {
 
 import { sessionList, sessionShow, summon as summonTool, sessionCancel, sessionRunning, sessionRecord, sessionHeartbeat, animatorStatus } from './tools/index.ts';
 import { animatorRoutes } from './oculus-routes.ts';
-import { cleanupLegacyStatusBook, drainDlq, recoverOrphans } from './startup.ts';
+import { drainDlq, recoverOrphans } from './startup.ts';
 import {
   DISPATCH_STATUS_DOC_ID,
   buildPrecheckRejectionResult,
@@ -864,21 +864,6 @@ export function createAnimator(): Plugin {
           probe: createResumeProbeTracker(),
         });
         setBackoffMachine({ observeTerminal: backoff.observeTerminal });
-
-        // One-shot legacy cleanup: drop the orphan
-        // `books_animator_status` table left behind by installs that
-        // ran the Animator before commit 6cb832a relocated the dispatch
-        // status doc into the shared `animator/state` book. Idempotent
-        // and best-effort — failure here must not block startup. Runs
-        // before the eager backoff.read() so any port-forwarded audit
-        // fields are visible to the first peek().
-        try {
-          await cleanupLegacyStatusBook(g.home, dispatchStatusBook);
-        } catch (err) {
-          console.warn(
-            `[animator] Legacy status-book cleanup failed: ${err instanceof Error ? err.message : err}`,
-          );
-        }
 
         // Register the session-lifecycle emitter so the detached
         // `handleSessionRecord` path can fire `session.ended` and
