@@ -67,6 +67,24 @@ import type {
   VisionStage,
 } from './types.ts';
 
+import {
+  visionCreate,
+  visionShow,
+  visionList,
+  visionPatch,
+  visionTransition,
+  chargeCreate,
+  chargeShow,
+  chargeList,
+  chargePatch,
+  chargeTransition,
+  pieceCreate,
+  pieceShow,
+  pieceList,
+  piecePatch,
+  pieceTransition,
+} from './tools/index.ts';
+
 // ── Writ-type configs ────────────────────────────────────────────────
 //
 // Six-state mandate-clone byte-shape, identical to astrolabe's
@@ -614,6 +632,29 @@ export function createCartograph(): Plugin {
           charges: { indexes: ['stage', 'codex', 'createdAt'] },
           pieces: { indexes: ['stage', 'codex', 'createdAt'] },
         },
+
+        // Cartograph contributes 15 patron-facing CLI tools — one per
+        // (type × operation) pair across vision/charge/piece × create/
+        // show/list/patch/transition. The framework `nsg` auto-builder
+        // discovers them via The Instrumentarium and groups them by
+        // hyphen prefix automatically (D2/D3 in the commission spec).
+        tools: [
+          visionCreate,
+          visionShow,
+          visionList,
+          visionPatch,
+          visionTransition,
+          chargeCreate,
+          chargeShow,
+          chargeList,
+          chargePatch,
+          chargeTransition,
+          pieceCreate,
+          pieceShow,
+          pieceList,
+          piecePatch,
+          pieceTransition,
+        ],
       },
 
       provides: api,

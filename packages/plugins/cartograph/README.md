@@ -7,9 +7,10 @@ decomposition, the unit of patron walkthrough) → **piece** (recursive,
 internal organization, self-nesting) → **mandate** (the existing leaf
 where rigs attach).
 
-This commission lands the **data-and-typed-API substrate only**. There is
-no agent runtime, no CLI surface, and no downstream consumer in this
-package — those land in follow-on commissions. What ships here:
+This commission lands the **data-and-typed-API substrate plus a
+patron-facing CLI**. There is no agent runtime and no downstream
+consumer in this package — those land in follow-on commissions. What
+ships here:
 
 - Three new writ types contributed to the Clerk: `vision`, `charge`,
   `piece`. Each uses a six-state mandate-clone lifecycle (no
@@ -28,6 +29,14 @@ package — those land in follow-on commissions. What ships here:
   parent-type checks — the typed API is the validator. The mandate-side
   rules (mandate may attach under any non-terminal node) stay where they
   are.
+- A patron-facing CLI surface contributed via `supportKit.tools` —
+  three subcommand groups (`nsg vision`, `nsg charge`, `nsg piece`),
+  each with five operations (`create`, `show`, `list`, `patch`,
+  `transition`). The framework `nsg` auto-builder discovers the tools
+  at startup and groups them by hyphen prefix; no edits to the framework
+  CLI package are required. Every tool routes through the typed API
+  above, so the parent invariants and lifecycle coupling hold for
+  CLI-driven authoring.
 
 The Cartograph requires `stacks` and `clerk` and recommends `oculus`. The
 Oculus writs page automatically renders the new types via the
@@ -170,15 +179,43 @@ Each writ type uses a six-state mandate-clone lifecycle:
 `new` (initial) → `open` (active) → `stuck`/`completed`/`failed`/`cancelled`;
 no `childrenBehavior` cascade.
 
+## CLI
+
+Cartograph contributes three subcommand groups to `nsg` — one per writ
+type — with the same five operations under each:
+
+| Command | Description |
+|---|---|
+| `nsg vision create --title <t> --body <b> [--codex <c>]` | Create a top-level vision (writ at `phase: new`, doc at `stage: draft`). |
+| `nsg charge create --parent-id <vision> --title <t> --body <b> [--codex <c>]` | Create a charge under a vision. |
+| `nsg piece create --parent-id <charge\|piece> --title <t> --body <b> [--codex <c>]` | Create a piece under a charge or piece (self-nests). |
+| `nsg <type> show <id> [--format text\|json]` | Show the companion doc joined with the writ row. Text mode mirrors `nsg writ show`'s lifecycle-aware block; JSON returns `{ ...doc, writ: { ... } }`. |
+| `nsg <type> list [--stage <s>] [--codex <c>] [--limit <n>] [--offset <n>] [--format text\|json]` | Tabular list (STAGE \| ID \| CODEX \| TITLE \| CREATED) ordered by `createdAt desc`. |
+| `nsg <type> patch <id> --codex <c>` | Patch the companion doc's `codex`. Title and body live on the writ row — edit them via `nsg writ edit`. |
+| `nsg <type> transition <id> --phase <writ-phase> --stage <doc-stage> [--resolution <r>]` | Atomically advance both `writ.phase` and the companion doc's `stage` inside one Stacks transaction. Both `--phase` and `--stage` are required because a single phase may map to multiple stages depending on context. |
+
+The CLI tools are read or write according to operation: `show`/`list`
+declare `permission: 'read'`; `create`/`patch`/`transition` declare
+`permission: 'write'`. Every tool declares `callableBy: ['patron']` —
+they are not exposed to anima or library callers in this commission.
+Only `show` and `list` accept the `--format text|json` flag; write
+tools return their result directly and the framework auto-stringifies.
+
+Short-prefix id resolution (via `clerk.resolveId`) works on every
+id-bearing flag: `nsg vision show w-mo123` and
+`nsg charge create --parent-id w-mo123` both succeed when the prefix
+matches a single writ.
+
 ## What is *not* in this commission
 
 - No vision-keeper agent runtime. `vision-keeper.md` is a placeholder
   stub; the agent runtime ships in a separate commission.
-- No CLI commands (`nsg vision`, `nsg charge`, `nsg piece`).
+- No per-type tree command. `nsg writ tree --type vision` already
+  renders the writ-level shape; the cartograph-aware tree renderer
+  (with stage badges per row) is a future commission.
 - No pages — the Oculus writs page auto-renders the new types via its
   type-vocabulary helper.
-- No tools, no `tools-apparatus` dependency.
 - No link kinds — parent edges flow through `writ.parentId`. Typed link
   kinds are deferred.
-- No `childrenBehavior` cascade — patron-walkthrough semantics will be
+- No `childrenBehavior` cascade — patron-walkthrough semantics are
   coordinated by the typed API and downstream consumers.

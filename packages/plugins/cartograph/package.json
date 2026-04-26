@@ -22,7 +22,9 @@
   },
   "dependencies": {
     "@shardworks/stacks-apparatus": "workspace:*",
-    "@shardworks/clerk-apparatus": "workspace:*"
+    "@shardworks/clerk-apparatus": "workspace:*",
+    "@shardworks/tools-apparatus": "workspace:*",
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@shardworks/nexus-core": "workspace:*",
