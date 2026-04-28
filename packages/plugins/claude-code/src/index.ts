@@ -132,9 +132,10 @@ const provider: AnimatorSessionProvider = {
       return;
     }
 
-    // Unknown kind — log and skip
+    // Unknown kind — log and skip. Use process.stderr.write to match the
+    // package's other diagnostic sites; semantic behavior is unchanged.
     if (kind) {
-      console.warn(`[claude-code] Unknown cancelHandle kind: ${kind}`);
+      process.stderr.write(`[claude-code] Unknown cancelHandle kind: ${kind}\n`);
     }
   },
 
