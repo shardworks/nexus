@@ -3,9 +3,10 @@
 Status: **Draft**
 
 Owner plugin: `reckoner` · Book name: `reckonings` · Sibling docs:
+[apparatus/reckoner.md](apparatus/reckoner.md),
+[petitioner-registration.md](petitioner-registration.md),
 [clockworks.md](clockworks.md), [apparatus/lattice.md](apparatus/lattice.md),
 [apparatus/animator.md](apparatus/animator.md),
-[apparatus/reckoner.md](apparatus/reckoner.md),
 [apparatus/sentinel.md](apparatus/sentinel.md).
 
 > **⚠️ Forward-looking design.** This document specifies the
@@ -35,12 +36,12 @@ produce no row.
 
 This means **absence-of-row is itself a signal**: a patron, a
 downstream petitioner, or a future ethnographer asking "what has the
-Reckoner decided about this petition?" gets the answer from the rows
-that exist; the lack of any row for a petition since timestamp T means
-"the Reckoner has not reached it yet, or no condition has changed
-that warranted re-evaluation."
+Reckoner decided about this writ?" gets the answer from the rows that
+exist; the lack of any row for a writ since timestamp T means "the
+Reckoner has not reached it yet, or no condition has changed that
+warranted re-evaluation."
 
-*Which* petitions get weighed on a given tick — and the per-tick
+*Which* held writs get weighed on a given tick — and the per-tick
 budget that bounds how far down the priority order the Reckoner walks
 — is a Reckoner-core scoping-policy decision, not a journal-schema
 decision, and lives in the Reckoner-core commission. The schema here
@@ -49,11 +50,22 @@ priority-bounded walk; the journal records what was considered, not
 the policy that picked it.
 
 This doc settles the schema, the index set, the retention stance, the
-CDC attachment, and the conceptual framing relative to the
-petition-state book that lives next door. It is decision-supporting
+CDC attachment, and the conceptual framing relative to Clerk's writs
+book (where held petitions actually live). It is decision-supporting
 prose only — downstream Reckoner-core implementers consume this design
 as a settled contract; no code, schema declaration, plugin manifest, or
 `guild.json` block ships from this commission.
+
+> **Petition-as-writ framing.** Per the
+> [Reckoner contract](apparatus/reckoner.md), a "petition" is **a writ
+> in `new` phase carrying `ext['reckoner']`**. There is no separate
+> petitions book — held petitions live in `clerk/writs`, and approval
+> is a phase transition (`new` → `open`), not a record-creation step.
+> The Reckonings book is the **only** book this design adds; the
+> materialized state-of-the-world lives in `clerk/writs`. Throughout
+> this doc, "writ" is the unit of consideration; "petition" survives
+> as informal vocabulary for "writ in `new` phase carrying Reckoner
+> ext."
 
 ---
 
@@ -84,65 +96,109 @@ Every Reckonings record carries a four-state `outcome`:
 'accepted' | 'deferred' | 'declined' | 'no-op'
 ```
 
-- **accepted** — the Reckoner created a writ for the petition and
-  flipped the petition state to `accepted`. The resulting writ flows
-  into the standard rig pipeline (Distiller → Sage → Artificer), same
-  as a patron-posted commission.
-- **deferred** — the Reckoner held the petition until a wake-up signal
-  fires, with structured reason metadata (see below).
-- **declined** — the Reckoner rejected the petition on validity
-  grounds. The decline scope is intentionally narrow (see Decline
-  Reasons) — "this work isn't worth doing on merit" is patron
-  territory and produces a `withdrawn` transition by the patron, not
-  a Reckoner-issued decline.
-- **no-op** — the Reckoner re-weighed the petition this tick against
-  changed conditions and chose to hold without a state transition.
-  Typical examples: a deferred petition's wake-up signal fired and the
-  Reckoner re-evaluated but still held; a sibling resolution shifted
-  the priority queue and the Reckoner re-checked this petition's
+- **accepted** — the Reckoner transitioned the writ from `new` to
+  `open` (or the writ type's equivalent active phase). Spider then
+  picks the writ up and dispatches via the standard rig pipeline
+  (Distiller → Sage → Artificer), same as any patron-posted
+  commission. The writ existed before the Reckoner saw it; acceptance
+  is a phase transition, not a record creation.
+- **deferred** — the Reckoner left the writ in `new` until a wake-up
+  signal fires, with structured reason metadata (see below). No phase
+  transition; the writ continues to sit in `new` waiting for the next
+  meaningful re-evaluation.
+- **declined** — the Reckoner transitioned the writ from `new` to
+  `cancelled` on validity grounds. The decline scope is intentionally
+  narrow (see Decline Reasons) — "this work isn't worth doing on
+  merit" is patron territory and is handled by direct
+  `clerk.transition(writId, 'cancelled', …)` from the petitioner, not
+  by a Reckoner-issued decline.
+- **no-op** — the Reckoner re-weighed the writ this tick against
+  changed conditions and chose to keep holding without a phase
+  transition. Typical examples: a deferred writ's wake-up signal fired
+  and the Reckoner re-evaluated but still held; a sibling resolution
+  shifted the priority queue and the Reckoner re-checked this writ's
   position; capacity changed and the Reckoner reconsidered. A `no-op`
   row records that the Reckoner did real work — not the heartbeat of
   the polling loop. See No-op Handling for the absence-of-row
   convention that distinguishes "we weighed and held" from "we haven't
   reached this yet."
 
-`withdrawn` is a petitioner-initiated transition and is **not** a
-Reckoner-consideration outcome, so it does not produce a Reckonings
-row.
+A petitioner-initiated withdrawal — `clerk.transition(writId,
+'cancelled', …)` (or the `reckoner.withdraw(writId)` helper, which
+wraps the same call) — bypasses the Reckoner entirely and produces
+**no** Reckonings row. The cancellation is observable through normal
+CDC on `book.clerk.writs.updated`; the Reckoner has no decision to
+record because the petitioner, not the Reckoner, made the transition.
 
-### Petition shape (settled upstream)
+### Held-writ shape (settled upstream)
 
-The Reckoner reads petitions from the petition-state book; the schema
-of that book is settled by an adjacent commission and reproduced here
-so this doc is self-contained. Each petition carries:
+The Reckoner reads its inputs from `clerk/writs`. A held writ is a
+normal `WritDoc` with one addition: `writ.ext['reckoner']` carries
+the petitioner-side metadata that signals "this writ requires Reckoner
+consideration." The shape of that ext block is fixed by the
+[Reckoner contract](apparatus/reckoner.md) and reproduced here so
+this doc is self-contained:
 
-- `source` — petitioner identity (vision-keeper, future tech-debt
-  watchers, the laboratory introspection writer, ad-hoc patron
-  petitions, …).
-- `intent` — short imperative sentence describing the work the
-  petitioner wants done.
-- `rationale` — long-form prose justifying the petition.
-- `priority_signals` — a structured block: `urgency` (an enum,
-  `immediate | urgent | normal | low`) plus an optional
-  `strategic_ref` pointing into a vision-document or roadmap entry.
-- `context_anchors` — file paths, writ ids, transcript ids, and
-  similar handles a downstream specifier can use as starting points.
+```typescript
+interface ReckonerExt {
+  source:       string;                  // e.g. 'vision-keeper.snapshot'
+  priority:     Priority;                // multi-dimensional; see below
+  complexity?:  ComplexityTier;          // 'mechanical' | 'bounded' | 'exploratory' | 'open-ended'
+  rationale?:   string;                  // free-form justification for the priority claim
+  payload?:     unknown;                 // opaque petitioner-defined data
+  labels?:      Record<string, string>;  // additive non-priority metadata
+}
 
-There is no pre-built brief or spec on a petition. Specification work
-happens **after** acceptance through the existing Distiller → Sage
-pipeline, the same path patron-posted commissions take.
+type Priority = {
+  visionRelation: 'vision-blocker' | 'vision-violator'
+                | 'vision-advancer' | 'vision-neutral';
+  severity:       'critical' | 'serious' | 'moderate' | 'minor';
+  scope:          'whole-product' | 'major-area' | 'minor-area';
+  time:           { decay: boolean; deadline: string | null };
+  domain:         Array<'security' | 'compliance' | 'cost' | 'feature'
+                       | 'quality' | 'infrastructure' | 'documentation'
+                       | 'research' | 'ergonomics'>;
+};
+```
 
-### Petition lifecycle (settled upstream)
+Priority is **multi-dimensional by design** — there is no unified
+urgency scalar. The Reckoner does judgment-laden contextual collapse
+into scheduling weight; petitioners declare honest dimension values
+and the Reckoner combines them. See the contract for the rationale
+behind this shape.
+
+The writ's intrinsic fields (`title`, `body`, `codex`, `parentId`,
+`type`) carry the work description; `ext['reckoner']` carries the
+scheduling-relevant metadata. Specification work happens **after**
+acceptance through the existing Distiller → Sage pipeline, the same
+path patron-posted commissions take.
+
+### Held-writ lifecycle
+
+The Reckoner is one authority among several that can transition writs
+out of `new`. For Reckoner-gated writs (those carrying
+`ext['reckoner']`), the relevant transitions are:
 
 ```
-new → pending → { accepted | deferred | declined | withdrawn }
+new → { open | cancelled }
 ```
 
-- `accepted`, `declined`, and `withdrawn` are terminal.
-- `deferred → pending` re-awakens on a wake-up signal.
-- `withdrawn` is petitioner-initiated and produces **no** Reckonings
-  row — the Reckoner never weighed it as part of its own
-  consideration loop.
+- `new → open` — Reckoner-issued **acceptance**. Spider picks up
+  from `open` onward.
+- `new → cancelled` (Reckoner-issued) — **decline** on validity
+  grounds (see Decline Reasons).
+- `new → cancelled` (petitioner-issued) — **withdrawal** via direct
+  `clerk.transition`. Bypasses the Reckoner; produces no Reckonings
+  row.
+- Stays in `new` — the Reckoner has either **deferred** the writ
+  pending a wake-up signal or has not yet reached it. The journal
+  distinguishes these two cases by row presence: a deferred writ
+  has at least one Reckonings row; an unreached writ has none.
+
+There is **no separate `deferred` phase**. Deferral is a Reckonings-
+book record annotating a writ that remains in Clerk's `new` phase.
+The writ's phase is the materialized state-of-the-world; the
+Reckonings journal is the decision history.
 
 ### Record body
 
@@ -152,20 +208,25 @@ interface ReckoningDoc {
   /** Unique id (`rk-<base36_ts>-<hex>`). Sortable by creation time. */
   id: string;
 
-  /** The petition this record is about. */
-  petitionId: string;
+  /** The Clerk writ this record is about (the held petition). */
+  writId: string;
 
-  /** Lean denormalized projection — see "Lean snapshot" below. */
-  source: string;
-  urgency: 'immediate' | 'urgent' | 'normal' | 'low';
+  /** Lean denormalized projection from the writ's ext.reckoner — see
+   *  "Lean snapshot" below. */
+  source:         string;                                  // ext.reckoner.source
+  visionRelation: 'vision-blocker' | 'vision-violator'
+                | 'vision-advancer' | 'vision-neutral';   // ext.reckoner.priority.visionRelation
+  severity:       'critical' | 'serious' | 'moderate' | 'minor';  // ext.reckoner.priority.severity
 
   /** Outcome enum — drives the discriminated-union reason fields. */
   outcome: 'accepted' | 'deferred' | 'declined' | 'no-op';
 
   /**
-   * Triggering Clockworks event id — the `clockworks.timer` row that
-   * produced this tick. Optional only on the patron fast path.
-   * See "Tick identity".
+   * Triggering Clockworks event id, when the consideration was
+   * triggered by a scheduling tick. Absent for considerations
+   * triggered by a CDC event on `clerk/writs` (e.g. initial post-time
+   * consideration of a newly-arrived held writ, before any scheduling
+   * tick reaches it). See "Tick identity".
    */
   tickEventId?: string;
 
@@ -183,6 +244,7 @@ interface ReckoningDoc {
     | 'duplicate'
     | 'policy_violation'
     | 'source_banned'
+    | 'source_unregistered'
     | 'other';
   remediationHint?: string;
 
@@ -200,9 +262,9 @@ interface ReckoningDoc {
   lastDeferredAt?: string;        // ISO timestamp
   deferNote?: string;             // freeform short note
 
-  /** outcome === 'accepted' */
-  writId?: string;                // the writ created on acceptance
-  acceptedAt?: string;            // ISO timestamp
+  // outcome === 'accepted' carries no extra metadata; the fact of
+  // acceptance is captured by `outcome: 'accepted'` and `consideredAt`.
+  // The phase transition itself is recorded by Clerk on the writ.
 }
 ```
 
@@ -229,66 +291,98 @@ the Lattice uses for pulse-id tie-breaking.
 
 ### Lean snapshot vs. fat denormalization
 
-The record carries `petitionId` plus a small, deliberate projection of
-two petition fields — `source` and `priority_signals.urgency` — at the
-top level. It does **not** embed the full petition body and does
-**not** carry a foreign-key-only reference to the petition row.
+The record carries `writId` plus a small, deliberate projection of
+three `ext.reckoner` fields — `source`, `priority.visionRelation`,
+and `priority.severity` — at the top level. It does **not** embed
+the full writ body, does **not** embed the full priority block, and
+does **not** carry a foreign-key-only reference to the writ.
 
-The two projected fields are the ones that drive hot filter queries:
+The three projected fields are the ones that drive hot filter
+queries:
 
-- "show me everything the Reckoner did with petitions from
-  `vision-keeper`" — `source` filter.
-- "show me every consideration of an `urgent` petition since T" —
-  `urgency` and `consideredAt` filter.
+- "show me everything the Reckoner did with writs from
+  `vision-keeper.snapshot`" — `source` filter.
+- "show me every consideration of a `vision-violator` writ since T" —
+  `visionRelation` and `consideredAt` filter.
+- "show me every consideration of `critical` or `serious` writs in
+  the last hour" — `severity` and `consideredAt` filter.
 
-Embedding only these two avoids a join on every per-petition timeline
-or per-source audit query, while keeping the record byte-budget close
-to the lattice/pulses precedent. The full petition row remains the
-source of truth; the Reckonings record is a snapshot at the moment of
+Embedding only these three avoids a join on every per-writ timeline,
+per-source audit, or priority-led dashboard query, while keeping the
+record byte-budget close to the lattice/pulses precedent. The full
+writ remains the source of truth; the Reckonings record is a snapshot
+of the dimensions that drove the decision at the moment of
 consideration.
 
-The alternative (a fat record carrying `intent`, `rationale`,
-`context_anchors`, etc.) was considered and rejected: those fields are
-not filtered against, they grow with the petition's free-form prose,
-and they would inflate every row of an append-forever book. The
-animator's lean-record / heavy-blob split (sessions + transcripts) is
-the precedent — but Reckonings stays as a single book because the
-record body is already lean enough that a heavy-blob sibling would be
-empty.
+#### Why these three and not the rest of the priority block
+
+The full `Priority` shape has five top-level fields plus a nested
+`time` object and an array `domain`. Of those:
+
+- **`visionRelation` and `severity`** are projected — they are
+  low-cardinality enums that read naturally as filter columns and
+  drive most priority-led dashboards.
+- **`scope`** is filterable in-process from any of the other-led
+  result sets. It rarely leads a query on its own; not projected.
+- **`time`** is a structured sub-object. Projecting it would either
+  flatten to two columns (`timeDecay`, `timeDeadline`) or store JSON;
+  neither earns its keep against the realistic query shapes. Time-
+  bounded queries lead with `consideredAt`, not with the writ's
+  declared deadline.
+- **`domain`** is an `Array<…>`. The Stacks query language is
+  scalar-only — there is no `array_contains` operator and no
+  array-field index. Projecting `domain` as JSON would not yield an
+  indexable filter; petitioners that want domain-led queries can
+  filter `clerk/writs.ext.reckoner.priority.domain` directly. Not
+  projected; flagged in Open Questions if Stacks ever grows array-
+  index support.
+- **`complexity`** is a peer of `priority`, not a priority dimension.
+  It answers a different question (cost, not how-much-it-matters);
+  not projected on the same rationale as `scope`.
+
+The alternative (a fat record carrying `rationale`, `payload`, the
+full `priority` block, etc.) was considered and rejected: those
+fields are not filtered against, `rationale` and `payload` grow with
+the petitioner's free-form prose, and they would inflate every row of
+an append-forever book. The animator's lean-record / heavy-blob split
+(sessions + transcripts) is the precedent — but Reckonings stays as a
+single book because the record body is already lean enough that a
+heavy-blob sibling would be empty.
 
 ### Tick identity
 
-The Reckoner's v0 trigger is a fixed-interval polling tick implemented
-as a Clockworks `schedule:` standing order. Every fire writes a
-synthesized `clockworks.timer` event row into `clockworks/events` (see
-[clockworks.md → Scheduled Standing Orders](clockworks.md#scheduled-standing-orders))
-with a unique event id of the form `e-<base36_ts>-<hex>`.
+The Reckoner has two trigger paths into a consideration:
 
-Each Reckonings record stamps the triggering `clockworks.timer` event id
-into a `tickEventId` field. Together with `consideredAt`, this gives
-the consumer two complementary handles:
+1. **Scheduled tick** — a Clockworks `schedule:` standing order
+   firing on a fixed interval. Every fire writes a synthesized
+   `clockworks.timer` event row into `clockworks/events` (see
+   [clockworks.md → Scheduled Standing Orders](clockworks.md#scheduled-standing-orders))
+   with a unique event id of the form `e-<base36_ts>-<hex>`. The
+   Reckoner sweeps held writs and may write Reckonings rows.
+2. **CDC-driven** — a Clockworks standing order on
+   `book.clerk.writs.{created,updated}`. When a held writ arrives or
+   changes, the Reckoner considers it directly. There is no
+   scheduling-tick id for these considerations because no scheduled
+   timer fired.
 
-- **`tickEventId`** — exact-match join to the dispatch row, the
-  schedule entry, and every sibling Reckonings row produced by the
-  same tick.
+Reckonings records stamp the triggering `clockworks.timer` event id
+into `tickEventId` on path (1). On path (2), the field is **absent**.
+Together with `consideredAt`, this gives the consumer two
+complementary handles:
+
+- **`tickEventId`** (when present) — exact-match join to the
+  dispatch row, the schedule entry, and every sibling Reckonings row
+  produced by the same scheduled tick.
 - **`consideredAt`** — time-range filter for since-T sweeps and
-  per-petition timeline ordering without going through the events
-  book.
+  per-writ timeline ordering, available on every row regardless of
+  trigger path.
 
-The doc deliberately reuses the framework-emitted `clockworks.timer` id
-rather than synthesizing a new "Reckoner tick id" — it earns no second
-piece of identity. There is one exception:
-
-#### Patron fast-path: `tickEventId` is optional
-
-The settled patron fast-path bypasses the Reckoner tick entirely. A
-patron-posted petition with `urgency: 'immediate'` is auto-accepted at
-post time, with the writ created synchronously and no waiting for the
-next tick. The Reckonings row for an `immediate` acceptance is still
-written so the audit trail is uniform — but because the row is written
-**outside** any tick, there is no `clockworks.timer` event id to stamp.
-`tickEventId` is therefore optional, not required: present on every
-non-fast-path row, absent on patron-fast-path acceptances.
+The doc deliberately reuses the framework-emitted `clockworks.timer`
+id rather than synthesizing a new "Reckoner tick id" — it earns no
+second piece of identity. CDC-triggered considerations have no tick
+id because there is no tick to identify; the Stacks `ChangeEvent`
+that triggered them is observable through `clockworks/events` for
+auditors who need that join.
 
 ### Outcome-keyed reason metadata layout
 
@@ -298,7 +392,7 @@ a discriminated union:
 
 | Outcome     | Top-level fields populated                                                                                  |
 |-------------|-------------------------------------------------------------------------------------------------------------|
-| `accepted`  | `writId`, `acceptedAt`                                                                                       |
+| `accepted`  | (none — only the projection and the tick stamp; the phase transition itself is recorded by Clerk on the writ) |
 | `deferred`  | `deferReason`, `deferUntil?`, `deferSignal?`, `deferCount`, `firstDeferredAt`, `lastDeferredAt`, `deferNote?` |
 | `declined`  | `declineReason`, `remediationHint?`                                                                          |
 | `no-op`     | (none — only the projection and the tick stamp)                                                              |
@@ -327,24 +421,35 @@ Consumer types decode against the same discriminated union, so a
 malformed row would surface as a parse error at read time — not as a
 silently-tolerated invalid state.
 
-### Decline reasons (settled upstream)
+### Decline reasons
 
 The decline-reason enum is intentionally narrow:
 
 ```
-'malformed'        // petition shape is invalid (missing source, etc.)
-'duplicate'        // a prior petition with the same intent is open
-'policy_violation' // petition violates a guild-declared policy
-'source_banned'    // the source has been blacklisted
-'other'            // freeform — `remediationHint` carries the detail
+'malformed'           // ext.reckoner shape is invalid (missing source, malformed priority, etc.)
+'duplicate'           // a prior open writ from the same source with the same intent exists
+'policy_violation'    // petition violates a guild-declared policy
+'source_banned'       // the source is in `reckoner.disabledSources` (operator action)
+'source_unregistered' // the source is not in the kit-static petitioner registry, with `enforceRegistration: true`
+'other'               // freeform — `remediationHint` carries the detail
 ```
 
 The narrowness is the point: the Reckoner's decline scope is "petition
-validity," not "merit." A petition that is well-formed but unwise
-gets a `withdrawn` transition from the patron — the Reckoner never
-issues a merit-based decline.
+validity," not "merit." A well-formed but unwise petition gets a
+direct `clerk.transition(writId, 'cancelled', …)` from the petitioner
+(or the patron acting on its behalf) — the Reckoner never issues a
+merit-based decline.
 
-### Defer reasons (settled upstream)
+`source_unregistered` is the registration-check decline, fired when
+`reckoner.enforceRegistration: true` (the default) and a writ arrives
+carrying an unknown `ext.reckoner.source`. With `enforceRegistration:
+false`, unknown-source writs are accepted-with-a-warning and proceed
+through normal consideration — no row with this reason is written in
+that mode. `source_banned`, by contrast, applies regardless of
+`enforceRegistration` and reflects an explicit operator-set
+`disabledSources` entry.
+
+### Defer reasons
 
 ```
 'priority'       // a higher-priority petition is ahead in the queue
@@ -358,11 +463,11 @@ issues a merit-based decline.
 time at which to revisit (a `time_hold` or a delayed-priority
 re-evaluation). `deferSignal` is populated when the Reckoner reserves
 an event pattern as a wake-up trigger (e.g. "re-weigh when
-`book.reckoner.petitions.updated` fires for this petition"). At least
-one of `deferUntil` and `deferSignal` is populated on a deferred row
-in normal operation; both being empty is allowed for the rare
-`other`-reason hold but should produce a `deferNote` for the audit
-trail.
+`book.clerk.writs.updated` fires for this writ" or "re-weigh when a
+sibling held writ resolves"). At least one of `deferUntil` and
+`deferSignal` is populated on a deferred row in normal operation;
+both being empty is allowed for the rare `other`-reason hold but
+should produce a `deferNote` for the audit trail.
 
 The actual wake-up dispatch path — how the Reckoner converts a
 populated `deferSignal` into a Clockworks standing-order subscription,
@@ -372,34 +477,38 @@ Reckoner-core commission. This doc names the schema fields the
 mechanism stamps; the mechanism itself is settled there.
 
 `deferCount`, `firstDeferredAt`, and `lastDeferredAt` are running
-counters: each new deferral on the same petition increments
-`deferCount` and refreshes `lastDeferredAt`, while
-`firstDeferredAt` is preserved across deferrals as the petition's
-first-seen-as-deferred timestamp. The Reckoner reads the prior
-Reckonings row for the petition to compute the running counter; the
-journal is its own source of truth for the deferral history.
+counters: each new deferral on the same writ increments `deferCount`
+and refreshes `lastDeferredAt`, while `firstDeferredAt` is preserved
+across deferrals as the writ's first-seen-as-deferred timestamp. The
+Reckoner reads the prior Reckonings row for the writ to compute the
+running counter; the journal is its own source of truth for the
+deferral history.
 
 **The counter advances only on `outcome: 'deferred'` rows.** A
-`no-op` row produced when the Reckoner re-weighed a deferred petition
-and chose to keep holding does **not** increment `deferCount`. The
+`no-op` row produced when the Reckoner re-weighed a held writ and
+chose to keep holding does **not** increment `deferCount`. The
 counter records distinct deferrals, not re-evaluations of an existing
-hold; "how many times has the Reckoner deferred this petition?" is
-answered by `count(*) WHERE petitionId = X AND outcome = 'deferred'`,
-and the running counter on the most recent deferred row matches that
+hold; "how many times has the Reckoner deferred this writ?" is
+answered by `count(*) WHERE writId = X AND outcome = 'deferred'`, and
+the running counter on the most recent deferred row matches that
 count.
 
 ### Acceptance metadata
 
-A row with `outcome: 'accepted'` carries:
+A row with `outcome: 'accepted'` carries **no extra metadata** beyond
+the projection and the tick stamp. The fact of acceptance is captured
+by `outcome: 'accepted'` and `consideredAt`; the phase transition
+itself (`new` → `open`) is recorded by Clerk on the writ and is
+observable through `clerk/writs` CDC. There is no separate
+"acceptedAt" timestamp because there is no separate acceptance event
+— the consideration *is* the transition, and the consideration's
+timestamp is `consideredAt`.
 
-- `writId` — the Clerk writ id the Reckoner created on acceptance.
-  This is a forward link into the rig pipeline; the writ flows
-  through Distiller → Sage → Artificer the same as any patron-posted
-  commission.
-- `acceptedAt` — ISO timestamp of the acceptance, distinct from
-  `consideredAt` only in the patron-fast-path case where the
-  acceptance happens outside a tick. In the normal case the two are
-  identical.
+This is a deliberate divergence from earlier draft framings in which
+the Reckoner *created* a writ on acceptance. Under the held-writ
+contract, the writ exists from petitioner-emit time; acceptance is a
+phase transition, not a creation, and no second identifier or
+timestamp is earned.
 
 ---
 
@@ -417,25 +526,23 @@ The Reckoner writes a `no-op` row when a consideration was
 *substantive* but the conclusion was still "hold." The canonical
 cases:
 
-- A deferred petition's `deferSignal` fired (its wake-up event
+- A deferred writ's `deferSignal` fired (its wake-up event
   pattern matched). The Reckoner re-weighed against current state
   and chose to keep holding rather than transition. The wake-up was
   meaningful even though the outcome did not change.
-- A deferred petition's `deferUntil` deadline passed and the
-  Reckoner's scheduled re-tick re-evaluated it. Same logic — the
-  re-evaluation was real work, recorded, even if the conclusion did
-  not transition.
-- A pending petition was re-weighed because a sibling resolved
-  (acceptance or withdrawal shifted the priority queue) or capacity
-  changed, and the Reckoner re-checked this petition's standing.
-  The re-evaluation was triggered by a change in conditions, not by
-  the tick itself.
+- A deferred writ's `deferUntil` deadline passed and the Reckoner's
+  scheduled re-tick re-evaluated it. Same logic — the re-evaluation
+  was real work, recorded, even if the conclusion did not transition.
+- A held writ was re-weighed because a sibling resolved (acceptance
+  or withdrawal shifted the priority queue) or capacity changed, and
+  the Reckoner re-checked this writ's standing. The re-evaluation was
+  triggered by a change in conditions, not by the tick itself.
 
 ### When a row is **not** written
 
-- The Reckoner did not reach the petition this tick (priority-bounded
+- The Reckoner did not reach the writ this tick (priority-bounded
   walk stopped before it). No row.
-- The Reckoner ticked, encountered the petition, but no condition had
+- The Reckoner ticked, encountered the writ, but no condition had
   changed since the last consideration — same priority order, same
   capacity, same wake-up state. No row. The prior conclusion stands
   by inheritance.
@@ -443,10 +550,10 @@ cases:
 ### Absence-of-row is the signal
 
 The "did anyone look at me?" question is answered by **any** row
-existing for the petition. A petition with no rows has not yet been
-reached or has had no condition change warrant re-evaluation; that is
-itself meaningful information. A petition with a recent terminal row
-(`accepted` / `declined`) has its outcome on file. A petition with a
+existing for the writ. A writ with no rows has not yet been reached
+or has had no condition change warrant re-evaluation; that is itself
+meaningful information. A writ with a recent terminal row
+(`accepted` / `declined`) has its outcome on file. A writ with a
 deferred row and several no-op rows has been actively re-weighed
 multiple times since the last transition.
 
@@ -457,13 +564,14 @@ storage-growth math (next section) reflects this design.
 
 ### No-op records carry the same projection as state-transition records
 
-When a `no-op` row *is* written, it carries `source` and `urgency`
-exactly like every other outcome — same lean snapshot, same tick
-stamp, same `consideredAt`. The modest byte savings of a stripped
-no-op shape don't justify branching the read path for every consumer
-query: filters like "since T, all considerations of urgent petitions"
-must work uniformly across all four outcomes, and the indexes that
-support those filters need every row to be the same shape.
+When a `no-op` row *is* written, it carries `source`, `visionRelation`,
+and `severity` exactly like every other outcome — same lean snapshot,
+same tick stamp, same `consideredAt`. The modest byte savings of a
+stripped no-op shape don't justify branching the read path for every
+consumer query: filters like "since T, all considerations of
+`vision-violator` writs" must work uniformly across all four
+outcomes, and the indexes that support those filters need every row
+to be the same shape.
 
 This uniformity also keeps the discriminated-union consumer type
 clean: no fork between "full record" and "stub record"; the
@@ -488,8 +596,8 @@ Reckonings book inherits the same stance.
 
 A rolling-window default would silently lose audit history. The
 journal's load-bearing job is "show me everything that ever happened
-to this petition" — a 90-day window quietly drops the row a
-post-mortem six months later needs.
+to this writ" — a 90-day window quietly drops the row a post-mortem
+six months later needs.
 
 ### Storage-growth math
 
@@ -522,10 +630,10 @@ design: the journal records decisions, not heartbeats.
 
 SQLite handles tables at this scale comfortably with the indexes
 declared below — primary-key lookups stay sub-millisecond, the
-indexed range scans on `consideredAt` and the per-petition timeline
-use the compound indexes directly, and table size at this magnitude
-is well within the Animator's transcripts-book scale (~30–300 MB /
-day) that the same substrate is already exercised at.
+indexed range scans on `consideredAt` and the per-writ timeline use
+the compound indexes directly, and table size at this magnitude is
+well within the Animator's transcripts-book scale (~30–300 MB / day)
+that the same substrate is already exercised at.
 
 Trip-wires that warrant revisiting:
 
@@ -535,7 +643,7 @@ Trip-wires that warrant revisiting:
   above.
 - A sustained 6-month measurement that exceeds 2M rows / year
   (more than 25% above the projection's upper bound).
-- An operator-visible query latency regression on the per-petition
+- An operator-visible query latency regression on the per-writ
   timeline or since-T sweeps.
 
 The trip-wires belong in Open Questions, not in the v0 retention
@@ -570,12 +678,13 @@ are not added.
 
 | Query | Filter shape | Index used |
 |-------|--------------|------------|
-| **Per-petition timeline** — show every consideration of petition X, oldest first | `petitionId = X` ORDER BY `consideredAt asc` | `['petitionId', 'consideredAt']` |
+| **Per-writ timeline** — show every consideration of writ W, oldest first | `writId = W` ORDER BY `consideredAt asc` | `['writId', 'consideredAt']` |
 | **Since-T sweep** — every Reckonings row produced since timestamp T | `consideredAt >= T` | `consideredAt` |
-| **Decline-by-reason audit** — every petition declined for reason R | `outcome = 'declined' AND declineReason = R` | `declineReason` (with the `outcome` filter narrowing the candidate set further) |
-| **Per-source filtering** — every consideration of petitions emitted by source S | `source = S` (optionally + `consideredAt`) | `source` |
+| **Decline-by-reason audit** — every writ declined for reason R | `outcome = 'declined' AND declineReason = R` | `declineReason` (with the `outcome` filter narrowing the candidate set further) |
+| **Per-source filtering** — every consideration of writs emitted by source S | `source = S` (optionally + `consideredAt`) | `source` |
 | **Recent-by-outcome** — most recent N rows for outcome O | `outcome = O` ORDER BY `consideredAt desc` | `['outcome', 'consideredAt']` |
-| **Urgency-led timeline** — recent considerations of immediate / urgent petitions, regardless of outcome | `urgency = U` ORDER BY `consideredAt desc` | `['urgency', 'consideredAt']` |
+| **Vision-relation timeline** — recent considerations of `vision-blocker` or `vision-violator` writs | `visionRelation = V` ORDER BY `consideredAt desc` | `['visionRelation', 'consideredAt']` |
+| **Severity timeline** — recent considerations of `critical` or `serious` writs | `severity = S` ORDER BY `consideredAt desc` | `['severity', 'consideredAt']` |
 | **Outcome-only filter** — count or list rows by outcome | `outcome = O` | `outcome` |
 
 ### Declared index set
@@ -586,39 +695,42 @@ are not added.
 
 ```typescript
 indexes: [
-  'petitionId',
+  'writId',
   'consideredAt',
   'outcome',
   'source',
-  'urgency',
+  'visionRelation',
+  'severity',
   'declineReason',
   ['outcome', 'consideredAt'],
-  ['urgency', 'consideredAt'],
-  ['petitionId', 'consideredAt'],
+  ['visionRelation', 'consideredAt'],
+  ['severity', 'consideredAt'],
+  ['writId', 'consideredAt'],
 ]
 ```
 
 Tracing each entry back to the queries it supports:
 
-- **`petitionId`** — bare-key existence checks ("does any row exist
-  for this petition?") and the foreign-key style join from the
-  petition-state book; superseded for ordered timelines by
-  `['petitionId', 'consideredAt']`.
+- **`writId`** — bare-key existence checks ("does any row exist for
+  this writ?") and the foreign-key-style join from `clerk/writs`;
+  superseded for ordered timelines by `['writId', 'consideredAt']`.
 - **`consideredAt`** — the unconditional since-T sweep, used by
   recent-history surfaces (Oculus pages, the future Sentinel
   apparatus's archival selector, vision-keeper's "what changed since
   my last poll" check).
 - **`outcome`** — outcome-only filters and counts; standalone for
   uses that don't need a time bound.
-- **`source`** — per-source audit (every consideration of petitions
-  from a single petitioner). The petitioners-registration commission
-  will likely want to surface this as part of an operator's
-  per-petitioner page.
-- **`urgency`** — priority-led queries: "every immediate petition
-  the Reckoner has ever weighed," "show me the urgent backlog the
-  Reckoner has touched in the last hour." Priority is the
-  Reckoner's organizing axis, so an urgency-led query is a primary
-  dashboard shape, not a secondary filter.
+- **`source`** — per-source audit (every consideration of writs from
+  a single petitioner). The petitioner-registration contract surfaces
+  this as part of an operator's per-petitioner page.
+- **`visionRelation`** — vision-led queries: "every `vision-blocker`
+  the Reckoner has ever weighed," "show me what the Reckoner has done
+  with vision-violator writs in the last hour." Vision-relation is
+  one of the two dimensions Coco identified as primary dashboard
+  axes, so it earns a top-level index.
+- **`severity`** — severity-led queries: "every `critical` writ the
+  Reckoner has weighed," "show me the serious-or-worse backlog the
+  Reckoner has touched today." The other primary dashboard axis.
 - **`declineReason`** — the decline-by-reason audit. The flat
   schema layout is what makes this an indexable top-level field; a
   nested `reason: { … }` would not.
@@ -627,20 +739,32 @@ Tracing each entry back to the queries it supports:
   decide in the last hour, grouped by outcome." The leading
   `outcome` column is low-cardinality (4 values), so this index
   doubles as a fast histogram input.
-- **`['urgency', 'consideredAt']`** — urgency-led timeline without
-  a re-sort. Pairs with the standalone `urgency` index for
-  priority-leading dashboard widgets and operator queries that
-  combine "level X petitions" with "since T."
-- **`['petitionId', 'consideredAt']`** — per-petition timeline
-  ordering without a re-sort. Critical for the petitioner-side "show
-  me my petition's full history" view.
+- **`['visionRelation', 'consideredAt']`** — vision-led timeline
+  without a re-sort. Pairs with the standalone `visionRelation`
+  index for vision-leading dashboard widgets.
+- **`['severity', 'consideredAt']`** — severity-led timeline without
+  a re-sort. Pairs with the standalone `severity` index for the
+  most common operator query shape ("what serious-or-worse work has
+  the Reckoner been weighing recently?").
+- **`['writId', 'consideredAt']`** — per-writ timeline ordering
+  without a re-sort. Critical for the petitioner-side "show me my
+  writ's full history" view, and for the `deferCount` lookup the
+  Reckoner runs against the prior deferred row when re-deferring.
 
-`tickEventId` is not indexed. The expected access pattern
-is "look up the Reckonings row by id, then walk to the tick" — not
-"find every row produced by tick T," which is rare and tolerates the
-full scan or a join through `consideredAt`. Adding the index later
-costs one schema migration and earns its keep only if the access
-pattern changes.
+`scope`, `time.decay`, `time.deadline`, `domain`, and `complexity`
+are **not** projected and therefore not indexed. They are filterable
+in-process from any of the dimension-led result sets, or directly
+against `clerk/writs.ext.reckoner` for queries that lead with them.
+`domain` in particular cannot be indexed under the current Stacks
+query language (scalar-only `WhereCondition`); see Open Questions
+for the trip-wire that would warrant adding array-index support.
+
+`tickEventId` is not indexed. The expected access pattern is "look
+up the Reckonings row by id, then walk to the tick" — not "find every
+row produced by tick T," which is rare and tolerates the full scan or
+a join through `consideredAt`. Adding the index later costs one
+schema migration and earns its keep only if the access pattern
+changes.
 
 ---
 
@@ -658,10 +782,14 @@ book has no analogous mutable field. There is no producer that would
 mutate a record in place:
 
 - The outcome is final at consideration time.
-- The reason metadata is derived from the petition state at the
-  moment of consideration; a later re-evaluation produces a new row,
-  not a patch on the old one.
-- The `writId` for an accepted petition does not change.
+- The reason metadata is derived from the writ's `ext.reckoner`
+  state at the moment of consideration; a later re-evaluation
+  produces a new row, not a patch on the old one.
+- The projected dimensions (`source`, `visionRelation`, `severity`)
+  are stamped at consideration time. If the writ's `ext.reckoner` is
+  later updated (via `clerk.setWritExt`), subsequent considerations
+  will project the new values onto new rows; the old rows preserve
+  the dimensions as they stood when the Reckoner weighed them.
 - Defer-counter updates (`deferCount`, `lastDeferredAt`) accumulate
   by writing a new deferred row, not by mutating the prior one — the
   per-deferral history is the journal's load-bearing output.
@@ -760,46 +888,54 @@ introduces named emission — it is **not** done by this design.
 
 ---
 
-## Journal vs. Materialized View
+## Journal vs. Writs Book
 
-The Reckoner ecosystem uses two books with deliberately different
-grains:
+The Reckoner does not own a materialized state-of-the-world book.
+The materialized view of "which petitions are held, accepted,
+declined, or withdrawn" lives in **Clerk's writs book**, which
+already has phase-based state, ext-keyed metadata, and CDC. Two
+books with deliberately different grains coexist:
 
-| Book                          | Role                | Grain                                        |
-|-------------------------------|---------------------|----------------------------------------------|
-| `reckoner/petitions` (separate commission) | Materialized view   | One row per petition, current state, fast lookup |
-| `reckoner/reckonings` (this doc) | Event journal       | One row per consideration, full history       |
+| Book                                | Role               | Grain                                         |
+|-------------------------------------|--------------------|-----------------------------------------------|
+| `clerk/writs` (Clerk-owned)         | Materialized view  | One row per writ; `phase` + `ext.reckoner` is current state |
+| `reckoner/reckonings` (this doc)    | Event journal      | One row per substantive consideration, full history |
 
 **The two CDC channels are not duplicative.** They differ in grain:
 
-- `book.reckoner.petitions.{created,updated,deleted}` fires on
-  state-transitions of a petition. A subscriber wiring to
-  `book.reckoner.petitions.updated` and filtering on
-  `event.entry.state === 'accepted'` sees the **state-of-the-world**
-  change at the moment of acceptance, but does not see the
-  Reckoner's repeated weighings of that same petition while it was
-  pending or deferred.
-- `book.reckoner.reckonings.created` fires on every consideration —
-  state-changing or not. A subscriber wiring here sees the
-  **decision history** of every petition the Reckoner has weighed.
+- `book.clerk.writs.{created,updated,deleted}` fires on writ
+  transitions and writ writes. A subscriber wiring to
+  `book.clerk.writs.updated` and filtering on
+  `event.entry.phase === 'open' && event.entry.ext?.reckoner`
+  sees the **state-of-the-world** change at the moment of
+  acceptance, but does not see the Reckoner's repeated weighings
+  of that same writ while it was held in `new`.
+- `book.reckoner.reckonings.created` fires on every substantive
+  consideration — state-changing or not. A subscriber wiring here
+  sees the **decision history** of every writ the Reckoner has
+  weighed, including the no-op re-evaluations that didn't transition.
 
-Asking the petition-state book to double as a journal would force an
-O(n) scan of every petition row to reconstruct deferral history, and
-would fail entirely for no-op considerations that produced no
-state-transition row to scan.
+Asking the writs book to double as a journal would force an O(n)
+scan of every writ row to reconstruct deferral history, and would
+fail entirely for no-op considerations that produced no phase
+transition to scan. The writ's phase is the latest state; it is
+**not** the history of how the Reckoner reached that state.
 
 Asking the journal to double as a materialized view would force every
-"what is the current state of petition X?" query to walk the journal
-backward looking for the most recent terminal row. The petition row
-has its own state machine and its own metadata (deferral counters,
-strategic-ref, withdraw-trigger handles); it is **not** merely
-derived from the journal.
+"what is the current phase of writ X?" query to walk the journal
+backward looking for the most recent terminal row, **and** to fall
+back on `clerk/writs` for the phase truth anyway because the journal
+doesn't observe petitioner-initiated withdrawals (those bypass the
+Reckoner). The writs book is the unambiguous source of truth for
+phase; the journal is the unambiguous source of truth for *what the
+Reckoner did*.
 
 The two books exist together. Petitioners that want "act on every
-state transition" subscribe to the petitions CDC channel.
-Petitioners that want "audit every consideration" subscribe to the
-reckonings CDC channel. Most petitioners only need the first. The
-journal is the second.
+phase transition of my writs" subscribe to `book.clerk.writs.updated`
+filtered on `ext.reckoner.source`. Petitioners (or operators, or
+ethnographers) that want "audit every consideration" subscribe to
+`book.reckoner.reckonings.created`. Most petitioners only need the
+first; the journal is the second.
 
 ---
 
@@ -846,34 +982,36 @@ The four citations:
 | `clockworks/events` | **No carve-out from CDC auto-wiring.** Events carves itself out because a watcher on the events book observes its own emit. Reckonings has no such recursion. | See CDC Attachment. |
 | `lattice/pulses` | **No `updatedAt`.** Pulses mutate `deliveryState`; Reckonings has no mutable field. | See Immutability. |
 | `lattice/pulses` | **No free-form `context: Record<string, unknown>`.** Every Reckonings field is named and indexed-or-filtered-against. | The pulses-style context blob exists because pulse consumers want trigger-keyed structured payloads (e.g. `WritStuckContext`); Reckonings reason metadata is already discriminated by `outcome`, so a separate context blob would be empty. |
-| `animator/sessions` + `animator/transcripts` | **One book, not two.** Sessions is lean, transcripts is heavy; Reckonings keeps the lean half and has no heavy-blob sibling. | The petition's `intent`, `rationale`, and `context_anchors` live on the petition row, not on the journal. The journal stays at the lean-record scale. |
+| `animator/sessions` + `animator/transcripts` | **One book, not two.** Sessions is lean, transcripts is heavy; Reckonings keeps the lean half and has no heavy-blob sibling. | The writ's `body`, `ext.reckoner.rationale`, and `ext.reckoner.payload` live on the writ in `clerk/writs`, not on the journal. The journal stays at the lean-record scale. |
 | `clockworks/event_dispatches` | **No per-handler dispatch log.** event_dispatches is a sibling to events recording one row per handler invocation; Reckonings has no per-handler concept. | Petitioner subscribers run as ordinary Clockworks standing orders against the auto-wired CDC event, so the dispatch log they produce already lives in `clockworks/event_dispatches`. A second per-handler log on the Reckonings side would duplicate that. |
 
 The dual-table pattern (events + event_dispatches) was considered as a
-shape for the Reckoner — one table for petitions weighed, a second
-for "what each petitioner did about it." It was rejected on the same
-grounds: petitioner reactions are Clockworks standing orders, and the
-existing `event_dispatches` book already records one row per
-invocation. Adding a Reckoner-owned dispatch log would re-implement a
-sibling apparatus's load-bearing data.
+shape for the Reckoner — one table for considerations weighed, a
+second for "what each downstream subscriber did about it." It was
+rejected on the same grounds: subscriber reactions are Clockworks
+standing orders, and the existing `event_dispatches` book already
+records one row per invocation. Adding a Reckoner-owned dispatch log
+would re-implement a sibling apparatus's load-bearing data.
 
 ---
 
 ## Open Questions
 
-The four items this design intentionally leaves for follow-on
+The five items this design intentionally leaves for follow-on
 resolution.
 
-- **Petitioner registration.** A parallel commission
-  (`docs/architecture/petitioner-registration.md`) is in flight and
-  will define how a petitioner declares itself to the Reckoner — the
-  registration contract, the per-source policy block, the source-id
-  validator. This Reckonings doc names the auto-wired event surface
-  registration will plug into (`book.reckoner.reckonings.created`,
-  with the registered petitioner's standing order filtering on
-  `outcome` and `source`), but does **not** specify the registration
-  shape. When the registration commission lands, the per-source
-  filtering convention should be cross-referenced from here.
+- **Cross-reference to petitioner-registration.** The
+  [petitioner-registration contract](petitioner-registration.md) (and
+  its successor framing in the [Reckoner contract](apparatus/reckoner.md))
+  define how a petitioner declares itself, the kit-static registry,
+  the source-id grammar, and the `enforceRegistration` /
+  `disabledSources` config. This Reckonings doc names the auto-wired
+  event surface registration plugs into
+  (`book.reckoner.reckonings.created`, with the registered petitioner's
+  standing order filtering on `outcome` and `source`) but does
+  **not** restate the registration shape. If the registration
+  contract gains additional projection fields the journal should
+  reflect (e.g. a per-source `tier`), that lands as a follow-up here.
 
 - **Retention trip-wires.** v0 ships append-only forever with the
   storage-growth math above. The trip-wires that warrant a future
@@ -881,10 +1019,11 @@ resolution.
   1. A Sentinel or Laboratory archival sink lands and an operator
      wants to point an archival relay at it.
   2. An operator complains about Reckonings book size or about
-     Stacks query latency on the per-petition timeline query.
-  3. Six months of production-growth measurement validates the
-     5.26M rows / year projection (or, more interestingly, refutes
-     it by 2× or more in either direction).
+     Stacks query latency on the per-writ timeline query.
+  3. Six months of production-growth measurement materially diverges
+     from the 525K–1.5M rows / year projection — either above 2M
+     rows / year (overrun) or below 250K / year (under-utilization
+     suggesting the scoping policy is too aggressive).
   Until one of those fires, retention is "do nothing." Designing the
   archive shape before it has a pull is premature; the future
   archival pattern in the Retention section is the placeholder, not
@@ -899,17 +1038,29 @@ resolution.
   new petition-scheduling Reckoner. An open question is whether the
   queue-observer's responsibilities (writ-lifecycle observation
   feeding Lattice pulses) fold back into the new Reckoner core, or
-  stay in the renamed sibling. The Reckonings book is unaffected either way —
-  the queue-observer's pulses go to the Lattice, not to the
-  Reckonings book — but the conceptual seam between "petition
-  evaluation" and "writ-lifecycle observation" wants to be settled
-  before the new Reckoner core ships.
+  stay in the renamed sibling. The Reckonings book is unaffected
+  either way — the queue-observer's pulses go to the Lattice, not
+  to the Reckonings book — but the conceptual seam between
+  "petition evaluation" and "writ-lifecycle observation" wants to
+  be settled before the new Reckoner core ships.
 
-- **When named events earn their keep.** D8 rejects a named-events
-  emission surface (`reckoning.accepted`, `reckoning.deferred`, etc.)
-  on the grounds that auto-wiring + a one-line in-relay outcome
-  filter serves every consumer auto-wiring can serve. The conditions
-  under which named events earn their keep:
+- **`domain` array indexing.** `ext.reckoner.priority.domain` is
+  multi-valued (`Array<…>`) and is not projected on the Reckonings
+  record because the Stacks query language is scalar-only — there
+  is no `array_contains` operator and no array-field index.
+  Domain-led queries today filter `clerk/writs.ext.reckoner.priority.domain`
+  in-process (full-scan or via a Stacks-side JSON predicate, neither
+  efficient). If Stacks grows array-index support — or if a
+  domain-led dashboard becomes a primary surface — the natural
+  follow-up is to project `domain` onto the Reckonings record (as
+  JSON-array column) and add the corresponding index.
+
+- **When named events earn their keep.** This doc rejects a
+  named-events emission surface (`reckoning.accepted`,
+  `reckoning.deferred`, etc.) on the grounds that auto-wiring + a
+  one-line in-relay outcome filter serves every consumer auto-wiring
+  can serve. The conditions under which named events earn their
+  keep:
   1. A non-Clockworks consumer of the Reckonings stream appears —
      e.g. an external webhook bus, a Discord channel, an HTTP
      subscriber — that cannot conveniently consume the framework's
@@ -930,6 +1081,15 @@ resolution.
 
 ## See Also
 
+- [docs/architecture/apparatus/reckoner.md](apparatus/reckoner.md)
+  — the petition-scheduling Reckoner whose contract surface this
+  book layers on top of. Defines the held-writ shape
+  (`writ.ext['reckoner']`), the priority dimensions, the petitioner
+  registry, and the `enforceRegistration` / `disabledSources` config.
+- [docs/architecture/petitioner-registration.md](petitioner-registration.md)
+  — the petitioner-registration contract: source-id grammar, the
+  kit-static registry, kit-vs-kit collision policy, the trust
+  model.
 - [docs/architecture/clockworks.md](clockworks.md) — the CDC
   auto-wiring contract and the reserved-namespace policy.
 - [docs/architecture/apparatus/lattice.md](apparatus/lattice.md) —
@@ -937,9 +1097,6 @@ resolution.
 - [docs/architecture/apparatus/animator.md](apparatus/animator.md)
   — the lean-record / heavy-blob book split (the alternative
   considered and rejected here).
-- [docs/architecture/apparatus/reckoner.md](apparatus/reckoner.md)
-  — the new petition-scheduling Reckoner whose contract surface
-  this book layers on top of.
 - [docs/architecture/apparatus/sentinel.md](apparatus/sentinel.md)
   — the renamed queue-observer apparatus that previously held the
   `reckoner` plugin id and continues to emit
