@@ -20,6 +20,35 @@
     cancelled: 'badge badge--cancelled',
   };
 
+  // ── URL handling ────────────────────────────────────────────────────
+
+  /**
+   * Read the current querystring as a `URLSearchParams`. Live snapshot.
+   */
+  function currentUrlParams() {
+    return new URLSearchParams(window.location.search);
+  }
+
+  /**
+   * Apply the given key/value changes to the current querystring and
+   * `pushState` the result. Null/undefined/empty value deletes the key.
+   * Mirrors Ratchet's `updateUrl` (D9). The session param shape is
+   * `?session=ID` (D10).
+   */
+  function updateUrl(changes) {
+    var params = currentUrlParams();
+    var keys = Object.keys(changes);
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      var value = changes[key];
+      if (value === null || value === undefined || value === '') params.delete(key);
+      else params.set(key, value);
+    }
+    var qs = params.toString();
+    var next = window.location.pathname + (qs ? '?' + qs : '');
+    window.history.pushState({}, '', next);
+  }
+
   // ── Utilities ───────────────────────────────────────────────────────
 
   function esc(str) {
@@ -201,9 +230,35 @@
 
   // ── Show detail view ────────────────────────────────────────────────
 
-  function showDetail(sessionId) {
+  /**
+   * Render a "not found" empty state inside the session detail view.
+   * Called from the metadata fetch path when /api/session/show returns
+   * an error or an empty record. Per D16 the URL param is preserved so
+   * the operator can recover (correct the id, hit Back).
+   */
+  function renderSessionDetailNotFound(sessionId) {
+    var metaTable = document.getElementById('detail-meta');
+    if (metaTable) {
+      metaTable.innerHTML =
+        '<tr><td colspan="2"><div class="empty-state" style="padding:1rem">' +
+        'No session with id <code>' + esc(sessionId) + '</code> exists. ' +
+        'It may have been deleted, or the id may be mistyped.</div></td></tr>';
+    }
+    var spinner = document.getElementById('session-log-spinner');
+    if (spinner) spinner.style.display = 'none';
+  }
+
+  function showDetail(sessionId, opts) {
+    var skipUrlPush = !!(opts && opts.skipUrlPush);
     currentSessionId = sessionId;
     stopSessionStream();
+
+    // Centralised URL push (D12) — every entry path into showDetail
+    // (row click, deep-link init, popstate-driven re-open) emits
+    // ?session=ID for free. The popstate-driven path passes
+    // skipUrlPush=true to avoid re-pushing the URL the browser already
+    // updated.
+    if (!skipUrlPush) updateUrl({ session: sessionId });
 
     document.getElementById('list-view').style.display = 'none';
     document.getElementById('detail-view').style.display = '';
@@ -218,13 +273,23 @@
 
     // Fetch session metadata and transcript in parallel
     var metaPromise = fetch('/api/session/show?id=' + encodeURIComponent(sessionId))
-      .then(function (r) { return r.json(); });
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      });
 
     var transcriptPromise = fetch('/api/animator/session-transcript?sessionId=' + encodeURIComponent(sessionId))
       .then(function (r) { return r.json(); });
 
     // Render metadata
     metaPromise.then(function (session) {
+      // D16: a missing/deleted/mistyped id surfaces as an empty record
+      // (or a thrown error caught below). Render a "not found" state
+      // inside the detail panel without rewriting the URL.
+      if (!session || !session.id) {
+        renderSessionDetailNotFound(sessionId);
+        return;
+      }
       var metaTable = document.getElementById('detail-meta');
       if (!metaTable) return;
       var rows = '';
@@ -256,6 +321,7 @@
       metaTable.innerHTML = rows;
     }).catch(function (err) {
       console.error('[animator] fetch session detail error:', err);
+      renderSessionDetailNotFound(sessionId);
     });
 
     // Render transcript from REST endpoint
@@ -364,11 +430,15 @@
 
   // ── Back to list ────────────────────────────────────────────────────
 
-  function showList() {
+  function showList(opts) {
+    var skipUrlPush = !!(opts && opts.skipUrlPush);
     stopSessionStream();
     currentSessionId = null;
     document.getElementById('detail-view').style.display = 'none';
     document.getElementById('list-view').style.display = '';
+    // D11: push a clean URL so deep-link entries survive the Back
+    // button without depending on history depth.
+    if (!skipUrlPush) updateUrl({ session: null });
     fetchList();
   }
 
@@ -377,7 +447,7 @@
   document.addEventListener('DOMContentLoaded', function () {
     // Back button
     var backBtn = document.getElementById('back-btn');
-    if (backBtn) backBtn.addEventListener('click', showList);
+    if (backBtn) backBtn.addEventListener('click', function () { showList(); });
 
     // Refresh button
     var refreshBtn = document.getElementById('refresh-btn');
@@ -415,8 +485,31 @@
       });
     }
 
+    // Browser navigation (Back / Forward) — read ?session=ID from the
+    // new URL and either show that detail (skipUrlPush=true) or return
+    // to the list. Pairs with the central push inside showDetail.
+    window.addEventListener('popstate', function () {
+      var sessionId = currentUrlParams().get('session');
+      if (sessionId) {
+        showDetail(sessionId, { skipUrlPush: true });
+      } else {
+        showList({ skipUrlPush: true });
+      }
+    });
+
     // Initial load
     fetchList();
+
+    // Deep-link: ?session=ID — if present on init, open that detail
+    // view. The fetchList runs first so the list is populated for the
+    // operator's eventual Back navigation; showDetail runs after it
+    // and overlays the detail view. A missing/deleted id falls
+    // through to renderSessionDetailNotFound (D16) — the URL is
+    // preserved.
+    var initialSessionId = currentUrlParams().get('session');
+    if (initialSessionId) {
+      showDetail(initialSessionId, { skipUrlPush: true });
+    }
 
     // Auto-refresh every 12 seconds
     pollTimer = setInterval(fetchList, 12000);

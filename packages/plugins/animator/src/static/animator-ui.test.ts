@@ -112,3 +112,100 @@ describe('animator.js cost/token formatting delegates to window.NexusFormat', ()
     );
   });
 });
+
+// ── Deep-link URL state (?session=ID) ───────────────────────────────────
+
+describe('animator.js — deep-link URL state', () => {
+  it('exposes currentUrlParams + updateUrl helpers (D9 — Ratchet pattern)', () => {
+    assert.match(
+      animatorJs,
+      /function currentUrlParams\(\)\s*\{[\s\S]*?new URLSearchParams\(window\.location\.search\)/,
+      'currentUrlParams reads window.location.search live',
+    );
+    assert.match(
+      animatorJs,
+      /function updateUrl\(changes\)\s*\{[\s\S]*?window\.history\.pushState/,
+      'updateUrl pushes via history.pushState',
+    );
+  });
+
+  it('showDetail pushes ?session=ID via the central updateUrl call (D12)', () => {
+    const block = animatorJs.match(
+      /function showDetail\(sessionId(?:, opts)?\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find showDetail body');
+    assert.match(
+      block[0],
+      /updateUrl\(\{\s*session:\s*sessionId\s*\}\)/,
+      'showDetail should push ?session=<id> when not skipUrlPush',
+    );
+    assert.match(block[0], /skipUrlPush/, 'showDetail accepts a skipUrlPush opt');
+  });
+
+  it('showList clears ?session via updateUrl({session: null}) — never pops history (D11)', () => {
+    const block = animatorJs.match(
+      /function showList\((?:opts)?\)[\s\S]*?(?=\n  function |\n  \/\/)/,
+    );
+    assert.ok(block, 'should find showList body');
+    assert.match(
+      block[0],
+      /updateUrl\(\{\s*session:\s*null\s*\}\)/,
+      'showList should push a clean URL via updateUrl({session: null})',
+    );
+    assert.ok(
+      !/window\.history\.back\s*\(/.test(block[0]),
+      'showList should never invoke history.back',
+    );
+  });
+
+  it('a popstate listener routes browser navigation back through the page', () => {
+    assert.match(
+      animatorJs,
+      /window\.addEventListener\(\s*['"]popstate['"]/,
+      'animator.js registers a popstate listener',
+    );
+    const block = animatorJs.match(
+      /addEventListener\(\s*['"]popstate['"][\s\S]*?\}\)/,
+    );
+    assert.ok(block, 'should find popstate handler body');
+    assert.match(
+      block[0],
+      /currentUrlParams\(\)\.get\(['"]session['"]\)/,
+      'popstate handler reads ?session from the new URL',
+    );
+    assert.match(
+      block[0],
+      /skipUrlPush:\s*true/,
+      'popstate-driven path passes skipUrlPush to avoid double-push',
+    );
+  });
+
+  it('init reads ?session=ID and overlays the detail view', () => {
+    assert.match(
+      animatorJs,
+      /var initialSessionId\s*=\s*currentUrlParams\(\)\.get\(['"]session['"]\)/,
+      'init reads ?session from the URL',
+    );
+    assert.match(
+      animatorJs,
+      /showDetail\(\s*initialSessionId\s*,\s*\{\s*skipUrlPush:\s*true\s*\}\)/,
+      'init opens the detail via showDetail with skipUrlPush=true',
+    );
+  });
+
+  it('renderSessionDetailNotFound preserves the URL param (D16)', () => {
+    const block = animatorJs.match(
+      /function renderSessionDetailNotFound\([\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find renderSessionDetailNotFound body');
+    assert.ok(
+      !/updateUrl/.test(block[0]),
+      'renderSessionDetailNotFound must not rewrite the URL',
+    );
+    assert.match(
+      block[0],
+      /No session with id/,
+      'renderSessionDetailNotFound surfaces a "not found" message',
+    );
+  });
+});
