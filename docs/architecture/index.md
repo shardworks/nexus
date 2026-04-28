@@ -273,7 +273,7 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 | **[The Stacks](apparatus/stacks.md)** | `stacks` | Persistence substrate — SQLite-backed document store with change-data-capture events |
 | **[The Scriptorium](apparatus/scriptorium.md)** | `codexes` | Codex management — repository registry, bare clones, draft binding lifecycle, sealing and push |
 | **[The Clerk](apparatus/clerk.md)** | `clerk` | Commission intake and writ lifecycle — receives commissions, creates writs, signals when work is ready |
-| **[The Clockworks](apparatus/clockworks.md)** | `clockworks` | Event-driven nervous system — binds events to relays via standing orders; the summon relay dispatches anima sessions. |
+| **[The Clockworks](clockworks.md)** | `clockworks` | Event-driven nervous system — binds events to relays via standing orders; the summon relay dispatches anima sessions |
 | **[The Ratchet](apparatus/ratchet.md)** | `ratchet` | Decision tracking — manages the click tree of questions and conclusions guiding the guild's reasoning |
 | **[The Fabricator](apparatus/fabricator.md)** | `fabricator` | Engine design registry — answers "what engine chain satisfies this need?" from installed kits |
 | **[The Spider](apparatus/spider.md)** | `spider` | Rig lifecycle — spawns, traverses, extends, and strikes rigs as work progresses |
