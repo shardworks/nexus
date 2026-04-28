@@ -38,7 +38,7 @@ Post a new commission, creating a writ in its registered type's declared `initia
 
 > **API vs. tool — auto-publish UX lives in the tool layer.** `clerk.post()` always lands the writ in the type's `initial` state and never advances it on its own — the API surface is intentionally minimal and predictable. The two tool wrappers reach `open` for you:
 >
-> - **`commission-post`** transitions newly-posted **mandate** writs to `open` automatically unless `draft: true` is passed. Other types (anything plugin-registered) are left in their `initial` state — advancing them without a type-specific tool would be silent coupling, so the auto-advance is confined to mandate.
+> - **`commission-post`** transitions newly-posted **mandate** writs to `open` automatically unless `draft: true` is passed. Other types (anything plugin-registered) are left in their `initial` state — advancing them without a type-specific tool would be silent coupling, so the auto-advance is confined to mandate. The handler also resolves `codex` up front: when omitted and `parentId` is not provided, it defaults to the only registered codex (or fails with a multi/zero-codex error) so no codex-less writ ever reaches the queue. When `parentId` is provided, codex resolution is skipped and `clerk.post()`'s parent-inheritance branch fires.
 > - **`piece-add`** unconditionally transitions the new piece to `open` (the tool has no `draft` parameter).
 >
 > Direct `clerk.post()` callers — including most plugin code — keep the `initial`-state landing semantics; if you want the writ to be dispatchable, follow up with `clerk.transition(id, 'open')`.
@@ -493,7 +493,7 @@ The Clerk contributes books, tools, and pages to the guild:
 
 | Tool | Permission | Description |
 |---|---|---|
-| `commission-post` | `clerk:write` | Post a new commission (create a writ, optionally as child). Auto-publishes mandate writs to `open` unless `draft: true` is passed; other types stay in their `initial` state. |
+| `commission-post` | `clerk:write` | Post a new commission (create a writ, optionally as child). Auto-publishes mandate writs to `open` unless `draft: true` is passed; other types stay in their `initial` state. Resolves `codex` at post time when omitted: inherited from `parentId` when provided; defaulted to the single registered codex; throws a clear error on multi/zero-codex ambiguity. |
 | `piece-add` | `clerk:write` | Add a child `piece` writ to a mandate from a structured task description; the piece is auto-published to `open` and joins the implement-loop queue. |
 | `writ-show` | `clerk:read` | Show full detail for a writ (includes parent/children context) |
 | `writ-list` | `clerk:read` | List writs with optional filters (phase, type, parentId) |

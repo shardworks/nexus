@@ -90,10 +90,19 @@ Post a new commission. Creates a writ in `open` phase by default, or in `new` (d
 |-----------|------|----------|-------------|
 | `title` | `string` | yes | Short description of the work |
 | `body` | `string` | yes | Full spec — what to do, acceptance criteria, context |
-| `codex` | `string` | no | Target codex name (inherited from parent if omitted) |
+| `codex` | `string` | no | Target codex name. When omitted: inherited from `parentId` when provided; otherwise resolved against the codex registry (see below). |
 | `type` | `string` | no | Writ type (default: `"mandate"`) |
 | `draft` | `boolean` | no | When `true`, create in `new` phase — held out of the queue until published (default: `false`, creates in `open`) |
 | `parentId` | `string` | no | Create as child of this parent writ. Parent must be in `new` or `open` phase. |
+
+**Codex resolution.** When the caller passes `codex` explicitly, that value is used unchanged. When `codex` is omitted, the handler resolves it as follows:
+
+1. **`parentId` provided** — the codex is inherited from the parent writ inside `clerk.post()`. Defaulting against the registry is skipped so that a child of a codex-bound parent always lands on the same codex.
+2. **No `parentId`, exactly one registered codex** — the only registered codex is selected automatically.
+3. **No `parentId`, two or more registered codexes** — the call fails with `commission-post: --codex is required when the guild has multiple codexes (registered: <names>)`, where `<names>` is the registered codex names sorted alphabetically and joined by `, `.
+4. **No `parentId`, no codexes registered** (including when the codexes apparatus is not installed) — the call fails with `no codexes are registered; install a codex package or declare one in guild.json before posting commissions`.
+
+Resolution happens in the `commission-post` tool handler, before `clerk.post()` is called. This ensures no codex-less writ ever reaches the queue.
 
 Returns the created `WritDoc`.
 
@@ -340,7 +349,7 @@ type WritPhase =
 interface PostCommissionRequest {
   title: string
   body: string
-  codex?: string          // inherited from parent if omitted
+  codex?: string          // when undefined and parentId is set, clerk.post() inherits the parent's codex; the commission-post tool handler resolves the unparented case against the codex registry before calling clerk.post()
   type?: string           // default: "mandate"
   draft?: boolean         // When true, create in 'new' phase (default: false → 'open')
   parentId?: string       // Create as child of this writ

@@ -30,6 +30,7 @@ import writLink from './tools/writ-link.ts';
 import writUnlink from './tools/writ-unlink.ts';
 import writLinkKinds from './tools/writ-link-kinds.ts';
 import writLinkKindsShow from './tools/writ-link-kinds-show.ts';
+import commissionPost from './tools/commission-post.ts';
 
 // ── Test harness ─────────────────────────────────────────────────────
 
@@ -74,6 +75,16 @@ interface SetupOptions {
    * existing data.
    */
   seedLinks?: Array<Record<string, unknown>>;
+  /**
+   * Names of codexes to register in a stub `codexes` apparatus. When
+   * provided, the harness installs a minimal `ScriptoriumApi`-shaped
+   * stub exposing only `.list()` under the `'codexes'` key in the
+   * apparatus map, so `guild().tryApparatus<ScriptoriumApi>('codexes')`
+   * resolves it. When omitted, no `codexes` apparatus is registered —
+   * which simulates the zero-codex case where `tryApparatus` returns
+   * null.
+   */
+  codexes?: string[];
 }
 
 function buildClerkCtx(kitEntries: KitEntry[] = []): {
@@ -163,6 +174,20 @@ async function setupCore(options: SetupOptions = {}, clerkCtx?: StartupContext):
   stacksApparatus.start({ on: () => {}, kits: () => [] });
   const stacks = stacksApparatus.provides as StacksApi;
   apparatusMap.set('stacks', stacks);
+
+  // Register a stub `codexes` apparatus when the test seeds codex names.
+  // The stub mirrors only the slice of `ScriptoriumApi` that the
+  // commission-post handler uses (`.list()` returning `{ name }`
+  // entries). When the option is omitted no apparatus is registered,
+  // which simulates the zero-codex case.
+  if (options.codexes !== undefined) {
+    const codexStub = {
+      async list() {
+        return (options.codexes ?? []).map((name) => ({ name }));
+      },
+    };
+    apparatusMap.set('codexes', codexStub);
+  }
 
   // Ensure books exist
   memBackend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
@@ -3308,6 +3333,115 @@ describe('Clerk', () => {
         () => writEdit.handler({ id: writ.id, codex: 'gamma' }),
         /Cannot change codex/,
       );
+    });
+  });
+
+  // ── commission-post tool handler ──────────────────────────────────
+
+  describe('commission-post tool handler', () => {
+    it('defaults to the only registered codex when the guild has exactly one', async () => {
+      await setup({ codexes: ['solo'] });
+      const writ = await commissionPost.handler({
+        title: 'Auto codex',
+        body: 'Body',
+      });
+      assert.equal(writ.codex, 'solo');
+    });
+
+    it('throws when the guild has multiple codexes and codex is omitted', async () => {
+      await setup({ codexes: ['gamma', 'alpha', 'beta'] });
+      await assert.rejects(
+        () => commissionPost.handler({ title: 'Ambiguous', body: 'Body' }),
+        (err: Error) => {
+          assert.equal(
+            err.message,
+            'commission-post: --codex is required when the guild has multiple codexes (registered: alpha, beta, gamma)',
+          );
+          return true;
+        },
+      );
+    });
+
+    it('throws when no codexes are registered and codex is omitted', async () => {
+      await setup(); // no codexes apparatus registered
+      await assert.rejects(
+        () => commissionPost.handler({ title: 'No codexes', body: 'Body' }),
+        (err: Error) => {
+          assert.equal(
+            err.message,
+            'no codexes are registered; install a codex package or declare one in guild.json before posting commissions',
+          );
+          return true;
+        },
+      );
+    });
+
+    it('also throws the zero-codex error when the codexes apparatus is registered but empty', async () => {
+      await setup({ codexes: [] });
+      await assert.rejects(
+        () => commissionPost.handler({ title: 'Zero codexes', body: 'Body' }),
+        (err: Error) => {
+          assert.equal(
+            err.message,
+            'no codexes are registered; install a codex package or declare one in guild.json before posting commissions',
+          );
+          return true;
+        },
+      );
+    });
+
+    it('passes an explicit codex through unchanged regardless of registry contents', async () => {
+      await setup({ codexes: ['alpha', 'beta'] });
+      const writ = await commissionPost.handler({
+        title: 'Explicit codex',
+        body: 'Body',
+        codex: 'gamma',
+      });
+      assert.equal(writ.codex, 'gamma');
+    });
+
+    it('explicit codex takes precedence even when the registry has exactly one entry', async () => {
+      await setup({ codexes: ['alpha'] });
+      const writ = await commissionPost.handler({
+        title: 'Explicit overrides single',
+        body: 'Body',
+        codex: 'beta',
+      });
+      assert.equal(writ.codex, 'beta');
+    });
+
+    it('parentId without codex inherits the parent codex via clerk.post() (no preemption)', async () => {
+      // Register multiple codexes — proves the handler's defaulting logic
+      // is skipped for parented posts (otherwise this would throw the
+      // multi-codex error before clerk.post() ran).
+      await setup({ codexes: ['alpha', 'beta'] });
+      const parent = await postMandate({
+        title: 'Parent',
+        body: 'Body',
+        codex: 'gamma',
+      });
+      const child = await commissionPost.handler({
+        title: 'Child',
+        body: 'Body',
+        parentId: parent.id,
+      });
+      assert.equal(child.codex, 'gamma');
+    });
+
+    it('explicit codex on a parented post takes precedence over parent inheritance', async () => {
+      await setup({ codexes: ['alpha'] });
+      const parent = await postMandate({
+        title: 'Parent',
+        body: 'Body',
+        codex: 'gamma',
+      });
+      const child = await commissionPost.handler({
+        title: 'Child',
+        body: 'Body',
+        parentId: parent.id,
+        codex: 'delta',
+      });
+      assert.equal(child.codex, 'delta');
     });
   });
 

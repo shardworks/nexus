@@ -1186,7 +1186,7 @@ export function createClerk(): Plugin {
   return {
     apparatus: {
       requires: ['stacks'],
-      recommends: ['oculus'],
+      recommends: ['oculus', 'codexes'],
       consumes: ['linkKinds'],
 
       supportKit: {
