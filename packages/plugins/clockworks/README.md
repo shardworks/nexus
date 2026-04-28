@@ -476,10 +476,12 @@ nsg clock stop
 nsg clock status [--json]
 ```
 
-The hand-written `nsg signal` command shares the same three-layer
-validation as the `signal` tool but passes `'operator'` as the emitter
-(per commission decision D4). The `--payload` flag accepts a JSON
-string; omit it to record a `null` payload.
+The hand-written `nsg signal` command shares the same validator path as
+the `signal` tool — both surfaces resolve the running guild's
+Clockworks apparatus and call `ClockworksApi.validateSignal(name)`
+before emitting. The CLI hardcodes `'operator'` as the emitter; the
+`--payload` flag accepts a JSON string; omit it to record a `null`
+payload.
 
 `nsg clock` is the operator surface for the event queue:
 
@@ -715,15 +717,19 @@ daemon-restart cycle stays idempotent.
   wired into `supportKit.relays`; re-exported so unit tests and any
   downstream tooling that needs to drive the relay directly can pull
   it without reaching into the package's internals.
-- `validateSignal`, `RESERVED_EVENT_NAMESPACES`,
-  `WRIT_LIFECYCLE_SUFFIXES` — the shared signal validator (re-used by
-  the framework CLI's hand-written `nsg signal` command).
 - `validateStandingOrders`, `ALLOWED_STANDING_ORDER_KEYS` — the shared
   standing-order load-time validator and its allowlist of permitted
   top-level keys.
 - Types: `ClockworksApi`, `ClockworksKit`, `ClockworksConfig`,
-  `EventDeclaration`, `StandingOrder`, `EventDoc`, `EventDispatchDoc`,
-  `RelayDefinition`, `RelayContext`, `GuildEvent`, `ClockStartOptions`,
+  `EventSpec`, `EventsKitContribution`, `MergedEventEntry`,
+  `StandingOrder`, `EventDoc`, `EventDispatchDoc`, `RelayDefinition`,
+  `RelayContext`, `GuildEvent`, `ClockStartOptions`,
   `ClockStartResult`, `ClockStopResult`, `ClockStatus`,
   `ForegroundDaemonInputs`.
+
+The signal validator does not ship as a standalone helper or as
+hardcoded namespace / suffix constants. `ClockworksApi.validateSignal(name)`
+on the running apparatus is the single canonical entry point, and the
+authoritative event set is assembled from kit contributions plus
+`guild.json` at start time.
 - The module augments `GuildConfig` with `clockworks?: ClockworksConfig`.

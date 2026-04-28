@@ -237,12 +237,12 @@ describe('Clockworks — skeleton', () => {
     assert.deepEqual(names, ['clock-status', 'signal']);
   });
 
-  it('declares the expected apparatus shape (requires stacks + clerk, recommends animator + loom, consumes relays)', () => {
+  it('declares the expected apparatus shape (requires stacks + clerk, recommends animator + loom, consumes relays and events)', () => {
     const plugin = createClockworks();
     if (!('apparatus' in plugin)) throw new Error('clockworks must be apparatus');
     assert.deepEqual(plugin.apparatus.requires, ['stacks', 'clerk']);
     assert.deepEqual(plugin.apparatus.recommends, ['animator', 'loom']);
-    assert.deepEqual(plugin.apparatus.consumes, ['relays']);
+    assert.deepEqual(plugin.apparatus.consumes, ['relays', 'events']);
     assert.equal(typeof plugin.apparatus.start, 'function');
     assert.equal(typeof plugin.apparatus.stop, 'function');
   });

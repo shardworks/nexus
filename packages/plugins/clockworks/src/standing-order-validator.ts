@@ -26,10 +26,9 @@
  * called out by name in the error message so operators editing legacy
  * configs know exactly what changed.
  *
- * Mirrors the pure-module + descriptive-Error shape of
- * `signal-validator.ts` so future operator-facing surfaces (lint
- * commands, write-hooks) can reuse the validator without booting any
- * apparatus.
+ * Pure-module + descriptive-Error shape so future operator-facing
+ * surfaces (lint commands, write-hooks) can reuse the validator
+ * without booting any apparatus.
  */
 
 import { parseSchedule } from './schedule-parser.ts';

@@ -4,22 +4,29 @@
  * The factory:
  *
  *   - Declares plugin id `clockworks` (derived from the package name).
- *   - Requires the Stacks and Clerk; consumes the `relays` kit
- *     vocabulary.
+ *   - Requires the Stacks and Clerk; consumes the `relays` and
+ *     `events` kit vocabularies.
  *   - Publishes two books (`events`, `event_dispatches`) under owner id
  *     `clockworks`, with the index set anticipated by the runner /
  *     status query patterns in `docs/architecture/clockworks.md`.
  *   - Resolves the Stacks during `start()` and obtains writable handles
  *     on both books so `emit()`, `processEvents()`, and the future
  *     daemon can use them without re-resolving Stacks.
- *   - Provides the `ClockworksApi` (`emit()`, `resolveRelay()`,
- *     `processEvents()`) that downstream tasks extend.
+ *   - Provides the `ClockworksApi` (`emit()`, `validateSignal()`,
+ *     `resolveRelay()`, `processEvents()`) that downstream tasks extend.
  *   - Builds a name-keyed relay registry from `ctx.kits('relays')`
  *     entries merged with the apparatus's own `supportKit.relays`. The
  *     registry is closure-scoped, cleared at the top of every `start()`
  *     for idempotent restart semantics, and uses first-writer-wins on
  *     duplicate names with a lattice-format warning. Reachable from the
  *     api via `resolveRelay(name)`.
+ *   - Builds a merged event set from `ctx.kits('events')` contributions
+ *     plus `guild.json clockworks.events`. The plugin layer is start-
+ *     scoped (built once); the operator layer is re-read per call to
+ *     `validateSignal` so hot-edits land without restart. The four
+ *     fail-loud boot guards — plugin-vs-plugin name collision, function-
+ *     form throw or non-object return, malformed kit value, malformed
+ *     guild.json value — surface at apparatus boot time.
  *   - Auto-wires every plugin-declared book (other than
  *     `clockworks/events` itself) as a CDC observer that re-emits each
  *     row create/update/delete as a `book.<ownerId>.<book>.<verb>`
@@ -59,6 +66,9 @@ import type {
   ClockworksApi,
   EventDispatchDoc,
   EventDoc,
+  EventSpec,
+  EventsKitContribution,
+  MergedEventEntry,
 } from './types.ts';
 
 import {
@@ -85,6 +95,14 @@ import { handleWritLifecycle } from './writ-lifecycle-observer.ts';
 // `start()` into a name-keyed registry. The constant is load-bearing —
 // the existing test asserts the exact string.
 const RELAYS_KIT = 'relays';
+
+// The `events` kit type carries plugin-contributed event declarations.
+// Clockworks walks contributions at `start()` after `requires:` deps
+// have started, evaluates function-form contributions, and assembles
+// the plugin layer of the merged event set. The `guild.json`
+// `clockworks.events` map is layered on per call to `validateSignal`
+// so operator hot-edits land without restart.
+const EVENTS_KIT = 'events';
 
 // ── Registry ────────────────────────────────────────────────────────
 
@@ -128,6 +146,22 @@ export function createClockworks(): Plugin {
   // build-once.
   const schedule: ScheduleEntry[] = [];
 
+  // ── Plugin-layer event set ─────────────────────────────────────────
+  //
+  // The plugin-contributed half of the merged event set. Built once in
+  // `start()` from `ctx.kits('events')` — function-form contributions
+  // are evaluated, plugin-vs-plugin name collisions throw fail-loud
+  // naming both contributors. Per-call `validateSignal` layers the
+  // `guild.json clockworks.events` map on top of this snapshot
+  // (full-replacement on collision; sticky `pluginDeclared`).
+  //
+  // `pluginEventSetReady` is the gate on the not-yet-ready throw —
+  // calling `validateSignal` before `start()` has primed the set
+  // surfaces a `clockworks: validateSignal() called before start() …`
+  // error attributing the problem to the package.
+  const pluginEventSet = new Map<string, MergedEventEntry>();
+  let pluginEventSetReady = false;
+
   /**
    * Register a single kit's `relays` contribution. Mirrors the lattice's
    * factory-registration shape: warn-and-skip on a malformed top-level
@@ -161,6 +195,131 @@ export function createClockworks(): Plugin {
       }
       relays.set(candidate.name, { pluginId, relay: candidate });
     }
+  }
+
+  /**
+   * Resolve a single `events` kit contribution to its declared event
+   * record. The contribution may be a plain `Record<string, EventSpec>`
+   * or a pure function of the `StartupContext` returning the same.
+   *
+   * Per commission decisions D5 / D6, contributions that are neither a
+   * plain object nor a function (D6), or function-form contributions
+   * that throw or return a non-object value (D5), throw fail-loud at
+   * `start()` — the apparatus boot fails so the kit author hears about
+   * the bug at first run rather than silently degrading.
+   */
+  function resolveEventsContribution(
+    pluginId: string,
+    raw: unknown,
+    ctx: StartupContext,
+  ): Record<string, unknown> {
+    if (typeof raw === 'function') {
+      // D5: a throw inside the function-form propagates verbatim from
+      // start(). We do not trap it — the kit author's stack trace is
+      // exactly what surfaces in the boot error.
+      const result = (raw as (ctx: StartupContext) => unknown)(ctx);
+      if (typeof result !== 'object' || result === null || Array.isArray(result)) {
+        throw new Error(
+          `clockworks: events kit "${pluginId}" function-form contribution returned ` +
+            `${result === null ? 'null' : Array.isArray(result) ? 'array' : typeof result}, ` +
+            `expected an object.`,
+        );
+      }
+      return result as Record<string, unknown>;
+    }
+    if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+      return raw as Record<string, unknown>;
+    }
+    // D6: malformed kit value (neither Record nor function).
+    throw new Error(
+      `clockworks: events kit "${pluginId}" contribution must be a record or a ` +
+        `function, got ${raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw}.`,
+    );
+  }
+
+  /**
+   * Walk every `events` kit contribution and assemble the plugin layer
+   * of the merged event set into the closure-scoped `pluginEventSet`.
+   * Called once at `start()`. Per D4 (plugin-vs-plugin collision),
+   * D5 (function-form throw / non-object return), D6 (malformed kit
+   * value): every shape error throws and fails apparatus boot.
+   */
+  function buildPluginEventSet(ctx: StartupContext): void {
+    pluginEventSet.clear();
+    for (const entry of ctx.kits(EVENTS_KIT)) {
+      const events = resolveEventsContribution(entry.pluginId, entry.value, ctx);
+      for (const [name, rawSpec] of Object.entries(events)) {
+        if (typeof rawSpec !== 'object' || rawSpec === null || Array.isArray(rawSpec)) {
+          // Mirror the operator-side D19 guard: a malformed per-event
+          // value from a plugin contribution is also a kit-author bug
+          // that the operator cannot fix — fail loud at boot.
+          throw new Error(
+            `clockworks: events kit "${entry.pluginId}" entry "${name}": expected ` +
+              `object, got ${rawSpec === null ? 'null' : Array.isArray(rawSpec) ? 'array' : typeof rawSpec}.`,
+          );
+        }
+        const existing = pluginEventSet.get(name);
+        if (existing && existing.source !== entry.pluginId) {
+          // D4: plugin-vs-plugin collision. Naming both contributors is
+          // load-bearing — operators need to know which two plugins are
+          // claiming the same name.
+          throw new Error(
+            `clockworks: events kit collision on "${name}" — declared by both ` +
+              `"${existing.source}" and "${entry.pluginId}".`,
+          );
+        }
+        pluginEventSet.set(name, {
+          spec: rawSpec as EventSpec,
+          source: entry.pluginId,
+          pluginDeclared: true,
+        });
+      }
+    }
+  }
+
+  /**
+   * Layer the per-call `guild.json clockworks.events` snapshot on top
+   * of the plugin layer and return the merged map. Per D7 the
+   * guild.json layer is re-read every call so operator hot-edits land
+   * without an apparatus restart.
+   *
+   * Per D20, on a name collision the plugin spec is fully replaced by
+   * the operator spec; `source` flips to `'guild.json'`; `pluginDeclared`
+   * stays sticky-true. Per D19, a malformed `guild.json` per-event
+   * value throws a `clockworks:` error attributing the problem to the
+   * package — the operator is the one who can fix it.
+   */
+  function buildMergedEventSet(): Map<string, MergedEventEntry> {
+    const merged = new Map<string, MergedEventEntry>(pluginEventSet);
+    const g = guild();
+    const operatorEvents = g.guildConfig().clockworks?.events;
+    if (operatorEvents !== undefined && operatorEvents !== null) {
+      if (typeof operatorEvents !== 'object' || Array.isArray(operatorEvents)) {
+        throw new Error(
+          `clockworks: guild.json clockworks.events: expected object, got ` +
+            `${Array.isArray(operatorEvents) ? 'array' : typeof operatorEvents}.`,
+        );
+      }
+      for (const [name, rawSpec] of Object.entries(operatorEvents)) {
+        if (typeof rawSpec !== 'object' || rawSpec === null || Array.isArray(rawSpec)) {
+          // D19: malformed guild.json value.
+          throw new Error(
+            `clockworks: guild.json clockworks.events.${name}: expected object, got ` +
+              `${rawSpec === null ? 'null' : Array.isArray(rawSpec) ? 'array' : typeof rawSpec}.`,
+          );
+        }
+        const existing = merged.get(name);
+        merged.set(name, {
+          spec: rawSpec as EventSpec,
+          source: 'guild.json',
+          // Sticky: once any plugin claimed this name, it stays
+          // plugin-declared even when an operator-supplied entry now
+          // provides the active spec.
+          pluginDeclared: existing?.pluginDeclared ?? false,
+        });
+      }
+    }
+    return merged;
   }
 
   // ── API ────────────────────────────────────────────────────────
@@ -210,6 +369,45 @@ export function createClockworks(): Plugin {
     resolveRelay(name: string): RelayDefinition | undefined {
       const entry = relays.get(name);
       return entry?.relay;
+    },
+
+    validateSignal(name: string): void {
+      // D10: pre-start guard — attribute the failure to the package
+      // and to the unprimed merged set (mirrors emit()'s shape).
+      if (!pluginEventSetReady) {
+        throw new Error(
+          'clockworks: validateSignal() called before start() primed the merged event set.',
+        );
+      }
+
+      // D7 / D20: layer the guild.json snapshot on top of the plugin
+      // layer per call so operator hot-edits land without restart;
+      // collisions full-replace the spec, `pluginDeclared` stays
+      // sticky-true.
+      const merged = buildMergedEventSet();
+
+      // D12: typo-first check ordering — operator hears "not declared"
+      // before "framework-owned" so the most-common case (a typo'd
+      // event name) gets the most actionable message.
+      const entry = merged.get(name);
+      if (entry === undefined) {
+        // D11: operator-facing rejection prefix `signal: "<name>" …`.
+        throw new Error(
+          `signal: "${name}" is not a declared event. Declare it under ` +
+            `clockworks.events in guild.json (or via a plugin's events kit) ` +
+            `before emitting it.`,
+        );
+      }
+
+      // D12 check 2: framework-owned (any plugin has claimed this name
+      // — sticky regardless of which layer's spec is active).
+      if (entry.pluginDeclared) {
+        throw new Error(
+          `signal: "${name}" is a framework-owned event and cannot be emitted ` +
+            `from the signal surface. Framework-owned events are claimed by a ` +
+            `plugin's events kit; only the framework may emit them.`,
+        );
+      }
     },
 
     async processSchedules(opts?: {
@@ -288,17 +486,16 @@ export function createClockworks(): Plugin {
 
   return {
     apparatus: {
-      // Clerk is required because the `signal` tool's writ-lifecycle
-      // validator (D3) resolves `ClerkApi` to enumerate declared writ
-      // types before rejecting `<type>.{ready,completed,stuck,failed}`
-      // patterns.
+      // Clerk is required because the writ-lifecycle observer reads
+      // `clerk/writs` to fan writ-lifecycle and commission events into
+      // the events book.
       requires: ['stacks', 'clerk'],
       // Animator and Loom are soft dependencies — needed by the stdlib
       // `summon-relay` (resolved lazily at handler-call time) so a guild
       // that uses Clockworks for non-anima relays can install Clockworks
       // without dragging in the session-launch stack.
       recommends: ['animator', 'loom'],
-      consumes: [RELAYS_KIT],
+      consumes: [RELAYS_KIT, EVENTS_KIT],
 
       provides: api,
 
@@ -346,6 +543,27 @@ export function createClockworks(): Plugin {
         for (const entry of ctx.kits(RELAYS_KIT)) {
           registerKitRelays(entry);
         }
+
+        // ── Plugin-layer event set ─────────────────────────────────
+        //
+        // Walk the `events` kit contributions, evaluate function-form
+        // contributions, and assemble the plugin layer of the merged
+        // event set. The four fail-loud guards (D4 plugin-vs-plugin
+        // collision, D5 function-form throw / non-object return, D6
+        // malformed kit value, plus the same per-event shape check
+        // operators get from D19) are all wired through
+        // `buildPluginEventSet`. Per D3 this runs after `requires:`
+        // deps have started — the apparatus's `start()` is itself
+        // gated on those deps, so simple ordering inside the function
+        // body is enough.
+        //
+        // `pluginEventSetReady` is the gate on the not-yet-ready
+        // throw from `validateSignal`; we flip it to true after the
+        // build completes so a thrown error keeps the gate closed and
+        // any subsequent call surfaces the unprimed-set message.
+        pluginEventSetReady = false;
+        buildPluginEventSet(ctx);
+        pluginEventSetReady = true;
 
         // ── Schedule table ─────────────────────────────────────────────
         //

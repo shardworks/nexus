@@ -25,13 +25,14 @@ Signal an event — persist it to the Clockworks event queue. Does **not** proce
 - `emitter` — who signaled it: anima name, engine name, or `"framework"`
 - **Returns:** the event ID (e.g. `"evt-a3f7b2c1"`)
 
-### `isFrameworkEvent(name): boolean`
+### `ClockworksApi.validateSignal(name): void`
 
-Check if an event name is in a reserved framework namespace. Reserved namespaces: `anima.`, `commission.`, `tool.`, `migration.`, `guild.`, `standing-order.`, `session.`, `schedule.`. Note: writ lifecycle events (e.g. `mandate.ready`, `task.completed`) are framework-emitted but use guild-defined type names — they are not in this list. See [Event Catalog](event-catalog.md#writ-lifecycle-events).
+Validate that an event name is permitted to be emitted from an unprivileged surface (the anima `signal` tool, the operator `nsg signal` CLI). Two checks run against the merged event set assembled at apparatus `start()` from the `events` kit contributions plus `guild.json clockworks.events` (re-read per call so operator hot-edits land without restart):
 
-### `validateCustomEvent(home, name): void`
+1. **Merged-set membership.** The name must be present in the merged set.
+2. **Framework-owned.** Names claimed by a plugin's `events` kit are framework-owned (`pluginDeclared` is sticky-true) and cannot be emitted from unprivileged surfaces, even if an operator's `guild.json` entry now provides the active spec.
 
-Validate that a custom event name is declared in `guild.json` clockworks.events. **Throws** if the name is in a reserved namespace or not declared.
+**Throws** with a `signal: "<name>" …` message on rejection. Both the anima `signal` tool and the operator `nsg signal` CLI route through this method; there is no second copy of the validator. `ClockworksApi.emit()` does not call `validateSignal` — framework emit sites are unchecked by design. See [Event Catalog → Validation Rules](event-catalog.md#validation-rules) for the full rule set.
 
 ### `readEvent(home, id): GuildEvent | null`
 

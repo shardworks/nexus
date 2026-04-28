@@ -427,7 +427,7 @@ Third-party apparatus follow the same pattern under their derived id:
 
 export interface ClockworksConfig {
   maxConcurrent?: number;
-  events?: Record<string, EventDeclaration>;
+  events?: Record<string, EventSpec>;
   standingOrders?: StandingOrder[];
 }
 

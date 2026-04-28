@@ -19,7 +19,7 @@
 // TypeScript treats the `declare module` block below as an
 // external-module augmentation (vs. a global augmentation). Without at
 // least one import from the target module TS2664 fires at compile time.
-import type { Kit } from '@shardworks/nexus-core';
+import type { Kit, StartupContext } from '@shardworks/nexus-core';
 import type { BookEntry } from '@shardworks/stacks-apparatus';
 
 import type { RelayDefinition } from './relay.ts';
@@ -27,15 +27,72 @@ import type { RelayDefinition } from './relay.ts';
 // ── Config ───────────────────────────────────────────────────────────
 
 /**
- * A custom event declaration in `guild.json` under `clockworks.events`.
+ * A single event specification — the value side of the events kit
+ * contribution and the `guild.json` `clockworks.events` map.
  *
- * Framework events (e.g. `writ.stuck`, `session.end`) are declared by
- * the plugins that produce them; only operator-defined events need to
- * appear here.
+ * Framework events are declared by the plugins that produce them via
+ * the `events` kit contribution (`supportKit.events` on apparatuses, or
+ * a top-level `events` field on standalone kits). The kit-contributed
+ * names plus the `guild.json` operator-declared names are merged at
+ * Clockworks `start()` into a single authoritative set; `signal`
+ * surfaces (the anima tool, the operator CLI) consult that set.
+ *
+ * `description` is human-readable purpose. `schema` reserves a slot
+ * for future structural payload validation — accepted but not
+ * interpreted at runtime today (the field is `unknown` so today's
+ * documentation-shape entries pass through ergonomically).
  */
-export interface EventDeclaration {
+export interface EventSpec {
   /** Human-readable description of what this event means. */
   description?: string;
+  /**
+   * Reserved slot for structural payload validation. Present in
+   * existing `guild.json` entries as a documentation shape; ignored at
+   * runtime in the current commission. A future commission may give
+   * this field a typed shape and a payload-validation runtime.
+   */
+  schema?: unknown;
+}
+
+/**
+ * Kit contribution shape for the `events` kit type.
+ *
+ * Plugins claim event names by exporting an `events` kit whose value is
+ * either a flat record `Record<string, EventSpec>` keyed by event name,
+ * or a pure function of the `StartupContext` returning the same record.
+ * The function form runs once at Clockworks `start()` after the kit's
+ * `requires:` deps have started; throwing or returning a non-record
+ * fails the apparatus boot loud (no silent fallback).
+ *
+ * The flat-map shape composes naturally with `guild.json`'s
+ * `clockworks.events` record-keyed-by-name shape — the Clockworks
+ * merges both layers into one authoritative set.
+ */
+export type EventsKitContribution =
+  | Record<string, EventSpec>
+  | ((ctx: StartupContext) => Record<string, EventSpec>);
+
+/**
+ * One row of the merged event set assembled at apparatus `start()` —
+ * what `validateSignal` consults per call.
+ *
+ * `source` records where the entry's active metadata came from — the
+ * contributing pluginId, or the literal string `'guild.json'` when the
+ * operator-declared entry shadowed (or originated) the row.
+ *
+ * `pluginDeclared` is sticky-true: once any plugin has claimed a name,
+ * the framework treats that name as plugin-owned even when a
+ * `guild.json` override later replaces the active spec. The two-check
+ * validator routes plugin-owned names away from anima-emit channels
+ * regardless of which layer's spec is currently active.
+ */
+export interface MergedEventEntry {
+  /** Active spec (record or function-form) — replaced verbatim on collision. */
+  spec: EventSpec;
+  /** `'guild.json'` or a contributing pluginId. */
+  source: string;
+  /** Sticky-true once any plugin claimed this name. */
+  pluginDeclared: boolean;
 }
 
 /**
@@ -84,7 +141,7 @@ export interface StandingOrder {
  */
 export interface ClockworksConfig {
   /** Custom event declarations keyed by event name. */
-  events?: Record<string, EventDeclaration>;
+  events?: Record<string, EventSpec>;
   /** Standing orders — event → action mappings. */
   standingOrders?: StandingOrder[];
 }
@@ -227,6 +284,33 @@ export interface ClockworksApi {
    * @throws        When `payload` cannot be JSON-serialized.
    */
   emit(name: string, payload: unknown, emitter: string): Promise<string>;
+
+  /**
+   * Validate that an event name is permitted to be emitted from an
+   * unprivileged surface (the anima `signal` tool, the operator
+   * `nsg signal` CLI).
+   *
+   * Two checks, in order, against the merged set assembled from the
+   * `events` kit (start-scoped) plus `guild.json` `clockworks.events`
+   * (re-read per call so operator hot-edits land without restart):
+   *
+   *   1. The name must be present in the merged set. Otherwise: `signal:
+   *      "<name>" is not declared …`.
+   *   2. Names declared by a plugin contribution are framework-owned and
+   *      cannot be emitted from anima/operator surfaces — even when a
+   *      `guild.json` entry now provides the active spec, the
+   *      `pluginDeclared` flag is sticky. Otherwise: `signal: "<name>"
+   *      …`.
+   *
+   * Throws a plain `Error` on rejection; rejection messages start with
+   * `signal: "<name>" …` (operator-facing). Pre-start invocation throws
+   * a `clockworks: …` not-yet-ready error attributing the problem to
+   * the package.
+   *
+   * `emit()` deliberately does NOT call this method — framework-owned
+   * emit sites are unchecked by design.
+   */
+  validateSignal(name: string): void;
 
   /**
    * Look up a registered relay by name.
@@ -418,4 +502,14 @@ export interface ClockworksKit extends Kit {
    * framework base, in which case it is a metadata-only contribution.
    */
   relays?: RelayDefinition[];
+  /**
+   * Event declarations contributed under the `events` kit type. Either
+   * a flat record of event-name → `EventSpec`, or a pure function of
+   * the `StartupContext` returning the same record. Plugin-declared
+   * events are framework-owned; operator-defined events live in
+   * `guild.json` under `clockworks.events`. The Clockworks merges both
+   * layers at `start()` and consults the merged set per call to
+   * `validateSignal`.
+   */
+  events?: EventsKitContribution;
 }

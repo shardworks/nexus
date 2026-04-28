@@ -1,28 +1,35 @@
 /**
- * Clockworks — emit() API and `signal` tool behavioral tests.
+ * Clockworks — emit() API and `signal` tool behavioral tests, plus the
+ * merged-set + two-check `validateSignal` apparatus-level surface.
  *
- * Covers every behavior enumerated in commission c-modhilaw's acceptance
- * signal:
+ * Covers, end-to-end through `ClockworksApi.validateSignal`:
  *
  *   - emit() round-trip: writes a well-formed row with the generated id,
  *     firedAt, emitter, processed=false, and serialized payload.
- *   - emit() coerces `undefined` payload to `null` (D8).
+ *   - emit() coerces `undefined` payload to `null`.
  *   - emit() throws a descriptive Clockworks-attributed error on a
- *     non-JSON-serializable payload (D2, D11) — before the Stacks layer
- *     sees the value.
- *   - signal: success on a declared custom event, delegating to emit().
- *   - signal: rejects reserved framework-namespace names (D10,
- *     case-sensitive).
- *   - signal: rejects writ-lifecycle patterns for any declared writ
- *     type (D3).
- *   - signal: rejects undeclared event names.
- *   - signal: declares callableBy: ['anima'] so the patron-facing CLI
- *     auto-builder skips it (D6) — the hand-written framework command
- *     in packages/framework/cli is the sole `nsg signal` registration.
- *
- * The dispatcher, runner, CDC auto-wiring, and framework lifecycle
- * emission are NOT tested here — they are out of scope for this
- * commission.
+ *     non-JSON-serializable payload — before the Stacks layer sees the
+ *     value.
+ *   - validateSignal: undeclared name fails the merged-set check.
+ *   - validateSignal: plugin-declared name fails the framework-owned
+ *     check (called from the anima signal tool).
+ *   - validateSignal: operator-original (guild.json-only) name passes
+ *     both checks.
+ *   - validateSignal: a name claimed by both a plugin contribution and
+ *     guild.json resolves with the operator metadata but rejects emit
+ *     from anima (sticky `pluginDeclared`).
+ *   - validateSignal: per-call hot-edit semantics — editing the
+ *     guild.json events map between two calls is observed without
+ *     restart; in-process plugin contributions are start-scoped.
+ *   - validateSignal: pre-start guard throws the `clockworks: …`
+ *     not-yet-ready message.
+ *   - The four fail-loud boot guards (D4 plugin-vs-plugin collision, D5
+ *     function-form throw / non-object return, D6 malformed kit value,
+ *     D19 malformed guild.json value).
+ *   - The anima `signal` tool's params schema rejects an `emitter`
+ *     field; the handler always emits with `'anima'`.
+ *   - The signal tool declares callableBy: ['anima'] so the patron-
+ *     facing CLI auto-builder skips it.
  */
 
 import { afterEach, describe, it } from 'node:test';
@@ -44,37 +51,38 @@ import type { StacksApi } from '@shardworks/stacks-apparatus';
 
 import { createClerk } from '@shardworks/clerk-apparatus';
 import type { ClerkApi } from '@shardworks/clerk-apparatus';
-import { makeWritTypeApparatus, mandateLikeWritType } from '@shardworks/clerk-apparatus/testing';
 
 import { createClockworks } from './clockworks.ts';
-import type { ClockworksApi, EventDoc } from './types.ts';
+import type {
+  ClockworksApi,
+  EventDoc,
+  EventSpec,
+  EventsKitContribution,
+} from './types.ts';
 import { default as signal } from './tools/signal.ts';
 import type { ToolDefinition } from '@shardworks/tools-apparatus';
 
 // ── Test fixture ──────────────────────────────────────────────────────
 
-const FRAMEWORK_KIT_FIELDS = new Set(['requires', 'recommends']);
+interface PluginEventsContribution {
+  pluginId: string;
+  value: EventsKitContribution;
+}
 
-function buildKitEntries(
-  kits: LoadedKit[],
-  apparatuses: LoadedApparatus[] = [],
-): KitEntry[] {
-  const entries: KitEntry[] = [];
-  for (const kit of kits) {
-    for (const [type, value] of Object.entries(kit.kit)) {
-      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
-      entries.push({ pluginId: kit.id, packageName: kit.packageName, type, value });
-    }
-  }
-  for (const app of apparatuses) {
-    const bag = app.apparatus.supportKit;
-    if (!bag || typeof bag !== 'object') continue;
-    for (const [type, value] of Object.entries(bag)) {
-      if (FRAMEWORK_KIT_FIELDS.has(type)) continue;
-      entries.push({ pluginId: app.id, packageName: app.packageName, type, value });
-    }
-  }
-  return entries;
+interface FixtureOptions {
+  /** guild.json clockworks.events map — mutable so tests can hot-edit. */
+  declaredEvents?: Record<string, EventSpec>;
+  /** Plugin-layer `events` kit contributions, listed in registration order. */
+  pluginEvents?: PluginEventsContribution[];
+}
+
+interface Fixture {
+  stacks: StacksApi;
+  clerk: ClerkApi;
+  clockworks: ClockworksApi;
+  eventsBook: ReturnType<StacksApi['book']>;
+  guildConfig: GuildConfig;
+  apparatusMap: Map<string, unknown>;
 }
 
 function buildCtx(kitEntries: KitEntry[] = []): StartupContext {
@@ -86,18 +94,7 @@ function buildCtx(kitEntries: KitEntry[] = []): StartupContext {
   };
 }
 
-interface Fixture {
-  stacks: StacksApi;
-  clerk: ClerkApi;
-  clockworks: ClockworksApi;
-  eventsBook: ReturnType<StacksApi['book']>;
-  apparatusMap: Map<string, unknown>;
-}
-
-async function buildFixture(options: {
-  declaredEvents?: Record<string, { description?: string }>;
-  writTypes?: Array<{ name: string; description?: string }>;
-} = {}): Promise<Fixture> {
+async function buildFixture(options: FixtureOptions = {}): Promise<Fixture> {
   const backend = new MemoryBackend();
   const stacksPlugin = createStacksApparatus(backend);
   const clerkPlugin = createClerk();
@@ -109,21 +106,12 @@ async function buildFixture(options: {
 
   const apparatusMap = new Map<string, unknown>();
 
-  // Build a tiny fake apparatus per requested writ type. Each apparatus
-  // calls clerk.registerWritType from its own start(), mirroring the
-  // production registration path. The legacy `clerk.writTypes` guild-
-  // config channel is gone — registration must flow through
-  // ClerkApi.registerWritType.
-  const writTypeApparatuses = (options.writTypes ?? []).map((entry) =>
-    makeWritTypeApparatus([mandateLikeWritType(entry.name)], { id: `${entry.name}-plugin` }),
-  );
-
   const guildConfig: GuildConfig = {
     name: 'test-guild',
     nexus: '0.0.0',
     plugins: [],
     clockworks: options.declaredEvents
-      ? { events: options.declaredEvents }
+      ? { events: { ...options.declaredEvents } }
       : undefined,
   };
 
@@ -163,9 +151,7 @@ async function buildFixture(options: {
   const stacks = stacksApparatus.provides as StacksApi;
   apparatusMap.set('stacks', stacks);
 
-  // Pre-create the book schemas for in-memory backend. In a live guild
-  // Arbor reconciles these from supportKit.books; the unit fixture
-  // performs the same wiring manually.
+  // Pre-create the book schemas for the in-memory backend.
   backend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
     indexes: ['phase', 'type', 'createdAt', 'parentId', ['phase', 'type'], ['phase', 'createdAt'], ['parentId', 'phase']],
   });
@@ -181,29 +167,31 @@ async function buildFixture(options: {
 
   // Start clerk.
   const clerkApparatus = clerkPlugin.apparatus;
-  await clerkApparatus.start(buildCtx(buildKitEntries([], [])));
+  await clerkApparatus.start(buildCtx());
   const clerk = clerkApparatus.provides as ClerkApi;
   apparatusMap.set('clerk', clerk);
 
-  // Run each fake writ-type apparatus's start() so it registers its writ
-  // type with the now-started Clerk. Mirrors the production ordering for
-  // plugins with `requires: ['clerk']`.
-  for (const app of writTypeApparatuses) {
-    const apparatus = app.apparatus as { start?: (ctx: StartupContext) => void | Promise<void> };
-    if (typeof apparatus.start === 'function') {
-      await apparatus.start(buildCtx());
-    }
+  // Build the kit entries for clockworks's start(): the `events` kit
+  // contributions plus a passthrough that mirrors a real Arbor wiring.
+  const clockworksCtxEntries: KitEntry[] = [];
+  for (const contribution of options.pluginEvents ?? []) {
+    clockworksCtxEntries.push({
+      pluginId: contribution.pluginId,
+      packageName: `@test/${contribution.pluginId}`,
+      type: 'events',
+      value: contribution.value,
+    });
   }
 
   // Start clockworks.
   const clockworksApparatus = clockworksPlugin.apparatus;
-  await clockworksApparatus.start(buildCtx());
+  await clockworksApparatus.start(buildCtx(clockworksCtxEntries));
   const clockworks = clockworksApparatus.provides as ClockworksApi;
   apparatusMap.set('clockworks', clockworks);
 
   const eventsBook = stacks.book<EventDoc>('clockworks', 'events');
 
-  return { stacks, clerk, clockworks, eventsBook, apparatusMap };
+  return { stacks, clerk, clockworks, eventsBook, guildConfig, apparatusMap };
 }
 
 // Narrow the signal tool definition to the type produced by the `tool()`
@@ -287,8 +275,8 @@ describe('Clockworks — emit()', () => {
       },
     );
 
-    // The failed emit must not have written any new row (the only
-    // pre-existing row is the boot-time `guild.initialized` emission).
+    // The failed emit must not have written any new row beyond the
+    // boot-time `guild.initialized` emission.
     assert.equal(await fix.eventsBook.count(), before);
   });
 
@@ -301,6 +289,226 @@ describe('Clockworks — emit()', () => {
     );
     assert.equal(await fix.eventsBook.count(), before);
   });
+
+  it('emit() never calls validateSignal — framework emit sites are unchecked', async () => {
+    // No declarations anywhere; emit succeeds regardless because emit()
+    // does not consult the merged set (D14).
+    const fix = await buildFixture();
+    const id = await fix.clockworks.emit('totally.unregistered', { ok: true }, 'framework');
+    assert.match(id, /^e-/);
+    const stored = (await fix.eventsBook.get(id)) as EventDoc | null;
+    assert.ok(stored);
+    assert.equal(stored.name, 'totally.unregistered');
+  });
+});
+
+// ── ClockworksApi.validateSignal() tests ──────────────────────────────
+
+describe('Clockworks — validateSignal()', () => {
+  afterEach(() => clearGuild());
+
+  it('throws a clockworks: not-yet-ready error when called before start()', () => {
+    const clockworksPlugin = createClockworks();
+    if (!('apparatus' in clockworksPlugin)) throw new Error('expected apparatus');
+    const api = clockworksPlugin.apparatus.provides as ClockworksApi;
+    assert.throws(
+      () => api.validateSignal('anything'),
+      /^Error: clockworks: validateSignal\(\) called before start\(\) primed the merged event set\./,
+    );
+  });
+
+  it('rejects an undeclared name with the signal: prefix and a "not declared" message', async () => {
+    const fix = await buildFixture({
+      declaredEvents: { 'demo.declared': {} },
+    });
+    assert.throws(
+      () => fix.clockworks.validateSignal('demo.unknown'),
+      /signal: "demo\.unknown" is not a declared event/,
+    );
+  });
+
+  it('accepts a name declared only in guild.json (operator-original)', async () => {
+    const fix = await buildFixture({
+      declaredEvents: { 'demo.thing': {} },
+    });
+    assert.doesNotThrow(() => fix.clockworks.validateSignal('demo.thing'));
+  });
+
+  it('rejects a plugin-declared name with the framework-owned message', async () => {
+    const fix = await buildFixture({
+      pluginEvents: [
+        { pluginId: 'astrolabe', value: { 'astrolabe.plan.finalized': { description: 'plugin' } } },
+      ],
+    });
+    assert.throws(
+      () => fix.clockworks.validateSignal('astrolabe.plan.finalized'),
+      /signal: "astrolabe\.plan\.finalized" is a framework-owned event/,
+    );
+  });
+
+  it('a name claimed by both a plugin and guild.json resolves with operator metadata but stays framework-owned', async () => {
+    const fix = await buildFixture({
+      pluginEvents: [
+        { pluginId: 'astrolabe', value: { 'astrolabe.plan.finalized': { description: 'plugin-side' } } },
+      ],
+      declaredEvents: {
+        'astrolabe.plan.finalized': { description: 'operator override' },
+      },
+    });
+    // Sticky `pluginDeclared`: the framework-owned check fires regardless.
+    assert.throws(
+      () => fix.clockworks.validateSignal('astrolabe.plan.finalized'),
+      /framework-owned/,
+    );
+
+    // Anima emit through the signal tool is rejected on the same name.
+    await assert.rejects(
+      () => invokeSignal({ name: 'astrolabe.plan.finalized', payload: {} }),
+      /framework-owned/,
+    );
+  });
+
+  it('hot-edit observability: editing guild.json events between two calls lands without restart', async () => {
+    const fix = await buildFixture({
+      declaredEvents: { 'demo.first': {} },
+    });
+    // Initial state: only `demo.first` is declared.
+    assert.doesNotThrow(() => fix.clockworks.validateSignal('demo.first'));
+    assert.throws(
+      () => fix.clockworks.validateSignal('demo.added-later'),
+      /signal: "demo\.added-later" is not a declared event/,
+    );
+
+    // Hot-edit the guild config in place.
+    fix.guildConfig.clockworks!.events = {
+      'demo.first': {},
+      'demo.added-later': {},
+    };
+
+    // Per-call re-read picks the change up.
+    assert.doesNotThrow(() => fix.clockworks.validateSignal('demo.added-later'));
+  });
+
+  it('plugin-layer is start-scoped: post-start changes to the kit list have no effect', async () => {
+    // We can only mutate the local in-memory list of pluginEvents
+    // before start; start-time evaluation freezes the plugin layer.
+    // Demonstrate by booting with a fixed plugin layer and asserting
+    // no later mutation could change the answer (no API exists to
+    // mutate it post-start, which is the behavior we want).
+    const fix = await buildFixture({
+      pluginEvents: [
+        { pluginId: 'astrolabe', value: { 'astrolabe.plan.x': {} } },
+      ],
+    });
+    assert.throws(
+      () => fix.clockworks.validateSignal('astrolabe.plan.x'),
+      /framework-owned/,
+    );
+    // No way for a test to "add" a plugin contribution after start —
+    // surfacing that assertion is the test: validateSignal still
+    // rejects unknown names and accepts known ones consistently.
+    assert.throws(
+      () => fix.clockworks.validateSignal('astrolabe.plan.unknown'),
+      /not a declared event/,
+    );
+  });
+});
+
+// ── Fail-loud boot guards ─────────────────────────────────────────────
+
+describe('Clockworks — fail-loud start() guards', () => {
+  afterEach(() => clearGuild());
+
+  it('throws on plugin-vs-plugin name collision (D4)', async () => {
+    await assert.rejects(
+      () =>
+        buildFixture({
+          pluginEvents: [
+            { pluginId: 'astrolabe', value: { 'shared.event': {} } },
+            { pluginId: 'reckoner', value: { 'shared.event': {} } },
+          ],
+        }),
+      /clockworks: events kit collision on "shared\.event" — declared by both "astrolabe" and "reckoner"\./,
+    );
+  });
+
+  it('does not collide when the same plugin contributes the same name twice', async () => {
+    // Same pluginId merging is deduplication, not collision.
+    const fix = await buildFixture({
+      pluginEvents: [
+        { pluginId: 'astrolabe', value: { 'shared.event': { description: 'first' } } },
+        { pluginId: 'astrolabe', value: { 'shared.event': { description: 'second' } } },
+      ],
+    });
+    // Either iteration order is acceptable — both wins are framework-owned.
+    assert.throws(
+      () => fix.clockworks.validateSignal('shared.event'),
+      /framework-owned/,
+    );
+  });
+
+  it('throws when a function-form contribution throws (D5)', async () => {
+    await assert.rejects(
+      () =>
+        buildFixture({
+          pluginEvents: [
+            {
+              pluginId: 'astrolabe',
+              value: () => {
+                throw new Error('boom');
+              },
+            },
+          ],
+        }),
+      /boom/,
+    );
+  });
+
+  it('throws when a function-form contribution returns a non-object (D5)', async () => {
+    await assert.rejects(
+      () =>
+        buildFixture({
+          pluginEvents: [
+            {
+              pluginId: 'astrolabe',
+              // Type-erase: the runtime guard catches non-records here.
+              value: (() => 'not-an-object') as unknown as EventsKitContribution,
+            },
+          ],
+        }),
+      /clockworks: events kit "astrolabe" function-form contribution returned string, expected an object\./,
+    );
+  });
+
+  it('throws on a malformed kit value that is neither record nor function (D6)', async () => {
+    await assert.rejects(
+      () =>
+        buildFixture({
+          pluginEvents: [
+            {
+              pluginId: 'astrolabe',
+              value: 42 as unknown as EventsKitContribution,
+            },
+          ],
+        }),
+      /clockworks: events kit "astrolabe" contribution must be a record or a function, got number\./,
+    );
+  });
+
+  it('throws on a malformed guild.json events.<key> value (D19)', async () => {
+    // The malformed value is detected on the first validateSignal call
+    // because the guild.json layer is read per-call (D7). Boot itself
+    // succeeds — only signal callers see the rejection.
+    const fix = await buildFixture({
+      declaredEvents: {
+        'demo.broken': 'oops' as unknown as EventSpec,
+      },
+    });
+    assert.throws(
+      () => fix.clockworks.validateSignal('demo.broken'),
+      /clockworks: guild\.json clockworks\.events\.demo\.broken: expected object, got string\./,
+    );
+  });
 });
 
 // ── signal tool tests ─────────────────────────────────────────────────
@@ -312,7 +520,7 @@ describe('Clockworks — signal tool', () => {
     assert.deepEqual(signalTool.callableBy, ['anima']);
   });
 
-  it('defaults the emitter to "anima" and delegates to emit()', async () => {
+  it('hardcodes emitter to "anima" — params schema has no `emitter` key, and a passed-in emitter is ignored', async () => {
     const fix = await buildFixture({
       declaredEvents: { 'code.reviewed': {} },
     });
@@ -328,123 +536,48 @@ describe('Clockworks — signal tool', () => {
     assert.equal(stored.emitter, 'anima');
     assert.equal(stored.name, 'code.reviewed');
     assert.deepEqual(stored.payload, { lines: 42 });
-  });
 
-  it('honors an explicit emitter argument', async () => {
-    const fix = await buildFixture({
-      declaredEvents: { 'code.reviewed': {} },
-    });
+    // Structural assertion: the params schema declares only `name` and
+    // `payload` — no `emitter` key exists for callers to spoof.
+    const shapeKeys = Object.keys(
+      (signalTool.params as unknown as { shape: Record<string, unknown> }).shape,
+    ).sort();
+    assert.deepEqual(shapeKeys, ['name', 'payload']);
 
-    const id = await invokeSignal({
+    // Behavioral assertion: even if a caller passes `emitter`, the
+    // value is stripped (zod default strip-unknown), and the row's
+    // emitter field still records 'anima'.
+    const id2 = await invokeSignal({
       name: 'code.reviewed',
       payload: {},
-      emitter: 'reviewer-anima',
+      emitter: 'spoof-attempt',
     }) as string;
-
-    const stored = (await fix.eventsBook.get(id)) as EventDoc | null;
-    assert.ok(stored);
-    assert.equal(stored.emitter, 'reviewer-anima');
+    const stored2 = (await fix.eventsBook.get(id2)) as EventDoc | null;
+    assert.ok(stored2);
+    assert.equal(stored2.emitter, 'anima');
   });
 
-  it('rejects reserved framework namespaces (each of eight)', async () => {
-    await buildFixture({
-      declaredEvents: { 'demo.thing': {} },
-    });
-
-    const reserved = [
-      'anima.registered',
-      'commission.posted',
-      'tool.invoked',
-      'migration.applied',
-      'guild.initialized',
-      'standing-order.created',
-      'session.start',
-      'schedule.fired',
-    ];
-
-    for (const name of reserved) {
-      await assert.rejects(
-        () => invokeSignal({ name, payload: {} }),
-        (err: unknown) => {
-          assert.ok(err instanceof Error);
-          assert.match(err.message, /reserved framework namespace/);
-          return true;
-        },
-        `"${name}" should be rejected as a reserved namespace`,
-      );
-    }
-  });
-
-  it('rejects arbitrary `schedule.*` names through the shared constant', async () => {
-    // The reserved-namespace check is a prefix match, so any
-    // sub-name under `schedule.` must be rejected — not just
-    // `schedule.fired`. This guards against any future consumer that
-    // hard-codes the literal name instead of using the prefix.
-    await buildFixture({
-      declaredEvents: { 'demo.thing': {} },
-    });
-
-    for (const name of ['schedule.fired', 'schedule.skipped', 'schedule.anything']) {
-      await assert.rejects(
-        () => invokeSignal({ name, payload: {} }),
-        /reserved framework namespace "schedule\."/,
-        `"${name}" should be rejected via the schedule. prefix`,
-      );
-    }
-  });
-
-  it('writ-lifecycle names are rejected for every declared writ type', async () => {
-    await buildFixture({
-      declaredEvents: { 'demo.thing': {} },
-      writTypes: [{ name: 'bug' }, { name: 'feature' }],
-    });
-
-    // Includes the built-in "mandate" type as well as the two guild-declared ones.
-    const forbidden = [
-      'mandate.ready',
-      'mandate.completed',
-      'mandate.stuck',
-      'mandate.failed',
-      'bug.ready',
-      'bug.completed',
-      'bug.stuck',
-      'bug.failed',
-      'feature.ready',
-      'feature.completed',
-      'feature.stuck',
-      'feature.failed',
-    ];
-
-    for (const name of forbidden) {
-      await assert.rejects(
-        () => invokeSignal({ name, payload: {} }),
-        /writ-lifecycle pattern/,
-        `"${name}" should be rejected as a writ-lifecycle pattern`,
-      );
-    }
-  });
-
-  it('rejects names not declared under clockworks.events', async () => {
+  it('rejects an undeclared name with the signal: prefix message', async () => {
     await buildFixture({
       declaredEvents: { 'demo.declared': {} },
     });
 
     await assert.rejects(
       () => invokeSignal({ name: 'demo.not-declared', payload: {} }),
-      /not declared in guild\.json under clockworks\.events/,
+      /signal: "demo\.not-declared" is not a declared event/,
     );
   });
 
-  it('case-sensitive match: "Guild.initialized" (capital G) bypasses the reserved check but fails the declared check', async () => {
+  it('rejects a plugin-declared name (framework-owned) when called from anima', async () => {
     await buildFixture({
-      declaredEvents: { 'demo.declared': {} },
+      pluginEvents: [
+        { pluginId: 'clerk', value: { 'mandate.ready': { description: 'writ-lifecycle' } } },
+      ],
     });
 
-    // Not in the reserved-namespace list (lowercase `guild.` only), so
-    // it falls through to the declared-events check and fails there.
     await assert.rejects(
-      () => invokeSignal({ name: 'Guild.initialized', payload: {} }),
-      /not declared in guild\.json under clockworks\.events/,
+      () => invokeSignal({ name: 'mandate.ready', payload: {} }),
+      /framework-owned/,
     );
   });
 

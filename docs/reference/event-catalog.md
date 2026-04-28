@@ -6,7 +6,7 @@ The Clockworks event system — every framework event, custom event rules, CDC e
 
 ## Framework Events
 
-Framework events are emitted by core modules and the Clockworks runner. They use [reserved namespaces](#reserved-namespaces) (`anima.`, `commission.`, `tool.`, `migration.`, `guild.`, `standing-order.`, `session.`, `schedule.`) and **cannot** be signalled by animas via the `signal` tool. Writ lifecycle events (`{type}.ready`, etc.) are also framework-only but live outside the reserved-namespace list — see [Writ Lifecycle Events](#writ-lifecycle-events) for how validation handles that.
+Framework events are emitted by core modules and the Clockworks runner. They are claimed by their owning plugins via the `events` kit contribution (`supportKit.events` on apparatuses, top-level `events` on standalone kits) and merged into the Clockworks's authoritative event set at apparatus `start()`. Once a plugin has claimed a name, it is **framework-owned** — `signal` surfaces (the anima `signal` tool, the operator `nsg signal` CLI) reject emit attempts on that name even when an operator's `guild.json` entry now provides the active spec. See [Reserved Namespaces](#reserved-namespaces) and [Validation Rules](#validation-rules) for the detail.
 
 Payload shapes use inline records `{ field, optional? }` where `?` marks an optional field.
 
@@ -73,10 +73,10 @@ Emitted by the writ-lifecycle observer in `clockworks/src/writ-lifecycle-observe
 
 #### Event namespace and validation
 
-Writ lifecycle events are **framework-emitted** but use **guild-defined type names** as their namespace. A guild with a `task` writ type gets `task.ready` events — these aren't in the reserved framework namespaces, and they aren't declared in `clockworks.events` either. This is intentional:
+Writ lifecycle events are **framework-emitted** but use **guild-defined type names** as their namespace. A guild with a `task` writ type gets `task.ready` events. Once the Clerk plugin claims these names through its `events` kit contribution, they become framework-owned in the merged event set:
 
-- The framework emits them freely (it calls `ClockworksApi.emit()` directly, bypassing `validateSignal`).
-- An anima calling `signal('task.ready')` is **rejected** by `validateSignal` — the writ-lifecycle pattern check catches `<type>.{ready,completed,stuck,failed}` for every type returned by `ClerkApi.listWritTypes()`.
+- The framework emits them freely. `ClockworksApi.emit()` bypasses `validateSignal` entirely (advisory-only enforcement on the unprivileged emit channels).
+- An anima calling `signal('task.ready')` is **rejected** by `validateSignal` because the merged event set marks the name as plugin-declared (sticky `pluginDeclared`).
 
 This asymmetry is a feature: the framework controls writ lifecycle events; animas cannot forge them.
 
@@ -126,20 +126,11 @@ The payload is `null` — the event is a marker, not a record.
 
 ### Reserved Namespaces
 
-The following namespaces are reserved for framework events. Animas calling the `signal` tool with names in these namespaces are rejected by `validateSignal`. The canonical list lives in `clockworks/src/signal-validator.ts` (`RESERVED_EVENT_NAMESPACES`):
+There is no hardcoded reserved-namespace list. Names are framework-owned per-event, claimed by a plugin's `events` kit contribution at apparatus `start()`. The merged event set tags each entry with a `pluginDeclared` flag that stays sticky-true once any plugin has claimed the name; `signal` surfaces (the anima `signal` tool, the operator `nsg signal` CLI) reject any emit on a `pluginDeclared` name even when an operator's `guild.json` entry now provides the active spec.
 
-```
-anima.
-commission.
-tool.
-migration.
-guild.
-standing-order.
-session.
-schedule.
-```
+By convention, framework plugins claim per-namespace prefixes via their `events` kit contributions — for example, the Clerk's writ-lifecycle and commission events under `<type>.{ready,completed,stuck,failed}` and `commission.*`, the Animator's `session.*` and `anima.*`, the Clockworks's own `schedule.*`, `standing-order.*`, `migration.*`, and `guild.*`, and the framework CLI's `tool.*` plugin-bootstrap events. The exact catalog of plugin-claimed names lives in each plugin's `supportKit.events` slot — there is no second copy to drift against.
 
-**Note:** Writ lifecycle events (e.g. `mandate.ready`, `task.completed`) use guild-defined type names as namespaces, which are *not* in this list. They are still framework-only — `validateSignal` rejects them via a separate writ-lifecycle pattern check that runs against `ClerkApi.listWritTypes()`. See [Writ Lifecycle Events](#writ-lifecycle-events).
+**Writ lifecycle events** (e.g. `mandate.ready`, `task.completed`) use guild-defined type names as namespaces, but the Clerk's `events` kit declares them per writ type as the type registry changes. They are still framework-only — `validateSignal` rejects them via the merged-set framework-owned check.
 
 **`book.` is intentionally absent.** The CDC auto-wiring emits `book.<ownerId>.<bookName>.<verb>` events from framework code (see [CDC Events](#cdc-events) below), but the prefix is **not** reserved — the validator does not block animas from signalling spoofed `book.*` names. This is an as-is gap in the validator; closing it is a separate code-only follow-up. Operators relying on `book.*` events should treat the namespace as authoritative-by-convention rather than authoritative-by-validator.
 
@@ -175,11 +166,11 @@ The `<ownerId>` parameter is the contributing plugin's id (e.g. `clerk`, `astrol
 
 ## Custom Events
 
-Custom events are declared in `guild.json` under `clockworks.events` and can be signalled by animas (via the `signal` MCP tool) or by engines / relays / plugin code (via `ClockworksApi.emit`).
+Custom events are declared in `guild.json` under `clockworks.events` and can be signalled by animas (via the `signal` MCP tool) or by engines / relays / plugin code (via `ClockworksApi.emit`). Plugins also claim events through their `events` kit contribution; the Clockworks merges both layers into one authoritative event set at apparatus `start()`.
 
 ### Declaring Custom Events
 
-Add events to `guild.json` under `clockworks.events`:
+Operator-defined events live in `guild.json` under `clockworks.events`:
 
 ```json
 {
@@ -196,19 +187,21 @@ Add events to `guild.json` under `clockworks.events`:
 }
 ```
 
-- `description` — human-readable purpose (optional but recommended)
+- `description` — human-readable purpose (optional but recommended).
+- `schema` — reserved slot for structural payload validation; accepted but not interpreted at runtime today.
 
-Plugins may also declare events in their `guild.json` contribution, which the framework merges into the live config on installation. The astrolabe plugin's `astrolabe.plan.files-over-threshold` event is declared this way — see the example below.
+Plugins claim events through the `events` kit (see [Plugin-Declared Custom Events](#plugin-declared-custom-events) below). The plugin layer is built once at apparatus `start()`; the `guild.json` layer is re-read on every call to `validateSignal` so operators can hot-edit `clockworks.events` and see the change without restarting the apparatus. The kit layer cannot be hot-edited — adding a new plugin contribution requires a restart.
 
 ### Validation Rules
 
-`validateSignal` enforces three layers, in order:
+`ClockworksApi.validateSignal(name)` runs two checks against the merged event set:
 
-1. The event name **must not** start with a [reserved framework namespace prefix](#reserved-namespaces).
-2. The event name **must not** match the writ-lifecycle pattern `<type>.{ready,completed,stuck,failed}` for any declared writ type.
-3. The event name **must** be declared in `guild.json` under `clockworks.events`.
+1. **Merged-set membership.** The event name must be present in the merged set. Otherwise: `signal: "<name>" is not a declared event …`.
+2. **Framework-owned check.** Events claimed by any plugin's `events` kit are framework-owned (`pluginDeclared` is sticky-true). Even if the operator's `guild.json` later overrides the spec, the name remains framework-owned and `signal` surfaces are rejected. Otherwise: `signal: "<name>" is a framework-owned event …`.
 
-Framework events bypass `validateSignal` — they call `ClockworksApi.emit` directly with `emitter: 'framework'`.
+Both the anima `signal` tool and the operator `nsg signal` CLI route through `ClockworksApi.validateSignal`; the apparatus closure is the single canonical validator path.
+
+`ClockworksApi.emit()` deliberately does **not** call `validateSignal` — framework emit sites are unchecked by design, so plugin code that owns its own emit sites does not trip the validator on its own claimed events. Enforcement is advisory-only at the unprivileged `signal` channels.
 
 ### Signalling Custom Events
 
@@ -228,26 +221,70 @@ const clockworks = guild().apparatus<ClockworksApi>('clockworks');
 await clockworks.emit('code.reviewed', { prUrl: '...', approved: true }, 'my-engine');
 ```
 
-### Plugin-Declared Custom Events (Example)
+### Plugin-Declared Custom Events
 
-The astrolabe plugin declares `astrolabe.plan.files-over-threshold` in its `guild.json` contribution and emits it from the `astrolabe.plan-finalize` engine when the predicted-files count from a plan's `<task-manifest>` strictly exceeds the configured threshold (default 15):
+Plugins claim event names through the `events` kit contribution. On apparatuses, this lives in `supportKit.events`; on standalone kits, as a top-level `events` field. The contribution is either a flat record (event-name → `EventSpec`) or a pure function of the `StartupContext` returning the same record.
 
-```json
-{
-  "clockworks": {
-    "events": {
-      "astrolabe.plan.files-over-threshold": {
-        "description": "A plan's predicted-files count exceeds the configured threshold",
-        "schema": { "planId": "string", "count": "number", "threshold": "number" }
-      }
-    }
-  }
-}
+```typescript
+// In an apparatus's `supportKit.events`:
+export default {
+  apparatus: {
+    // ...
+    supportKit: {
+      events: {
+        'astrolabe.plan.files-over-threshold': {
+          description: "A plan's predicted-files count exceeds the configured threshold",
+          schema: { planId: 'string', count: 'number', threshold: 'number' },
+        },
+      },
+    },
+  },
+};
 ```
 
-The emitter calls `ClockworksApi.emit('astrolabe.plan.files-over-threshold', { planId, count, threshold }, 'framework')` after the patch transitioning the plan to `completed` has already landed; the emission is best-effort and a Clockworks failure logs an `[astrolabe]` warning without failing the engine.
+The function form lets a plugin compute its event set from runtime data — the Clerk uses this to emit one entry per registered writ type:
 
-This is a **measurement signal, not a gate** — the framework records the signal; subscribers (sanctum-side instrumentation, future auto-decompose) decide what to do with it. The event is not declared in any framework-shipped `guild.json` beyond astrolabe's own contribution; wiring a standing order to react to it is the responsibility of whichever guild operationalizes the signal.
+```typescript
+// In an apparatus that produces a writ-type-derived event set:
+events: (ctx) => {
+  const events: Record<string, EventSpec> = {};
+  for (const writType of registeredTypes) {
+    for (const suffix of ['ready', 'completed', 'stuck', 'failed']) {
+      events[`${writType}.${suffix}`] = {
+        description: `${writType} writ entered ${suffix} phase`,
+      };
+    }
+  }
+  return events;
+},
+```
+
+Names claimed by a plugin's `events` kit are framework-owned. The emitter calls `ClockworksApi.emit(name, payload, '<plugin-id>')` directly — `emit()` bypasses `validateSignal`, so the plugin's own emit sites are not blocked by the framework-owned check.
+
+**Operator override.** An operator may shadow a plugin's event spec by declaring the same name under `clockworks.events` in `guild.json`. The active spec is the operator entry (full-replacement on collision); the `pluginDeclared` flag stays sticky-true so animas and the operator CLI cannot emit the name through the `signal` surfaces.
+
+**Worked example.** The astrolabe plugin claims `astrolabe.plan.files-over-threshold` through its `events` kit and emits it from the `astrolabe.plan-finalize` engine when the predicted-files count from a plan's `<task-manifest>` strictly exceeds the configured threshold (default 15):
+
+```typescript
+clockworks.emit(
+  'astrolabe.plan.files-over-threshold',
+  { planId, count, threshold },
+  'astrolabe',
+);
+```
+
+The emission lands after the patch transitioning the plan to `completed`; the call is best-effort and a Clockworks failure logs an `[astrolabe]` warning without failing the engine.
+
+This is a **measurement signal, not a gate** — the framework records the signal; subscribers (sanctum-side instrumentation, future auto-decompose) decide what to do with it. Wiring a standing order to react to it is the responsibility of whichever guild operationalizes the signal.
+
+#### Fail-loud boot guards
+
+Several shape errors fail apparatus boot loud rather than silently degrading:
+
+- **Plugin-vs-plugin collision** — two plugins claiming the same event name throw at `start()`, naming both contributors.
+- **Function-form contribution that throws or returns a non-object** — the throw propagates from `start()`; non-object returns produce a `clockworks: events kit "<plugin>" function-form contribution returned <type>, expected an object.` error.
+- **Malformed kit value** — neither a record nor a function; the apparatus throws naming the kit's pluginId and `typeof`.
+- **Malformed `guild.json clockworks.events.<key>` value** — non-object entries throw on the first `validateSignal` call (the operator-side layer is read per-call, so this surfaces lazily but with a `clockworks: guild.json clockworks.events.<key>: expected object, got <typeof>` message that names the offending key).
 
 ---
 

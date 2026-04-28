@@ -16,9 +16,11 @@ export {
   type ClockworksApi,
   type ClockworksConfig,
   type ClockworksKit,
-  type EventDeclaration,
   type EventDispatchDoc,
   type EventDoc,
+  type EventSpec,
+  type EventsKitContribution,
+  type MergedEventEntry,
   type StandingOrder,
 } from './types.ts';
 
@@ -44,15 +46,6 @@ export { createClockworks } from './clockworks.ts';
 // run them programmatically) can import them without reaching into the
 // package's internals.
 export { clockStatusTool, signal } from './tools/index.ts';
-
-// Re-export the shared signal validator so the framework CLI's
-// hand-written `nsg signal` command can call the exact same three-layer
-// validation path as the anima-facing tool.
-export {
-  RESERVED_EVENT_NAMESPACES,
-  WRIT_LIFECYCLE_SUFFIXES,
-  validateSignal,
-} from './signal-validator.ts';
 
 // Re-export the standing-order validator so future config-write hooks,
 // CLI linters, and other operator-facing surfaces can run the exact
