@@ -1,668 +1,254 @@
 # Core API Reference
 
-`@shardworks/nexus-core` — the shared infrastructure library for the guild system. All functions take `home: string` (the guild root path) as their first argument unless noted otherwise.
+`@shardworks/nexus-core` is the public SDK substrate for Nexus Mk 2.1. Every plugin — kit or apparatus — depends on this package for the `guild()` singleton, the Plugin/Kit/Apparatus type model, guild configuration helpers, and a small bag of process and path utilities. The package has zero runtime dependencies; the dependency graph runs one way (plugins → core).
+
+This reference documents only what `@shardworks/nexus-core` re-exports. Each export is described with the audience it is intended for (plugin code vs framework infrastructure). For every surface that used to live here in v1 — anima identity, commissions and writs, sessions, conversations, the Clockworks runner and daemon, tool authoring and installation, workshops, bundles, migrations, upgrade, init, rehydrate, books and schemas — the migration map below points at its current owner.
+
+This document mirrors the section order of the in-package [README](../../packages/framework/core/README.md). The two are intended to be read together; if they disagree, the README is the source of truth and this doc is the bug.
 
 ---
 
-## Authoring
+## Surface Migration Map
 
-> **Note:** The `tool()` factory, `ToolDefinition`, `ToolCaller`, `isToolDefinition()`, and `resolveToolFromExport()` have moved to `@shardworks/tools-apparatus`. See the [Instrumentarium API Contract](../architecture/apparatus/instrumentarium.md) for the tool authoring API.
+The v1 `nexus-core` surface area was much larger. Apparatus modularisation moved most of it into dedicated packages; a few v1 concepts (workshops, bundles, rehydrate) have been retired entirely and replaced by different machinery in v2. For every retired surface area, the table below names its current owner.
 
-> **Note:** The `relay()` factory, `RelayDefinition`, `RelayContext`, `RelayHandler`, `GuildEvent`, and `isRelayDefinition()` have moved to `@shardworks/clockworks-apparatus`. See [Building Relays](../guides/building-relays.md) and [The Clockworks](../architecture/clockworks.md) for the relay authoring API.
+Each row is a single sentence with one link, matching the established Authoring-section convention (`tool()` and `relay()` rows below).
 
----
+| Old surface area | New owner |
+|---|---|
+| `tool()` factory, `ToolDefinition`, `ToolCaller`, `isToolDefinition()`, `resolveToolFromExport()` | Moved to `@shardworks/tools-apparatus` — see the [Instrumentarium API Contract](../architecture/apparatus/instrumentarium.md) for the tool authoring API. |
+| `relay()` factory, `RelayDefinition`, `RelayContext`, `RelayHandler`, `GuildEvent`, `isRelayDefinition()` | Moved to `@shardworks/clockworks-apparatus` — see [The Clockworks](../architecture/clockworks.md) for the relay authoring API. |
+| Anima identity (`instantiate`, `listAnimas`, `showAnima`, `updateAnima`, `removeAnima`, `readAnima`) | Moved to The Loom — see the [Loom API Contract](../architecture/apparatus/loom.md) for the anima registry API. |
+| System prompt composition (`readCodex`, `readRoleInstructions`, `assembleSystemPrompt`, `manifest`) and the role registry | Moved to The Loom — see the [Loom API Contract](../architecture/apparatus/loom.md) for the manifest/composition surface. |
+| Commissions and writs (`commission`, `listCommissions`, `readCommission`, `showCommission`, `updateCommissionStatus`, `createWrit`, `listWrits`, `showWrit`, `updateWritStatus`, `completeWrit`, `failWrit`, `getWritProgress`) | Moved to The Clerk — see the [Clerk API Contract](../architecture/apparatus/clerk.md) for the writ and commission API. |
+| Sessions, the Daybook, and the audit log (`listSessions`, `showSession`, `listAuditLog`, `launchSession`, `registerSessionProvider`, `getSessionProvider`, `resolveWorkspace`, `createTempWorktree`, `removeTempWorktree`) | Moved to The Animator — see the [Animator API Contract](../architecture/apparatus/animator.md) for the session funnel and Daybook API. |
+| Conversations (`createConversation`, `takeTurn`, `endConversation`, `nextParticipant`, `formatConveneMessage`, `listConversations`, `showConversation`) | Moved to The Parlour — see the [Parlour API Contract](../architecture/apparatus/parlour.md) for the conversation API. |
+| Events (`signalEvent`, `readEvent`, `listEvents`, `isFrameworkEvent`, `validateCustomEvent`) | Moved to The Clockworks; framework event names and payloads are catalogued in the [Event Catalog](event-catalog.md). |
+| Clockworks runner and daemon lifecycle (`clockTick`, `clockRun`, `clockStart`, `clockStop`, `clockStatus`) | Moved to `@shardworks/clockworks-apparatus` — see [The Clockworks](../architecture/clockworks.md) for the runner and daemon contract. |
+| Tool installation, removal, and registry (`installTool`, `removeTool`, `listTools`, `classifySource`, preconditions) | Moved to The Instrumentarium — see the [Instrumentarium API Contract](../architecture/apparatus/instrumentarium.md) for the tool registry surface. |
+| Books and schemas (`booksPath`, `ledgerPath`, schema declaration and migration) | Moved to The Stacks — see the [Stacks API Contract](../architecture/apparatus/stacks.md) for the books/schemas API and migration model. |
+| SQL migrations (`discoverMigrations`, `applyMigrations`, the `_migrations` table) | Subsumed by The Stacks — schema evolution is now per-book and apparatus-owned; see the [Stacks API Contract](../architecture/apparatus/stacks.md). |
+| Workshops, worktrees, and the bare-clone lifecycle (`addWorkshop`, `removeWorkshop`, `listWorkshops`, `showWorkshop`, `createWorkshop`, `setupWorktree`, `teardownWorktree`, `listWorktrees`, `workshopsPath`, `workshopBarePath`) | Replaced by codexes and draft bindings under The Scriptorium — see the [Scriptorium API Contract](../architecture/apparatus/scriptorium.md). |
+| Bundles (`readBundleManifest`, `installBundle`, `isBundleDir`, `BundleManifest`, etc.) | Retired in v2 — installation is now plugin-shaped and driven by `npm install` against the guild's `package.json`. |
+| Guild upgrade (`planUpgrade`, `applyUpgrade`, `UpgradePlan`, `UpgradeResult`) | Retired in v2 — upgrades are driven by the `nsg upgrade` CLI command against the framework version recorded in `guild.json`. |
+| Guild init (`initGuild`) | Retired in v2 — guild bootstrapping is owned by the `nsg init` CLI command. |
+| Rehydrate (`rehydrate`, `RehydrateResult`) | Retired in v2 — `npm install` and the plugin loader's startup checks now reconstruct runtime state from `guild.json` and `package.json`. |
 
-## Events
-
-The event system — signaling, reading, and validation. Events are immutable facts persisted to the Clockworks event queue. The Clockworks runner processes them separately via `nsg clock`.
-
-### `signalEvent(home, name, payload, emitter): string`
-
-Signal an event — persist it to the Clockworks event queue. Does **not** process the event.
-
-- `name` — event name (e.g. `"writ.mandate.open"`, `"code.reviewed"`)
-- `payload` — JSON-serializable event data, or `null`
-- `emitter` — who signaled it: anima name, engine name, or `"framework"`
-- **Returns:** the event ID (e.g. `"evt-a3f7b2c1"`)
-
-### `ClockworksApi.validateSignal(name): void`
-
-Validate that an event name is permitted to be emitted from an unprivileged surface (the anima `signal` tool, the operator `nsg signal` CLI). Two checks run against the merged event set assembled at apparatus `start()` from the `events` kit contributions plus `guild.json clockworks.events` (re-read per call so operator hot-edits land without restart):
-
-1. **Merged-set membership.** The name must be present in the merged set.
-2. **Framework-owned.** Names claimed by a plugin's `events` kit are framework-owned (`pluginDeclared` is sticky-true) and cannot be emitted from unprivileged surfaces, even if an operator's `guild.json` entry now provides the active spec.
-
-**Throws** with a `signal: "<name>" …` message on rejection. Both the anima `signal` tool and the operator `nsg signal` CLI route through this method; there is no second copy of the validator. `ClockworksApi.emit()` does not call `validateSignal` — framework emit sites are unchecked by design. See [Event Catalog → Validation Rules](event-catalog.md#validation-rules) for the full rule set.
-
-### `readEvent(home, id): GuildEvent | null`
-
-Read a single event by ID.
-
-### `listEvents(home, opts?): GuildEvent[]`
-
-List events with optional filters. Returns newest first.
-
-**Options (`ListEventsOptions`):**
-- `name?: string` — filter by event name (exact match or `LIKE` pattern with `%` wildcards)
-- `emitter?: string` — filter by emitter
-- `pending?: boolean` — `true` = unprocessed only, `false` = processed only, omit for all
-- `limit?: number` — max results
-
-### Types
-
-| Type | Description |
-|------|-------------|
-| `ListEventsOptions` | Filters for `listEvents()` |
-
-> **Dispatch tracking.** Dispatch records (what ran in response to each event) are internal Clockworks operational state, managed by the Clockworks apparatus via Stacks books. They are not part of the `nexus-core` API surface. See the Clockworks section for the runner API that exposes dispatch results.
+URL anchors that used to point at carved-out sections will no longer resolve; that is intended. Anchor stability is reset at this migration.
 
 ---
 
-## Register
+## `Guild` — Process-Level Singleton
 
-Anima identity and lifecycle — creation, querying, updating, and removal.
-
-### `instantiate(opts): InstantiateResult`
-
-Create a new anima in the guild. Validates roles exist and have available seats, reads and snapshots curriculum/temperament content at current versions. All operations run in a single transaction.
-
-**Options (`InstantiateOptions`):**
-- `home: string`
-- `name: string` — must be unique
-- `roles: string[]` — at least one required; each must be defined in guild.json
-- `curriculum?: string` — by name (must be registered in guild.json)
-- `temperament?: string` — by name (must be registered in guild.json)
-
-**Returns (`InstantiateResult`):** `{ animaId, name, roles, curriculum, temperament }`
-
-### `listAnimas(home, opts?): AnimaSummary[]`
-
-List animas with optional filters by `status` and/or `role`.
-
-### `showAnima(home, animaId): AnimaDetail | null`
-
-Show detailed info for a single anima. Accepts either ID or name.
-
-### `updateAnima(home, animaId, opts): AnimaDetail`
-
-Update an anima's status and/or roles. Accepts either ID or name. When updating roles, replaces all existing roles.
-
-**Options (`UpdateAnimaOptions`):**
-- `status?: string` — new status value
-- `roles?: string[]` — complete replacement set
-
-### `removeAnima(home, animaId): void`
-
-Retire an anima — sets status to `'retired'` and removes all roster entries. Accepts either ID or name.
-
-### Manifest Functions
-
-These functions assemble an anima's identity for a session.
-
-### `readAnima(home, animaName): AnimaRecord`
-
-Read an anima's full record including roles and composition metadata. **Throws** if not found.
-
-### Tool Resolution
-
-Tool resolution has moved to **The Instrumentarium** (`@shardworks/tools-apparatus`). The Loom resolves an anima's roles into a flat permissions array, then calls `instrumentarium.resolve({ permissions, channel })` to get the available tool set. See [The Instrumentarium — Permission Model](../architecture/apparatus/instrumentarium.md#permission-model).
-
-### `readCodex(home): string`
-
-Read all `.md` files from the `codex/` directory (non-recursive). Returns them joined with `---` separators.
-
-### `readRoleInstructions(home, config, animaRoles): string`
-
-Read role-specific instructions for an anima's roles from the files pointed to by role definitions in guild.json.
-
-### `assembleSystemPrompt(codex, roleInstructions, anima, tools, unavailable?): string`
-
-Assemble the composed system prompt. Sections included in order: Codex → Role Instructions → Training (curriculum) → Temperament → Tool Instructions → Unavailable Tools notice.
-
-### `manifest(home, animaName): Promise<ManifestResult>`
-
-The main entry point for session preparation. Reads composition, resolves tools, assembles system prompt. **Throws** if anima is not active.
-
-**Returns (`ManifestResult`):**
-- `anima: AnimaRecord`
-- `systemPrompt: string`
-- `composition: { codex, roleInstructions, curriculum, temperament, toolInstructions }`
-- `tools: ResolvedTool[]`
-- `unavailable: UnavailableTool[]`
-- `warnings: string[]`
-
-### Types
-
-| Type | Description |
-|------|-------------|
-| `AnimaSummary` | id, name, status, roles, createdAt |
-| `AnimaDetail` | Full detail including curriculum/temperament names and versions |
-| `AnimaRecord` | Full record with composition snapshots (used by manifest) |
-| `ListAnimasOptions` | `{ status?, role? }` |
-| `UpdateAnimaOptions` | `{ status?, roles? }` |
-| `InstantiateOptions` | Options for `instantiate()` |
-| `InstantiateResult` | `{ animaId, name, roles, curriculum, temperament }` |
-| `ResolvedTool` | `{ name, path, instructions, package }` |
-| `UnavailableTool` | `{ name, reasons[] }` |
-| `ManifestResult` | Full manifest with composition provenance |
-
----
-
-## Ledger
-
-Commission lifecycle and writ CRUD. All entities are historical records — no deletes, only status transitions.
-
-### Commissions
-
-#### `commission(opts): CommissionResult`
-
-Post a commission to the guild. Creates a record with status `"posted"` and creates a mandate writ linked to the commission. Validates that the workshop exists in guild.json. Subscribers wanting to react to the new commission should bind a standing order to the writ-lifecycle event the framework fires when the mandate enters its active phase (`writ.mandate.open`); event emission is the writ-lifecycle observer's responsibility, not part of `commission()`'s contract.
-
-**Options (`CommissionOptions`):** `{ home, spec, workshop }`
-
-**Returns:** `{ commissionId }`
-
-#### `listCommissions(home, opts?): CommissionSummary[]`
-
-List commissions. Filter by `status` and/or `workshop`.
-
-#### `readCommission(home, commissionId): { id, content, status, workshop, statusReason, writId } | null`
-
-Read a commission record (basic fields only).
-
-#### `showCommission(home, commissionId): CommissionDetail | null`
-
-Extended commission view including assignments (anima ID, name, assigned-at) and linked sessions (session ID, anima ID, started/ended-at).
-
-#### `updateCommissionStatus(home, commissionId, status, reason): void`
-
-Update a commission's status and reason.
-
-### Writs
-
-#### `createWrit(home, opts): WritRecord`
-
-Create a writ. Signals `{type}.ready`. Options: `{ type, title, description?, parentId? }`. The type must be a built-in type (`mandate`, `summon`) or declared in `guild.json` `writTypes`.
-
-#### `listWrits(home, opts?): WritRecord[]`
-
-Filter by `status`, `type`, and/or `parentId`.
-
-#### `showWrit(home, writId): WritRecord | null`
-
-#### `updateWritStatus(home, writId, status): WritRecord`
-
-Transition a writ's status. Signals `{type}.completed` on completion, `{type}.failed` on failure. Failure cascades cancellation to incomplete children.
-
-#### `completeWrit(home, writId): CompletionResult`
-
-Mark a writ as completed. If the writ has incomplete children, transitions to `pending` instead. When all children complete, auto-transitions to `ready` (if a standing order exists for `{type}.ready`) or `completed` (if not). Returns `{ changed, newStatus }`.
-
-#### `failWrit(home, writId, reason): void`
-
-Mark a writ as failed. Cascades cancellation to all incomplete children. Signals `{type}.failed`.
-
-#### `getWritProgress(home, writId): WritProgress`
-
-Returns `{ total, completed, failed, cancelled, pending, active, ready }` — counts of child writs by status.
-
-### Shared Types
-
-| Type | Description |
-|------|-------------|
-| `CompletionCheck` | `{ complete: boolean, total, done, pending, failed }` |
-| `CompletionResult` | `{ changed: boolean, newStatus: string }` |
-| `CommissionOptions` | `{ home, spec, workshop }` |
-| `CommissionResult` | `{ commissionId }` |
-| `CommissionSummary` | id, content, status, workshop, statusReason, createdAt, updatedAt |
-| `CommissionDetail` | Summary + assignments[] + sessions[] |
-| `ListCommissionsOptions` | `{ status?, workshop? }` |
-| `WritRecord` | id, type, title, description, status, parentId, sessionId, createdAt, updatedAt |
-| `CreateWritOptions` | `{ type, title, description?, parentId? }` |
-| `ListWritsOptions` | `{ status?, type?, parentId? }` |
-| `WritProgress` | `{ total, completed, failed, cancelled, pending, active, ready }` |
-
----
-
-## Daybook
-
-Session tracking and audit trail.
-
-### `listSessions(home, opts?): SessionSummary[]`
-
-List sessions with optional filters. Returns newest first.
-
-**Options (`ListSessionsOptions`):**
-- `anima?: string` — filter by anima name or ID
-- `workshop?: string`
-- `trigger?: string` — `"consult"`, `"summon"`, `"brief"`, or `"convene"`
-- `status?: 'active' | 'completed'` — active = no `ended_at`, completed = has `ended_at`
-- `limit?: number`
-
-### `showSession(home, sessionId): SessionDetail | null`
-
-Full session detail including all token usage, cost, duration, composition metadata, and record path.
-
-### `listAuditLog(home, opts?): AuditEntry[]`
-
-List audit log entries, newest first.
-
-**Options (`ListAuditLogOptions`):**
-- `actor?: string` — e.g. `"patron"`, `"operator"`, `"framework"`, `"instantiate"`
-- `action?: string` — e.g. `"commission_posted"`, `"anima_updated"`
-- `targetType?: string` — e.g. `"commission"`, `"anima"`, `"writ"`
-- `targetId?: string`
-- `limit?: number`
-
-### Session Funnel
-
-The unified session infrastructure. ALL sessions flow through `launchSession()`.
-
-### `registerSessionProvider(provider): void`
-
-Register a session provider (e.g. claude-code, claude-api). Called once at startup.
-
-### `getSessionProvider(): SessionProvider | null`
-
-Get the registered session provider.
-
-### `resolveWorkspace(payload): ResolvedWorkspace`
-
-Resolve workspace context from an event payload. Returns `{ kind: 'guildhall' }`, `{ kind: 'workshop-temp', workshop, worktreePath }`, or `{ kind: 'workshop-managed', workshop, worktreePath }`.
-
-### `createTempWorktree(home, workshop): string`
-
-Create a temporary worktree from a workshop's bare repo (detached HEAD at main). Returns the absolute path.
-
-### `removeTempWorktree(home, workshop, worktreePath): void`
-
-Remove a temporary worktree. Logs but does not throw on failure.
-
-### `launchSession(options): Promise<SessionResult>`
-
-Launch a session through the registered provider. The complete lifecycle:
-1. Create temp worktree (if `workshop-temp`)
-2. Insert `session.started` row in Daybook
-3. Signal `session.started` event
-4. Delegate to provider
-5. Update session row with metrics
-6. Write SessionRecord JSON to `.nexus/sessions/`
-7. Signal `session.ended` event
-8. Tear down temp worktree (if autonomous + workshop-temp)
-
-**Guarantees:** Steps 5–8 execute even if the provider throws.
-
-### Types
-
-| Type | Description |
-|------|-------------|
-| `SessionSummary` | id, animaId, provider, trigger, workshop, workspaceKind, startedAt, endedAt, exitCode, costUsd, durationMs |
-| `SessionDetail` | Full record including token usage, composition metadata, providerSessionId, recordPath |
-| `ListSessionsOptions` | Filters for `listSessions()` |
-| `SessionProvider` | `{ name, launch(opts), launchStreaming?(opts) }` — the provider contract |
-| `SessionProviderLaunchOptions` | What the provider receives (home, manifest, prompt, interactive, cwd, claudeSessionId?, ...) |
-| `SessionProviderResult` | What the provider returns (exitCode, tokenUsage?, costUsd?, durationMs, ...) |
-| `SessionLaunchOptions` | Full options for `launchSession()` — includes conversationId?, turnNumber?, claudeSessionId?, onChunk? |
-| `SessionResult` | `{ sessionId, exitCode, tokenUsage?, costUsd?, durationMs, providerSessionId?, transcript?, conversationId?, turnNumber? }` |
-| `SessionChunk` | Union: `{ type: 'text', text }` \| `{ type: 'tool_use', tool }` \| `{ type: 'tool_result', tool }` |
-| `WorkspaceContext` | `{ workshop?, worktreePath? }` — standard event payload fields |
-| `ResolvedWorkspace` | Discriminated union: guildhall, workshop-temp, or workshop-managed |
-| `SessionRecord` | Full session record written to disk as JSON |
-| `AuditEntry` | id, actor, action, targetType, targetId, detail, timestamp |
-| `ListAuditLogOptions` | Filters for `listAuditLog()` |
-
----
-
-## Conversations
-
-Multi-turn interaction with animas — web consultation and convene sessions. See the **[Conversations API Reference](./conversations.md)** for the full guide including schema, integration patterns, and analytics queries.
-
-### `createConversation(home, opts): CreateConversationResult`
-
-Create a new conversation with participant records. Does NOT take a first turn.
-
-### `takeTurn(home, conversationId, participantId, message): AsyncGenerator<ConversationChunk>`
-
-Take a turn in a conversation. Manifests the anima, calls `launchSession()` with `--resume` threading, streams response chunks. The core primitive.
-
-### `endConversation(home, conversationId, reason?): void`
-
-End a conversation. Sets status to `'concluded'` or `'abandoned'`.
-
-### `nextParticipant(home, conversationId): { participantId, name } | null`
-
-Next participant in a convene rotation (round-robin). Returns `null` if done.
-
-### `formatConveneMessage(home, conversationId, participantId): string`
-
-Format the message for the next convene participant (new turns since their last).
-
-### `listConversations(home, opts?): ConversationSummary[]`
-
-List conversations. Filter by `status`, `kind`, `limit`.
-
-### `showConversation(home, conversationId): ConversationDetail | null`
-
-Full conversation detail including all turns.
-
-### Types
-
-| Type | Description |
-|------|-------------|
-| `ConversationChunk` | Union: text, tool_use, tool_result, turn_complete |
-| `CreateConversationOptions` | Options for `createConversation()` |
-| `CreateConversationResult` | `{ conversationId, participants[] }` |
-| `ConversationSummary` | List view with computed turnCount and totalCostUsd |
-| `ConversationDetail` | Full view with turns array |
-| `ListConversationsOptions` | Filters for `listConversations()` |
-
----
-
-## Clockworks
-
-The event processing runner — matches pending events to standing orders and dispatches them. The Clockworks apparatus owns its event and dispatch state via Stacks books (not raw SQL tables). Internal operations — reading pending events, marking events processed, recording dispatches — are handled by the apparatus and are not part of the public API. The runner functions below expose dispatch results without leaking persistence details.
-
-### `clockTick(home, eventId?): Promise<TickResult | null>`
-
-Process a single event. If `eventId` is provided, processes that specific event. Otherwise, processes the next pending event. Returns `null` if no events to process.
-
-### `clockRun(home): Promise<ClockRunResult>`
-
-Process all pending events until the queue is empty. Loops because standing order failures may generate new events (`clockworks.standing-order.failed`).
-
-### `clockStart(home, options?): Promise<ClockStartResult>`
-
-Start the clockworks daemon as a detached background process. The daemon polls the event queue at the specified interval and processes events automatically. Re-execs the same `nsg` binary with `clock start --foreground` and pipes both stdout and stderr to a single append-mode `clock.log`. The returned promise resolves once the pidfile is present and the named pid is alive (~10s deadline) — "started" means "verified running". On timeout, the function tails `clock.log` to help debugging and throws.
+`guild()` is the universal entry point all plugin code reaches for at runtime — apparatus `start()` bodies, tool handlers, engine handlers, relay handlers. It returns the process-level `Guild` instance Arbor created at startup, exposing the guild root path, the apparatus registry, plugin configuration, and snapshots of the loaded plugin graph.
 
 ```typescript
-await clockStart(home, { interval: 2000 })
-// => { pid: 12345, logFile: '/path/to/.nexus/clock.log' }
+import { guild } from '@shardworks/nexus-core';
+
+const home   = guild().home;
+const stacks = guild().apparatus<StacksApi>('stacks');
+const config = guild().config<MyConfig>('my-plugin');
 ```
 
-Options: `{ interval?: number }` — polling interval in ms (default 2000). Throws if the daemon is already running (the pidfile points at a live pid). Cleans up a stale pidfile (the pidfile points at a dead pid) and continues with a fresh spawn.
+### `Guild` interface
 
-### `clockStop(home): Promise<ClockStopResult>`
+The narrow contract every plugin sees. Calling `guild()` before Arbor has initialised the singleton (typically at module import time) throws with a clear "Guild not initialized" message — the accessor is meant for handler/start scopes, not module scope.
 
-Stop the running clockworks daemon. Sends SIGTERM, polls for exit, escalates to SIGKILL after a 5s grace window, and unlinks the pidfile once the process is confirmed dead. Handles stale PID files gracefully — when no pidfile exists or the pidfile points at a dead pid, the function returns successfully (with `reason: 'no-pidfile' | 'stale'`) rather than throwing.
+| Member | Returns | Purpose |
+|---|---|---|
+| `home` | `string` | Absolute path to the guild root (the directory containing `guild.json`). |
+| `apparatus<T>(name)` | `T` | Retrieve a started apparatus's `provides` object by plugin id. Throws if absent — use for `requires` dependencies. |
+| `tryApparatus<T>(name)` | `T \| null` | Optional counterpart to `apparatus<T>` — returns `null` when the apparatus is not installed. Use for `recommends` dependencies so the caller can branch on presence rather than catch a thrown error. |
+| `config<T>(pluginId)` | `T` | Read a plugin's configuration section from `guild.json`. Returns `{}` when no section exists. The generic is a cast — the framework does not validate config shape. |
+| `writeConfig<T>(pluginId, value)` | `void` | Write a plugin's configuration section to `guild.json` (updates in-memory + disk). For framework-level keys (`name`, `nexus`, `plugins`, `settings`), use the standalone `writeGuildConfig()` instead. |
+| `guildConfig()` | `GuildConfig` | Read the full parsed `guild.json` — the escape hatch for framework-level fields that don't belong to any specific plugin. |
+| `kits()` | `LoadedKit[]` | Snapshot of all loaded standalone kit plugins (does not include apparatus `supportKit`s). |
+| `apparatuses()` | `LoadedApparatus[]` | Snapshot of all started apparatuses. |
+| `failedPlugins()` | `FailedPlugin[]` | Snapshot of plugins that failed to load, validate, or start. |
+| `startupWarnings()` | `string[]` | Advisory warnings collected during guild startup (missing `recommends`, unconsumed contributions). |
 
-```typescript
-await clockStop(home)
-// => { pid: 12345, stopped: true, reason: 'signaled', message: 'Clockworks daemon stopped (pid: 12345).' }
-// or { pid: null, stopped: true, reason: 'no-pidfile', message: '...' }
-// or { pid: 999, stopped: true, reason: 'stale', message: '...' }    // stale pidfile cleaned up as a side effect
-```
+### `StartedGuild` — bootstrap-only extension
 
-Throws only when the process refuses to exit even after SIGKILL (or when SIGTERM itself fails for an unexpected reason).
+`StartedGuild` extends `Guild` with a `shutdown()` method and is what `createGuild()` returns to its bootstrap caller (the CLI, a daemon entry point, a one-shot helper). Plugin code never sees `StartedGuild` — `shutdown()` is deliberately not on the singleton-facing `Guild` interface because plugin code has no legitimate reason to tear down the guild it is running inside.
 
-### `clockStatus(home): ClockStatus`
+`shutdown()` fires `guild:shutdown`, calls `stop()` on every started apparatus in reverse topological order, aggregates per-apparatus errors into a single throw, and clears the `guild()` singleton as its last act. It is idempotent under repeated calls.
 
-Check whether the clockworks daemon is running. Read-mostly: when the pidfile points at a dead pid, the function surfaces `stalePidfile: true` in the return shape and unlinks the pidfile as a side effect. A subsequent call is silent on staleness. Uptime is computed from the pidfile birthtime (`fs.statSync(...).birthtimeMs`) — wall-clock since the pidfile was created.
+### Framework-internal exports
 
-```typescript
-clockStatus(home)
-// => { running: true, pid: 12345, logFile: '...', uptime: 360000 }
-// or { running: false }
-// or { running: false, stalePidfile: true }   // first call after a kill -9
-```
+These are public exports because Arbor and the test harness need them, but plugin code should not call them. Listed for honesty about the surface — not an invitation.
 
-### Types
-
-| Type | Description |
-|------|-------------|
-| `TickResult` | `{ eventId, eventName, dispatches: DispatchSummary[] }` |
-| `DispatchSummary` | `{ handlerType, handlerName, status, error? }` |
-| `ClockRunResult` | `{ processed: TickResult[], totalEvents }` |
-| `ClockStartOptions` | `{ interval?: number }` |
-| `ClockStartResult` | `{ pid, logFile }` |
-| `ClockStopResult` | `{ pid: number \| null, stopped: true, reason: 'signaled' \| 'no-pidfile' \| 'stale', message }` |
-| `ClockStatus` | `{ running, pid?, logFile?, uptime?, stalePidfile? }` |
+| Function | Purpose |
+|---|---|
+| `setGuild(g)` | Register the guild instance — called by Arbor at startup. |
+| `clearGuild()` | Clear the guild instance — called as the last act of `StartedGuild.shutdown()` and by tests resetting between cases. |
 
 ---
 
-## Guild Config
+## Plugin System — `Kit`, `Apparatus`, `Plugin`
 
-Reading and writing `guild.json` — the guild's central configuration file.
+Core types for the Kit/Apparatus model. A plugin is one of two kinds:
 
-### `readGuildConfig(home): GuildConfig`
+- **Kit** — a passive package contributing capabilities (tools, engines, roles, etc.) to consuming apparatuses. No lifecycle, no running state. Read at load time.
+- **Apparatus** — a package contributing persistent running infrastructure. Has a `start`/`stop` lifecycle and receives a `StartupContext` at start.
 
-Read and parse `guild.json` from the guild root.
+```typescript
+import type { Kit, Apparatus, Plugin } from '@shardworks/nexus-core';
 
-### `writeGuildConfig(home, config): void`
+// Kit example
+export default { kit: { tools: [myTool] } } satisfies Plugin;
 
-Write `guild.json` to the guild root (pretty-printed with trailing newline).
+// Apparatus example
+export default {
+  apparatus: {
+    requires: ['stacks'],
+    provides: myApi,
+    start: async (ctx) => { /* ... */ },
+  },
+} satisfies Plugin;
+```
 
-### `guildConfigPath(home): string`
-
-Resolve the path to `guild.json`.
-
-### `createInitialGuildConfig(name, nexusVersion, model): GuildConfig`
-
-Create the default guild.json content for a new guild. All registries start empty.
+The framework-level fields on a `Kit` are `requires` and `recommends`; every other key is an open contribution slot defined by consuming apparatuses. An `Apparatus` may declare `requires`, `recommends`, `provides`, `start`, optional `stop`, optional `supportKit`, and `consumes`. See [Plugins](../architecture/plugins.md) for the full Kit/Apparatus model and the `consumes` warning rules.
 
 ### Types
 
-| Type | Description |
-|------|-------------|
-| `GuildConfig` | The full guild.json shape: name, nexus, plugins, settings, plus plugin config sections |
+| Type | Purpose |
+|---|---|
+| `Kit` | Open record with optional `requires` / `recommends`. Contribution fields are defined by consuming apparatuses. |
+| `Apparatus` | Record with `start(ctx)`, optional `stop()`, optional `provides`, `requires`, `recommends`, `supportKit`, `consumes`. |
+| `Plugin` | Discriminated union: `{ kit: Kit }` or `{ apparatus: Apparatus }`. |
+| `LoadedKit` | A kit as tracked by Arbor: `packageName`, `id`, `version`, `kit`. |
+| `LoadedApparatus` | An apparatus as tracked by Arbor: `packageName`, `id`, `version`, `apparatus`. |
+| `LoadedPlugin` | Union of `LoadedKit` and `LoadedApparatus`. |
+| `FailedPlugin` | A plugin that failed to load, validate, or start: `{ id, reason }`. |
+| `StartupContext` | Passed to `apparatus.start()`. Provides `on(event, handler)` for lifecycle subscriptions and `kits(type)` for querying kit contributions collected during the Wire phase. |
+| `KitEntry` | A single kit contribution collected during Wire: `{ pluginId, packageName, type, value }`. |
+
+### Type guards
+
+| Function | Purpose |
+|---|---|
+| `isKit(obj)` | Narrows an unknown export to `{ kit: Kit }`. |
+| `isApparatus(obj)` | Narrows an unknown export to `{ apparatus: Apparatus }` (also checks that `apparatus.start` is a function). |
+| `isLoadedKit(p)` | Narrows a `LoadedPlugin` to `LoadedKit`. |
+| `isLoadedApparatus(p)` | Narrows a `LoadedPlugin` to `LoadedApparatus`. |
 
 ---
 
-## Infrastructure
+## Guild Configuration
 
-Path resolution, ID generation, preconditions, workshops, worktrees, bundles, migrations, tool installation, and guild initialization.
+Read and write `guild.json`, the guild's central configuration file. The standalone helpers are the right surface for framework-level fields and for migration / tooling code that needs to inspect or mutate the file outside an apparatus context; plugin code reading or writing its own configuration section should prefer `guild().config<T>()` and `guild().writeConfig<T>()` instead.
 
-### Paths
+```typescript
+import { readGuildConfig, writeGuildConfig } from '@shardworks/nexus-core';
+
+const config = readGuildConfig(home);
+writeGuildConfig(home, config);
+```
+
+### `GuildConfig`
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `string` | Guild name — used as the guildhall npm package name. |
+| `nexus` | `string` | Installed Nexus framework version (recorded at init / upgrade). |
+| `plugins` | `string[]` | Installed plugin ids (derived from npm package names). Always present; starts empty. |
+| `settings?` | `GuildSettings` | Operational flags and preferences: `model` (default LLM), `autoMigrate` (defaults to `true`). |
+
+`GuildConfig` is an **open interface**. Every other top-level key on `guild.json` is a plugin configuration section keyed by derived plugin id, contributed by the owning apparatus package via `declare module '@shardworks/nexus-core'`. For example, the Clockworks apparatus augments `GuildConfig` with a `clockworks?: { events?, standingOrders? }` section in its own `clockworks.d.ts`; that augmentation is visible at every call site that imports `GuildConfig`. The shape of each augmented section lives with its plugin, not here. See [Plugins](../architecture/plugins.md) for the augmentation pattern.
+
+### Other exports
+
+| Function / Type | Purpose |
+|---|---|
+| `createInitialGuildConfig(name, nexusVersion, model)` | Default config for `nsg init`. All collections start empty; `model` is stored under `settings`. |
+| `guildConfigPath(home)` | Resolve the path to `guild.json` in the guild root. |
+| `GuildSettings` | `{ model?, autoMigrate? }` — operational flags. |
+
+---
+
+## Path Resolution — `nexus-home`
+
+Resolve standard paths within a guild's `.nexus/` directory.
+
+```typescript
+import { findGuildRoot, nexusDir } from '@shardworks/nexus-core';
+
+const home = findGuildRoot();   // walks up from cwd to find guild.json
+const dir  = nexusDir(home);    // .nexus/
+```
 
 | Function | Returns |
-|----------|---------|
-| `findGuildRoot(startDir?)` | Guild root path (walks up looking for `guild.json`). Throws if not found. |
-| `nexusDir(home)` | `.nexus` directory path |
-| `booksPath(home)` | `.nexus/nexus.db` — the Books SQLite database |
-| `ledgerPath(home)` | *(Deprecated)* Alias for `booksPath()` |
-| `worktreesPath(home)` | `.nexus/worktrees` — commission worktrees root |
-| `workshopsPath(home)` | `.nexus/workshops` — bare clone directory |
-| `workshopBarePath(home, name)` | `.nexus/workshops/{name}.git` |
+|---|---|
+| `findGuildRoot(startDir?)` | The guild root path. Walks up from `startDir` (or `process.cwd()` when omitted) looking for `guild.json`; throws `Not inside a guild. …` if none is found before the filesystem root. |
+| `nexusDir(home)` | `.nexus/` — the framework-managed runtime directory. |
+| `worktreesPath(home)` | `.nexus/worktrees/` — the top-level worktrees root used by writ worktrees. |
+| `clockPidPath(home)` | `.nexus/clock.pid` — the Clockworks daemon PID file. |
+| `clockLogPath(home)` | `.nexus/clock.log` — the Clockworks daemon log file. |
 
-### IDs
+`findGuildRoot` is the one helper that does **not** take `home` as its first argument: it produces `home`. Every other `nexus-home` helper is a path builder that takes the resolved guild root and appends to it. There is no general "home-first" convention to assume in `@shardworks/nexus-core`; standalone helpers each have their own signatures, and runtime callers reach the guild root through `guild().home`.
 
-#### `generateId(prefix): string`
+---
 
-Generate a prefixed hex ID: `{prefix}-{8 hex chars}`.
+## ID Generation
 
-| Prefix | Entity |
-|--------|--------|
-| `a-` | anima |
-| `c-` | commission |
-| `conv-` | conversation |
-| `cpart-` | conversation participant |
-| `evt-` | event |
-| `ses-` | session |
-| `wrt-` | writ |
+Generate sortable, prefixed IDs.
 
-Additional prefixes used internally: `aud-` (audit log), `ed-` (event dispatch), `r-` (roster), `ac-` (anima composition), `ca-` (commission assignment).
+```typescript
+import { generateId, shortId } from '@shardworks/nexus-core';
 
-### `VERSION: string`
+const id   = generateId('w');             // 'w-lzx3a91q-3f7b2c1de4a8'
+const slug = shortId(id);                 // 'w-lzx3a91q'
+```
 
-The framework version string, read from `@shardworks/nexus-core/package.json`.
+| Function | Purpose |
+|---|---|
+| `generateId(prefix, randomByteCount?)` | Returns `{prefix}-{base36_timestamp}-{hex_random}`. The timestamp component (`Date.now()` in base36) gives lexicographic sort order by creation time; the random suffix prevents collisions without coordination. `randomByteCount` defaults to `6` (12 hex chars). |
+| `shortId(id)` | Returns the `{prefix}-{base36_timestamp}` slice — the human-readable form that drops the random suffix. Apparatus `resolveId()` implementations (e.g. `ClerkApi`, `RatchetApi`) accept this form as a unique-prefix lookup, making it the natural shape for CLI output, tree renderings, and pulse-context payloads. |
 
-### Tool Installation
+Prefixes are **caller-owned**, not nexus-core-owned. The framework does not maintain a registry of prefix → entity mappings; each apparatus declares its own prefixes in its API contract. Refer to the relevant apparatus contracts (e.g. [Clerk](../architecture/apparatus/clerk.md), [Animator](../architecture/apparatus/animator.md), [Parlour](../architecture/apparatus/parlour.md)) for the prefixes a particular caller is expected to use.
 
-#### `installTool(opts): InstallResult`
+---
 
-Install a tool, engine, curriculum, or temperament into the guild. Supports five source types: registry, git-url, workshop, tarball, link.
+## PID & Process Helpers
 
-**Options (`InstallToolOptions`):** `{ home, source, name?, roles?, commit?, link?, bundle? }`
+Shared primitives for daemon-style commands. Two daemons live in the framework today (the guild daemon `nsg start` and the Clockworks daemon `nsg clock start`), and both share the same lifecycle: read a pidfile, decide whether the named pid is alive, unlink the pidfile when the daemon is gone, poll for exit after SIGTERM. These helpers live in `@shardworks/nexus-core` so the CLI and the Clockworks apparatus can consume them without depending on one another.
 
-**Returns (`InstallResult`):** `{ category, name, installedTo, sourceKind, warnings }`
+These exports are public substrate for daemon implementations. Plugin code that only wants to ask "is the Clockworks daemon running?" should prefer the Clockworks apparatus's `status` API — see the [Clockworks contract](../architecture/clockworks.md).
 
-#### `removeTool(opts): RemoveResult`
+| Function | Purpose |
+|---|---|
+| `isProcessAlive(pid)` | Returns `true` when a process with the given pid is alive on this host. Uses signal `0` (the existence probe); treats `EPERM` (process exists but we lack permission to signal it) as alive. |
+| `readPidFile(pidFile)` | Read a pidfile and parse it into a positive integer pid. Returns `null` when the file is missing, unreadable, empty, or doesn't parse. |
+| `tryUnlink(file)` | Delete a file, swallowing any error. Used for pidfile cleanup where a stale or already-deleted file should not be a fatal condition. |
+| `waitForExit(pid, timeoutMs)` | Poll `isProcessAlive(pid)` every 200ms until the pid exits or the timeout elapses. Returns `true` if the process exited within the window, `false` otherwise. |
 
-Remove a tool from the guild. Deregisters from guild.json, removes from disk, cleans up node_modules.
+---
 
-**Options (`RemoveToolOptions`):** `{ home, name, category? }`
+## Package Resolution
 
-#### `classifySource(source, link?): SourceKind`
+Utilities for resolving guild-installed npm packages and deriving plugin ids. These exist because guild plugins are ESM-only packages and `createRequire()` cannot resolve their `exports` maps directly.
 
-Classify a source string: `'registry'`, `'git-url'`, `'workshop'`, `'tarball'`, or `'link'`.
+```typescript
+import { derivePluginId, resolveGuildPackageEntry } from '@shardworks/nexus-core';
 
-### Tool Registry
+derivePluginId('@shardworks/books-apparatus');  // → 'books'
+derivePluginId('@acme/my-plugin');              // → 'acme/my-plugin'
+derivePluginId('my-relay-kit');                 // → 'my-relay'
+```
 
-#### `listTools(home, category?): ToolSummary[]`
+| Function | Purpose |
+|---|---|
+| `derivePluginId(packageName)` | Canonical npm package name → plugin id. Strips the `@shardworks/` scope (the official Nexus namespace), retains other scopes as `scope/name` prefixes (without `@`) to prevent third-party collisions, and strips descriptor suffixes (`-plugin`, `-apparatus`, `-kit`). |
+| `readGuildPackageJson(guildRoot, pkgName)` | Read a package's `package.json` from the guild's `node_modules`. Returns `{ version, pkgJson }`; falls back gracefully when the file is missing. |
+| `resolvePackageNameForPluginId(guildRoot, pluginId)` | Reverse lookup: scan the guild's root `package.json` dependencies and return the npm package name whose derived id matches `pluginId`. Prefers `@shardworks`-scoped packages on collisions. Returns `null` when nothing matches. |
+| `resolveGuildPackageEntry(guildRoot, pkgName)` | Resolve the ESM entry point for a guild-installed package by reading the package's `exports` map (with sensible fallbacks to `main` and finally `index.js`). Returns an absolute path suitable for dynamic `import()`. |
 
-List all installed artifacts from guild.json. Filter by category (`'tools'`, `'engines'`, `'curricula'`, `'temperaments'`).
+---
 
-### Preconditions
+## `VERSION`
 
-#### `readPreconditions(descriptorPath): Precondition[]`
+```typescript
+import { VERSION } from '@shardworks/nexus-core';
+```
 
-Read preconditions from a descriptor file. Returns empty array if none declared.
-
-#### `checkOne(precondition): PreconditionCheckResult`
-
-Run a single precondition check.
-
-#### `checkPreconditions(preconditions): PreconditionCheckResult[]`
-
-Check all preconditions in an array.
-
-#### `checkAllPreconditions(home, config): ToolPreconditionResult[]`
-
-Check preconditions for all tools and engines in a guild.
-
-#### `checkToolPreconditions(descriptorPath): PreconditionCheckResult[]`
-
-Convenience wrapper for install-time warnings.
-
-**Precondition types:**
-- `CommandPrecondition` — checks if a command exists on PATH
-- `CommandOutputPrecondition` — runs a command, checks stdout against a regex
-- `EnvPrecondition` — checks if an env var is set and non-empty
-
-### Workshops
-
-#### `addWorkshop(opts): AddWorkshopResult`
-
-Clone a remote repo as a bare clone and register in guild.json.
-
-#### `removeWorkshop(opts): void`
-
-Remove bare clone, worktrees, and guild.json entry.
-
-#### `listWorkshops(home): WorkshopInfo[]`
-
-List all workshops with status (cloned, active worktree count).
-
-#### `showWorkshop(home, name): WorkshopDetail | null`
-
-Detailed workshop info including bare path and default branch.
-
-#### `createWorkshop(opts): AddWorkshopResult`
-
-Create a new GitHub repo via `gh`, then add it as a workshop. Seeds with an initial commit on `main`.
-
-#### `checkGhAuth(): string | null`
-
-Check if `gh` is installed and authenticated. Returns `null` if OK, error message otherwise.
-
-#### `deriveWorkshopName(input): string`
-
-Derive a workshop name from a URL or `org/name` format.
-
-### Worktrees
-
-#### `setupWorktree(config): WorktreeResult`
-
-Create a git worktree for a commission session. Creates a branch `commission-{id}` from the base branch.
-
-#### `teardownWorktree(home, workshop, commissionId): void`
-
-Remove a commission worktree. Does **not** delete the branch.
-
-#### `listWorktrees(home, workshop?): WorktreeResult[]`
-
-List active commission worktrees.
-
-### Bundles
-
-#### `readBundleManifest(bundleDir): BundleManifest`
-
-Read and validate `nexus-bundle.json`. Enforces: tools/engines require `package`, content requires `package` or `path`, migrations require `path`.
-
-#### `installBundle(opts): InstallBundleResult`
-
-Install all artifacts from a bundle manifest. Handles transitive bundles (nested `nexus-bundle.json`).
-
-#### `isBundleDir(dir): boolean`
-
-Check if a directory contains `nexus-bundle.json`.
-
-### Migrations
-
-#### `discoverMigrations(migrationsDir): MigrationFile[]`
-
-Discover migration files matching `NNN-description.sql`, sorted by sequence.
-
-#### `applyMigrations(home, provenance?): MigrateResult`
-
-Apply pending SQL migrations. Each runs in its own transaction. Tracks applied migrations in `_migrations` table.
-
-### Upgrade
-
-#### `planUpgrade(home, bundleDir, bundleSource?): UpgradePlan`
-
-Plan a framework upgrade by diffing the guild's current state against a bundle. Read-only — inspects the guild and bundle but makes no changes. Returns an `UpgradePlan` describing new migrations, updated content, and stale animas.
-
-#### `applyUpgrade(home, bundleDir, plan): UpgradeResult`
-
-Apply an upgrade plan. Installs new migrations (renumbered into the guild's sequence), updates content artifacts (curricula/temperaments), and bumps the nexus version in `guild.json`. Does **not** recompose stale animas — that is a separate operator decision.
-
-**Types:**
-- `UpgradePlan` — `{ bundleSource, migrations, contentUpdates, staleAnimas, isEmpty }`
-- `UpgradeResult` — `{ migrationsApplied, contentUpdated, staleAnimaCount }`
-- `MigrationPlanEntry` — `{ bundleFilename, guildSequence, guildFilename }`
-- `ContentUpdateEntry` — `{ category, name, installedVersion, bundleVersion, bundlePath }`
-- `StaleAnimaEntry` — `{ id, name, roles, curriculum, temperament }` (curriculum/temperament are `{ composedVersion, currentVersion } | null`)
-
-### Guild Init
-
-#### `initGuild(home, name, model): void`
-
-Initialize a new guild — creates guild.json, package.json, .git, .nexus directory, and applies migrations.
-
-### Rehydrate
-
-#### `rehydrate(home): RehydrateResult`
-
-Reconstruct runtime state after a fresh clone: re-clone workshop bare repos, `npm install` for registry deps, reinstall workshop/tarball tools from on-disk source, report linked tools needing re-linking.
-
-### Types
-
-| Type | Description |
-|------|-------------|
-| `SourceKind` | `'registry' \| 'git-url' \| 'workshop' \| 'tarball' \| 'link'` |
-| `InstallToolOptions` | Full options for `installTool()` |
-| `InstallResult` | `{ category, name, installedTo, sourceKind, warnings }` |
-| `RemoveToolOptions` | `{ home, name, category? }` |
-| `RemoveResult` | `{ category, name, removedFrom }` |
-| `ToolSummary` | `{ name, category, upstream, installedAt, bundle? }` |
-| `Precondition` | Union: CommandPrecondition \| CommandOutputPrecondition \| EnvPrecondition |
-| `PreconditionCheckResult` | `{ precondition, passed, message? }` |
-| `ToolPreconditionResult` | `{ name, category, available, checks, failures }` |
-| `AddWorkshopOptions` | `{ home, name, remoteUrl }` |
-| `AddWorkshopResult` | `{ name, remoteUrl, barePath }` |
-| `RemoveWorkshopOptions` | `{ home, name }` |
-| `WorkshopInfo` | `{ name, remoteUrl, addedAt, cloned, activeWorktrees }` |
-| `WorkshopDetail` | WorkshopInfo + `{ barePath, defaultBranch }` |
-| `CreateWorkshopOptions` | `{ home, repoName, private? }` |
-| `WorktreeConfig` | `{ home, workshop, commissionId, baseBranch? }` |
-| `WorktreeResult` | `{ path, branch, commissionId }` |
-| `BundleManifest` | `{ description?, tools?, engines?, curricula?, temperaments?, migrations? }` |
-| `BundlePackageEntry` | `{ package, name? }` |
-| `BundleContentEntry` | `{ package?, path?, name? }` |
-| `BundleMigrationEntry` | `{ path }` |
-| `InstallBundleOptions` | `{ home, bundleDir, bundleSource?, commit? }` |
-| `InstallBundleResult` | `{ installed, artifacts, migrationProvenance? }` |
-| `MigrationFile` | `{ sequence, filename, path }` |
-| `MigrationProvenance` | `{ bundle, originalName }` |
-| `MigrateResult` | `{ applied[], skipped[], total }` |
-| `RehydrateResult` | `{ workshopsCloned[], workshopsFailed[], fromPackageJson, fromSlotSource[], needsRelink[] }` |
+The `@shardworks/nexus-core` package version, read from `package.json` at runtime. The framework version recorded in `guild.json` (`config.nexus`) is set from this value at `nsg init` and `nsg upgrade`.
