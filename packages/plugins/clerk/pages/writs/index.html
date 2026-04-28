@@ -220,6 +220,36 @@
     // (and summarise) hidden subtrees without enumerating them.
     const DEPTH_CAP = 8;
 
+    // ── URL handling ───────────────────────────────────────────────────
+
+    /**
+     * Read the current querystring as a `URLSearchParams`. A live snapshot —
+     * always read at call time, never cached, so reasoning stays local.
+     */
+    function currentUrlParams() {
+      return new URLSearchParams(window.location.search);
+    }
+
+    /**
+     * Apply the given key/value changes to the current querystring and
+     * `pushState` the result, preserving any unrelated params already
+     * present. A null/undefined/empty value deletes the key. Mirrors
+     * Ratchet's `updateUrl` (D9). Always pushes — `back-to-list` does
+     * `updateUrl({writ: null})` so the operator's Back button returns to
+     * whatever page they came from rather than collapsing inside the
+     * page's own history (D11).
+     */
+    function updateUrl(changes) {
+      const params = currentUrlParams();
+      for (const [key, value] of Object.entries(changes)) {
+        if (value === null || value === undefined || value === '') params.delete(key);
+        else params.set(key, value);
+      }
+      const qs = params.toString();
+      const next = window.location.pathname + (qs ? '?' + qs : '');
+      window.history.pushState({}, '', next);
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────
 
     async function api(method, path, body) {
@@ -816,7 +846,11 @@
       html += `<div class="detail-section"><h4>Details</h4><dl class="detail-grid">`;
       if (writ.codex) html += `<dt>Codex</dt><dd>${escHtml(writ.codex)}</dd>`;
       if (writ.parent) {
-        html += `<dt>Parent</dt><dd><a href="?writ=${encodeURIComponent(writ.parent.id)}" style="color:var(--blue,#7aa2f7);text-decoration:underline;cursor:pointer">${escHtml(writ.parent.title)}</a> ${phaseBadge(writ.parent)}</dd>`;
+        // The href stays as `?writ=ID` so right-click → "Open in new tab"
+        // and the on-hover URL preview keep working. wireDetailEvents
+        // intercepts left-clicks below and routes through showWritDetail
+        // so left-click stays an in-page navigation.
+        html += `<dt>Parent</dt><dd><a class="parent-link" data-parent-id="${escAttr(writ.parent.id)}" href="?writ=${encodeURIComponent(writ.parent.id)}" style="color:var(--blue,#7aa2f7);text-decoration:underline;cursor:pointer">${escHtml(writ.parent.title)}</a> ${phaseBadge(writ.parent)}</dd>`;
       }
       html += `<dt>Created</dt><dd>${fmtDate(writ.createdAt)}</dd>`;
       html += `<dt>Updated</dt><dd>${fmtDate(writ.updatedAt)}</dd>`;
@@ -1030,6 +1064,21 @@
           e.stopPropagation();
           e.preventDefault();
           showWritDetail(a.dataset.writId);
+        });
+      });
+
+      // Parent link clicks — intercept the left-click so navigation
+      // stays in-page and the URL push routes through the central
+      // showWritDetail. The href is left intact so middle-click /
+      // right-click → open-in-new-tab still work.
+      container.querySelectorAll('.parent-link[data-parent-id]').forEach(a => {
+        a.addEventListener('click', e => {
+          // Honour modifier-key shortcuts so power users keep their
+          // open-in-new-tab muscle memory.
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+          e.stopPropagation();
+          e.preventDefault();
+          showWritDetail(a.dataset.parentId);
         });
       });
 
@@ -1356,12 +1405,54 @@
 
     // ── Detail view ──────────────────────────────────────────────────
 
-    async function showWritDetail(id) {
+    /**
+     * Render the not-found empty state inside the detail view for an
+     * unresolvable id. Per D16, the URL param is never rewritten — we
+     * surface the failure honestly so the operator can recover (e.g. by
+     * editing the url, hitting Back, or copy-pasting a corrected id).
+     */
+    function renderDetailNotFound(id) {
+      document.getElementById('writ-list-view').style.display = 'none';
+      document.getElementById('writ-detail-view').style.display = '';
+      document.getElementById('detail-title').textContent = 'Writ not found';
+
+      const oldSubtitle = document.getElementById('detail-id-subtitle');
+      if (oldSubtitle) oldSubtitle.remove();
+
+      const subtitle = document.createElement('div');
+      subtitle.id = 'detail-id-subtitle';
+      subtitle.style.cssText = 'margin-top:0.25rem;margin-bottom:0.75rem;font-size:0.875rem;opacity:0.7';
+      subtitle.innerHTML = '<code>' + escHtml(id) + '</code>';
+      document.getElementById('detail-title').after(subtitle);
+
+      const content = document.getElementById('detail-content');
+      content.innerHTML =
+        `<div class="empty-state" style="padding:1.5rem">` +
+        `No writ with id <code>${escHtml(id)}</code> exists. ` +
+        `It may have been deleted, or the id may be mistyped.</div>`;
+    }
+
+    /**
+     * Open the detail view for `id`. Centralises the URL push so every
+     * caller (row click, parent link, child detail row, link-id target,
+     * overflow row, deep-link init, popstate) gets the URL contract for
+     * free (D12). Pass `{ skipUrlPush: true }` from the popstate handler
+     * to avoid double-pushing when the browser is already at the right
+     * URL — every other entry point should push.
+     *
+     * D16: a missing/deleted/mistyped id renders a "not found" empty
+     * state inside the detail panel without rewriting the URL.
+     */
+    async function showWritDetail(id, opts) {
+      const skipUrlPush = !!(opts && opts.skipUrlPush);
+
       let writ;
       try {
         writ = await api('GET', '/api/writ/show?id=' + encodeURIComponent(id));
       } catch (e) {
         console.error('Failed to load writ detail:', e);
+        if (!skipUrlPush) updateUrl({ writ: id });
+        renderDetailNotFound(id);
         return;
       }
 
@@ -1378,6 +1469,11 @@
           writ._descendantTree = null;
         }
       }
+
+      // Centralised URL push — every callsite into showWritDetail emits
+      // ?writ=ID for free, except the popstate-driven path which would
+      // otherwise re-push the current URL.
+      if (!skipUrlPush) updateUrl({ writ: id });
 
       // Toggle views
       document.getElementById('writ-list-view').style.display = 'none';
@@ -1406,6 +1502,18 @@
       const content = document.getElementById('detail-content');
       content.innerHTML = renderDetail(writ);
       wireDetailEvents(content, writ);
+    }
+
+    /** Switch back from the detail view to the list view. Centralised so
+     *  the URL clear (`updateUrl({writ: null})`) and the DOM toggle stay
+     *  paired. Per D11 we never call `history.back()` — clicking "Back to
+     *  list" pushes a clean URL so the operator's forward button keeps
+     *  doing what they expect. */
+    function showWritList(opts) {
+      const skipUrlPush = !!(opts && opts.skipUrlPush);
+      document.getElementById('writ-detail-view').style.display = 'none';
+      document.getElementById('writ-list-view').style.display = '';
+      if (!skipUrlPush) updateUrl({ writ: null });
     }
 
     // ── Data loading ────────────────────────────────────────────────────
@@ -1645,9 +1753,11 @@
     }
 
     function openRepost(writ) {
-      // If in detail view, switch back to list view first
-      document.getElementById('writ-detail-view').style.display = 'none';
-      document.getElementById('writ-list-view').style.display = '';
+      // If in detail view, switch back to list view first. Routes
+      // through showWritList so the URL also clears `?writ=` — repost
+      // operates on the source writ but lands the operator on the new
+      // (drafting) form, so the param no longer reflects state.
+      showWritList();
       openPostForm();
       document.getElementById('post-title').textContent = 'Repost Writ';
       document.getElementById('post-title-input').value = `[Repost] ${writ.title ?? ''}`;
@@ -1791,8 +1901,11 @@
     document.getElementById('btn-refresh').addEventListener('click', () => loadWrits(true));
 
     document.getElementById('back-btn').addEventListener('click', () => {
-      document.getElementById('writ-detail-view').style.display = 'none';
-      document.getElementById('writ-list-view').style.display = '';
+      // D11: push a clean URL via showWritList → updateUrl, never call
+      // history.back(). Survives deep-link entries (the operator may have
+      // arrived directly at ?writ=ID with no prior list-view entry to
+      // pop back to), and keeps Forward navigation predictable.
+      showWritList();
     });
 
     document.getElementById('btn-toggle-children').addEventListener('click', () => {
@@ -1840,6 +1953,25 @@
       });
     });
 
+    // ── Browser navigation ──────────────────────────────────────────────
+
+    /**
+     * Reflect browser navigation (Back / Forward) into the page's view
+     * state. The popstate handler reads `?writ=` from the new URL and
+     * either shows the matching detail (without re-pushing the URL,
+     * which the browser has already done) or returns to the list. This
+     * pairs with the central push inside showWritDetail so the
+     * round-trip stays balanced (D11/D12).
+     */
+    window.addEventListener('popstate', () => {
+      const writId = currentUrlParams().get('writ');
+      if (writId) {
+        showWritDetail(writId, { skipUrlPush: true });
+      } else {
+        showWritList({ skipUrlPush: true });
+      }
+    });
+
     // ── Init ────────────────────────────────────────────────────────────
     loadCodexes();
     loadLinkKinds();
@@ -1849,13 +1981,15 @@
       // Load writ types first so currentType default is set before fetching writs
       await loadWritTypes();
 
-      var params = new URLSearchParams(window.location.search);
-      var writId = params.get('writ');
+      var writId = currentUrlParams().get('writ');
 
       await loadWrits(true);
 
       if (writId) {
-        showWritDetail(writId);
+        // The URL already carries the id — pass skipUrlPush so we don't
+        // re-push the same querystring. A missing/deleted id falls
+        // through to renderDetailNotFound (D16) — the URL is preserved.
+        showWritDetail(writId, { skipUrlPush: true });
       }
     })();
   })();

@@ -393,7 +393,7 @@ function renderDetail(writ) {
   html += `<div class="detail-section"><h4>Details</h4><dl class="detail-grid">`;
   if (writ.codex) html += `<dt>Codex</dt><dd>${escHtml(writ.codex)}</dd>`;
   if (writ.parent) {
-    html += `<dt>Parent</dt><dd><a href="?writ=${encodeURIComponent(writ.parent.id)}" style="color:var(--blue,#7aa2f7);text-decoration:underline;cursor:pointer">${escHtml(writ.parent.title)}</a> ${phaseBadge(writ.parent)}</dd>`;
+    html += `<dt>Parent</dt><dd><a class="parent-link" data-parent-id="${escAttr(writ.parent.id)}" href="?writ=${encodeURIComponent(writ.parent.id)}" style="color:var(--blue,#7aa2f7);text-decoration:underline;cursor:pointer">${escHtml(writ.parent.title)}</a> ${phaseBadge(writ.parent)}</dd>`;
   }
   html += `<dt>Created</dt><dd></dd>`;
   html += `</dl></div>`;
@@ -1402,6 +1402,182 @@ describe('Deep descendant rendering in detail view', () => {
     // Depth 1 (active classification) gets Cancel only
     assert.ok(html.match(/data-action="row-cancel"[^>]*data-id="g"/));
     assert.ok(!html.match(/data-action="row-publish"[^>]*data-id="g"/));
+  });
+});
+
+describe('URL deep-link helpers (currentUrlParams + updateUrl + popstate cycle)', () => {
+  // Mirrors the URL helpers in index.html. The page IIFE reads from
+  // `window.location.search` and pushes via `window.history.pushState`;
+  // here we test the shape of those interactions by injecting a fake
+  // window. Keeping these tests beside the rest of the page logic locks
+  // in the contract that:
+  //   - showWritDetail pushes ?writ=ID
+  //   - showWritList clears ?writ
+  //   - skipUrlPush suppresses the push (the popstate-driven path)
+  //   - the popstate handler reads ?writ from the new URL and routes
+  //     into showWritDetail (skipUrlPush) or showWritList (skipUrlPush)
+  function makeWindow(initialSearch) {
+    const w = {
+      location: {
+        pathname: '/pages/writs/',
+        search: initialSearch ?? '',
+      },
+      history: {
+        pushed: [],
+        pushState(state, _title, url) {
+          this.pushed.push(url);
+          // Reflect the push back into location so subsequent reads
+          // see the new querystring — matching real browser behaviour.
+          const idx = url.indexOf('?');
+          w.location.search = idx === -1 ? '' : url.slice(idx);
+          w.location.pathname = idx === -1 ? url : url.slice(0, idx);
+        },
+      },
+      _popstate: null,
+      addEventListener(name, fn) { if (name === 'popstate') this._popstate = fn; },
+    };
+    return w;
+  }
+
+  function makeUrlHelpers(w) {
+    function currentUrlParams() {
+      return new URLSearchParams(w.location.search);
+    }
+    function updateUrl(changes) {
+      const params = currentUrlParams();
+      for (const [key, value] of Object.entries(changes)) {
+        if (value === null || value === undefined || value === '') params.delete(key);
+        else params.set(key, value);
+      }
+      const qs = params.toString();
+      const next = w.location.pathname + (qs ? '?' + qs : '');
+      w.history.pushState({}, '', next);
+    }
+    return { currentUrlParams, updateUrl };
+  }
+
+  it('updateUrl({writ: id}) pushes ?writ=ID onto a clean URL', () => {
+    const w = makeWindow();
+    const { updateUrl } = makeUrlHelpers(w);
+    updateUrl({ writ: 'w-abc' });
+    assert.deepEqual(w.history.pushed, ['/pages/writs/?writ=w-abc']);
+  });
+
+  it('updateUrl({writ: null}) clears the param while preserving others', () => {
+    const w = makeWindow('?writ=w-old&keep=me');
+    const { updateUrl } = makeUrlHelpers(w);
+    updateUrl({ writ: null });
+    assert.equal(w.history.pushed.length, 1);
+    assert.equal(w.history.pushed[0], '/pages/writs/?keep=me');
+  });
+
+  it('updateUrl percent-encodes ids that include special characters', () => {
+    const w = makeWindow();
+    const { updateUrl } = makeUrlHelpers(w);
+    updateUrl({ writ: 'w with spaces' });
+    // URLSearchParams encodes spaces as `+`; either form is valid in a
+    // querystring, but the regex below pins what URLSearchParams
+    // actually emits so wording drift breaks the suite.
+    assert.equal(w.history.pushed[0], '/pages/writs/?writ=w+with+spaces');
+  });
+
+  it('a full select → back-to-list → select cycle pushes the right URL sequence', () => {
+    const w = makeWindow();
+    const { updateUrl } = makeUrlHelpers(w);
+
+    // Operator clicks into a writ → showWritDetail pushes ?writ=
+    updateUrl({ writ: 'w-1' });
+    // Back to list → showWritList clears ?writ=
+    updateUrl({ writ: null });
+    // Operator opens another writ
+    updateUrl({ writ: 'w-2' });
+
+    assert.deepEqual(w.history.pushed, [
+      '/pages/writs/?writ=w-1',
+      '/pages/writs/',
+      '/pages/writs/?writ=w-2',
+    ]);
+  });
+
+  it('popstate-driven path does not push (the browser already updated the URL)', () => {
+    const w = makeWindow('?writ=w-1');
+    const { currentUrlParams, updateUrl } = makeUrlHelpers(w);
+
+    // Simulate the popstate dispatch: the page reads ?writ from the
+    // current URL and calls showWritDetail with skipUrlPush=true. We
+    // model showWritDetail's URL-push branch here as "if not
+    // skipUrlPush, updateUrl({writ: id})" — see the index.html
+    // implementation. The expected behaviour is zero pushes.
+    function simulateShowWritDetail(id, skipUrlPush) {
+      if (!skipUrlPush) updateUrl({ writ: id });
+    }
+    function simulateShowWritList(skipUrlPush) {
+      if (!skipUrlPush) updateUrl({ writ: null });
+    }
+
+    // Forward to detail (programmatic, normal) — pushes once.
+    simulateShowWritDetail('w-1', false);
+    assert.equal(w.history.pushed.length, 1);
+
+    // popstate-driven invocation — must not push.
+    simulateShowWritDetail('w-1', true);
+    assert.equal(w.history.pushed.length, 1, 'popstate-driven detail render must not push');
+
+    // popstate-driven list render — must not push either.
+    simulateShowWritList(true);
+    assert.equal(w.history.pushed.length, 1, 'popstate-driven list render must not push');
+
+    // Programmatic back-to-list — pushes a clean URL.
+    simulateShowWritList(false);
+    assert.equal(w.history.pushed.length, 2);
+    assert.equal(w.history.pushed[1], '/pages/writs/');
+  });
+
+  it('popstate handler reads ?writ from the new URL (round-trip simulation)', () => {
+    const w = makeWindow();
+    const { currentUrlParams, updateUrl } = makeUrlHelpers(w);
+
+    // Track which view the page would be showing.
+    let view = 'list';
+    let detailId = null;
+    function showWritDetail(id, opts) {
+      view = 'detail';
+      detailId = id;
+      if (!(opts && opts.skipUrlPush)) updateUrl({ writ: id });
+    }
+    function showWritList(opts) {
+      view = 'list';
+      detailId = null;
+      if (!(opts && opts.skipUrlPush)) updateUrl({ writ: null });
+    }
+    function popstate() {
+      const id = currentUrlParams().get('writ');
+      if (id) showWritDetail(id, { skipUrlPush: true });
+      else showWritList({ skipUrlPush: true });
+    }
+    w.addEventListener('popstate', popstate);
+
+    // Operator clicks into w-1 → URL becomes ?writ=w-1
+    showWritDetail('w-1');
+    assert.equal(view, 'detail');
+    assert.equal(detailId, 'w-1');
+    assert.equal(w.location.search, '?writ=w-1');
+
+    // Browser Back → URL would revert; simulate the browser flipping
+    // the URL state back to the prior entry, then dispatching popstate.
+    w.location.search = '';
+    w._popstate({});
+    assert.equal(view, 'list', 'popstate to list-view');
+    assert.equal(detailId, null);
+    // No additional pushes from the popstate-driven render.
+    assert.equal(w.history.pushed.length, 1);
+
+    // Browser Forward → URL flips forward; popstate fires again.
+    w.location.search = '?writ=w-1';
+    w._popstate({});
+    assert.equal(view, 'detail');
+    assert.equal(detailId, 'w-1');
+    assert.equal(w.history.pushed.length, 1, 'forward popstate still does not push');
   });
 });
 
