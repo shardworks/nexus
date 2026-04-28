@@ -41,7 +41,7 @@ import type {
 
 import { createStacksApparatus } from '@shardworks/stacks-apparatus';
 import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
-import type { StacksApi } from '@shardworks/stacks-apparatus';
+import type { ChangeEvent, StacksApi } from '@shardworks/stacks-apparatus';
 
 import { createClerk } from '@shardworks/clerk-apparatus';
 import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
@@ -49,6 +49,7 @@ import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import { createReckonerWithHooks } from './reckoner.ts';
 import { alwaysApproveScheduler } from './schedulers/always-approve.ts';
 import type {
+  PetitionExtRequest,
   PetitionRequest,
   ReckonerApi,
   ReckonerConfig,
@@ -577,6 +578,495 @@ describe('Reckoner apparatus', () => {
           return true;
         },
       );
+    });
+  });
+
+  // ── Stamp-only form (draft-then-publish idiom) ─────────────────────
+
+  describe('petition() — stamp-only form', () => {
+    /**
+     * Happy path: a fresh writ in its registered initial phase
+     * carries no `ext.reckoner` until the stamp-only form is called;
+     * after the call, the on-disk shape matches the create+stamp
+     * form's output for the same ext-only fields.
+     */
+    it('stamps ext.reckoner onto a fresh writ in initial phase and returns the patched writ', async () => {
+      const fix = await buildFixture({
+        petitionerKits: [
+          {
+            pluginId: 'vision-keeper',
+            value: [
+              {
+                source: 'vision-keeper.snapshot',
+                description: 'snapshots',
+              },
+            ],
+          },
+        ],
+      });
+
+      const writ = await fix.clerk.post({
+        title: 'fresh writ pending publication',
+        body: 'long-form body',
+        codex: 'nexus',
+      });
+      assert.equal(writ.phase, 'new');
+      assert.equal(writ.ext, undefined, 'no ext.reckoner before stamp');
+
+      const stamped = await fix.reckoner.petition(writ.id, {
+        source: 'vision-keeper.snapshot',
+        priority: { visionRelation: 'vision-violator' },
+        complexity: 'bounded',
+        payload: { snapshotId: 'snap-1' },
+        labels: { 'vision-keeper.io/vision-id': 'nexus' },
+      });
+
+      assert.equal(stamped.id, writ.id, 'returns the same writ');
+      assert.equal(stamped.phase, 'new', 'stamping does not transition');
+      const ext = stamped.ext?.reckoner as ReckonerExt | undefined;
+      assert.ok(ext, 'ext.reckoner populated after stamp');
+      assert.equal(ext!.source, 'vision-keeper.snapshot');
+      assert.equal(ext!.complexity, 'bounded');
+      assert.deepEqual(ext!.payload, { snapshotId: 'snap-1' });
+      assert.deepEqual(ext!.labels, { 'vision-keeper.io/vision-id': 'nexus' });
+      // Default-fill on omitted dimensions, identical to create+stamp form.
+      assert.equal(ext!.priority.visionRelation, 'vision-violator');
+      assert.equal(ext!.priority.severity, 'minor');
+      assert.equal(ext!.priority.scope, 'minor-area');
+      assert.equal(ext!.priority.time.decay, false);
+      assert.equal(ext!.priority.time.deadline, null);
+      assert.deepEqual(ext!.priority.domain, []);
+    });
+
+    it('omits optional ext fields the caller did not supply (parity with create+stamp form)', async () => {
+      const fix = await buildFixture({
+        petitionerKits: [
+          {
+            pluginId: 'vision-keeper',
+            value: [
+              {
+                source: 'vision-keeper.snapshot',
+                description: 'snapshots',
+              },
+            ],
+          },
+        ],
+      });
+
+      const writ = await fix.clerk.post({ title: 'mvp', body: 'B' });
+      const stamped = await fix.reckoner.petition(writ.id, {
+        source: 'vision-keeper.snapshot',
+      });
+
+      const ext = stamped.ext?.reckoner as ReckonerExt | undefined;
+      assert.ok(ext);
+      assert.equal('complexity' in ext!, false);
+      assert.equal('payload' in ext!, false);
+      assert.equal('labels' in ext!, false);
+      assert.equal(ext!.priority.visionRelation, 'vision-neutral');
+    });
+
+    it('fails loud and writes nothing when ext.reckoner is already present', async () => {
+      // Disable the CDC auto-accept path so a successful create+stamp
+      // leaves the writ in its initial phase with ext.reckoner set.
+      // That isolates the existing-ext guard from the initial-phase
+      // guard for this test.
+      const originalDebug = console.debug;
+      console.debug = () => {};
+      const fix = await buildFixture({
+        petitionerKits: [
+          {
+            pluginId: 'vision-keeper',
+            value: [
+              {
+                source: 'vision-keeper.snapshot',
+                description: 'snapshots',
+              },
+            ],
+          },
+        ],
+        config: {
+          disabledSources: ['vision-keeper.snapshot'],
+        },
+      });
+
+      try {
+        const existing = await fix.reckoner.petition({
+          source: 'vision-keeper.snapshot',
+          title: 'already petitioned',
+          body: 'B',
+        });
+        const reread1 = await fix.clerk.show(existing.id);
+        assert.equal(reread1.phase, 'new', 'disabled-source skip leaves writ in initial phase');
+        assert.ok(reread1.ext?.reckoner, 'ext.reckoner already present');
+        const beforeUpdatedAt = reread1.updatedAt;
+        const beforeExt = reread1.ext?.reckoner as ReckonerExt;
+
+        await assert.rejects(
+          () =>
+            fix.reckoner.petition(existing.id, {
+              source: 'vision-keeper.snapshot',
+              priority: { severity: 'critical' },
+            }),
+          (err: Error) => {
+            assert.match(err.message, /\[reckoner\] petition:/);
+            assert.match(err.message, /already carries ext\.reckoner/);
+            assert.match(err.message, new RegExp(existing.id));
+            return true;
+          },
+        );
+
+        // No mutation: the original ext is intact and updatedAt is
+        // unchanged (no patch applied).
+        const reread2 = await fix.clerk.show(existing.id);
+        assert.equal(reread2.updatedAt, beforeUpdatedAt, 'no writ mutation on fail-loud');
+        assert.deepEqual(reread2.ext?.reckoner, beforeExt, 'existing ext untouched');
+      } finally {
+        console.debug = originalDebug;
+      }
+    });
+
+    it('fails loud and writes nothing when the writ is past its initial phase', async () => {
+      const fix = await buildFixture({
+        petitionerKits: [
+          {
+            pluginId: 'vision-keeper',
+            value: [
+              {
+                source: 'vision-keeper.snapshot',
+                description: 'snapshots',
+              },
+            ],
+          },
+        ],
+      });
+
+      const writ = await fix.clerk.post({ title: 't', body: 'b' });
+      // Drive the writ out of its initial phase BEFORE attempting the
+      // stamp-only form.
+      await fix.clerk.transition(writ.id, 'open', {});
+      const opened = await fix.clerk.show(writ.id);
+      assert.equal(opened.phase, 'open');
+      const beforeUpdatedAt = opened.updatedAt;
+
+      await assert.rejects(
+        () =>
+          fix.reckoner.petition(writ.id, {
+            source: 'vision-keeper.snapshot',
+          }),
+        (err: Error) => {
+          assert.match(err.message, /\[reckoner\] petition:/);
+          assert.match(err.message, /not in its writ-type's initial phase/);
+          assert.match(err.message, /open/);
+          return true;
+        },
+      );
+
+      const reread = await fix.clerk.show(writ.id);
+      assert.equal(reread.updatedAt, beforeUpdatedAt, 'no mutation when phase guard fires');
+      assert.equal(reread.ext, undefined, 'no ext stamped');
+    });
+
+    it('fails loud when the writ id does not exist', async () => {
+      const fix = await buildFixture({
+        petitionerKits: [
+          {
+            pluginId: 'vision-keeper',
+            value: [
+              {
+                source: 'vision-keeper.snapshot',
+                description: 'snapshots',
+              },
+            ],
+          },
+        ],
+      });
+
+      await assert.rejects(
+        () =>
+          fix.reckoner.petition('w-does-not-exist', {
+            source: 'vision-keeper.snapshot',
+          }),
+        (err: Error) => {
+          assert.match(err.message, /\[reckoner\] petition:/);
+          assert.match(err.message, /w-does-not-exist/);
+          return true;
+        },
+      );
+    });
+
+    it('rejects unregistered sources under enforceRegistration: true (parity with create+stamp form)', async () => {
+      const fix = await buildFixture({
+        petitionerKits: [],
+        config: { enforceRegistration: true },
+      });
+
+      const writ = await fix.clerk.post({ title: 't', body: 'b' });
+      const beforeUpdatedAt = writ.updatedAt;
+
+      await assert.rejects(
+        () =>
+          fix.reckoner.petition(writ.id, {
+            source: 'unknown.source',
+          }),
+        (err: Error) => {
+          assert.match(err.message, /\[reckoner\] petition:/);
+          assert.match(err.message, /not registered/);
+          assert.match(err.message, /unknown\.source/);
+          assert.match(err.message, /enforceRegistration is true/);
+          return true;
+        },
+      );
+
+      // Input-only guard fires before any Stacks read; no mutation.
+      const reread = await fix.clerk.show(writ.id);
+      assert.equal(reread.updatedAt, beforeUpdatedAt);
+      assert.equal(reread.ext, undefined);
+    });
+
+    it('warns and proceeds for unregistered sources under enforceRegistration: false (parity with create+stamp form)', async () => {
+      const fix = await buildFixture({
+        petitionerKits: [],
+      });
+
+      const writ = await fix.clerk.post({ title: 't', body: 'b' });
+
+      const originalWarn = console.warn;
+      const warnings: string[] = [];
+      console.warn = (msg: unknown) => {
+        warnings.push(String(msg));
+      };
+      try {
+        const stamped = await fix.reckoner.petition(writ.id, {
+          source: 'unknown.source',
+        });
+        assert.ok(stamped.ext?.reckoner, 'ext stamped despite unregistered source');
+        assert.ok(
+          warnings.some((w) =>
+            /\[reckoner\] petition: source "unknown\.source" is not registered/.test(w),
+          ),
+          `expected a warning naming the unregistered source; got: ${JSON.stringify(warnings)}`,
+        );
+      } finally {
+        console.warn = originalWarn;
+      }
+    });
+
+    it('rejects an out-of-enum priority dimension at the helper boundary (parity with create+stamp form)', async () => {
+      const fix = await buildFixture({
+        petitionerKits: [
+          {
+            pluginId: 'vision-keeper',
+            value: [
+              {
+                source: 'vision-keeper.snapshot',
+                description: 'snapshots',
+              },
+            ],
+          },
+        ],
+      });
+
+      const writ = await fix.clerk.post({ title: 'bad', body: 'b' });
+      const beforeUpdatedAt = writ.updatedAt;
+
+      await assert.rejects(
+        () =>
+          fix.reckoner.petition(writ.id, {
+            source: 'vision-keeper.snapshot',
+            priority: {
+              visionRelation: 'vision-incinerator' as unknown as PetitionExtRequest['priority'] extends
+                | infer P
+                | undefined
+                ? P extends { visionRelation?: infer V }
+                  ? V
+                  : never
+                : never,
+            },
+          }),
+        (err: Error) => {
+          assert.match(err.message, /visionRelation/);
+          return true;
+        },
+      );
+
+      // Input-only guard fires before any Stacks read; no mutation.
+      const reread = await fix.clerk.show(writ.id);
+      assert.equal(reread.updatedAt, beforeUpdatedAt);
+      assert.equal(reread.ext, undefined);
+    });
+
+    it('default-fills omitted priority dimensions (parity with create+stamp form)', async () => {
+      const fix = await buildFixture({
+        petitionerKits: [
+          {
+            pluginId: 'vision-keeper',
+            value: [
+              {
+                source: 'vision-keeper.snapshot',
+                description: 'snapshots',
+              },
+            ],
+          },
+        ],
+      });
+
+      const writ = await fix.clerk.post({ title: 'partial priority', body: 'b' });
+      const stamped = await fix.reckoner.petition(writ.id, {
+        source: 'vision-keeper.snapshot',
+        priority: {
+          severity: 'critical',
+          domain: ['security'],
+        },
+      });
+      const ext = stamped.ext?.reckoner as ReckonerExt;
+      assert.equal(ext.priority.severity, 'critical');
+      assert.deepEqual(ext.priority.domain, ['security']);
+      // Defaults filled.
+      assert.equal(ext.priority.visionRelation, 'vision-neutral');
+      assert.equal(ext.priority.scope, 'minor-area');
+      assert.equal(ext.priority.time.decay, false);
+      assert.equal(ext.priority.time.deadline, null);
+    });
+
+    /**
+     * Composition with `stacks.transaction(...)` — the load-bearing
+     * draft-then-publish idiom. The petitioner posts the writ in
+     * its initial phase first, then wires `depends-on` links and
+     * stamps `ext.reckoner` together inside a single transaction.
+     * The writ is Reckoner-visible only after the transaction
+     * commits: the test installs a Phase-2 writs watcher and
+     * asserts no events fire while the body is still executing,
+     * then verifies the Reckoner CDC handler sees the post-commit
+     * UPDATE event and produces a Reckonings row.
+     */
+    it('composes with stacks.transaction(): CDC events fire only after the outer commit', async () => {
+      const fix = await buildFixture({
+        petitionerKits: [
+          {
+            pluginId: 'vision-keeper',
+            value: [
+              {
+                source: 'vision-keeper.snapshot',
+                description: 'snapshots',
+              },
+            ],
+          },
+        ],
+      });
+
+      // Pre-create the reckonings book so the Reckoner's CDC handler
+      // can append a row without falling back to its failOnError
+      // warn-and-proceed branch — that lets the test assertion read
+      // a Reckonings row count rather than relying on indirect proof.
+      fix.memBackend.ensureBook(
+        { ownerId: 'reckoner', book: 'reckonings' },
+        {
+          indexes: [
+            'writId',
+            'consideredAt',
+            'outcome',
+            'source',
+            'visionRelation',
+            'severity',
+            'declineReason',
+            ['outcome', 'consideredAt'],
+            ['visionRelation', 'consideredAt'],
+            ['severity', 'consideredAt'],
+            ['writId', 'consideredAt'],
+          ],
+        },
+      );
+
+      // Capture every writs CDC event our test sees. Phase 2
+      // (`failOnError: false`) — the framework dispatches these
+      // strictly post-commit. If the stamp-only form joined an
+      // outer transaction correctly, no events arrive while the
+      // transaction body is still executing.
+      const observed: Array<ChangeEvent<WritDoc>> = [];
+      fix.stacks.watch<WritDoc>(
+        'clerk',
+        'writs',
+        (event) => {
+          observed.push(event);
+        },
+        { failOnError: false },
+      );
+
+      // A pre-existing sibling and the draft writ — both posted
+      // outside the under-test transaction so they exist (and have
+      // emitted their own CREATE events) before we begin observing.
+      const sibling = await fix.clerk.post({
+        title: 'sibling',
+        body: 'b',
+      });
+      const draft = await fix.clerk.post({
+        title: 'draft idiom: posted, then linked + stamped in a txn',
+        body: 'b',
+      });
+      observed.length = 0; // discard the post events from setup
+      const draftId = draft.id;
+
+      // Now wire a depends-on link and stamp via the stamp-only form
+      // inside a single transaction. The setWritExt produces an
+      // UPDATE event on the writs book — the Reckoner's CDC handler
+      // gates on update-shape events (D14), so this is the natural
+      // shape that drives consideration after commit.
+      let countAtBodyEnd = -1;
+      await fix.stacks.transaction(async () => {
+        await fix.clerk.link(draftId, sibling.id, 'depends-on');
+
+        // Stamp via the stamp-only form. The inner setWritExt
+        // joins the outer transaction (Stacks AsyncLocalStorage
+        // composition). Inside the body, the writ-on-disk does not
+        // yet carry ext.reckoner from any other observer's
+        // perspective; the framework defers Phase-2 dispatch to
+        // commit.
+        await fix.reckoner.petition(draftId, {
+          source: 'vision-keeper.snapshot',
+          priority: { visionRelation: 'vision-violator' },
+        });
+
+        // Snapshot the event count at the end of the transaction
+        // body — before the framework starts running Phase-2
+        // handlers. Phase-2 dispatch happens after the body resolves
+        // but before `stacks.transaction(...)` returns to the
+        // caller, so a flag flipped in the caller's `finally` would
+        // already be too late.
+        countAtBodyEnd = observed.length;
+      });
+
+      // The Reckoner-visibility invariant: zero CDC events for the
+      // newly-posted writ during the body, then events delivered
+      // post-commit. The body-end snapshot proves the first half;
+      // the post-await length proves the second.
+      assert.equal(
+        countAtBodyEnd,
+        0,
+        `no Phase-2 CDC events fire while the transaction body is still executing; got ${JSON.stringify(observed)}`,
+      );
+      assert.ok(
+        observed.length >= 1,
+        'CDC events fire after the outer transaction commits',
+      );
+
+      // Reckoner-visibility: the on-disk writ now carries
+      // ext.reckoner and the CDC handler has produced a Reckonings
+      // row from the post-commit UPDATE event.
+      const reread = await fix.clerk.show(draftId);
+      const ext = reread.ext?.reckoner as ReckonerExt | undefined;
+      assert.ok(ext, 'ext.reckoner is set after commit');
+      assert.equal(ext!.source, 'vision-keeper.snapshot');
+
+      const reckoningsBook = fix.stacks.readBook<{ writId: string; outcome: string; [k: string]: unknown }>(
+        'reckoner',
+        'reckonings',
+      );
+      const rows = await reckoningsBook.find({
+        where: [['writId', '=', draftId]],
+      });
+      assert.equal(rows.length, 1, 'exactly one Reckonings row written by the post-commit CDC handler');
+      assert.equal(rows[0]!.outcome, 'accepted');
     });
   });
 

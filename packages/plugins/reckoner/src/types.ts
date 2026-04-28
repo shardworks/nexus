@@ -140,19 +140,43 @@ export interface ReckonerExt {
 // ── Petition request ──────────────────────────────────────────────────
 
 /**
- * Argument shape for `ReckonerApi.petition()`.
+ * Ext-only argument shape — the `writ.ext['reckoner']` fields a
+ * petitioner supplies, decoupled from the writ-shape fields.
+ *
+ * Used as the second argument to the stamp-only form of
+ * `ReckonerApi.petition(writId, extRequest)` (the draft-then-publish
+ * idiom: post a writ in its initial phase without `ext.reckoner`,
+ * wire dependencies, then stamp `ext.reckoner` to publish). The
+ * create+stamp form of `petition()` accepts a `PetitionRequest`
+ * which extends this shape with the writ-shape fields.
  *
  * The helper takes a partial priority — every omitted dimension is
  * filled with the contract default at the helper boundary (D15) so
  * petitioners with one strongly-felt dimension do not need to
  * supply the entire shape.
- *
- * Writ-shape fields (`type`, `title`, `body`, `codex`, `parentId`)
- * pass straight through to `clerk.post()`. The optional `type`
- * mirrors `PostCommissionRequest.type?` exactly — when omitted, the
- * guild's default writ type is used (D21).
  */
-export interface PetitionRequest {
+export interface PetitionExtRequest {
+  /** Petitioner source id. Required. Matched against the registry. */
+  source: string;
+  /** Partial priority — omitted dimensions fall back to defaults at the helper boundary. */
+  priority?: Partial<Priority>;
+  /** Optional coarse complexity estimate. */
+  complexity?: ComplexityTier;
+  /** Opaque petitioner-defined data. */
+  payload?: unknown;
+  /** Additive metadata labels. */
+  labels?: Record<string, string>;
+}
+
+/**
+ * Argument shape for the create+stamp form of `ReckonerApi.petition()`.
+ *
+ * Extends `PetitionExtRequest` with the writ-shape fields that pass
+ * straight through to `clerk.post()`. The optional `type` mirrors
+ * `PostCommissionRequest.type?` exactly — when omitted, the guild's
+ * default writ type is used (D21).
+ */
+export interface PetitionRequest extends PetitionExtRequest {
   // ── writ fields (passed through to clerk.post) ───────────────────
   /** Writ type. Defaults to the guild's configured default writ type. */
   type?: string;
@@ -164,18 +188,6 @@ export interface PetitionRequest {
   codex?: string;
   /** Create this writ as a child of the specified parent writ. */
   parentId?: string;
-
-  // ── ext.reckoner fields ──────────────────────────────────────────
-  /** Petitioner source id. Required. Matched against the registry. */
-  source: string;
-  /** Partial priority — omitted dimensions fall back to defaults at the helper boundary. */
-  priority?: Partial<Priority>;
-  /** Optional coarse complexity estimate. */
-  complexity?: ComplexityTier;
-  /** Opaque petitioner-defined data. */
-  payload?: unknown;
-  /** Additive metadata labels. */
-  labels?: Record<string, string>;
 }
 
 // ── Petitioner descriptor ─────────────────────────────────────────────
@@ -527,8 +539,8 @@ declare module '@shardworks/nexus-core' {
  */
 export interface ReckonerApi {
   /**
-   * Post a writ in `new` phase with `writ.ext['reckoner']` set
-   * correctly.
+   * Create + stamp form. Post a writ in its registered initial
+   * phase with `writ.ext['reckoner']` set correctly.
    *
    * Resolves the source against the registry. When the source is
    * not registered:
@@ -539,13 +551,43 @@ export interface ReckonerApi {
    *
    * Validates every priority dimension against its enum. Applies
    * defaults to omitted priority dimensions (field-by-field
-   * merge). Calls `clerk.post()` then `clerk.setWritExt()` — the
-   * two-step non-atomic flow described in D7.
+   * merge). Delegates to the stamp-only form below for the actual
+   * ext write — source/priority validation runs once via the
+   * shared internal helper consumed by both forms, so a malformed
+   * input never produces an orphan writ.
    *
    * Returns the resulting writ document (post-`setWritExt`, so
    * `writ.ext.reckoner` is populated on the returned shape).
    */
   petition(request: PetitionRequest): Promise<WritDoc>;
+
+  /**
+   * Stamp-only form — the draft-then-publish idiom. Stamps
+   * `writ.ext['reckoner']` onto an already-posted writ that is
+   * still in its writ-type's initial phase, making the writ
+   * Reckoner-visible. Mirrors the create+stamp form's source-
+   * registry, priority-default-fill, and dimension-validation
+   * semantics; differs only in that the caller has already
+   * posted the writ (typically so dependencies via `clerk.link()`
+   * could be wired before consideration).
+   *
+   * Guards (in order; each fails loud with a `[reckoner] petition:`
+   * prefix and produces no writ mutation):
+   *   1. source registry + `enforceRegistration` (same as create+stamp).
+   *   2. priority dimension validation (same as create+stamp).
+   *   3. writ exists (`clerk.show(writId)` throws otherwise).
+   *   4. writ is in its type's initial phase (`clerk.isInitial(writ)`).
+   *   5. `writ.ext.reckoner` is absent — petitioning is a one-time
+   *      act; an already-petitioned writ never silently re-stamps.
+   *
+   * Composes naturally with `stacks.transaction(...)`: when the
+   * petitioner wraps `clerk.post() + clerk.link() + reckoner.petition(
+   * writId, ext)` in a single transaction, the writ becomes
+   * Reckoner-visible only after the outer transaction commits.
+   *
+   * Returns the patched writ (post-`setWritExt`).
+   */
+  petition(writId: string, extRequest: PetitionExtRequest): Promise<WritDoc>;
 
   /**
    * Withdraw a held writ by transitioning it to `cancelled`.

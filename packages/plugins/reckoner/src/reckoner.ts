@@ -77,6 +77,7 @@ import type {
 } from '@shardworks/clerk-apparatus';
 
 import type {
+  PetitionExtRequest,
   PetitionRequest,
   PetitionerDescriptor,
   Priority,
@@ -1168,6 +1169,173 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
     }
   }
 
+  /**
+   * Single canonical validation path for both `petition()` forms.
+   *
+   * Runs the input-only guards: source-registry check (gated by
+   * `enforceRegistration`), priority dimension validation, and
+   * partial-priority default-fill. Returns the validated, default-
+   * filled `ReckonerExt` ready for `clerk.setWritExt()`.
+   *
+   * Both the create+stamp form and the stamp-only form route through
+   * this helper before any writ-state work — a malformed input never
+   * reaches `clerk.post()` (so the create+stamp form cannot leak an
+   * orphan writ on bad input) and never reaches `clerk.show()` /
+   * `clerk.setWritExt()` (so the stamp-only form does not pay a
+   * Stacks read just to be told the input is wrong).
+   */
+  function validateAndFillExt(extRequest: PetitionExtRequest): ReckonerExt {
+    // ── Source resolution ────────────────────────────────────────
+    const config = resolveConfig();
+    const isRegistered = registry.has(extRequest.source);
+
+    if (!isRegistered) {
+      if (config.enforceRegistration) {
+        // Fail-loud without side-effect (D8): no writ created, no
+        // ext stamped.
+        throw new Error(
+          `[reckoner] petition: source "${extRequest.source}" is not registered. Registered sources: ${
+            registry.size === 0
+              ? '(none)'
+              : [...registry.keys()].map((s) => `"${s}"`).join(', ')
+          }. enforceRegistration is true; refusing to post.`,
+        );
+      }
+      // Permissive mode: warn and proceed (D6).
+      console.warn(
+        `[reckoner] petition: source "${extRequest.source}" is not registered; proceeding because reckoner.enforceRegistration is false.`,
+      );
+    }
+
+    // ── Priority validation + default-fill ───────────────────────
+    validatePriorityDimensions(extRequest.priority ?? {});
+    const priority = mergePriorityWithDefaults(extRequest.priority);
+
+    // Build the minimum-viable ext shape — optional fields are
+    // included only when the caller supplied them so the on-disk
+    // shape never carries dead keys.
+    const ext: ReckonerExt = {
+      source: extRequest.source,
+      priority,
+      ...(extRequest.complexity !== undefined ? { complexity: extRequest.complexity } : {}),
+      ...(extRequest.payload !== undefined ? { payload: extRequest.payload } : {}),
+      ...(extRequest.labels !== undefined ? { labels: extRequest.labels } : {}),
+    };
+    return ext;
+  }
+
+  // ── petition() — overloaded: create+stamp and stamp-only ─────────
+  //
+  // The two forms share validation (source registry + priority
+  // default-fill via `validateAndFillExt`) but differ in whether a
+  // writ is created. The stamp-only form is the canonical
+  // implementation: the create+stamp form composes
+  // `clerk.post()` + a self-call into the stamp-only form so a
+  // single code path carries source / priority / ext-write.
+  function petition(request: PetitionRequest): Promise<WritDoc>;
+  function petition(writId: string, extRequest: PetitionExtRequest): Promise<WritDoc>;
+  async function petition(
+    arg1: PetitionRequest | string,
+    arg2?: PetitionExtRequest,
+  ): Promise<WritDoc> {
+    if (typeof arg1 === 'string') {
+      if (arg2 === undefined) {
+        throw new Error(
+          '[reckoner] petition: stamp-only form requires an extRequest argument.',
+        );
+      }
+      return petitionStampOnly(arg1, arg2);
+    }
+    return petitionCreateAndStamp(arg1);
+  }
+
+  /**
+   * Stamp-only form — the canonical implementation.
+   *
+   * Guard order (D4 cheap-first): input validation (via
+   * `validateAndFillExt`) before writ-state guards. Every fail-loud
+   * path carries the `[reckoner] petition:` diagnostic prefix and
+   * produces no writ mutation.
+   */
+  async function petitionStampOnly(
+    writId: string,
+    extRequest: PetitionExtRequest,
+  ): Promise<WritDoc> {
+    // 1. Input-only guards: source registry + priority dimensions +
+    //    default-fill. A malformed input never pays a Stacks read.
+    const ext = validateAndFillExt(extRequest);
+
+    // 2. Writ-state guards. clerk.show() throws if the writ does
+    //    not exist; the throw is rewrapped with the helper's
+    //    diagnostic prefix so operators can grep for every helper-
+    //    boundary throw with one prefix.
+    let writ: WritDoc;
+    try {
+      writ = await clerk.show(writId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `[reckoner] petition: writ "${writId}" cannot be stamped: ${msg}`,
+      );
+    }
+
+    // 3. Initial-phase guard. Type-aware via clerk.isInitial — never
+    //    hardcode `'new'` here. A non-mandate writ-type with a
+    //    differently-named initial state is supported by construction.
+    if (!clerk.isInitial(writ)) {
+      throw new Error(
+        `[reckoner] petition: writ "${writId}" is not in its writ-type's initial phase (current phase: "${writ.phase}"). Stamp-only form requires the writ to be in its initial phase.`,
+      );
+    }
+
+    // 4. No-existing-ext guard. Petitioning is a one-time act;
+    //    fail-loud rather than silently re-stamping or deep-comparing
+    //    the existing slot.
+    if (writ.ext?.[RECKONER_PLUGIN_ID] !== undefined) {
+      throw new Error(
+        `[reckoner] petition: writ "${writId}" already carries ext.reckoner. Petitioning is a one-time act; refusing to overwrite.`,
+      );
+    }
+
+    // 5. Stamp. Returns the patched writ; symmetry with the create+
+    //    stamp form lets that form return the result of this call
+    //    directly.
+    return clerk.setWritExt(writId, RECKONER_PLUGIN_ID, ext);
+  }
+
+  /**
+   * Create+stamp form — convenience wrapper that posts a writ in
+   * its registered initial phase and then routes through the stamp-
+   * only form for the ext write. Source/priority validation runs
+   * once (in `validateAndFillExt`) before `clerk.post()` so a
+   * malformed input never produces an orphan writ.
+   */
+  async function petitionCreateAndStamp(
+    request: PetitionRequest,
+  ): Promise<WritDoc> {
+    // Run validation up-front — a malformed input must never reach
+    // clerk.post() (no orphan writ on bad input).
+    validateAndFillExt(request);
+
+    // Step 1: clerk.post() with the writ-shape fields. The optional
+    // type passes straight through (D21); when omitted Clerk uses
+    // the guild-default writ type.
+    const writ = await clerk.post({
+      ...(request.type !== undefined ? { type: request.type } : {}),
+      title: request.title,
+      body: request.body,
+      ...(request.codex !== undefined ? { codex: request.codex } : {}),
+      ...(request.parentId !== undefined ? { parentId: request.parentId } : {}),
+    });
+
+    // Step 2: delegate to the stamp-only form for the ext write.
+    // Re-running validation in the helper is intentional and cheap:
+    // there is exactly one canonical validation path, and the
+    // helper-boundary diagnostics fire from the same place
+    // regardless of which form the caller invoked.
+    return petitionStampOnly(writ.id, request);
+  }
+
   const api: ReckonerApi = {
     isSourceRegistered(source: string): boolean {
       return registry.has(source);
@@ -1188,59 +1356,7 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
       }));
     },
 
-    async petition(request: PetitionRequest): Promise<WritDoc> {
-      // ── Source resolution ────────────────────────────────────────
-      const config = resolveConfig();
-      const isRegistered = registry.has(request.source);
-
-      if (!isRegistered) {
-        if (config.enforceRegistration) {
-          // Fail-loud without side-effect (D8): no writ created.
-          throw new Error(
-            `[reckoner] petition: source "${request.source}" is not registered. Registered sources: ${
-              registry.size === 0
-                ? '(none)'
-                : [...registry.keys()].map((s) => `"${s}"`).join(', ')
-            }. enforceRegistration is true; refusing to post.`,
-          );
-        }
-        // Permissive mode: warn and proceed (D6).
-        console.warn(
-          `[reckoner] petition: source "${request.source}" is not registered; proceeding because reckoner.enforceRegistration is false.`,
-        );
-      }
-
-      // ── Priority validation + default-fill ───────────────────────
-      validatePriorityDimensions(request.priority ?? {});
-      const priority = mergePriorityWithDefaults(request.priority);
-
-      // ── Two-step post (D7) ───────────────────────────────────────
-      // Step 1: clerk.post() with the writ-shape fields. The
-      // optional type passes straight through (D21); when omitted
-      // Clerk uses the guild-default writ type.
-      const writ = await clerk.post({
-        ...(request.type !== undefined ? { type: request.type } : {}),
-        title: request.title,
-        body: request.body,
-        ...(request.codex !== undefined ? { codex: request.codex } : {}),
-        ...(request.parentId !== undefined ? { parentId: request.parentId } : {}),
-      });
-
-      // Step 2: clerk.setWritExt() with the reckoner ext slot.
-      // The `pluginId` argument is the hardcoded literal so the
-      // contract slot key never drifts (D11). We only include
-      // optional fields when the caller supplied them — otherwise
-      // the ext is the minimum viable shape.
-      const ext: ReckonerExt = {
-        source: request.source,
-        priority,
-        ...(request.complexity !== undefined ? { complexity: request.complexity } : {}),
-        ...(request.payload !== undefined ? { payload: request.payload } : {}),
-        ...(request.labels !== undefined ? { labels: request.labels } : {}),
-      };
-
-      return clerk.setWritExt(writ.id, RECKONER_PLUGIN_ID, ext);
-    },
+    petition,
 
     async withdraw(writId: string, reason?: string): Promise<WritDoc> {
       // Thin pass-through (D10, D17). No source/owner/ext check;

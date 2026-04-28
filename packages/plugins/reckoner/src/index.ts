@@ -14,6 +14,7 @@ export type {
   ComplexityTier,
   ReckonerExt,
   PetitionRequest,
+  PetitionExtRequest,
   PetitionerDescriptor,
   ReckonerConfig,
   ReckonerApi,

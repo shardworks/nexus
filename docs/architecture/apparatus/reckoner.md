@@ -4,13 +4,17 @@ Status: **Draft**
 
 Package: `@shardworks/reckoner-apparatus` · Plugin id: `reckoner`
 
-> **⚠️ v0 scope.** v0 ships the contract surface only — the
-> kit-static petitioner registry, the `petition()` /
-> `withdraw()` helpers (Workflow 2 in the contract document),
-> the `enforceRegistration` and `disabledSources` config keys,
-> and the inspection helpers on `provides`. There is no CDC
-> handler, no Lattice pulse emission, and no Reckonings book in
-> this commission — those land in follow-on work. The legacy
+> **⚠️ v0 scope.** v0 ships the contract surface plus the Phase-2
+> CDC handler and the Reckonings evaluation journal. Specifically:
+> the kit-static petitioner registry, the `petition()` /
+> `withdraw()` helpers (Workflow 2 in the contract document, in
+> both create+stamp and stamp-only forms), the
+> `enforceRegistration` and `disabledSources` config keys, the
+> inspection helpers on `provides`, the CDC handler on
+> `clerk/writs` that drives held petitions out of their initial
+> phase, and the `reckoner/reckonings` book. Lattice pulse emission
+> remains out of scope (the auto-wired Clockworks events on the
+> reckonings book are sufficient for v0 consumers). The legacy
 > stall/fail/drain pulse emitter (formerly named "the Reckoner")
 > now lives at [sentinel.md](sentinel.md) under the `sentinel`
 > plugin id.
@@ -24,11 +28,15 @@ The Reckoner is the petitioner-scheduler apparatus. It owns the
 writ — a writ in `new` phase carrying `writ.ext['reckoner']` — and
 maintains the registry of recognized petitioner sources.
 
-In v0 the Reckoner does **not** evaluate or transition petitions;
-it only stands up the contract. Petitions land in `new` phase and
-wait there until the follow-on CDC handler commission picks them
-up. Petitioners may withdraw a held writ via `withdraw()` (a thin
-wrapper over `clerk.transition(writId, 'cancelled', …)`).
+In v0 the Reckoner evaluates held petitions through a Phase-2 CDC
+handler on `clerk/writs` (see "What the Reckoner does NOT do" for
+the policy carve-outs that remain out of scope). The handler runs
+the rule sequence (skip / disabled-source / source-check /
+scheduler-evaluate), drives `clerk.transition()` on accept or
+decline, and idempotently appends one row per consideration to the
+`reckoner/reckonings` book. The v0 scheduling stub is always-
+approve; petitioners may withdraw a held writ via `withdraw()` (a
+thin wrapper over `clerk.transition(writId, 'cancelled', …)`).
 
 The Reckoner is the canonical Workflow-2 path. Workflow-1 callers
 (direct `clerk.post()` + `clerk.setWritExt()`) get the same on-disk
@@ -127,9 +135,13 @@ link-kinds: `^[a-z0-9]+(?:-[a-z0-9]+)*$`.
 
 ## Support Kit
 
-None — the Reckoner contributes no books, no tools, and no pages
-in v0. Its effect on the guild is the contract surface and the
-`provides` API.
+The Reckoner contributes the `reckoner/reckonings` book — its
+evaluation journal — via `supportKit.books`. Stacks materialises
+the book during the Wire phase with the contract index set; the
+auto-wired `book.reckoner.reckonings.{created,updated,deleted}`
+Clockworks events fire normally. The Reckoner is the sole writer.
+See `docs/architecture/reckonings-book.md` for the schema and CDC
+contract.
 
 ---
 
@@ -138,8 +150,8 @@ in v0. Its effect on the guild is the contract surface and the
 ```typescript
 interface ReckonerApi {
   /**
-   * Post a writ in `new` phase with `writ.ext['reckoner']` set
-   * correctly.
+   * Create + stamp form. Post a writ in its registered initial
+   * phase with `writ.ext['reckoner']` set correctly.
    *
    * Resolves the source against the registry. When the source is
    * not registered:
@@ -150,12 +162,33 @@ interface ReckonerApi {
    *
    * Validates every priority dimension against its enum. Applies
    * defaults to omitted priority dimensions (field-by-field
-   * merge). Calls `clerk.post()` then `clerk.setWritExt()` —
-   * two-step, non-atomic.
+   * merge). Delegates to the stamp-only form below for the actual
+   * ext write — source/priority validation runs once via the
+   * shared internal helper consumed by both forms.
    *
    * Returns the writ document with `ext.reckoner` populated.
    */
   petition(request: PetitionRequest): Promise<WritDoc>;
+
+  /**
+   * Stamp-only form. Stamps `writ.ext['reckoner']` onto an
+   * already-posted writ that is still in its writ-type's initial
+   * phase. The draft-then-publish idiom: post the writ, wire
+   * `clerk.link(...)` dependencies, then call this form to make
+   * the writ Reckoner-visible.
+   *
+   * Same source / priority semantics as the create+stamp form.
+   * Additional fail-loud guards: writ must exist, must be in its
+   * type's initial phase (via `clerk.isInitial(writ)`), and must
+   * not already carry `ext.reckoner`. Composes with
+   * `stacks.transaction(...)`: when the petitioner wraps
+   * `clerk.link()` + `reckoner.petition(writId, ext)` in a single
+   * transaction, the writ becomes Reckoner-visible only after
+   * commit.
+   *
+   * Returns the patched writ.
+   */
+  petition(writId: string, extRequest: PetitionExtRequest): Promise<WritDoc>;
 
   /**
    * Withdraw a held writ by transitioning it to `cancelled`.
@@ -181,20 +214,22 @@ interface ReckonerApi {
   listPetitioners(): PetitionerDescriptor[];
 }
 
-interface PetitionRequest {
-  // ── writ fields (passed through to clerk.post) ────────
-  type?:     string;
-  title:     string;
-  body:      string;
-  codex?:    string;
-  parentId?: string;
-
+interface PetitionExtRequest {
   // ── ext.reckoner fields ───────────────────────────────
   source:      string;
   priority?:   Partial<Priority>;
   complexity?: ComplexityTier;
   payload?:    unknown;
   labels?:     Record<string, string>;
+}
+
+interface PetitionRequest extends PetitionExtRequest {
+  // ── writ fields (passed through to clerk.post) ────────
+  type?:     string;
+  title:     string;
+  body:      string;
+  codex?:    string;
+  parentId?: string;
 }
 
 type Priority = {
@@ -235,12 +270,13 @@ who hand-build the ext supply their own priority values.
 
 ### Two-step post (D7)
 
-`petition()` runs two non-atomic Clerk calls:
+The create+stamp form of `petition()` runs two non-atomic Clerk
+calls:
 
-1. `clerk.post(...)` — creates the writ in `new` phase with the
-   writ-shape fields (`type`, `title`, `body`, `codex`, `parentId`).
-   `type` defaults to the guild's configured default writ type
-   when omitted (D21).
+1. `clerk.post(...)` — creates the writ in its registered initial
+   phase with the writ-shape fields (`type`, `title`, `body`,
+   `codex`, `parentId`). `type` defaults to the guild's configured
+   default writ type when omitted (D21).
 2. `clerk.setWritExt(writId, 'reckoner', ext)` — writes the
    `writ.ext['reckoner']` slot. The `pluginId` argument is the
    hardcoded literal `'reckoner'` (D11): the constant *is* the
@@ -249,9 +285,52 @@ who hand-build the ext supply their own priority values.
 There is a small orphan window between these two calls. The
 contract document (`docs/architecture/petitioner-registration.md`,
 observation `obs-4`/`obs-5`) records the trade-off; in v0 the
-window is acceptable and recoverable. Wrapping `petition()` in a
-Stacks transaction would cross a layering boundary not earned by
-this commission.
+window is acceptable and recoverable. Wrapping the create+stamp
+form in a single Stacks transaction is left to the petitioner — see
+the stamp-only form below for the supported transactional idiom.
+
+### Stamp-only form (draft-then-publish idiom)
+
+The stamp-only form (`petition(writId, extRequest)`) is the
+canonical implementation; the create+stamp form is a convenience
+wrapper that does writ-shape construction plus delegation. Both
+forms route through the same internal validate-and-fill helper, so
+source-registry / `enforceRegistration` semantics, priority
+dimension validation, and partial-priority default-fill behave
+identically.
+
+The stamp-only form's order of operations:
+
+1. Validate the ext-only fields (source registry +
+   `enforceRegistration`, priority dimensions, default-fill). A
+   malformed input never pays a Stacks read.
+2. Read the writ via `clerk.show(writId)`. Throws (with a
+   `[reckoner] petition:` prefix) when the writ does not exist.
+3. Verify the writ is in its writ-type's initial phase via
+   `clerk.isInitial(writ)`. Type-aware — never hardcodes `'new'`,
+   so a non-mandate writ-type with a differently-named initial
+   state is supported by construction. Fail-loud with no mutation
+   when the writ is past its initial phase.
+4. Verify `writ.ext['reckoner']` is absent. Petitioning is a
+   one-time act; an already-petitioned writ never silently
+   re-stamps. Fail-loud with no mutation.
+5. Call `clerk.setWritExt(writId, 'reckoner', ext)`. Returns the
+   patched writ.
+
+Composition with `stacks.transaction(...)`: `clerk.setWritExt`
+joins the surrounding transaction via Stacks AsyncLocalStorage, so
+a petitioner that wraps `clerk.link()` (or any other writ-graph
+prep) plus `reckoner.petition(writId, ext)` in a single transaction
+gets atomicity for free — the writ becomes Reckoner-visible only
+after the outer transaction commits. The Reckoner CDC handler
+observes the post-commit `setWritExt` UPDATE event and runs the
+rule sequence as for any other Reckoner-stamped writ (no special
+case in the handler).
+
+Out of scope (parked at the parent click): re-prioritization on
+already-`open` writs, cross-apparatus authoring (apparatus X
+creates, apparatus Y stamps), and atomic `clerk.post() + setWritExt`
+bundling inside a single Clerk call.
 
 ---
 
@@ -422,6 +501,8 @@ The three `SchedulerDecision` outcomes map to apparatus actions:
 
 ## Workflow-2: petition()
 
+### Create + stamp (one-shot)
+
 ```typescript
 import type { ReckonerApi } from '@shardworks/reckoner-apparatus';
 import { guild } from '@shardworks/nexus-core';
@@ -447,25 +528,79 @@ const writ = await reckoner.petition({
 });
 ```
 
-After this call, the writ exists in `new` phase, with
-`writ.ext.reckoner = { source, priority, complexity, payload,
-labels }`. The follow-on CDC handler picks it up.
+After this call, the writ exists in its registered initial phase
+with `writ.ext.reckoner = { source, priority, complexity, payload,
+labels }`. The CDC handler picks it up on the post-commit update
+event.
+
+### Draft-then-publish (stamp-only)
+
+When the petitioner needs to wire `clerk.link()` dependencies (or
+any other writ-graph prep) onto a writ before it becomes Reckoner-
+visible, post the writ first, perform the prep, then call the
+stamp-only form to publish:
+
+```typescript
+import type { StacksApi } from '@shardworks/stacks-apparatus';
+import type { ClerkApi } from '@shardworks/clerk-apparatus';
+import type { ReckonerApi } from '@shardworks/reckoner-apparatus';
+import { guild } from '@shardworks/nexus-core';
+
+const clerk    = guild().apparatus<ClerkApi>('clerk');
+const stacks   = guild().apparatus<StacksApi>('stacks');
+const reckoner = guild().apparatus<ReckonerApi>('reckoner');
+
+// Post the draft writ. It is in its initial phase but not yet
+// Reckoner-visible (no ext.reckoner).
+const draft = await clerk.post({
+  title: 'Address vision drift',
+  body:  '...',
+});
+
+// Wire the link and stamp ext.reckoner inside a single transaction
+// so the writ becomes Reckoner-visible only after the outer commit.
+await stacks.transaction(async () => {
+  await clerk.link(draft.id, blockerId, 'depends-on');
+  await reckoner.petition(draft.id, {
+    source:   'vision-keeper.snapshot',
+    priority: { visionRelation: 'vision-violator' },
+  });
+});
+```
+
+The stamp-only form fails loud (with no writ mutation) when the
+writ is past its initial phase, when `ext.reckoner` is already
+present, or when the writ id does not exist. See the
+`ReckonerApi.petition` interface above for the full guard set.
 
 ---
 
 ## What the Reckoner does NOT do (in v0)
 
-- **No CDC observer.** No subscription to `clerk/writs`. The
-  follow-on commission (`w-mohuvpu2`) wires that.
-- **No Lattice pulses.** The Reckoner does not emit pulses.
-- **No Reckonings book.** The evaluation log lives in a separate
-  parallel commission.
-- **No Stacks transaction wrapping `petition()`.** The two-step
-  flow is the chosen design (D7). The orphan-window observations
-  are recorded in the contract document.
+- **No Lattice pulses.** The Reckoner does not emit pulses; the
+  auto-wired `book.reckoner.reckonings.{created,updated,deleted}`
+  Clockworks events are sufficient for v0 consumers.
+- **No re-prioritization on already-`open` writs.** Mutating
+  `ext.reckoner.priority` on an accepted writ is a different
+  operation than petitioning and is not addressed here.
+- **No cross-apparatus authoring.** Apparatus X creates the writ
+  and apparatus Y stamps `ext.reckoner` is not addressed here —
+  parked at the parent click.
+- **No atomic `clerk.post() + setWritExt()` bundling.** The
+  create+stamp form remains two underlying Clerk calls; atomicity
+  inside a single transaction is the petitioner's concern via the
+  stamp-only form composed with `stacks.transaction(...)` (see
+  above).
+- **No deferral, no-op, throttling, or per-source quotas.** The
+  v0 scheduling stub is always-approve for held petitions that pass
+  the source / disabled / registration gates; richer scheduling
+  policy is reserved for the Reckoner-core scheduling commission.
 - **No `ext` field on `clerk.post()`.** Clerk's
   `PostCommissionRequest` is unchanged; the ext slot is written
-  via the second `setWritExt` call.
+  via the `setWritExt` call.
+- **No silent re-stamping or deep-compare in the stamp-only form.**
+  An already-petitioned writ fails loud; petitioning is a one-time
+  act.
 - **No `defaultPriority()` export.** Internal helper only (D14).
 - **No `contributingPluginId` / timestamps on
   `PetitionerDescriptor`.** Contract floor only (D19).

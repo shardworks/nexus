@@ -27,9 +27,17 @@ What ships here:
   `scope`, `time`, `domain`), the `ComplexityTier` enum, and the
   `ReckonerExt` shape — all faithful to the contract document at
   `docs/architecture/petitioner-registration.md`.
-- The `petition()` helper — posts a writ in `new` phase via
-  `clerk.post()`, then stamps `writ.ext['reckoner']` via
-  `clerk.setWritExt()`. Two-step and non-atomic by design (see D7).
+- The `petition()` helper in two forms:
+  - **Create + stamp** (`petition(request)`) — posts a writ in its
+    initial phase via `clerk.post()`, then stamps `writ.ext['reckoner']`
+    via `clerk.setWritExt()`. Two-step and non-atomic by design (see D7).
+  - **Stamp-only** (`petition(writId, extRequest)`) — the draft-then-
+    publish idiom. Stamps `ext.reckoner` onto an already-posted writ
+    that is still in its writ-type's initial phase, making the writ
+    Reckoner-visible. Lets a petitioner create the writ, wire
+    dependencies via `clerk.link()`, and then publish it as a single
+    transactional unit when wrapped in `stacks.transaction(...)`. Both
+    forms run through the same source / priority validation path.
 - The `withdraw()` helper — a thin pass-through to
   `clerk.transition(writId, 'cancelled', { resolution: reason })`.
 - Inspection helpers — `isSourceRegistered`, `isSourceDisabled`,
@@ -91,6 +99,8 @@ Add `reckoner` to `guild.json`'s `plugins` array.
 
 ## Posting a petition (Workflow 2)
 
+### Create + stamp (one-shot)
+
 ```typescript
 import type { ReckonerApi } from '@shardworks/reckoner-apparatus';
 import { guild } from '@shardworks/nexus-core';
@@ -117,6 +127,49 @@ const writ = await reckoner.petition({
 
 Omitted priority dimensions fall back to the contract defaults at the
 helper boundary (see §3 of the contract document).
+
+### Draft-then-publish (stamp-only)
+
+When the petitioner needs to wire links or other dependencies onto a
+writ before it becomes Reckoner-visible, use the stamp-only form.
+Post the writ first, perform any setup, then call
+`petition(writId, extRequest)` to stamp `ext.reckoner` and publish:
+
+```typescript
+import type { StacksApi } from '@shardworks/stacks-apparatus';
+import type { ClerkApi } from '@shardworks/clerk-apparatus';
+import type { ReckonerApi } from '@shardworks/reckoner-apparatus';
+import { guild } from '@shardworks/nexus-core';
+
+const clerk    = guild().apparatus<ClerkApi>('clerk');
+const stacks   = guild().apparatus<StacksApi>('stacks');
+const reckoner = guild().apparatus<ReckonerApi>('reckoner');
+
+// Post the draft writ first — it is in its initial phase but not yet
+// Reckoner-visible (no ext.reckoner).
+const draft = await clerk.post({
+  title: 'Address vision drift',
+  body:  '...',
+});
+
+// Wire dependencies and stamp ext.reckoner inside a single
+// transaction so the writ becomes Reckoner-visible only after the
+// outer commit. The Reckoner CDC handler observes the post-commit
+// update event and runs its rule sequence.
+await stacks.transaction(async () => {
+  await clerk.link(draft.id, blockerId, 'depends-on');
+  await reckoner.petition(draft.id, {
+    source: 'vision-keeper.snapshot',
+    priority: { visionRelation: 'vision-violator' },
+  });
+});
+```
+
+The stamp-only form fails loud (with no writ mutation) when the writ
+is past its initial phase, when `ext.reckoner` is already present, or
+when the writ id does not exist. Source registration and priority
+defaults / dimension validation are identical to the create+stamp
+form — a single canonical validation path runs for both.
 
 ## Declaring a petitioner
 

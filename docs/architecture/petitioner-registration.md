@@ -144,12 +144,21 @@ registry validated at API-call time. Petitioners that prefer
 direct posting (Workflow 1) get identical Reckoner behavior; the
 helper is a convenience layer, not a gate.
 
-There is **no Workflow 3** (post-then-petition). Adding ext to an
-already-posted writ via a separate `reckoner.petition(writId, ...)`
-call introduces atomicity concerns (orphaned writs in `new` with
-no ext) and serves no current use case. If retroactive gating
-becomes needed later, adding a `petition(writId, ...)` overload is
-purely additive.
+A **stamp-only form** of `petition()` (`reckoner.petition(writId,
+extRequest)`) supports the *draft-then-publish* idiom: the
+petitioner posts the writ in its initial phase first, wires
+`clerk.link(...)` dependencies (or any other writ-graph prep), and
+then stamps `ext['reckoner']` to publish. The stamp-only form runs
+the same source-registry check, priority validation, and partial-
+priority default-fill as the create+stamp form (a single canonical
+validation path), and adds writ-state guards: the writ must exist,
+must be in its writ-type's initial phase, and must not already
+carry `ext['reckoner']`. Each guard fails loud with no writ
+mutation. When wrapped in `stacks.transaction(...)`, the inner
+`setWritExt` joins the outer transaction via Stacks AsyncLocalStorage
+composition, so the writ becomes Reckoner-visible only after the
+outer commit. See [apparatus/reckoner.md](apparatus/reckoner.md)
+for the full helper signature and the guard order.
 
 ### Reckoner behavior
 
