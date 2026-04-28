@@ -1120,6 +1120,82 @@ describe('ScriptoriumCore', () => {
     });
   });
 
+  // ── Seal: Detached-HEAD recovery ─────────────────────────────────
+
+  describe('seal() detached-HEAD recovery', () => {
+
+    it('reattaches the bare clone branch ref when worktree HEAD is detached', async () => {
+      // Reproduces the Apr-26 reckoner-rename failure mode: an upstream
+      // caller (e.g. review/revise) detached HEAD in the draft worktree
+      // mid-flow. The rebase still produces correct commits, but
+      // refs/heads/<draft> in the bare clone never advances. Without the
+      // reattach, each retry iteration of the seal loop resolves the
+      // stale pre-rebase SHA, the FF check keeps failing, and the loop
+      // exits with the misleading "Sealing failed after N retries"
+      // message.
+      const remote = createRemoteRepo();
+      const { core, guildState } = createStartedCore();
+      const api = core.createApi();
+
+      await api.add('test-codex', remote.url);
+
+      const draftA = await api.openDraft({ codexName: 'test-codex', branch: 'draft-a' });
+      const draftB = await api.openDraft({ codexName: 'test-codex', branch: 'draft-b' });
+
+      for (const d of [draftA, draftB]) {
+        gitSync(['config', 'user.email', 'test@test.com'], d.path);
+        gitSync(['config', 'user.name', 'Test'], d.path);
+      }
+
+      // Draft A inscribes (will be sealed first to advance main)
+      fs.writeFileSync(path.join(draftA.path, 'file-a.txt'), 'from draft A\n');
+      gitSync(['add', 'file-a.txt'], draftA.path);
+      gitSync(['commit', '-m', 'Draft A inscription'], draftA.path);
+
+      // Draft B inscribes (will need rebase against the advanced main)
+      fs.writeFileSync(path.join(draftB.path, 'file-b.txt'), 'from draft B\n');
+      gitSync(['add', 'file-b.txt'], draftB.path);
+      gitSync(['commit', '-m', 'Draft B inscription'], draftB.path);
+
+      // Seal draft A first — fast-forward, advances main
+      await api.seal({ codexName: 'test-codex', sourceBranch: 'draft-a' });
+
+      // Detach HEAD in draft B before sealing — simulates a mid-flow
+      // `git checkout HEAD~1` style inspection that left HEAD detached.
+      gitSync(['checkout', '--detach'], draftB.path);
+
+      // Seal draft B — must rebase onto the advanced main. Without the
+      // reattach, refs/heads/draft-b would stay at the pre-rebase SHA
+      // and the seal loop would exhaust retries.
+      const result = await api.seal({
+        codexName: 'test-codex',
+        sourceBranch: 'draft-b',
+        keepDraft: true,
+      });
+
+      assert.equal(result.success, true);
+      assert.equal(result.strategy, 'rebase');
+      assert.ok(result.sealedCommit);
+
+      // The bare clone's refs/heads/draft-b should now resolve to the
+      // rebased HEAD — the same commit the worktree sees.
+      const bareClone = path.join(guildState.home, '.nexus', 'codexes', 'test-codex.git');
+      const bareDraftRef = gitSync(['rev-parse', 'refs/heads/draft-b'], bareClone);
+      const worktreeHead = gitSync(['rev-parse', 'HEAD'], draftB.path);
+      assert.equal(bareDraftRef, worktreeHead);
+      assert.equal(bareDraftRef, result.sealedCommit);
+
+      // The remote main should carry the sealed commit (seal pushed).
+      const remoteMain = gitSync(['rev-parse', 'main'], remote.path);
+      assert.equal(remoteMain, result.sealedCommit);
+
+      // Both inscriptions should be present in the sealed tree.
+      const tree = gitSync(['ls-tree', '--name-only', 'main'], bareClone);
+      assert.ok(tree.includes('file-a.txt'), 'file-a.txt should be in sealed tree');
+      assert.ok(tree.includes('file-b.txt'), 'file-b.txt should be in sealed tree');
+    });
+  });
+
   // ── Startup Reconciliation ────────────────────────────────────────
 
   describe('startup reconciliation', () => {
