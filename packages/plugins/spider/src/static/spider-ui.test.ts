@@ -1917,33 +1917,37 @@ describe('spider.js engine-detail attempt-history details', () => {
 // ── Deep-link URL state (?rig=ID) ──────────────────────────────────────
 
 describe('spider.js — deep-link URL state', () => {
-  it('exposes currentUrlParams + updateUrl helpers (D9 — Ratchet pattern)', () => {
-    assert.match(
-      spiderJs,
-      /function currentUrlParams\(\)\s*\{[\s\S]*?new URLSearchParams\(window\.location\.search\)/,
-      'currentUrlParams reads window.location.search live',
+  it('routes URL reads/writes through window.NexusUrl (no inline helpers)', () => {
+    // Inline currentUrlParams / updateUrl are gone (commission moix23w5).
+    assert.ok(
+      !/function\s+currentUrlParams\s*\(/.test(spiderJs),
+      'inline currentUrlParams must not be redeclared',
+    );
+    assert.ok(
+      !/function\s+updateUrl\s*\(/.test(spiderJs),
+      'inline updateUrl must not be redeclared',
     );
     assert.match(
       spiderJs,
-      /function updateUrl\(changes\)\s*\{[\s\S]*?window\.history\.pushState/,
-      'updateUrl pushes via history.pushState',
+      /window\.NexusUrl\.read\(\)/,
+      'spider.js should read URL state via window.NexusUrl.read',
     );
     assert.match(
       spiderJs,
-      /function updateUrl\(changes\)[\s\S]*?params\.delete\(key\)/,
-      'updateUrl deletes the key when value is null/undefined/empty',
+      /window\.NexusUrl\.update\(/,
+      'spider.js should write URL state via window.NexusUrl.update',
     );
   });
 
-  it('showRigDetail pushes ?rig=ID via the central updateUrl call (D12)', () => {
+  it('showRigDetail pushes ?rig=ID via NexusUrl with push: true (D12)', () => {
     const block = spiderJs.match(
       /function showRigDetail\(rig(?:, opts)?\)[\s\S]*?(?=\n  function )/,
     );
     assert.ok(block, 'should find showRigDetail body');
     assert.match(
       block[0],
-      /updateUrl\(\{\s*rig:\s*rig\.id\s*\}\)/,
-      'showRigDetail should push ?rig=<rig.id> when not skipUrlPush',
+      /window\.NexusUrl\.update\(\{\s*rig:\s*rig\.id\s*\}\s*,\s*\{\s*push:\s*true\s*\}\)/,
+      'showRigDetail must push ?rig=<rig.id> when not skipUrlPush',
     );
     assert.match(
       block[0],
@@ -1952,15 +1956,15 @@ describe('spider.js — deep-link URL state', () => {
     );
   });
 
-  it('backToList clears ?rig via updateUrl({rig: null}) — never history.back (D11)', () => {
+  it('backToList clears ?rig via NexusUrl with push: true — never history.back (D11)', () => {
     const block = spiderJs.match(
       /function backToList\((?:opts)?\)[\s\S]*?(?=\n  function )/,
     );
     assert.ok(block, 'should find backToList body');
     assert.match(
       block[0],
-      /updateUrl\(\{\s*rig:\s*null\s*\}\)/,
-      'backToList should push a clean URL via updateUrl({rig: null})',
+      /window\.NexusUrl\.update\(\{\s*rig:\s*null\s*\}\s*,\s*\{\s*push:\s*true\s*\}\)/,
+      'backToList must push a clean URL via NexusUrl.update({rig: null}, {push: true})',
     );
     assert.ok(
       !/history\.back\(/.test(block[0]),
@@ -1980,8 +1984,8 @@ describe('spider.js — deep-link URL state', () => {
     assert.ok(block, 'should find popstate handler body');
     assert.match(
       block[0],
-      /currentUrlParams\(\)\.get\(['"]rig['"]\)/,
-      'popstate handler reads ?rig from the new URL',
+      /readUrlState\(\)/,
+      'popstate handler should restore filter state via readUrlState',
     );
     assert.match(
       block[0],
@@ -1990,15 +1994,15 @@ describe('spider.js — deep-link URL state', () => {
     );
   });
 
-  it('init reads ?rig=ID and opens the matching detail after the rig list lands', () => {
+  it('init reads URL state and opens the deep-linked rig after the list lands', () => {
     assert.match(
       spiderJs,
-      /currentUrlParams\(\)\.get\(['"]rig['"]\)/,
-      'init reads ?rig from the URL',
+      /var\s+initialState\s*=\s*readUrlState\(\)/,
+      'init should call readUrlState before fetching rigs',
     );
     assert.match(
       spiderJs,
-      /showRigDetailById\(\s*initialRigId\s*,\s*\{\s*skipUrlPush:\s*true\s*\}\s*\)/,
+      /showRigDetailById\(\s*initialState\.rigId\s*,\s*\{\s*skipUrlPush:\s*true\s*\}\s*\)/,
       'init opens the detail via showRigDetailById with skipUrlPush=true',
     );
   });
@@ -2008,10 +2012,10 @@ describe('spider.js — deep-link URL state', () => {
       /function renderRigDetailNotFound\([\s\S]*?(?=\n  function )/,
     );
     assert.ok(block, 'should find renderRigDetailNotFound body');
-    // The function itself must not call updateUrl — the URL is left
-    // alone so the operator can recover by editing the address bar.
+    // The function itself must not call NexusUrl.update — the URL is
+    // left alone so the operator can recover by editing the address bar.
     assert.ok(
-      !/updateUrl/.test(block[0]),
+      !/NexusUrl\.update/.test(block[0]),
       'renderRigDetailNotFound must not rewrite the URL',
     );
     assert.match(
@@ -2022,13 +2026,75 @@ describe('spider.js — deep-link URL state', () => {
   });
 
   it('does not push a tab=… or engine=… URL param (D13/D14 explicit out-of-scope)', () => {
+    // Filter-shaped only (D13 narrow reading): the rigs page must
+    // never write ?tab= or ?engine= to the URL. These assertions stay
+    // in place verbatim from the pre-migration test suite.
     assert.ok(
-      !/updateUrl\(\{\s*tab:/.test(spiderJs),
+      !/NexusUrl\.update\(\{\s*tab:/.test(spiderJs),
       'tab state must remain client-only (D14)',
     );
     assert.ok(
-      !/updateUrl\(\{\s*engine:/.test(spiderJs),
+      !/NexusUrl\.update\(\{\s*engine:/.test(spiderJs),
       'engine selection must remain client state (D13)',
+    );
+    // Defensive — also forbid the legacy updateUrl shape (which the
+    // page no longer carries, but which a future regression could
+    // reintroduce).
+    assert.ok(
+      !/updateUrl\(\{\s*tab:/.test(spiderJs),
+      'tab state must remain client-only (D14) — legacy form too',
+    );
+    assert.ok(
+      !/updateUrl\(\{\s*engine:/.test(spiderJs),
+      'engine selection must remain client state (D13) — legacy form too',
+    );
+  });
+
+  it('rigs filter state writes through NexusUrl.update (replace, no push: true)', () => {
+    const writer = spiderJs.match(
+      /function writeRigFiltersToUrl\(\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(writer, 'writeRigFiltersToUrl should be defined');
+    assert.match(
+      writer[0],
+      /window\.NexusUrl\.update\(\{[\s\S]*?status:[\s\S]*?\}\s*\)/,
+      'rig filter writer must call NexusUrl.update without { push: true }',
+    );
+    assert.ok(
+      !/push:\s*true/.test(writer[0]),
+      'rig filter writes must use replaceState (D5 default) — no push: true',
+    );
+    // Each filter key the rigs page tracks must appear in the writer.
+    for (const key of ['status', "'writ-filter'", 'from', 'to', 'sort', 'dir']) {
+      assert.match(
+        writer[0],
+        new RegExp(`${key.replace(/'/g, "\\'")}\\s*:`),
+        `rig filter writer must include the ${key} key`,
+      );
+    }
+  });
+
+  it('readUrlState validates filter values and surfaces fail-loud errors (D6)', () => {
+    const reader = spiderJs.match(
+      /function readUrlState\(\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(reader, 'readUrlState should be defined');
+    // The reader must call showUrlError when validation fails.
+    assert.match(
+      reader[0],
+      /showUrlError\(/,
+      'readUrlState must surface validation errors via showUrlError',
+    );
+    // It must validate ?status= against the known status set.
+    assert.match(
+      reader[0],
+      /STATUS_VALUES\.indexOf/,
+      'readUrlState must validate ?status= against STATUS_VALUES',
+    );
+    assert.match(
+      reader[0],
+      /SORT_FIELDS\.indexOf/,
+      'readUrlState must validate ?sort= against SORT_FIELDS',
     );
   });
 });

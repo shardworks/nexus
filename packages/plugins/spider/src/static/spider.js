@@ -77,33 +77,115 @@
   }
 
   // ── URL handling ───────────────────────────────────────────────────────
+  //
+  // All deep-linkable view state for this page rides on
+  // `window.NexusUrl` — the shared helper auto-injected by oculus's
+  // chrome pass. The earlier inline `currentUrlParams` / `updateUrl`
+  // copies are gone (commission moix23w5).
+  //
+  // URL keys for the rigs tab:
+  //   ?status=        running | completed | failed | cancelled
+  //                   (matches the server-side ?status= already sent
+  //                   to /api/rig/list per D8). Default '' (All).
+  //   ?writ-filter=   Substring filter against rig.writTitle / writId.
+  //                   Default ''.
+  //   ?from=          ISO date (yyyy-mm-dd). Inclusive lower bound.
+  //   ?to=            ISO date. Inclusive upper bound (compared with
+  //                   T23:59:59 suffix).
+  //   ?sort=          status | id | writId | createdAt
+  //                   Default 'createdAt'; omitted when default.
+  //   ?dir=           asc | desc.    Default 'desc'.
+  //   ?rig=ID         Detail deep-link; pushes (D5).
+  //
+  // Tab state (?tab=) and engine selection (?engine=) are deliberately
+  // NOT URL-tracked (D13 — narrow reading). The spider-ui tests assert
+  // those keys never appear; do not introduce them.
 
-  /**
-   * Read the current querystring as a `URLSearchParams`. Live snapshot —
-   * read at call time, never cached, so reasoning stays local.
-   */
-  function currentUrlParams() {
-    return new URLSearchParams(window.location.search);
+  var SORT_FIELDS = ['status', 'id', 'writId', 'createdAt'];
+  var SORT_DIRS = ['asc', 'desc'];
+  var STATUS_VALUES = ['', 'running', 'completed', 'failed', 'cancelled'];
+
+  /** Append a fail-loud message to the URL-error banner (D6). */
+  function showUrlError(msg) {
+    var el = document.getElementById('url-error-banner');
+    if (!el) return;
+    var line = document.createElement('div');
+    line.textContent = msg;
+    el.appendChild(line);
+    el.style.display = 'block';
+  }
+
+  function clearUrlErrors() {
+    var el = document.getElementById('url-error-banner');
+    if (!el) return;
+    el.innerHTML = '';
+    el.style.display = 'none';
+  }
+
+  /** Persist the current rigs-list filter state to the URL (replace, D5). */
+  function writeRigFiltersToUrl() {
+    var writFilter = (document.getElementById('writ-filter') || {}).value || '';
+    var dateFrom = (document.getElementById('date-from') || {}).value || '';
+    var dateTo = (document.getElementById('date-to') || {}).value || '';
+    window.NexusUrl.update({
+      status: currentStatusFilter === '' ? null : currentStatusFilter,
+      'writ-filter': writFilter === '' ? null : writFilter,
+      from: dateFrom === '' ? null : dateFrom,
+      to: dateTo === '' ? null : dateTo,
+      sort: sortField === 'createdAt' ? null : sortField,
+      dir: sortDir === 'desc' ? null : sortDir,
+    });
   }
 
   /**
-   * Apply the given key/value changes to the current querystring and
-   * `pushState` the result. Null/undefined/empty value deletes the key.
-   * Mirrors Ratchet's `updateUrl` (D9). Tab state and engine selection
-   * are deliberately NOT round-tripped through this helper (D13/D14).
+   * Read the URL filter state into module-level variables and return
+   * the deep-link rig id (if any). Validates each value against its
+   * known set; unknowns surface a fail-loud banner per D6 without
+   * applying the value.
    */
-  function updateUrl(changes) {
-    var params = currentUrlParams();
-    var keys = Object.keys(changes);
-    for (var i = 0; i < keys.length; i++) {
-      var key = keys[i];
-      var value = changes[key];
-      if (value === null || value === undefined || value === '') params.delete(key);
-      else params.set(key, value);
+  function readUrlState() {
+    clearUrlErrors();
+    var params = window.NexusUrl.read();
+
+    var status = params.get('status');
+    if (status !== null) {
+      if (STATUS_VALUES.indexOf(status) !== -1) {
+        currentStatusFilter = status;
+      } else {
+        showUrlError('Unknown rig status "' + status + '". Expected one of: running, completed, failed, cancelled.');
+      }
     }
-    var qs = params.toString();
-    var next = window.location.pathname + (qs ? '?' + qs : '');
-    window.history.pushState({}, '', next);
+
+    var sort = params.get('sort');
+    if (sort !== null) {
+      if (SORT_FIELDS.indexOf(sort) !== -1) sortField = sort;
+      else showUrlError('Unknown sort column "' + sort + '". Expected one of: ' + SORT_FIELDS.join(', ') + '.');
+    }
+    var dir = params.get('dir');
+    if (dir !== null) {
+      if (SORT_DIRS.indexOf(dir) !== -1) sortDir = dir;
+      else showUrlError('Unknown sort direction "' + dir + '". Expected "asc" or "desc".');
+    }
+
+    return {
+      rigId: params.get('rig'),
+      writFilter: params.get('writ-filter'),
+      dateFrom: params.get('from'),
+      dateTo: params.get('to'),
+    };
+  }
+
+  /** Sync the toolbar UI to current filter state. */
+  function syncRigFilterUiFromState() {
+    var statusEl = document.getElementById('status-filter');
+    if (statusEl) statusEl.value = currentStatusFilter;
+    var params = window.NexusUrl.read();
+    var writEl = document.getElementById('writ-filter');
+    if (writEl) writEl.value = params.get('writ-filter') || '';
+    var fromEl = document.getElementById('date-from');
+    if (fromEl) fromEl.value = params.get('from') || '';
+    var toEl = document.getElementById('date-to');
+    if (toEl) toEl.value = params.get('to') || '';
   }
 
   // ── Utility ────────────────────────────────────────────────────────────
@@ -918,12 +1000,12 @@
         if (rig && rig.id) {
           showRigDetail(rig, { skipUrlPush: skipUrlPush });
         } else {
-          if (!skipUrlPush) updateUrl({ rig: id });
+          if (!skipUrlPush) window.NexusUrl.update({ rig: id }, { push: true });
           renderRigDetailNotFound(id);
         }
       })
       .catch(function () {
-        if (!skipUrlPush) updateUrl({ rig: id });
+        if (!skipUrlPush) window.NexusUrl.update({ rig: id }, { push: true });
         renderRigDetailNotFound(id);
       });
   }
@@ -937,8 +1019,8 @@
     // (writ-title anchor, rig-id anchor, future entry points, deep-link
     // init) emits ?rig=ID for free. The popstate-driven path passes
     // skipUrlPush=true to avoid double-pushing the URL the browser
-    // already updated.
-    if (!skipUrlPush) updateUrl({ rig: rig.id });
+    // already updated. Detail open is a navigation event (push: true).
+    if (!skipUrlPush) window.NexusUrl.update({ rig: rig.id }, { push: true });
 
     // Reset the session-log surface BEFORE any render (T7): hides the
     // section, clears the textarea, and nulls transcript state.
@@ -1618,7 +1700,7 @@
     // doing what they expect. We deliberately push instead of popping
     // history — the operator may have arrived directly at ?rig=ID with
     // no prior list-view entry to pop back to.
-    if (!skipUrlPush) updateUrl({ rig: null });
+    if (!skipUrlPush) window.NexusUrl.update({ rig: null }, { push: true });
   }
 
   // ── Config tab ─────────────────────────────────────────────────────────
@@ -1893,6 +1975,8 @@
     var statusFilter = document.getElementById('status-filter');
     if (statusFilter) {
       statusFilter.addEventListener('change', function () {
+        currentStatusFilter = statusFilter.value;
+        writeRigFiltersToUrl();
         fetchRigs(statusFilter.value);
       });
     }
@@ -1901,6 +1985,7 @@
     var writFilter = document.getElementById('writ-filter');
     if (writFilter) {
       writFilter.addEventListener('input', function () {
+        writeRigFiltersToUrl();
         renderRigList();
       });
     }
@@ -1909,10 +1994,16 @@
     var dateFrom = document.getElementById('date-from');
     var dateTo = document.getElementById('date-to');
     if (dateFrom) {
-      dateFrom.addEventListener('change', function () { renderRigList(); });
+      dateFrom.addEventListener('change', function () {
+        writeRigFiltersToUrl();
+        renderRigList();
+      });
     }
     if (dateTo) {
-      dateTo.addEventListener('change', function () { renderRigList(); });
+      dateTo.addEventListener('change', function () {
+        writeRigFiltersToUrl();
+        renderRigList();
+      });
     }
 
     // Refresh button
@@ -1937,6 +2028,7 @@
             sortField = field;
             sortDir = 'asc';
           }
+          writeRigFiltersToUrl();
           renderRigList();
         });
       })(headers[k]);
@@ -1948,29 +2040,33 @@
       backBtn.addEventListener('click', backToList);
     }
 
-    // Browser navigation (Back / Forward) — read ?rig=ID from the new
-    // URL and either open the matching detail (skipUrlPush=true so we
-    // don't push the URL the browser already updated) or return to the
-    // list. Pairs with the central push inside showRigDetail (D11/D12).
+    // Browser navigation (Back / Forward) — restore the FULL filter
+    // state and the ?rig= deep-link. Pairs with the central push
+    // inside showRigDetail (D11/D12). The popstate-driven path uses
+    // skipUrlPush so it never re-pushes the URL the browser already
+    // updated.
     window.addEventListener('popstate', function () {
-      var rigId = currentUrlParams().get('rig');
-      if (rigId) {
-        showRigDetailById(rigId, { skipUrlPush: true });
+      var state = readUrlState();
+      syncRigFilterUiFromState();
+      if (state.rigId) {
+        showRigDetailById(state.rigId, { skipUrlPush: true });
       } else {
         backToList({ skipUrlPush: true });
+        // Refresh the list with the restored filter set.
+        fetchRigs(currentStatusFilter);
       }
     });
 
-    // Initial load. Deep-link: ?rig=ID. The init path waits for the
-    // first rig list to land (so showRigDetailById can find the live
-    // rig in `rigs`) before opening the detail. A missing/deleted id
-    // falls through to renderRigDetailNotFound (D16) — the URL is
-    // preserved.
-    var initialRigId = currentUrlParams().get('rig');
-    fetchRigs('', {
+    // Initial load. Read the URL filter state and ?rig= deep-link
+    // BEFORE fetching the rig list so the server query already carries
+    // the correct ?status= filter. A missing/deleted ?rig= id falls
+    // through to renderRigDetailNotFound (D16) — the URL is preserved.
+    var initialState = readUrlState();
+    syncRigFilterUiFromState();
+    fetchRigs(currentStatusFilter, {
       onLoaded: function () {
-        if (initialRigId) {
-          showRigDetailById(initialRigId, { skipUrlPush: true });
+        if (initialState.rigId) {
+          showRigDetailById(initialState.rigId, { skipUrlPush: true });
         }
       },
     });
