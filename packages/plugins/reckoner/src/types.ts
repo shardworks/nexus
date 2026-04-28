@@ -201,6 +201,134 @@ export interface PetitionerDescriptor {
   description: string;
 }
 
+// ── Reckonings record ────────────────────────────────────────────────
+
+/**
+ * Outcome enum for a Reckonings record. v0 of the CDC handler emits
+ * only `'accepted'` (after a successful `new → active` transition) and
+ * `'declined'` (after a `new → cancelled` transition driven by the
+ * source-unregistered + `enforceRegistration: true` rule). The other
+ * two values are reserved for future commissions.
+ *
+ * See: docs/architecture/reckonings-book.md §"Outcome enum".
+ */
+export type ReckoningOutcome = 'accepted' | 'deferred' | 'declined' | 'no-op';
+
+/**
+ * Decline-reason enum for a Reckonings record with `outcome: 'declined'`.
+ * The v0 handler emits only `'source_unregistered'`; the wider set is
+ * declared here so consumer types can pattern-match without drifting
+ * when later commissions add reason paths.
+ *
+ * See: docs/architecture/reckonings-book.md §"Decline reasons".
+ */
+export type ReckoningDeclineReason =
+  | 'malformed'
+  | 'duplicate'
+  | 'policy_violation'
+  | 'source_banned'
+  | 'source_unregistered'
+  | 'other';
+
+/**
+ * Defer-reason enum for a Reckonings record with `outcome: 'deferred'`.
+ * v0 of the CDC handler does not emit deferred rows; the type is
+ * declared here so consumer code matching against the journal pattern
+ * matches the architecture doc verbatim.
+ *
+ * See: docs/architecture/reckonings-book.md §"Defer reasons".
+ */
+export type ReckoningDeferReason =
+  | 'priority'
+  | 'queue_depth'
+  | 'time_hold'
+  | 'patron_policy'
+  | 'other';
+
+/**
+ * Vision-relation projection on a Reckonings record. Mirrors the
+ * `Priority.visionRelation` enum exactly — projected at the top level
+ * of the record so the per-vision-relation timeline index can name it
+ * directly.
+ */
+export type ReckoningVisionRelation = Priority['visionRelation'];
+
+/**
+ * Severity projection on a Reckonings record. Mirrors the
+ * `Priority.severity` enum exactly — projected at the top level of
+ * the record so the per-severity timeline index can name it directly.
+ */
+export type ReckoningSeverity = Priority['severity'];
+
+/**
+ * One row in the Reckonings book — the Reckoner's evaluation journal.
+ *
+ * Every meaningful consideration produces one record. A record
+ * with `outcome: 'accepted'` corresponds to a `new → active` phase
+ * transition; `'declined'` to a `new → cancelled` transition; the
+ * other two outcomes are reserved for future commissions.
+ *
+ * The flat optional layout (every reason field at the top level)
+ * intentionally trades type-purity for index-friendliness — the
+ * architecture doc notes the iff-outcome invariant is writer-enforced
+ * by the Reckoner and consumer types decode against a discriminated
+ * union. See `docs/architecture/reckonings-book.md` §"Record body".
+ */
+export interface ReckoningDoc {
+  /** Index signature required to satisfy the Stacks `BookEntry` constraint. */
+  [key: string]: unknown;
+  /** Unique id (`rk-<base36_ts>-<hex>`). Sortable by creation time. */
+  id: string;
+  /** The Clerk writ this record is about (the held petition). */
+  writId: string;
+  /**
+   * Forward-compatible extension to the contract shape: the
+   * triggering writ's `updatedAt` value, captured at consideration
+   * time. Used for the `(writId, writUpdatedAt)` dedupe identity
+   * (D6/D23). Not declared in `reckonings-book.md`'s illustrative
+   * schema; the doc's "every meaningful field named and filterable"
+   * ethos justifies storing it as a top-level field rather than
+   * burying it under a context blob.
+   */
+  writUpdatedAt: string;
+  /** Lean projection: `ext.reckoner.source`. */
+  source: string;
+  /** Lean projection: `ext.reckoner.priority.visionRelation`. */
+  visionRelation: ReckoningVisionRelation;
+  /** Lean projection: `ext.reckoner.priority.severity`. */
+  severity: ReckoningSeverity;
+  /** Outcome enum — drives the discriminated-union reason fields. */
+  outcome: ReckoningOutcome;
+  /**
+   * Triggering Clockworks event id, when the consideration was
+   * triggered by a scheduling tick. Absent for considerations
+   * triggered by a CDC event on `clerk/writs`. The v0 handler is
+   * CDC-only, so this field is always absent on v0 rows.
+   */
+  tickEventId?: string;
+  /** ISO timestamp when the Reckoner completed this consideration. */
+  consideredAt: string;
+  // ── Outcome-keyed reason metadata (flat optionals, writer-enforced) ──
+  /** Populated iff `outcome === 'declined'`. */
+  declineReason?: ReckoningDeclineReason;
+  /** Optional remediation hint accompanying a decline. */
+  remediationHint?: string;
+  /** Populated iff `outcome === 'deferred'`. */
+  deferReason?: ReckoningDeferReason;
+  /** Optional defer-until ISO timestamp. */
+  deferUntil?: string;
+  /** Optional defer wake-up event pattern. */
+  deferSignal?: string;
+  /** Running deferral counter for this writ. */
+  deferCount?: number;
+  /** First-seen-as-deferred ISO timestamp. */
+  firstDeferredAt?: string;
+  /** Most-recent deferral ISO timestamp. */
+  lastDeferredAt?: string;
+  /** Optional freeform short note on a deferral. */
+  deferNote?: string;
+}
+
 // ── Reckoner config ───────────────────────────────────────────────────
 
 /**

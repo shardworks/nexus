@@ -32,13 +32,15 @@ Out of scope for this commission (separate follow-up work):
 
 - The vision-artifact storage, the drift-detection runtime, and the
   rig that processes vision-keeper writs.
-- The Reckoner CDC approval handler that moves a petition out of
-  `phase: 'new'`. v0 petitions sit in `new` indefinitely until that
-  handler lands; tests that need an approved writ synthesize the
-  transition by calling `clerk.transition(writId, 'open')` directly.
 - Multi-vision orchestration (multiple keeper apparatuses, per-vision
   factories, vision registries). v0 supports the labels surface for
   multi-instance discrimination — see the per-call `visionId` argument.
+
+The Reckoner now ships a CDC approval handler (the always-approve
+v0 stub): a vision-keeper petition lands in `new`, the handler picks
+it up via the Phase 2 watcher on `clerk/writs`, and the writ
+transitions to the type's active state (`open` for mandate). The
+keeper does not need to drive that transition itself.
 
 The apparatus declares `requires: ['reckoner']` and
 `recommends: ['clockworks']`. Without Clockworks the keeper still
@@ -170,12 +172,12 @@ outstanding petition returns `null` rather than throwing.
 
 ## Wiring the decline-feedback relay
 
-When the Reckoner CDC handler (separate commission) declines a
-vision-keeper petition, the writ transitions into `cancelled` and a
-`book.clerk.writs.updated` event fires. The Vision-keeper contributes
-a relay named `vision-keeper-on-decline` that logs a single line per
-decline; operators wire it through the Clockworks standing-order
-surface.
+When the Reckoner CDC handler declines a vision-keeper petition (or
+the petitioner-initiated `withdraw()` helper cancels one), the writ
+transitions into `cancelled` and a `book.clerk.writs.updated` event
+fires. The Vision-keeper contributes a relay named
+`vision-keeper-on-decline` that logs a single line per decline;
+operators wire it through the Clockworks standing-order surface.
 
 Add the following entry to `clockworks.standingOrders` in
 `guild.json`:
@@ -209,11 +211,6 @@ configuration block.
 
 ## Caveats
 
-- **Petitions sit in `new` indefinitely.** v0 ships the petitioner
-  side; the Reckoner CDC approval handler that moves a petition into
-  `open` is a separate commission. Tests that need an approved writ
-  must synthesize the transition by calling
-  `clerk.transition(writId, 'open')` directly.
 - **No persistence of the outstanding-petition map.** The
   `Map<visionId, writId>` lives in process memory. A daemon restart
   loses the map; downstream Reckoner consideration of any orphaned

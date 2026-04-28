@@ -17,6 +17,12 @@ export type {
   PetitionerDescriptor,
   ReckonerConfig,
   ReckonerApi,
+  ReckoningDoc,
+  ReckoningOutcome,
+  ReckoningDeclineReason,
+  ReckoningDeferReason,
+  ReckoningVisionRelation,
+  ReckoningSeverity,
 } from './types.ts';
 
 export {

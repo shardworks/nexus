@@ -26,6 +26,7 @@
     "@shardworks/reckoner-apparatus": "workspace:*"
   },
   "devDependencies": {
+    "@shardworks/clockworks-stacks-signals-apparatus": "workspace:*",
     "@shardworks/nexus-core": "workspace:*",
     "@shardworks/stacks-apparatus": "workspace:*",
     "@types/node": "25.5.0"

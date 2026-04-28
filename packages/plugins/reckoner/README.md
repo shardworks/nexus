@@ -1,16 +1,12 @@
 # `@shardworks/reckoner-apparatus`
 
-The Reckoner stands up the **petitioner-scheduler contract surface**: the
+The Reckoner stands up the **petition-scheduler apparatus**: the
 kit-static registry of petitioner sources, the canonical
 `petition()` / `withdraw()` helpers (Workflow 2 in the contract document),
-and the inspection helpers downstream consumers use to read the registry
-and live config.
-
-This v0 commission ships the **contract surface only**. There is no CDC
-handler, no Lattice pulse emission, and no Reckonings book. Petitions
-posted through `petition()` land in `new` phase carrying
-`writ.ext['reckoner']` — the follow-on CDC handler commission picks them
-up and drives consideration.
+the inspection helpers downstream consumers use to read the registry
+and live config, and a Phase 2 CDC handler on `clerk/writs` that drives
+held petitions out of `new` and writes one row per substantive
+consideration to its `reckoner/reckonings` evaluation journal.
 
 What ships here:
 
@@ -33,8 +29,32 @@ What ships here:
 - A `reckoner` block in `guild.json` with `enforceRegistration` and
   `disabledSources`; both fields are optional and re-read on every
   consumer call so operators can hot-edit without restarting the guild.
+- A **Phase 2 CDC handler** that watches `clerk/writs` for held
+  petitions (writs in `new` phase carrying `ext.reckoner`), runs the
+  rule sequence (skip / disabled-source / source-check / scheduler-
+  evaluate), drives `clerk.transition(...)` to the type's active state
+  on accept (or to `cancelled` with a structured resolution on
+  decline), and idempotently appends one row to the `reckoner/reckonings`
+  book per consideration. v0's scheduling stub is **always-approve**
+  for held petitions that pass the source / disabled / registration
+  gates; the only decline path is `enforceRegistration: true` against
+  an unregistered source, which produces an `outcome: 'declined'`
+  Reckonings row with `declineReason: 'source_unregistered'`.
+- A **startup catch-up scan** that re-routes pre-existing held
+  petitions through the same handler at apparatus start so a process
+  restart does not strand work.
+- The **`reckoner/reckonings` book** — the Reckoner's evaluation
+  journal. One row per substantive consideration, immutable after
+  write. The auto-wired
+  `book.reckoner.reckonings.{created,updated,deleted}` Clockworks
+  events fire normally (no carve-out); `created` is the channel
+  petitioners subscribe to. See
+  `docs/architecture/reckonings-book.md` for the schema, index set,
+  and CDC contract.
 
-The Reckoner requires `clerk` and consumes `petitioners`.
+The Reckoner requires `clerk` and consumes `petitioners`. Stacks is
+reached transitively through Clerk; no Clockworks dependency is
+declared.
 
 See the contract document at
 `docs/architecture/petitioner-registration.md` for the full data shape

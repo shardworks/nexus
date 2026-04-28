@@ -8,8 +8,9 @@
  * an opportunity to push the product further along the vision.
  *
  * v0 ships the petitioner side only — vision-artifact storage, drift
- * detection, the rig that processes vision-keeper writs, and the
- * Reckoner CDC approval handler are all owned by separate commissions.
+ * detection, and the rig that processes vision-keeper writs remain
+ * owned by separate commissions. The Reckoner CDC approval handler
+ * now lands in the Reckoner package itself.
  *
  * This file is the single source of public-symbol truth for downstream
  * consumers: every type that crosses the package boundary lives here,

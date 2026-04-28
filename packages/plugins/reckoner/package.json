@@ -21,11 +21,11 @@
     "@shardworks/nexus-core": "0.x"
   },
   "dependencies": {
-    "@shardworks/clerk-apparatus": "workspace:*"
+    "@shardworks/clerk-apparatus": "workspace:*",
+    "@shardworks/stacks-apparatus": "workspace:*"
   },
   "devDependencies": {
     "@shardworks/nexus-core": "workspace:*",
-    "@shardworks/stacks-apparatus": "workspace:*",
     "@types/node": "25.5.0"
   },
   "files": [

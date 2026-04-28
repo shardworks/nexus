@@ -191,6 +191,27 @@ async function buildFixture(): Promise<Fixture> {
       ],
     },
   );
+  // Reckoner's reckonings book — populated by the Reckoner CDC
+  // handler on every consideration. Pre-create here so the handler's
+  // first write succeeds.
+  memBackend.ensureBook(
+    { ownerId: 'reckoner', book: 'reckonings' },
+    {
+      indexes: [
+        'writId',
+        'consideredAt',
+        'outcome',
+        'source',
+        'visionRelation',
+        'severity',
+        'declineReason',
+        ['outcome', 'consideredAt'],
+        ['visionRelation', 'consideredAt'],
+        ['severity', 'consideredAt'],
+        ['writId', 'consideredAt'],
+      ],
+    },
+  );
 
   // Track phase:started handlers so the test can drive seal manually.
   const phaseStartedHandlers: Array<(...args: unknown[]) => void | Promise<void>> = [];
@@ -535,8 +556,13 @@ describe('Vision-keeper apparatus', () => {
       assert.ok(withdrawnA, 'vision-a outstanding petition must be withdrawn');
       assert.equal(withdrawnA!.id, a.id);
 
+      // The Reckoner CDC handler auto-approves registered-source
+      // petitions; vision-b's writ is now in `open` (the type's
+      // active phase), not `new`. The assertion's intent is "vision-
+      // b's writ is not transitioned by superseded('vision-a')" —
+      // the active phase satisfies that intent.
       const bReread = await fix.clerk.show(b.id);
-      assert.equal(bReread.phase, 'new', 'vision-b petition must not be touched');
+      assert.equal(bReread.phase, 'open', 'vision-b petition must not be touched');
     });
   });
 

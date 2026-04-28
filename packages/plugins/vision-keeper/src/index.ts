@@ -10,8 +10,10 @@
  * standing-order surface.
  *
  * v0 ships the petitioner side only. The vision-artifact storage,
- * drift-detection rig, the rig that processes vision-keeper writs, and
- * the Reckoner CDC approval handler are owned by separate commissions.
+ * the drift-detection rig, and the rig that processes vision-keeper
+ * writs remain owned by separate commissions; the Reckoner CDC
+ * approval handler now lands in the Reckoner package and drives
+ * keeper petitions out of `new` automatically.
  *
  * See: packages/plugins/vision-keeper/README.md and
  * docs/architecture/petitioner-registration.md §§1, 3, 4, 9, 11.

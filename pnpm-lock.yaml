@@ -406,13 +406,13 @@ importers:
       '@shardworks/clerk-apparatus':
         specifier: workspace:*
         version: link:../clerk
+      '@shardworks/stacks-apparatus':
+        specifier: workspace:*
+        version: link:../stacks
     devDependencies:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../../framework/core
-      '@shardworks/stacks-apparatus':
-        specifier: workspace:*
-        version: link:../stacks
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
@@ -535,6 +535,9 @@ importers:
         specifier: workspace:*
         version: link:../reckoner
     devDependencies:
+      '@shardworks/clockworks-stacks-signals-apparatus':
+        specifier: workspace:*
+        version: link:../clockworks-stacks-signals
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../../framework/core

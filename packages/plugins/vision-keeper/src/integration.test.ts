@@ -6,9 +6,12 @@
  * is hand-rolled. Asserts every behavioral case from the brief against
  * a live stack:
  *
- *   1. A drift snapshot lands a writ in `phase: 'new'` carrying the
- *      contract's `ext.reckoner` slot (registered source, drift
- *      dimensions, typed payload, vision-id label).
+ *   1. A drift snapshot lands a held writ that the Reckoner CDC
+ *      handler observes and accepts (drift petitions carry a
+ *      registered source under the always-approve stub). The writ
+ *      ends up in the active phase carrying the contract's
+ *      `ext.reckoner` slot (registered source, drift dimensions,
+ *      typed payload, vision-id label).
  *   2. A second snapshot for the same vision auto-supersedes the
  *      first — the prior writ ends in `cancelled`.
  *   3. `superseded(visionId)` cancels the outstanding writ for a
@@ -17,10 +20,11 @@
  *      label values at the writs-book level.
  *   5. The decline-feedback relay is invoked end-to-end via the
  *      Clockworks dispatch sweep when a `vision-keeper.snapshot` writ
- *      transitions into `cancelled` (synthesised here by calling
- *      `clerk.transition(writId, 'cancelled')` directly — the real
- *      Reckoner CDC approval handler that would do this is owned by
- *      a separate commission).
+ *      transitions into `cancelled`. The cancellation is driven
+ *      naturally through `reckoner.withdraw()` — the petitioner-
+ *      initiated path that produces a real `clerk.transition` from
+ *      Reckoner code, not a hand-synthesised transition from the
+ *      test harness.
  *   6. The petitioner kit declaration round-trips through the
  *      Reckoner registry as in production.
  *
@@ -58,6 +62,8 @@ import type {
   RelayDefinition,
   StandingOrder,
 } from '@shardworks/clockworks-apparatus';
+
+import { createClockworksStacksSignals } from '@shardworks/clockworks-stacks-signals-apparatus';
 
 import {
   DECLINE_RELAY_NAME,
@@ -118,6 +124,9 @@ async function buildGuild(opts: {
 
   const clockworksPlugin = createClockworks();
   if (!('apparatus' in clockworksPlugin)) throw new Error('clockworks');
+
+  const bridgePlugin = createClockworksStacksSignals();
+  if (!('apparatus' in bridgePlugin)) throw new Error('clockworks-stacks-signals');
 
   const keeperPlugin = createVisionKeeper();
   if (!('apparatus' in keeperPlugin)) throw new Error('vision-keeper');
@@ -203,6 +212,27 @@ async function buildGuild(opts: {
   backend.ensureBook(
     { ownerId: 'clockworks', book: 'event_dispatches' },
     { indexes: ['eventId', 'status', ['eventId', 'status']] },
+  );
+  // Reckoner's reckonings book — populated by the Reckoner CDC
+  // handler on every consideration. Pre-create here so the handler's
+  // first write succeeds.
+  backend.ensureBook(
+    { ownerId: 'reckoner', book: 'reckonings' },
+    {
+      indexes: [
+        'writId',
+        'consideredAt',
+        'outcome',
+        'source',
+        'visionRelation',
+        'severity',
+        'declineReason',
+        ['outcome', 'consideredAt'],
+        ['visionRelation', 'consideredAt'],
+        ['severity', 'consideredAt'],
+        ['writId', 'consideredAt'],
+      ],
+    },
   );
 
   // ── Stacks ─────────────────────────────────────────────────────────
@@ -291,6 +321,45 @@ async function buildGuild(opts: {
   const clockworks = clockworksPlugin.apparatus.provides as ClockworksApi;
   apparatusMap.set('clockworks', clockworks);
 
+  // ── Clockworks↔Stacks bridge ──────────────────────────────────────
+  // The bridge reads `ctx.kits('books')` and registers a Phase 2 CDC
+  // watcher on each declared book, re-emitting row mutations as
+  // `book.<owner>.<book>.<verb>` Clockworks events. Without it, the
+  // standing order on `book.clerk.writs.updated` never fires. The
+  // bridge's `requires: ['stacks', 'clockworks']` is satisfied at this
+  // point. We surface the same books kits Clockworks consumed (clerk,
+  // clockworks) plus the Reckoner's `reckonings` book so the auto-wired
+  // `book.reckoner.reckonings.created` channel is observable too.
+  const reckonerBooks = (reckonerPlugin.apparatus.supportKit as
+    | { books?: unknown }
+    | undefined)?.books;
+  const bridgeKitEntries: KitEntry[] = [];
+  if (clockworksBooks !== undefined) {
+    bridgeKitEntries.push({
+      pluginId: 'clockworks',
+      packageName: '@shardworks/clockworks-apparatus',
+      type: 'books',
+      value: clockworksBooks,
+    });
+  }
+  if (clerkBooks !== undefined) {
+    bridgeKitEntries.push({
+      pluginId: 'clerk',
+      packageName: '@shardworks/clerk-apparatus',
+      type: 'books',
+      value: clerkBooks,
+    });
+  }
+  if (reckonerBooks !== undefined) {
+    bridgeKitEntries.push({
+      pluginId: 'reckoner',
+      packageName: '@shardworks/reckoner-apparatus',
+      type: 'books',
+      value: reckonerBooks,
+    });
+  }
+  await bridgePlugin.apparatus.start(buildCtx(bridgeKitEntries));
+
   // ── Vision-keeper ─────────────────────────────────────────────────
   await keeperPlugin.apparatus.start(buildCtx([]));
   const keeper = keeperPlugin.apparatus.provides as VisionKeeperApi;
@@ -344,9 +413,13 @@ describe('Vision-keeper — end-to-end', () => {
         metricValues: { metricA: 1 },
       });
 
-      // Re-read through Clerk to confirm the row is persisted.
+      // Re-read through Clerk to confirm the row is persisted. The
+      // Reckoner CDC handler auto-approves on its always-approve
+      // stub for registered sources, so the writ ends up in the
+      // type's active phase (`open` for mandate). The contract ext
+      // slot survives the transition.
       const reread = await fix.clerk.show(writ.id);
-      assert.equal(reread.phase, 'new');
+      assert.equal(reread.phase, 'open');
       const ext = reread.ext?.reckoner as ReckonerExt | undefined;
       assert.ok(ext);
       assert.equal(ext!.source, VISION_KEEPER_SOURCE);
@@ -390,8 +463,10 @@ describe('Vision-keeper — end-to-end', () => {
         /superseded by newer snapshot/i,
       );
 
+      // The new petition gets auto-approved by the Reckoner CDC
+      // handler — it ends up in the type's active phase.
       const secondReread = await fix.clerk.show(second.id);
-      assert.equal(secondReread.phase, 'new');
+      assert.equal(secondReread.phase, 'open');
     } finally {
       await teardown(fix);
     }
@@ -429,9 +504,11 @@ describe('Vision-keeper — end-to-end', () => {
         'context shifted; nudge no longer relevant',
       );
 
-      // Vision-a's petition stays in `new`.
+      // Vision-a's petition is untouched by the explicit supersede
+      // — it remains in the active phase the Reckoner CDC handler
+      // approved it into.
       const aReread = await fix.clerk.show(a.id);
-      assert.equal(aReread.phase, 'new');
+      assert.equal(aReread.phase, 'open');
     } finally {
       await teardown(fix);
     }
@@ -485,12 +562,16 @@ describe('Vision-keeper — end-to-end', () => {
         metricValues: null,
       });
 
-      // Synthesise the decline transition. The Reckoner CDC approval
-      // handler is out of scope; we drive the writ to `cancelled`
-      // directly via Clerk so the CDC observer fires its update event.
-      await fix.clerk.transition(writ.id, 'cancelled', {
-        resolution: 'declined by reckoner — vision misalignment',
-      });
+      // Drive the cancellation through the Reckoner's `withdraw`
+      // helper so the CDC update event arrives via real Reckoner
+      // code rather than a hand-synthesised `clerk.transition` from
+      // the test harness. The relay's filter does not differentiate
+      // who initiated the cancel — only that a vision-keeper.snapshot
+      // writ transitions into `cancelled` with a captured resolution.
+      await fix.reckoner.withdraw(
+        writ.id,
+        'declined by reckoner — vision misalignment',
+      );
 
       // Drain the Clockworks event sweep — the relay handler is invoked
       // synchronously here.
