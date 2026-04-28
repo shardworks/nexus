@@ -5,16 +5,20 @@
  * book and translates terminal session outcomes into pause / resume
  * transitions.
  *
- * Design references:
- *  - D7  — "successful dispatch after resume" = any terminal other than
- *          rate-limited resets `backoffLevel`.
- *  - D8  — hits while already paused coalesce; only a rate-limit hit
- *          arriving *after* a resume attempt dispatched bumps the level.
- *  - D11 — `getStatus()` returns the doc verbatim; no composed
- *          dispatchability predicate lives here.
- *  - D12 — `animate()` rejects at the top with a synthesized
- *          rate-limited SessionResult when paused.
- *  - D24 — daemon restart leaves state untouched; the first dispatch
+ * Design references — short rule names, with the canonical Dn index in
+ * the package README's "Design decisions index" appendix:
+ *  - D7  — "non-rate-limit-terminal reset gate": any terminal other
+ *          than rate-limited resets `backoffLevel`, but only when the
+ *          session was dispatched after the current pause opened.
+ *  - D8  — "coalesce-vs-increment rule": hits while already paused
+ *          coalesce; only a rate-limit hit arriving *after* a resume
+ *          attempt dispatched bumps the level.
+ *  - D11 — "verbatim getStatus": `getStatus()` returns the doc
+ *          verbatim; no composed dispatchability predicate lives here.
+ *  - D12 — "pre-check rejection": `animate()` rejects at the top with
+ *          a synthesized rate-limited SessionResult when paused.
+ *  - D24 — "canonical dispatchability predicate / first-dispatch-flips-state":
+ *          daemon restart leaves state untouched; the first dispatch
  *          that happens while `pausedUntil <= now` naturally flips the
  *          state to `running`.
  *

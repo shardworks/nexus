@@ -521,3 +521,56 @@ duplicate locals previously scattered across the package are gone, and
 `rate-limit-backoff.ts` derives its `NON_RATE_LIMIT_TERMINAL_STATUSES`
 from this consolidated set rather than maintaining a hand-listed
 inverse.
+
+#### Reducer audit: tools that stay standalone
+
+The reducer covers every SessionDoc *writer*. Read-only and
+display-only surfaces are deliberately not folded through it because
+they never produce a transition:
+
+- `session-show` — pure read by id; the only invariant it adds above
+  `sessions.get(id)` is translating row-not-found into a thrown error.
+  Folding this through the reducer would require inventing a no-op
+  variant whose behaviour is `return existing`, which is what `get`
+  already does.
+- `session-list` — pure read with filters; same rationale.
+- `animator-status` — reads the dispatch-status doc (not a SessionDoc)
+  and decorates the response with the request-time `dispatchable`
+  predicate; no SessionDoc transition is ever produced.
+
+## Design decisions index
+
+The animator source carries a long tail of `(Dn)` traceability tags
+that anchor source comments and test names to specific design
+decisions made during the apparatus's lifecycle planning. This index
+is the canonical mapping; bare `(Dn)` references in code are
+intentional shorthand for the rules below. Source-level comments
+generally inline a one-line rule name in addition to the tag (e.g.
+`// Co-location rule (D3): …`); this table is the authoritative
+source of truth when the names disagree.
+
+| Tag | Rule name | One-line summary |
+|---|---|---|
+| **D2** | Event-spec discipline | Event entries must declare a non-empty `description`; `schema` is omitted while no consumer needs payload validation. |
+| **D3** | Emit co-location rule | The lifecycle emitter and its emit-gate live in the same module (`session-emission.ts`) so the unprivileged-emit rejection is one read. |
+| **D5** | Heartbeat read+reduce+put | `session-heartbeat` writes through the reducer (heartbeat-touch variant) rather than `sessions.patch`, so every SessionDoc writer follows one merge contract. |
+| **D6** | Skip-when-unset rule | `getSessionCosts()` and similar bulk reads omit ids whose row is missing from the `sessions` book rather than synthesising a placeholder. |
+| **D7** | Non-rate-limit-terminal reset gate | A non-rate-limit terminal resets `backoffLevel` only when the session was dispatched *after* the current pause opened (in-flight stragglers don't count). |
+| **D8** | Coalesce-vs-increment rule | Rate-limit hits arriving while already paused coalesce; only a hit that arrives after a resume probe has dispatched bumps the back-off level. |
+| **D9** | Internal-refresh-detection / already-running refresh path | The reducer detects `running → running` refreshes internally and preserves `metadata`, `startedAt`, and `lastActivityAt` rather than asking call sites to branch. |
+| **D10** | Patron-override fail-loud config | Animator boot validates the rate-limit back-off block fail-loud — partial overrides are allowed, but malformed values refuse to start rather than silently using defaults. |
+| **D11** | Verbatim getStatus | `AnimatorApi.getStatus()` returns the persisted `AnimatorStatusDoc` verbatim — no composed `dispatchable` field on the API. The tool/HTTP boundary decorates the response at request time. |
+| **D12** | Pre-check rejection (synthesized rate-limit) | `animate()` rejects at the top with a synthesized `SessionResult { status: 'rate-limited', … }` when the back-off machine is paused; no SessionDoc is written for the rejected call. |
+| **D13** | Read-existing-first uniformity / best-effort emit | All terminal-write call sites read existing → reduce → put (rather than patching), and emit lifecycle events best-effort *after* the put succeeds. The animate() pre-check (Step 0) sits at the top of `animate()` before id generation or any SessionDoc write. |
+| **D16** | Transcript-write-on-duplicate-terminal early return | `handleSessionRecord()`'s "session already terminal" early return stays at the call site (not folded into the reducer) because the transcript-write side-effect needs the call site to know it's on a no-op path; the reducer's terminal-immutability rule is belt-and-suspenders for direct callers. |
+| **D17** | Legacy-row backfill rule | Orphan-recovery's legacy `lastActivityAt` backfill writes via the reducer's `heartbeat-touch` variant rather than `sessions.patch`, so the legacy row joins the modern merge contract. |
+| **D22** | Eager boot reconciliation of pause-window expiry | `start()` awaits a single `BackoffMachine.read()` up front so the first post-start `animate()` peek reflects the persisted state — a paused doc whose window has elapsed flips to running before the first dispatch. |
+| **D24** | Canonical dispatchability predicate / first-dispatch-flips-state | `isDispatchable(doc)` is the single source of truth for "may dispatch now" — combines `state === 'running'` with the `pausedUntil <= now` window check. Daemon restarts leave persisted state untouched; the first dispatch with `pausedUntil <= now` naturally flips the state to `running` via the back-off machine. |
+
+Source-level pointers: `rate-limit-backoff.ts`'s file header lists the
+back-off rules (D7, D8, D11, D12, D24) it owns; `session-emission.ts`
+documents D3 inline; `session-record-handler.ts` explains D16 inline;
+`startup.ts` explains D17 inline. The reducer module
+(`session-reducer.ts`) is the load-bearing site for D5, D9, D13, and
+the read-existing-first uniformity rule. Tests names follow the
+convention `<rule name>: <behaviour> (Dn)`.

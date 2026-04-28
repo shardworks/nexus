@@ -163,7 +163,16 @@ For each concern: file:line anchors, 1–3 line code excerpts, and 1–2
 test pointers that codify current behavior.
 
 ### §1 hotspot — TERMINAL_STATUSES set duplication (concern 1, *partly
-accidental*)
+accidental*) — **RESOLVED**
+
+> **Resolved** in commit `912ef17` ("animator: route every SessionDoc
+> writer through the reducer"). The four duplicate locals listed below
+> were collapsed into a single export from
+> `packages/plugins/animator/src/session-reducer.ts` (line 71).
+> `rate-limit-backoff.ts:135` now derives its
+> `NON_RATE_LIMIT_TERMINAL_STATUSES` from the consolidated set rather
+> than maintaining a hand-listed inverse. The text below is preserved as
+> the historical diagnosis that motivated the consolidation.
 
 Four near-identical local definitions of the terminal-status set. The
 type union is exported from `types.ts:518`; the set is not.
@@ -405,6 +414,15 @@ computation → write initial guild_alive_at → recoverOrphans, then the
 two periodic timers (heartbeat 30s, reconciler 30s). Each ordering
 edge has a real reason; collectively they are five rules a reader must
 load before they can edit `start()`.
+
+> **Update — `cleanupLegacyStatusBook` removed** in commit `f0e690c`
+> ("animator: drop legacy status-book migration shim"). The one-shot
+> migration helper for the pre-`6cb832a` `animator/status` doc layout
+> has been deleted along with its call site, dropping the boot
+> sequence to six pre-timer stages. Manual cleanup of the orphan
+> `books_animator_status` SQLite table on legacy installs is a
+> one-liner via the sqlite3 CLI; the install footprint is small enough
+> that this is the right trade.
 
 Tests covering current behavior:
 `packages/plugins/animator/src/animator.test.ts` →

@@ -4,6 +4,19 @@
  * Reads the complete session record from The Animator's `sessions` book
  * in The Stacks, including tokenUsage, metadata, and all indexed fields.
  *
+ * Why this tool stays standalone (post-reducer audit): `session-show`
+ * is a pure read — it never writes a SessionDoc, never triggers a
+ * lifecycle transition, and never touches `lastActivityAt` or the
+ * `cancelHandle`. The `reduceSessionTransition` reducer encodes write
+ * invariants (preserve startedAt/provider, refresh lastActivityAt only
+ * from per-variant payload, no-op on terminal regression); none of
+ * those apply to a read-by-id surface. Folding this tool through the
+ * reducer would mean inventing a no-op variant whose only behaviour is
+ * `return existing`, which is what the underlying `book.get(id)` call
+ * already does. The tool's only responsibility above `book.get` is
+ * translating "row not found" into a thrown Error so the tool runtime
+ * surfaces a 404-shaped failure to the caller.
+ *
  * See: docs/specification.md (animator § session-show tool)
  */
 
