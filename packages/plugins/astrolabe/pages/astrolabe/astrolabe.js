@@ -16,34 +16,78 @@
   var writTitleLookup = {};
 
   // ── URL handling ───────────────────────────────────────────────────────
+  //
+  // All deep-linkable view state for this page rides on
+  // `window.NexusUrl` — the shared helper auto-injected by oculus's
+  // chrome pass. The earlier inline `currentUrlParams` / `updateUrl`
+  // copies are gone (commission moix23w5).
+  //
+  // URL keys:
+  //   ?status=        reading | analyzing | reviewing | writing |
+  //                   completed | failed
+  //                   Matches the server-side ?status= sent to
+  //                   /api/plan/list (D8). Default '' (All).
+  //   ?plan=ID        Detail deep-link; pushes (D5).
+  //
+  // Detail-tab state (inventory / scope / decisions / observations /
+  // spec) is deliberately NOT URL-tracked (D13 narrow reading). The
+  // astrolabe.test.js suite asserts no `?tab=` key is ever written;
+  // do not introduce one.
 
-  /**
-   * Read the current querystring as a `URLSearchParams`. Live snapshot
-   * — read at call time, never cached.
-   */
-  function currentUrlParams() {
-    return new URLSearchParams(window.location.search);
+  var STATUS_VALUES = ['', 'reading', 'analyzing', 'reviewing', 'writing', 'completed', 'failed'];
+
+  function showUrlError(msg) {
+    var el = document.getElementById('url-error-banner');
+    if (!el) return;
+    var line = document.createElement('div');
+    line.textContent = msg;
+    el.appendChild(line);
+    el.style.display = 'block';
+  }
+
+  function clearUrlErrors() {
+    var el = document.getElementById('url-error-banner');
+    if (!el) return;
+    el.innerHTML = '';
+    el.style.display = 'none';
+  }
+
+  /** Persist the list-page status filter to the URL (replace, D5). */
+  function writeStatusFilterToUrl() {
+    window.NexusUrl.update({
+      status: currentStatusFilter === '' ? null : currentStatusFilter,
+    });
   }
 
   /**
-   * Apply the given key/value changes to the current querystring and
-   * `pushState` the result. Null/undefined/empty value deletes the key.
-   * Mirrors Ratchet's `updateUrl` (D9). The plan param shape (?plan=ID)
-   * is preserved verbatim — operators have URLs in the wild already
-   * (D10).
+   * Read URL state into module-level variables. Validates ?status=
+   * against STATUS_VALUES; unknowns surface a fail-loud banner per D6
+   * without applying. Returns the deep-link plan id, if any.
    */
-  function updateUrl(changes) {
-    var params = currentUrlParams();
-    var keys = Object.keys(changes);
-    for (var i = 0; i < keys.length; i++) {
-      var key = keys[i];
-      var value = changes[key];
-      if (value === null || value === undefined || value === '') params.delete(key);
-      else params.set(key, value);
+  function readUrlState() {
+    clearUrlErrors();
+    var params = window.NexusUrl.read();
+
+    var status = params.get('status');
+    if (status !== null) {
+      if (STATUS_VALUES.indexOf(status) !== -1) {
+        currentStatusFilter = status;
+      } else {
+        showUrlError('Unknown plan status "' + status + '". Expected one of: reading, analyzing, reviewing, writing, completed, failed.');
+      }
     }
-    var qs = params.toString();
-    var next = window.location.pathname + (qs ? '?' + qs : '');
-    window.history.pushState({}, '', next);
+
+    return params.get('plan');
+  }
+
+  /** Sync the status-filter button row to the current filter state. */
+  function syncStatusFilterUiFromState() {
+    var btns = document.querySelectorAll('#status-filters .filter-btn');
+    for (var i = 0; i < btns.length; i++) {
+      var match = btns[i].getAttribute('data-status') === currentStatusFilter;
+      if (match) btns[i].classList.add('active-filter');
+      else btns[i].classList.remove('active-filter');
+    }
   }
 
   // ── Utility ────────────────────────────────────────────────────────────
@@ -205,6 +249,7 @@
           filterBtns[j].classList.remove('active-filter');
         }
         btn.classList.add('active-filter');
+        writeStatusFilterToUrl();
         fetchPlans(true);
       });
     })(filterBtns[fi]);
@@ -363,7 +408,7 @@
     // ?plan=ID for free. The popstate-driven path passes
     // skipUrlPush=true to avoid double-pushing the URL the browser
     // already updated.
-    if (!skipUrlPush) updateUrl({ plan: plan.id });
+    if (!skipUrlPush) window.NexusUrl.update({ plan: plan.id }, { push: true });
 
     detailTitle.textContent = 'Plan: ' + plan.id;
 
@@ -674,7 +719,7 @@
     // D11: push a clean URL — the operator's Forward button still does
     // what they expect, and we never pop history because they may have
     // arrived directly at ?plan=ID with no prior list-view entry.
-    if (!skipUrlPush) updateUrl({ plan: null });
+    if (!skipUrlPush) window.NexusUrl.update({ plan: null }, { push: true });
   }
 
   // ── Deep Link ──────────────────────────────────────────────────────────
@@ -693,7 +738,10 @@
    */
   function handleDeepLink(opts) {
     var fetchOnEmpty = !(opts && opts.fetchOnEmpty === false);
-    var planId = currentUrlParams().get('plan');
+    // Restore the status filter alongside the deep-link id so the
+    // filtered view round-trips through refresh and Back/Forward.
+    var planId = readUrlState();
+    syncStatusFilterUiFromState();
 
     if (planId) {
       fetch('/api/plan/show?planId=' + encodeURIComponent(planId))
@@ -713,9 +761,10 @@
     } else if (fetchOnEmpty) {
       fetchPlans(true);
     } else {
-      // popstate to a no-?plan URL: just return to the list view
-      // without re-fetching.
+      // popstate to a no-?plan URL: refresh the list with the
+      // restored filter and switch back to list view.
       backToList({ skipUrlPush: true });
+      fetchPlans(true);
     }
   }
 

@@ -712,41 +712,50 @@ describe('astrolabe.js cost-panel rig lookup uses rig-for-writ', () => {
 // ── Deep-link URL state (?plan=ID) ──────────────────────────────────────
 
 describe('astrolabe.js — deep-link URL state', () => {
-  it('exposes currentUrlParams + updateUrl helpers (D9 — Ratchet pattern)', () => {
-    assert.match(
-      astrolabeJs,
-      /function currentUrlParams\(\)\s*\{[\s\S]*?new URLSearchParams\(window\.location\.search\)/,
-      'currentUrlParams reads window.location.search live',
+  it('routes URL reads/writes through window.NexusUrl (no inline helpers)', () => {
+    // Inline currentUrlParams / updateUrl are gone (commission moix23w5).
+    assert.ok(
+      !/function\s+currentUrlParams\s*\(/.test(astrolabeJs),
+      'inline currentUrlParams must not be redeclared',
+    );
+    assert.ok(
+      !/function\s+updateUrl\s*\(/.test(astrolabeJs),
+      'inline updateUrl must not be redeclared',
     );
     assert.match(
       astrolabeJs,
-      /function updateUrl\(changes\)\s*\{[\s\S]*?window\.history\.pushState/,
-      'updateUrl pushes via history.pushState',
+      /window\.NexusUrl\.read\(\)/,
+      'astrolabe.js should read URL state via window.NexusUrl.read',
+    );
+    assert.match(
+      astrolabeJs,
+      /window\.NexusUrl\.update\(/,
+      'astrolabe.js should write URL state via window.NexusUrl.update',
     );
   });
 
-  it('showPlanDetail pushes ?plan=ID via the central updateUrl call (D12)', () => {
+  it('showPlanDetail pushes ?plan=ID via NexusUrl with push: true (D12)', () => {
     const block = astrolabeJs.match(
       /function showPlanDetail\(plan(?:, opts)?\)[\s\S]*?(?=\n {2}function )/,
     );
     assert.ok(block, 'should find showPlanDetail body');
     assert.match(
       block[0],
-      /updateUrl\(\{\s*plan:\s*plan\.id\s*\}\)/,
+      /window\.NexusUrl\.update\(\{\s*plan:\s*plan\.id\s*\}\s*,\s*\{\s*push:\s*true\s*\}\)/,
       'showPlanDetail should push ?plan=<plan.id> when not skipUrlPush',
     );
     assert.match(block[0], /skipUrlPush/, 'showPlanDetail accepts a skipUrlPush opt');
   });
 
-  it('backToList clears ?plan via updateUrl({plan: null}) — never pops history (D11)', () => {
+  it('backToList clears ?plan via NexusUrl with push: true — never pops history (D11)', () => {
     const block = astrolabeJs.match(
       /function backToList\((?:opts)?\)[\s\S]*?(?=\n {2}\/\/)/,
     );
     assert.ok(block, 'should find backToList body');
     assert.match(
       block[0],
-      /updateUrl\(\{\s*plan:\s*null\s*\}\)/,
-      'backToList should push a clean URL via updateUrl({plan: null})',
+      /window\.NexusUrl\.update\(\{\s*plan:\s*null\s*\}\s*,\s*\{\s*push:\s*true\s*\}\)/,
+      'backToList should push a clean URL via NexusUrl.update with plan: null',
     );
     assert.ok(
       !/window\.history\.back\s*\(/.test(block[0]),
@@ -796,13 +805,61 @@ describe('astrolabe.js — deep-link URL state', () => {
     );
     assert.ok(block, 'should find renderPlanDetailNotFound body');
     assert.ok(
-      !/updateUrl/.test(block[0]),
+      !/NexusUrl\.update/.test(block[0]),
       'renderPlanDetailNotFound must not rewrite the URL',
     );
     assert.match(
       block[0],
       /No plan with id/,
       'renderPlanDetailNotFound surfaces a "not found" message',
+    );
+  });
+
+  it('list-page status filter writes through NexusUrl.update (replace, no push: true)', () => {
+    const writer = astrolabeJs.match(
+      /function writeStatusFilterToUrl\(\)[\s\S]*?(?=\n {2}function )/,
+    );
+    assert.ok(writer, 'writeStatusFilterToUrl should be defined');
+    assert.match(
+      writer[0],
+      /window\.NexusUrl\.update\(\{\s*status:[\s\S]*?\}\s*\)/,
+      'status filter must call NexusUrl.update without { push: true }',
+    );
+    assert.ok(
+      !/push:\s*true/.test(writer[0]),
+      'status filter writes must use replaceState (D5 default)',
+    );
+  });
+
+  it('readUrlState validates ?status= against STATUS_VALUES and surfaces fail-loud errors (D6)', () => {
+    const reader = astrolabeJs.match(
+      /function readUrlState\(\)[\s\S]*?(?=\n {2}function )/,
+    );
+    assert.ok(reader, 'readUrlState should be defined');
+    assert.match(
+      reader[0],
+      /STATUS_VALUES\.indexOf/,
+      'readUrlState must validate ?status= against STATUS_VALUES',
+    );
+    assert.match(
+      reader[0],
+      /showUrlError\(/,
+      'readUrlState must surface invalid values via showUrlError',
+    );
+  });
+
+  it('detail-tab state stays non-URL-tracked (D13 narrow reading)', () => {
+    // Astrolabe's detail tabs (inventory / scope / decisions /
+    // observations / spec) are deliberately NOT URL-tracked. Filter-
+    // shaped only — the tab affordance remains client-only state.
+    assert.ok(
+      !/NexusUrl\.update\(\{\s*tab:/.test(astrolabeJs),
+      'detail-tab state must remain client-only (D13)',
+    );
+    // Defensive — also forbid the legacy updateUrl shape.
+    assert.ok(
+      !/updateUrl\(\{\s*tab:/.test(astrolabeJs),
+      'detail-tab state must remain client-only (D13) — legacy form too',
     );
   });
 });
