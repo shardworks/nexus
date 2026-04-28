@@ -60,7 +60,8 @@ Your inventory feeds a downstream scoping primer and spec writer who produce **i
 - Any prior commissions that touched this code (check commission log if relevant)
 
 **Doc/code discrepancies:**
-- Note any places where documentation describes different behavior than the code implements. These may indicate bugs, stale docs, or unfinished migrations. Don't try to resolve them — just record them.
+- Note any places where documentation describes different behavior than the code implements. Capture them in the inventory as data points; downstream primer stages will decide whether any rise to the bar of being a separately-lifted observation.
+- **Tag drift on files the commission will already be touching as `concurrent doc updates needed`** — the implementing artificer will fix this inline as part of the work, no separate observation needed.
 
 **Click references in the brief:**
 - Briefs frequently reference clicks by id (long form `c-mo2e88aw-f4d5684cf385` or short form `c-mo301yp9`). Clicks are the guild's record of decisions and open inquiries, managed by the Ratchet apparatus. Treat click references as mandatory context — same priority as reading referenced source files.

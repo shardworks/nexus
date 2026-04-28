@@ -181,12 +181,24 @@ Write all decisions using `decisions-write`.
 
 ### Step 3: Observations
 
-Accumulate a punch list of things noticed during analysis that are outside the brief's scope but worth recording:
+Observations are concerns worth lifting to a draft mandate writ for downstream curator review. Each observation gets auto-promoted to a draft writ, so the bar for what counts as an observation must be high — anything you lift will sit in the books until a curator triages it.
 
-- **Refactoring opportunities** skipped to keep scope narrow
-- **Suboptimal conventions** followed for consistency
-- **Doc/code discrepancies** found during inventory
-- **Potential bugs or risks** noticed in adjacent code
+**An observation is the right primitive when one of these is true:**
+
+- **Real bug or latent hazard.** A code path that's wrong, a race that's possible, an edge case that will silently misbehave, a contract gap downstream consumers will trip over.
+- **Real cross-cutting design question.** A decision that needs to be made because two or more apparatuses will trip over it. Not a question for *this* commission (those are decisions, not observations) but one that surfaces during this pass and deserves its own thread.
+- **Real DRY/consolidation opportunity with concrete payoff.** Duplicated logic across N call sites with measurable maintenance cost. Not "this could be cleaner" but "this WILL drift and bite us."
+- **Doc/code discrepancy that points at a hidden bug or unfinished migration.** Where the gap implies the migration was abandoned mid-way or a behavior was changed without updating callers.
+
+**An observation is NOT the right primitive for any of these:**
+
+- **Doc drift on files inside or adjacent to your touched area.** Surface in inventory under "concurrent doc updates needed" so the implementing artificer fixes it inline. Stale text in `clockworks.md` while the commission is already editing `clockworks.md` is part of the work, not a follow-up.
+- **Doc drift on files far outside your touched area.** Let the next commission that touches them fix the drift. Doc drift is largely self-healing through normal traffic.
+- **Brief meta-observations.** "The brief cites stale line numbers" / "the brief mislocates X." These are observations about the staleness of the planning artifact, which becomes archival once the commission ships. Do not lift.
+- **Future-feature placeholders.** "Someone should commission X downstream." Track those as clicks under the appropriate subtree, not as observation writs.
+- **Nice-to-have UX or polish** without observed friction. Wait for a real operator/anima to hit the issue.
+
+When in doubt about whether to lift, ask: *"Could the artificer of this commission realistically address this inline?"* If yes, surface it in the inventory rather than as an observation. *"Will this self-heal as someone touches the area next?"* If yes, do not lift.
 
 Each observation is **one record per atomic concern**. Downstream, the `astrolabe.observation-lift` engine lifts each record into a draft top-level `mandate` writ (never a child of the originating mandate); each lifted writ carries an `astrolabe.lifted-from` provenance edge back to the originating mandate, plus a `spider.follows` edge that holds dispatch until the mandate has terminated. When the plan yields two or more observations, the engine additionally groups them under a top-level `observation-set` container that parents the draft mandates and carries the `astrolabe.lifted-from` edge on behalf of the batch. A curator (human or automated) promotes each draft to open status. Your job is to package the concerns; you do not decide which ones get promoted.
 

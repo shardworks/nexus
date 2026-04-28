@@ -43,7 +43,7 @@ You also have the standard file-reading tools (Read, Glob, Grep) for exploring t
 3. Write the codebase inventory using `inventory-write`. The inventory must meet the full quality bar described below.
 4. Write scope items using `scope-write`. Break the brief into coarse, independently deliverable capabilities. Each item should be something the patron might include or exclude.
 5. Write decisions using `decisions-write`. Be exhaustive — capture every design question including ones where the answer seems obvious from codebase conventions. Each decision needs: id, scope references, question, context, options, recommendation, rationale, and `selected` (see the pre-fill rule under Decision Analysis — leave unset only when the decision matches the razor and passes the Reach and Patch Tests; otherwise apply the three defaults and pre-fill with your choice). Never set `patronOverride` — that field is owned by the patron-review pass. When you feel uncertainty about a decision that does *not* match any razor criterion, treat that feeling as a cue to **investigate** — read more code, trace another caller, check the brief again — not as a cue to punt the decision to the patron.
-6. Write observations using `observations-write`. Record refactoring opportunities, risks, suboptimal conventions, doc/code discrepancies, and potential bugs noticed during your pass.
+6. Write observations using `observations-write`. **Apply the discriminating bar in the *Observations* section below** — every record you lift will be auto-promoted to a draft writ, so the bar for "this deserves an observation" is high. Doc drift on touched files is NOT an observation (note it in the inventory as "concurrent doc updates needed" instead). Brief meta-observations and future-feature placeholders are NOT observations.
 
 You may interleave reading and writing — for example, write partial inventory as you go and refine it, or write scope items as they become clear and adjust later. The key constraint is that when you finish, all four artifacts (inventory, scope, decisions, observations) must be complete and written to the plan via the write tools.
 
@@ -92,7 +92,8 @@ Your inventory feeds a downstream spec writer who produces **intent-based briefs
 - Any prior commissions that touched this code (check commission log if relevant)
 
 **Doc/code discrepancies:**
-- Note any places where documentation describes different behavior than the code implements. These may indicate bugs, stale docs, or unfinished migrations. Don't try to resolve them — just record them.
+- Note any places where documentation describes different behavior than the code implements. Capture them in the inventory as data points; do NOT lift to observations unless they meet the *Observations* bar (real bug, real cross-cutting design Q, real consolidation, real hidden-migration evidence).
+- **Tag drift on files the commission will already be touching as `concurrent doc updates needed`** — the implementing artificer will fix this inline as part of the work. Do not separately lift it as an observation.
 
 This is a working document — rough, thorough, and unpolished. Do not spend effort on formatting or prose quality. Its value is in completeness of *coverage* (every relevant system identified, every cross-cutting concern surfaced) and analytical orientation (downstream agents can form decisions from your map), not in transcribing code.
 
@@ -216,12 +217,24 @@ Order decisions by scope item.
 
 ### Observations
 
-Accumulate a punch list of things noticed during your pass that are outside the brief's scope but worth recording:
+Observations are concerns worth lifting to a draft mandate writ for downstream curator review. Each observation gets auto-promoted to a draft writ, so the bar for what counts as an observation must be high — anything you lift will sit in the books until a curator triages it.
 
-- **Refactoring opportunities** skipped to keep scope narrow
-- **Suboptimal conventions** followed for consistency
-- **Doc/code discrepancies** found during inventory
-- **Potential bugs or risks** noticed in adjacent code
+**An observation is the right primitive when one of these is true:**
+
+- **Real bug or latent hazard.** A code path that's wrong, a race that's possible, an edge case that will silently misbehave, a contract gap downstream consumers will trip over.
+- **Real cross-cutting design question.** A decision that needs to be made because two or more apparatuses will trip over it. Not a question for *this* commission (those are decisions, not observations) but one that surfaces during this pass and deserves its own thread.
+- **Real DRY/consolidation opportunity with concrete payoff.** Duplicated logic across N call sites with measurable maintenance cost. Not "this could be cleaner" but "this WILL drift and bite us."
+- **Doc/code discrepancy that points at a hidden bug or unfinished migration.** Where the gap implies the migration was abandoned mid-way or a behavior was changed without updating callers.
+
+**An observation is NOT the right primitive for any of these:**
+
+- **Doc drift on files inside or adjacent to your touched area.** Surface in inventory under "concurrent doc updates needed" so the implementing artificer fixes it inline. Stale text in `clockworks.md` while the commission is already editing `clockworks.md` is part of the work, not a follow-up.
+- **Doc drift on files far outside your touched area.** Let the next commission that touches them fix the drift. Doc drift is largely self-healing through normal traffic.
+- **Brief meta-observations.** "The brief cites stale line numbers" / "the brief mislocates X." These are observations about the staleness of the planning artifact, which becomes archival once the commission ships. Do not lift.
+- **Future-feature placeholders.** "Someone should commission X downstream." Track those as clicks under the appropriate subtree, not as observation writs.
+- **Nice-to-have UX or polish** without observed friction. Wait for a real operator/anima to hit the issue.
+
+When in doubt about whether to lift, ask: *"Could the artificer of this commission realistically address this inline?"* If yes, surface it in the inventory rather than as an observation. *"Will this self-heal as someone touches the area next?"* If yes, do not lift.
 
 Each observation is **one record per atomic concern**. Downstream, the `astrolabe.observation-lift` engine lifts each record into a draft top-level `mandate` writ (never a child of the originating mandate); each lifted writ carries an `astrolabe.lifted-from` provenance edge back to the originating mandate, plus a `spider.follows` edge that holds dispatch until the mandate has terminated. When the plan yields two or more observations, the engine additionally groups them under a top-level `observation-set` container that parents the draft mandates and carries the `astrolabe.lifted-from` edge on behalf of the batch. A curator (human or automated) promotes each draft to open status. Your job is to package the concerns; you do not decide which ones get promoted.
 
