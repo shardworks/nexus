@@ -21,32 +21,77 @@
   };
 
   // ── URL handling ────────────────────────────────────────────────────
+  //
+  // All deep-linkable view state for this page rides on
+  // `window.NexusUrl` — the shared helper auto-injected by oculus's
+  // chrome pass. The earlier inline `currentUrlParams` / `updateUrl`
+  // copies are gone (commission moix23w5).
+  //
+  // URL keys:
+  //   ?status=     running | completed | failed | timeout | cancelled
+  //                Matches the server-side ?status= (D8). Default ''.
+  //   ?from=       Inclusive lower-bound date (yyyy-mm-dd).
+  //   ?to=         Inclusive upper-bound date.
+  //   ?session=ID  Detail deep-link; pushes (D5).
 
-  /**
-   * Read the current querystring as a `URLSearchParams`. Live snapshot.
-   */
-  function currentUrlParams() {
-    return new URLSearchParams(window.location.search);
+  var STATUS_VALUES = ['', 'running', 'completed', 'failed', 'timeout', 'cancelled'];
+
+  function showUrlError(msg) {
+    var el = document.getElementById('url-error-banner');
+    if (!el) return;
+    var line = document.createElement('div');
+    line.textContent = msg;
+    el.appendChild(line);
+    el.style.display = 'block';
+  }
+
+  function clearUrlErrors() {
+    var el = document.getElementById('url-error-banner');
+    if (!el) return;
+    el.innerHTML = '';
+    el.style.display = 'none';
+  }
+
+  /** Persist the current sessions-list filter state to the URL (replace, D5). */
+  function writeSessionFiltersToUrl() {
+    var status = (document.getElementById('status-filter') || {}).value || '';
+    var from = (document.getElementById('date-from') || {}).value || '';
+    var to = (document.getElementById('date-to') || {}).value || '';
+    window.NexusUrl.update({
+      status: status === '' ? null : status,
+      from: from === '' ? null : from,
+      to: to === '' ? null : to,
+    });
   }
 
   /**
-   * Apply the given key/value changes to the current querystring and
-   * `pushState` the result. Null/undefined/empty value deletes the key.
-   * Mirrors Ratchet's `updateUrl` (D9). The session param shape is
-   * `?session=ID` (D10).
+   * Read URL state into the toolbar inputs and return the deep-link
+   * session id, if any. Validates each value against its known set;
+   * unknowns surface a fail-loud banner per D6.
    */
-  function updateUrl(changes) {
-    var params = currentUrlParams();
-    var keys = Object.keys(changes);
-    for (var i = 0; i < keys.length; i++) {
-      var key = keys[i];
-      var value = changes[key];
-      if (value === null || value === undefined || value === '') params.delete(key);
-      else params.set(key, value);
+  function readUrlState() {
+    clearUrlErrors();
+    var params = window.NexusUrl.read();
+
+    var statusEl = document.getElementById('status-filter');
+    var status = params.get('status');
+    if (status !== null) {
+      if (STATUS_VALUES.indexOf(status) !== -1) {
+        if (statusEl) statusEl.value = status;
+      } else {
+        showUrlError('Unknown session status "' + status + '". Expected one of: running, completed, failed, timeout, cancelled.');
+      }
     }
-    var qs = params.toString();
-    var next = window.location.pathname + (qs ? '?' + qs : '');
-    window.history.pushState({}, '', next);
+
+    var fromEl = document.getElementById('date-from');
+    var from = params.get('from');
+    if (from !== null && fromEl) fromEl.value = from;
+
+    var toEl = document.getElementById('date-to');
+    var to = params.get('to');
+    if (to !== null && toEl) toEl.value = to;
+
+    return params.get('session');
   }
 
   // ── Utilities ───────────────────────────────────────────────────────
@@ -258,7 +303,7 @@
     // ?session=ID for free. The popstate-driven path passes
     // skipUrlPush=true to avoid re-pushing the URL the browser already
     // updated.
-    if (!skipUrlPush) updateUrl({ session: sessionId });
+    if (!skipUrlPush) window.NexusUrl.update({ session: sessionId }, { push: true });
 
     document.getElementById('list-view').style.display = 'none';
     document.getElementById('detail-view').style.display = '';
@@ -438,7 +483,7 @@
     document.getElementById('list-view').style.display = '';
     // D11: push a clean URL so deep-link entries survive the Back
     // button without depending on history depth.
-    if (!skipUrlPush) updateUrl({ session: null });
+    if (!skipUrlPush) window.NexusUrl.update({ session: null }, { push: true });
     fetchList();
   }
 
@@ -455,13 +500,22 @@
 
     // Status filter
     var statusFilter = document.getElementById('status-filter');
-    if (statusFilter) statusFilter.addEventListener('change', fetchList);
+    if (statusFilter) statusFilter.addEventListener('change', function () {
+      writeSessionFiltersToUrl();
+      fetchList();
+    });
 
     // Date filters
     var dateFrom = document.getElementById('date-from');
     var dateTo = document.getElementById('date-to');
-    if (dateFrom) dateFrom.addEventListener('change', fetchList);
-    if (dateTo) dateTo.addEventListener('change', fetchList);
+    if (dateFrom) dateFrom.addEventListener('change', function () {
+      writeSessionFiltersToUrl();
+      fetchList();
+    });
+    if (dateTo) dateTo.addEventListener('change', function () {
+      writeSessionFiltersToUrl();
+      fetchList();
+    });
 
     // Click delegation on table body for row clicks and cancel buttons
     var tbody = document.getElementById('sessions-tbody');
@@ -485,11 +539,12 @@
       });
     }
 
-    // Browser navigation (Back / Forward) — read ?session=ID from the
-    // new URL and either show that detail (skipUrlPush=true) or return
-    // to the list. Pairs with the central push inside showDetail.
+    // Browser navigation (Back / Forward) — restore the FULL filter
+    // state and the ?session= deep-link. Pairs with the central push
+    // inside showDetail. The popstate-driven path uses skipUrlPush so
+    // it never re-pushes the URL the browser already updated.
     window.addEventListener('popstate', function () {
-      var sessionId = currentUrlParams().get('session');
+      var sessionId = readUrlState();
       if (sessionId) {
         showDetail(sessionId, { skipUrlPush: true });
       } else {
@@ -497,16 +552,13 @@
       }
     });
 
-    // Initial load
+    // Initial load — read URL state BEFORE fetching the list so the
+    // server query already carries ?status= / ?from= / ?to=. A missing
+    // or deleted ?session= id falls through to renderSessionDetail
+    // NotFound — the URL is preserved.
+    var initialSessionId = readUrlState();
     fetchList();
 
-    // Deep-link: ?session=ID — if present on init, open that detail
-    // view. The fetchList runs first so the list is populated for the
-    // operator's eventual Back navigation; showDetail runs after it
-    // and overlays the detail view. A missing/deleted id falls
-    // through to renderSessionDetailNotFound (D16) — the URL is
-    // preserved.
-    var initialSessionId = currentUrlParams().get('session');
     if (initialSessionId) {
       showDetail(initialSessionId, { skipUrlPush: true });
     }

@@ -116,41 +116,50 @@ describe('animator.js cost/token formatting delegates to window.NexusFormat', ()
 // ── Deep-link URL state (?session=ID) ───────────────────────────────────
 
 describe('animator.js — deep-link URL state', () => {
-  it('exposes currentUrlParams + updateUrl helpers (D9 — Ratchet pattern)', () => {
-    assert.match(
-      animatorJs,
-      /function currentUrlParams\(\)\s*\{[\s\S]*?new URLSearchParams\(window\.location\.search\)/,
-      'currentUrlParams reads window.location.search live',
+  it('routes URL reads/writes through window.NexusUrl (no inline helpers)', () => {
+    // Inline currentUrlParams / updateUrl are gone (commission moix23w5).
+    assert.ok(
+      !/function\s+currentUrlParams\s*\(/.test(animatorJs),
+      'inline currentUrlParams must not be redeclared',
+    );
+    assert.ok(
+      !/function\s+updateUrl\s*\(/.test(animatorJs),
+      'inline updateUrl must not be redeclared',
     );
     assert.match(
       animatorJs,
-      /function updateUrl\(changes\)\s*\{[\s\S]*?window\.history\.pushState/,
-      'updateUrl pushes via history.pushState',
+      /window\.NexusUrl\.read\(\)/,
+      'animator.js should read URL state via window.NexusUrl.read',
+    );
+    assert.match(
+      animatorJs,
+      /window\.NexusUrl\.update\(/,
+      'animator.js should write URL state via window.NexusUrl.update',
     );
   });
 
-  it('showDetail pushes ?session=ID via the central updateUrl call (D12)', () => {
+  it('showDetail pushes ?session=ID via NexusUrl with push: true (D12)', () => {
     const block = animatorJs.match(
       /function showDetail\(sessionId(?:, opts)?\)[\s\S]*?(?=\n  function )/,
     );
     assert.ok(block, 'should find showDetail body');
     assert.match(
       block[0],
-      /updateUrl\(\{\s*session:\s*sessionId\s*\}\)/,
+      /window\.NexusUrl\.update\(\{\s*session:\s*sessionId\s*\}\s*,\s*\{\s*push:\s*true\s*\}\)/,
       'showDetail should push ?session=<id> when not skipUrlPush',
     );
     assert.match(block[0], /skipUrlPush/, 'showDetail accepts a skipUrlPush opt');
   });
 
-  it('showList clears ?session via updateUrl({session: null}) — never pops history (D11)', () => {
+  it('showList clears ?session via NexusUrl with push: true — never pops history (D11)', () => {
     const block = animatorJs.match(
       /function showList\((?:opts)?\)[\s\S]*?(?=\n  function |\n  \/\/)/,
     );
     assert.ok(block, 'should find showList body');
     assert.match(
       block[0],
-      /updateUrl\(\{\s*session:\s*null\s*\}\)/,
-      'showList should push a clean URL via updateUrl({session: null})',
+      /window\.NexusUrl\.update\(\{\s*session:\s*null\s*\}\s*,\s*\{\s*push:\s*true\s*\}\)/,
+      'showList should push a clean URL via NexusUrl.update with session: null',
     );
     assert.ok(
       !/window\.history\.back\s*\(/.test(block[0]),
@@ -170,8 +179,8 @@ describe('animator.js — deep-link URL state', () => {
     assert.ok(block, 'should find popstate handler body');
     assert.match(
       block[0],
-      /currentUrlParams\(\)\.get\(['"]session['"]\)/,
-      'popstate handler reads ?session from the new URL',
+      /readUrlState\(\)/,
+      'popstate handler reads URL state via the central readUrlState helper',
     );
     assert.match(
       block[0],
@@ -180,11 +189,11 @@ describe('animator.js — deep-link URL state', () => {
     );
   });
 
-  it('init reads ?session=ID and overlays the detail view', () => {
+  it('init reads URL state and overlays the detail view', () => {
     assert.match(
       animatorJs,
-      /var initialSessionId\s*=\s*currentUrlParams\(\)\.get\(['"]session['"]\)/,
-      'init reads ?session from the URL',
+      /var initialSessionId\s*=\s*readUrlState\(\)/,
+      'init calls readUrlState before fetching the list',
     );
     assert.match(
       animatorJs,
@@ -199,13 +208,53 @@ describe('animator.js — deep-link URL state', () => {
     );
     assert.ok(block, 'should find renderSessionDetailNotFound body');
     assert.ok(
-      !/updateUrl/.test(block[0]),
+      !/NexusUrl\.update/.test(block[0]),
       'renderSessionDetailNotFound must not rewrite the URL',
     );
     assert.match(
       block[0],
       /No session with id/,
       'renderSessionDetailNotFound surfaces a "not found" message',
+    );
+  });
+
+  it('sessions filter state writes through NexusUrl.update (replace, no push: true)', () => {
+    const writer = animatorJs.match(
+      /function writeSessionFiltersToUrl\(\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(writer, 'writeSessionFiltersToUrl should be defined');
+    assert.match(
+      writer[0],
+      /window\.NexusUrl\.update\(\{[\s\S]*?status:[\s\S]*?\}\s*\)/,
+      'session filter must call NexusUrl.update without { push: true }',
+    );
+    assert.ok(
+      !/push:\s*true/.test(writer[0]),
+      'session filter writes must use replaceState (D5 default)',
+    );
+    for (const key of ['status', 'from', 'to']) {
+      assert.match(
+        writer[0],
+        new RegExp(`${key}\\s*:`),
+        `session filter writer must include the ${key} key`,
+      );
+    }
+  });
+
+  it('readUrlState validates ?status= against STATUS_VALUES and surfaces fail-loud errors (D6)', () => {
+    const reader = animatorJs.match(
+      /function readUrlState\(\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(reader, 'readUrlState should be defined');
+    assert.match(
+      reader[0],
+      /STATUS_VALUES\.indexOf/,
+      'readUrlState must validate ?status= against STATUS_VALUES',
+    );
+    assert.match(
+      reader[0],
+      /showUrlError\(/,
+      'readUrlState must surface invalid values via showUrlError',
     );
   });
 });
