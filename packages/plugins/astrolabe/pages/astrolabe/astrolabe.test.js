@@ -708,3 +708,101 @@ describe('astrolabe.js cost-panel rig lookup uses rig-for-writ', () => {
     );
   });
 });
+
+// ── Deep-link URL state (?plan=ID) ──────────────────────────────────────
+
+describe('astrolabe.js — deep-link URL state', () => {
+  it('exposes currentUrlParams + updateUrl helpers (D9 — Ratchet pattern)', () => {
+    assert.match(
+      astrolabeJs,
+      /function currentUrlParams\(\)\s*\{[\s\S]*?new URLSearchParams\(window\.location\.search\)/,
+      'currentUrlParams reads window.location.search live',
+    );
+    assert.match(
+      astrolabeJs,
+      /function updateUrl\(changes\)\s*\{[\s\S]*?window\.history\.pushState/,
+      'updateUrl pushes via history.pushState',
+    );
+  });
+
+  it('showPlanDetail pushes ?plan=ID via the central updateUrl call (D12)', () => {
+    const block = astrolabeJs.match(
+      /function showPlanDetail\(plan(?:, opts)?\)[\s\S]*?(?=\n {2}function )/,
+    );
+    assert.ok(block, 'should find showPlanDetail body');
+    assert.match(
+      block[0],
+      /updateUrl\(\{\s*plan:\s*plan\.id\s*\}\)/,
+      'showPlanDetail should push ?plan=<plan.id> when not skipUrlPush',
+    );
+    assert.match(block[0], /skipUrlPush/, 'showPlanDetail accepts a skipUrlPush opt');
+  });
+
+  it('backToList clears ?plan via updateUrl({plan: null}) — never pops history (D11)', () => {
+    const block = astrolabeJs.match(
+      /function backToList\((?:opts)?\)[\s\S]*?(?=\n {2}\/\/)/,
+    );
+    assert.ok(block, 'should find backToList body');
+    assert.match(
+      block[0],
+      /updateUrl\(\{\s*plan:\s*null\s*\}\)/,
+      'backToList should push a clean URL via updateUrl({plan: null})',
+    );
+    assert.ok(
+      !/window\.history\.back\s*\(/.test(block[0]),
+      'backToList should never invoke history.back',
+    );
+  });
+
+  it('a popstate listener re-runs handleDeepLink without re-pushing the URL', () => {
+    assert.match(
+      astrolabeJs,
+      /window\.addEventListener\(\s*['"]popstate['"]/,
+      'astrolabe.js registers a popstate listener',
+    );
+    const block = astrolabeJs.match(
+      /addEventListener\(\s*['"]popstate['"][\s\S]*?\}\)/,
+    );
+    assert.ok(block, 'should find popstate handler body');
+    assert.match(
+      block[0],
+      /handleDeepLink\(\{\s*fetchOnEmpty:\s*false\s*\}\)/,
+      'popstate handler invokes handleDeepLink with fetchOnEmpty=false',
+    );
+  });
+
+  it('handleDeepLink renders a not-found state instead of falling back to the list (D16)', () => {
+    const block = astrolabeJs.match(
+      /function handleDeepLink\([\s\S]*?(?=\n {2}\/\/ ── Init)/,
+    );
+    assert.ok(block, 'should find handleDeepLink body');
+    assert.match(
+      block[0],
+      /renderPlanDetailNotFound\(planId\)/,
+      'handleDeepLink should render the not-found state on fetch failure',
+    );
+    // The deep-link calls into showPlanDetail with skipUrlPush so we
+    // don't double-push the URL the operator already arrived with.
+    assert.match(
+      block[0],
+      /showPlanDetail\(plan,\s*\{\s*skipUrlPush:\s*true\s*\}\)/,
+      'init / popstate path passes skipUrlPush=true into showPlanDetail',
+    );
+  });
+
+  it('renderPlanDetailNotFound preserves the URL param', () => {
+    const block = astrolabeJs.match(
+      /function renderPlanDetailNotFound\([\s\S]*?(?=\n {2}function )/,
+    );
+    assert.ok(block, 'should find renderPlanDetailNotFound body');
+    assert.ok(
+      !/updateUrl/.test(block[0]),
+      'renderPlanDetailNotFound must not rewrite the URL',
+    );
+    assert.match(
+      block[0],
+      /No plan with id/,
+      'renderPlanDetailNotFound surfaces a "not found" message',
+    );
+  });
+});

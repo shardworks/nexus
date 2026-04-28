@@ -15,6 +15,37 @@
   var LIMIT = 20;
   var writTitleLookup = {};
 
+  // ── URL handling ───────────────────────────────────────────────────────
+
+  /**
+   * Read the current querystring as a `URLSearchParams`. Live snapshot
+   * — read at call time, never cached.
+   */
+  function currentUrlParams() {
+    return new URLSearchParams(window.location.search);
+  }
+
+  /**
+   * Apply the given key/value changes to the current querystring and
+   * `pushState` the result. Null/undefined/empty value deletes the key.
+   * Mirrors Ratchet's `updateUrl` (D9). The plan param shape (?plan=ID)
+   * is preserved verbatim — operators have URLs in the wild already
+   * (D10).
+   */
+  function updateUrl(changes) {
+    var params = currentUrlParams();
+    var keys = Object.keys(changes);
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      var value = changes[key];
+      if (value === null || value === undefined || value === '') params.delete(key);
+      else params.set(key, value);
+    }
+    var qs = params.toString();
+    var next = window.location.pathname + (qs ? '?' + qs : '');
+    window.history.pushState({}, '', next);
+  }
+
   // ── Utility ────────────────────────────────────────────────────────────
 
   function esc(s) {
@@ -299,10 +330,40 @@
 
   // ── Detail View ────────────────────────────────────────────────────────
 
-  function showPlanDetail(plan) {
+  /**
+   * Render a "not found" empty state inside the plan detail view for a
+   * deep-linked id that does not resolve. Per D16 the URL param is
+   * preserved so the operator can recover (correct the id, hit Back).
+   * Replaces the legacy fall-back-to-list behaviour, which silently
+   * dropped the param and pretended the deep-link never happened.
+   */
+  function renderPlanDetailNotFound(planId) {
+    currentPlan = null;
+    listView.style.display = 'none';
+    detailView.style.display = '';
+    detailTitle.textContent = 'Plan not found';
+    metaCard.innerHTML =
+      '<div class="empty-state" style="padding:1.5rem">' +
+      'No plan with id <code>' + esc(planId) + '</code> exists. ' +
+      'It may have been deleted, or the id may be mistyped.</div>';
+    // Hide tab content / decisions table — they reference fields on a
+    // missing plan that would just render blanks.
+    var tabContent = document.getElementById('tab-content');
+    if (tabContent) tabContent.innerHTML = '';
+  }
+
+  function showPlanDetail(plan, opts) {
+    var skipUrlPush = !!(opts && opts.skipUrlPush);
     currentPlan = plan;
     listView.style.display = 'none';
     detailView.style.display = '';
+
+    // Centralised URL push — every entry path into showPlanDetail
+    // (row click, deep-link init, popstate-driven re-open) emits
+    // ?plan=ID for free. The popstate-driven path passes
+    // skipUrlPush=true to avoid double-pushing the URL the browser
+    // already updated.
+    if (!skipUrlPush) updateUrl({ plan: plan.id });
 
     detailTitle.textContent = 'Plan: ' + plan.id;
 
@@ -605,39 +666,67 @@
 
   // ── Navigation ─────────────────────────────────────────────────────────
 
-  function backToList() {
+  function backToList(opts) {
+    var skipUrlPush = !!(opts && opts.skipUrlPush);
     detailView.style.display = 'none';
     listView.style.display = '';
     currentPlan = null;
+    // D11: push a clean URL — the operator's Forward button still does
+    // what they expect, and we never pop history because they may have
+    // arrived directly at ?plan=ID with no prior list-view entry.
+    if (!skipUrlPush) updateUrl({ plan: null });
   }
 
   // ── Deep Link ──────────────────────────────────────────────────────────
 
-  function handleDeepLink() {
-    var params = new URLSearchParams(window.location.search);
-    var planId = params.get('plan');
+  /**
+   * Resolve `?plan=ID` to a detail view. Called on init and from the
+   * popstate handler. Both paths suppress the URL push (the browser
+   * already has the URL in place, or the deep-link landed already).
+   * A missing/deleted/mistyped id renders the not-found empty state
+   * (D16) — the URL param is left intact.
+   *
+   * `opts.fetchOnEmpty` selects what to do when no plan param is
+   * present. Init wants the list to be fetched (this is the page's
+   * normal load); popstate just wants to switch back to whatever was
+   * already rendered.
+   */
+  function handleDeepLink(opts) {
+    var fetchOnEmpty = !(opts && opts.fetchOnEmpty === false);
+    var planId = currentUrlParams().get('plan');
 
     if (planId) {
-      // Deep link: fetch and show the specific plan
       fetch('/api/plan/show?planId=' + encodeURIComponent(planId))
         .then(function (r) {
           if (!r.ok) throw new Error('HTTP ' + r.status);
           return r.json();
         })
         .then(function (plan) {
-          showPlanDetail(plan);
+          showPlanDetail(plan, { skipUrlPush: true });
         })
         .catch(function (err) {
           console.error('Deep-link plan not found:', planId, err);
-          // Fallback: show list view
-          fetchPlans(true);
+          // D16: surface the failure as a not-found empty state inside
+          // the detail panel; never silently rewrite the URL.
+          renderPlanDetailNotFound(planId);
         });
-    } else {
+    } else if (fetchOnEmpty) {
       fetchPlans(true);
+    } else {
+      // popstate to a no-?plan URL: just return to the list view
+      // without re-fetching.
+      backToList({ skipUrlPush: true });
     }
   }
 
   // ── Init ───────────────────────────────────────────────────────────────
+
+  // popstate listener — the browser updated the URL, so we re-run the
+  // deep-link routing without re-pushing. Pairs with the central push
+  // inside showPlanDetail (D11/D12).
+  window.addEventListener('popstate', function () {
+    handleDeepLink({ fetchOnEmpty: false });
+  });
 
   handleDeepLink();
 })();
