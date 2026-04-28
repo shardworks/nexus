@@ -102,8 +102,9 @@ interface Fixture {
   keeper: VisionKeeperApi;
   /**
    * Manually re-fire `phase:started` against every registered
-   * handler. Awaits async handlers (the Reckoner's seal handler runs
-   * the catch-up scan async).
+   * handler. Awaits async handlers (kept awaitable for forward-
+   * compatibility; the Reckoner's seal handler is synchronous now
+   * that there is no catch-up scan).
    */
   firePhaseStarted: () => Promise<void>;
 }
@@ -577,13 +578,12 @@ describe('Vision-keeper apparatus', () => {
       assert.ok(withdrawnA, 'vision-a outstanding petition must be withdrawn');
       assert.equal(withdrawnA!.id, a.id);
 
-      // The Reckoner CDC handler auto-approves registered-source
-      // petitions; vision-b's writ is now in `open` (the type's
-      // active phase), not `new`. The assertion's intent is "vision-
-      // b's writ is not transitioned by superseded('vision-a')" —
-      // the active phase satisfies that intent.
+      // No tick has fired in this fixture, so vision-b's writ
+      // remains in `new`. The assertion's intent is "vision-b's
+      // writ is not transitioned by superseded('vision-a')" — the
+      // unchanged `new` phase satisfies that intent.
       const bReread = await fix.clerk.show(b.id);
-      assert.equal(bReread.phase, 'open', 'vision-b petition must not be touched');
+      assert.equal(bReread.phase, 'new', 'vision-b petition must not be touched');
     });
   });
 

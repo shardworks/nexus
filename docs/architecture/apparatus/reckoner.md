@@ -4,20 +4,26 @@ Status: **Draft**
 
 Package: `@shardworks/reckoner-apparatus` · Plugin id: `reckoner`
 
-> **⚠️ v0 scope.** v0 ships the contract surface plus the Phase-2
-> CDC handler and the Reckonings evaluation journal. Specifically:
-> the kit-static petitioner registry, the `petition()` /
-> `withdraw()` helpers (Workflow 2 in the contract document, in
-> both create+stamp and stamp-only forms), the
-> `enforceRegistration` and `disabledSources` config keys, the
-> inspection helpers on `provides`, the CDC handler on
-> `clerk/writs` that drives held petitions out of their initial
-> phase, and the `reckoner/reckonings` book. Lattice pulse emission
-> remains out of scope (the auto-wired Clockworks events on the
-> reckonings book are sufficient for v0 consumers). The legacy
-> stall/fail/drain pulse emitter (formerly named "the Reckoner")
-> now lives at [sentinel.md](sentinel.md) under the `sentinel`
-> plugin id.
+> **⚠️ Periodic-tick model.** The Reckoner drives evaluation from a
+> single canonical surface: a `reckoner.tick` relay paired with a
+> kit-contributed `@every 60s` standing order. There is no CDC
+> observer on `clerk/writs`, no per-writ-update path, and no startup
+> catch-up scan; held petitions are picked up by the next tick after
+> they land. The tick step set runs the full rule sequence on each
+> surviving candidate (source-check / disabled-source /
+> dependency-gate / scheduler-evaluate), drives `clerk.transition()`
+> on accept or decline, defers (no transition, deferred row) when the
+> dependency gate fires, and idempotently appends one row per
+> state-change to the `reckoner/reckonings` book. The Reckonings book,
+> the kit-static petitioner registry, the `petition()` / `withdraw()`
+> helpers (Workflow 2 in the contract document, in both create+stamp
+> and stamp-only forms), the `enforceRegistration` /
+> `disabledSources` config, and the inspection helpers on `provides`
+> all ship here. Lattice pulse emission remains out of scope (the
+> auto-wired Clockworks events on the reckonings book are sufficient
+> for v0 consumers). The legacy stall/fail/drain pulse emitter
+> (formerly named "the Reckoner") now lives at
+> [sentinel.md](sentinel.md) under the `sentinel` plugin id.
 
 ---
 
@@ -28,17 +34,20 @@ The Reckoner is the petitioner-scheduler apparatus. It owns the
 writ — a writ in `new` phase carrying `writ.ext['reckoner']` — and
 maintains the registry of recognized petitioner sources.
 
-In v0 the Reckoner evaluates held petitions through a Phase-2 CDC
-handler on `clerk/writs` (see "What the Reckoner does NOT do" for
-the policy carve-outs that remain out of scope). The handler runs
-the rule sequence (skip / disabled-source / source-check /
-dependency-gate / scheduler-evaluate), drives `clerk.transition()`
-on accept or decline, defers (no transition, deferred row) when the
-dependency gate fires, and idempotently appends one row per
-state-change to the `reckoner/reckonings` book. The default
-scheduler is always-approve; petitioners may withdraw a held writ
-via `withdraw()` (a thin wrapper over `clerk.transition(writId,
-'cancelled', …)`).
+Held petitions are evaluated by a periodic tick: a `reckoner.tick`
+relay paired with a kit-contributed `@every 60s` standing order. On
+each fire the Reckoner sweeps `clerk/writs` for held petitions,
+applies source / disabled-source gates, runs the dependency-aware
+gate (defer + deferred row when one or more outbound `depends-on`
+targets are not all cleared), dedupes against its evaluation
+journal, calls the active scheduler with the full surviving
+candidate set, and applies each emitted decision (`approve` →
+transition to active target; `decline` → transition to cancelled;
+`defer` → no transition, deferred row). The tick is the single
+evaluation entry — there is no CDC observer on `clerk/writs`. The
+default scheduler is always-approve; petitioners may withdraw a
+held writ via `withdraw()` (a thin wrapper over
+`clerk.transition(writId, 'cancelled', …)`).
 
 The Reckoner is the canonical Workflow-2 path. Workflow-1 callers
 (direct `clerk.post()` + `clerk.setWritExt()`) get the same on-disk
@@ -53,8 +62,9 @@ See: the load-bearing contract document at
 ## Dependencies
 
 ```
-requires: ['clerk']
-consumes: ['petitioners', 'schedulers']
+requires:   ['clerk']
+recommends: ['clockworks']
+consumes:   ['petitioners', 'schedulers']
 ```
 
 - **The Clerk** (required) — `clerk.post()` is the writ-creation
@@ -62,6 +72,16 @@ consumes: ['petitioners', 'schedulers']
   `writ.ext['reckoner']` slot; `clerk.transition()` drives
   `withdraw()`. Stacks is a transitive `requires` via Clerk and is
   not declared explicitly (D16).
+- **The Clockworks** (recommended) — the standing-order dispatcher
+  that fires the Reckoner's `@every 60s` tick. The Reckoner ships
+  the `reckoner.tick` relay and the standing order via
+  `apparatus.supportKit.relays` / `apparatus.supportKit.standingOrders`.
+  When the Clockworks is not installed the Reckoner still boots —
+  the standing order is simply never consumed and the tick never
+  fires. Petitioners can still call `petition()` / `withdraw()` and
+  read the registry, but no scheduler decisions are applied until
+  Clockworks is added (or until an external caller drives the
+  tick directly through some future operator surface).
 
 ---
 
@@ -137,13 +157,30 @@ link-kinds: `^[a-z0-9]+(?:-[a-z0-9]+)*$`.
 
 ## Support Kit
 
-The Reckoner contributes the `reckoner/reckonings` book — its
-evaluation journal — via `supportKit.books`. Stacks materialises
-the book during the Wire phase with the contract index set; the
-auto-wired `book.reckoner.reckonings.{created,updated,deleted}`
-Clockworks events fire normally. The Reckoner is the sole writer.
-See `docs/architecture/reckonings-book.md` for the schema and CDC
-contract.
+The Reckoner's `apparatus.supportKit` declares:
+
+- **`books.reckonings`** — the Reckonings evaluation journal
+  with the contract index set. Stacks materialises the book during
+  the Wire phase; the auto-wired
+  `book.reckoner.reckonings.{created,updated,deleted}` Clockworks
+  events fire normally. The Reckoner is the sole writer. See
+  [reckonings-book.md](../reckonings-book.md) for the full schema
+  and CDC contract.
+- **`schedulers: [alwaysApproveScheduler]`** — the built-in
+  `reckoner.always-approve` scheduler. Surfaces through
+  `ctx.kits('schedulers')` exactly like a user-contributed
+  scheduler; see the [Schedulers](#schedulers) section below.
+- **`relays: [tickRelay]`** — the `reckoner.tick` relay that
+  drives the per-fire sequence (held-writ query, source gates,
+  dependency-aware gate, dedupe, scheduler invocation, decision
+  application).
+- **`standingOrders: [{ schedule: '@every 60s', run: 'reckoner.tick' }]`**
+  — the kit-contributed standing order that wires the relay
+  through the Clockworks dispatcher. The schedule is hard-coded —
+  no operator knob exists in this commission. The order has no
+  `id` field, per the kit-standing-orders additive-merge model:
+  operators may append their own orders but cannot disable or
+  override this one.
 
 ---
 
@@ -484,7 +521,7 @@ The three `SchedulerDecision` outcomes map to apparatus actions:
 | Outcome   | Phase transition       | Reckonings row | Notes |
 |-----------|------------------------|----------------|-------|
 | `approve` | `new` → active target  | `accepted`     | The target is the writ-type config's active state; weight (if present) is threaded onto the row. |
-| `defer`   | none                   | none           | The writ stays in `new`. The scheduler-emitted defer path is row-less because `SchedulerDecision` does not carry the `deferReason` / `deferNote` metadata required to populate a faithful deferred row. (The dependency-aware defer path — see "Dependency-aware defer" below — does emit deferred rows; that path runs in the apparatus's rule sequence before the scheduler is invoked.) |
+| `defer`   | none                   | `deferred`     | The writ stays in `new`. The row carries `deferReason: 'other'` and the decision's `reason` in `deferNote`; other defer-metadata fields stay absent until a real consumer earns them. |
 | `decline` | `new` → `cancelled`    | `declined`     | The decision's `reason` is recorded as the writ's resolution string; the row carries `declineReason: 'other'` and the reason in `remediationHint`. |
 
 ### Dependency-aware defer
@@ -528,34 +565,42 @@ would silently absorb registration drift.
 Wiring those companion fields is owned by the deferred-petition
 staleness diagnostic, a separately-scoped sibling commission.
 
-**Rule ordering.** Disabled-source skip and source-registration
+**Rule ordering.** Disabled-source decline and source-registration
 enforcement run *before* the dependency check. A disabled-source writ
-produces no row and no dep evaluation; an unregistered-source writ
-under `enforceRegistration: true` declines + transitions and never
-reaches the dep check.
+produces a `source_banned` decline + transition to cancelled and no
+dep evaluation; an unregistered-source writ under
+`enforceRegistration: true` declines + transitions and never reaches
+the dep check.
 
-**Cadence and idempotency.** The dependency check runs on every
-consideration tick — it is not gated by the existing `(writId,
-writUpdatedAt)` dedupe (which lives inside the scheduler call and
-gates only acceptance/decline writes). Re-evaluating a deferred writ
-at the same outcome shape suppresses the row write rather than
-emitting a heartbeat duplicate; a fresh row appears only when the
-outcome shape changes (a dep cleared, a new dep failed, the dep set's
-classification mix changed). The wake-up mechanism in v0 is the
-polling tick — deferred dependents do not subscribe to wake-up
-events on dependency-target updates.
+**Cadence and idempotency.** The dependency check runs on every tick —
+it is not gated by the existing `(writId, writUpdatedAt)` dedupe
+(which counts only non-deferred prior rows, so a deferred writ stays
+free for re-evaluation at the same `writUpdatedAt`). Re-evaluating a
+deferred writ at the same outcome shape suppresses the row write
+rather than emitting a heartbeat duplicate; a fresh row appears only
+when the outcome shape changes (a dep cleared, a new dep failed, the
+dep set's classification mix changed). The wake-up mechanism in v0
+is the polling tick — deferred dependents do not subscribe to
+wake-up events on dependency-target updates.
 
-### Failure modes
+### Per-tick failure modes
+
+The tick handler runs the active scheduler once per fire over the
+entire surviving candidate set. The table below summarises how each
+failure mode is handled — note that several failures fail-loud-skip
+the **whole tick**, not just the offending writ:
 
 | Condition                                                          | Behavior |
 |---|---|
-| CDC event arrives before `phase:started`                           | Silently skipped; the catch-up scan reprocesses the writ post-seal. |
-| Dedupe lookup short-circuits on the same `(writId, writUpdatedAt)` | No `evaluate` call, no acceptance/decline row, no transition. The dedupe runs inside the scheduler call and counts only non-deferred prior rows — the dependency gate (which runs *before* the scheduler) re-evaluates every tick regardless. |
-| `validateConfig` throws                                            | Fail-loud log via the `[reckoner] scheduler:` prefix; evaluation is skipped (no row, no transition). |
-| `evaluate` throws or does not return an array                      | Fail-loud log; evaluation skipped. |
-| Decision carries a `writId` not in the candidate set               | Per-decision `console.warn` naming the offending id; ignore-and-continue. |
-| Two decisions target the same `writId`                             | Fail-loud log; the entire evaluation is skipped (no decision is applied). |
-| Decision carries an unknown outcome                                | Fail-loud log; the decision is ignored. |
+| Tick fires before `phase:started` (active scheduler not yet resolved) | Throws fail-loud with `[reckoner] tick: activeScheduler not resolved …`. Production should never trip this; tests can assert the throw. |
+| Held-petition query returns an empty set                            | Early return — no scheduler call, no rows, no errors. |
+| Disabled-source / unregistered-strict gate matches                  | Per-writ `declined` row + transition to cancelled (the writ is dropped from the candidate set the scheduler sees). |
+| Dedupe lookup short-circuits on the same `(writId, writUpdatedAt)`  | The writ is dropped from the candidate set before the scheduler is called; no row, no transition. |
+| `validateConfig` throws                                             | Fail-loud log via the `[reckoner] scheduler:` prefix; the **entire tick is skipped** (no row written for any candidate). |
+| `evaluate` throws or does not return an array                       | Fail-loud log; the entire tick is skipped. |
+| Decision carries a `writId` not in the candidate set                | Per-decision `console.warn` naming the offending id; ignore-and-continue (in-scope decisions still apply). |
+| Two decisions target the same `writId`                              | Fail-loud log; the **entire tick is skipped** (no decision applied for any writ). |
+| Decision carries an unknown outcome                                 | Fail-loud log; that decision is ignored, sibling decisions still apply. |
 
 ---
 
@@ -590,8 +635,8 @@ const writ = await reckoner.petition({
 
 After this call, the writ exists in its registered initial phase
 with `writ.ext.reckoner = { source, priority, complexity, payload,
-labels }`. The CDC handler picks it up on the post-commit update
-event.
+labels }`. The next periodic tick after `phase:started` picks it
+up.
 
 ### Draft-then-publish (stamp-only)
 
@@ -637,9 +682,25 @@ present, or when the writ id does not exist. See the
 
 ## What the Reckoner does NOT do (in v0)
 
+- **No CDC observer on `clerk/writs`.** Per-writ-update evaluation is
+  out of scope; the periodic tick is the single evaluation entry.
+- **No operator-configurable tick cadence.** The `@every 60s`
+  schedule is hard-coded in the kit-contributed standing order.
+  There is no `reckoner.tickSchedule` knob and no way to disable
+  the standing order short of removing the apparatus. Future
+  improvement is parked.
+- **No tick disable / pause mechanism.** Operators have no
+  config-side way to suspend the tick.
 - **No Lattice pulses.** The Reckoner does not emit pulses; the
   auto-wired `book.reckoner.reckonings.{created,updated,deleted}`
   Clockworks events are sufficient for v0 consumers.
+- **No `CapacitySnapshot` fields.** v0 ships the empty stub;
+  capacity-tracking lands when a capacity-aware scheduler does.
+- **No multi-scheduler dispatch in one tick.** One active scheduler
+  per Reckoner instance.
+- **No new framework events on tick.** The auto-wired Clockworks
+  book events on `reckoner/reckonings` continue to fire as they do
+  today; the tick handler emits no new events.
 - **No re-prioritization on already-`open` writs.** Mutating
   `ext.reckoner.priority` on an accepted writ is a different
   operation than petitioning and is not addressed here.
@@ -651,13 +712,11 @@ present, or when the writ id does not exist. See the
   inside a single transaction is the petitioner's concern via the
   stamp-only form composed with `stacks.transaction(...)` (see
   above).
-- **No no-op, throttling, or per-source quotas.** The default
-  scheduler is always-approve for held petitions that pass the
-  source / disabled / registration gates and clear the dependency
-  gate; richer scheduling policy is reserved for the Reckoner-core
-  scheduling commission. (Deferral *is* implemented for the
-  dependency-aware path — see "Dependency-aware defer" above —
-  but the scheduler-emitted `defer` outcome remains row-less.)
+- **No `no-op` outcome rows, throttling, or per-source quotas.**
+  Reserved for future commissions. (Dependency-aware deferral *is*
+  implemented as a tick step — see "Dependency-aware defer" above
+  — and the scheduler-emitted `defer` outcome now writes a
+  deferred row with `deferReason: 'other'`.)
 - **No deferred-petition staleness diagnostic.** Cycle visibility,
   dangling-target escalation, `dependency_failed` petitioner
   notification, and the running-counter fields (`deferCount`,
@@ -670,6 +729,9 @@ present, or when the writ id does not exist. See the
   petitions wake up on the next polling tick only — the Reckoner
   does not subscribe to writ-completion events on the dep target's
   side to drive an immediate re-evaluation.
+- **No Stacks transaction wrapping `petition()`.** The two-step
+  flow is the chosen design (D7). The orphan-window observations
+  are recorded in the contract document.
 - **No `ext` field on `clerk.post()`.** Clerk's
   `PostCommissionRequest` is unchanged; the ext slot is written
   via the `setWritExt` call.
@@ -681,8 +743,8 @@ present, or when the writ id does not exist. See the
   `PetitionerDescriptor`.** Contract floor only (D19).
 - **No source/owner check inside `withdraw()`.** Thin pass-through
   (D10).
-- **No `recommends: ['oculus']` or explicit Stacks dependency.**
-  `requires: ['clerk']` only (D16).
+- **No explicit Stacks dependency.** `requires: ['clerk']`
+  only (D16); Stacks is transitive through Clerk.
 - **No `nsg reckoner list-petitioners` CLI tool.** Recorded as
   observation `obs-8`.
 

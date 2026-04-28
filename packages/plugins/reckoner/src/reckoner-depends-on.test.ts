@@ -75,8 +75,9 @@ interface Fixture {
   reckoningsBook: ReadOnlyBook<ReckoningDoc>;
   /**
    * Re-fire `phase:started` against the registered handlers. The
-   * Reckoner's seal handler runs the catch-up scan — calling this
-   * again is the v0 way to simulate a tick (D7 of the commission).
+   * Reckoner's seal handler resolves the active scheduler — calling
+   * it again is harmless re-resolution. Consideration in the new
+   * tick model is driven by `hooks.runTick()`, not by phase:started.
    */
   firePhaseStarted: () => Promise<void>;
 }
@@ -286,13 +287,14 @@ const TESTER_KIT = {
 };
 
 /**
- * Post a held petition without consideration firing. We post the
+ * Post a held petition and drive the first tick. We post the
  * underlying writ via `clerk.post()` (no ext), wire any depends-on
- * links to existing targets, then stamp `ext.reckoner` last —
- * stamping is the moment the CDC handler considers the writ. By
- * routing all stamps through `reckoner.petition(writId, ext)` we
- * exercise the same code path operators use for the draft-then-
- * publish idiom.
+ * links to existing targets, stamp `ext.reckoner` via
+ * `reckoner.petition(writId, ext)` to exercise the draft-then-
+ * publish idiom, then drive a single tick so the held writ goes
+ * through the per-fire sequence (source / disabled gates →
+ * dependency-aware gate → scheduler). The synthetic tick mirrors
+ * what the standing order would produce in production.
  */
 async function postHeld(
   fix: Fixture,
@@ -310,6 +312,7 @@ async function postHeld(
   await fix.reckoner.petition(writ.id, {
     source: 'tester.dep',
   });
+  await fix.hooks.runTick();
   return writ;
 }
 
@@ -461,7 +464,7 @@ describe('Reckoner dependency-aware consideration gate', () => {
 
     // Re-run the catch-up scan to re-evaluate the held writ at the
     // dangling-target shape.
-    await fix.hooks.runCatchUpScan();
+    await fix.hooks.runTick();
 
     const rows = await fix.reckoningsBook.find({
       where: [['writId', '=', writ.id]],
@@ -528,7 +531,7 @@ describe('Reckoner dependency-aware consideration gate', () => {
     // Tick again — re-run the catch-up scan, which re-considers every
     // held petition. With the dep cleared, the gate proceeds and the
     // scheduler accepts.
-    await fix.hooks.runCatchUpScan();
+    await fix.hooks.runTick();
 
     const rereadAfterTick = await fix.clerk.show(writ.id);
     assert.equal(
@@ -567,8 +570,8 @@ describe('Reckoner dependency-aware consideration gate', () => {
 
     // Re-run the catch-up scan twice without changing dep state.
     // Each tick must run the dep gate but suppress the row write.
-    await fix.hooks.runCatchUpScan();
-    await fix.hooks.runCatchUpScan();
+    await fix.hooks.runTick();
+    await fix.hooks.runTick();
 
     rows = await fix.reckoningsBook.find({
       where: [['writId', '=', writ.id]],
@@ -598,7 +601,7 @@ describe('Reckoner dependency-aware consideration gate', () => {
     // Fail the dep — outcome shape changes (pending → failed).
     await fix.clerk.transition(dep.id, 'failed', { resolution: 'oops' });
 
-    await fix.hooks.runCatchUpScan();
+    await fix.hooks.runTick();
 
     rows = await fix.reckoningsBook.find({
       where: [['writId', '=', writ.id]],
@@ -630,8 +633,8 @@ describe('Reckoner dependency-aware consideration gate', () => {
 
     // Re-run the catch-up scan a few times to confirm the cycle
     // doesn't drift toward an accept on either side.
-    await fix.hooks.runCatchUpScan();
-    await fix.hooks.runCatchUpScan();
+    await fix.hooks.runTick();
+    await fix.hooks.runTick();
 
     const rereadA = await fix.clerk.show(a.id);
     const rereadB = await fix.clerk.show(b.id);
@@ -656,9 +659,9 @@ describe('Reckoner dependency-aware consideration gate', () => {
     }
   });
 
-  // ── Case 12: rule ordering — disabled-source skip wins over dep gate ─
+  // ── Case 12: rule ordering — disabled-source decline wins over dep gate ─
 
-  it('rule ordering: a disabled source produces no row even when its deps would defer', async () => {
+  it('rule ordering: a disabled source declines before the dep gate fires', async () => {
     const fix = await buildFixture({
       petitionerKits: [TESTER_KIT],
       config: { disabledSources: ['tester.dep'] },
@@ -667,23 +670,25 @@ describe('Reckoner dependency-aware consideration gate', () => {
     const dep = await fix.clerk.post({ title: 'dep', body: 'b' });
     await fix.clerk.transition(dep.id, 'open', {}); // gating
 
-    const originalDebug = console.debug;
-    console.debug = () => {};
-    try {
-      const writ = await postHeld(fix, { dependsOn: [dep.id] });
-      const rows = await fix.reckoningsBook.find({
-        where: [['writId', '=', writ.id]],
-      });
-      assert.equal(
-        rows.length,
-        0,
-        'disabled-source skip runs before the dep gate; no row',
-      );
-      const reread = await fix.clerk.show(writ.id);
-      assert.equal(reread.phase, 'new');
-    } finally {
-      console.debug = originalDebug;
-    }
+    const writ = await postHeld(fix, { dependsOn: [dep.id] });
+
+    const rows = await fix.reckoningsBook.find({
+      where: [['writId', '=', writ.id]],
+    });
+    assert.equal(
+      rows.length,
+      1,
+      'disabled-source decline runs before the dep gate; one declined row',
+    );
+    assert.equal(rows[0]!.outcome, 'declined');
+    assert.equal(rows[0]!.declineReason, 'source_banned');
+    const reread = await fix.clerk.show(writ.id);
+    assert.equal(
+      reread.phase,
+      'cancelled',
+      'disabled-source decline transitions the writ to cancelled — no dep-gate defer',
+    );
+    assert.notEqual(rows[0]!.deferReason, 'dependency_pending');
   });
 
   // ── Case 12b: rule ordering — registration enforce → decline (no defer) ─
@@ -698,7 +703,7 @@ describe('Reckoner dependency-aware consideration gate', () => {
     await fix.clerk.transition(dep.id, 'open', {}); // gating
 
     // Bypass the helper's registry guard by stamping ext via Clerk
-    // directly with an unregistered source. The CDC handler then
+    // directly with an unregistered source. The tick handler then
     // takes the decline path before reaching the dep gate.
     const writ = await fix.clerk.post({ title: 't', body: 'b' });
     await fix.clerk.link(writ.id, dep.id, 'depends-on', 'depends-on');
@@ -712,6 +717,8 @@ describe('Reckoner dependency-aware consideration gate', () => {
         domain: [],
       },
     });
+
+    await fix.hooks.runTick();
 
     const reread = await fix.clerk.show(writ.id);
     assert.equal(

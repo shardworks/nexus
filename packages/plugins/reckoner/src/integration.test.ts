@@ -9,14 +9,16 @@
  *
  *   1. A petition lands as a held writ in `new` carrying
  *      `ext['reckoner']`.
- *   2. The Phase 2 CDC handler observes the setWritExt update
- *      event and runs the rule sequence.
+ *   2. A periodic tick fires (driven directly through the
+ *      test-only `runTick` hook with a synthetic `clockworks.timer`
+ *      event) and runs the per-fire sequence.
  *   3. The accept-path transitions the writ from `new` to the
  *      type's active state (`open` for mandate).
  *   4. A Reckonings row is appended carrying `outcome: 'accepted'`,
  *      the lean projection (`source`, `visionRelation`, `severity`),
- *      and the dedupe-discriminating `(writId, writUpdatedAt)`
- *      pair.
+ *      the dedupe-discriminating `(writId, writUpdatedAt)` pair,
+ *      and a populated `tickEventId` matching the synthetic
+ *      timer-event id.
  *
  * Mirrors the structural pattern from
  * `packages/plugins/sentinel/src/integration.test.ts` for fixture
@@ -43,7 +45,7 @@ import type { ReadOnlyBook, StacksApi } from '@shardworks/stacks-apparatus';
 import { createClerk } from '@shardworks/clerk-apparatus';
 import type { ClerkApi } from '@shardworks/clerk-apparatus';
 
-import { createReckoner } from './reckoner.ts';
+import { createReckonerWithHooks } from './reckoner.ts';
 import { alwaysApproveScheduler } from './schedulers/always-approve.ts';
 import type { ReckoningDoc, ReckonerApi } from './types.ts';
 
@@ -51,6 +53,7 @@ interface Fixture {
   stacks: StacksApi;
   clerk: ClerkApi;
   reckoner: ReckonerApi;
+  hooks: ReturnType<typeof createReckonerWithHooks>['hooks'];
   reckoningsBook: ReadOnlyBook<ReckoningDoc>;
 }
 
@@ -58,7 +61,8 @@ async function buildGuild(): Promise<Fixture> {
   const backend = new MemoryBackend();
   const stacksPlugin = createStacksApparatus(backend);
   const clerkPlugin = createClerk();
-  const reckonerPlugin = createReckoner();
+  const built = createReckonerWithHooks();
+  const reckonerPlugin = built.plugin;
 
   const apparatusMap = new Map<string, unknown>();
   const guildConfig: GuildConfig = {
@@ -211,6 +215,7 @@ async function buildGuild(): Promise<Fixture> {
     stacks,
     clerk,
     reckoner,
+    hooks: built.hooks,
     reckoningsBook: stacks.readBook<ReckoningDoc>('reckoner', 'reckonings'),
   };
 }
@@ -218,7 +223,7 @@ async function buildGuild(): Promise<Fixture> {
 describe('Reckoner — end-to-end', () => {
   afterEach(() => clearGuild());
 
-  it('petition → consideration → transition → reckonings row flows end-to-end', async () => {
+  it('petition → tick → transition → reckonings row flows end-to-end', async () => {
     const fix = await buildGuild();
 
     const writ = await fix.reckoner.petition({
@@ -231,11 +236,23 @@ describe('Reckoner — end-to-end', () => {
       },
     });
 
-    // The CDC handler ran during setWritExt's Phase 2 dispatch and
-    // approved the petition. Re-read to confirm the writ is in the
-    // type's active state (`open` for mandate).
+    // Petition lands the writ in `new`. The tick is the only path
+    // that drives evaluation — fire one with a synthetic
+    // `clockworks.timer` event so the resulting row stamps a
+    // populated `tickEventId`.
+    const tickEventId = 'e-integration-tick-1';
+    await fix.hooks.runTick({
+      id: tickEventId,
+      name: 'clockworks.timer',
+      payload: null,
+      emitter: 'framework',
+      firedAt: new Date().toISOString(),
+    });
+
+    // Re-read to confirm the writ is in the type's active state
+    // (`open` for mandate).
     const reread = await fix.clerk.show(writ.id);
-    assert.equal(reread.phase, 'open', 'held petition becomes active');
+    assert.equal(reread.phase, 'open', 'held petition becomes active after tick');
     assert.equal(reread.type, 'mandate');
     // The ext stays in place across the transition.
     assert.ok(reread.ext?.reckoner, 'ext.reckoner survives the transition');
@@ -259,11 +276,11 @@ describe('Reckoner — end-to-end', () => {
     // Accepted rows carry no decline / defer metadata.
     assert.equal(row.declineReason, undefined);
     assert.equal(row.deferReason, undefined);
-    // No scheduled-tick id for v0 (CDC-driven only).
-    assert.equal(row.tickEventId, undefined);
+    // The tick stamped the triggering event id onto the row.
+    assert.equal(row.tickEventId, tickEventId);
   });
 
-  it('emits one row per acceptance even when the handler is re-driven on the same writ-version', async () => {
+  it('emits one row per acceptance even when ticks repeat after the writ has moved out of new', async () => {
     const fix = await buildGuild();
 
     const writ = await fix.reckoner.petition({
@@ -271,13 +288,14 @@ describe('Reckoner — end-to-end', () => {
       title: 'idempotent integration',
       body: 'b',
     });
+    // First tick auto-approves.
+    await fix.hooks.runTick();
 
-    // Drive a benign edit through Clerk so a fresh CDC update event
-    // fires for the writ. ext.reckoner did not change and phase did
-    // not change since the accept transition, so the re-firing gate
-    // (D14) rejects it before the dedupe lookup; either way the
-    // assertion is the same: exactly one row per acceptance.
-    await fix.clerk.edit({ id: writ.id, body: 'b' });
+    // Subsequent ticks observe no candidate — the writ is no
+    // longer in `new`, so the tick's held-petition query produces
+    // an empty set. No second row.
+    await fix.hooks.runTick();
+    await fix.hooks.runTick();
 
     const rows = await fix.reckoningsBook.find({
       where: [['writId', '=', writ.id]],

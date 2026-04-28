@@ -1,10 +1,10 @@
 /**
  * Reckoner scheduler-registry tests.
  *
- * Companion to `reckoner.test.ts` and `reckoner-cdc.test.ts`. Targets
- * the registry-resolved scheduler call site (Rule 5 in `considerWrit`)
- * and the kit-static scheduler registry. Covers every entry in the
- * commission's Acceptance Signal:
+ * Companion to `reckoner.test.ts` and `reckoner-tick.test.ts`. Targets
+ * the registry-resolved scheduler call site driven by the tick
+ * handler, and the kit-static scheduler registry. Covers every entry
+ * in the commission's Acceptance Signal:
  *
  *   - duplicate scheduler id across two kits → fail-loud naming both
  *     kits;
@@ -19,15 +19,19 @@
  *   - `evaluate` throw → log + skip;
  *   - multiple decisions for one writ id → log + skip;
  *   - non-candidate decisions → log + ignore;
- *   - CDC events arriving pre-seal → silently skipped;
+ *   - pre-seal ticks → fail-loud throw (the silent-skip the v0
+ *     CDC path used has been replaced with the loud guard);
  *   - approve / defer / decline outcomes map to the prescribed
- *     transitions and Reckonings rows;
+ *     transitions and Reckonings rows (per the new tick model
+ *     `defer` writes a row with `deferReason: 'other'`);
  *   - `weight` is threaded from a `SchedulerDecision` to the
  *     Reckonings row when present.
  *
- * The fixture mirrors the one in `reckoner-cdc.test.ts`: real Stacks
+ * The fixture mirrors the one in `reckoner-tick.test.ts`: real Stacks
  * + Clerk + Reckoner against `MemoryBackend`, with explicit book
- * pre-creation and a phase-started capable StartupContext.
+ * pre-creation and a phase-started capable StartupContext. Every
+ * "petition then observe outcome" entry now drives the tick path
+ * via `hooks.runTick()`.
  */
 
 import { describe, it, afterEach } from 'node:test';
@@ -539,6 +543,7 @@ describe('Reckoner scheduler registry', () => {
           title: 't',
           body: 'b',
         });
+        await fix.hooks.runTick();
         const reread = await fix.clerk.show(writ.id);
         assert.equal(reread.phase, 'new', 'writ stays in new on validateConfig throw');
         const rows = await fix.reckoningsBook.find({
@@ -560,7 +565,7 @@ describe('Reckoner scheduler registry', () => {
     });
   });
 
-  // ── runScheduler: evaluate throw ──────────────────────────────────
+  // ── tick: evaluate throw ──────────────────────────────────────────
 
   describe('evaluate throw', () => {
     it('logs fail-loud and skips evaluation', async () => {
@@ -588,6 +593,7 @@ describe('Reckoner scheduler registry', () => {
           title: 't',
           body: 'b',
         });
+        await fix.hooks.runTick();
         const reread = await fix.clerk.show(writ.id);
         assert.equal(reread.phase, 'new');
         const rows = await fix.reckoningsBook.find({
@@ -608,7 +614,7 @@ describe('Reckoner scheduler registry', () => {
     });
   });
 
-  // ── runScheduler: multi-decision per writ id ───────────────────────
+  // ── tick: multi-decision per writ id ──────────────────────────────
 
   describe('multi-decision per writ id', () => {
     it('logs fail-loud and skips applying any decision', async () => {
@@ -640,6 +646,7 @@ describe('Reckoner scheduler registry', () => {
           title: 't',
           body: 'b',
         });
+        await fix.hooks.runTick();
         const reread = await fix.clerk.show(writ.id);
         assert.equal(reread.phase, 'new', 'writ untouched on multi-decision');
         const rows = await fix.reckoningsBook.find({
@@ -660,7 +667,7 @@ describe('Reckoner scheduler registry', () => {
     });
   });
 
-  // ── runScheduler: stranger writId ──────────────────────────────────
+  // ── tick: stranger writId ─────────────────────────────────────────
 
   describe('non-candidate writ id in decisions', () => {
     it('warns and ignores the stranger decision while applying the in-scope one', async () => {
@@ -692,6 +699,7 @@ describe('Reckoner scheduler registry', () => {
           title: 't',
           body: 'b',
         });
+        await fix.hooks.runTick();
         const reread = await fix.clerk.show(writ.id);
         assert.equal(reread.phase, 'open', 'in-scope decision is applied');
         const rows = await fix.reckoningsBook.find({
@@ -714,44 +722,26 @@ describe('Reckoner scheduler registry', () => {
     });
   });
 
-  // ── Pre-seal CDC events silently skipped ───────────────────────────
+  // ── Pre-seal tick fail-loud ────────────────────────────────────────
 
-  describe('pre-seal CDC events', () => {
-    it('silently skips when activeScheduler has not yet resolved', async () => {
+  describe('pre-seal tick', () => {
+    it('throws fail-loud when activeScheduler has not yet resolved', async () => {
       const fix = await buildFixture({
         petitionerKits: [REGISTERED_PETITIONER],
         skipPhaseStarted: true,
       });
       assert.equal(fix.hooks.getActiveSchedulerId(), undefined);
 
-      // Suppress the petition-helper's expected warning about the
-      // unregistered source path; this test stamps ext directly.
-      const originalWarn = console.warn;
-      console.warn = () => {};
-      try {
-        const writ = await fix.clerk.post({ title: 't', body: 'b' });
-        await fix.clerk.setWritExt(writ.id, 'reckoner', {
-          source: 'tester.kind',
-          priority: {
-            visionRelation: 'vision-neutral',
-            severity: 'minor',
-            scope: 'minor-area',
-            time: { decay: false, deadline: null },
-            domain: [],
-          },
-        });
-        const reread = await fix.clerk.show(writ.id);
-        assert.equal(reread.phase, 'new', 'pre-seal events leave writ in new');
-        const rows = await fix.reckoningsBook.find({
-          where: [['writId', '=', writ.id]],
-        });
-        assert.equal(rows.length, 0);
-      } finally {
-        console.warn = originalWarn;
-      }
+      await assert.rejects(
+        () => fix.hooks.runTick(),
+        (err: Error) => {
+          assert.match(err.message, /\[reckoner\] tick: activeScheduler not resolved/);
+          return true;
+        },
+      );
     });
 
-    it('catch-up scan reprocesses pre-seal events post-seal', async () => {
+    it('the first tick after phase:started reprocesses pre-seal held writs', async () => {
       const fix = await buildFixture({
         petitionerKits: [REGISTERED_PETITIONER],
         skipPhaseStarted: true,
@@ -770,10 +760,12 @@ describe('Reckoner scheduler registry', () => {
             domain: [],
           },
         });
-        // Now fire phase:started → seal + catch-up scan.
+        // Fire phase:started → registry seals, active scheduler
+        // resolves. Then the first tick auto-approves the writ.
         await fix.firePhaseStarted();
+        await fix.hooks.runTick();
         const reread = await fix.clerk.show(writ.id);
-        assert.equal(reread.phase, 'open', 'catch-up scan auto-approves the writ');
+        assert.equal(reread.phase, 'open', 'first post-seal tick auto-approves the writ');
         const rows = await fix.reckoningsBook.find({
           where: [['writId', '=', writ.id]],
         });
@@ -797,6 +789,7 @@ describe('Reckoner scheduler registry', () => {
         title: 't',
         body: 'b',
       });
+      await fix.hooks.runTick();
       const reread = await fix.clerk.show(writ.id);
       assert.equal(reread.phase, 'open');
       const rows = await fix.reckoningsBook.find({
@@ -810,14 +803,15 @@ describe('Reckoner scheduler registry', () => {
   // ── Outcome mapping: defer ────────────────────────────────────────
 
   describe('outcome: defer', () => {
-    it('leaves writ in new with no row and no transition', async () => {
+    it('leaves writ in new and writes a deferred row carrying deferReason: other (D3)', async () => {
+      const reason = 'capacity hold';
       const scheduler: Scheduler = makeScheduler({
         id: 'kit-a.defer',
         async evaluate(input: SchedulerInput<unknown>): Promise<readonly SchedulerDecision[]> {
           return input.candidates.map((w) => ({
             writId: w.id,
             outcome: 'defer' as const,
-            reason: 'capacity hold',
+            reason,
           }));
         },
       });
@@ -833,12 +827,16 @@ describe('Reckoner scheduler registry', () => {
         title: 't',
         body: 'b',
       });
+      await fix.hooks.runTick();
       const reread = await fix.clerk.show(writ.id);
       assert.equal(reread.phase, 'new', 'defer leaves writ in new');
       const rows = await fix.reckoningsBook.find({
         where: [['writId', '=', writ.id]],
       });
-      assert.equal(rows.length, 0, 'defer writes no row in v0');
+      assert.equal(rows.length, 1, 'defer writes a row in the tick model');
+      assert.equal(rows[0]!.outcome, 'deferred');
+      assert.equal(rows[0]!.deferReason, 'other');
+      assert.equal(rows[0]!.deferNote, reason);
     });
   });
 
@@ -869,6 +867,7 @@ describe('Reckoner scheduler registry', () => {
         title: 't',
         body: 'b',
       });
+      await fix.hooks.runTick();
       const reread = await fix.clerk.show(writ.id);
       assert.equal(reread.phase, 'cancelled');
       assert.equal(reread.resolution, reason);
@@ -910,6 +909,7 @@ describe('Reckoner scheduler registry', () => {
         title: 't',
         body: 'b',
       });
+      await fix.hooks.runTick();
       const rows = await fix.reckoningsBook.find({
         where: [['writId', '=', writ.id]],
       });
@@ -927,6 +927,7 @@ describe('Reckoner scheduler registry', () => {
         title: 't',
         body: 'b',
       });
+      await fix.hooks.runTick();
       const rows = await fix.reckoningsBook.find({
         where: [['writId', '=', writ.id]],
       });

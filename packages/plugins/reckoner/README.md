@@ -4,9 +4,9 @@ The Reckoner stands up the **petition-scheduler apparatus**: the
 kit-static registry of petitioner sources, the canonical
 `petition()` / `withdraw()` helpers (Workflow 2 in the contract document),
 the inspection helpers downstream consumers use to read the registry
-and live config, and a Phase 2 CDC handler on `clerk/writs` that drives
-held petitions out of `new` and writes one row per substantive
-consideration to its `reckoner/reckonings` evaluation journal.
+and live config, and a periodic tick relay that drives held petitions
+out of `new` and writes one row per consideration to its
+`reckoner/reckonings` evaluation journal.
 
 What ships here:
 
@@ -46,24 +46,29 @@ What ships here:
 - A `reckoner` block in `guild.json` with `enforceRegistration` and
   `disabledSources`; both fields are optional and re-read on every
   consumer call so operators can hot-edit without restarting the guild.
-- A **Phase 2 CDC handler** that watches `clerk/writs` for held
-  petitions (writs in `new` phase carrying `ext.reckoner`), runs the
-  rule sequence (skip / disabled-source / source-check /
-  dependency-gate / scheduler-evaluate), drives `clerk.transition(...)`
-  to the type's active state on accept (or to `cancelled` with a
-  structured resolution on decline), and idempotently appends one row
-  to the `reckoner/reckonings` book per state-change. The scheduler
-  call site routes through the registry-resolved active scheduler —
-  the default `reckoner.always-approve` instance approves every held
-  petition that clears the source / disabled / registration gates and
-  whose dependency gate proceeds. The configured scheduler can also
-  emit `defer` (no transition, no row) or `decline` (transition to
-  `cancelled` with the decision's reason recorded as the resolution
-  string + a Reckonings row carrying `declineReason: 'other'`). The
-  other decline path remains `enforceRegistration: true` against an
-  unregistered source, which produces an `outcome: 'declined'` row
-  with `declineReason: 'source_unregistered'`.
-- A **dependency-aware defer rule**, slotted into the rule sequence
+- A **periodic tick relay** (`reckoner.tick`) plus a kit-contributed
+  standing order at `@every 60s` that drives the relay. Every fire
+  sweeps the held-petition set in one batch, applies source /
+  disabled-source gates, runs the dependency-aware consideration
+  gate, dedupes against the persisted `(writId, writUpdatedAt)`
+  lookup, calls the active scheduler's `evaluate` once with the full
+  surviving candidate set, and applies each emitted decision
+  (`approve` → transition to active target; `decline` → transition
+  to `cancelled` with the decision's reason recorded as the
+  resolution string + a Reckonings row carrying
+  `declineReason: 'other'`; `defer` → no transition + a row
+  carrying `deferReason: 'other'` and the decision's reason in
+  `deferNote`). The other decline path is the source-unregistered +
+  `enforceRegistration: true` rule (row carries
+  `declineReason: 'source_unregistered'`); the disabled-source path
+  produces a row with `declineReason: 'source_banned'`. The
+  `@every 60s` cadence is hard-coded — there is no operator
+  knob in this commission, and no way to disable the standing order
+  short of removing the apparatus. The tick is the single
+  evaluation entry — there is no CDC handler, no startup catch-up
+  scan, and no per-writ-update path. Pre-existing held petitions
+  are picked up on the first tick after `phase:started`.
+- A **dependency-aware defer rule**, slotted into the tick sequence
   between source-registration enforcement and the scheduler call. The
   rule walks each held petition's outbound `depends-on` links
   (filtered by `link.kind === 'depends-on'`), resolves each target via
@@ -86,9 +91,6 @@ What ships here:
   dangling-target escalation, running counters, `dependency_failed`
   petitioner notification) belongs to a sibling commission; the
   Reckoner stops at "petition stays deferred."
-- A **startup catch-up scan** that re-routes pre-existing held
-  petitions through the same handler at apparatus start so a process
-  restart does not strand work.
 - The **`reckoner/reckonings` book** — the Reckoner's evaluation
   journal. One row per substantive consideration, immutable after
   write. The auto-wired
@@ -98,9 +100,11 @@ What ships here:
   `docs/architecture/reckonings-book.md` for the schema, index set,
   and CDC contract.
 
-The Reckoner requires `clerk` and consumes `petitioners`. Stacks is
-reached transitively through Clerk; no Clockworks dependency is
-declared.
+The Reckoner requires `clerk`. Stacks is reached transitively through
+Clerk. Clockworks is a soft `recommends` because the periodic tick
+relay only fires when Clockworks is installed; the Reckoner's
+`petition()` / `withdraw()` and registry inspection helpers continue
+to work without it.
 
 See the contract document at
 `docs/architecture/petitioner-registration.md` for the full data shape

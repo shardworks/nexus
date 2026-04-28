@@ -353,38 +353,36 @@ heavy-blob sibling would be empty.
 
 ### Tick identity
 
-The Reckoner has two trigger paths into a consideration:
+The Reckoner drives every consideration from a single trigger path:
+a `reckoner.tick` relay paired with a kit-contributed `@every 60s`
+standing order. Every fire of the standing order writes a synthesized
+`clockworks.timer` event row into `clockworks/events` (see
+[clockworks.md → Scheduled Standing Orders](clockworks.md#scheduled-standing-orders))
+with a unique event id of the form `e-<base36_ts>-<hex>`, then
+dispatches the `reckoner.tick` relay with that event in its handler
+context. The relay's handler sweeps held writs and may write
+Reckonings rows; every row carries the triggering event id in
+`tickEventId`.
 
-1. **Scheduled tick** — a Clockworks `schedule:` standing order
-   firing on a fixed interval. Every fire writes a synthesized
-   `clockworks.timer` event row into `clockworks/events` (see
-   [clockworks.md → Scheduled Standing Orders](clockworks.md#scheduled-standing-orders))
-   with a unique event id of the form `e-<base36_ts>-<hex>`. The
-   Reckoner sweeps held writs and may write Reckonings rows.
-2. **CDC-driven** — a Clockworks standing order on
-   `book.clerk.writs.{created,updated}`. When a held writ arrives or
-   changes, the Reckoner considers it directly. There is no
-   scheduling-tick id for these considerations because no scheduled
-   timer fired.
+The field is **omitted** only on test paths that drive the pure
+tick helper directly with `null` (the Reckoner's in-package test
+hooks do this to verify the omitted-when-absent rule). Production
+ticks always populate it. Synthesizing a fallback id from the
+helper's call boundary would pollute rows with non-joinable values;
+absence is meaningful — it indicates a non-dispatcher caller.
 
-Reckonings records stamp the triggering `clockworks.timer` event id
-into `tickEventId` on path (1). On path (2), the field is **absent**.
 Together with `consideredAt`, this gives the consumer two
 complementary handles:
 
-- **`tickEventId`** (when present) — exact-match join to the
-  dispatch row, the schedule entry, and every sibling Reckonings row
-  produced by the same scheduled tick.
+- **`tickEventId`** (populated on production rows) — exact-match
+  join to the dispatch row, the schedule entry, and every sibling
+  Reckonings row produced by the same tick.
 - **`consideredAt`** — time-range filter for since-T sweeps and
-  per-writ timeline ordering, available on every row regardless of
-  trigger path.
+  per-writ timeline ordering, available on every row.
 
 The doc deliberately reuses the framework-emitted `clockworks.timer`
 id rather than synthesizing a new "Reckoner tick id" — it earns no
-second piece of identity. CDC-triggered considerations have no tick
-id because there is no tick to identify; the Stacks `ChangeEvent`
-that triggered them is observable through `clockworks/events` for
-auditors who need that join.
+second piece of identity.
 
 ### Outcome-keyed reason metadata layout
 

@@ -42,11 +42,15 @@ contract spans: ['clerk', 'spider', 'stacks', 'clockworks']
   state), Spider picks it up and dispatches via the writ type's
   rig template.
 - **[Stacks](apparatus/stacks.md)** — the storage substrate. The
-  Reckoner watches CDC events on the writs book to find writs
-  needing consideration.
-- **[Clockworks](clockworks.md)** — the event substrate. The auto-
-  wired `book.clerk.writs.{created,updated}` events feed the
-  Reckoner's CDC handler.
+  Reckoner reads `clerk/writs` directly on every periodic tick to
+  find writs needing consideration.
+- **[Clockworks](clockworks.md)** — the event substrate. A
+  kit-contributed `@every 60s` standing order dispatches the
+  `reckoner.tick` relay; the relay's handler is the canonical
+  evaluation entry. When Clockworks is not installed, the standing
+  order is never consumed and the tick never fires; the Reckoner's
+  `petition()` / `withdraw()` and registry inspection still work,
+  but no scheduler decisions are applied.
 
 ---
 
@@ -84,10 +88,10 @@ await clerk.post({
 ```
 
 The writ exists in `new` phase (Clerk's default for new writs).
-Spider doesn't dispatch from `new`. The Reckoner observes CDC,
-sees `writ.ext['reckoner']`, validates the source against its
-registry (see §5), and adopts responsibility for transitioning
-the writ.
+Spider doesn't dispatch from `new`. The next periodic tick
+(`@every 60s`) sweeps `clerk/writs`, sees `writ.ext['reckoner']`,
+validates the source against its registry (see §5), and adopts
+responsibility for transitioning the writ.
 
 This workflow is always available — any apparatus that can call
 `clerk.post()` (which is to say, any loaded apparatus) can post a
@@ -162,30 +166,33 @@ for the full helper signature and the guard order.
 
 ### Reckoner behavior
 
-The Reckoner subscribes to the auto-wired `book.clerk.writs`
-events. For each writ event, it inspects the writ:
+The Reckoner runs a periodic tick (`@every 60s`) that sweeps
+`clerk/writs` for held petitions. On every fire it walks the
+candidate set in one batch:
 
-1. If the writ is **not** in `new` phase, ignore.
-2. If the writ does **not** have `ext['reckoner']`, ignore — this
-   is not a Reckoner-gated writ; some other authority owns the
-   transition.
-3. **Source check.** If the writ's `ext['reckoner'].source` is
+1. Held-petition query: every writ in `new` phase carrying
+   `ext['reckoner']` with a non-empty source string.
+2. **Source check.** If the writ's `ext['reckoner'].source` is
    **not** registered (see §5):
    - When `enforceRegistration` is true: decline the writ,
      transitioning `new` → `cancelled` with a reason naming the
-     unknown source.
-   - When `enforceRegistration` is false (default): log a warning
-     and proceed.
-4. **Per-source ops controls.** If the source is in
-   `disabledSources` (§6), the Reckoner **skips** the writ —
-   leaves it in `new` phase, takes no action, does not write a
-   reckoning entry. The writ remains eligible for consideration
-   again if the source is later removed from `disabledSources`.
-5. Otherwise the writ is a held petition. The Reckoner evaluates
-   its priority dimensions and complexity against current state
-   and decides:
+     unknown source. Append a `declined` Reckonings row carrying
+     `declineReason: 'source_unregistered'`.
+   - When `enforceRegistration` is false (default): the writ
+     proceeds to the scheduler call.
+3. **Per-source ops controls.** If the source is in
+   `disabledSources` (§6), the Reckoner declines the writ:
+   transition `new` → `cancelled` with a reason naming the banned
+   source, and append a `declined` Reckonings row carrying
+   `declineReason: 'source_banned'`.
+4. **Dedupe.** Skip any writ for which a Reckonings row already
+   exists at the current `(writId, writUpdatedAt)` pair.
+5. **Scheduler call.** The surviving candidates are handed to the
+   active scheduler in one `evaluate` call, with the validated
+   `reckoner.schedulerConfig`. Each emitted decision is applied:
    - **Approve** → transition `new` → `open` (or the type's
-     equivalent active state). Spider then picks up.
+     equivalent active state). Spider then picks up. Append an
+     `accepted` row.
    - **Defer (dependency-aware)** → leave in `new`. Append a
      `deferred` Reckonings row carrying `deferReason:
      'dependency_pending'` (one or more outbound `depends-on`
@@ -198,12 +205,14 @@ events. For each writ event, it inspects the writ:
      journal lean. The classifier reads the target's writ-type
      config attrs (cleared = terminal + success-or-cancelled);
      cancelled deps are success-equivalent in v0.
-   - **Defer (scheduler-emitted)** → leave in `new`, no row. The
-     scheduler-emitted defer outcome is row-less in v0; richer
-     scheduling-policy deferrals are reserved for future
-     commissions.
-   - **Decline** → transition `new` → `cancelled`. The decline
-     reason is stamped on the writ via the resolution field.
+   - **Defer (scheduler-emitted)** → leave in `new`. Append a
+     `deferred` row carrying `deferReason: 'other'` and the
+     decision's reason in `deferNote`. Re-evaluate on the next
+     tick.
+   - **Decline** → transition `new` → `cancelled`. Append a
+     `declined` row carrying `declineReason: 'other'` and the
+     decision's reason in both the writ's resolution field and the
+     row's `remediationHint`.
 
 The Reckoner is one authority among several that can transition
 writs out of `new`. Patron manual transitions, planner-driven
@@ -225,7 +234,8 @@ The Reckoner's `withdraw(writId, reason?)` helper is a thin
 wrapper around the same call.
 
 If withdrawal lands while the writ is still in `new` (the common
-case), the Reckoner's CDC handler stops considering it. If
+case), the next tick simply sees the writ no longer in `new` and
+skips it (the held-petition query filters by phase). If
 withdrawal lands after approval (writ already in `open` or
 further), it follows the normal lifecycle for cancelling
 in-flight work — same as any other writ being cancelled mid-

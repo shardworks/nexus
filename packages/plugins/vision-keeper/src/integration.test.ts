@@ -6,12 +6,13 @@
  * is hand-rolled. Asserts every behavioral case from the brief against
  * a live stack:
  *
- *   1. A drift snapshot lands a held writ that the Reckoner CDC
- *      handler observes and accepts (drift petitions carry a
- *      registered source under the always-approve stub). The writ
- *      ends up in the active phase carrying the contract's
- *      `ext.reckoner` slot (registered source, drift dimensions,
- *      typed payload, vision-id label).
+ *   1. A drift snapshot lands a held writ in `new` carrying the
+ *      contract's `ext.reckoner` slot (registered source, drift
+ *      dimensions, typed payload, vision-id label). The Reckoner's
+ *      periodic tick (the production evaluation entry) is not
+ *      driven from this fixture — these tests assert vision-keeper
+ *      behavior, not tick outcomes; per-tick acceptance is covered
+ *      end-to-end in `packages/plugins/reckoner/src/integration.test.ts`.
  *   2. A second snapshot for the same vision auto-supersedes the
  *      first — the prior writ ends in `cancelled`.
  *   3. `superseded(visionId)` cancels the outstanding writ for a
@@ -213,9 +214,10 @@ async function buildGuild(opts: {
     { ownerId: 'clockworks', book: 'event_dispatches' },
     { indexes: ['eventId', 'status', ['eventId', 'status']] },
   );
-  // Reckoner's reckonings book — populated by the Reckoner CDC
-  // handler on every consideration. Pre-create here so the handler's
-  // first write succeeds.
+  // Reckoner's reckonings book — populated by the Reckoner's
+  // periodic tick handler on every consideration. Pre-create here
+  // so the handler's first write succeeds in fixtures that drive
+  // the tick.
   backend.ensureBook(
     { ownerId: 'reckoner', book: 'reckonings' },
     {
@@ -383,8 +385,10 @@ async function buildGuild(opts: {
   const keeper = keeperPlugin.apparatus.provides as VisionKeeperApi;
   apparatusMap.set('vision-keeper', keeper);
 
-  // Seal — run any registered phase:started handlers. The Reckoner's
-  // handler is async (it runs the catch-up scan), so await each.
+  // Seal — run any registered phase:started handlers. The
+  // Reckoner's seal handler resolves the active scheduler
+  // synchronously now; awaiting each is forward-compatibility
+  // with future async seal handlers.
   for (const handler of phaseStartedHandlers) {
     await handler();
   }
@@ -431,13 +435,15 @@ describe('Vision-keeper — end-to-end', () => {
         metricValues: { metricA: 1 },
       });
 
-      // Re-read through Clerk to confirm the row is persisted. The
-      // Reckoner CDC handler auto-approves on its always-approve
-      // stub for registered sources, so the writ ends up in the
-      // type's active phase (`open` for mandate). The contract ext
-      // slot survives the transition.
+      // Re-read through Clerk to confirm the row is persisted.
+      // The Reckoner now drives evaluation through a periodic tick
+      // (`@every 60s`) rather than CDC, and this fixture does not
+      // fire a tick — the writ remains in `new` carrying the
+      // contract ext slot. The vision-keeper integration's load-
+      // bearing assertions are about the writ shape, not the
+      // tick outcome.
       const reread = await fix.clerk.show(writ.id);
-      assert.equal(reread.phase, 'open');
+      assert.equal(reread.phase, 'new');
       const ext = reread.ext?.reckoner as ReckonerExt | undefined;
       assert.ok(ext);
       assert.equal(ext!.source, VISION_KEEPER_SOURCE);
@@ -481,10 +487,12 @@ describe('Vision-keeper — end-to-end', () => {
         /superseded by newer snapshot/i,
       );
 
-      // The new petition gets auto-approved by the Reckoner CDC
-      // handler — it ends up in the type's active phase.
+      // The new petition lands in `new` and waits for the next
+      // periodic tick — no tick fires in this fixture, so the
+      // writ stays in `new`. The auto-supersede behavior under
+      // test is on the prior writ, not the new one.
       const secondReread = await fix.clerk.show(second.id);
-      assert.equal(secondReread.phase, 'open');
+      assert.equal(secondReread.phase, 'new');
     } finally {
       await teardown(fix);
     }
@@ -523,10 +531,10 @@ describe('Vision-keeper — end-to-end', () => {
       );
 
       // Vision-a's petition is untouched by the explicit supersede
-      // — it remains in the active phase the Reckoner CDC handler
-      // approved it into.
+      // — no tick has fired in this fixture, so it remains in
+      // `new`.
       const aReread = await fix.clerk.show(a.id);
-      assert.equal(aReread.phase, 'open');
+      assert.equal(aReread.phase, 'new');
     } finally {
       await teardown(fix);
     }

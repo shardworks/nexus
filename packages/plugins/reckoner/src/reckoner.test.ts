@@ -68,8 +68,9 @@ interface Fixture {
   /**
    * Re-fire `phase:started` against the registered handlers — used
    * by the seal-test to flip `registrySealed` without driving the
-   * full Arbor lifecycle. Awaits any async handlers (the Reckoner's
-   * seal handler runs the catch-up scan async).
+   * full Arbor lifecycle. Awaits any async handlers (kept awaitable
+   * for forward-compatibility; the Reckoner's seal handler is
+   * synchronous now that there is no catch-up scan).
    */
   firePhaseStarted: () => Promise<void>;
 }
@@ -1059,9 +1060,16 @@ describe('Reckoner apparatus', () => {
         'CDC events fire after the outer transaction commits',
       );
 
+      // Drive a synthetic tick so the held petition routes through
+      // the per-fire sequence (the periodic-tick model has no CDC
+      // handler — pre-existing held petitions wait for the next
+      // standing-order fire, which the test models by calling the
+      // hook directly).
+      await fix.hooks.runTick();
+
       // Reckoner-visibility: the on-disk writ now carries
-      // ext.reckoner and the CDC handler has produced a Reckonings
-      // row from the post-commit UPDATE event.
+      // ext.reckoner and the tick handler has produced a Reckonings
+      // row from the surviving candidate.
       const reread = await fix.clerk.show(draftId);
       const ext = reread.ext?.reckoner as ReckonerExt | undefined;
       assert.ok(ext, 'ext.reckoner is set after commit');
@@ -1074,7 +1082,7 @@ describe('Reckoner apparatus', () => {
       const rows = await reckoningsBook.find({
         where: [['writId', '=', draftId]],
       });
-      assert.equal(rows.length, 1, 'exactly one Reckonings row written by the post-commit CDC handler');
+      assert.equal(rows.length, 1, 'exactly one Reckonings row written by the tick handler');
       assert.equal(rows[0]!.outcome, 'accepted');
     });
   });

@@ -5,7 +5,7 @@
  * kit-static petitioner registry, exposes the canonical
  * `petition()` / `withdraw()` helpers (Workflow 2 in the contract
  * document), and surfaces inspection helpers for downstream
- * consumers (the future CDC handler, the vision-keeper kit, the
+ * consumers (the periodic tick handler, the vision-keeper kit, the
  * patron-bridge apparatus).
  *
  * This file is the single source of public-symbol truth — every
@@ -117,12 +117,12 @@ export type ComplexityTier =
  * Shape of `writ.ext['reckoner']` — the contract slot a petitioner
  * stamps onto a writ to opt it into Reckoner consideration.
  *
- * The Reckoner observes CDC on the writs book and treats every writ
- * carrying this slot in `new` phase as a held petition. Petitioners
- * can stamp it directly via `clerk.post()` + `clerk.setWritExt()`
- * (Workflow 1) or use the `petition()` helper (Workflow 2) for
- * default-fill and validation; both paths produce the same on-disk
- * shape.
+ * The Reckoner sweeps the writs book on every periodic tick and
+ * treats every writ carrying this slot in `new` phase as a held
+ * petition. Petitioners can stamp it directly via `clerk.post()` +
+ * `clerk.setWritExt()` (Workflow 1) or use the `petition()` helper
+ * (Workflow 2) for default-fill and validation; both paths produce
+ * the same on-disk shape.
  */
 export interface ReckonerExt {
   /** Identifies the petitioner. Must be `{pluginId}.{kebab-suffix}`. */
@@ -216,11 +216,13 @@ export interface PetitionerDescriptor {
 // ── Reckonings record ────────────────────────────────────────────────
 
 /**
- * Outcome enum for a Reckonings record. v0 of the CDC handler emits
- * only `'accepted'` (after a successful `new → active` transition) and
+ * Outcome enum for a Reckonings record. The tick handler emits
+ * `'accepted'` (after a successful `new → active` transition),
  * `'declined'` (after a `new → cancelled` transition driven by the
- * source-unregistered + `enforceRegistration: true` rule). The other
- * two values are reserved for future commissions.
+ * source-unregistered, source-banned, or scheduler-decline path),
+ * and `'deferred'` (when the active scheduler returns a `defer`
+ * decision; the writ stays in `new`). The fourth value, `'no-op'`,
+ * is reserved for future commissions.
  *
  * See: docs/architecture/reckonings-book.md §"Outcome enum".
  */
@@ -254,10 +256,11 @@ export type ReckoningDeclineReason =
  * carries failed-precedence — when at least one dependency target
  * resolves to a `failed` classification, the gate emits
  * `dependency_failed` regardless of how many other deps are still
- * gating. The remaining values (`priority`, `queue_depth`,
- * `time_hold`, `patron_policy`, `other`) remain reserved for future
- * commissions; the v0 scheduler-emitted defer path still writes no
- * row (only the dependency gate emits deferred rows in v0).
+ * gating. The scheduler-emitted defer path now writes deferred rows
+ * with `'other'` as the reason (the decision's lineage string lands
+ * in `deferNote`). The remaining values (`priority`, `queue_depth`,
+ * `time_hold`, `patron_policy`) remain reserved for future
+ * commissions.
  *
  * See: docs/architecture/reckonings-book.md §"Defer reasons" and
  * docs/architecture/apparatus/reckoner.md §"Dependency-aware defer".
@@ -326,10 +329,13 @@ export interface ReckoningDoc {
   /** Outcome enum — drives the discriminated-union reason fields. */
   outcome: ReckoningOutcome;
   /**
-   * Triggering Clockworks event id, when the consideration was
-   * triggered by a scheduling tick. Absent for considerations
-   * triggered by a CDC event on `clerk/writs`. The v0 handler is
-   * CDC-only, so this field is always absent on v0 rows.
+   * Triggering Clockworks event id, stamped from the
+   * `clockworks.timer` event the standing-order dispatch handed to
+   * the tick relay. Populated whenever the relay handler receives a
+   * non-null event with an id; omitted on test paths driving the
+   * pure tick helper directly with `null`. Synthesizing a fallback
+   * id would pollute rows with non-joinable values; absence is
+   * meaningful and is what test rows look like.
    */
   tickEventId?: string;
   /** ISO timestamp when the Reckoner completed this consideration. */
@@ -547,9 +553,9 @@ declare module '@shardworks/nexus-core' {
  * The surface is a coherent set of helpers for petitioner authoring
  * (`petition`, `withdraw`) and registry inspection
  * (`isSourceRegistered`, `isSourceDisabled`, `listPetitioners`).
- * The CDC handler that lands in the follow-on commission consumes
- * the inspection helpers per-event; the petitioner authoring
- * helpers are the canonical Workflow-2 path for petitioners.
+ * The periodic tick handler consumes the inspection helpers
+ * per-tick; the petitioner authoring helpers are the canonical
+ * Workflow-2 path for petitioners.
  */
 export interface ReckonerApi {
   /**
