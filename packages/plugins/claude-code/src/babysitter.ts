@@ -432,7 +432,16 @@ export async function runBabysitter(
     throw err;
   } finally {
     // 9. Cleanup
-    process.removeAllListeners('SIGTERM');
+    // Targeted SIGTERM-listener removal: the happy path already removes
+    // ctx.onSigterm in runTerminalPhase, so this is a defensive no-op
+    // when steady-state completed; on a partial-init path where steady-
+    // state never installed the listener, ctx.onSigterm is null and the
+    // call is skipped. Avoids removeAllListeners which would sweep
+    // unrelated listeners installed by hosts of this module.
+    if (ctx.onSigterm) {
+      process.removeListener('SIGTERM', ctx.onSigterm);
+      ctx.onSigterm = null;
+    }
     await ctx.mcpHandle?.close().catch(() => {});
     ctx.db?.close();
     if (ctx.tmpDir) {
