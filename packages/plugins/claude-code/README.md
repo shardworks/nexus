@@ -55,18 +55,27 @@ import {
 
 ### Rate-Limit Detection
 
-The provider runs a **two-branch NDJSON detector** to identify rate-limited terminations and attach a structured `terminationTag` to the session result. The Animator's back-off state machine consumes the tag and transitions its pause-state doc accordingly.
+The provider runs a **single-branch, evidence-driven NDJSON detector** to identify rate-limited terminations and attach a structured `terminationTag` to the session result. The Animator's back-off state machine consumes the tag and transitions its pause-state doc accordingly.
 
 ```typescript
 import { detectRateLimitFromNdjson } from '@shardworks/claude-code-apparatus';
 ```
 
-Active detector branches (first-wins):
+The active branch matches the rate-limit pattern against the **top-level `error` field** (peer of `message`) on every NDJSON message — the shape claude actually emits on rate-limited assistant termination:
 
-1. **Structural `subtype`** — `parseStreamJsonMessage` inspects every NDJSON message whose `subtype` contains `rate_limit` / `rate-limit` and emits a tag with `source: 'ndjson-result'`.
-2. **Structural `is_error`** — if `msg.is_error === true` and the carried error text matches the rate-limit phrasing regex, the same tag is produced.
+```json
+{ "type": "assistant", "message": { "...": "..." }, "error": "rate_limit" }
+```
 
-Everything else surfaces as plain `failed`. The previous stderr-pattern and exit-code branches were retired after two production incidents where an assistant's prose summary / a generic non-zero exit code tripped a false-positive pause. Generic non-zero exit codes surface as `'failed'`; the babysitter no longer samples claude's stderr for pattern matches, only forwards it to the per-session log file.
+When the regex matches, a tag with `source: 'ndjson-result'` is emitted. The detector is intentionally narrow: branches are added only when a real provider emission is observed, not pre-emptively.
+
+**Retired branches** (do not re-introduce without a live observation):
+
+- `subtype` — earlier speculative branch that emitted a tag when `msg.subtype` contained `rate_limit` / `rate-limit`. Retired because no live provider emission ever fired it.
+- `is_error` — earlier speculative branch that emitted a tag when `msg.is_error === true` and the carried error text matched the rate-limit pattern. Retired for the same reason.
+- `result`-text and stderr/exit-code cascades — retired earlier for false-positive pauses (an assistant's prose summary of a prior rate-limit / a generic non-zero exit code each tripped a false-positive pause once in production).
+
+Everything else surfaces as plain `failed`. Generic non-zero exit codes do not produce a rate-limit tag; the babysitter no longer samples claude's stderr for pattern matches, only forwards it to the per-session log file.
 
 When a non-zero exit arrives without an NDJSON termination tag, the babysitter captures a `terminationDiagnostic: { exitCode, stderrExcerpt? }` on the session-record payload so operators can review the signal that fell through — without the Animator widening its pause gate on it.
 
