@@ -76,6 +76,36 @@
     return '<span class="' + fullCls + '">' + esc(status) + '</span>';
   }
 
+  // ── URL handling ───────────────────────────────────────────────────────
+
+  /**
+   * Read the current querystring as a `URLSearchParams`. Live snapshot —
+   * read at call time, never cached, so reasoning stays local.
+   */
+  function currentUrlParams() {
+    return new URLSearchParams(window.location.search);
+  }
+
+  /**
+   * Apply the given key/value changes to the current querystring and
+   * `pushState` the result. Null/undefined/empty value deletes the key.
+   * Mirrors Ratchet's `updateUrl` (D9). Tab state and engine selection
+   * are deliberately NOT round-tripped through this helper (D13/D14).
+   */
+  function updateUrl(changes) {
+    var params = currentUrlParams();
+    var keys = Object.keys(changes);
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      var value = changes[key];
+      if (value === null || value === undefined || value === '') params.delete(key);
+      else params.set(key, value);
+    }
+    var qs = params.toString();
+    var next = window.location.pathname + (qs ? '?' + qs : '');
+    window.history.pushState({}, '', next);
+  }
+
   // ── Utility ────────────────────────────────────────────────────────────
 
   function esc(s) {
@@ -504,7 +534,8 @@
 
   // ── Fetch rigs ─────────────────────────────────────────────────────────
 
-  function fetchRigs(statusFilter) {
+  function fetchRigs(statusFilter, opts) {
+    var onLoaded = opts && typeof opts.onLoaded === 'function' ? opts.onLoaded : null;
     currentStatusFilter = statusFilter || '';
     var rigUrl = '/api/rig/list?limit=100';
     if (statusFilter) {
@@ -515,10 +546,12 @@
       rigs = Array.isArray(result) ? result : [];
       renderRigList();
       startRigListPollIfNeeded();
+      if (onLoaded) onLoaded();
     }).catch(function (err) {
       console.error('Failed to fetch rigs:', err);
       rigs = [];
       renderRigList();
+      if (onLoaded) onLoaded();
     });
   }
 
@@ -831,9 +864,81 @@
 
   // ── Show rig detail ────────────────────────────────────────────────────
 
-  function showRigDetail(rig) {
+  /**
+   * Render a "not found" empty state inside the rig detail view for a
+   * deep-linked id that does not resolve. Per D16 the URL param is left
+   * untouched so the operator can recover (correct the id, hit Back).
+   * Tab state and engine selection are not part of the URL contract so
+   * we don't need to clear them here.
+   */
+  function renderRigDetailNotFound(id) {
+    document.getElementById('rig-list-view').style.display = 'none';
+    document.getElementById('rig-detail-view').style.display = '';
+    document.getElementById('detail-title').textContent = 'Rig not found';
+
+    // Hide the meta + writ + pipeline + engine surfaces — they reference
+    // nodes that updateRigMeta would otherwise populate.
+    var hideIds = ['detail-meta', 'writ-details-card', 'engine-detail', 'session-log-section'];
+    for (var i = 0; i < hideIds.length; i++) {
+      var el = document.getElementById(hideIds[i]);
+      if (el) el.style.display = 'none';
+    }
+
+    var pipeline = document.getElementById('pipeline');
+    if (pipeline) {
+      pipeline.innerHTML =
+        '<div class="empty-state" style="padding:1.5rem">' +
+        'No rig with id <code>' + esc(id) + '</code> exists. ' +
+        'It may have been deleted, or the id may be mistyped.</div>';
+    }
+  }
+
+  /**
+   * Open the detail view for a rig id. Used by the deep-link init path
+   * and the popstate handler. Looks the rig up in the local list first
+   * (so the renderer still has a complete record); falls back to a
+   * direct /api/rig/show fetch if the list is empty or the id is
+   * absent (e.g. the operator deep-linked to a rig outside the
+   * currently filtered list). On miss, renders the not-found state
+   * without rewriting the URL (D16).
+   */
+  function showRigDetailById(id, opts) {
+    var skipUrlPush = !!(opts && opts.skipUrlPush);
+    var live = rigs.find(function (r) { return r.id === id; });
+    if (live) {
+      showRigDetail(live, { skipUrlPush: skipUrlPush });
+      return;
+    }
+    fetch('/api/rig/show?id=' + encodeURIComponent(id))
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (rig) {
+        if (rig && rig.id) {
+          showRigDetail(rig, { skipUrlPush: skipUrlPush });
+        } else {
+          if (!skipUrlPush) updateUrl({ rig: id });
+          renderRigDetailNotFound(id);
+        }
+      })
+      .catch(function () {
+        if (!skipUrlPush) updateUrl({ rig: id });
+        renderRigDetailNotFound(id);
+      });
+  }
+
+  function showRigDetail(rig, opts) {
+    var skipUrlPush = !!(opts && opts.skipUrlPush);
     currentRig = rig;
     selectedEngineId = null;
+
+    // Centralised URL push (D12) — every entry path into showRigDetail
+    // (writ-title anchor, rig-id anchor, future entry points, deep-link
+    // init) emits ?rig=ID for free. The popstate-driven path passes
+    // skipUrlPush=true to avoid double-pushing the URL the browser
+    // already updated.
+    if (!skipUrlPush) updateUrl({ rig: rig.id });
 
     // Reset the session-log surface BEFORE any render (T7): hides the
     // section, clears the textarea, and nulls transcript state.
@@ -1494,7 +1599,8 @@
 
   // ── Back to list ───────────────────────────────────────────────────────
 
-  function backToList() {
+  function backToList(opts) {
+    var skipUrlPush = !!(opts && opts.skipUrlPush);
     // T7: explicit session-log reset on back-to-list. resetSessionLog
     // itself calls stopSessionTranscriptPoll and clears the textarea
     // so the list → detail → list → detail cycle never leaks a stale
@@ -1507,6 +1613,12 @@
     selectedEngineId = null;
     document.getElementById('rig-detail-view').style.display = 'none';
     document.getElementById('rig-list-view').style.display = '';
+
+    // D11: push a clean URL so the operator's Forward button keeps
+    // doing what they expect. We deliberately push instead of popping
+    // history — the operator may have arrived directly at ?rig=ID with
+    // no prior list-view entry to pop back to.
+    if (!skipUrlPush) updateUrl({ rig: null });
   }
 
   // ── Config tab ─────────────────────────────────────────────────────────
@@ -1836,8 +1948,32 @@
       backBtn.addEventListener('click', backToList);
     }
 
-    // Initial load
-    fetchRigs('');
+    // Browser navigation (Back / Forward) — read ?rig=ID from the new
+    // URL and either open the matching detail (skipUrlPush=true so we
+    // don't push the URL the browser already updated) or return to the
+    // list. Pairs with the central push inside showRigDetail (D11/D12).
+    window.addEventListener('popstate', function () {
+      var rigId = currentUrlParams().get('rig');
+      if (rigId) {
+        showRigDetailById(rigId, { skipUrlPush: true });
+      } else {
+        backToList({ skipUrlPush: true });
+      }
+    });
+
+    // Initial load. Deep-link: ?rig=ID. The init path waits for the
+    // first rig list to land (so showRigDetailById can find the live
+    // rig in `rigs`) before opening the detail. A missing/deleted id
+    // falls through to renderRigDetailNotFound (D16) — the URL is
+    // preserved.
+    var initialRigId = currentUrlParams().get('rig');
+    fetchRigs('', {
+      onLoaded: function () {
+        if (initialRigId) {
+          showRigDetailById(initialRigId, { skipUrlPush: true });
+        }
+      },
+    });
 
     // Start the independent Animator pause-banner poll. Runs on every
     // tab (rigs/config) regardless of rig activity (D23 — the banner

@@ -428,7 +428,7 @@ describe('spider.js rig list polling', () => {
 
   it('starts current rig polling in showRigDetail', () => {
     const showRigBlock = spiderJs.match(
-      /function showRigDetail\(rig\)[\s\S]*?startCurrentRigPoll\(\)/,
+      /function showRigDetail\(rig(?:, opts)?\)[\s\S]*?startCurrentRigPoll\(\)/,
     );
     assert.ok(
       showRigBlock,
@@ -438,7 +438,7 @@ describe('spider.js rig list polling', () => {
 
   it('stops current rig poll when navigating back to list', () => {
     const backBlock = spiderJs.match(
-      /function backToList\(\)[\s\S]*?stopCurrentRigPoll\(\)/,
+      /function backToList\((?:opts)?\)[\s\S]*?stopCurrentRigPoll\(\)/,
     );
     assert.ok(
       backBlock,
@@ -448,7 +448,7 @@ describe('spider.js rig list polling', () => {
 
   it('stops current rig poll when selecting a new rig', () => {
     const showRigBlock = spiderJs.match(
-      /function showRigDetail\(rig\)[\s\S]*?stopCurrentRigPoll\(\)/,
+      /function showRigDetail\(rig(?:, opts)?\)[\s\S]*?stopCurrentRigPoll\(\)/,
     );
     assert.ok(
       showRigBlock,
@@ -876,7 +876,7 @@ describe('spider.js session transcript polling', () => {
     // through that helper so the textarea + spinner state is cleared
     // alongside the poll.
     const backBlock = spiderJs.match(
-      /function backToList\(\)[\s\S]*?(?=\n  function )/,
+      /function backToList\((?:opts)?\)[\s\S]*?(?=\n  function )/,
     );
     assert.ok(backBlock, 'should find backToList');
     assert.match(
@@ -885,7 +885,7 @@ describe('spider.js session transcript polling', () => {
       'backToList should tear down transcript state via resetSessionLog',
     );
     const showRigBlock = spiderJs.match(
-      /function showRigDetail\(rig\)[\s\S]*?(?=\n  function )/,
+      /function showRigDetail\(rig(?:, opts)?\)[\s\S]*?(?=\n  function )/,
     );
     assert.ok(showRigBlock, 'should find showRigDetail');
     assert.match(
@@ -1001,7 +1001,7 @@ describe('spider.js elapsed ticker', () => {
 
   it('navigating away stops the elapsed ticker', () => {
     const backBlock = spiderJs.match(
-      /function backToList\(\)[\s\S]*?(?=\n  function )/,
+      /function backToList\((?:opts)?\)[\s\S]*?(?=\n  function )/,
     );
     assert.ok(backBlock, 'should find backToList');
     assert.match(
@@ -1010,7 +1010,7 @@ describe('spider.js elapsed ticker', () => {
       'backToList should stop the elapsed ticker',
     );
     const showRigBlock = spiderJs.match(
-      /function showRigDetail\(rig\)[\s\S]*?(?=\n  function )/,
+      /function showRigDetail\(rig(?:, opts)?\)[\s\S]*?(?=\n  function )/,
     );
     assert.ok(showRigBlock, 'should find showRigDetail');
     assert.match(
@@ -1491,7 +1491,7 @@ describe('spider.js rig-meta stable-id skeleton', () => {
 
   it('showRigDetail wires up skeleton + update + rig-elapsed ticker', () => {
     const showRigBlock = spiderJs.match(
-      /function showRigDetail\(rig\)[\s\S]*?(?=\n  function )/,
+      /function showRigDetail\(rig(?:, opts)?\)[\s\S]*?(?=\n  function )/,
     );
     assert.ok(showRigBlock, 'should find showRigDetail');
     assert.match(
@@ -1545,7 +1545,7 @@ describe('spider.js rig-meta stable-id skeleton', () => {
       'should define stopRigElapsedTimer',
     );
     const backBlock = spiderJs.match(
-      /function backToList\(\)[\s\S]*?(?=\n  function )/,
+      /function backToList\((?:opts)?\)[\s\S]*?(?=\n  function )/,
     );
     assert.ok(backBlock, 'should find backToList');
     assert.match(
@@ -1616,7 +1616,7 @@ describe('spider.js session-log lifecycle', () => {
 
   it('showRigDetail calls resetSessionLog before any render or poll start', () => {
     const block = spiderJs.match(
-      /function showRigDetail\(rig\)[\s\S]*?(?=\n  function )/,
+      /function showRigDetail\(rig(?:, opts)?\)[\s\S]*?(?=\n  function )/,
     );
     assert.ok(block, 'should find showRigDetail body');
     assert.match(
@@ -1635,7 +1635,7 @@ describe('spider.js session-log lifecycle', () => {
 
   it('backToList calls resetSessionLog', () => {
     const block = spiderJs.match(
-      /function backToList\(\)[\s\S]*?(?=\n  \/\/|\n  function )/,
+      /function backToList\((?:opts)?\)[\s\S]*?(?=\n  \/\/|\n  function )/,
     );
     assert.ok(block, 'should find backToList body');
     assert.match(
@@ -1913,3 +1913,123 @@ describe('spider.js engine-detail attempt-history details', () => {
     );
   });
 });
+
+// ── Deep-link URL state (?rig=ID) ──────────────────────────────────────
+
+describe('spider.js — deep-link URL state', () => {
+  it('exposes currentUrlParams + updateUrl helpers (D9 — Ratchet pattern)', () => {
+    assert.match(
+      spiderJs,
+      /function currentUrlParams\(\)\s*\{[\s\S]*?new URLSearchParams\(window\.location\.search\)/,
+      'currentUrlParams reads window.location.search live',
+    );
+    assert.match(
+      spiderJs,
+      /function updateUrl\(changes\)\s*\{[\s\S]*?window\.history\.pushState/,
+      'updateUrl pushes via history.pushState',
+    );
+    assert.match(
+      spiderJs,
+      /function updateUrl\(changes\)[\s\S]*?params\.delete\(key\)/,
+      'updateUrl deletes the key when value is null/undefined/empty',
+    );
+  });
+
+  it('showRigDetail pushes ?rig=ID via the central updateUrl call (D12)', () => {
+    const block = spiderJs.match(
+      /function showRigDetail\(rig(?:, opts)?\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find showRigDetail body');
+    assert.match(
+      block[0],
+      /updateUrl\(\{\s*rig:\s*rig\.id\s*\}\)/,
+      'showRigDetail should push ?rig=<rig.id> when not skipUrlPush',
+    );
+    assert.match(
+      block[0],
+      /skipUrlPush/,
+      'showRigDetail should accept a skipUrlPush opt',
+    );
+  });
+
+  it('backToList clears ?rig via updateUrl({rig: null}) — never history.back (D11)', () => {
+    const block = spiderJs.match(
+      /function backToList\((?:opts)?\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find backToList body');
+    assert.match(
+      block[0],
+      /updateUrl\(\{\s*rig:\s*null\s*\}\)/,
+      'backToList should push a clean URL via updateUrl({rig: null})',
+    );
+    assert.ok(
+      !/history\.back\(/.test(block[0]),
+      'backToList should never call history.back()',
+    );
+  });
+
+  it('a popstate listener routes browser navigation back through the page', () => {
+    assert.match(
+      spiderJs,
+      /window\.addEventListener\(\s*['"]popstate['"]/,
+      'spider.js should register a popstate listener',
+    );
+    const block = spiderJs.match(
+      /addEventListener\(\s*['"]popstate['"][\s\S]*?\}\)/,
+    );
+    assert.ok(block, 'should find popstate handler body');
+    assert.match(
+      block[0],
+      /currentUrlParams\(\)\.get\(['"]rig['"]\)/,
+      'popstate handler reads ?rig from the new URL',
+    );
+    assert.match(
+      block[0],
+      /skipUrlPush:\s*true/,
+      'popstate-driven path passes skipUrlPush to avoid double-push',
+    );
+  });
+
+  it('init reads ?rig=ID and opens the matching detail after the rig list lands', () => {
+    assert.match(
+      spiderJs,
+      /currentUrlParams\(\)\.get\(['"]rig['"]\)/,
+      'init reads ?rig from the URL',
+    );
+    assert.match(
+      spiderJs,
+      /showRigDetailById\(\s*initialRigId\s*,\s*\{\s*skipUrlPush:\s*true\s*\}\s*\)/,
+      'init opens the detail via showRigDetailById with skipUrlPush=true',
+    );
+  });
+
+  it('not-found state preserves the URL param (D16)', () => {
+    const block = spiderJs.match(
+      /function renderRigDetailNotFound\([\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find renderRigDetailNotFound body');
+    // The function itself must not call updateUrl — the URL is left
+    // alone so the operator can recover by editing the address bar.
+    assert.ok(
+      !/updateUrl/.test(block[0]),
+      'renderRigDetailNotFound must not rewrite the URL',
+    );
+    assert.match(
+      block[0],
+      /No rig with id/,
+      'renderRigDetailNotFound surfaces a "not found" message',
+    );
+  });
+
+  it('does not push a tab=… or engine=… URL param (D13/D14 explicit out-of-scope)', () => {
+    assert.ok(
+      !/updateUrl\(\{\s*tab:/.test(spiderJs),
+      'tab state must remain client-only (D14)',
+    );
+    assert.ok(
+      !/updateUrl\(\{\s*engine:/.test(spiderJs),
+      'engine selection must remain client state (D13)',
+    );
+  });
+});
+
