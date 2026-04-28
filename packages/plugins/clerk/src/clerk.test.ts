@@ -1525,6 +1525,140 @@ describe('Clerk', () => {
     });
   });
 
+  // ── setWritExt() — plugin-owned metadata slot ────────────────────
+
+  describe('setWritExt()', () => {
+    beforeEach(async () => { await setup(); });
+
+    it('returns an empty ext slot for a freshly created writ', async () => {
+      const writ = await postMandate({ title: 'No slot yet', body: 'Body' });
+      assert.equal(writ.ext, undefined, 'new writs have no ext slot by default');
+    });
+
+    it('writes a sub-slot under the provided pluginId', async () => {
+      const writ = await postMandate({ title: 'Marked', body: 'Body' });
+      const updated = await clerk.setWritExt(writ.id, 'reckoner', { petitionId: 'pet-1' });
+
+      assert.ok(updated.ext, 'ext slot should exist after setWritExt');
+      assert.deepEqual(updated.ext!['reckoner'], { petitionId: 'pet-1' });
+    });
+
+    it('disjoint sub-slot writes from different plugins do not clobber each other', async () => {
+      const writ = await postMandate({ title: 'Two plugins', body: 'Body' });
+
+      await clerk.setWritExt(writ.id, 'reckoner', { petitionId: 'pet-a' });
+      const afterSecond = await clerk.setWritExt(writ.id, 'astrolabe', { tag: 'feature' });
+
+      assert.deepEqual(afterSecond.ext!['reckoner'], { petitionId: 'pet-a' });
+      assert.deepEqual(afterSecond.ext!['astrolabe'], { tag: 'feature' });
+    });
+
+    it('overwrites its own sub-slot but preserves sibling sub-slots', async () => {
+      const writ = await postMandate({ title: 'Own overwrite', body: 'Body' });
+
+      await clerk.setWritExt(writ.id, 'reckoner', { petitionId: 'pet-first' });
+      await clerk.setWritExt(writ.id, 'astrolabe', { tag: 'one' });
+      const updated = await clerk.setWritExt(writ.id, 'reckoner', { petitionId: 'pet-second' });
+
+      assert.deepEqual(updated.ext!['reckoner'], { petitionId: 'pet-second' });
+      assert.deepEqual(updated.ext!['astrolabe'], { tag: 'one' });
+    });
+
+    it('survives terminal transitions — slot is not cleared on completed/failed/cancelled', async () => {
+      const writ = await postMandate({ title: 'Terminal survivor', body: 'Body' });
+      await clerk.setWritExt(writ.id, 'reckoner', { petitionId: 'pet-1' });
+
+      const done = await clerk.transition(writ.id, 'completed', { resolution: 'ok' });
+      assert.deepEqual(done.ext!['reckoner'], { petitionId: 'pet-1' },
+        'metadata slot survives transition to a terminal phase');
+
+      const fetched = await clerk.show(writ.id);
+      assert.deepEqual(fetched.ext!['reckoner'], { petitionId: 'pet-1' });
+    });
+
+    it('transition() strips the caller-supplied ext field and preserves sibling sub-slots', async () => {
+      // The metadata slot is writable only via setWritExt() — the
+      // one sanctioned slot-write path, which performs a transactional
+      // read-modify-write on the sub-slot keyed by pluginId so sibling
+      // sub-slots are preserved. transition() silently drops any `ext`
+      // in its body (the same treatment as the other managed fields) so
+      // that a smuggled slot-write through the generic shallow-merge
+      // path cannot clobber sibling sub-slots.
+      const writ = await postMandate({ title: 'Strip ext on transition', body: 'Body' });
+      await clerk.setWritExt(writ.id, 'reckoner', { petitionId: 'original' });
+      await clerk.setWritExt(writ.id, 'astrolabe', { tag: 'preserved' });
+
+      const done = await clerk.transition(writ.id, 'completed', {
+        resolution: 'done',
+        ext: { reckoner: { petitionId: 'overwritten' } },
+      });
+
+      // The caller-supplied sub-slot is discarded; sibling sub-slots survive.
+      assert.deepEqual(done.ext!['reckoner'], { petitionId: 'original' },
+        'caller-supplied ext sub-slot is discarded by transition()');
+      assert.deepEqual(done.ext!['astrolabe'], { tag: 'preserved' },
+        'sibling sub-slots are preserved when transition() drops the body ext');
+    });
+
+    it('throws when writId is missing', async () => {
+      await assert.rejects(
+        () => clerk.setWritExt('', 'reckoner', {}),
+        /writId is required/,
+      );
+    });
+
+    it('throws when pluginId is missing', async () => {
+      const writ = await postMandate({ title: 'No plugin', body: 'Body' });
+      await assert.rejects(
+        () => clerk.setWritExt(writ.id, '', {}),
+        /pluginId is required/,
+      );
+    });
+
+    it('throws when the writ does not exist', async () => {
+      await assert.rejects(
+        () => clerk.setWritExt('w-missing-xxxx', 'reckoner', {}),
+        /not found/,
+      );
+    });
+
+    it('emits a CDC update event carrying the new ext sub-slot', async () => {
+      const writ = await postMandate({ title: 'CDC emit', body: 'Body' });
+
+      // Subscribe to the writs book before invoking setWritExt so the
+      // handler captures the event it fires.
+      const stacks = guild().apparatus<StacksApi>('stacks');
+      const events: Array<{ entry: WritDoc; prev: WritDoc | undefined }> = [];
+      stacks.watch<WritDoc>('clerk', 'writs', (event) => {
+        if (event.type !== 'update') return;
+        if (event.entry.id !== writ.id) return;
+        events.push({ entry: event.entry, prev: event.prev });
+      });
+
+      await clerk.setWritExt(writ.id, 'reckoner', { petitionId: 'cdc-emitted' });
+
+      assert.equal(events.length, 1, 'setWritExt() should emit exactly one update event');
+      assert.deepEqual(events[0]!.entry.ext!['reckoner'], { petitionId: 'cdc-emitted' },
+        'CDC event carries the freshly-written sub-slot');
+      assert.equal(events[0]!.prev!.ext, undefined,
+        'prev metadata slot was empty before the write');
+    });
+
+    it('supports an arbitrary JSON-compatible value in the sub-slot', async () => {
+      const writ = await postMandate({ title: 'Any value', body: 'Body' });
+
+      // Strings, arrays, numbers, nested objects — all valid.
+      const stringValue = await clerk.setWritExt(writ.id, 'a', 'just-a-string');
+      assert.equal(stringValue.ext!['a'], 'just-a-string');
+
+      const arrayValue = await clerk.setWritExt(writ.id, 'b', [1, 2, 3]);
+      assert.deepEqual(arrayValue.ext!['b'], [1, 2, 3]);
+
+      const nested = await clerk.setWritExt(writ.id, 'c', { nested: { deep: true } });
+      assert.deepEqual(nested.ext!['c'], { nested: { deep: true } });
+    });
+  });
+
   // ── link() ──────────────────────────────────────────────────────
 
   describe('link()', () => {

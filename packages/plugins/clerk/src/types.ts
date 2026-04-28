@@ -120,6 +120,41 @@ export interface WritDoc {
    * The slot survives terminal phase transitions.
    */
   status?: Record<string, unknown>;
+  /**
+   * Plugin-owned metadata slot — sibling to `status` but reserved for
+   * metadata-shape data (provenance, cross-references, classification
+   * tags, configuration extensions) attached at writ creation or
+   * registration time, rather than the post-hoc observation that
+   * `status` records.
+   *
+   * The semantic distinction matters: `status` is for what a plugin
+   * has *observed* about a writ after the fact (a stuck cause, a
+   * triggering child, a gate result); `ext` is for what a plugin needs
+   * the writ to *carry* as an attribute of its identity (a petition id,
+   * a classifier tag, a foreign-system reference). Picking the wrong
+   * slot layers metadata under an observation contract or vice versa,
+   * so plugin authors should choose consciously.
+   *
+   * Structurally identical to `status`: a plugin-keyed map
+   * (`Record<PluginId, unknown>`) where each top-level key is a plugin
+   * id and the value is an arbitrary opaque shape. Ownership is
+   * convention-only — plugin `X` writes only to `ext[X]`.
+   *
+   * There is exactly one sanctioned slot-write path:
+   * `ClerkApi.setWritExt(writId, pluginId, value)`, which performs a
+   * transactional read-modify-write on the sub-slot keyed by `pluginId`
+   * so sibling sub-slots are preserved under concurrent writers.
+   * `transition()` silently strips `ext` from its body, and the
+   * generic `put()` / `patch()` paths on the writs book are not
+   * supported slot-write mechanisms — every route other than
+   * `setWritExt()` would wholesale-replace the slot and clobber
+   * sibling sub-slots. Readers access `writ.ext?.[pluginId]` directly.
+   *
+   * Optional and absent by default — a freshly-posted writ reads
+   * `ext === undefined` until a plugin writes its first sub-slot. The
+   * slot survives terminal phase transitions.
+   */
+  ext?: Record<string, unknown>;
   /** Short human-readable title. */
   title: string;
   /** Detail text. */
@@ -623,6 +658,34 @@ export interface ClerkApi {
    * Returns the updated writ document.
    */
   setWritStatus(writId: string, pluginId: string, value: unknown): Promise<WritDoc>;
+
+  /**
+   * Write a plugin-owned sub-slot of the writ's metadata `ext` map.
+   *
+   * The slot is the metadata sibling to `status`: plugins attach
+   * metadata-shape data here (petition ids, cross-references,
+   * classifier tags, configuration extensions) — data that belongs to
+   * the writ as an attribute of its identity, rather than the post-hoc
+   * observation `setWritStatus` records.
+   *
+   * The call is a transactional read-modify-write — the sub-slot keyed by
+   * `pluginId` is replaced with `value`, but sibling sub-slots owned by
+   * other plugins are preserved. Writes emit CDC update events like any
+   * other field change, and survive terminal phase transitions.
+   *
+   * Validation: throws when `writId` is empty, when `pluginId` is empty,
+   * or when no writ matches `writId`. The `value` is opaque — the Clerk
+   * does not validate sub-slot contents (mirrors `setWritStatus`).
+   *
+   * Each call bumps `updatedAt` to the current ISO timestamp so CDC
+   * observers keying on the timestamp see the change.
+   *
+   * Ownership is convention-only: plugin `X` writes only `ext[X]`.
+   * There is no runtime guard.
+   *
+   * Returns the updated writ document.
+   */
+  setWritExt(writId: string, pluginId: string, value: unknown): Promise<WritDoc>;
 
   /**
    * Create a typed directional link from one writ to another.

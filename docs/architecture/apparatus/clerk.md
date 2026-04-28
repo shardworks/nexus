@@ -16,7 +16,7 @@ The Clerk does **not** execute work. It does not launch sessions, manage rigs, o
 
 Writs can be organized into parent/child hierarchies for decomposing complex work. The Clerk's children-behavior engine consumes each type's `WritTypeConfig.childrenBehavior` block to drive both cascade directions automatically: terminal children can lift the parent (upward `allSuccess` / `anyFailure`), and a parent reaching a `failure`- or `cancelled`-attr terminal can cancel every non-terminal descendant (downward `parentTerminal`). Cascade is opt-in per type — a type whose config omits `childrenBehavior` evolves independently from its parent and children. Mandate opts into all three triggers; see [Children-behavior cascade](#children-behavior-cascade).
 
-Writ documents follow a Kubernetes-style spec/status split: **`phase`** is the Clerk-owned lifecycle state (the phase machine below), and **`status`** is a plugin-owned observation slot — a `Record<string, unknown>` keyed by plugin id where apparatuses like Spider record side-channel observations (last rig, stuck cause, progress ratchets). See [Spec/Status Convention](#specstatus-convention).
+Writ documents follow a Kubernetes-style spec/status split: **`phase`** is the Clerk-owned lifecycle state (the phase machine below), **`status`** is a plugin-owned observation slot — a `Record<string, unknown>` keyed by plugin id where apparatuses like Spider record side-channel observations (last rig, stuck cause, progress ratchets) — and **`ext`** is a sibling plugin-owned metadata slot of the same shape, reserved for metadata-shape data (provenance, cross-references, classifier tags) attached at registration time rather than the post-hoc observation `status` records. See [Spec/Status Convention](#specstatus-convention).
 
 ---
 
@@ -223,10 +223,11 @@ interface ClerkApi {
    *
    * The `fields` parameter allows setting additional fields
    * atomically with the transition (e.g. `resolution`).
-   * Managed fields (id, phase, timestamps, parentId, status) are
-   * stripped. The observation slot `status` is plugin-owned and
-   * must be written via setWritStatus() — transition() silently
-   * strips any caller-supplied status field.
+   * Managed fields (id, phase, timestamps, parentId, status, ext)
+   * are stripped. The observation slot `status` is plugin-owned and
+   * must be written via setWritStatus(); the metadata slot `ext` is
+   * plugin-owned and must be written via setWritExt(). transition()
+   * silently strips any caller-supplied status or ext field.
    *
    * Cascade across the parent/child boundary is not driven by
    * `transition()` itself; it is dispatched by the per-type
@@ -242,6 +243,18 @@ interface ClerkApi {
    * clear the slot — observations persist for post-mortem analysis.
    */
   setWritStatus(writId: string, pluginId: string, value: unknown): Promise<WritDoc>
+
+  /**
+   * Write (or overwrite) a plugin-owned sub-slot inside the writ's
+   * metadata `ext` map. Sibling to setWritStatus: same plugin-keyed
+   * shape, same transactional read-modify-write semantics, same CDC
+   * event emission, same terminal-survival rule. The semantic
+   * distinction is that `ext` carries metadata-shape data (petition
+   * ids, cross-references, classifier tags) attached at registration
+   * time, while `status` records post-hoc observations. Throws on
+   * empty writId / empty pluginId / missing writ.
+   */
+  setWritExt(writId: string, pluginId: string, value: unknown): Promise<WritDoc>
 
   // ── Links ─────────────────────────────────────────────────────
 
@@ -304,6 +317,16 @@ interface WritDoc {
    *  observations (last rig, stuck cause, progress ratchets, etc.)
    *  written via setWritStatus(). Not part of the phase machine. */
   status?: Record<string, unknown>
+
+  // ── Metadata slot ────────────────────────────────────────────
+
+  /** Plugin-owned metadata slot, keyed by plugin id. Sibling to
+   *  status, but reserved for metadata-shape data (petition ids,
+   *  cross-references, classifier tags) attached at registration
+   *  time. Written via setWritExt(). Optional and absent by default;
+   *  survives terminal phase transitions. Not part of the phase
+   *  machine. */
+  ext?: Record<string, unknown>
 }
 
 type WritPhase =
@@ -788,15 +811,31 @@ Writ documents follow a Kubernetes-style spec/status split:
 
 - **Spec fields** are the declared intent of the writ — `title`, `body`, `type`, `codex`, `parentId`, and the Clerk-owned lifecycle field `phase`. These describe *what should happen* and *where the writ currently sits on the phase machine*. `transition()` is the only writer for `phase`.
 - **Status slot** (`status` on `WritDoc`) is a free-form `Record<string, unknown>` keyed by plugin id. Each plugin owns one sub-slot and records side-channel observations there: last rig, stuck cause, progress ratchets, planner version, etc. `setWritStatus()` is the only writer for the slot.
+- **Ext slot** (`ext` on `WritDoc`) is the structural sibling of `status` — same plugin-keyed `Record<string, unknown>` shape, same transactional write contract, same terminal-survival rule — but reserved for metadata-shape data (petition ids, cross-references, classifier tags, configuration extensions) attached at registration time rather than the post-hoc observation `status` records. `setWritExt()` is the only writer. See [ext (metadata) vs status (observation)](#ext-metadata-vs-status-observation) below.
 
 ### Rules
 
-- **Plugin ownership is a soft convention.** Each plugin writes only under its own pluginId key. No runtime guard stops a plugin from reading another plugin's sub-slot — the convention is *write only your own key*, and the `setWritStatus()` API makes the right thing easy.
-- **One sanctioned slot-write path.** The observation slot is writable only via `setWritStatus()`, which performs a transactional read-modify-write on the sub-slot keyed by `pluginId` so sibling sub-slots are preserved under concurrent writers. `transition()` silently drops `status` from its body alongside the other managed fields. The generic `put()` / `patch()` paths on the `clerk/writs` book are not supported slot-write mechanisms — every route other than `setWritStatus()` would wholesale-replace the slot and clobber sibling sub-slots.
-- **Disjoint sub-slots are concurrency-safe.** `setWritStatus()` runs its read-modify-write inside a Stacks transaction. Concurrent writes from different plugins to different sub-slots do not clobber each other.
-- **Within a single plugin's sub-slot, writes are last-writer-wins.** `setWritStatus()` replaces the plugin's sub-slot value wholesale — per-key atomicity inside a sub-slot is deferred until real contention appears.
-- **Slot writes emit CDC events.** Changes to the `status` slot propagate through the same `update` events on the `clerk/writs` book as any other field change; downstream watchers can react.
-- **Terminal transitions do not clear the slot.** Observations persist on the writ after `completed`/`failed`/`cancelled` for post-mortem inspection.
+The rules below apply uniformly to both the observation slot (`status` / `setWritStatus()`) and the metadata slot (`ext` / `setWritExt()`) — wherever a rule names one slot and writer, the same rule holds for the sibling.
+
+- **Plugin ownership is a soft convention.** Each plugin writes only under its own pluginId key. No runtime guard stops a plugin from reading another plugin's sub-slot — the convention is *write only your own key*, and the `setWritStatus()` / `setWritExt()` APIs make the right thing easy.
+- **One sanctioned slot-write path per slot.** The observation slot is writable only via `setWritStatus()`, and the metadata slot only via `setWritExt()`; each performs a transactional read-modify-write on the sub-slot keyed by `pluginId` so sibling sub-slots are preserved under concurrent writers. `transition()` silently drops both `status` and `ext` from its body alongside the other managed fields. The generic `put()` / `patch()` paths on the `clerk/writs` book are not supported slot-write mechanisms — every route other than the dedicated writer would wholesale-replace the slot and clobber sibling sub-slots.
+- **Disjoint sub-slots are concurrency-safe.** `setWritStatus()` and `setWritExt()` each run their read-modify-write inside a Stacks transaction. Concurrent writes from different plugins to different sub-slots do not clobber each other.
+- **Within a single plugin's sub-slot, writes are last-writer-wins.** The dedicated writer replaces the plugin's sub-slot value wholesale — per-key atomicity inside a sub-slot is deferred until real contention appears.
+- **Slot writes emit CDC events.** Changes to either slot propagate through the same `update` events on the `clerk/writs` book as any other field change; downstream watchers can react.
+- **Terminal transitions do not clear the slots.** Observations and metadata persist on the writ after `completed`/`failed`/`cancelled` for post-mortem inspection and ongoing cross-reference reads.
+
+### `ext` (metadata) vs `status` (observation)
+
+Both slots are plugin-keyed `Record<string, unknown>` maps with identical mechanics. The semantic distinction is the *kind* of data each is meant to hold:
+
+- **`status` is for post-hoc observation** — what a plugin has *observed* about a writ after the fact. Examples: a stuck cause recorded by Spider's engine-failure handler, a triggering child id recorded by the Clerk's children-behavior cascade, a gate result recorded by an evaluator. The defining feature is that the observation is the plugin's reaction to something the writ has been through.
+- **`ext` is for attached metadata** — what a plugin needs the writ to *carry* as an attribute of its identity. Examples: a petition id linking a writ back to its originating registration, a foreign-system reference, a classifier tag baked in at creation. The defining feature is that the metadata is part of *what the writ is*, not a record of what has happened to it.
+
+Picking the wrong slot layers metadata under an observation contract or vice versa, so plugin authors should choose consciously. When in doubt: ask whether the data is set as the writ comes into being (or is registered with another system) — that points to `ext` — versus updated reactively as the writ evolves — that points to `status`.
+
+#### Worked example: `ext['reckoner'].petitionId`
+
+The Reckoner registers a petition for a writ at the moment the writ is created on its behalf, and attaches the petition id under `ext['reckoner']` so downstream consumers can chase the cross-reference back to the petition record without a separate index. The shape is established at attach time and stable for the writ's lifetime — a textbook metadata-shape consumer rather than an observation. See [Reckoner: petitioner registration → §13](../petitioner-registration.md) for the full contract; the slot itself is opaque to the Clerk and validated only by the Reckoner.
 
 ### Worked example: `status.clerk.triggeringChildId`
 

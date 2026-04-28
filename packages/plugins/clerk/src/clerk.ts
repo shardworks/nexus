@@ -1076,24 +1076,27 @@ export function createClerk(): Plugin {
       const isTerminal = targetState.classification === 'terminal';
 
       // Strip managed fields — callers cannot override id, phase, the
-      // plugin-owned observation slot `status`, or timestamps controlled
-      // by the phase machine.
+      // plugin-owned observation slot `status`, the plugin-owned
+      // metadata slot `ext`, or timestamps controlled by the phase
+      // machine.
       //
-      // The observation slot is a plugin-keyed map (`Record<PluginId,
+      // Both `status` and `ext` are plugin-keyed maps (`Record<PluginId,
       // unknown>`) whose sub-slots are owned by different plugins. The
-      // only slot-write path that preserves sibling sub-slots under
-      // concurrent writers is ClerkApi.setWritStatus(writId, pluginId,
-      // value), which performs a transactional read-modify-write on the
-      // sub-slot keyed by pluginId. Because patch() is a top-level
-      // shallow merge, a `status` value smuggled through transition()
-      // would wholesale-replace the slot and silently clobber sibling
-      // sub-slots — so `status` is stripped here alongside the other
-      // managed fields. There is exactly one sanctioned slot-write
-      // path, and it is setWritStatus().
+      // only slot-write paths that preserve sibling sub-slots under
+      // concurrent writers are ClerkApi.setWritStatus(writId, pluginId,
+      // value) for `status` and ClerkApi.setWritExt(writId, pluginId,
+      // value) for `ext`, each performing a transactional read-modify-
+      // write on the sub-slot keyed by pluginId. Because patch() is a
+      // top-level shallow merge, a `status` or `ext` value smuggled
+      // through transition() would wholesale-replace the slot and
+      // silently clobber sibling sub-slots — so both are stripped here
+      // alongside the other managed fields. There is exactly one
+      // sanctioned slot-write path per slot: setWritStatus() and
+      // setWritExt() respectively.
       //
       // `phase` is also stripped from the remainder (we throw above when
       // non-empty, but an empty-string phase key is still scrubbed here).
-      const { id: _id, phase: _phase, status: _status,
+      const { id: _id, phase: _phase, status: _status, ext: _ext,
         createdAt: _c, updatedAt: _u,
         resolvedAt: _r, parentId: _p,
         ...safeFields } = (fields ?? {}) as WritDoc;
@@ -1130,6 +1133,33 @@ export function createClerk(): Plugin {
 
         return txWrits.patch(writId, {
           status: nextStatus,
+          updatedAt: new Date().toISOString(),
+        });
+      });
+    },
+
+    async setWritExt(writId: string, pluginId: string, value: unknown): Promise<WritDoc> {
+      if (!writId) {
+        throw new Error('setWritExt: writId is required.');
+      }
+      if (!pluginId) {
+        throw new Error('setWritExt: pluginId is required.');
+      }
+
+      // Read-modify-write in a single transaction so we do not clobber
+      // sibling sub-slots written concurrently by other plugins.
+      return stacks.transaction(async (tx) => {
+        const txWrits = tx.book<WritDoc>('clerk', 'writs');
+        const existing = await txWrits.get(writId);
+        if (!existing) {
+          throw new Error(`Writ "${writId}" not found.`);
+        }
+
+        const prevExt = (existing.ext ?? {}) as Record<string, unknown>;
+        const nextExt: Record<string, unknown> = { ...prevExt, [pluginId]: value };
+
+        return txWrits.patch(writId, {
+          ext: nextExt,
           updatedAt: new Date().toISOString(),
         });
       });
