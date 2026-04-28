@@ -44,6 +44,7 @@ import { createClerk } from '@shardworks/clerk-apparatus';
 import type { ClerkApi } from '@shardworks/clerk-apparatus';
 
 import { createReckoner } from './reckoner.ts';
+import { alwaysApproveScheduler } from './schedulers/always-approve.ts';
 import type { ReckoningDoc, ReckonerApi } from './types.ts';
 
 interface Fixture {
@@ -143,9 +144,20 @@ async function buildGuild(): Promise<Fixture> {
     },
   );
 
+  const phaseStartedHandlers: Array<(...args: unknown[]) => void | Promise<void>> = [];
+  const firePhaseStarted = async (): Promise<void> => {
+    for (const handler of phaseStartedHandlers) {
+      await handler();
+    }
+  };
+
   function buildCtx(kitEntries: KitEntry[]): StartupContext {
     return {
-      on(): void {},
+      on(event, handler): void {
+        if (event === 'phase:started') {
+          phaseStartedHandlers.push(handler);
+        }
+      },
       kits(type: string): KitEntry[] {
         return kitEntries.filter((e) => e.type === type);
       },
@@ -165,8 +177,10 @@ async function buildGuild(): Promise<Fixture> {
   // ── Reckoner ──────────────────────────────────────────────────────
   // One petitioner pre-registered through the kit-contribution wire
   // path so the integration exercises the registered-source accept
-  // branch end-to-end.
-  const petitionerKitEntries: KitEntry[] = [
+  // branch end-to-end. The Reckoner's own supportKit `schedulers`
+  // contribution (the always-approve instance) is mirrored by hand
+  // because this test fixture does not drive Arbor.
+  const reckonerKitEntries: KitEntry[] = [
     {
       pluginId: 'tester',
       packageName: '@test/tester',
@@ -178,10 +192,20 @@ async function buildGuild(): Promise<Fixture> {
         },
       ],
     },
+    {
+      pluginId: 'reckoner',
+      packageName: '@shardworks/reckoner-apparatus',
+      type: 'schedulers',
+      value: [alwaysApproveScheduler],
+    },
   ];
-  await reckonerPlugin.apparatus.start(buildCtx(petitionerKitEntries));
+  await reckonerPlugin.apparatus.start(buildCtx(reckonerKitEntries));
   const reckoner = reckonerPlugin.apparatus.provides as ReckonerApi;
   apparatusMap.set('reckoner', reckoner);
+
+  // Fire phase:started so the registry seals and the active scheduler
+  // resolves — the real Arbor lifecycle does this in production.
+  await firePhaseStarted();
 
   return {
     stacks,

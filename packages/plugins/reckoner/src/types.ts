@@ -327,6 +327,136 @@ export interface ReckoningDoc {
   lastDeferredAt?: string;
   /** Optional freeform short note on a deferral. */
   deferNote?: string;
+  /**
+   * Optional scheduler-emitted weight projected onto the row when a
+   * `SchedulerDecision` carried one. Forward-compatible with
+   * future weighted-priority schedulers; absent for the v0
+   * always-approve scheduler. The Reckoner's row writer threads the
+   * value through verbatim — no normalization, no defaulting.
+   */
+  weight?: number;
+}
+
+// ── Scheduler ─────────────────────────────────────────────────────────
+
+/**
+ * A held writ — a writ in `new` phase carrying `ext.reckoner`.
+ *
+ * Vocabulary alias for `WritDoc` used at scheduler-input read sites
+ * to make intent explicit. There is no runtime invariant beyond what
+ * the apparatus already guarantees at the call site (phase + ext
+ * gates run before the scheduler is invoked); the alias is purely
+ * documentary so a reader of `SchedulerInput` knows the candidate
+ * shape without chasing back through the rule sequence.
+ */
+export type HeldWrit = WritDoc;
+
+/**
+ * Forward-compatible capacity slot threaded into `SchedulerInput`.
+ *
+ * Empty in v0 — the slot exists so the scheduler interface does not
+ * have to grow a new positional argument when a future commission
+ * adds capacity tracking (concurrent-active counts, per-source
+ * quotas, queue-depth observations). Schedulers that do not consume
+ * capacity simply ignore the field.
+ */
+export interface CapacitySnapshot {
+  /** Reserved for future capacity-tracking commissions. v0 ships no fields. */
+  [key: string]: unknown;
+}
+
+/**
+ * The outcome a scheduler emits for a held writ. Mirrors the three
+ * substantive Reckonings outcomes:
+ *
+ * - `'approve'` — drive the writ out of `new` to its type's active
+ *   target and append an `accepted` Reckonings row.
+ * - `'defer'`   — leave the writ in `new`. No transition, no row
+ *   in v0 (deferred rows require richer reason metadata than the
+ *   `SchedulerDecision` shape declares).
+ * - `'decline'` — drive the writ to `cancelled` with the decision's
+ *   `reason` recorded as the resolution string and append a
+ *   `declined` Reckonings row carrying `declineReason: 'other'` plus
+ *   the reason in `remediationHint`.
+ */
+export type SchedulerOutcome = 'approve' | 'defer' | 'decline';
+
+/**
+ * One scheduler decision targeting one held writ.
+ *
+ * `writId` identifies the candidate; `outcome` selects the
+ * disposition; `reason` is a human-readable lineage string the
+ * apparatus persists alongside the decision (resolution string for
+ * declines, `remediationHint` for declined Reckonings rows, or a
+ * grep-able marker on accepted rows). `weight` is an optional
+ * scheduler-emitted score the apparatus threads onto the resulting
+ * Reckonings row when present.
+ */
+export interface SchedulerDecision {
+  /** The held writ this decision applies to. Must match a candidate from the input. */
+  writId: string;
+  /** The scheduler's selected outcome. */
+  outcome: SchedulerOutcome;
+  /** Human-readable lineage. Persisted on Reckonings rows where applicable. */
+  reason: string;
+  /** Optional scheduler-emitted weight. Threaded through to the Reckonings row when present. */
+  weight?: number;
+}
+
+/**
+ * Argument shape for `Scheduler.evaluate()`.
+ *
+ * The Reckoner samples `now` once at the call boundary so the row id
+ * and `consideredAt` stay consistent within a single consideration
+ * (D33). `config` is the validated, scheduler-narrowed view of the
+ * `reckoner.schedulerConfig` block — the apparatus runs
+ * `validateConfig` immediately before each `evaluate` call (D17) so
+ * each invocation sees the freshest config.
+ */
+export interface SchedulerInput<TConfig = unknown> {
+  /** The held writs the scheduler is being asked to consider. */
+  candidates: readonly HeldWrit[];
+  /** Forward-compatible capacity slot. Empty in v0. */
+  capacity: CapacitySnapshot;
+  /** Sampling timestamp from the apparatus call boundary. */
+  now: Date;
+  /** Validated config slice — narrowed by `Scheduler.validateConfig` when present. */
+  config: TConfig;
+}
+
+/**
+ * A scheduler — pluggable selection policy contributed via the
+ * `schedulers` kit-contribution type.
+ *
+ * Each registered scheduler declares an `id` of the form
+ * `{contributingPluginId}.{kebab-suffix}`, a human-readable
+ * `description`, an `evaluate` function that takes a
+ * `SchedulerInput` and returns one or more `SchedulerDecision`s, and
+ * an optional `validateConfig` narrower the apparatus calls per
+ * evaluation when the operator has supplied a `reckoner.schedulerConfig`
+ * block. The Reckoner resolves a single active scheduler at startup
+ * from `guild.json reckoner.scheduler` (defaults to
+ * `reckoner.always-approve` when unset).
+ *
+ * Schedulers reach for shared guild state (Stacks book handles, Clerk
+ * helpers) via `guild()` rather than constructor injection — the
+ * direct-instance shape mirrors Fabricator's `EngineDesign` registry
+ * precedent.
+ */
+export interface Scheduler<TConfig = unknown> {
+  /** Fully-qualified id of the form `{pluginId}.{kebab-suffix}`. */
+  id: string;
+  /** Human-readable description of the scheduling policy. */
+  description: string;
+  /** Run the policy against the candidate set and emit decisions. */
+  evaluate(input: SchedulerInput<TConfig>): Promise<readonly SchedulerDecision[]>;
+  /**
+   * Optional config narrower. Called per evaluation immediately
+   * before `evaluate`; throws are caught by the apparatus, logged
+   * fail-loud, and skip the call without writing a row or
+   * transitioning the writ.
+   */
+  validateConfig?(raw: unknown): TConfig;
 }
 
 // ── Reckoner config ───────────────────────────────────────────────────
@@ -355,6 +485,23 @@ export interface ReckonerConfig {
    * restart (D20).
    */
   disabledSources?: string[];
+  /**
+   * Selector for the active scheduler. Must match a registered
+   * `Scheduler.id`; resolved once at `phase:started` and cached for
+   * the seal's life. When unset, defaults to the built-in
+   * `reckoner.always-approve` scheduler. When set to an unknown id,
+   * the Reckoner fail-loud throws at startup with a diagnostic
+   * listing every registered id.
+   */
+  scheduler?: string;
+  /**
+   * Opaque per-evaluation config slice passed into the active
+   * scheduler. Re-read from `guild.json` on every consideration so
+   * operators can hot-edit (D17) without a restart. The Reckoner
+   * does not narrow this value — each scheduler's `validateConfig`
+   * is the boundary.
+   */
+  schedulerConfig?: unknown;
 }
 
 // Augment GuildConfig so `guild().guildConfig().reckoner` is typed

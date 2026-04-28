@@ -14,6 +14,15 @@ What ships here:
   contributing an array of `{ source, description }` entries; the
   Reckoner consumes the array at boot, validates the source-id grammar,
   and seals the registry at `phase:started`.
+- A new `schedulers` kit-contribution type. Kits (and the Reckoner's
+  own `supportKit`) declare scheduler instances by contributing an
+  array of `Scheduler` objects under that key. The Reckoner consumes
+  the array at boot, validates the id grammar, seals the registry at
+  `phase:started`, and resolves a single active scheduler from
+  `guild.json reckoner.scheduler`. The default scheduler is
+  `reckoner.always-approve` (shipped from the Reckoner's own
+  `supportKit.schedulers`); plugins land additional policies by
+  contributing their own scheduler under their own `{pluginId}.…` id.
 - The `Priority` type (five dimensions: `visionRelation`, `severity`,
   `scope`, `time`, `domain`), the `ComplexityTier` enum, and the
   `ReckonerExt` shape — all faithful to the contract document at
@@ -35,11 +44,17 @@ What ships here:
   evaluate), drives `clerk.transition(...)` to the type's active state
   on accept (or to `cancelled` with a structured resolution on
   decline), and idempotently appends one row to the `reckoner/reckonings`
-  book per consideration. v0's scheduling stub is **always-approve**
-  for held petitions that pass the source / disabled / registration
-  gates; the only decline path is `enforceRegistration: true` against
-  an unregistered source, which produces an `outcome: 'declined'`
-  Reckonings row with `declineReason: 'source_unregistered'`.
+  book per consideration. The scheduler call site (Rule 5) routes
+  through the registry-resolved active scheduler — the default
+  `reckoner.always-approve` instance approves every held petition
+  that clears the source / disabled / registration gates. The
+  configured scheduler can also emit `defer` (no transition, no row)
+  or `decline` (transition to `cancelled` with the decision's reason
+  recorded as the resolution string + a Reckonings row carrying
+  `declineReason: 'other'`). The other decline path remains
+  `enforceRegistration: true` against an unregistered source, which
+  produces an `outcome: 'declined'` row with
+  `declineReason: 'source_unregistered'`.
 - A **startup catch-up scan** that re-routes pre-existing held
   petitions through the same handler at apparatus start so a process
   restart does not strand work.
@@ -131,13 +146,15 @@ source is also a hard startup error (mirrors Clerk link-kinds, Spider
 ## Configuration
 
 The Reckoner reads its configuration from `guild.json` under the
-`reckoner` key. Both fields are optional:
+`reckoner` key. Every field is optional:
 
 ```json
 {
   "reckoner": {
     "enforceRegistration": false,
-    "disabledSources": []
+    "disabledSources": [],
+    "scheduler": "reckoner.always-approve",
+    "schedulerConfig": {}
   }
 }
 ```
@@ -148,6 +165,52 @@ The Reckoner reads its configuration from `guild.json` under the
 - `disabledSources` (string array, default `[]`) — sources operators
   want to skip. The list is re-read on every call; operators can
   hot-edit `guild.json` without restarting the guild.
+- `scheduler` (string, optional) — selects the active scheduler from
+  the kit-static scheduler registry. Defaults to
+  `reckoner.always-approve` when unset; setting it to an unregistered
+  id throws fail-loud at startup with a diagnostic listing every
+  registered id. Resolution happens once at `phase:started`.
+- `schedulerConfig` (any, optional) — opaque config passed to the
+  active scheduler's `evaluate` call. Re-read from `guild.json` on
+  every consideration so operators can hot-edit; each scheduler
+  narrows the value through its own `validateConfig`.
+
+## Declaring a scheduler
+
+A kit (or apparatus's `supportKit`) declares one or more scheduler
+instances under the `schedulers` key:
+
+```typescript
+import type { Scheduler } from '@shardworks/reckoner-apparatus';
+
+const myScheduler: Scheduler = {
+  id: 'my-plugin.priority-walk',
+  description: 'Selects highest-weight petition first.',
+  async evaluate(input) {
+    // input.candidates: the held petitions for this consideration.
+    // input.config:     the validated config from guild.json.
+    return [{ writId: input.candidates[0]!.id, outcome: 'approve', reason: 'top-of-queue' }];
+  },
+  validateConfig(raw) {
+    // optional; throw on shape mismatch.
+    return raw;
+  },
+};
+
+export default {
+  kit: {
+    requires: ['reckoner'],
+    schedulers: [myScheduler],
+  },
+};
+```
+
+The id grammar matches the petitioner-source grammar:
+`{contributingPluginId}.{kebab-suffix}`. Duplicate ids across two
+kits, malformed grammar, missing `evaluate`, and post-seal
+registration all hard-fail at startup. Schedulers reach for shared
+guild state (Stacks book handles, Clerk helpers) via `guild()` rather
+than constructor injection.
 
 ## Withdrawing a petition
 

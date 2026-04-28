@@ -47,6 +47,7 @@ import { createClerk } from '@shardworks/clerk-apparatus';
 import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 
 import { createReckonerWithHooks } from './reckoner.ts';
+import { alwaysApproveScheduler } from './schedulers/always-approve.ts';
 import type {
   PetitionRequest,
   ReckonerApi,
@@ -66,9 +67,10 @@ interface Fixture {
   /**
    * Re-fire `phase:started` against the registered handlers — used
    * by the seal-test to flip `registrySealed` without driving the
-   * full Arbor lifecycle.
+   * full Arbor lifecycle. Awaits any async handlers (the Reckoner's
+   * seal handler runs the catch-up scan async).
    */
-  firePhaseStarted: () => void;
+  firePhaseStarted: () => Promise<void>;
 }
 
 function buildFakeGuild(
@@ -150,11 +152,9 @@ async function buildFixture(opts: {
 
   // Build a phase-started capable StartupContext per apparatus.
   const phaseStartedHandlers: Array<(...args: unknown[]) => void | Promise<void>> = [];
-  const firePhaseStarted = () => {
+  const firePhaseStarted = async (): Promise<void> => {
     for (const handler of phaseStartedHandlers) {
-      const result = handler();
-      // Test path is sync; ignore promises here.
-      void result;
+      await handler();
     }
   };
 
@@ -194,7 +194,23 @@ async function buildFixture(opts: {
     }),
   );
 
-  await reckonerPlugin.apparatus.start(buildCtx(petitionerKitEntries));
+  // Surface the Reckoner's own supportKit `schedulers` contribution
+  // (the built-in always-approve instance). Arbor synthesises kit
+  // entries from each apparatus's supportKit in production; the
+  // test fixture mirrors that responsibility by hand. Tests that
+  // need to contribute a non-default scheduler append to this list.
+  const schedulerKitEntries: KitEntry[] = [
+    {
+      pluginId: 'reckoner',
+      packageName: '@shardworks/reckoner-apparatus',
+      type: 'schedulers',
+      value: [alwaysApproveScheduler],
+    },
+  ];
+
+  await reckonerPlugin.apparatus.start(
+    buildCtx([...petitionerKitEntries, ...schedulerKitEntries]),
+  );
   const reckoner = reckonerPlugin.apparatus.provides as ReckonerApi;
   apparatusMap.set('reckoner', reckoner);
 
@@ -638,7 +654,7 @@ describe('Reckoner apparatus', () => {
       // `registrySealed = true`. (The fixture's firePhaseStarted
       // also calls Clerk's handler, which is fine; our concern is
       // the Reckoner's hook landing.)
-      fix.firePhaseStarted();
+      await fix.firePhaseStarted();
       assert.equal(
         fix.hooks.isSealed(),
         true,

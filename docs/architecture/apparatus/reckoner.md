@@ -44,7 +44,7 @@ See: the load-bearing contract document at
 
 ```
 requires: ['clerk']
-consumes: ['petitioners']
+consumes: ['petitioners', 'schedulers']
 ```
 
 - **The Clerk** (required) — `clerk.post()` is the writ-creation
@@ -258,13 +258,15 @@ this commission.
 ## Configuration
 
 The Reckoner reads its configuration from `guild.json` under the
-`reckoner` key. Both fields are optional:
+`reckoner` key. Every field is optional:
 
 ```json
 {
   "reckoner": {
     "enforceRegistration": false,
-    "disabledSources": []
+    "disabledSources": [],
+    "scheduler": "reckoner.always-approve",
+    "schedulerConfig": {}
   }
 }
 ```
@@ -278,10 +280,143 @@ The Reckoner reads its configuration from `guild.json` under the
   `isSourceDisabled()`. The list is re-read on every call (D20)
   so operators can hot-edit `guild.json` without restarting the
   guild.
+- **`scheduler`** (string, optional) — selects the active scheduler
+  from the kit-static scheduler registry. Defaults to
+  `reckoner.always-approve` when unset; setting it to an
+  unregistered id throws fail-loud at startup with a diagnostic
+  listing every registered id. Resolution happens once at
+  `phase:started`.
+- **`schedulerConfig`** (any, optional) — opaque config slice
+  passed to the active scheduler. Re-read from `guild.json` on
+  every consideration so operators can hot-edit; each scheduler
+  narrows the value through its own `validateConfig`.
 
-When the entire `reckoner` block is missing, both fields take
-their defaults silently. When the block is present, type
-mismatches in either field throw fail-loud at the read site (D12).
+When the entire `reckoner` block is missing, every field takes its
+default silently. When the block is present, type mismatches in any
+field throw fail-loud at the read site (D12). The
+`scheduler` / `schedulerConfig` fields are described in detail in
+the [Schedulers](#schedulers) section below.
+
+---
+
+## Schedulers
+
+The Reckoner consumes a second kit-contribution type — `schedulers`
+— for pluggable selection policy. Exactly one scheduler is active
+per Reckoner instance, resolved at startup from
+`guild.json reckoner.scheduler`.
+
+### Kit Interface
+
+A kit (or apparatus's `supportKit`) declares one or more scheduler
+instances under the `schedulers` array:
+
+```typescript
+export default {
+  kit: {
+    requires: ['reckoner'],
+    schedulers: [myScheduler],
+  },
+} satisfies Plugin;
+
+interface Scheduler<TConfig = unknown> {
+  /** Fully-qualified id of the form `{pluginId}.{kebab-suffix}`. */
+  id:           string;
+  /** Human-readable description of the scheduling policy. */
+  description:  string;
+  /** Run the policy against the candidate set and emit decisions. */
+  evaluate(input: SchedulerInput<TConfig>): Promise<readonly SchedulerDecision[]>;
+  /** Optional config narrower; called per evaluation. */
+  validateConfig?(raw: unknown): TConfig;
+}
+
+interface SchedulerInput<TConfig = unknown> {
+  candidates: readonly HeldWrit[];
+  capacity:   CapacitySnapshot;        // empty in v0
+  now:        Date;                    // sampled at the call boundary
+  config:     TConfig;                 // validated slice
+}
+
+interface SchedulerDecision {
+  writId:  string;
+  outcome: 'approve' | 'defer' | 'decline';
+  reason:  string;
+  weight?: number;                     // optional — threaded onto the row
+}
+```
+
+The Reckoner contributes its own built-in `reckoner.always-approve`
+instance via its apparatus `supportKit.schedulers`. That entry
+flows through `ctx.kits('schedulers')` exactly like a user-
+contributed scheduler; there is no special-cased default-bypass.
+
+### Id-grammar validation
+
+Scheduler ids match `{contributingPluginId}.{kebab-suffix}` — the
+same grammar used for petitioner sources, link-kinds, and Lattice
+trigger types. The kebab-case suffix regex is the shared
+`^[a-z0-9]+(?:-[a-z0-9]+)*$` pattern.
+
+- **Prefix mismatch** → startup hard-fails with a diagnostic naming
+  the offending id and the contributing kit.
+- **Malformed kebab-case suffix** → same hard-fail policy.
+- **Duplicate id across two kits** → startup hard-fails naming both
+  kits.
+- **Missing or wrong-typed `evaluate` / non-string id / non-string
+  description** → startup hard-fails per the
+  `[reckoner] Kit "<id>" schedulers:` shape.
+- **Sealing.** The registry seals at the framework's
+  `phase:started` signal. Post-seal registration attempts throw a
+  sealed-registry error patterned on the petitioner-registry
+  diagnostic shape (`[reckoner] registerSchedulers: …`).
+
+### Selector resolution
+
+At `phase:started`, immediately after both registries seal, the
+Reckoner resolves the active scheduler from `guild.json
+reckoner.scheduler`:
+
+- **Unset** → defaults to `reckoner.always-approve` and emits one
+  info-level log line.
+- **Set to a registered id** → caches that instance for the seal's
+  life.
+- **Set to an unregistered id** → throws fail-loud at startup with a
+  diagnostic listing every registered id (the
+  `[reckoner] guild config: scheduler …` prefix).
+
+Resolution is one-shot at startup; selector errors surface where
+they are catchable, not deferred to per-call.
+
+### Per-evaluation config flow
+
+`reckoner.schedulerConfig` is re-read from `guild.json` on every
+consideration so operators can hot-edit. The Reckoner does not
+narrow this value — each scheduler's `validateConfig`, when
+declared, is the trust boundary. The narrowed result becomes
+`SchedulerInput.config` for the immediately-following `evaluate`
+call.
+
+### Outcome mapping
+
+The three `SchedulerDecision` outcomes map to apparatus actions:
+
+| Outcome   | Phase transition       | Reckonings row | Notes |
+|-----------|------------------------|----------------|-------|
+| `approve` | `new` → active target  | `accepted`     | The target is the writ-type config's active state; weight (if present) is threaded onto the row. |
+| `defer`   | none                   | none           | The writ stays in `new`; absence of a row is itself a signal. |
+| `decline` | `new` → `cancelled`    | `declined`     | The decision's `reason` is recorded as the writ's resolution string; the row carries `declineReason: 'other'` and the reason in `remediationHint`. |
+
+### Failure modes
+
+| Condition                                                          | Behavior |
+|---|---|
+| CDC event arrives before `phase:started`                           | Silently skipped; the catch-up scan reprocesses the writ post-seal. |
+| Dedupe lookup short-circuits on the same `(writId, writUpdatedAt)` | No `evaluate` call, no row, no transition. |
+| `validateConfig` throws                                            | Fail-loud log via the `[reckoner] scheduler:` prefix; evaluation is skipped (no row, no transition). |
+| `evaluate` throws or does not return an array                      | Fail-loud log; evaluation skipped. |
+| Decision carries a `writId` not in the candidate set               | Per-decision `console.warn` naming the offending id; ignore-and-continue. |
+| Two decisions target the same `writId`                             | Fail-loud log; the entire evaluation is skipped (no decision is applied). |
+| Decision carries an unknown outcome                                | Fail-loud log; the decision is ignored. |
 
 ---
 

@@ -84,6 +84,8 @@ import type {
   ReckonerConfig,
   ReckonerExt,
   ReckoningDoc,
+  Scheduler,
+  SchedulerDecision,
 } from './types.ts';
 
 import {
@@ -92,6 +94,8 @@ import {
   SEVERITY_VALUES,
   VISION_RELATION_VALUES,
 } from './types.ts';
+
+import { alwaysApproveScheduler } from './schedulers/always-approve.ts';
 
 /**
  * Plugin id stamped on `writ.ext['reckoner']`. Hardcoded literal
@@ -227,7 +231,13 @@ export interface ReckonerTestHooks {
    * the seal invariant).
    */
   registerKitPetitioners(kitEntry: { pluginId: string; value: unknown }): void;
-  /** Whether the registry has sealed. */
+  /**
+   * Register a `schedulers` kit entry through the same code path
+   * the kit-contribution scan uses. Throws after seal (test for
+   * the seal invariant).
+   */
+  registerKitSchedulers(kitEntry: { pluginId: string; value: unknown }): void;
+  /** Whether the petitioner registry has sealed. */
   isSealed(): boolean;
   /** Force the registry into the sealed state — bypasses `phase:started`. */
   sealRegistry(): void;
@@ -244,6 +254,18 @@ export interface ReckonerTestHooks {
    * twice does not produce duplicate Reckonings rows.
    */
   runCatchUpScan(): Promise<void>;
+  /**
+   * Return the resolved active scheduler's id, or `undefined` when
+   * the registry has not yet sealed (D32). Tests assert this against
+   * the unset-defaults-to-always-approve and set-explicit-id paths.
+   */
+  getActiveSchedulerId(): string | undefined;
+  /**
+   * Return the sorted list of registered scheduler ids (D32). Used
+   * by the unregistered-selector test to assert the diagnostic
+   * names every registered id.
+   */
+  getRegisteredSchedulerIds(): string[];
 }
 
 /**
@@ -348,11 +370,147 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
     }
   }
 
+  // ── Scheduler registry (D9) ────────────────────────────────────────
+  //
+  // Sibling of the petitioner registry. Same closure-scoped map
+  // pattern; same seal flag pattern; same `[reckoner] Kit "<id>"
+  // schedulers:` diagnostic shape (D11). The Reckoner contributes
+  // the built-in `reckoner.always-approve` instance via
+  // `apparatus.supportKit.schedulers`, which surfaces through
+  // `ctx.kits('schedulers')` exactly like a user-contributed kit
+  // (D29) — there is no special-cased default-bypass.
+  //
+  // The active scheduler is resolved at `phase:started` from
+  // `guild.json reckoner.scheduler` (D14). Its closure-local
+  // reference is set in `start()`; see the seal handler.
+
+  /** Scheduler id → instance + contributing kit's plugin id. */
+  interface SchedulerRegistryEntry {
+    scheduler: Scheduler;
+    contributingPluginId: string;
+  }
+
+  const schedulerRegistry: Map<string, SchedulerRegistryEntry> = new Map();
+  let schedulerRegistrySealed = false;
+
+  /**
+   * Closure-local handle to the resolved active scheduler.
+   * Populated on the framework's `phase:started` signal (D14) after
+   * the registry seals; remains `undefined` until then so CDC
+   * events arriving pre-seal are silently skipped (D35) — the
+   * catch-up scan reprocesses them post-seal.
+   */
+  let activeScheduler: Scheduler | undefined;
+
+  /**
+   * Validate one `schedulers` kit entry and register it. Mirrors
+   * `registerKitPetitioners` byte-faithfully (D10): array typeof,
+   * full-shape entry check, dot-split + prefix-match + suffix-regex,
+   * dedupe naming both kits, fail-loud on post-seal registration.
+   *
+   * The diagnostic-prefix shape follows D11 — `[reckoner] Kit
+   * "<id>" schedulers:` for per-entry validation, `[reckoner]
+   * registerSchedulers:` for sealed-registry errors.
+   */
+  function registerKitSchedulers(kitEntry: { pluginId: string; value: unknown }): void {
+    if (schedulerRegistrySealed) {
+      throw new Error(
+        `[reckoner] registerSchedulers: cannot register schedulers from kit "${kitEntry.pluginId}" — the startup registration window has closed. Schedulers must be contributed via the "schedulers" kit array before the framework fires phase:started.`,
+      );
+    }
+
+    const pluginId = kitEntry.pluginId;
+    const raw = kitEntry.value;
+    if (!Array.isArray(raw)) {
+      throw new Error(
+        `[reckoner] Kit "${pluginId}" schedulers: expected an array, got ${typeof raw}.`,
+      );
+    }
+
+    for (const entry of raw) {
+      if (typeof entry !== 'object' || entry === null) {
+        throw new Error(
+          `[reckoner] Kit "${pluginId}" schedulers: entry is not an object (got ${entry === null ? 'null' : typeof entry}).`,
+        );
+      }
+      const rec = entry as Record<string, unknown>;
+      const id = rec.id;
+      const description = rec.description;
+      const evaluate = rec.evaluate;
+      const validateConfig = rec.validateConfig;
+
+      if (typeof id !== 'string' || id.length === 0) {
+        throw new Error(
+          `[reckoner] Kit "${pluginId}" schedulers: entry is missing a non-empty string "id" field.`,
+        );
+      }
+      if (typeof description !== 'string' || description.length === 0) {
+        throw new Error(
+          `[reckoner] Kit "${pluginId}" schedulers: entry "${id}" is missing a non-empty string "description" field.`,
+        );
+      }
+      if (typeof evaluate !== 'function') {
+        throw new Error(
+          `[reckoner] Kit "${pluginId}" schedulers: entry "${id}" "evaluate" must be a function; got ${typeof evaluate}.`,
+        );
+      }
+      if (validateConfig !== undefined && typeof validateConfig !== 'function') {
+        throw new Error(
+          `[reckoner] Kit "${pluginId}" schedulers: entry "${id}" "validateConfig" must be a function or omitted; got ${typeof validateConfig}.`,
+        );
+      }
+
+      const dotIdx = id.indexOf('.');
+      if (dotIdx <= 0 || dotIdx === id.length - 1) {
+        throw new Error(
+          `[reckoner] Kit "${pluginId}" schedulers: entry "${id}" must be of the form "{pluginId}.{kebab-suffix}".`,
+        );
+      }
+      const prefix = id.slice(0, dotIdx);
+      const suffix = id.slice(dotIdx + 1);
+
+      if (prefix !== pluginId) {
+        throw new Error(
+          `[reckoner] Kit "${pluginId}" schedulers: entry "${id}" has prefix "${prefix}" but must match the contributing plugin id "${pluginId}".`,
+        );
+      }
+
+      if (!SOURCE_SUFFIX_RE.test(suffix)) {
+        throw new Error(
+          `[reckoner] Kit "${pluginId}" schedulers: entry "${id}" suffix "${suffix}" must be kebab-case (lowercase letters, digits, and hyphens, not starting or ending with "-").`,
+        );
+      }
+
+      const existing = schedulerRegistry.get(id);
+      if (existing) {
+        throw new Error(
+          `[reckoner] Kit "${pluginId}" schedulers: duplicate id "${id}" — already registered by kit "${existing.contributingPluginId}". Two kits cannot contribute a scheduler with the same id.`,
+        );
+      }
+
+      schedulerRegistry.set(id, {
+        scheduler: entry as Scheduler,
+        contributingPluginId: pluginId,
+      });
+    }
+  }
+
   // ── Config accessor ────────────────────────────────────────────────
   //
   // Re-read on every consumer call (D20). The block is missing-
   // equivalent when undefined; type mismatches in explicitly-set
   // values throw fail-loud (D12).
+
+  /**
+   * Concrete shape returned by `resolveConfig`. Intentionally not
+   * `Required<ReckonerConfig>` — the scheduler-selector fields
+   * (`scheduler`, `schedulerConfig`) live on the same config block
+   * but are read through different accessors with different cadences.
+   */
+  interface ResolvedReckonerConfig {
+    enforceRegistration: boolean;
+    disabledSources: string[];
+  }
 
   /**
    * Read and validate the `reckoner` block from `guild.json`.
@@ -361,7 +519,7 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
    * for absent keys). Throws fail-loud when the block is present
    * but contains a typo / type mismatch.
    */
-  function resolveConfig(): Required<ReckonerConfig> {
+  function resolveConfig(): ResolvedReckonerConfig {
     const raw = guild().guildConfig().reckoner;
     if (raw === undefined || raw === null) {
       return { enforceRegistration: false, disabledSources: [] };
@@ -403,22 +561,90 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
     return { enforceRegistration, disabledSources };
   }
 
+  /**
+   * Re-read the `reckoner.schedulerConfig` slot per evaluation (D17).
+   * No narrowing happens here — each `Scheduler.validateConfig` is
+   * the trust boundary. Returns `undefined` when the slot is absent.
+   */
+  function resolveSchedulerConfig(): unknown {
+    const raw = guild().guildConfig().reckoner;
+    if (raw === undefined || raw === null) return undefined;
+    if (typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error(
+        `[reckoner] guild config: "reckoner" must be an object; got ${Array.isArray(raw) ? 'array' : typeof raw}.`,
+      );
+    }
+    return (raw as { schedulerConfig?: unknown }).schedulerConfig;
+  }
+
+  /**
+   * Resolve the active scheduler from the registry. Called once on
+   * the framework's `phase:started` signal (D14) immediately after
+   * the registry seals so any selector misconfiguration surfaces at
+   * startup rather than on the first considered writ.
+   *
+   * Behavior:
+   *   - **Unset selector** (D15): default to `reckoner.always-approve`
+   *     and emit one info log line.
+   *   - **Set but unregistered** (D16): throw fail-loud with a
+   *     diagnostic listing every registered id.
+   *   - **Bad type on the selector field**: throw fail-loud with the
+   *     `[reckoner] guild config: scheduler ...` prefix.
+   */
+  function resolveActiveScheduler(): Scheduler {
+    const raw = guild().guildConfig().reckoner;
+    let selector: string | undefined;
+    if (raw !== undefined && raw !== null) {
+      if (typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new Error(
+          `[reckoner] guild config: "reckoner" must be an object; got ${Array.isArray(raw) ? 'array' : typeof raw}.`,
+        );
+      }
+      const block = raw as { scheduler?: unknown };
+      if (block.scheduler !== undefined) {
+        if (typeof block.scheduler !== 'string' || block.scheduler.length === 0) {
+          throw new Error(
+            `[reckoner] guild config: scheduler must be a non-empty string; got ${typeof block.scheduler}.`,
+          );
+        }
+        selector = block.scheduler;
+      }
+    }
+
+    if (selector === undefined) {
+      const fallback = schedulerRegistry.get('reckoner.always-approve');
+      if (!fallback) {
+        // Defensive — the apparatus contributes the always-approve
+        // scheduler via its own supportKit, so absence here would
+        // mean the kit wiring is broken.
+        throw new Error(
+          `[reckoner] guild config: scheduler default "reckoner.always-approve" is not registered. The Reckoner's supportKit contribution did not surface in ctx.kits('schedulers').`,
+        );
+      }
+      // eslint-disable-next-line no-console
+      console.info(
+        `[reckoner] no reckoner.scheduler configured; defaulting to "reckoner.always-approve".`,
+      );
+      return fallback.scheduler;
+    }
+
+    const entry = schedulerRegistry.get(selector);
+    if (!entry) {
+      const ids = [...schedulerRegistry.keys()].sort();
+      throw new Error(
+        `[reckoner] guild config: scheduler "${selector}" is not registered. Registered schedulers: ${
+          ids.length === 0 ? '(none)' : ids.map((id) => `"${id}"`).join(', ')
+        }.`,
+      );
+    }
+    return entry.scheduler;
+  }
+
   // ── API surface ────────────────────────────────────────────────────
 
   let clerk: ClerkApi;
   let stacks: StacksApi | undefined;
   let reckoningsBook: Book<ReckoningDoc> | undefined;
-
-  /**
-   * Always-approve scheduling stub (D4). Returns the outcome to apply
-   * to a held petition once it has cleared the source / disabled /
-   * registration gates. Hardcoded private function (D13) — not
-   * exported and not configurable. The Reckoner-core scheduling
-   * commission introduces its own seam when it lands.
-   */
-  function evaluateScheduler(_writ: WritDoc): 'accepted' {
-    return 'accepted';
-  }
 
   /**
    * Compute the type-aware target active phase for a writ at
@@ -505,8 +731,14 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
     writ: WritDoc;
     ext: ReckonerExt;
     outcome: 'accepted' | 'declined';
-    declineReason?: 'source_unregistered';
+    declineReason?: ReckoningDoc['declineReason'];
     remediationHint?: string;
+    /**
+     * Scheduler-emitted weight (D5). Threaded through verbatim onto
+     * the resulting Reckonings row when present; absent for
+     * decisions whose `SchedulerDecision.weight` was undefined.
+     */
+    weight?: number;
   }): ReckoningDoc {
     const consideredAt = params.now.toISOString();
     const row: ReckoningDoc = {
@@ -526,6 +758,9 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
       if (params.remediationHint !== undefined) {
         row.remediationHint = params.remediationHint;
       }
+    }
+    if (params.weight !== undefined) {
+      row.weight = params.weight;
     }
     return row;
   }
@@ -547,10 +782,11 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
    * Decline path (writes a row, transitions to `cancelled`):
    *   - source unregistered + `enforceRegistration: true` (D8)
    *
-   * Accept path (writes a row, transitions to the active target):
+   * Scheduler path (Rule 5):
    *   - source registered, OR source unregistered with
-   *     `enforceRegistration: false`. Routes through the always-
-   *     approve stub (D4).
+   *     `enforceRegistration: false`. Delegated to `runScheduler`,
+   *     which calls the registry-resolved active scheduler and maps
+   *     its decision per D21.
    *
    * Idempotency: each non-skip path consults `alreadyConsidered`
    * before writing — a re-delivery of the same (writId,
@@ -635,14 +871,197 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
       return;
     }
 
-    // Accept path. Always-approve stub (D4).
-    const decision = evaluateScheduler(writ);
-    if (decision !== 'accepted') return; // pleased the type checker
+    // Rule 5 — registry-resolved scheduler.
+    await runScheduler(writ, ext, now);
+  }
 
+  /**
+   * Run the active scheduler against a single held writ and apply
+   * the resulting decision (D20). Extracted from `considerWrit` so
+   * the tick-relay follow-on can call the same helper at a different
+   * call site without re-extracting the evaluation logic.
+   *
+   * Sequence:
+   *
+   *   1. Pre-seal guard (D35) — if the active scheduler reference has
+   *      not been resolved yet, skip silently. The catch-up scan
+   *      reprocesses the writ post-seal.
+   *   2. Dedupe lookup (D25) — short-circuit before paying the
+   *      `validateConfig` / `evaluate` cost on duplicate CDC delivery.
+   *   3. Per-evaluation `schedulerConfig` re-read (D17) +
+   *      `validateConfig` narrow (D18) — on throw, log fail-loud and
+   *      return without writing a row or transitioning.
+   *   4. `evaluate` — on throw, log fail-loud and return.
+   *   5. Decision validation: filter-and-warn on `writId` not in the
+   *      candidate set (D24); fail-loud-skip if any `writId` carries
+   *      more than one decision (D23).
+   *   6. Outcome mapping (D21) —
+   *        - `approve`  → transition to active target + accepted row.
+   *        - `defer`    → no transition, no row.
+   *        - `decline`  → transition to cancelled with the decision's
+   *                       reason as resolution + declined row carrying
+   *                       `declineReason: 'other'` (D22) and the
+   *                       reason in `remediationHint`.
+   */
+  async function runScheduler(
+    writ: WritDoc,
+    ext: ReckonerExt,
+    now: Date,
+  ): Promise<void> {
+    if (!reckoningsBook) return;
+
+    // 1. Pre-seal guard (D35).
+    if (!activeScheduler) return;
+
+    // 2. Dedupe before paying the scheduler cost.
     if (await alreadyConsidered(reckoningsBook, writ.id, writ.updatedAt)) {
       return;
     }
 
+    // 3. Per-evaluation config re-read + validate.
+    const rawSchedulerConfig = resolveSchedulerConfig();
+    let validatedConfig: unknown = rawSchedulerConfig;
+    if (typeof activeScheduler.validateConfig === 'function') {
+      try {
+        validatedConfig = activeScheduler.validateConfig(rawSchedulerConfig);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[reckoner] scheduler: "${activeScheduler.id}" validateConfig threw — skipping evaluation for writ "${writ.id}". ${msg}`,
+        );
+        return;
+      }
+    }
+
+    // 4. Evaluate.
+    let decisions: readonly SchedulerDecision[];
+    try {
+      const result = await activeScheduler.evaluate({
+        candidates: [writ],
+        capacity: {},
+        now,
+        config: validatedConfig,
+      });
+      decisions = result;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[reckoner] scheduler: "${activeScheduler.id}" evaluate threw — skipping evaluation for writ "${writ.id}". ${msg}`,
+      );
+      return;
+    }
+
+    if (!Array.isArray(decisions)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[reckoner] scheduler: "${activeScheduler.id}" evaluate did not return an array — skipping evaluation for writ "${writ.id}".`,
+      );
+      return;
+    }
+
+    // 5. Validate decisions: filter-and-warn on stranger writIds (D24).
+    const candidateIds = new Set<string>([writ.id]);
+    const inScope: SchedulerDecision[] = [];
+    for (const decision of decisions) {
+      if (
+        decision === null ||
+        typeof decision !== 'object' ||
+        typeof decision.writId !== 'string' ||
+        decision.writId.length === 0
+      ) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[reckoner] scheduler: "${activeScheduler.id}" returned a malformed decision (missing writId) — ignoring.`,
+        );
+        continue;
+      }
+      if (!candidateIds.has(decision.writId)) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[reckoner] scheduler: "${activeScheduler.id}" returned a decision for writ "${decision.writId}" which was not in the candidate set — ignoring.`,
+        );
+        continue;
+      }
+      inScope.push(decision);
+    }
+
+    // Group by writId; fail-loud-skip on multi-decision-per-writ (D23).
+    const grouped = new Map<string, SchedulerDecision[]>();
+    for (const decision of inScope) {
+      const list = grouped.get(decision.writId) ?? [];
+      list.push(decision);
+      grouped.set(decision.writId, list);
+    }
+    for (const [writId, list] of grouped) {
+      if (list.length > 1) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[reckoner] scheduler: "${activeScheduler.id}" returned ${list.length} decisions for writ "${writId}" — refusing to apply any. Schedulers must emit at most one decision per candidate.`,
+        );
+        return;
+      }
+    }
+
+    const decision = grouped.get(writ.id)?.[0];
+    if (!decision) {
+      // No decision for this candidate — defer-equivalent, no row, no transition.
+      return;
+    }
+
+    // 6. Outcome mapping (D21).
+    if (decision.outcome === 'defer') {
+      // No transition, no row. v0 defer means absence-of-row signal.
+      return;
+    }
+
+    if (
+      decision.outcome !== 'approve' &&
+      decision.outcome !== 'decline' &&
+      decision.outcome !== 'defer'
+    ) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[reckoner] scheduler: "${activeScheduler.id}" returned an unknown outcome "${String((decision as { outcome?: unknown }).outcome)}" for writ "${writ.id}" — ignoring.`,
+      );
+      return;
+    }
+
+    if (decision.outcome === 'decline') {
+      const resolution = decision.reason;
+      try {
+        await clerk.transition(writ.id, 'cancelled' as WritPhase, { resolution });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[reckoner] cdc: failed to transition writ "${writ.id}" to cancelled (scheduler decline): ${msg}`,
+        );
+        return;
+      }
+      const row = buildReckoningRow({
+        now,
+        writ,
+        ext,
+        outcome: 'declined',
+        declineReason: 'other',
+        remediationHint: decision.reason,
+        ...(decision.weight !== undefined ? { weight: decision.weight } : {}),
+      });
+      try {
+        await reckoningsBook!.put(row);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[reckoner] cdc: failed to persist Reckonings row for writ "${writ.id}" (scheduler decline): ${msg}`,
+        );
+      }
+      return;
+    }
+
+    // approve.
     let target: string;
     try {
       target = resolveActiveTargetPhase(writ);
@@ -661,7 +1080,7 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
       const msg = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
       console.warn(
-        `[reckoner] cdc: failed to transition writ "${writ.id}" to "${target}" (accept path): ${msg}`,
+        `[reckoner] cdc: failed to transition writ "${writ.id}" to "${target}" (scheduler approve): ${msg}`,
       );
       return;
     }
@@ -671,14 +1090,15 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
       writ,
       ext,
       outcome: 'accepted',
+      ...(decision.weight !== undefined ? { weight: decision.weight } : {}),
     });
     try {
-      await reckoningsBook.put(row);
+      await reckoningsBook!.put(row);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
       console.warn(
-        `[reckoner] cdc: failed to persist Reckonings row for writ "${writ.id}" (accept path): ${msg}`,
+        `[reckoner] cdc: failed to persist Reckonings row for writ "${writ.id}" (scheduler approve): ${msg}`,
       );
     }
   }
@@ -844,18 +1264,22 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
       // commission.
       requires: ['clerk'],
 
-      // The Reckoner is the consumer of `petitioners` kit
-      // contributions. Declaring `consumes` here suppresses the
-      // Arbor's "no consumer" warning for kits contributing
-      // `petitioners` arrays.
-      consumes: ['petitioners'],
+      // The Reckoner is the consumer of `petitioners` and
+      // `schedulers` kit contributions. Declaring `consumes` here
+      // suppresses the Arbor's "no consumer" warning for kits
+      // contributing those arrays.
+      consumes: ['petitioners', 'schedulers'],
 
       provides: api,
 
-      // Reckoner-owned book (D1, D9, D21). Stacks materialises this
-      // during the Wire phase from the supportKit declaration; the
-      // Wire-phase ensure call carries the index set forward to the
-      // backend. The Reckoner is the sole writer.
+      // Reckoner-owned book (D1, D9, D21) plus the Reckoner's own
+      // contribution to its own scheduler registry — the built-in
+      // `reckoner.always-approve` scheduler flows through
+      // `ctx.kits('schedulers')` exactly like a user-contributed
+      // scheduler (D29). Stacks materialises the book during the
+      // Wire phase from the supportKit declaration; the Wire-phase
+      // ensure call carries the index set forward to the backend.
+      // The Reckoner is the sole writer.
       supportKit: {
         books: {
           reckonings: {
@@ -874,6 +1298,7 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
             ],
           },
         },
+        schedulers: [alwaysApproveScheduler],
       },
 
       async start(ctx: StartupContext): Promise<void> {
@@ -895,13 +1320,33 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
           registerKitPetitioners(entry);
         }
 
-        // Seal the registry on the framework's `phase:started`
+        // Build the scheduler registry from `schedulers` kit
+        // contributions (D9/D29). The Reckoner's own
+        // `apparatus.supportKit.schedulers: [alwaysApproveScheduler]`
+        // surfaces here too — there is no special-cased default-
+        // bypass; the built-in instance is registered exactly like
+        // a user-contributed one.
+        for (const entry of ctx.kits('schedulers')) {
+          registerKitSchedulers(entry);
+        }
+
+        // Seal both registries on the framework's `phase:started`
         // signal — the same moment Clerk seals its writ-type
-        // registry (D5). Any post-seal registration attempt throws
-        // a sealed-registry error patterned on Clerk's `[clerk]
-        // registerWritType:` diagnostic (D5).
-        ctx.on('phase:started', () => {
+        // registry (D5/D12). Any post-seal registration attempt
+        // throws a sealed-registry error patterned on Clerk's
+        // `[clerk] registerWritType:` diagnostic. Immediately after
+        // sealing, resolve the active scheduler (D14) so any
+        // selector misconfiguration surfaces at startup rather than
+        // on the first considered writ. The catch-up scan is
+        // deferred to this same handler (D35) — pre-seal CDC events
+        // are silently skipped via the `activeScheduler` guard, and
+        // the scan reprocesses every held writ post-seal so no
+        // event is lost.
+        ctx.on('phase:started', async () => {
           registrySealed = true;
+          schedulerRegistrySealed = true;
+          activeScheduler = resolveActiveScheduler();
+          await runCatchUpScan();
         });
 
         // ── Phase 2 CDC subscription (D2/D3) ─────────────────────
@@ -915,26 +1360,22 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
           (event) => handleWritsChange(event),
           { failOnError: false },
         );
-
-        // ── Startup catch-up scan (D12) ─────────────────────────
-        // Held petitions pre-dating apparatus startup are picked
-        // up here. The watcher is already registered, so events
-        // arriving during the scan are observed; idempotency
-        // guards prevent double-counting if an event arrives for
-        // a writ the scan also picks up.
-        await runCatchUpScan();
       },
     },
   };
 
   const hooks: ReckonerTestHooks = {
     registerKitPetitioners,
+    registerKitSchedulers,
     isSealed: () => registrySealed,
     sealRegistry: () => {
       registrySealed = true;
+      schedulerRegistrySealed = true;
     },
     handleWritsChange: (event) => handleWritsChange(event),
     runCatchUpScan: () => runCatchUpScan(),
+    getActiveSchedulerId: () => activeScheduler?.id,
+    getRegisteredSchedulerIds: () => [...schedulerRegistry.keys()].sort(),
   };
 
   return { plugin, hooks };

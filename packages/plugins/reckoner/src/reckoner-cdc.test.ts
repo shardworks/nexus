@@ -61,7 +61,13 @@ import { createClerk } from '@shardworks/clerk-apparatus';
 import type { ClerkApi, WritDoc, WritTypeConfig } from '@shardworks/clerk-apparatus';
 
 import { createReckonerWithHooks } from './reckoner.ts';
-import type { ReckoningDoc, ReckonerApi, ReckonerConfig } from './types.ts';
+import { alwaysApproveScheduler } from './schedulers/always-approve.ts';
+import type {
+  ReckoningDoc,
+  ReckonerApi,
+  ReckonerConfig,
+  Scheduler,
+} from './types.ts';
 
 // ── Test harness ─────────────────────────────────────────────────────
 
@@ -73,8 +79,12 @@ interface Fixture {
   memBackend: MemoryBackend;
   fakeGuildConfig: GuildConfig & { reckoner?: ReckonerConfig };
   reckoningsBook: ReadOnlyBook<ReckoningDoc>;
-  /** Re-fire `phase:started` against the registered handlers. */
-  firePhaseStarted: () => void;
+  /**
+   * Re-fire `phase:started` against the registered handlers. Awaits
+   * any async handlers (the Reckoner's seal handler runs the
+   * catch-up scan async).
+   */
+  firePhaseStarted: () => Promise<void>;
 }
 
 function buildFakeGuild(
@@ -112,6 +122,15 @@ function buildFakeGuild(
 
 interface FixtureOptions {
   petitionerKits?: Array<{ pluginId: string; value: unknown }>;
+  /**
+   * Additional `schedulers` kit contributions visible to the
+   * Reckoner's `start()`, on top of the built-in
+   * `reckoner.always-approve` instance the apparatus contributes
+   * from its own supportKit. Tests that need to exercise a non-
+   * default scheduler (decline / defer / weight / validateConfig)
+   * supply their scheduler here.
+   */
+  schedulerKits?: Array<{ pluginId: string; value: Scheduler[] }>;
   config?: ReckonerConfig | undefined;
   /**
    * Optional writ types to register on the Clerk before the Reckoner
@@ -197,10 +216,9 @@ async function buildFixture(opts: FixtureOptions = {}): Promise<Fixture> {
 
   // Build a phase-started capable StartupContext per apparatus.
   const phaseStartedHandlers: Array<(...args: unknown[]) => void | Promise<void>> = [];
-  const firePhaseStarted = () => {
+  const firePhaseStarted = async (): Promise<void> => {
     for (const handler of phaseStartedHandlers) {
-      const result = handler();
-      void result;
+      await handler();
     }
   };
 
@@ -250,9 +268,39 @@ async function buildFixture(opts: FixtureOptions = {}): Promise<Fixture> {
     }),
   );
 
-  await reckonerPlugin.apparatus.start(buildCtx(petitionerKitEntries));
+  // Surface the Reckoner's own supportKit `schedulers` contribution
+  // (the built-in always-approve instance) plus any test-supplied
+  // schedulers. Arbor synthesises kit entries from each apparatus's
+  // supportKit in production; the test fixture mirrors that
+  // responsibility by hand.
+  const schedulerKitEntries: KitEntry[] = [
+    {
+      pluginId: 'reckoner',
+      packageName: '@shardworks/reckoner-apparatus',
+      type: 'schedulers',
+      value: [alwaysApproveScheduler],
+    },
+    ...(opts.schedulerKits ?? []).map((entry) => ({
+      pluginId: entry.pluginId,
+      packageName: `@test/${entry.pluginId}`,
+      type: 'schedulers',
+      value: entry.value,
+    })),
+  ];
+
+  await reckonerPlugin.apparatus.start(
+    buildCtx([...petitionerKitEntries, ...schedulerKitEntries]),
+  );
   const reckoner = reckonerPlugin.apparatus.provides as ReckonerApi;
   apparatusMap.set('reckoner', reckoner);
+
+  // Fire `phase:started` so the registry seals, the active
+  // scheduler resolves, and the catch-up scan runs — the real Arbor
+  // lifecycle does this for us in production. Tests that need to
+  // exercise pre-seal behavior (CDC events arriving before
+  // phase:started, etc.) call `hooks.handleWritsChange` against a
+  // fresh fixture and rely on the activeScheduler-undefined guard.
+  await firePhaseStarted();
 
   return {
     stacks,

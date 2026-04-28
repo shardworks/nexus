@@ -23,6 +23,12 @@ export type {
   ReckoningDeferReason,
   ReckoningVisionRelation,
   ReckoningSeverity,
+  Scheduler,
+  SchedulerInput,
+  SchedulerDecision,
+  SchedulerOutcome,
+  CapacitySnapshot,
+  HeldWrit,
 } from './types.ts';
 
 export {
