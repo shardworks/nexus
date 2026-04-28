@@ -150,6 +150,14 @@
 <main style="padding: 24px;">
   <h1>Clicks</h1>
 
+  <!--
+    URL-state validation banner (D6 fail-loud). Shown when the page is
+    loaded with an invalid filter value (e.g. ?status=bogus). The banner
+    appends one line per invalid value; pages do not silently fall back
+    to a default.
+  -->
+  <div id="url-error-banner" class="error-msg" style="display:none;margin-bottom:12px;padding:0.6rem 0.8rem;background:var(--bg2,#1a1b26);border:1px solid var(--red,#f7768e);border-radius:6px;font-size:0.9rem"></div>
+
   <div id="clicks-layout">
     <div id="tree-area">
       <div class="card" style="margin-bottom: 16px;">
@@ -375,20 +383,72 @@
     }
 
     // ── URL handling ───────────────────────────────────────────────────
+    //
+    // All deep-linkable view state for this page rides on
+    // `window.NexusUrl` — the shared helper auto-injected by oculus's
+    // chrome pass. The earlier inline `currentUrlParams` / `updateUrl`
+    // copies are gone (commission moix23w5).
+    //
+    // URL keys:
+    //   ?root=ID         Subtree-focus deep-link; pushes (D5).
+    //   ?click=ID        Detail-pane deep-link; pushes.
+    //   ?status=A&status=B
+    //                    Repeated keys (D3). Omitted when every status
+    //                    is selected (the default).
 
-    function currentUrlParams() {
-      return new URLSearchParams(window.location.search);
+    /** Append a fail-loud message to the URL-error banner (D6). */
+    function showUrlError(msg) {
+      const el = document.getElementById('url-error-banner');
+      if (!el) return;
+      const line = document.createElement('div');
+      line.textContent = msg;
+      el.appendChild(line);
+      el.style.display = 'block';
     }
 
-    function updateUrl(changes) {
-      const params = currentUrlParams();
-      for (const [key, value] of Object.entries(changes)) {
-        if (value === null || value === undefined || value === '') params.delete(key);
-        else params.set(key, value);
+    /** Clear the URL-error banner. */
+    function clearUrlErrors() {
+      const el = document.getElementById('url-error-banner');
+      if (!el) return;
+      el.innerHTML = '';
+      el.style.display = 'none';
+    }
+
+    /** Persist the active status filter to the URL (replace, D5). */
+    function writeStatusFilterToUrl() {
+      const allActive = activeStatuses.size === ALL_STATUSES.length;
+      window.NexusUrl.update({
+        status: allActive ? null : [...activeStatuses],
+      });
+    }
+
+    /**
+     * Read the URL filter state. Returns the deep-link writ ids alongside
+     * the active status set so init can route into the appropriate
+     * detail / focus view. Validates ?status= against ALL_STATUSES per
+     * D6 — unknown values surface a fail-loud banner.
+     */
+    function readUrlState() {
+      clearUrlErrors();
+      const params = window.NexusUrl.read();
+
+      const statuses = params.getAll('status');
+      if (statuses.length > 0) {
+        const known = new Set(ALL_STATUSES);
+        const unknown = statuses.filter((s) => !known.has(s));
+        if (unknown.length > 0) {
+          for (const u of unknown) {
+            showUrlError(`Unknown click status "${u}". Expected one of: ${ALL_STATUSES.join(', ')}.`);
+          }
+        } else {
+          activeStatuses = new Set(statuses);
+        }
       }
-      const qs = params.toString();
-      const next = window.location.pathname + (qs ? '?' + qs : '');
-      window.history.pushState({}, '', next);
+
+      return {
+        rootId: params.get('root'),
+        clickId: params.get('click'),
+      };
     }
 
     // ── Data loading ───────────────────────────────────────────────────
@@ -523,7 +583,9 @@
       focus.addEventListener('click', (e) => {
         e.stopPropagation();
         scopedRootId = node.click.id;
-        updateUrl({ root: node.click.id });
+        // Subtree focus is a navigation event — push so Back returns
+        // to the previous (un-scoped) view.
+        window.NexusUrl.update({ root: node.click.id }, { push: true });
         renderTree();
       });
       row.appendChild(focus);
@@ -604,7 +666,7 @@
       showAll.textContent = 'Show all';
       showAll.addEventListener('click', () => {
         scopedRootId = null;
-        updateUrl({ root: null });
+        window.NexusUrl.update({ root: null }, { push: true });
         renderTree();
       });
       bar.appendChild(showAll);
@@ -626,7 +688,7 @@
           a.textContent = node.click.goal;
           a.addEventListener('click', () => {
             scopedRootId = node.click.id;
-            updateUrl({ root: node.click.id });
+            window.NexusUrl.update({ root: node.click.id }, { push: true });
             renderTree();
           });
           bar.appendChild(a);
@@ -639,7 +701,9 @@
     async function selectClick(id) {
       selectedId = id;
       confirmPending = null;
-      updateUrl({ click: id });
+      // Click selection is a navigation event — push so Back returns
+      // to the prior (un-selected) view.
+      window.NexusUrl.update({ click: id }, { push: true });
       selectedDetail = await loadDetail(id);
       renderTree();
       renderDetail();
@@ -1099,6 +1163,7 @@
         else activeStatuses.add(status);
       }
       updateFilterButtons();
+      writeStatusFilterToUrl();
       renderTree();
     }
 
@@ -1131,28 +1196,43 @@
     });
 
     window.addEventListener('popstate', () => {
-      const params = currentUrlParams();
-      scopedRootId = params.get('root');
-      const clickParam = params.get('click');
-      if (clickParam) selectClick(clickParam);
-      else { selectedId = null; selectedDetail = null; renderDetail(); }
-      renderTree();
+      // Restore the full URL state (status filter, root, click) on Back/
+      // Forward — the popstate-driven path must NOT push so we route
+      // through the helpers manually rather than calling selectClick
+      // (which pushes).
+      const { rootId, clickId } = readUrlState();
+      scopedRootId = rootId;
+      updateFilterButtons();
+      if (clickId) {
+        selectedId = clickId;
+        loadDetail(clickId).then((d) => {
+          selectedDetail = d;
+          renderTree();
+          renderDetail();
+        });
+      } else {
+        selectedId = null;
+        selectedDetail = null;
+        renderTree();
+        renderDetail();
+      }
     });
 
     // ── Init ───────────────────────────────────────────────────────────
 
     (async function init() {
-      const params = currentUrlParams();
-      scopedRootId = params.get('root');
-      const clickParam = params.get('click');
+      // Read URL state on first paint so the status filter and the
+      // ?root= / ?click= deep-links survive refresh and copy-paste.
+      const { rootId, clickId } = readUrlState();
+      scopedRootId = rootId;
 
       updateFilterButtons();
       await loadForest();
       renderTree();
 
-      if (clickParam) {
-        selectedId = clickParam;
-        selectedDetail = await loadDetail(clickParam);
+      if (clickId) {
+        selectedId = clickId;
+        selectedDetail = await loadDetail(clickId);
         renderTree();
         renderDetail();
       } else {
