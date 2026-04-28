@@ -16,7 +16,11 @@ import { z } from "zod";
 import type { Plugin, StartupContext } from "@shardworks/nexus-core";
 import { guild, VERSION } from "@shardworks/nexus-core";
 import type { InstrumentariumApi } from "@shardworks/tools-apparatus";
-import { tool, isToolDefinition } from "@shardworks/tools-apparatus";
+import {
+  tool,
+  isToolDefinition,
+  applyHttpFormatDefault,
+} from "@shardworks/tools-apparatus";
 
 import type {
   OculusApi,
@@ -431,7 +435,8 @@ export function createOculus(): Plugin {
               try {
                 const rawQuery = parseQueryParams(c.req.url, shape);
                 const coerced = coerceParams(shape, rawQuery as Record<string, string>);
-                const validated = toolDef.params.parse(coerced);
+                const withJsonDefault = applyHttpFormatDefault(shape, coerced);
+                const validated = toolDef.params.parse(withJsonDefault);
                 const result = await toolDef.handler(validated);
                 return c.json(result);
               } catch (err) {
@@ -450,7 +455,11 @@ export function createOculus(): Plugin {
             app.delete(routePath, async (c) => {
               try {
                 const body = await c.req.json();
-                const validated = toolDef.params.parse(body);
+                const withJsonDefault = applyHttpFormatDefault(
+                  shape,
+                  (body ?? {}) as Record<string, unknown>,
+                );
+                const validated = toolDef.params.parse(withJsonDefault);
                 const result = await toolDef.handler(validated);
                 return c.json(result);
               } catch (err) {
@@ -469,7 +478,11 @@ export function createOculus(): Plugin {
             app.post(routePath, async (c) => {
               try {
                 const body = await c.req.json();
-                const validated = toolDef.params.parse(body);
+                const withJsonDefault = applyHttpFormatDefault(
+                  shape,
+                  (body ?? {}) as Record<string, unknown>,
+                );
+                const validated = toolDef.params.parse(withJsonDefault);
                 const result = await toolDef.handler(validated);
                 return c.json(result);
               } catch (err) {

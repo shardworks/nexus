@@ -38,6 +38,7 @@ export {
   toolNameToRoute,
   permissionToMethod,
   coerceParams,
+  applyHttpFormatDefault,
 } from './tool-server.ts';
 
 // ── Default export: the apparatus plugin ──────────────────────────────
