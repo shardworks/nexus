@@ -145,8 +145,11 @@ function buildEntry(
   if (!result.ok) throw new Error(`bad schedule: ${result.error}`);
   // Mirror the apparatus's start-time seeding (D8 / D9): both branches
   // collapse to a single `computeNextFireTime(parsed, start)` call.
+  // `source: null` mirrors operator-sourced entries — the dedicated
+  // apparatus / scheduler-integration tests cover the kit-source path.
   return {
     orderIndex,
+    source: null,
     order,
     parsed: result.parsed,
     nextFireTime: computeNextFireTime(result.parsed, start),

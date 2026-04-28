@@ -51,7 +51,6 @@ import type { Book, BookQuery, WhereClause } from '@shardworks/stacks-apparatus'
 
 import { STANDING_ORDER_FAILED_EVENT } from './event-names.ts';
 import type { GuildEvent, RelayContext, RelayDefinition } from './relay.ts';
-import { validateStandingOrders } from './standing-order-validator.ts';
 import type {
   DispatchObservation,
   EventDispatchDoc,
@@ -60,6 +59,35 @@ import type {
 } from './types.ts';
 
 export type { DispatchObservation } from './types.ts';
+
+/**
+ * One entry in the merged standing-order list the dispatcher consumes.
+ *
+ * The apparatus is the single owner of this merge — kit-layer entries
+ * are sealed at apparatus boot, the operator layer is read fresh on
+ * every `processEvents` call, and the two slices are concatenated in
+ * `[...kit, ...operator]` order before being handed to the dispatcher.
+ *
+ * The dispatcher trusts its merged input (D3): kit-layer validation
+ * already ran at apparatus boot through the source-aware validator,
+ * and operator-layer validation runs in the apparatus's `processEvents`
+ * path before this list is built. The dispatcher itself does NOT
+ * re-validate.
+ *
+ * `orderIndex` is per-source — the index within the entry's own source
+ * array (D7) — so error messages quote a number the operator (or kit
+ * author) can match against the array they wrote. `source` is `null`
+ * for the operator slice and the contributing pluginId for kit entries
+ * (D8).
+ */
+export interface SourcedStandingOrder {
+  /** The verbatim standing order from the contributing source. */
+  order: StandingOrder;
+  /** `null` for operator entries, contributing pluginId for kit entries. */
+  source: string | null;
+  /** Per-source index — position within `source`'s own array (D7). */
+  orderIndex: number;
+}
 
 /**
  * Counts returned by a single sweep.
@@ -99,11 +127,16 @@ export interface DispatchSweepInputs {
    */
   resolveRelay: (name: string) => RelayDefinition | undefined;
   /**
-   * The current standing-order array, typically read fresh from
-   * `g.guildConfig().clockworks?.standingOrders ?? []` per call so
-   * operators can hot-edit (D15).
+   * The merged standing-order list — kit-layer entries first (sealed
+   * at apparatus boot), operator-layer entries second (read fresh per
+   * call so operators can hot-edit, D15). Each entry carries its own
+   * source attribution (D7, D8) so error messages can name the
+   * contributing kit when applicable.
+   *
+   * The apparatus owns the merge and the per-layer validation; the
+   * dispatcher trusts this input verbatim (D3) and does not re-validate.
    */
-  standingOrders: readonly StandingOrder[];
+  standingOrders: readonly SourcedStandingOrder[];
   /** Absolute path to the guild home. Forwarded into `RelayContext`. */
   home: string;
   /** ISO-string clock — defaults to `() => new Date().toISOString()`. */
@@ -190,9 +223,14 @@ export async function runDispatchSweep(
     signalStandingOrderFailed,
   } = inputs;
 
-  // D3, D4, D26: re-validate every sweep; aggregated throw on any
-  // violation; no events read or written when validation fails.
-  validateStandingOrders(standingOrders as readonly unknown[]);
+  // D3 (this commission): the dispatcher trusts its merged input. Both
+  // layers were already validated by the apparatus — kit entries at
+  // apparatus boot through the source-aware validator, operator entries
+  // per-call in the apparatus's `processEvents` path before the merge.
+  // Re-validating here would either re-throw on the kit layer's
+  // already-validated entries (with the wrong attribution) or force the
+  // dispatcher to re-thread the per-source labels — neither pays for
+  // itself.
 
   // D13, D23: single full-drain query with no count() pre-check. Event
   // ids (`e-<base36_ts>-<hex>`) sort roughly chronologically, so id
@@ -246,16 +284,18 @@ export async function runDispatchSweep(
     const isLoopGuardEvent = isStandingOrderFailedTrigger(eventDoc.payload);
 
     // D8: match purely on string equality of `on:`. Undeclared event
-    // names naturally match no orders. Orders are visited in
-    // registration order with their original index preserved (D20
-    // requires the index in error messages).
-    for (let index = 0; index < standingOrders.length; index += 1) {
-      const order = standingOrders[index];
+    // names naturally match no orders. Each candidate carries its own
+    // per-source `orderIndex` and `source` label, so the dispatcher's
+    // error messages can name the offending position the operator (or
+    // kit author) recognizes.
+    for (const sourced of standingOrders) {
+      const order = sourced.order;
       if (order.on !== eventDoc.name) continue;
 
       await dispatchOrder({
         order,
-        index,
+        index: sourced.orderIndex,
+        source: sourced.source,
         eventDoc,
         guildEvent,
         dispatches,
@@ -281,7 +321,10 @@ export async function runDispatchSweep(
 
 interface DispatchOrderInputs {
   order: StandingOrder;
+  /** Per-source index for the order — matches the operator's mental model. */
   index: number;
+  /** `null` for operator entries, contributing pluginId for kit entries (D8). */
+  source: string | null;
   eventDoc: EventDoc;
   guildEvent: GuildEvent;
   dispatches: Book<EventDispatchDoc>;
@@ -311,6 +354,7 @@ async function dispatchOrder(args: DispatchOrderInputs): Promise<void> {
   const {
     order,
     index,
+    source,
     eventDoc,
     guildEvent,
     dispatches,
@@ -357,11 +401,14 @@ async function dispatchOrder(args: DispatchOrderInputs): Promise<void> {
   }
 
   // D20: unresolved relay produces one error row with the
-  // index-naming message and does not block sibling orders.
+  // index-naming message and does not block sibling orders. D8: the
+  // message attributes the kit when the entry came from a kit
+  // contribution; operator entries continue to read as before.
   const relay = resolveRelay(handlerName);
   if (!relay) {
     const ts = now();
-    const errorMsg = `clockworks: relay "${handlerName}" referenced by standing order ${index} is not registered.`;
+    const sourceTag = source === null ? '' : ` (kit "${source}")`;
+    const errorMsg = `clockworks: relay "${handlerName}" referenced by standing order ${index}${sourceTag} is not registered.`;
     await writeDispatchRow({
       dispatches,
       eventId: eventDoc.id,

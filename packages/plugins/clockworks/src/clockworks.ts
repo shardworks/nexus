@@ -60,12 +60,14 @@ import type {
   EventSpec,
   EventsKitContribution,
   MergedEventEntry,
+  StandingOrder,
 } from './types.ts';
 
 import {
   runDispatchSweep,
   type DispatchObservation,
   type DispatchSummary,
+  type SourcedStandingOrder,
 } from './dispatcher.ts';
 import {
   CLOCKWORKS_TIMER_EVENT,
@@ -78,6 +80,7 @@ import {
   type ScheduleEntry,
   type ScheduleSweepSummary,
 } from './scheduler.ts';
+import { validateStandingOrders } from './standing-order-validator.ts';
 import { createSummonRelay } from './summon-relay.ts';
 import { clockStatusTool, signal } from './tools/index.ts';
 import { handleWritLifecycle } from './writ-lifecycle-observer.ts';
@@ -153,6 +156,17 @@ const RELAYS_KIT = 'relays';
 // so operator hot-edits land without restart.
 const EVENTS_KIT = 'events';
 
+// The `standingOrders` kit type carries plugin-contributed default
+// standing orders. Clockworks walks contributions at `start()`,
+// validates each through the shared source-aware validator, and seals
+// the resulting kit layer for the life of the apparatus. The merge with
+// the operator-supplied `guild.json clockworks.standingOrders` array is
+// purely additive — `[...kit, ...operator]` — at dispatch and schedule
+// time. Listing this token under the apparatus's `consumes` array keeps
+// the framework's unconsumed-kit warning quiet for legitimate kit
+// authors.
+const STANDING_ORDERS_KIT = 'standingOrders';
+
 // ── Registry ────────────────────────────────────────────────────────
 
 interface RegisteredRelay {
@@ -197,6 +211,25 @@ export function createClockworks(): Plugin {
   // error attributing the problem to the package.
   const pluginEventSet = new Map<string, MergedEventEntry>();
   let pluginEventSetReady = false;
+
+  // ── Kit-layer standing orders ──────────────────────────────────────
+  //
+  // The kit-contributed half of the merged standing-order list. Built
+  // once in `start()` from `ctx.kits('standingOrders')` (D10) — every
+  // kit's contribution is validated through the source-aware shared
+  // validator (D6) and the resulting entries are sealed for the life
+  // of the apparatus. Subsequent `processEvents` / `processSchedules`
+  // calls read from this closure-scoped layer; the operator-layer
+  // hot-edit path lives in `processEvents` and merges the operator
+  // slice on top per call.
+  //
+  // Each entry carries a `source` label (the contributing pluginId)
+  // and a per-source `orderIndex` — the position within that kit's
+  // contributed array — so error-attribution surfaces (D7, D8) can
+  // name the contributing kit and the operator's mental model of
+  // "index #N in `guild.json`" stays stable when kit defaults change
+  // out from under them.
+  const kitStandingOrders: SourcedStandingOrder[] = [];
 
   /**
    * Register a single kit's `relays` contribution. Mirrors the lattice's
@@ -308,6 +341,55 @@ export function createClockworks(): Plugin {
           spec: rawSpec as EventSpec,
           source: entry.pluginId,
           pluginDeclared: true,
+        });
+      }
+    }
+  }
+
+  /**
+   * Walk every `standingOrders` kit contribution and assemble the kit
+   * layer of the merged standing-order list into the closure-scoped
+   * `kitStandingOrders`. Called once at `start()`.
+   *
+   * For each kit:
+   *
+   *   - The contributed value MUST be an array. A non-array value is
+   *     fail-loud at apparatus boot with kit attribution (D9), mirroring
+   *     the events kit's malformed-value guard.
+   *   - The shared standing-order validator runs with the contributing
+   *     pluginId so any malformed entry surfaces with the kit-attributed
+   *     header / per-bullet shape (D5, D6).
+   *   - On success, a shallow copy of the entries is appended to the
+   *     closure-scoped layer (D15), each tagged with the contributing
+   *     pluginId and its per-kit `orderIndex` (D7).
+   *
+   * Silent on the happy path (D17) — mirrors the events kit's build
+   * path; no info logging announces the kit-layer build.
+   */
+  function buildKitStandingOrders(ctx: StartupContext): void {
+    kitStandingOrders.length = 0;
+    for (const entry of ctx.kits(STANDING_ORDERS_KIT)) {
+      const { pluginId, value } = entry;
+      if (!Array.isArray(value)) {
+        // D9: fail-loud, kit-attributed. Mirrors the events kit's
+        // malformed-value guard and the brief's "fail loud for
+        // kit-author bugs" mandate.
+        throw new Error(
+          `clockworks: standingOrders kit "${pluginId}" contribution must be an array, got ` +
+            `${value === null ? 'null' : typeof value}.`,
+        );
+      }
+      // D6: source-aware validator call. The validator owns the
+      // per-bullet kit attribution and the source-labeled header text.
+      validateStandingOrders(value, pluginId);
+      // D15: shallow copy preserves array identity protection without
+      // paying for deep cloning of declarative records.
+      const arr = value as readonly StandingOrder[];
+      for (let i = 0; i < arr.length; i += 1) {
+        kitStandingOrders.push({
+          order: arr[i]!,
+          source: pluginId,
+          orderIndex: i,
         });
       }
     }
@@ -489,12 +571,33 @@ export function createClockworks(): Plugin {
         );
       }
 
-      // D15: re-read the standing-order array per call so operators can
-      // hot-edit guild.json without restarting the apparatus. The
-      // dispatcher then re-validates it via the standing-order
-      // validator on every sweep (D3).
+      // D15: re-read the operator standing-order array per call so
+      // operators can hot-edit guild.json without restarting the
+      // apparatus. D3: the apparatus owns operator-layer validation —
+      // we run the no-source validator path here so any malformed
+      // operator entry surfaces with the byte-for-byte historical
+      // message text. Kit-layer entries were already validated at
+      // apparatus boot through `buildKitStandingOrders` and are not
+      // re-validated here (the dispatcher trusts its merged input).
       const g = guild();
-      const standingOrders = g.guildConfig().clockworks?.standingOrders ?? [];
+      const operatorStandingOrders =
+        g.guildConfig().clockworks?.standingOrders ?? [];
+      validateStandingOrders(operatorStandingOrders as readonly unknown[]);
+
+      // D2 / D11: build the merged dispatch list with kit entries
+      // first, operator entries second. Each entry carries its own
+      // per-source `orderIndex` (D7) and `source` label (null for the
+      // operator slice, contributing pluginId for kit entries) so the
+      // dispatcher's relay-not-registered error attribution (D8) can
+      // name the contributing kit when applicable.
+      const mergedStandingOrders: SourcedStandingOrder[] = [
+        ...kitStandingOrders,
+        ...operatorStandingOrders.map((order, idx) => ({
+          order,
+          source: null as string | null,
+          orderIndex: idx,
+        })),
+      ];
 
       // D11: per-call read of `home`. D21: pure dispatcher receives
       // every dependency by parameter so unit tests can drive it
@@ -510,7 +613,7 @@ export function createClockworks(): Plugin {
         events,
         dispatches,
         resolveRelay: api.resolveRelay,
-        standingOrders,
+        standingOrders: mergedStandingOrders,
         home: g.home,
         signalStandingOrderFailed: async (payload) => {
           await api.emit(STANDING_ORDER_FAILED_EVENT, payload, 'framework');
@@ -533,7 +636,7 @@ export function createClockworks(): Plugin {
       // that uses Clockworks for non-anima relays can install Clockworks
       // without dragging in the session-launch stack.
       recommends: ['animator', 'loom'],
-      consumes: [RELAYS_KIT, EVENTS_KIT],
+      consumes: [RELAYS_KIT, EVENTS_KIT, STANDING_ORDERS_KIT],
 
       provides: api,
 
@@ -628,40 +731,65 @@ export function createClockworks(): Plugin {
         buildPluginEventSet(ctx);
         pluginEventSetReady = true;
 
+        // ── Kit-layer standing orders ──────────────────────────────────
+        //
+        // D11: build the kit layer immediately after the events-kit
+        // build and before the schedule-table seed, so the schedule
+        // seed loop and the per-call dispatch path both observe the
+        // same sealed snapshot. D9: malformed kit contributions throw
+        // here with kit attribution, failing apparatus boot loud.
+        buildKitStandingOrders(ctx);
+
         // ── Schedule table ─────────────────────────────────────────────
         //
         // D4, D11: build the in-memory schedule table fresh on every
-        // start. Walk the standing orders array; for each entry with a
-        // `schedule:` key, parse the expression and seed
-        // `nextFireTime` per D8 (`@every`: now + duration) / D9 (cron:
-        // next boundary after now) — both fall out of the same
-        // `computeNextFireTime(parsed, startTime)` call.
+        // start. Walk the merged `[...kit, ...operator]` standing-order
+        // list; for each entry with a `schedule:` key, parse the
+        // expression and seed `nextFireTime` per D8 (`@every`: now +
+        // duration) / D9 (cron: next boundary after now) — both fall
+        // out of the same `computeNextFireTime(parsed, startTime)`
+        // call.
         //
-        // Validation already happened at config load (the shared
-        // standing-order validator runs on every guild boot via the
-        // dispatcher's first sweep, but we're also fail-loud here for
-        // any malformed entry that slipped past — the parser surface
-        // gives an exact-cause error that names the offending index).
+        // Validation already happened: kit entries went through the
+        // source-aware validator in `buildKitStandingOrders` above, and
+        // operator entries are validated per-call from `processEvents`.
+        // The `parseSchedule` defensive guard here re-checks the
+        // schedule string so any drift between the validator and the
+        // schedule table surfaces as a boot-time error attributed to
+        // the offending source.
         schedule.length = 0;
-        const standingOrdersForSchedule =
+        const operatorStandingOrders =
           g.guildConfig().clockworks?.standingOrders ?? [];
+        const mergedForSchedule: SourcedStandingOrder[] = [
+          ...kitStandingOrders,
+          ...operatorStandingOrders.map((order, idx) => ({
+            order,
+            source: null,
+            orderIndex: idx,
+          })),
+        ];
         const startTime = new Date();
-        for (let index = 0; index < standingOrdersForSchedule.length; index += 1) {
-          const order = standingOrdersForSchedule[index]!;
-          const value = (order as { schedule?: unknown }).schedule;
+        for (const entry of mergedForSchedule) {
+          const value = (entry.order as { schedule?: unknown }).schedule;
           if (typeof value !== 'string' || value.length === 0) continue;
           const parsed = parseSchedule(value);
           if (!parsed.ok) {
             // Fail loud: the validator should have caught this, but
             // surfacing it again here keeps the message attached to
             // the apparatus boot rather than the first scheduler tick.
+            // D12: attribute kit vs. operator in the boot-time message.
+            const sourceTag =
+              entry.source === null
+                ? 'in guild.json'
+                : `in kit "${entry.source}"`;
             throw new Error(
-              `clockworks: standing order #${index} has an invalid schedule (${parsed.error}).`,
+              `clockworks: standing order #${entry.orderIndex} ${sourceTag} has an invalid schedule (${parsed.error}).`,
             );
           }
           schedule.push({
-            orderIndex: index,
-            order,
+            orderIndex: entry.orderIndex,
+            source: entry.source,
+            order: entry.order,
             parsed: parsed.parsed,
             nextFireTime: computeNextFireTime(parsed.parsed, startTime),
           });

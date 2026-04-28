@@ -323,6 +323,73 @@ through Clockworks rather than maintaining its own scheduler:
 }
 ```
 
+### Kit-contributed defaults
+
+Apparatuses and standalone kits may ship default standing orders by
+contributing a `standingOrders` array on their `ClockworksKit`. Each
+kit's contribution is validated with the source-aware standing-order
+validator at apparatus boot and sealed into a closure-scoped layer for
+the life of the apparatus.
+
+```typescript
+import type { ClockworksKit } from '@shardworks/clockworks-apparatus';
+
+export default {
+  recommends: ['clockworks'],
+  standingOrders: [
+    { schedule: '@every 30s', run: 'reckoner-tick' },
+  ],
+} satisfies ClockworksKit;
+```
+
+The kit layer is merged additively with the operator-defined
+`clockworks.standingOrders` slice on every dispatch and schedule pass:
+
+```
+effective list = [...kit, ...operator]
+```
+
+There is no id, no override, no disable, and no collision detection
+— identical entries from two sources simply produce two dispatches.
+Operator hot-edits to `guild.json` continue to land on the next
+`processEvents` call without restart; updating a kit-contributed
+default requires an apparatus restart (matching the existing
+schedule-table lifecycle).
+
+A malformed kit contribution fails the apparatus boot loud with kit
+attribution. A non-array contribution surfaces as
+`clockworks: standingOrders kit "<pluginId>" contribution must be an
+array, …`. A malformed entry surfaces through the source-aware
+validator with a header reading `clockworks: invalid standing order in
+kit "<pluginId>":` (or the pluralized form) and per-bullet lines that
+read `standing order #N [kit "<pluginId>"]: …`. The operator-layer
+validator path is untouched — its messages continue to read
+`clockworks: invalid standing order in guild.json:` so existing
+operator-facing diagnostics are byte-for-byte preserved.
+
+#### `clockworks.timer` payload — `source` and per-source `orderIndex`
+
+Every scheduled fire writes a `clockworks.timer` event carrying:
+
+```typescript
+{
+  standingOrder: { /* verbatim from the contributing source */ },
+  orderIndex: 0,         // position within `source`'s OWN array
+  source: 'demo-kit',    // null for operator entries, pluginId for kit entries
+  fireTime: '2026-04-25T17:30:00.000Z'
+}
+```
+
+`orderIndex` is per-source so the operator's mental model of "the
+#N-th order in `guild.json`" stays stable when kit defaults change.
+The scalar `source` field disambiguates kit-sourced fires from
+operator-sourced fires when the same `orderIndex` would otherwise
+collide.
+
+The dispatcher's relay-not-registered error message and the
+scheduler's boot-time schedule-parse error both attribute the
+contributing kit when applicable.
+
 ---
 
 ## CDC auto-wiring

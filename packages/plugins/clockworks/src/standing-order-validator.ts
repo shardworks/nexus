@@ -83,12 +83,24 @@ function describeValue(value: unknown): string {
  * surfaces it as `StandingOrder[] | undefined`) the validator throws a
  * structural error.
  *
+ * The optional `source` argument routes the message text into a
+ * source-labeled variant: when present, the header reads
+ * `clockworks: invalid standing order in kit "<source>":` (or the
+ * pluralized form) and each per-bullet line carries `[kit "<source>"]`
+ * after the index. When `source` is omitted the messages are
+ * byte-for-byte identical to the historical operator-layer text.
+ *
  * @param orders The current standing-order array (typically
  *               `g.guildConfig().clockworks?.standingOrders ?? []`).
+ * @param source When set, the contributing pluginId — switches the
+ *               aggregated message to the kit-attribution variant.
  * @throws Error with an aggregated descriptive message when any
  *         violation is found.
  */
-export function validateStandingOrders(orders: readonly unknown[]): void {
+export function validateStandingOrders(
+  orders: readonly unknown[],
+  source?: string,
+): void {
   if (!Array.isArray(orders)) {
     throw new Error(
       `clockworks: standingOrders must be an array, got ${describeValue(orders)}.`,
@@ -100,17 +112,29 @@ export function validateStandingOrders(orders: readonly unknown[]): void {
   orders.forEach((order, index) => {
     const issue = validateSingleOrder(order, index);
     if (issue !== null) {
-      errors.push(`  - standing order #${index}: ${issue}`);
+      const sourceTag = source ? ` [kit "${source}"]` : '';
+      errors.push(`  - standing order #${index}${sourceTag}: ${issue}`);
     }
   });
 
   if (errors.length > 0) {
-    const header =
-      errors.length === 1
-        ? 'clockworks: invalid standing order in guild.json:'
-        : `clockworks: ${errors.length} invalid standing orders in guild.json:`;
+    const header = buildAggregatedHeader(errors.length, source);
     throw new Error([header, ...errors].join('\n'));
   }
+}
+
+function buildAggregatedHeader(
+  errorCount: number,
+  source: string | undefined,
+): string {
+  if (source) {
+    return errorCount === 1
+      ? `clockworks: invalid standing order in kit "${source}":`
+      : `clockworks: ${errorCount} invalid standing orders in kit "${source}":`;
+  }
+  return errorCount === 1
+    ? 'clockworks: invalid standing order in guild.json:'
+    : `clockworks: ${errorCount} invalid standing orders in guild.json:`;
 }
 
 /**

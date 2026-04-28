@@ -64,18 +64,28 @@ import type { StandingOrderFailedPayload } from './dispatcher.ts';
 
 /**
  * One row of the in-memory schedule table — built fresh on apparatus
- * `start()` (D11), keyed by the order's `orderIndex` so the apparatus
- * can read both the verbatim order and its parsed schedule handle
- * without re-walking the config array on every tick.
+ * `start()` (D11), keyed by the order's per-source `orderIndex` so the
+ * apparatus can read both the verbatim order and its parsed schedule
+ * handle without re-walking the config array on every tick.
  */
 export interface ScheduleEntry {
   /**
-   * Stable index into `guildConfig().clockworks.standingOrders`. Used
-   * for fire-ordering when multiple entries are due simultaneously
-   * (D13) and for surfacing the offending index in error messages.
+   * Per-source index — position within the entry's own source array
+   * (D7). Operator entries are indexed within `guildConfig().clockworks
+   * .standingOrders`; kit entries are indexed within their own
+   * contributing kit's array. Used for fire-ordering when multiple
+   * entries are due simultaneously (D13) and for surfacing the
+   * offending index in error messages.
    */
   readonly orderIndex: number;
-  /** The verbatim standing order from `guild.json`. */
+  /**
+   * `null` for operator entries, the contributing pluginId for kit
+   * entries (D7). Carried through `fireScheduleEntry` so error messages
+   * and the synthesized `clockworks.timer` payload (D20) name the
+   * source uniformly.
+   */
+  readonly source: string | null;
+  /** The verbatim standing order from its contributing source. */
   readonly order: StandingOrder;
   /** Parsed schedule handle from {@link parseSchedule}. */
   readonly parsed: ParsedSchedule;
@@ -241,11 +251,18 @@ async function fireScheduleEntry(args: FireEntryInputs): Promise<void> {
   // of timer events. The literal lives in `event-names.ts` (D20)
   // so the persisted row's `name` field and the synthesized
   // in-memory `GuildEvent` view stay in lockstep.
+  //
+  // D20: the payload carries a scalar `source` field alongside
+  // `orderIndex` so subscribers can disambiguate kit-contributed
+  // schedule entries from operator-defined ones — per-source
+  // `orderIndex` alone is ambiguous (a kit and the operator may both
+  // hold a "#0" entry).
   const eventId = generateId('e');
   const eventName = CLOCKWORKS_TIMER_EVENT;
   const payload = {
     standingOrder: entry.order,
     orderIndex: entry.orderIndex,
+    source: entry.source,
     fireTime: fireTimeIso,
   };
   const eventDoc: EventDoc = {
@@ -277,9 +294,12 @@ async function fireScheduleEntry(args: FireEntryInputs): Promise<void> {
 
   const relay = resolveRelay(handlerName);
   if (!relay) {
+    // D8 / D7: name the contributing kit when the entry came from a
+    // kit; operator entries continue to read as before.
+    const sourceTag = entry.source === null ? '' : ` (kit "${entry.source}")`;
     const errorMsg =
       `clockworks: relay "${handlerName}" referenced by scheduled order ` +
-      `${entry.orderIndex} is not registered.`;
+      `${entry.orderIndex}${sourceTag} is not registered.`;
     await writeDispatchRow({
       dispatches,
       eventId,

@@ -519,4 +519,23 @@ export interface ClockworksKit extends Kit {
    * `validateSignal`.
    */
   events?: EventsKitContribution;
+  /**
+   * Default standing orders contributed under the `standingOrders` kit
+   * type. Each entry is a {@link StandingOrder} with the same canonical
+   * shape as `guild.json` `clockworks.standingOrders` — every kit
+   * contribution is validated through the shared standing-order
+   * validator at apparatus boot.
+   *
+   * Kit-contributed orders are layered with operator-defined orders
+   * additively (`[...kit, ...operator]`) at dispatch time. There is no
+   * id, no override, no disable, no collision detection — identical
+   * entries simply produce two dispatches.
+   *
+   * Kit contributions are sealed at apparatus `start()`; operators
+   * editing `guild.json` continue to hot-edit the operator layer
+   * without restart, but updating a kit-contributed default requires
+   * an apparatus restart (matching the existing schedule-table
+   * lifecycle).
+   */
+  standingOrders?: StandingOrder[];
 }

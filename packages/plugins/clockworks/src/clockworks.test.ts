@@ -239,12 +239,12 @@ describe('Clockworks — skeleton', () => {
     assert.deepEqual(names, ['clock-status', 'signal']);
   });
 
-  it('declares the expected apparatus shape (requires stacks + clerk, recommends animator + loom, consumes relays and events)', () => {
+  it('declares the expected apparatus shape (requires stacks + clerk, recommends animator + loom, consumes relays, events, and standingOrders)', () => {
     const plugin = createClockworks();
     if (!('apparatus' in plugin)) throw new Error('clockworks must be apparatus');
     assert.deepEqual(plugin.apparatus.requires, ['stacks', 'clerk']);
     assert.deepEqual(plugin.apparatus.recommends, ['animator', 'loom']);
-    assert.deepEqual(plugin.apparatus.consumes, ['relays', 'events']);
+    assert.deepEqual(plugin.apparatus.consumes, ['relays', 'events', 'standingOrders']);
     assert.equal(typeof plugin.apparatus.start, 'function');
     assert.equal(typeof plugin.apparatus.stop, 'function');
   });
@@ -632,6 +632,13 @@ interface DispatchFixtureOptions {
   standingOrders?: StandingOrder[];
   /** Relays added to `supportKit.relays` before start(). */
   supportKitRelays?: RelayDefinition[];
+  /**
+   * Kit-contributed standing-order arrays, listed in wire order. Each
+   * entry becomes a `KitEntry { type: 'standingOrders' }` with the
+   * given pluginId, mirroring the way standalone kits surface their
+   * contributions through the framework's `ctx.kits` walk.
+   */
+  kitStandingOrders?: Array<{ pluginId: string; value: unknown }>;
 }
 
 interface DispatchFixture {
@@ -723,6 +730,18 @@ async function buildDispatchFixture(
       packageName: '@shardworks/clockworks-apparatus',
       type: 'relays',
       value: supportRelays,
+    });
+  }
+  // Kit-contributed standing orders surface as the new `standingOrders`
+  // kit type (C1). Each contribution is sealed at apparatus start and
+  // merged additively with the operator slice on every `processEvents`
+  // call. Malformed contributions throw kit-attributed boot errors.
+  for (const kit of opts.kitStandingOrders ?? []) {
+    ctxEntries.push({
+      pluginId: kit.pluginId,
+      packageName: `@test/${kit.pluginId}`,
+      type: 'standingOrders',
+      value: kit.value,
     });
   }
 
@@ -1027,5 +1046,232 @@ describe('Clockworks — processEvents integration', () => {
     assert.equal(skippedRows[0].handlerName, 'boomB');
     assert.ok(skippedRows[0].error?.startsWith('loop-guard:'));
     assert.equal(skippedRows[0].startedAt, skippedRows[0].endedAt);
+  });
+});
+
+// ── Kit-contributed standing orders (C1) ─────────────────────────────
+
+describe('Clockworks — kit-contributed standing orders (event-driven path)', () => {
+  afterEach(() => clearGuild());
+
+  it('fires a kit-contributed event-driven order through processEvents', async () => {
+    let invoked = 0;
+    const recorder = relay({
+      name: 'kit-recorder',
+      handler: () => {
+        invoked += 1;
+      },
+    });
+
+    const fix = await buildDispatchFixture({
+      kitStandingOrders: [
+        {
+          pluginId: 'demo-kit',
+          value: [{ on: 'demo.kit-event', run: 'kit-recorder' }],
+        },
+      ],
+      supportKitRelays: [recorder],
+    });
+
+    await fix.clockworks.emit('demo.kit-event', { hello: 'kit' }, 'tester');
+    const summary = await fix.clockworks.processEvents();
+
+    assert.deepEqual(summary, {
+      processedEvents: 1,
+      dispatches: 1,
+      errors: 0,
+      skipped: 0,
+    });
+    assert.equal(invoked, 1);
+  });
+
+  it('coexists with operator orders additively (both layers fire on the same event)', async () => {
+    const fired: string[] = [];
+    const r1 = relay({
+      name: 'kit-r',
+      handler: () => {
+        fired.push('kit');
+      },
+    });
+    const r2 = relay({
+      name: 'op-r',
+      handler: () => {
+        fired.push('operator');
+      },
+    });
+
+    const fix = await buildDispatchFixture({
+      standingOrders: [{ on: 'demo.x', run: 'op-r' }],
+      kitStandingOrders: [
+        {
+          pluginId: 'demo-kit',
+          value: [{ on: 'demo.x', run: 'kit-r' }],
+        },
+      ],
+      supportKitRelays: [r1, r2],
+    });
+
+    await fix.clockworks.emit('demo.x', null, 'tester');
+    const summary = await fix.clockworks.processEvents();
+
+    assert.deepEqual(summary, {
+      processedEvents: 1,
+      dispatches: 2,
+      errors: 0,
+      skipped: 0,
+    });
+    // D2 ordering: kit slice first, operator second.
+    assert.deepEqual(fired, ['kit', 'operator']);
+  });
+
+  it('hot-edits to operator orders still land without restart (kit layer is sealed)', async () => {
+    const fired: string[] = [];
+    const kitR = relay({
+      name: 'kit-only',
+      handler: () => {
+        fired.push('kit');
+      },
+    });
+    const opR = relay({
+      name: 'op-only',
+      handler: () => {
+        fired.push('operator');
+      },
+    });
+
+    const fix = await buildDispatchFixture({
+      standingOrders: [],
+      kitStandingOrders: [
+        {
+          pluginId: 'demo-kit',
+          value: [{ on: 'demo.x', run: 'kit-only' }],
+        },
+      ],
+      supportKitRelays: [kitR, opR],
+    });
+
+    // First sweep — only the kit-contributed order matches.
+    await fix.clockworks.emit('demo.x', null, 'tester');
+    await fix.clockworks.processEvents();
+    assert.deepEqual(fired, ['kit']);
+
+    // Hot-edit operator orders — must take effect on the next sweep
+    // without restarting the apparatus (D5).
+    fix.guildConfig.clockworks!.standingOrders!.push({
+      on: 'demo.x',
+      run: 'op-only',
+    });
+    await fix.clockworks.emit('demo.x', null, 'tester');
+    await fix.clockworks.processEvents();
+    // Second event: kit AND operator both fire.
+    assert.deepEqual(fired, ['kit', 'kit', 'operator']);
+  });
+
+  it('still rejects malformed operator entries per call as today', async () => {
+    const fix = await buildDispatchFixture({
+      standingOrders: [
+        // Hand-edited operator entry with a dropped sugar key.
+        { on: 'demo.x', summon: 'reviewer' } as unknown as StandingOrder,
+      ],
+      kitStandingOrders: [
+        {
+          pluginId: 'demo-kit',
+          value: [{ on: 'demo.x', run: 'noop' }],
+        },
+      ],
+    });
+
+    await fix.clockworks.emit('demo.x', null, 'tester');
+    await assert.rejects(
+      fix.clockworks.processEvents(),
+      (err: Error) =>
+        /sugar form has been removed/.test(err.message) &&
+        // The operator-layer error is byte-for-byte the historical
+        // `guild.json` text — no kit attribution, even when a kit
+        // layer is present.
+        /clockworks: invalid standing order in guild\.json:/.test(err.message),
+    );
+  });
+
+  it('attributes the contributing kit when an unresolved-relay error fires', async () => {
+    let captured: string | null = null;
+
+    const fix = await buildDispatchFixture({
+      kitStandingOrders: [
+        {
+          pluginId: 'demo-kit',
+          value: [{ on: 'demo.x', run: 'ghost-relay' }],
+        },
+      ],
+    });
+
+    await fix.clockworks.emit('demo.x', null, 'tester');
+    await fix.clockworks.processEvents({
+      onDispatch: (obs) => {
+        if (obs.status === 'error') captured = obs.error;
+      },
+    });
+
+    assert.ok(captured, 'expected an error observation');
+    assert.match(
+      captured!,
+      /relay "ghost-relay" referenced by standing order 0 \(kit "demo-kit"\) is not registered/,
+    );
+  });
+});
+
+describe('Clockworks — kit-contributed standing orders (boot-time validation)', () => {
+  afterEach(() => clearGuild());
+
+  it('fails apparatus boot loud with kit attribution when a kit value is not an array', async () => {
+    await assert.rejects(
+      buildDispatchFixture({
+        kitStandingOrders: [
+          { pluginId: 'broken-kit', value: { not: 'an-array' } },
+        ],
+      }),
+      (err: Error) =>
+        /standingOrders kit "broken-kit"/.test(err.message) &&
+        /must be an array/.test(err.message),
+    );
+  });
+
+  it('fails apparatus boot loud with kit-attributed validator output when a kit entry is malformed', async () => {
+    await assert.rejects(
+      buildDispatchFixture({
+        kitStandingOrders: [
+          {
+            pluginId: 'malformed-kit',
+            value: [
+              // Dropped-sugar form — the validator's per-bullet text
+              // must include the kit-attribution block.
+              { on: 'demo.x', summon: 'reviewer' },
+            ],
+          },
+        ],
+      }),
+      (err: Error) =>
+        /clockworks: invalid standing order in kit "malformed-kit":/.test(err.message) &&
+        /standing order #0 \[kit "malformed-kit"\]:/.test(err.message) &&
+        /sugar form has been removed/.test(err.message),
+    );
+  });
+
+  it('fails apparatus boot loud when a kit-contributed schedule expression is malformed', async () => {
+    await assert.rejects(
+      buildDispatchFixture({
+        kitStandingOrders: [
+          {
+            pluginId: 'sched-kit',
+            value: [{ schedule: 'not-a-cron', run: 'whatever' }],
+          },
+        ],
+      }),
+      // The standing-order validator catches malformed schedules at
+      // load time, so the kit-attributed validator path fires first.
+      (err: Error) =>
+        /clockworks: invalid standing order in kit "sched-kit":/.test(err.message) &&
+        /"schedule" is invalid/.test(err.message),
+    );
   });
 });

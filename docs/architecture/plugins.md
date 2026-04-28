@@ -57,7 +57,7 @@ export default {
 
 Type safety for contribution fields is provided by the apparatus that consumes them — not by the framework. Each apparatus package publishes a kit interface that kit authors can import and `satisfies` against:
 
-- `ClockworksKit` — defines `relays`. See [ClockworksKit](clockworks.md#clockworkskit).
+- `ClockworksKit` — defines `relays`, `events`, and `standingOrders`. See [ClockworksKit](clockworks.md#clockworkskit).
 - `SpiderKit` — defines `engines`. See [Engine Designs](engine-designs.md).
 - `AnimaKit` — defines `tools`. See [Tools](anima-lifecycle.md#tools).
 

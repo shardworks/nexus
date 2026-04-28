@@ -90,6 +90,13 @@ function buildCtx(kitEntries: KitEntry[] = []): StartupContext {
 interface BuildOptions {
   standingOrders?: StandingOrder[];
   relays?: RelayDefinition[];
+  /**
+   * Kit-contributed standing-order arrays surfaced under the new
+   * `standingOrders` kit type (C1). Each entry produces a `KitEntry`
+   * the apparatus walks at start, validates with kit attribution, and
+   * seals into the closure-scoped layer.
+   */
+  kitStandingOrders?: Array<{ pluginId: string; value: unknown }>;
 }
 
 async function buildFixture(opts: BuildOptions = {}): Promise<Fixture> {
@@ -163,6 +170,16 @@ async function buildFixture(opts: BuildOptions = {}): Promise<Fixture> {
     pluginId: 'test-kit',
     value: [rel],
   } as KitEntry));
+  // Kit-contributed standing-order arrays surface as the new
+  // `standingOrders` kit type (C1). The apparatus walks them at start
+  // and seals the result for the life of the apparatus.
+  for (const kit of opts.kitStandingOrders ?? []) {
+    kitEntries.push({
+      type: 'standingOrders',
+      pluginId: kit.pluginId,
+      value: kit.value,
+    } as KitEntry);
+  }
 
   await clockworksPlugin.apparatus.start(buildCtx(kitEntries));
   const clockworks = clockworksPlugin.apparatus.provides as ClockworksApi;
@@ -392,5 +409,89 @@ describe('Scheduler integration — emit-and-pickup (D18)', () => {
     });
     assert.equal(cascade.length, 1);
     assert.equal(cascade[0]!.processed, true);
+  });
+});
+
+describe('Scheduler integration — kit-contributed @every (C1)', () => {
+  afterEach(() => clearGuild());
+
+  it('a kit-contributed `@every` schedule entry fires through the live apparatus and the timer payload carries source + per-source orderIndex (D7, D20)', async () => {
+    let fires = 0;
+    const tickRelay = relay({
+      name: 'kit-tick',
+      handler: () => {
+        fires += 1;
+      },
+    });
+
+    const fix = await buildFixture({
+      kitStandingOrders: [
+        {
+          pluginId: 'kit-author',
+          value: [{ schedule: '@every 1s', run: 'kit-tick' }],
+        },
+      ],
+      relays: [tickRelay],
+    });
+
+    await new Promise((r) => setTimeout(r, 1100));
+    const summary = await fix.clockworks.processSchedules();
+    assert.equal(summary.fired, 1);
+    assert.equal(summary.errors, 0);
+    assert.equal(fires, 1);
+
+    // The synthesized timer event carries the per-source `orderIndex`
+    // (0 — first within the kit's own array) and the scalar `source`
+    // field naming the contributing kit (D20).
+    const timerRows = await fix.events.find({
+      where: [['name', '=', 'clockworks.timer']],
+    });
+    assert.equal(timerRows.length, 1);
+    const payload = timerRows[0]!.payload as {
+      orderIndex: number;
+      source: string | null;
+      standingOrder: StandingOrder;
+    };
+    assert.equal(payload.orderIndex, 0);
+    assert.equal(payload.source, 'kit-author');
+    assert.equal(payload.standingOrder.run, 'kit-tick');
+  });
+
+  it('kit + operator schedule entries each carry their own per-source orderIndex (D7)', async () => {
+    const noopRelay = relay({
+      name: 'noop-relay',
+      handler: () => {},
+    });
+
+    const fix = await buildFixture({
+      kitStandingOrders: [
+        {
+          pluginId: 'kit-author',
+          value: [{ schedule: '@every 1s', run: 'noop-relay' }],
+        },
+      ],
+      standingOrders: [{ schedule: '@every 1s', run: 'noop-relay' }],
+      relays: [noopRelay],
+    });
+
+    await new Promise((r) => setTimeout(r, 1100));
+    await fix.clockworks.processSchedules();
+
+    const timerRows = await fix.events.find({
+      where: [['name', '=', 'clockworks.timer']],
+    });
+    assert.equal(timerRows.length, 2);
+    // Both entries indexed at 0 — kit within its own array, operator
+    // within `guild.json`. The operator's mental model of "index #N in
+    // my array" is preserved against kit-source changes.
+    const payloads = timerRows.map(
+      (r) => r.payload as { orderIndex: number; source: string | null },
+    );
+    const kitPayload = payloads.find((p) => p.source === 'kit-author');
+    const opPayload = payloads.find((p) => p.source === null);
+    assert.ok(kitPayload, 'kit timer payload present');
+    assert.ok(opPayload, 'operator timer payload present');
+    assert.equal(kitPayload!.orderIndex, 0);
+    assert.equal(opPayload!.orderIndex, 0);
   });
 });

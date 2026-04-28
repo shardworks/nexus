@@ -457,3 +457,97 @@ describe('validateStandingOrders — aggregation', () => {
     assert.doesNotMatch(captured!.message, /\d+ invalid standing orders/);
   });
 });
+
+describe('validateStandingOrders — source-labeled messages (D5)', () => {
+  it('uses the kit-attributed singular header when source is set and exactly one order is invalid', () => {
+    let captured: Error | null = null;
+    try {
+      validateStandingOrders(
+        [
+          { on: 'a', run: 'r' },
+          { on: 'b' }, // the only offender
+        ],
+        'demo-kit',
+      );
+    } catch (err) {
+      captured = err as Error;
+    }
+    assert.ok(captured);
+    assert.match(
+      captured!.message,
+      /^clockworks: invalid standing order in kit "demo-kit":/,
+    );
+    assert.doesNotMatch(captured!.message, /\d+ invalid standing orders/);
+    // Per-bullet line carries the kit attribution after the index.
+    assert.match(captured!.message, /standing order #1 \[kit "demo-kit"\]:/);
+    // No mention of guild.json when source is set.
+    assert.doesNotMatch(captured!.message, /guild\.json/);
+  });
+
+  it('uses the kit-attributed plural header when source is set and multiple orders are invalid', () => {
+    let captured: Error | null = null;
+    try {
+      validateStandingOrders(
+        [
+          { on: 'a', run: 'r' },
+          { on: 'b' }, // missing run
+          { on: 'c', run: '' }, // empty run
+        ],
+        'multi-kit',
+      );
+    } catch (err) {
+      captured = err as Error;
+    }
+    assert.ok(captured);
+    assert.match(
+      captured!.message,
+      /^clockworks: 2 invalid standing orders in kit "multi-kit":/,
+    );
+    assert.match(captured!.message, /standing order #1 \[kit "multi-kit"\]:/);
+    assert.match(captured!.message, /standing order #2 \[kit "multi-kit"\]:/);
+  });
+
+  it('preserves the operator-layer message verbatim when source is omitted (no-source path unchanged)', () => {
+    // Single offender — singular header.
+    let single: Error | null = null;
+    try {
+      validateStandingOrders([{ on: 'b' }]);
+    } catch (err) {
+      single = err as Error;
+    }
+    assert.ok(single);
+    assert.match(
+      single!.message,
+      /^clockworks: invalid standing order in guild\.json:/,
+    );
+    // Per-bullet line MUST NOT include any kit-source attribution.
+    assert.doesNotMatch(single!.message, /\[kit "/);
+
+    // Multiple offenders — plural header.
+    let multi: Error | null = null;
+    try {
+      validateStandingOrders([
+        { on: 'a', run: 'r' },
+        { on: 'b' },
+        { brief: '/x' },
+      ]);
+    } catch (err) {
+      multi = err as Error;
+    }
+    assert.ok(multi);
+    assert.match(
+      multi!.message,
+      /^clockworks: 2 invalid standing orders in guild\.json:/,
+    );
+    assert.doesNotMatch(multi!.message, /\[kit "/);
+  });
+
+  it('happy path with source set throws nothing (no spurious header)', () => {
+    assert.doesNotThrow(() =>
+      validateStandingOrders(
+        [{ on: 'demo.thing', run: 'log-event' }],
+        'happy-kit',
+      ),
+    );
+  });
+});

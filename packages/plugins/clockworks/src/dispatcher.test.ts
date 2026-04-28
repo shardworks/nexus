@@ -40,10 +40,28 @@ import type { Book, StacksApi } from '@shardworks/stacks-apparatus';
 
 import {
   runDispatchSweep,
+  type SourcedStandingOrder,
   type StandingOrderFailedPayload,
 } from './dispatcher.ts';
 import { relay, type RelayDefinition, type GuildEvent, type RelayContext } from './relay.ts';
 import type { EventDispatchDoc, EventDoc, StandingOrder } from './types.ts';
+
+/**
+ * Wrap a plain `StandingOrder[]` into the dispatcher's merged-list
+ * shape, treating every entry as operator-sourced (the historical
+ * shape these unit tests exercise). Apparatus-level tests cover the
+ * kit-source path; the dispatcher itself sees both layers as the same
+ * `SourcedStandingOrder[]` post-merge.
+ */
+function asOperatorOrders(
+  orders: readonly StandingOrder[],
+): SourcedStandingOrder[] {
+  return orders.map((order, orderIndex) => ({
+    order,
+    source: null,
+    orderIndex,
+  }));
+}
 
 // ── Fixture ──────────────────────────────────────────────────────────
 
@@ -171,7 +189,7 @@ describe('runDispatchSweep — empty queue', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [],
+      standingOrders: asOperatorOrders([]),
       home: '/tmp/test-guild',
       now: makeClock(),
     });
@@ -205,7 +223,7 @@ describe('runDispatchSweep — happy path', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.thing', run: 'r1' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.thing', run: 'r1' }]),
       home: '/guild/home',
       now: makeClock('2026-04-25T00:00:00.000Z'),
     });
@@ -262,9 +280,9 @@ describe('runDispatchSweep — happy path', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [
+      standingOrders: asOperatorOrders([
         { on: 'demo.params', run: 'r1', with: { level: 'info', target: 7 } },
-      ],
+      ]),
       home: '/x',
       now: makeClock(),
     });
@@ -297,11 +315,11 @@ describe('runDispatchSweep — multiple matching orders', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [
+      standingOrders: asOperatorOrders([
         { on: 'demo.fanout', run: 'first' },
         { on: 'unrelated', run: 'first' },
         { on: 'demo.fanout', run: 'second' },
-      ],
+      ]),
       home: '/h',
       now: makeClock(),
     });
@@ -323,7 +341,7 @@ describe('runDispatchSweep — multiple matching orders', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'something.else', run: 'r' }],
+      standingOrders: asOperatorOrders([{ on: 'something.else', run: 'r' }]),
       home: '/h',
       now: makeClock(),
     });
@@ -345,7 +363,7 @@ describe('runDispatchSweep — error paths', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.unresolved', run: 'missing-relay' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.unresolved', run: 'missing-relay' }]),
       home: '/h',
       now: makeClock(),
     });
@@ -375,11 +393,11 @@ describe('runDispatchSweep — error paths', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [
+      standingOrders: asOperatorOrders([
         { on: 'irrelevant', run: 'real' }, // index 0, doesn't match
         { on: 'demo.event', run: 'real' }, // index 1, matches
         { on: 'demo.event', run: 'ghost' }, // index 2, matches but ghost
-      ],
+      ]),
       home: '/h',
       now: makeClock(),
     });
@@ -405,10 +423,10 @@ describe('runDispatchSweep — error paths', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [
+      standingOrders: asOperatorOrders([
         { on: 'demo.mix', run: 'ghost' },
         { on: 'demo.mix', run: 'good' },
-      ],
+      ]),
       home: '/h',
       now: makeClock(),
     });
@@ -433,7 +451,7 @@ describe('runDispatchSweep — error paths', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.boom', run: 'boom' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.boom', run: 'boom' }]),
       home: '/h',
       now: makeClock(),
     });
@@ -460,7 +478,7 @@ describe('runDispatchSweep — error paths', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.boom', run: 'boom' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.boom', run: 'boom' }]),
       home: '/h',
       now: makeClock(),
     });
@@ -485,10 +503,10 @@ describe('runDispatchSweep — error paths', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [
+      standingOrders: asOperatorOrders([
         { on: 'demo.mixed', run: 'boom' },
         { on: 'demo.mixed', run: 'good' },
-      ],
+      ]),
       home: '/h',
       now: makeClock(),
     });
@@ -526,10 +544,10 @@ describe('runDispatchSweep — N-event ordering', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [
+      standingOrders: asOperatorOrders([
         { on: 'demo.x', run: 'r' },
         { on: 'demo.x', run: 'r' }, // two rows per event
-      ],
+      ]),
       home: '/h',
       now: makeClock(),
     });
@@ -574,7 +592,7 @@ describe('runDispatchSweep — N-event ordering', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.x', run: 'r' }]),
       home: '/h',
       now: makeClock(),
     });
@@ -600,7 +618,7 @@ describe('runDispatchSweep — single-event mode (max=1)', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.x', run: 'r' }]),
       home: '/h',
       now: makeClock(),
       max: 1,
@@ -626,7 +644,7 @@ describe('runDispatchSweep — single-event mode (max=1)', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.x', run: 'r' }]),
       home: '/h',
       now: makeClock(),
       // max=0 / non-positive falls through to the unlimited path —
@@ -649,7 +667,7 @@ describe('runDispatchSweep — single-event mode (max=1)', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.x', run: 'r' }]),
       home: '/h',
       now: makeClock(),
       max: 2,
@@ -678,7 +696,7 @@ describe('runDispatchSweep — eventId filter', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.x', run: 'r' }]),
       home: '/h',
       now: makeClock(),
       eventId: e2.id,
@@ -701,7 +719,7 @@ describe('runDispatchSweep — eventId filter', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.x', run: 'r' }]),
       home: '/h',
       now: makeClock(),
       eventId: e.id,
@@ -719,7 +737,7 @@ describe('runDispatchSweep — eventId filter', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.x', run: 'r' }]),
       home: '/h',
       now: makeClock(),
       eventId: 'e-does-not-exist',
@@ -744,10 +762,10 @@ describe('runDispatchSweep — observer hook', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [
+      standingOrders: asOperatorOrders([
         { on: 'demo.x', run: 'a' },
         { on: 'demo.x', run: 'b' },
-      ],
+      ]),
       home: '/h',
       now: makeClock(),
       onDispatch: (obs) => {
@@ -786,7 +804,7 @@ describe('runDispatchSweep — observer hook', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.boom', run: 'boom' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.boom', run: 'boom' }]),
       home: '/h',
       now: makeClock(),
       onDispatch: (obs) => {
@@ -806,7 +824,7 @@ describe('runDispatchSweep — observer hook', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.x', run: 'ghost' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.x', run: 'ghost' }]),
       home: '/h',
       now: makeClock(),
       onDispatch: (obs) => {
@@ -836,10 +854,10 @@ describe('runDispatchSweep — observer hook', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [
+      standingOrders: asOperatorOrders([
         { on: 'demo.x', run: 'a' },
         { on: 'demo.x', run: 'b' },
-      ],
+      ]),
       home: '/h',
       now: makeClock(),
       onDispatch: () => {
@@ -865,7 +883,7 @@ describe('runDispatchSweep — observer hook', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.x', run: 'r' }]),
       home: '/h',
       // Each call advances 1 second; startedAt and endedAt straddle
       // exactly one tick → 1000 ms.
@@ -886,7 +904,7 @@ describe('runDispatchSweep — observer hook', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.named-event', run: 'r' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.named-event', run: 'r' }]),
       home: '/h',
       now: makeClock(),
       onDispatch: (obs) => { observed.push(obs.eventName); },
@@ -896,35 +914,16 @@ describe('runDispatchSweep — observer hook', () => {
   });
 });
 
-describe('runDispatchSweep — validator integration', () => {
+describe('runDispatchSweep — clock fallback', () => {
   afterEach(() => clearGuild());
 
-  it('throws aggregated and writes nothing when an order is malformed', async () => {
-    const fix = await buildSweepFixture();
-    fix.registerRelay(relay({ name: 'r', handler: () => {} }));
-    await fix.emitEvent('demo.x');
-
-    await assert.rejects(
-      runDispatchSweep({
-        events: fix.events,
-        dispatches: fix.dispatches,
-        resolveRelay: fix.resolveRelay,
-        standingOrders: [
-          // A single malformed order is enough to halt the sweep.
-          { on: 'demo.x', summon: 'reviewer' } as unknown as StandingOrder,
-        ],
-        home: '/h',
-        now: makeClock(),
-      }),
-      /sugar form has been removed/,
-    );
-
-    // No events processed, no rows written.
-    assert.equal((await fix.allDispatches()).length, 0);
-    const events = await fix.allEvents();
-    assert.equal(events.length, 1);
-    assert.equal(events[0].processed, false);
-  });
+  // The historical "throws aggregated when an order is malformed" test
+  // moved up into the apparatus: per-call operator validation now runs
+  // in `clockworks.ts processEvents` before the merged list is built,
+  // and the dispatcher trusts its merged input verbatim. The
+  // apparatus-level integration tests in `clockworks.test.ts` cover
+  // that contract. The dispatcher unit tests still exercise the rest
+  // of the runtime contract here.
 
   it('uses the injected default clock when `now` is omitted', async () => {
     const fix = await buildSweepFixture();
@@ -936,7 +935,7 @@ describe('runDispatchSweep — validator integration', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.x', run: 'r' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.x', run: 'r' }]),
       home: '/h',
       // intentionally omit `now`
     });
@@ -974,7 +973,7 @@ describe('runDispatchSweep — clockworks.standing-order.failed signaling', () =
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [order],
+      standingOrders: asOperatorOrders([order]),
       home: '/h',
       now: makeClock(),
       signalStandingOrderFailed: async (payload) => {
@@ -1020,7 +1019,7 @@ describe('runDispatchSweep — clockworks.standing-order.failed signaling', () =
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [order],
+      standingOrders: asOperatorOrders([order]),
       home: '/h',
       now: makeClock(),
       signalStandingOrderFailed: async (payload) => {
@@ -1068,7 +1067,7 @@ describe('runDispatchSweep — clockworks.standing-order.failed signaling', () =
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'clockworks.standing-order.failed', run: 'react-to-fail' }],
+      standingOrders: asOperatorOrders([{ on: 'clockworks.standing-order.failed', run: 'react-to-fail' }]),
       home: '/h',
       now: makeClock('2026-01-01T00:00:00.000Z'),
       onDispatch: (obs) => {
@@ -1131,7 +1130,7 @@ describe('runDispatchSweep — clockworks.standing-order.failed signaling', () =
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'demo.regular', run: 'boom' }],
+      standingOrders: asOperatorOrders([{ on: 'demo.regular', run: 'boom' }]),
       home: '/h',
       now: makeClock(),
       signalStandingOrderFailed: async (payload) => {
@@ -1178,10 +1177,10 @@ describe('runDispatchSweep — clockworks.standing-order.failed signaling', () =
         events: fix.events,
         dispatches: fix.dispatches,
         resolveRelay: fix.resolveRelay,
-        standingOrders: [
+        standingOrders: asOperatorOrders([
           { on: 'demo.first', run: 'boom' },
           { on: 'demo.second', run: 'good' },
-        ],
+        ]),
         home: '/h',
         now: makeClock(),
         signalStandingOrderFailed: async () => {

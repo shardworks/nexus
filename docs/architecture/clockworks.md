@@ -371,16 +371,18 @@ The interface declarations above mirror `EventDoc` and `EventDispatchDoc` in `pa
 
 ## ClockworksKit
 
-The Clockworks apparatus consumes relay contributions from installed plugins. It publishes a `ClockworksKit` interface that kit authors import for type safety:
+The Clockworks apparatus consumes relay, event, and standing-order contributions from installed plugins. It publishes a `ClockworksKit` interface that kit authors import for type safety:
 
 ```typescript
 // Published by @shardworks/clockworks-apparatus
 interface ClockworksKit {
-  relays?: RelayDefinition[]
+  relays?:         RelayDefinition[]
+  events?:         EventsKitContribution
+  standingOrders?: StandingOrder[]
 }
 ```
 
-A plugin contributing relays declares itself as satisfying `ClockworksKit` and names `clockworks` in its `recommends`:
+A plugin contributing relays, events, or default standing orders declares itself as satisfying `ClockworksKit` and names `clockworks` in its `recommends`:
 
 ```typescript
 import type { ClockworksKit } from "@shardworks/clockworks-apparatus"
@@ -395,6 +397,14 @@ export default {
 ```
 
 The Clockworks apparatus registers relays from both standalone kit packages and its own `supportKit` into a unified relay registry. Callers of the Clockworks API see a single relay list regardless of source.
+
+### Kit-contributed standing orders
+
+Apparatuses and standalone kits may ship default standing orders through the `standingOrders` slot. Each kit's contribution is validated with the source-aware standing-order validator at apparatus boot — a malformed entry fails the boot loud with a header that names the contributing kit, e.g. `clockworks: invalid standing order in kit "demo-kit":` plus per-bullet `standing order #N [kit "demo-kit"]: …` lines. A non-array contribution surfaces the same fail-loud guard.
+
+The kit layer is sealed at apparatus `start()` and merged additively (`[...kit, ...operator]`) with the operator-defined `clockworks.standingOrders` slice on every dispatch and schedule pass. There is no id, no override, no disable, and no collision detection — identical entries from two sources simply produce two dispatches. Operator hot-edits to `guild.json` continue to land on the next `processEvents` call without restart; updating a kit-contributed default requires an apparatus restart (matching the existing schedule-table lifecycle).
+
+The synthesized `clockworks.timer` event payload carries a scalar `source` field alongside `orderIndex` (`null` for operator-sourced entries; the contributing pluginId for kit entries). `orderIndex` is per-source — the entry's position within its own source array — so an operator's mental model of "the #N-th order in `guild.json`" stays stable when kit defaults change. The dispatcher's relay-not-registered error message and the scheduler's boot-time schedule-parse error both attribute the contributing kit when applicable.
 
 ### Relay Contract
 
