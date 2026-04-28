@@ -316,16 +316,25 @@ describe('feedback.js tag filter toolbar', () => {
 // ── Deep-link URL state (?feedback=ID) ──────────────────────────────────
 
 describe('feedback.js — deep-link URL state', () => {
-  it('exposes currentUrlParams + updateUrl helpers (D9 — Ratchet pattern)', () => {
-    assert.match(
-      feedbackJs,
-      /function currentUrlParams\(\)\s*\{[\s\S]*?new URLSearchParams\(window\.location\.search\)/,
-      'currentUrlParams reads window.location.search live',
+  it('routes URL reads/writes through window.NexusUrl (no inline helpers)', () => {
+    // Inline currentUrlParams / updateUrl are gone (commission moix23w5).
+    assert.ok(
+      !/function\s+currentUrlParams\s*\(/.test(feedbackJs),
+      'inline currentUrlParams must not be redeclared',
+    );
+    assert.ok(
+      !/function\s+updateUrl\s*\(/.test(feedbackJs),
+      'inline updateUrl must not be redeclared',
     );
     assert.match(
       feedbackJs,
-      /function updateUrl\(changes\)\s*\{[\s\S]*?window\.history\.pushState/,
-      'updateUrl pushes via history.pushState',
+      /window\.NexusUrl\.read\(\)/,
+      'feedback.js should read URL state via window.NexusUrl.read',
+    );
+    assert.match(
+      feedbackJs,
+      /window\.NexusUrl\.update\(/,
+      'feedback.js should write URL state via window.NexusUrl.update',
     );
   });
 
@@ -336,21 +345,29 @@ describe('feedback.js — deep-link URL state', () => {
     assert.ok(block, 'should find showDetail body');
     assert.match(
       block[0],
-      /updateUrl\(\{\s*feedback:\s*currentRequest\.id\s*\}\)/,
-      'showDetail pushes ?feedback=<currentRequest.id> — keyed on the id, not the index',
+      /window\.NexusUrl\.update\(\{\s*feedback:\s*currentRequest\.id\s*\}\s*,\s*\{\s*push:\s*true\s*\}\)/,
+      'showDetail pushes ?feedback=<currentRequest.id> via NexusUrl.update with push: true',
     );
     assert.match(block[0], /skipUrlPush/, 'showDetail accepts a skipUrlPush opt');
   });
 
-  it('navigateToList clears ?feedback via updateUrl({feedback: null}) — never pops history (D11)', () => {
+  it('navigateToList clears ?feedback (and ?tag=) via NexusUrl with push: true (D11/D12)', () => {
     const block = feedbackJs.match(
       /function navigateToList\((?:opts)?\)[\s\S]*?fetchList\(\);[\s\S]*?startPoll\(\);\s*\}/,
     );
     assert.ok(block, 'should find navigateToList body');
     assert.match(
       block[0],
-      /updateUrl\(\{\s*feedback:\s*null\s*\}\)/,
-      'navigateToList should push a clean URL via updateUrl({feedback: null})',
+      /window\.NexusUrl\.update\(\{[^}]*feedback:\s*null[^}]*\}\s*,\s*\{\s*push:\s*true\s*\}\)/,
+      'navigateToList must push a clean URL with feedback: null',
+    );
+    // D12 — closing the detail also clears any per-detail ?tag= keys
+    // via the omit-defaults rule. The same NexusUrl.update call drops
+    // both keys at once.
+    assert.match(
+      block[0],
+      /tag:\s*null/,
+      'navigateToList must also drop ?tag= keys when the detail closes (D12)',
     );
     assert.ok(
       !/window\.history\.back\s*\(/.test(block[0]),
@@ -370,8 +387,8 @@ describe('feedback.js — deep-link URL state', () => {
     assert.ok(block, 'should find popstate handler body');
     assert.match(
       block[0],
-      /currentUrlParams\(\)\.get\(['"]feedback['"]\)/,
-      'popstate handler reads ?feedback from the new URL',
+      /readUrlState\(\)/,
+      'popstate handler reads URL state via the central readUrlState helper',
     );
     assert.match(
       block[0],
@@ -380,11 +397,11 @@ describe('feedback.js — deep-link URL state', () => {
     );
   });
 
-  it('init reads ?feedback=ID and resolves it via showDetailById', () => {
+  it('init reads URL state and resolves the deep-link via showDetailById', () => {
     assert.match(
       feedbackJs,
-      /var initialFeedbackId\s*=\s*currentUrlParams\(\)\.get\(['"]feedback['"]\)/,
-      'init reads ?feedback from the URL',
+      /var initialFeedbackId\s*=\s*readUrlState\(\)/,
+      'init calls readUrlState before fetching the list',
     );
     assert.match(
       feedbackJs,
@@ -399,13 +416,72 @@ describe('feedback.js — deep-link URL state', () => {
     );
     assert.ok(block, 'should find renderFeedbackNotFound body');
     assert.ok(
-      !/updateUrl/.test(block[0]),
+      !/NexusUrl\.update/.test(block[0]),
       'renderFeedbackNotFound must not rewrite the URL',
     );
     assert.match(
       block[0],
       /No feedback request with id/,
       'renderFeedbackNotFound surfaces a "not found" message',
+    );
+  });
+
+  it('list-page status filter writes through NexusUrl.update (replace, no push: true)', () => {
+    const writer = feedbackJs.match(
+      /function writeStatusFilterToUrl\(\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(writer, 'writeStatusFilterToUrl should be defined');
+    assert.match(
+      writer[0],
+      /window\.NexusUrl\.update\(\{\s*status:[\s\S]*?\}\s*\)/,
+      'status filter must call NexusUrl.update without { push: true }',
+    );
+    assert.ok(
+      !/push:\s*true/.test(writer[0]),
+      'status filter writes must use replaceState (D5 default)',
+    );
+  });
+
+  it('per-detail tag filter writes ?tag= via repeated keys (D12 + D3)', () => {
+    const writer = feedbackJs.match(
+      /function writeTagFilterToUrl\(\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(writer, 'writeTagFilterToUrl should be defined');
+    assert.match(
+      writer[0],
+      /Object\.keys\(activeTagFilters\)/,
+      'tag filter writer reads from activeTagFilters',
+    );
+    assert.match(
+      writer[0],
+      /window\.NexusUrl\.update\(\{\s*tag:[\s\S]*?\}\s*\)/,
+      'tag filter writer calls NexusUrl.update with the tag key (no push: true)',
+    );
+    assert.ok(
+      !/push:\s*true/.test(writer[0]),
+      'tag filter changes must use replaceState (D5 default)',
+    );
+  });
+
+  it('readUrlState validates ?status= against STATUS_VALUES and surfaces fail-loud errors (D6)', () => {
+    const reader = feedbackJs.match(
+      /function readUrlState\(\)[\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(reader, 'readUrlState should be defined');
+    assert.match(
+      reader[0],
+      /STATUS_VALUES\.indexOf/,
+      'readUrlState must validate ?status= against STATUS_VALUES',
+    );
+    assert.match(
+      reader[0],
+      /showUrlError\(/,
+      'readUrlState must surface invalid values via showUrlError',
+    );
+    assert.match(
+      reader[0],
+      /params\.getAll\(['"]tag['"]\)/,
+      'readUrlState must read ?tag= as a repeated-key array',
     );
   });
 });

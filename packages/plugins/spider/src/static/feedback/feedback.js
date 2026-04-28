@@ -35,35 +35,80 @@
   var successToast       = document.getElementById('success-toast');
 
   // ── URL handling ───────────────────────────────────────────────────────
+  //
+  // All deep-linkable view state for this page rides on
+  // `window.NexusUrl` — the shared helper auto-injected by oculus's
+  // chrome pass. The earlier inline `currentUrlParams` / `updateUrl`
+  // copies are gone (commission moix23w5).
+  //
+  // URL keys:
+  //   ?status=        pending | completed | rejected
+  //                   List-page status filter. Default 'pending'.
+  //   ?feedback=ID    Detail deep-link; pushes (D5).
+  //   ?tag=A&tag=B    Per-detail tag filter (D12). Repeated keys; clears
+  //                   itself when the detail closes via the omit-defaults
+  //                   rule.
 
-  /**
-   * Read the current querystring as a `URLSearchParams`. Live snapshot.
-   */
-  function currentUrlParams() {
-    return new URLSearchParams(window.location.search);
+  var STATUS_VALUES = ['pending', 'completed', 'rejected'];
+  var DEFAULT_STATUS = 'pending';
+
+  function showUrlError(msg) {
+    var el = document.getElementById('url-error-banner');
+    if (!el) return;
+    var line = document.createElement('div');
+    line.textContent = msg;
+    el.appendChild(line);
+    el.style.display = 'block';
+  }
+
+  function clearUrlErrors() {
+    var el = document.getElementById('url-error-banner');
+    if (!el) return;
+    el.innerHTML = '';
+    el.style.display = 'none';
+  }
+
+  /** Persist the list-page status filter to the URL (replace, D5). */
+  function writeStatusFilterToUrl() {
+    var status = statusFilterEl ? statusFilterEl.value : DEFAULT_STATUS;
+    window.NexusUrl.update({
+      status: status === DEFAULT_STATUS ? null : status,
+    });
+  }
+
+  /** Persist the per-detail tag filter to the URL (replace, D5). */
+  function writeTagFilterToUrl() {
+    var keys = Object.keys(activeTagFilters);
+    window.NexusUrl.update({
+      tag: keys.length === 0 ? null : keys,
+    });
   }
 
   /**
-   * Apply the given key/value changes to the current querystring and
-   * `pushState` the result. Null/undefined/empty value deletes the key.
-   * Mirrors Ratchet's `updateUrl` (D9). The feedback param shape is
-   * `?feedback=ID` (D10) — keyed on the request id (req.id), which is
-   * stable across the list reorderings the 12 s polling loop can
-   * trigger. The legacy index-based showDetail path now translates
-   * index → id at the click site.
+   * Read URL state into the page. Validates the status filter and any
+   * tag values; unknowns fail loud (D6). Returns the deep-link
+   * feedback id, if any.
    */
-  function updateUrl(changes) {
-    var params = currentUrlParams();
-    var keys = Object.keys(changes);
-    for (var i = 0; i < keys.length; i++) {
-      var key = keys[i];
-      var value = changes[key];
-      if (value === null || value === undefined || value === '') params.delete(key);
-      else params.set(key, value);
+  function readUrlState() {
+    clearUrlErrors();
+    var params = window.NexusUrl.read();
+
+    var status = params.get('status');
+    if (status !== null) {
+      if (STATUS_VALUES.indexOf(status) !== -1) {
+        if (statusFilterEl) statusFilterEl.value = status;
+      } else {
+        showUrlError('Unknown feedback status "' + status + '". Expected one of: ' + STATUS_VALUES.join(', ') + '.');
+      }
     }
-    var qs = params.toString();
-    var next = window.location.pathname + (qs ? '?' + qs : '');
-    window.history.pushState({}, '', next);
+
+    var tags = params.getAll('tag');
+    activeTagFilters = {};
+    for (var i = 0; i < tags.length; i++) {
+      activeTagFilters[tags[i]] = true;
+    }
+
+    return params.get('feedback');
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────
@@ -180,8 +225,9 @@
 
     // Centralised URL push (D12) — keyed on the request id so the URL
     // survives list reorderings between the 12 s polls. Translation
-    // index → id happens here, not at the click site.
-    if (!skipUrlPush) updateUrl({ feedback: currentRequest.id });
+    // index → id happens here, not at the click site. Detail open is
+    // a navigation event (push: true).
+    if (!skipUrlPush) window.NexusUrl.update({ feedback: currentRequest.id }, { push: true });
 
     // Initialize local answers from server state
     localAnswers = {};
@@ -231,7 +277,7 @@
       })
       .then(function (req) {
         if (!req || !req.id) {
-          if (!skipUrlPush) updateUrl({ feedback: id });
+          if (!skipUrlPush) window.NexusUrl.update({ feedback: id }, { push: true });
           renderFeedbackNotFound(id);
           return;
         }
@@ -242,7 +288,7 @@
         showDetail(requests.length - 1, { skipUrlPush: skipUrlPush });
       })
       .catch(function () {
-        if (!skipUrlPush) updateUrl({ feedback: id });
+        if (!skipUrlPush) window.NexusUrl.update({ feedback: id }, { push: true });
         renderFeedbackNotFound(id);
       });
   }
@@ -332,6 +378,7 @@
             activeTagFilters[tag] = true;
             e.target.classList.add('active');
           }
+          writeTagFilterToUrl();
           applyTagFilters();
         } else if (e.target.matches('.tag-filter-clear')) {
           activeTagFilters = {};
@@ -339,6 +386,7 @@
           for (var j = 0; j < btns.length; j++) {
             btns[j].classList.remove('active');
           }
+          writeTagFilterToUrl();
           applyTagFilters();
         }
       });
@@ -604,8 +652,9 @@
     listView.style.display = '';
     // D11: push a clean URL so deep-link entries survive the Back
     // button. Never pop history — the operator may have arrived
-    // directly at ?feedback=ID.
-    if (!skipUrlPush) updateUrl({ feedback: null });
+    // directly at ?feedback=ID. Closing the detail also drops the
+    // per-detail tag filter via the omit-defaults rule (D12).
+    if (!skipUrlPush) window.NexusUrl.update({ feedback: null, tag: null }, { push: true });
     fetchList();
     startPoll();
   }
@@ -683,6 +732,7 @@
   });
 
   statusFilterEl.addEventListener('change', function () {
+    writeStatusFilterToUrl();
     requests = [];
     renderList();
     fetchList();
@@ -853,11 +903,12 @@
 
   // ── Browser navigation (popstate) ──────────────────────────────────────
 
-  // Read ?feedback=ID from the new URL and either re-open the matching
-  // detail (skipUrlPush=true) or return to the list. Pairs with the
-  // central push inside showDetail (D11/D12).
+  // Restore the full URL state on Back / Forward — ?status=,
+  // ?feedback=, and ?tag= each round-trip independently. The
+  // popstate-driven path uses skipUrlPush so it never re-pushes the
+  // URL the browser already updated.
   window.addEventListener('popstate', function () {
-    var feedbackId = currentUrlParams().get('feedback');
+    var feedbackId = readUrlState();
     if (feedbackId) {
       showDetailById(feedbackId, { skipUrlPush: true });
     } else {
@@ -866,17 +917,19 @@
   });
 
   // ── Init ───────────────────────────────────────────────────────────────
-
+  //
+  // Read URL state on first paint so the status filter, tag filter,
+  // and ?feedback= deep-link survive refresh and copy-paste. The list
+  // fetch already reads statusFilterEl.value, so updating that input
+  // before fetchList() is enough to apply the URL-restored status.
+  var initialFeedbackId = readUrlState();
   fetchList();
   startPoll();
 
   // Deep-link: ?feedback=ID — open that request's detail after the
-  // first list fetch lands. The list-fetch is async so we wait for it
-  // by polling `requests.length` once via a microtask; on a miss, the
-  // /api/input/request-show fallback inside showDetailById handles it.
-  // A missing/deleted/mistyped id renders a "not found" state without
-  // rewriting the URL (D16).
-  var initialFeedbackId = currentUrlParams().get('feedback');
+  // first list fetch lands. On a miss, the /api/input/request-show
+  // fallback inside showDetailById handles it. A missing/deleted/
+  // mistyped id renders a "not found" state without rewriting the URL.
   if (initialFeedbackId) {
     showDetailById(initialFeedbackId, { skipUrlPush: true });
   }
