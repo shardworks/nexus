@@ -128,6 +128,45 @@ export function coerceParams(
   return result;
 }
 
+/**
+ * Override the default format for HTTP-context tool calls.
+ *
+ * Tools that expose a `format` enum (typically `'text' | 'json'`) generally
+ * default to `'text'` for human CLI consumption. HTTP callers — Oculus pages,
+ * detached-session proxies, anything reading the REST surface — always want
+ * structured JSON. This helper injects `format: 'json'` when the caller did
+ * not supply an explicit value AND the tool's schema both declares a `format`
+ * field and accepts `'json'` as a valid option.
+ *
+ * The check is intentionally conservative: if the tool's `format` enum does
+ * not include `'json'`, or the caller already passed a value, the params are
+ * returned unchanged. Tools without a `format` field are unaffected.
+ *
+ * Without this override, every REST consumer of a text-defaulted tool would
+ * have to remember to append `?format=json`, and forgetting silently returns
+ * a CLI-rendered string in place of a structured object — a regression class
+ * that has bitten the Oculus writs/spider/astrolabe pages historically.
+ */
+export function applyHttpFormatDefault(
+  shape: Record<string, z.ZodTypeAny>,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  if (params.format !== undefined) return params;
+  const formatSchema = shape.format;
+  if (!formatSchema) return params;
+
+  let inner: z.ZodTypeAny = formatSchema;
+  while (inner instanceof z.ZodOptional || inner instanceof z.ZodDefault) {
+    inner = inner.unwrap() as z.ZodTypeAny;
+  }
+  if (!(inner instanceof z.ZodEnum)) return params;
+
+  const options = inner.options as readonly string[];
+  if (!options.includes('json')) return params;
+
+  return { ...params, format: 'json' };
+}
+
 // ── Session authorization header ─────────────────────────────────────
 
 const SESSION_ID_HEADER = 'x-session-id';
@@ -207,10 +246,15 @@ export function createToolServerApp(
         if (method === 'GET') {
           const rawQuery = c.req.query();
           const coerced = coerceParams(shape, rawQuery);
-          params = definition.params.parse(coerced);
+          const withJsonDefault = applyHttpFormatDefault(shape, coerced);
+          params = definition.params.parse(withJsonDefault);
         } else {
           const body = await c.req.json();
-          params = definition.params.parse(body);
+          const withJsonDefault = applyHttpFormatDefault(
+            shape,
+            (body ?? {}) as Record<string, unknown>,
+          );
+          params = definition.params.parse(withJsonDefault);
         }
         const result = await definition.handler(params as Record<string, unknown>);
         return c.json(result as object);

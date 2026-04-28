@@ -30,6 +30,7 @@ import {
   toolNameToRoute,
   permissionToMethod,
   coerceParams,
+  applyHttpFormatDefault,
   createToolServerApp,
   startToolServer,
   type ToolAuthorizer,
@@ -274,6 +275,52 @@ describe('coerceParams', () => {
   });
 });
 
+// ── Unit tests: applyHttpFormatDefault ───────────────────────────────
+
+describe('applyHttpFormatDefault', () => {
+  it('injects format=json when schema has a format enum that includes json and caller did not provide one', () => {
+    const shape = { format: z.enum(['text', 'json']).default('text') };
+    const result = applyHttpFormatDefault(shape, {});
+    assert.equal(result.format, 'json');
+  });
+
+  it('respects an explicit caller-provided format value', () => {
+    const shape = { format: z.enum(['text', 'json']).default('text') };
+    const result = applyHttpFormatDefault(shape, { format: 'text' });
+    assert.equal(result.format, 'text');
+  });
+
+  it('leaves params unchanged when the schema has no format field', () => {
+    const shape = { id: z.string() };
+    const result = applyHttpFormatDefault(shape, { id: 'abc' });
+    assert.deepEqual(result, { id: 'abc' });
+  });
+
+  it('leaves params unchanged when the format enum does not accept json', () => {
+    const shape = { format: z.enum(['text', 'csv']).default('text') };
+    const result = applyHttpFormatDefault(shape, {});
+    assert.equal(result.format, undefined);
+  });
+
+  it('handles optional and bare-enum format schemas', () => {
+    const optionalShape = { format: z.enum(['text', 'json']).optional() };
+    assert.equal(applyHttpFormatDefault(optionalShape, {}).format, 'json');
+
+    const bareShape = { format: z.enum(['text', 'json']) };
+    assert.equal(applyHttpFormatDefault(bareShape, {}).format, 'json');
+  });
+
+  it('does not clobber other params', () => {
+    const shape = {
+      id: z.string(),
+      format: z.enum(['text', 'json']).default('text'),
+    };
+    const result = applyHttpFormatDefault(shape, { id: 'abc' });
+    assert.equal(result.id, 'abc');
+    assert.equal(result.format, 'json');
+  });
+});
+
 // ── Unit tests: ToolAuthorizer ───────────────────────────────────────
 
 describe('makeAuthorizer test helper', () => {
@@ -422,6 +469,50 @@ describe('Tool HTTP server', () => {
       const body = await res.json();
       assert.equal(body.limit, 10);
       assert.equal(body.active, true);
+    });
+
+    it("GET tool with format enum — defaults to 'json' over HTTP even when the schema default is 'text'", async () => {
+      const kit = mockKit('stdlib', [
+        testTool('writ-show', {
+          permission: 'read',
+          params: {
+            id: z.string(),
+            format: z.enum(['text', 'json']).default('text'),
+          },
+          handler: async ({ format }: Record<string, unknown>) =>
+            format === 'json'
+              ? { id: 'w1', title: 'Test', body: 'structured' }
+              : 'TEXT-RENDERED-BLOCK',
+        }),
+      ]);
+      const { api } = startInstrumentarium({ kits: [kit] });
+
+      handle = await startToolServer(api, 0);
+      const res = await fetch(`${handle.url}/api/writ/show?id=w1`);
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.deepStrictEqual(body, { id: 'w1', title: 'Test', body: 'structured' });
+    });
+
+    it("GET tool with format enum — caller can still override with format=text", async () => {
+      const kit = mockKit('stdlib', [
+        testTool('writ-show', {
+          permission: 'read',
+          params: {
+            id: z.string(),
+            format: z.enum(['text', 'json']).default('text'),
+          },
+          handler: async ({ format }: Record<string, unknown>) =>
+            format === 'text' ? 'TEXT-RENDERED-BLOCK' : { id: 'w1' },
+        }),
+      ]);
+      const { api } = startInstrumentarium({ kits: [kit] });
+
+      handle = await startToolServer(api, 0);
+      const res = await fetch(`${handle.url}/api/writ/show?id=w1&format=text`);
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body, 'TEXT-RENDERED-BLOCK');
     });
 
     it('tool handler errors return 500', async () => {
