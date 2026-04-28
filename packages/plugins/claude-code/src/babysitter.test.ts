@@ -587,7 +587,7 @@ describe('runBabysitter()', () => {
     assert.ok(body.terminationDiagnostic, 'diagnostic should be present');
     assert.equal(body.terminationDiagnostic.exitCode, 3);
     const excerpt = body.terminationDiagnostic.stderrExcerpt as string;
-    assert.ok(excerpt.length <= 200, `excerpt should fit the 200-char cap, got ${excerpt.length}`);
+    assert.ok(excerpt.length <= 2048, `excerpt should fit the 2048-char cap, got ${excerpt.length}`);
     assert.ok(excerpt.includes('TAIL-MARKER-END'), 'the tail of the stream must survive in the excerpt');
 
     db.close();

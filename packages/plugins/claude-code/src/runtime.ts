@@ -441,8 +441,13 @@ export function resolveTerminalStatus(
   };
 }
 
-/** Maximum number of characters to retain for the diagnostic stderr tail. */
-export const STDERR_DIAGNOSTIC_TAIL_LIMIT = 200;
+/**
+ * Maximum number of characters to retain for the diagnostic stderr tail.
+ *
+ * 2KB comfortably accommodates a typical Node traceback (deep stack +
+ * cause chain) with margin, without bloating the SessionDoc payload.
+ */
+export const STDERR_DIAGNOSTIC_TAIL_LIMIT = 2048;
 
 /**
  * Report the final session result to the guild via the session-record tool.
