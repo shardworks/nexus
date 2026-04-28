@@ -86,6 +86,47 @@ describe('Astrolabe supportKit shape', () => {
     assert.ok(liftedFrom.description && liftedFrom.description.length > 0);
   });
 
+  // ── events kit contribution ────────────────────────────────────────
+
+  describe('events kit contribution', () => {
+    it('declares astrolabe.plan.files-over-threshold as the only entry with a non-empty description', () => {
+      const kit = getKit(plugin);
+      const events = kit.events as Record<string, { description?: string }>;
+      assert.ok(events && typeof events === 'object', 'kit.events must be defined');
+      const keys = Object.keys(events);
+      assert.equal(keys.length, 1, 'must have exactly one event entry');
+      assert.equal(keys[0], 'astrolabe.plan.files-over-threshold');
+      const spec = events['astrolabe.plan.files-over-threshold'];
+      assert.ok(spec, 'astrolabe.plan.files-over-threshold spec must exist');
+      assert.equal(typeof spec.description, 'string');
+      assert.ok(
+        spec.description && spec.description.length > 0,
+        'astrolabe.plan.files-over-threshold description must be non-empty',
+      );
+    });
+
+    it('uses the static-record form (not a function)', () => {
+      const kit = getKit(plugin);
+      assert.notEqual(
+        typeof kit.events,
+        'function',
+        'kit.events must be a static record per D4, not a function-form contribution',
+      );
+    });
+
+    it('declares no other plugin-prefixed event names', () => {
+      const kit = getKit(plugin);
+      const events = kit.events as Record<string, unknown>;
+      const keys = Object.keys(events);
+      const stray = keys.filter(k => k !== 'astrolabe.plan.files-over-threshold');
+      assert.deepEqual(
+        stray,
+        [],
+        `events kit must declare only astrolabe.plan.files-over-threshold today; found extras: ${stray.join(', ')}`,
+      );
+    });
+  });
+
   it('observation-set writ type is non-dispatchable (no rigTemplateMappings entry)', () => {
     const kit = getKit(plugin);
     const mappings = kit.rigTemplateMappings as Record<string, string>;

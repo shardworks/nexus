@@ -312,6 +312,13 @@ export function createAstrolabe(): Plugin {
           plans: { indexes: ['status', 'codex', 'createdAt'] },
         },
 
+        events: {
+          'astrolabe.plan.files-over-threshold': {
+            description:
+              'plan finalize detected manifest file count exceeded the configured threshold (soft warn)',
+          },
+        },
+
         linkKinds: [
           {
             id: 'astrolabe.lifted-from',

@@ -22,8 +22,6 @@ import {
 } from '@shardworks/nexus-core';
 import { z } from 'zod';
 
-import { bootstrapEmitToolEvent } from './plugin-bootstrap-emit.ts';
-
 // ── Helpers ────────────────────────────────────────────────────────────
 
 function npm(args: string[], cwd: string): string {
@@ -172,16 +170,6 @@ export const pluginInstall = tool({
 
     writeGuildConfig(home, config);
 
-    // 3. Bootstrap-and-emit `tool.installed`. The guild.json change is
-    // already authoritative; this step is purely advisory and is
-    // wrapped in try/catch so a bootstrap failure cannot roll back the
-    // install (D20).
-    await bootstrapEmitToolEvent(
-      'tool.installed',
-      { pluginId, packageName },
-      home,
-    );
-
     return `Installed plugin: ${pluginId} (${packageName})`;
   },
 });
@@ -218,16 +206,6 @@ export const pluginRemove = tool({
         // Don't fail if uninstall fails — guild.json is already updated
       }
     }
-
-    // Bootstrap-and-emit `tool.removed`. Note that the just-uninstalled
-    // package is no longer loadable, so the bootstrap will run with the
-    // remaining plugins; if Clockworks itself was the package being
-    // removed the emission is silently skipped (D20).
-    await bootstrapEmitToolEvent(
-      'tool.removed',
-      { pluginId: targetId, ...(packageName ? { packageName } : {}) },
-      home,
-    );
 
     return `Removed plugin: ${targetId}`;
   },

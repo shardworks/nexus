@@ -70,17 +70,6 @@ Emitted by the dispatcher (`clockworks/src/dispatcher.ts`) and the scheduler (`c
 
 **Scheduled-fire bookkeeping:** the scheduler writes each `clockworks.timer` row with `processed: true` so the dispatcher's event-sweep does not pick it up. The row is the durable record of the fire; the matching `event_dispatches` row records the relay invocation.
 
-### Tool Events
-
-Emitted by `cli/src/commands/plugin-bootstrap-emit.ts` after a successful `nsg plugin install` or `nsg plugin remove`. Both emissions are best-effort: the `guild.json` change is authoritative regardless of whether the event lands.
-
-| Event | Payload | Emitter | When |
-|-------|---------|---------|------|
-| `tool.installed` | `{ pluginId, packageName }` | `framework` | A plugin (which contributes implements, engines, curricula, or temperaments) is installed via `nsg plugin install` |
-| `tool.removed` | `{ pluginId, packageName? }` | `framework` | A plugin is removed via `nsg plugin remove`. `packageName` is present when the package name was resolvable; on a stale entry without a package the field is omitted |
-
-The events use the `tool.` namespace because plugins are the framework's tool-delivery mechanism — implements, engines, curricula, and temperaments all flow through the plugin contract.
-
 ### Renamed/removed in this release
 
 The C2 commission migrated Clockworks's event vocabulary onto the kit-contribution mechanism, and the C4 commission migrated the Animator's session events the same way. Operators with `guild.json` standing orders bound to the legacy names below should update their bindings — bindings to deleted names silently stop firing, and bindings to renamed names will not match the new persisted event-row `name` field.
@@ -109,7 +98,7 @@ Renaming `commissionId` on writ-lifecycle event payloads to a more precise name 
 
 There is no hardcoded reserved-namespace list. Names are framework-owned per-event, claimed by a plugin's `events` kit contribution at apparatus `start()`. The merged event set tags each entry with a `pluginDeclared` flag that stays sticky-true once any plugin has claimed the name; `signal` surfaces (the anima `signal` tool, the operator `nsg signal` CLI) reject any emit on a `pluginDeclared` name even when an operator's `guild.json` entry now provides the active spec.
 
-By convention, framework plugins claim per-namespace prefixes via their `events` kit contributions — the Clockworks claims its own `clockworks.*` intrinsic events (`clockworks.standing-order.failed`, `clockworks.timer`) plus the universal `writ.<type>.<status>` family (one entry per `(writType, state)` pair currently registered with the Clerk); the Animator claims `animator.session.*` (`animator.session.started`, `animator.session.ended`, `animator.session.record-failed`); the framework CLI claims `tool.*` plugin-bootstrap events. The exact catalog of plugin-claimed names lives in each plugin's `supportKit.events` slot — there is no second copy to drift against.
+By convention, framework plugins claim per-namespace prefixes via their `events` kit contributions — the Clockworks claims its own `clockworks.*` intrinsic events (`clockworks.standing-order.failed`, `clockworks.timer`) plus the universal `writ.<type>.<status>` family (one entry per `(writType, state)` pair currently registered with the Clerk); the Animator claims `animator.session.*` (`animator.session.started`, `animator.session.ended`, `animator.session.record-failed`). The exact catalog of plugin-claimed names lives in each plugin's `supportKit.events` slot — there is no second copy to drift against.
 
 **Writ lifecycle events** (e.g. `writ.mandate.open`, `writ.task.queued`) are declared by the Clockworks's own `events` kit contribution as a state-walk over Clerk's writ-type registry. They are still framework-only — `validateSignal` rejects them via the merged-set framework-owned check.
 

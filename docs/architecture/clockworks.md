@@ -14,7 +14,7 @@ An event is an immutable fact: *this happened*.
 
 ```typescript
 {
-  name: string;       // e.g. "writ.mandate.completed", "tool.installed"
+  name: string;       // e.g. "writ.mandate.completed", "astrolabe.plan.files-over-threshold"
   payload: unknown;   // event-specific data
   emitter: string;    // who signaled it: anima name, engine name, or "framework"
   firedAt: DateTime;
@@ -25,7 +25,7 @@ Events are persisted to the Clockworks' own event queue immediately when signale
 
 #### Framework events
 
-Framework events are signaled automatically from authoritative code paths in the framework and apparatuses (`session.*`, `anima.*`, `commission.session.ended`, the universal writ-lifecycle `writ.<type>.<status>` family, the Clockworks's own `clockworks.standing-order.failed` and `clockworks.timer`, the framework CLI's `tool.*` plugin-bootstrap events). Animas cannot signal them. The full enumeration — every event name, payload shape, emitter site, and "fires when" condition — lives in the [Event Catalog](../reference/event-catalog.md), which is the single source of truth for the framework event surface. Each event listed there is grep-findable in shipped emitter code; this document deliberately does not duplicate the table.
+Framework events are signaled automatically from authoritative code paths in the framework and apparatuses (`session.*`, `anima.*`, `commission.session.ended`, the universal writ-lifecycle `writ.<type>.<status>` family, the Clockworks's own `clockworks.standing-order.failed` and `clockworks.timer`). Animas cannot signal them. The full enumeration — every event name, payload shape, emitter site, and "fires when" condition — lives in the [Event Catalog](../reference/event-catalog.md), which is the single source of truth for the framework event surface. Each event listed there is grep-findable in shipped emitter code; this document deliberately does not duplicate the table.
 
 #### Custom guild events
 
@@ -279,7 +279,7 @@ tool({
 
 Also exposed as `nsg signal <name> [--payload <json>]` for operator use.
 
-Animas cannot signal framework events (`anima.*`, `session.*`, `tool.*`, the Clockworks's own `clockworks.standing-order.failed` / `clockworks.timer`, etc.) or any name from the universal writ-lifecycle family (`writ.mandate.open`, `writ.task.completed`, every other `writ.<type>.<status>` declared by the Clockworks's `events` kit). Only operator-declared custom events. This keeps the event record trustworthy — framework events come from authoritative code paths.
+Animas cannot signal framework events (`anima.*`, `session.*`, the Clockworks's own `clockworks.standing-order.failed` / `clockworks.timer`, etc.) or any name from the universal writ-lifecycle family (`writ.mandate.open`, `writ.task.completed`, every other `writ.<type>.<status>` declared by the Clockworks's `events` kit). Only operator-declared custom events. This keeps the event record trustworthy — framework events come from authoritative code paths.
 
 ---
 
