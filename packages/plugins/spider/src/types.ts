@@ -872,10 +872,10 @@ export interface SpiderCollectResult {
 /**
  * The reason a writ is stuck as recorded in its `status.spider` sub-slot.
  *
- * - 'failed-blocker' — at least one outbound `spider.follows` blocker
+ * - 'failed-blocker' — at least one outbound `depends-on` blocker
  *                      reached `failed`; the dependent was cascaded to
  *                      `stuck` directly (not transitively).
- * - 'cycle'          — a back-edge was discovered in the `spider.follows`
+ * - 'cycle'          — a back-edge was discovered in the `depends-on`
  *                      graph during gate evaluation; every cycle member is
  *                      stuck with this cause.
  *
@@ -906,7 +906,7 @@ export interface SpiderWritStatus {
   stuckCause?: SpiderStuckCause;
   /**
    * For gating-path stucks, the blockers responsible for the transition.
-   * For `failed-blocker`, these are the outbound `spider.follows` targets
+   * For `failed-blocker`, these are the outbound `depends-on` targets
    * that reached `failed`. For `cycle`, these are the members of the
    * detected cycle (typically including the dependent itself).
    */

@@ -17,7 +17,7 @@
  *         mandate:
  *           - `astrolabe.lifted-from` (label "lifted from") carrying
  *             the provenance relationship, and
- *           - `spider.follows` (label "depends on") carrying the
+ *           - `depends-on` (label "depends on") carrying the
  *             precedence-dependency gate.
  *
  *   - Grouped mode (two or more observation records):
@@ -28,16 +28,16 @@
  *         list of the child titles.
  *       * Install exactly one outbound `astrolabe.lifted-from` edge
  *         from the group parent → originating mandate. The group parent
- *         carries no `spider.follows` edge (it is non-dispatchable by
+ *         carries no `depends-on` edge (it is non-dispatchable by
  *         type, so a precedence edge on it would be dead data).
  *       * For each observation record in record order, post a draft
  *         mandate writ with `parentId` set to the group parent's id and
- *         install exactly one outbound `spider.follows` edge from that
+ *         install exactly one outbound `depends-on` edge from that
  *         child → originating mandate. Children do not carry
  *         `astrolabe.lifted-from`; their provenance is implied by the
  *         group parent's edge plus the parent-child relationship.
  *
- * Both modes preserve the existing `spider.follows` gate: the
+ * Both modes preserve the existing `depends-on` gate: the
  * originating mandate is still the blocker, so Spider's `trySpawn` gate
  * will hold each lifted writ (flat) or each child (grouped) until the
  * mandate reaches a terminal state (release on completed/cancelled,
@@ -192,13 +192,13 @@ export function createObservationLiftEngine(getPlansBook: () => Book<PlanDoc>): 
         // so the Spider's `trySpawn` gate holds the lifted writ until
         // the mandate reaches a terminal state. In grouped mode only
         // children carry this edge — the group parent is
-        // non-dispatchable by type, so a spider.follows edge on it
+        // non-dispatchable by type, so a depends-on edge on it
         // would be dead data.
         await clerk.link(
           writ.id,
           planId,
           'depends on',
-          'spider.follows',
+          'depends-on',
         );
       }
 

@@ -1352,7 +1352,7 @@ describe('observation-lift engine', () => {
 
   // ── Flat mode: exactly one observation ─────────────────────────────
 
-  it('flat mode — single observation posts one top-level draft mandate with both lifted-from and spider.follows edges', async () => {
+  it('flat mode — single observation posts one top-level draft mandate with both lifted-from and depends-on edges', async () => {
     const engine = createObservationLiftEngine(() => plansBook);
     const observations: Observation[] = [
       {
@@ -1407,7 +1407,7 @@ describe('observation-lift engine', () => {
 
     // Two outbound edges, both from the new draft to the originating mandate:
     //   1. astrolabe.lifted-from (provenance)
-    //   2. spider.follows       (precedence gate)
+    //   2. depends-on       (precedence gate)
     assert.equal(mockClerkLinkCalls.length, 2);
 
     const liftedLink = mockClerkLinkCalls.find((l) => l.kind === 'astrolabe.lifted-from');
@@ -1416,8 +1416,8 @@ describe('observation-lift engine', () => {
     assert.equal(liftedLink.targetId, 'w-mandate-flat');
     assert.equal(liftedLink.label, 'lifted from');
 
-    const followsLink = mockClerkLinkCalls.find((l) => l.kind === 'spider.follows');
-    assert.ok(followsLink, 'must emit a spider.follows edge');
+    const followsLink = mockClerkLinkCalls.find((l) => l.kind === 'depends-on');
+    assert.ok(followsLink, 'must emit a depends-on edge');
     assert.equal(followsLink.sourceId, 'w-obs-flat-1');
     assert.equal(followsLink.targetId, 'w-mandate-flat');
     assert.equal(followsLink.label, 'depends on');
@@ -1497,7 +1497,7 @@ describe('observation-lift engine', () => {
     );
 
     // The first link attempt (astrolabe.lifted-from) threw — the second
-    // (spider.follows) never executed.
+    // (depends-on) never executed.
     assert.equal(mockClerkLinkCalls.length, 1);
     assert.equal(mockClerkLinkCalls[0].sourceId, 'w-flat-linkfail-1');
     assert.equal(mockClerkLinkCalls[0].targetId, 'w-mandate-flat-link-fail');
@@ -1599,8 +1599,8 @@ describe('observation-lift engine', () => {
       assert.equal('draft' in call, false, 'engine must not pass the removed `draft` field');
     }
 
-    // Edges: exactly 1 group-parent lifted-from + N child spider.follows
-    // (no lifted-from on children, no spider.follows on group parent).
+    // Edges: exactly 1 group-parent lifted-from + N child depends-on
+    // (no lifted-from on children, no depends-on on group parent).
     assert.equal(mockClerkLinkCalls.length, 1 + observations.length);
 
     const liftedLinks = mockClerkLinkCalls.filter((l) => l.kind === 'astrolabe.lifted-from');
@@ -1609,8 +1609,8 @@ describe('observation-lift engine', () => {
     assert.equal(liftedLinks[0].targetId, 'w-mandate-grouped');
     assert.equal(liftedLinks[0].label, 'lifted from');
 
-    const followsLinks = mockClerkLinkCalls.filter((l) => l.kind === 'spider.follows');
-    assert.equal(followsLinks.length, observations.length, 'one spider.follows edge per child');
+    const followsLinks = mockClerkLinkCalls.filter((l) => l.kind === 'depends-on');
+    assert.equal(followsLinks.length, observations.length, 'one depends-on edge per child');
     for (let i = 0; i < observations.length; i++) {
       const link = followsLinks[i];
       assert.equal(link.sourceId, `w-obs-child-${i + 1}`);
@@ -1618,11 +1618,11 @@ describe('observation-lift engine', () => {
       assert.equal(link.label, 'depends on');
     }
 
-    // The group parent must NOT carry a spider.follows edge.
+    // The group parent must NOT carry a depends-on edge.
     const groupFollowsEdge = mockClerkLinkCalls.find(
-      (l) => l.kind === 'spider.follows' && l.sourceId === 'w-obs-group',
+      (l) => l.kind === 'depends-on' && l.sourceId === 'w-obs-group',
     );
-    assert.equal(groupFollowsEdge, undefined, 'group parent must not carry spider.follows');
+    assert.equal(groupFollowsEdge, undefined, 'group parent must not carry depends-on');
 
     // Children must NOT carry astrolabe.lifted-from edges.
     const childLiftedEdge = mockClerkLinkCalls.find(
@@ -1631,7 +1631,7 @@ describe('observation-lift engine', () => {
     assert.equal(childLiftedEdge, undefined, 'children must not carry lifted-from');
 
     // Call ordering: group post → group lifted-from link → then per
-    // record: child post → child spider.follows link.
+    // record: child post → child depends-on link.
     assert.deepEqual(
       callLog.map((c) => c.kind),
       ['post', 'link', 'post', 'link', 'post', 'link', 'post', 'link'],
@@ -1766,11 +1766,11 @@ describe('observation-lift engine', () => {
     assert.equal(postCalls[2].title, 'second — explodes');
 
     // Two links persisted — group parent lifted-from + child 1's
-    // spider.follows. Child 2's post threw before its link was attempted.
+    // depends-on. Child 2's post threw before its link was attempted.
     assert.equal(mockClerkLinkCalls.length, 2);
     assert.equal(mockClerkLinkCalls[0].kind, 'astrolabe.lifted-from');
     assert.equal(mockClerkLinkCalls[0].sourceId, 'w-obs-group-fail');
-    assert.equal(mockClerkLinkCalls[1].kind, 'spider.follows');
+    assert.equal(mockClerkLinkCalls[1].kind, 'depends-on');
     assert.equal(mockClerkLinkCalls[1].sourceId, 'w-obs-child-fail-1');
   });
 
@@ -1804,8 +1804,8 @@ describe('observation-lift engine', () => {
     let linkCounter = 0;
     mockClerkLink = async () => {
       linkCounter += 1;
-      // Order: 1 = group lifted-from, 2 = child1 spider.follows,
-      // 3 = child2 spider.follows (throws).
+      // Order: 1 = group lifted-from, 2 = child1 depends-on,
+      // 3 = child2 depends-on (throws).
       if (linkCounter === 3) {
         throw new Error('simulated mid-loop clerk.link failure');
       }
@@ -1827,18 +1827,18 @@ describe('observation-lift engine', () => {
     assert.equal(postCalls[1].title, 'first');
     assert.equal(postCalls[2].title, 'second — link explodes');
 
-    // Three link attempts: group lifted-from (ok), child 1 spider.follows
-    // (ok), child 2 spider.follows (threw).
+    // Three link attempts: group lifted-from (ok), child 1 depends-on
+    // (ok), child 2 depends-on (threw).
     assert.equal(mockClerkLinkCalls.length, 3);
     assert.equal(mockClerkLinkCalls[0].kind, 'astrolabe.lifted-from');
     assert.equal(mockClerkLinkCalls[0].sourceId, 'w-obs-linkgroup');
     assert.equal(mockClerkLinkCalls[0].targetId, 'w-mandate-grouped-link-fail');
 
-    assert.equal(mockClerkLinkCalls[1].kind, 'spider.follows');
+    assert.equal(mockClerkLinkCalls[1].kind, 'depends-on');
     assert.equal(mockClerkLinkCalls[1].sourceId, 'w-obs-linkchild-1');
     assert.equal(mockClerkLinkCalls[1].targetId, 'w-mandate-grouped-link-fail');
 
-    assert.equal(mockClerkLinkCalls[2].kind, 'spider.follows');
+    assert.equal(mockClerkLinkCalls[2].kind, 'depends-on');
     assert.equal(mockClerkLinkCalls[2].sourceId, 'w-obs-linkchild-2');
     assert.equal(mockClerkLinkCalls[2].targetId, 'w-mandate-grouped-link-fail');
   });

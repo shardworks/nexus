@@ -48,6 +48,21 @@ The registry projection is exposed through `ClerkApi.listKinds()`, which returns
 
 Link rows attach a kind via the optional `kind` field on `WritLinkDoc`. The `kind` is the load-bearing identifier (stable, plugin-owned, validated against the registry). The `label` field is the casual, human-facing string (open, syntactically normalized, not validated against any registry). Every link row has a `label`; `kind` is `null` when no kind is attached. `link()` rejects unknown `kind` ids at call time with `Unknown link kind "<id>". Registered link kinds: ...`.
 
+#### Naming-primacy carve-out: Clerk owns the unprefixed namespace
+
+The Clerk plugin owns the writ-link substrate. The kit-ingest validator carves out a single exception to the prefix rule above: contributions from the Clerk plugin itself (where `pluginId === 'clerk'`) may use a bare kebab id without a `{pluginId}.` prefix. Every other plugin must continue to use the prefixed form.
+
+The carve-out admits exactly two forms when the contributor is Clerk:
+
+1. **Unprefixed kebab** — e.g. `depends-on`. The id is validated against the existing kebab grammar (`KIND_SUFFIX_RE`) and registered as-is.
+2. **Prefixed `clerk.X`** — e.g. `clerk.example`. The id flows through the standard prefix-equals-pluginId path.
+
+A Clerk contribution containing a `.` whose left side is not `clerk` (e.g. `foo.bar` from a Clerk-id apparatus) is malformed and rejected with the existing prefix-mismatch error. Kebab grammar and registry-wide duplicate detection always apply, regardless of which arm fired.
+
+The principle behind the carve-out: **substrate-owners own the unprefixed namespace within their substrate.** The Clerk owns the writ-link graph; the unprefixed namespace within that graph belongs to the Clerk. The dependency-link kind `depends-on` is the first beneficiary — it is framework-level (the Spider's dispatch gate, the Reckoner's petition consideration, and Astrolabe's observation-lift all read it), so naming it under any single plugin's namespace would invert the dependency direction. Hosting it on the Clerk's substrate, with a bare kebab id, makes the read-write asymmetry honest: the Clerk publishes the kind; everyone consumes it.
+
+The carve-out is **exclusive to Clerk**: there is no "primacy plugins" registry, no per-guild override, no extension hook. If a second foundational plugin ever earns the same status, the carve-out is revisited as a deliberate design decision rather than as a drive-by widening.
+
 ---
 
 ## Support Kit

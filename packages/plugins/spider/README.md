@@ -65,13 +65,13 @@ CrawlResult variants:
 
 A `null` return means no dispatchable candidate was found this tick — either the queue is empty, or every candidate writ was gated on non-terminal blockers. Gate state lives on the writ substrate (`phase` + `status.spider`), not in the `CrawlResult`.
 
-### Dispatch gating via `spider.follows`
+### Dispatch gating via `depends-on`
 
-Spider contributes a `spider.follows` link kind and consults outbound `spider.follows` links when deciding whether to spawn a rig for an open writ. The gate is evaluated in `trySpawn` before any rig is created:
+The `depends-on` link kind is contributed by the Clerk apparatus's own `supportKit` (the Clerk owns the writ-link substrate, so dependency edges live in Clerk's namespace). Spider is one of several apparatuses that read it; its dispatch gate consults outbound `depends-on` links when deciding whether to spawn a rig for an open writ. The gate is evaluated in `trySpawn` before any rig is created:
 
-- If any direct outbound `spider.follows` target is still `new`, `open`, or `stuck` — the writ is held. The scan continues to the next candidate so a later, unblocked writ can still dispatch this tick; the gated writ stays `open` and no status is persisted.
+- If any direct outbound `depends-on` target is still `new`, `open`, or `stuck` — the writ is held. The scan continues to the next candidate so a later, unblocked writ can still dispatch this tick; the gated writ stays `open` and no status is persisted.
 - If any direct outbound target is `failed` — the writ is cascaded to `stuck`. A `status.spider` record is written with `stuckCause: 'failed-blocker'` and the ids of every failed blocker. The resolution text is `Blocked by failed dependency: <short-id>` (or `Blocked by failed dependencies: …` when plural). The scan then continues with the next candidate.
-- If the full transitive `spider.follows` walk from the writ visits a cycle — every cycle member is cascaded to `stuck` with `stuckCause: 'cycle'` and the cycle members as blockers. The resolution text is `Cycle detected in spider.follows graph`. The scan then continues with the next candidate.
+- If the full transitive `depends-on` walk from the writ visits a cycle — every cycle member is cascaded to `stuck` with `stuckCause: 'cycle'` and the cycle members as blockers. The resolution text is `Cycle detected in depends-on graph`. The scan then continues with the next candidate.
 - Only when every direct outbound target is in a terminal-success state (`completed`, or `cancelled`) does the writ proceed to rig spawn.
 
 Before `trySpawn`, each crawl tick runs an `autoUnstick` pass that re-evaluates every writ whose `status.spider.stuckCause` is one of the dependency-recovery causes (`failed-blocker` or `cycle`). When the recorded cause resolves (all `failed-blocker` ids are now `completed`/`cancelled`, or any `cycle` member has moved out of `open`/`stuck`), the writ is returned to `open` and emits a `'writ-unstuck'` result. Writs stuck without a `status.spider` slot (operator-flagged stucks) are left alone — their recovery is owned by the operator, not by `autoUnstick`.

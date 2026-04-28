@@ -2463,7 +2463,7 @@ export function createSpider(): Plugin {
    *
    * Find the oldest open writ with no existing rig. Create a rig for it.
    */
-  // ── spider.follows gate evaluation ──────────────────────────────────
+  // ── depends-on gate evaluation ──────────────────────────────────────
   //
   // These are the terminal phase-categories the gate cares about. A blocker
   // in a terminal-success state (completed or cancelled) releases its edge;
@@ -2473,7 +2473,7 @@ export function createSpider(): Plugin {
 
   /**
    * Gate evaluation result for a single candidate writ. The walk inspects
-   * the candidate's outbound `spider.follows` links and transitively
+   * the candidate's outbound `depends-on` links and transitively
    * follows further outbound links on those targets only to the extent
    * needed for cycle detection. Phase-category decisions (ready / gated /
    * failed-blocker) are scoped to the candidate's *direct* outbound
@@ -2486,16 +2486,16 @@ export function createSpider(): Plugin {
     | { kind: 'failed-blocker'; blockerIds: string[] }
     | { kind: 'cycle'; members: string[] };
 
-  /** Fetch outbound `spider.follows` target ids for a given writ id. */
-  async function getSpiderFollowsTargets(writId: string): Promise<string[]> {
+  /** Fetch outbound `depends-on` target ids for a given writ id. */
+  async function getDependsOnTargets(writId: string): Promise<string[]> {
     const { outbound } = await clerk.links(writId);
     return outbound
-      .filter((l) => l.kind === 'spider.follows')
+      .filter((l) => l.kind === 'depends-on')
       .map((l) => l.targetId);
   }
 
   /**
-   * Walk the candidate's outbound `spider.follows` edges.
+   * Walk the candidate's outbound `depends-on` edges.
    *
    * Decisions about the candidate's gate state come from the **direct**
    * outbound edges only (per D14). Cycle detection, however, runs an
@@ -2508,9 +2508,9 @@ export function createSpider(): Plugin {
    * appearing on the current DFS stack is a diamond, not a cycle.
    */
   async function evaluateGate(candidateId: string): Promise<GateOutcome> {
-    const directTargets = await getSpiderFollowsTargets(candidateId);
+    const directTargets = await getDependsOnTargets(candidateId);
 
-    // Fast path: no outbound spider.follows at all → nothing to gate on.
+    // Fast path: no outbound depends-on at all → nothing to gate on.
     if (directTargets.length === 0) return { kind: 'ready' };
 
     // First: run a DFS for cycle detection over the transitive closure.
@@ -2556,7 +2556,7 @@ export function createSpider(): Plugin {
       // Schedule leave *before* enqueuing children so they run first (LIFO).
       stack.push({ kind: 'leave', id: frame.id, parent: frame.parent });
 
-      const outboundTargets = await getSpiderFollowsTargets(frame.id);
+      const outboundTargets = await getDependsOnTargets(frame.id);
       for (const t of outboundTargets) {
         stack.push({ kind: 'enter', id: t, parent: frame.id });
       }
@@ -2635,7 +2635,7 @@ export function createSpider(): Plugin {
    *     non-terminal, keep the writ stuck.)
    *   - `cycle`: any recorded cycle member has moved out of the cycle
    *     (non-open phase, or no longer has the originally-observed
-   *     outbound `spider.follows` edge — the simplest proxy is that at
+   *     outbound `depends-on` edge — the simplest proxy is that at
    *     least one member is no longer in `open`). The next poll's
    *     trySpawn pass will re-evaluate the gate; if the cycle remains,
    *     it re-sticks.
@@ -2748,7 +2748,7 @@ export function createSpider(): Plugin {
       ]);
       if (activeForWrit > 0) continue;
 
-      // Gate on outbound spider.follows links before dispatch. Evaluation
+      // Gate on outbound depends-on links before dispatch. Evaluation
       // produces one of four outcomes — see `evaluateGate`. The walk also
       // runs cycle detection; back-edges surface as a `cycle` outcome.
       const gate = await evaluateGate(writ.id);
@@ -2786,7 +2786,7 @@ export function createSpider(): Plugin {
               memberId,
               'cycle',
               gate.members,
-              'Cycle detected in spider.follows graph',
+              'Cycle detected in depends-on graph',
             );
           }
         }
@@ -3102,13 +3102,6 @@ export function createSpider(): Plugin {
             indexes: ['status', 'rigId', 'engineId', 'createdAt', ['rigId', 'engineId', 'status']],
           },
         },
-        linkKinds: [
-          {
-            id: 'spider.follows',
-            description:
-              'The source writ is a precedence-successor of the target: source cannot be dispatched until the target reaches a terminal state. Consumers define their own policy for what happens on each terminal state.',
-          },
-        ],
         engines: {
           'anima-session': animaSessionEngine,
           draft:     draftEngine,

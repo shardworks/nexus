@@ -40,6 +40,7 @@ import type {
   WritTreeParams,
   WritWithPresentation,
 } from './types.ts';
+import { CLERK_PLUGIN_ID } from './types.ts';
 
 import { derivePresentation } from './writ-presentation.ts';
 
@@ -79,6 +80,12 @@ export interface ClerkKit {
    * Kit authors supply `{ id, description }`; the registry-projection view
    * (returned by `listKinds()`) embeds the resolved owner plugin id on each
    * record as `ownerPlugin`.
+   *
+   * Carve-out: contributions from the Clerk plugin itself may additionally
+   * use a bare kebab id without a `{pluginId}.` prefix (e.g. `depends-on`).
+   * The Clerk owns the writ link substrate and therefore owns the
+   * unprefixed namespace within that substrate. See `KindEntry.id` for
+   * the full rule.
    */
   linkKinds?: KindEntry[];
 }
@@ -470,6 +477,46 @@ export function createClerk(): Plugin {
         throw new Error(
           `[clerk] Kit "${pluginId}" linkKinds: entry "${id}" is missing a non-empty string "description" field.`,
         );
+      }
+
+      // ── Clerk-only carve-out for unprefixed kind ids ──
+      //
+      // The Clerk plugin owns the writ link substrate, so it is granted
+      // primacy over the unprefixed namespace within that substrate. Only
+      // contributions from `pluginId === CLERK_PLUGIN_ID` may use a bare
+      // kebab id (e.g. `depends-on`); every other plugin must continue to
+      // use the prefixed `{pluginId}.{kebab-suffix}` form.
+      //
+      // The carve-out admits exactly two forms when the contributor is
+      // Clerk:
+      //   - `X` (unprefixed kebab id), or
+      //   - `clerk.X` (prefixed kebab id).
+      // A Clerk contribution containing a `.` whose left side is not
+      // `'clerk'` is malformed and falls through to the standard
+      // prefix-equals-pluginId rejection below.
+      //
+      // Only the dot-required and prefix-equals-pluginId checks are
+      // short-circuited for the Clerk-unprefixed path; kebab grammar and
+      // registry-wide duplicate detection still apply.
+      if (pluginId === CLERK_PLUGIN_ID && id.indexOf('.') === -1) {
+        if (!KIND_SUFFIX_RE.test(id)) {
+          throw new Error(
+            `[clerk] Kit "${pluginId}" linkKinds: entry "${id}" must be kebab-case (lowercase letters, digits, and hyphens, not starting or ending with "-").`,
+          );
+        }
+
+        if (linkKindRegistry.has(id)) {
+          const existing = linkKindRegistry.get(id)!;
+          throw new Error(
+            `[clerk] Kit "${pluginId}" linkKinds: duplicate kind id "${id}" — already registered by kit "${existing.ownerPlugin}".`,
+          );
+        }
+
+        linkKindRegistry.set(id, {
+          ownerPlugin: pluginId,
+          description,
+        });
+        continue;
       }
 
       const dotIdx = id.indexOf('.');
@@ -1198,6 +1245,13 @@ export function createClerk(): Plugin {
             indexes: ['sourceId', 'targetId', 'label', ['sourceId', 'label'], ['targetId', 'label']],
           },
         },
+        linkKinds: [
+          {
+            id: 'depends-on',
+            description:
+              'The source writ is a precedence-successor of the target: source cannot be dispatched until the target reaches a terminal state. Consumers define their own policy for what happens on each terminal state.',
+          },
+        ],
         tools: [
           commissionPost,
           stepAdd,
@@ -1422,6 +1476,36 @@ export function createClerk(): Plugin {
             await links.delete(survivor.id);
           }
           await links.put(migrated);
+        }
+
+        // ── One-shot migration: rename `spider.follows` → `depends-on` ──
+        //
+        // The dependency-link kind moved out of Spider's namespace
+        // (`spider.follows`) and onto the Clerk's substrate (`depends-on`)
+        // — see the `depends-on` declaration in this apparatus's
+        // `supportKit.linkKinds`. This pass rewrites every persisted link
+        // row that still carries the legacy kind so downstream readers
+        // (Spider's dispatch gate, the Reckoner, anyone querying
+        // `link.kind`) see the canonical name.
+        //
+        // The composite link id (`{src}:{tgt}:{normalized-label}`) is
+        // unaffected because the kind is not part of the id; `createdAt`
+        // and all other fields are preserved trivially via
+        // `links.patch(id, { kind })`. Idempotent: re-running on
+        // already-migrated data is a no-op.
+        const allLinksForKindMigration = await links.find({});
+        let renamed = 0;
+        for (const row of allLinksForKindMigration) {
+          if (row.kind === 'spider.follows') {
+            await links.patch(row.id, { kind: 'depends-on' });
+            renamed += 1;
+          }
+        }
+        if (renamed > 0) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[clerk] Link migration: renamed ${renamed} "spider.follows" rows to "depends-on".`,
+          );
         }
       },
     },

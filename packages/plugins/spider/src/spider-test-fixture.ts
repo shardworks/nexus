@@ -265,14 +265,28 @@ export function buildFixture(
     apparatus: mergeCustomEnginesIntoSpider(spiderApparatus, extra.customEngines),
   };
 
+  // Mirror production wiring: Arbor's `buildKitEntries` walks every loaded
+  // apparatus's `supportKit` including Clerk's. Include Clerk's own
+  // apparatus in the kit-entry pool so its self-contributed link kinds
+  // (notably `depends-on`) flow through the same path they take in
+  // production. Without this, the Clerk would not see its own contribution
+  // through `ctx.kits('linkKinds')` and the dependency-link kind would be
+  // missing from the test registry.
+  const clerkAsLoaded: LoadedApparatus = {
+    packageName: '@shardworks/clerk-apparatus',
+    id: 'clerk',
+    version: '0.0.0',
+    apparatus: clerkApparatus,
+  };
+
   const fabricatorKitEntries = buildKitEntries(
     extra.kits ?? [],
-    [spiderAsLoaded, ...(extra.apparatuses ?? [])],
+    [clerkAsLoaded, spiderAsLoaded, ...(extra.apparatuses ?? [])],
   );
 
   const spiderKitEntries = buildKitEntries(
     extra.kits ?? [],
-    [spiderAsLoaded, ...(extra.apparatuses ?? [])],
+    [clerkAsLoaded, spiderAsLoaded, ...(extra.apparatuses ?? [])],
   );
 
   // Start stacks with memory backend
@@ -369,9 +383,12 @@ export function buildFixture(
   apparatusMap.set('animator', mockAnimatorApi);
 
   // Start clerk. Clerk consumes `linkKinds` kit entries, so pass the full
-  // kit-entry snapshot through its ctx — this is how `spider.follows`
-  // (contributed by Spider's supportKit) gets registered in the kind
-  // registry and becomes acceptable to `clerk.link(_, _, _, 'spider.follows')`.
+  // kit-entry snapshot through its ctx — this is how `depends-on` (now
+  // contributed by Clerk's own supportKit, mirrored here via `clerkAsLoaded`
+  // above) gets registered in the kind registry and becomes acceptable to
+  // `clerk.link(_, _, _, 'depends-on')`. Production wiring (Arbor's
+  // `buildKitEntries`) walks every loaded apparatus's `supportKit` including
+  // Clerk's; the fixture mimics that exactly.
   const { ctx: clerkCtx } = buildCtx(spiderKitEntries);
   clerkApparatus.start(clerkCtx);
   const realClerk = clerkApparatus.provides as ClerkApi;

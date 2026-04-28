@@ -222,6 +222,8 @@ const kinds = await clerk.listKinds();
 
 Kit authors register kinds under the `linkKinds` key of their `ClerkKit` (or an apparatus's `supportKit`). Each entry is `{ id, description }`; the id must be prefixed with the contributing plugin id (`{pluginId}.{kebab-suffix}`, dot-separated). Malformed entries, duplicate ids, and plugin-prefix mismatches hard-fail at startup.
 
+**Naming-primacy carve-out.** The Clerk plugin owns the writ-link substrate, so it is granted primacy over the unprefixed namespace within that substrate: contributions from the Clerk's own apparatus (`pluginId === 'clerk'`) may use a bare kebab id without a `{pluginId}.` prefix — `depends-on` is the first such kind. Every other plugin must continue to use the prefixed form. The carve-out is exclusive to Clerk; see [docs/architecture/apparatus/clerk.md](../../../docs/architecture/apparatus/clerk.md) for the full rule and the principle behind it.
+
 ### `edit(request): Promise<WritDoc>`
 
 Edit a writ, updating one or more fields. Only the provided fields are updated.

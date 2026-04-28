@@ -1,12 +1,11 @@
 /**
- * Spider — `spider.follows` gate.
+ * Spider — `depends-on` gate.
  *
- * Covers the `spider.follows` link kind: how it gates rig spawning when
- * a writ is linked to an in-flight predecessor, and the drain semantics
- * once the predecessor terminates. The inline `drainCrawls` helper for
- * this suite stays co-located with its sole consumer.
- *
- * Verbatim relocation from the legacy monolithic `spider.test.ts`.
+ * Covers the `depends-on` link kind (contributed by Clerk's own
+ * supportKit, read by Spider's dispatch gate): how it gates rig spawning
+ * when a writ is linked to an in-flight predecessor, and the drain
+ * semantics once the predecessor terminates. The inline `drainCrawls`
+ * helper for this suite stays co-located with its sole consumer.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -53,9 +52,9 @@ import {
   assertTerminalAt,
 } from './spider-test-fixture.ts';
 
-// ── spider.follows gate behavior ─────────────────────────────────────────
+// ── depends-on gate behavior ──────────────────────────────────────────────
 
-describe('Spider — spider.follows gate', () => {
+describe('Spider — depends-on gate', () => {
   let fix: ReturnType<typeof buildFixture>;
 
   beforeEach(() => {
@@ -83,25 +82,25 @@ describe('Spider — spider.follows gate', () => {
   }
 
   describe('link-kind registration', () => {
-    it('spider.follows appears in listKinds() with the prescribed description', async () => {
+    it('depends-on appears in listKinds() with the prescribed description', async () => {
       const kinds = await fix.clerk.listKinds();
-      const entry = kinds.find((k) => k.id === 'spider.follows');
-      assert.ok(entry, 'spider.follows should be registered');
-      assert.equal(entry!.ownerPlugin, 'spider');
+      const entry = kinds.find((k) => k.id === 'depends-on');
+      assert.ok(entry, 'depends-on should be registered');
+      assert.equal(entry!.ownerPlugin, 'clerk');
       assert.equal(
         entry!.description,
         'The source writ is a precedence-successor of the target: source cannot be dispatched until the target reaches a terminal state. Consumers define their own policy for what happens on each terminal state.',
       );
     });
 
-    it('clerk.link() accepts kind="spider.follows" and rejects the colon form', async () => {
+    it('clerk.link() accepts kind="depends-on" and rejects the retired "spider.follows" id', async () => {
       const { clerk } = fix;
       const a = await postWrit(clerk, 'A');
       const b = await postWrit(clerk, 'B');
-      const linkDoc = await clerk.link(a.id, b.id, 'depends on', 'spider.follows');
-      assert.equal(linkDoc.kind, 'spider.follows');
+      const linkDoc = await clerk.link(a.id, b.id, 'depends on', 'depends-on');
+      assert.equal(linkDoc.kind, 'depends-on');
       await assert.rejects(
-        () => clerk.link(a.id, b.id, 'fixes', 'spider:follows'),
+        () => clerk.link(a.id, b.id, 'fixes', 'spider.follows'),
         /Unknown link kind/,
       );
     });
@@ -112,7 +111,7 @@ describe('Spider — spider.follows gate', () => {
       const { clerk, spider, stacks } = fix;
       const blocker = await postWrit(clerk, 'Blocker');
       const dependent = await postWrit(clerk, 'Dependent');
-      await clerk.link(dependent.id, blocker.id, 'depends on', 'spider.follows');
+      await clerk.link(dependent.id, blocker.id, 'depends on', 'depends-on');
 
       // Dependent is younger than blocker, so blocker dispatches first.
       // Prevent blocker from spawning by completing it out-of-band via
@@ -147,7 +146,7 @@ describe('Spider — spider.follows gate', () => {
       // Exercise actual gating against an explicitly-open blocker:
       const blocker2 = await postWrit(clerk, 'Blocker 2');
       const dependent2 = await postWrit(clerk, 'Dependent 2');
-      await clerk.link(dependent2.id, blocker2.id, 'depends on', 'spider.follows');
+      await clerk.link(dependent2.id, blocker2.id, 'depends on', 'depends-on');
 
       // Evaluate the gate on dependent2 without letting blocker2's own
       // rig progress to terminal (which would change dependent2's gate
@@ -172,7 +171,7 @@ describe('Spider — spider.follows gate', () => {
       const { clerk, spider, stacks } = fix;
       const blocker = await postWrit(clerk, 'Blocker first');
       const gated = await postWrit(clerk, 'Gated second');
-      await clerk.link(gated.id, blocker.id, 'depends on', 'spider.follows');
+      await clerk.link(gated.id, blocker.id, 'depends on', 'depends-on');
       const independent = await postWrit(clerk, 'Independent third');
 
       // Drive crawls until independent has spawned or we give up. Before
@@ -197,7 +196,7 @@ describe('Spider — spider.follows gate', () => {
       const { clerk, spider } = fix;
       const blocker = await postWrit(clerk, 'Blocker');
       const dependent = await postWrit(clerk, 'Dependent');
-      await clerk.link(dependent.id, blocker.id, 'depends on', 'spider.follows');
+      await clerk.link(dependent.id, blocker.id, 'depends on', 'depends-on');
 
       // Complete blocker out-of-band (transition handles 'open' → 'completed').
       await clerk.transition(blocker.id, 'completed', { resolution: 'Done.' });
@@ -219,7 +218,7 @@ describe('Spider — spider.follows gate', () => {
       const { clerk, spider } = fix;
       const blocker = await postWrit(clerk, 'Blocker');
       const dependent = await postWrit(clerk, 'Dependent');
-      await clerk.link(dependent.id, blocker.id, 'depends on', 'spider.follows');
+      await clerk.link(dependent.id, blocker.id, 'depends on', 'depends-on');
 
       await clerk.transition(blocker.id, 'cancelled', { resolution: 'Moot.' });
 
@@ -242,9 +241,9 @@ describe('Spider — spider.follows gate', () => {
       const b2 = await postWrit(clerk, 'B2');
       const b3 = await postWrit(clerk, 'B3');
       const dep = await postWrit(clerk, 'Dependent');
-      await clerk.link(dep.id, b1.id, 'depends on', 'spider.follows');
-      await clerk.link(dep.id, b2.id, 'depends on', 'spider.follows');
-      await clerk.link(dep.id, b3.id, 'depends on', 'spider.follows');
+      await clerk.link(dep.id, b1.id, 'depends on', 'depends-on');
+      await clerk.link(dep.id, b2.id, 'depends on', 'depends-on');
+      await clerk.link(dep.id, b3.id, 'depends on', 'depends-on');
 
       // Complete two of three out-of-band via direct stacks patch. Using the
       // direct book here (rather than clerk.transition()) sidesteps the rig
@@ -287,7 +286,7 @@ describe('Spider — spider.follows gate', () => {
       const { clerk, spider } = fix;
       const blocker = await postWrit(clerk, 'Blocker');
       const dependent = await postWrit(clerk, 'Dependent');
-      await clerk.link(dependent.id, blocker.id, 'depends on', 'spider.follows');
+      await clerk.link(dependent.id, blocker.id, 'depends on', 'depends-on');
 
       await clerk.transition(blocker.id, 'failed', { resolution: 'boom' });
 
@@ -316,8 +315,8 @@ describe('Spider — spider.follows gate', () => {
       const b1 = await postWrit(clerk, 'B1');
       const b2 = await postWrit(clerk, 'B2');
       const dep = await postWrit(clerk, 'Dependent');
-      await clerk.link(dep.id, b1.id, 'depends on', 'spider.follows');
-      await clerk.link(dep.id, b2.id, 'depends on', 'spider.follows');
+      await clerk.link(dep.id, b1.id, 'depends on', 'depends-on');
+      await clerk.link(dep.id, b2.id, 'depends on', 'depends-on');
 
       await clerk.transition(b1.id, 'failed', { resolution: 'one' });
       await clerk.transition(b2.id, 'failed', { resolution: 'two' });
@@ -348,9 +347,9 @@ describe('Spider — spider.follows gate', () => {
       const b = await postWrit(clerk, 'B');
       const c = await postWrit(clerk, 'C');
       // A → B → C → A (cycle)
-      await clerk.link(a.id, b.id, 'depends on', 'spider.follows');
-      await clerk.link(b.id, c.id, 'depends on', 'spider.follows');
-      await clerk.link(c.id, a.id, 'depends on', 'spider.follows');
+      await clerk.link(a.id, b.id, 'depends on', 'depends-on');
+      await clerk.link(b.id, c.id, 'depends on', 'depends-on');
+      await clerk.link(c.id, a.id, 'depends on', 'depends-on');
 
       // Drain crawls; the first evaluation of any cycle member should
       // cascade all members to `stuck`. The per-writ stuck-state check
@@ -363,7 +362,7 @@ describe('Spider — spider.follows gate', () => {
       for (const writId of [a.id, b.id, c.id]) {
         const w = await clerk.show(writId);
         assert.equal(w.phase, 'stuck', `${writId} should be stuck`);
-        assert.equal(w.resolution, 'Cycle detected in spider.follows graph');
+        assert.equal(w.resolution, 'Cycle detected in depends-on graph');
         const status = w.status?.spider as Record<string, unknown> | undefined;
         assert.ok(status, `status.spider should be set on ${writId}`);
         assert.equal(status!.stuckCause, 'cycle');
@@ -379,10 +378,10 @@ describe('Spider — spider.follows gate', () => {
       const right = await postWrit(clerk, 'Right');
       const top = await postWrit(clerk, 'Top');
       // top → left → target;  top → right → target  (diamond, two paths)
-      await clerk.link(top.id, left.id, 'depends on', 'spider.follows');
-      await clerk.link(top.id, right.id, 'depends on', 'spider.follows');
-      await clerk.link(left.id, target.id, 'depends on', 'spider.follows');
-      await clerk.link(right.id, target.id, 'depends on', 'spider.follows');
+      await clerk.link(top.id, left.id, 'depends on', 'depends-on');
+      await clerk.link(top.id, right.id, 'depends on', 'depends-on');
+      await clerk.link(left.id, target.id, 'depends on', 'depends-on');
+      await clerk.link(right.id, target.id, 'depends on', 'depends-on');
 
       // Complete target so the dependents can eventually dispatch.
       await clerk.transition(target.id, 'completed', { resolution: 'ok' });
@@ -408,7 +407,7 @@ describe('Spider — spider.follows gate', () => {
       const { clerk, spider } = fix;
       const blocker = await postWrit(clerk, 'Blocker');
       const dependent = await postWrit(clerk, 'Dependent');
-      await clerk.link(dependent.id, blocker.id, 'depends on', 'spider.follows');
+      await clerk.link(dependent.id, blocker.id, 'depends on', 'depends-on');
 
       await clerk.transition(blocker.id, 'failed', { resolution: 'boom' });
 
@@ -482,8 +481,8 @@ describe('Spider — spider.follows gate', () => {
       const c = await postWrit(clerk, 'C');
       const b = await postWrit(clerk, 'B');
       const a = await postWrit(clerk, 'A');
-      await clerk.link(b.id, c.id, 'depends on', 'spider.follows');
-      await clerk.link(a.id, b.id, 'depends on', 'spider.follows');
+      await clerk.link(b.id, c.id, 'depends on', 'depends-on');
+      await clerk.link(a.id, b.id, 'depends on', 'depends-on');
 
       // Move C to failed directly via Stacks (bypass the phase state machine:
       // we don't need to go through `open → failed`, we just want C in
@@ -607,7 +606,7 @@ describe('Spider — spider.follows gate', () => {
       const { clerk, spider } = fix;
       const blocker = await postWrit(clerk, 'Blocker');
       const dependent = await postWrit(clerk, 'Dependent');
-      await clerk.link(dependent.id, blocker.id, 'depends on', 'spider.follows');
+      await clerk.link(dependent.id, blocker.id, 'depends on', 'depends-on');
       await clerk.transition(blocker.id, 'failed', { resolution: 'boom' });
 
       for (let i = 0; i < 6; i++) {
@@ -626,8 +625,8 @@ describe('Spider — spider.follows gate', () => {
       const { clerk, spider } = fix;
       const a = await postWrit(clerk, 'A');
       const b = await postWrit(clerk, 'B');
-      await clerk.link(a.id, b.id, 'depends on', 'spider.follows');
-      await clerk.link(b.id, a.id, 'depends on', 'spider.follows');
+      await clerk.link(a.id, b.id, 'depends on', 'depends-on');
+      await clerk.link(b.id, a.id, 'depends on', 'depends-on');
 
       for (let i = 0; i < 6; i++) {
         const r = await spider.crawl();

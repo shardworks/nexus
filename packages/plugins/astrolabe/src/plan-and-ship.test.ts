@@ -146,7 +146,7 @@ describe('astrolabe.plan-and-ship rig template — shape and wiring', () => {
     // observation-lift lifts plan.observations into draft top-level writs
     // with an astrolabe.lifted-from edge back to the originating mandate.
     // Placement: the plan has reached `completed` (via plan-finalize) but
-    // the mandate writ is still `open`, so the spider.follows gate the
+    // the mandate writ is still `open`, so the depends-on gate the
     // engine installs on each lifted writ is well-formed.
     const ol = template.engines.find(e => e.id === 'observation-lift');
     assert.ok(ol, 'observation-lift engine must exist');

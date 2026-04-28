@@ -461,6 +461,13 @@ export interface KindEntry {
    * Fully-qualified kind id. Must begin with `{pluginId}.` and be followed
    * by a non-empty kebab-case suffix (lowercase letters, digits, and hyphens,
    * not starting or ending with a hyphen).
+   *
+   * Carve-out: contributions from the Clerk plugin itself (where the
+   * contributing plugin id equals the Clerk's own id) may additionally use
+   * a bare kebab id without a `{pluginId}.` prefix — e.g. `depends-on`.
+   * The Clerk owns the writ link substrate and therefore owns the
+   * unprefixed namespace within that substrate. The carve-out is exclusive
+   * to Clerk; every other plugin must continue to use the prefixed form.
    */
   id: string;
   /** Human-readable description of the relationship this kind denotes. */

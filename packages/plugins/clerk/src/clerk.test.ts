@@ -212,8 +212,23 @@ async function setupCore(options: SetupOptions = {}, clerkCtx?: StartupContext):
     }
   }
 
-  // Start clerk — build default ctx with Wire-phase kit entries if not provided
-  const kitEntries = buildKitEntries(options.extraKits ?? [], options.extraApparatuses ?? []);
+  // Start clerk — build default ctx with Wire-phase kit entries if not provided.
+  //
+  // Production wiring (Arbor's `buildKitEntries`) walks every loaded
+  // apparatus's `supportKit` including Clerk's. Mirror that here by including
+  // Clerk's own apparatus in the kit-entry pool so `supportKit.linkKinds`
+  // contributions from Clerk itself (e.g. `depends-on`) flow through the
+  // same path they take in production.
+  const clerkAsLoaded: LoadedApparatus = {
+    packageName: '@shardworks/clerk-apparatus',
+    id: 'clerk',
+    version: '0.0.0',
+    apparatus: (clerkPlugin as { apparatus: LoadedApparatus['apparatus'] }).apparatus,
+  };
+  const kitEntries = buildKitEntries(
+    options.extraKits ?? [],
+    [clerkAsLoaded, ...(options.extraApparatuses ?? [])],
+  );
   const ctx = clerkCtx ?? buildClerkCtx(kitEntries).ctx;
   const clerkApparatus = (clerkPlugin as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
   await clerkApparatus.start(ctx);
@@ -2087,11 +2102,24 @@ describe('Clerk', () => {
       };
       await setup({ extraKits: [kit] });
       const kinds = await clerk.listKinds();
-      assert.equal(kinds.length, 2);
+      // Two kit-contributed kinds + Clerk's own self-contributed `depends-on`.
+      assert.equal(kinds.length, 3);
       const refines = kinds.find((k) => k.id === 'alpha.refines');
       assert.ok(refines, 'alpha.refines should be registered');
       assert.equal(refines.ownerPlugin, 'alpha');
       assert.equal(refines.description, 'Refines relationship');
+    });
+
+    it('Clerk self-contributes `depends-on` from its own supportKit', async () => {
+      await setup();
+      const kinds = await clerk.listKinds();
+      const dependsOn = kinds.find((k) => k.id === 'depends-on');
+      assert.ok(dependsOn, '`depends-on` should be self-contributed by the Clerk plugin');
+      assert.equal(dependsOn.ownerPlugin, 'clerk');
+      assert.equal(
+        dependsOn.description,
+        'The source writ is a precedence-successor of the target: source cannot be dispatched until the target reaches a terminal state. Consumers define their own policy for what happens on each terminal state.',
+      );
     });
 
     it('registers kinds contributed by apparatus supportKit', async () => {
@@ -2116,10 +2144,12 @@ describe('Clerk', () => {
       assert.equal(k.ownerPlugin, 'support-app');
     });
 
-    it('returns an empty array when no kinds are registered', async () => {
+    it('returns only the Clerk self-contributed `depends-on` kind when no other kinds are registered', async () => {
       await setup();
       const kinds = await clerk.listKinds();
-      assert.deepEqual(kinds, []);
+      assert.equal(kinds.length, 1);
+      assert.equal(kinds[0]!.id, 'depends-on');
+      assert.equal(kinds[0]!.ownerPlugin, 'clerk');
     });
 
     it('hard-fails when an entry is not an object', async () => {
@@ -2220,6 +2250,132 @@ describe('Clerk', () => {
         /Unknown link kind/,
       );
     });
+
+    // ── Clerk-only carve-out for unprefixed kind ids ──
+    //
+    // The Clerk plugin owns the writ link substrate and is granted primacy
+    // over the unprefixed namespace within that substrate. Only
+    // contributions from the Clerk's own id may use a bare kebab id; every
+    // other plugin must continue to use the prefixed form. The cases below
+    // exercise both arms.
+
+    it('Clerk plugin id contributing an unprefixed kebab id succeeds', async () => {
+      // Use a kind id distinct from Clerk's own self-contributed
+      // `depends-on` so the duplicate-id check does not fire first.
+      const apparatus: LoadedApparatus = {
+        packageName: '@shardworks/clerk-apparatus',
+        id: 'clerk',
+        version: '0.0.0',
+        apparatus: {
+          requires: [],
+          start: () => {},
+          supportKit: {
+            linkKinds: [
+              { id: 'fake-depends-on', description: 'Test unprefixed kind (carve-out)' },
+            ],
+          },
+        },
+      };
+      await setup({ extraApparatuses: [apparatus] });
+      const kinds = await clerk.listKinds();
+      const entry = kinds.find((k) => k.id === 'fake-depends-on');
+      assert.ok(entry, 'Clerk-contributed unprefixed id should register');
+      assert.equal(entry.ownerPlugin, 'clerk');
+      assert.equal(entry.description, 'Test unprefixed kind (carve-out)');
+    });
+
+    it('Clerk plugin id contributing a prefixed `clerk.X` id still succeeds', async () => {
+      const apparatus: LoadedApparatus = {
+        packageName: '@shardworks/clerk-apparatus',
+        id: 'clerk',
+        version: '0.0.0',
+        apparatus: {
+          requires: [],
+          start: () => {},
+          supportKit: {
+            linkKinds: [
+              { id: 'clerk.example', description: 'Prefixed Clerk-contributed kind' },
+            ],
+          },
+        },
+      };
+      await setup({ extraApparatuses: [apparatus] });
+      const kinds = await clerk.listKinds();
+      const entry = kinds.find((k) => k.id === 'clerk.example');
+      assert.ok(entry, 'Clerk-contributed prefixed id should register');
+      assert.equal(entry.ownerPlugin, 'clerk');
+    });
+
+    it('rejects a Clerk contribution containing a `.` whose left side is not "clerk"', async () => {
+      const apparatus: LoadedApparatus = {
+        packageName: '@shardworks/clerk-apparatus',
+        id: 'clerk',
+        version: '0.0.0',
+        apparatus: {
+          requires: [],
+          start: () => {},
+          supportKit: {
+            linkKinds: [
+              { id: 'foo.bar', description: 'Malformed third form from Clerk' },
+            ],
+          },
+        },
+      };
+      await assert.rejects(
+        () => setup({ extraApparatuses: [apparatus] }),
+        /must match the contributing plugin id "clerk"/,
+      );
+    });
+
+    it('non-Clerk plugin contributing an unprefixed kind is still rejected with the existing prefix error', async () => {
+      const kit: LoadedKit = {
+        packageName: '@test/alpha',
+        id: 'alpha',
+        version: '0.0.0',
+        kit: { linkKinds: [{ id: 'depends-on', description: 'should not register' }] },
+      };
+      await assert.rejects(
+        () => setup({ extraKits: [kit] }),
+        /must be of the form "\{pluginId\}\.\{kebab-suffix\}"/,
+      );
+    });
+
+    it('rejects a duplicate-id collision between an unprefixed Clerk kind and another contributor', async () => {
+      const clerkApparatus: LoadedApparatus = {
+        packageName: '@shardworks/clerk-apparatus',
+        id: 'clerk',
+        version: '0.0.0',
+        apparatus: {
+          requires: [],
+          start: () => {},
+          supportKit: {
+            linkKinds: [
+              { id: 'depends-on', description: 'first' },
+            ],
+          },
+        },
+      };
+      const dupeApparatus: LoadedApparatus = {
+        packageName: '@dupe/clerk-clone',
+        // Same plugin id forces the contribution through the carve-out
+        // path so the duplicate-id check fires.
+        id: 'clerk',
+        version: '0.0.0',
+        apparatus: {
+          requires: [],
+          start: () => {},
+          supportKit: {
+            linkKinds: [
+              { id: 'depends-on', description: 'duplicate' },
+            ],
+          },
+        },
+      };
+      await assert.rejects(
+        () => setup({ extraApparatuses: [clerkApparatus, dupeApparatus] }),
+        /duplicate kind id "depends-on"/,
+      );
+    });
   });
 
   // ── Apparatus consumes declaration for linkKinds ────────────────
@@ -2307,6 +2463,74 @@ describe('Clerk', () => {
       } finally {
         console.warn = original;
       }
+    });
+
+    it('rewrites legacy `spider.follows` link rows to `depends-on` and preserves other fields', async () => {
+      const seedLinks = [
+        {
+          id: 'w-src:w-tgt:depends on',
+          sourceId: 'w-src',
+          targetId: 'w-tgt',
+          label: 'depends on',
+          kind: 'spider.follows',
+          createdAt: '2024-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'w-src2:w-tgt2:depends on',
+          sourceId: 'w-src2',
+          targetId: 'w-tgt2',
+          label: 'depends on',
+          kind: 'spider.follows',
+          createdAt: '2024-01-02T00:00:00.000Z',
+        },
+      ];
+      await setup({ seedLinks });
+
+      const stacks = guild().apparatus<StacksApi>('stacks');
+      const linksBook = stacks.book<WritLinkDoc>('clerk', 'links');
+
+      const a = await linksBook.get('w-src:w-tgt:depends on');
+      assert.equal(a?.kind, 'depends-on');
+      assert.equal(a?.sourceId, 'w-src');
+      assert.equal(a?.targetId, 'w-tgt');
+      assert.equal(a?.label, 'depends on');
+      assert.equal(a?.createdAt, '2024-01-01T00:00:00.000Z');
+
+      const b = await linksBook.get('w-src2:w-tgt2:depends on');
+      assert.equal(b?.kind, 'depends-on');
+      assert.equal(b?.createdAt, '2024-01-02T00:00:00.000Z');
+    });
+
+    it('is idempotent — restarting against already-migrated kind rows produces no further changes', async () => {
+      const seedLinks = [
+        {
+          id: 'w-src:w-tgt:depends on',
+          sourceId: 'w-src',
+          targetId: 'w-tgt',
+          label: 'depends on',
+          kind: 'spider.follows',
+          createdAt: '2024-01-01T00:00:00.000Z',
+        },
+      ];
+      await setup({ seedLinks });
+
+      const stacks = guild().apparatus<StacksApi>('stacks');
+      const linksBook = stacks.book<WritLinkDoc>('clerk', 'links');
+
+      const before = await linksBook.get('w-src:w-tgt:depends on');
+      assert.equal(before?.kind, 'depends-on');
+
+      // Second pass: start a fresh Clerk plugin instance against the same
+      // backend. The migration's row-by-row guard short-circuits when no
+      // legacy `spider.follows` rows remain — the row should be byte-
+      // identical afterwards.
+      const clerk2 = createClerk();
+      const { ctx: ctx2 } = buildClerkCtx([]);
+      const clerk2Apparatus = (clerk2 as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
+      await clerk2Apparatus.start(ctx2);
+
+      const after = await linksBook.get('w-src:w-tgt:depends on');
+      assert.deepEqual(after, before, 'already-migrated kind row must not be rewritten');
     });
 
     it('is a no-op on already-canonical rows (no rewrite, no warnings)', async () => {
@@ -2651,21 +2875,19 @@ describe('Clerk', () => {
 
       const result = (await writLinkKinds.handler({ json: true })) as LinkKindDoc[];
       assert.ok(Array.isArray(result));
-      assert.equal(result.length, 1);
-      assert.equal(result[0]!.id, 'kit.refines');
-      assert.equal(result[0]!.ownerPlugin, 'kit');
+      // One kit-contributed kind + Clerk's own self-contributed `depends-on`.
+      assert.equal(result.length, 2);
+      const refines = result.find((k) => k.id === 'kit.refines');
+      assert.ok(refines, 'kit.refines should be registered');
+      assert.equal(refines.ownerPlugin, 'kit');
     });
 
-    it('prints "No link kinds registered." in table mode when the registry is empty', async () => {
-      await setup();
-      const result = (await writLinkKinds.handler({ json: false })) as string;
-      assert.equal(result, 'No link kinds registered.');
-    });
-
-    it('returns [] under --json when the registry is empty', async () => {
+    it('lists the Clerk self-contributed `depends-on` kind under --json when no other kinds are registered', async () => {
       await setup();
       const result = (await writLinkKinds.handler({ json: true })) as LinkKindDoc[];
-      assert.deepEqual(result, []);
+      assert.equal(result.length, 1);
+      assert.equal(result[0]!.id, 'depends-on');
+      assert.equal(result[0]!.ownerPlugin, 'clerk');
     });
   });
 

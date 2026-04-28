@@ -17,7 +17,7 @@
  * It lifts each record in `plan.observations` into a draft top-level
  * `mandate` writ (never a child of the originating mandate); each lifted
  * writ carries an `astrolabe.lifted-from` provenance edge and a
- * `spider.follows` precedence edge back to the originating mandate. When
+ * `depends-on` precedence edge back to the originating mandate. When
  * the plan yields two or more observations, the engine additionally groups
  * the drafts under a top-level `observation-set` container that carries the
  * provenance edge on behalf of the batch. A curator (human or overseer)
