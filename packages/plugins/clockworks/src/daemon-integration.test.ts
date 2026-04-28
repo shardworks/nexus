@@ -362,7 +362,7 @@ describe('runForegroundDaemon — integration', () => {
       // log line goes through the same formatter.
       opts?.onDispatch?.({
         eventId: 'e-sched-1',
-        eventName: 'schedule.fired',
+        eventName: 'clockworks.timer',
         handlerName: 'reckoner-tick',
         status: 'success',
         durationMs: 4,

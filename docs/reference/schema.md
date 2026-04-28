@@ -192,7 +192,7 @@ The Clockworks event queue.
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | `id` | TEXT | PRIMARY KEY | Prefixed hex ID (evt-) |
-| `name` | TEXT | NOT NULL | Event name (e.g. `commission.posted`, `code.reviewed`) |
+| `name` | TEXT | NOT NULL | Event name (e.g. `writ.mandate.open`, `code.reviewed`) |
 | `payload` | TEXT | | JSON-encoded event data |
 | `emitter` | TEXT | NOT NULL | Who signaled it |
 | `fired_at` | TEXT | NOT NULL, DEFAULT now | |

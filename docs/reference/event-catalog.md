@@ -10,20 +10,13 @@ Framework events are emitted by core modules and the Clockworks runner. They are
 
 Payload shapes use inline records `{ field, optional? }` where `?` marks an optional field.
 
-### Commission Events
+### Commission Session Events
 
-Emitted by the writ-lifecycle observer in `clockworks/src/writ-lifecycle-observer.ts` for **root mandates only** — a writ with `type === 'mandate'` and no `parentId`. The shared payload base is `{ commissionId, writId, phase, title }`.
+Emitted by `animator/src/session-emission.ts`. The Clockworks no longer fans a separate `commission.*` family from writ lifecycle transitions — that vocabulary is gone (see [Renamed/removed in this release](#renamedremoved-in-this-release)). The single survivor is the session-co-emit below, which reports a session result against the root commission a writ chains up to.
 
 | Event | Payload | Emitter | When |
 |-------|---------|---------|------|
-| `commission.posted` | `{ commissionId, writId, phase, title }` | `framework` | A root mandate enters `open` phase — direct creation in `open`, `new → open` via `writ-publish`, or `stuck → open` re-entry |
-| `commission.state.changed` | `{ commissionId, writId, phase, title, previousPhase? }` | `framework` | Any phase change on a root mandate. `previousPhase` is present on update events; on the initial create event there is no prior phase to record |
-| `commission.sealed` | `{ commissionId, writId, phase, title }` | `framework` | A root mandate enters `completed` phase. **Fires alongside `commission.completed`** — both names are emitted from the same transition; pick one to subscribe to |
-| `commission.completed` | `{ commissionId, writId, phase, title }` | `framework` | A root mandate enters `completed` phase. **Fires alongside `commission.sealed`** — both names are emitted from the same transition; pick one to subscribe to |
-| `commission.failed` | `{ commissionId, writId, phase, title, resolution? }` | `framework` | A root mandate enters `failed` phase. `resolution` is present when the writ records a resolution string |
 | `commission.session.ended` | `{ sessionId, anima?, trigger?, exitCode?, durationMs?, costUsd?, error?, commissionId }` | `framework` | A session whose `metadata.writId` chains to a root mandate completes. Co-emitted alongside `session.ended` only when the chain resolves |
-
-**`commission.posted`** is the primary entry point for the commission pipeline. The framework also emits a `mandate.ready` writ-lifecycle event for the same writ — standing orders typically wire **`mandate.ready`** to summon an anima rather than `commission.posted`, since the lifecycle event carries the writ id directly.
 
 **`commission.session.ended`** fires after `session.ended` and only when the underlying session was triggered by a writ that chains up to a root mandate. Sessions without `metadata.writId`, or whose chain doesn't reach a root mandate, emit `session.ended` only.
 
@@ -54,29 +47,30 @@ Only the two anima events listed above fire today. The Roster apparatus is the n
 
 ### Writ Lifecycle Events
 
-Emitted by the writ-lifecycle observer in `clockworks/src/writ-lifecycle-observer.ts` for every writ regardless of position in the hierarchy. The event namespace is the writ's **type** — a `mandate` writ emits `mandate.ready`, a guild-defined `task` type emits `task.ready`, etc. Transitions into `new` (drafts) and `cancelled` are silent.
+Emitted by the writ-lifecycle observer in `clockworks/src/writ-lifecycle-observer.ts` for every writ regardless of position in the hierarchy. The contract is **universal across writ types and statuses**: every status transition fires exactly one `writ.<type>.<status>` event whose suffix is the writ's `phase` verbatim. The status set is open-ended — it grows whenever a plugin registers a writ type with new states; the catalog no longer hardcodes a fixed `{ ready | completed | stuck | failed }` suffix list.
 
 | Event Pattern | Payload | Emitter | When |
 |---------------|---------|---------|------|
-| `{type}.ready` | `{ writId, writType, phase, commissionId, title, parentId? }` | `framework` | Writ enters `open` phase — available for dispatch. Stuck → open re-entry re-emits |
-| `{type}.completed` | `{ writId, writType, phase, commissionId, title, parentId? }` | `framework` | Writ enters `completed` phase |
-| `{type}.stuck` | `{ writId, writType, phase, commissionId, title, parentId? }` | `framework` | Writ enters `stuck` phase (engine failure, needs attention) |
-| `{type}.failed` | `{ writId, writType, phase, commissionId, title, parentId? }` | `framework` | Writ enters `failed` phase |
+| `writ.<type>.<status>` | `{ writId, writType, phase, commissionId, title, parentId? }` | `framework` | A writ of `<type>` transitions into `<status>`. Fires on every status change including initial entry into the type's initial state and into terminal states such as `cancelled` |
 
-**`commissionId`** is derived at emit time by walking `parentId` to the root — no `commissionId` column lives on `WritDoc`. For root writs (no parent), `commissionId === writId`.
+For the builtin `mandate` type the concrete vocabulary is `writ.mandate.new`, `writ.mandate.open`, `writ.mandate.stuck`, `writ.mandate.completed`, `writ.mandate.failed`, and `writ.mandate.cancelled`. Plugin-registered types contribute their own state list — for example, a guild that registers a `task` type with states `[draft, queued, running, done, cancelled]` gets `writ.task.draft`, `writ.task.queued`, …, `writ.task.cancelled`.
 
-**`{type}.ready` is the primary dispatch signal.** Standing orders wire these to summon animas. When a commission is posted, the framework creates a `mandate` writ and emits `mandate.ready`.
+**`commissionId`** is derived at emit time by walking `parentId` to the root — no `commissionId` column lives on `WritDoc`. For root writs (no parent), `commissionId === writId`. The field name is preserved verbatim from the prior contract so subscribers that already key on it continue to work; renaming it to a more precise name is a deferred follow-up.
 
-**Completion rollup:** when all children of a writ complete, the parent transitions from `pending` to `open` (re-emitting `{type}.ready`) or auto-completes (if no standing order exists). This cascades upward through the tree.
+**`writ.<type>.<active-state>` is the primary dispatch signal.** Standing orders typically bind to the type's active phase — `writ.mandate.open` for the default mandate flow, `writ.task.queued` for a guild's custom task type — to summon animas at the moment the writ is available for work.
 
-**Failure cascade:** when a writ fails, all its incomplete children are cancelled. Cancelled writs do not emit a lifecycle event.
+**Metadata-only updates fire nothing.** The observer gates emission on a real phase delta: a title rename, codex inheritance change, or any other metadata-only patch produces no event row.
+
+**Completion rollup:** when all children of a writ complete, the parent transitions to its active phase (re-emitting `writ.<type>.<active>`) or auto-completes per the type's `childrenBehavior` config. This cascades upward through the tree.
+
+**Failure cascade:** when a writ fails, all its incomplete children are cancelled — and per the universal contract, each cancellation now fires its own `writ.<type>.cancelled` row.
 
 #### Event namespace and validation
 
-Writ lifecycle events are **framework-emitted** but use **guild-defined type names** as their namespace. A guild with a `task` writ type gets `task.ready` events. Once the Clerk plugin claims these names through its `events` kit contribution, they become framework-owned in the merged event set:
+Writ lifecycle events are **framework-emitted** but use **guild-defined type names and state names** as their namespace. The Clockworks declares the full Cartesian product (every registered type × every declared state) at apparatus `start()` via its `events` kit contribution; once that declaration lands, the names are framework-owned in the merged event set:
 
 - The framework emits them freely. `ClockworksApi.emit()` bypasses `validateSignal` entirely (advisory-only enforcement on the unprivileged emit channels).
-- An anima calling `signal('task.ready')` is **rejected** by `validateSignal` because the merged event set marks the name as plugin-declared (sticky `pluginDeclared`).
+- An anima calling `signal('writ.mandate.open')` (or any other declared writ-lifecycle name) is **rejected** by `validateSignal` because the merged set marks the name as plugin-declared (sticky `pluginDeclared`).
 
 This asymmetry is a feature: the framework controls writ lifecycle events; animas cannot forge them.
 
@@ -86,12 +80,12 @@ Emitted by the dispatcher (`clockworks/src/dispatcher.ts`) and the scheduler (`c
 
 | Event | Payload | Emitter | When |
 |-------|---------|---------|------|
-| `standing-order.failed` | `{ standingOrder, triggeringEvent: { id, name }, error }` | `framework` | A standing order execution fails — the relay throws, or the named relay is not registered. The `error` string is the same one written to the dispatch row's `error` column |
-| `schedule.fired` | `{ standingOrder, orderIndex, fireTime }` | `framework` | The Clockworks scheduler fires a time-driven standing order. Emitted once per fire by the daemon's scheduler pass; the row is written with `processed: true` so the event-sweep does not re-fire it |
+| `clockworks.standing-order.failed` | `{ standingOrder, triggeringEvent: { id, name }, error }` | `framework` | A standing order execution fails — the relay throws, or the named relay is not registered. The `error` string is the same one written to the dispatch row's `error` column |
+| `clockworks.timer` | `{ standingOrder, orderIndex, fireTime }` | `framework` | The Clockworks scheduler fires a time-driven standing order. Emitted once per fire by the daemon's scheduler pass; the row is written with `processed: true` so the event-sweep does not re-fire it |
 
-**Loop guard:** if a `standing-order.failed` event was itself triggered by another `standing-order.failed`, the dispatcher skips processing to prevent infinite cascades.
+**Loop guard:** if a `clockworks.standing-order.failed` event was itself triggered by another `clockworks.standing-order.failed`, the dispatcher skips processing to prevent infinite cascades.
 
-**Scheduled-fire bookkeeping:** the scheduler writes each `schedule.fired` row with `processed: true` so the dispatcher's event-sweep does not pick it up. The row is the durable record of the fire; the matching `event_dispatches` row records the relay invocation.
+**Scheduled-fire bookkeeping:** the scheduler writes each `clockworks.timer` row with `processed: true` so the dispatcher's event-sweep does not pick it up. The row is the durable record of the fire; the matching `event_dispatches` row records the relay invocation.
 
 ### Tool Events
 
@@ -104,33 +98,31 @@ Emitted by `cli/src/commands/plugin-bootstrap-emit.ts` after a successful `nsg p
 
 The events use the `tool.` namespace because plugins are the framework's tool-delivery mechanism — implements, engines, curricula, and temperaments all flow through the plugin contract.
 
-### Migration Events
+### Renamed/removed in this release
 
-Emitted by `clockworks/src/clockworks.ts` (`emitMigrationsApplied`) at apparatus `start()`. Idempotency is keyed off the events book itself — each `(pluginId, book)` pair fires exactly once, ever. First boot fires one event per declared book; subsequent boots fire only for newly-introduced books.
+The C2 commission migrated Clockworks's event vocabulary onto the kit-contribution mechanism. Operators with `guild.json` standing orders bound to the legacy names below should update their bindings — bindings to deleted names silently stop firing, and bindings to renamed names will not match the new persisted event-row `name` field.
 
-| Event | Payload | Emitter | When |
-|-------|---------|---------|------|
-| `migration.applied` | `{ pluginId, book, indexes }` | `framework` | A `(pluginId, book)` schema is observed for the first time. `indexes` is the declared index list from the book's schema contribution (an array of strings or string arrays) |
+| Before | After | Notes |
+|--------|-------|-------|
+| `standing-order.failed` | `clockworks.standing-order.failed` | Renamed; payload shape unchanged |
+| `schedule.fired` | `clockworks.timer` | Renamed; payload shape unchanged. The row is still written with `processed: true` |
+| `commission.posted` | *(deleted)* | Use `writ.mandate.open` instead — fires every time a root mandate enters the active phase |
+| `commission.state.changed` | *(deleted)* | Use the matching `writ.mandate.<status>` row for the target phase |
+| `commission.sealed` | *(deleted)* | Use `writ.mandate.completed` |
+| `commission.completed` | *(deleted)* | Use `writ.mandate.completed` |
+| `commission.failed` | *(deleted)* | Use `writ.mandate.failed`. The lifecycle payload does not include `resolution`; subscribers that need it read the writ from the Clerk |
+| `guild.initialized` | *(deleted)* | No replacement. A fresh Clockworks `start()` now writes zero rows of its own to the events book |
+| `migration.applied` | *(deleted)* | No replacement. Stacks reconciles `CREATE … IF NOT EXISTS` silently; subscribers needing migration visibility consult Stacks directly |
 
-The catalog defines this event by name; the chosen payload identifies the schema that came into existence plus its disambiguating index list. Because Stacks' `reconcileSchemas` runs `CREATE … IF NOT EXISTS` silently, we use the events book itself as the ledger of "what we've already announced" rather than asking Stacks for a delta.
-
-### Guild Events
-
-Emitted by `clockworks/src/clockworks.ts` at apparatus `start()`. Idempotency is keyed off the events book — the persisted row is itself the marker.
-
-| Event | Payload | Emitter | When |
-|-------|---------|---------|------|
-| `guild.initialized` | `null` | `framework` | First Clockworks boot for this guild. `start()` queries the events book for any prior `guild.initialized` row and emits one if absent; subsequent boots find the row and skip |
-
-The payload is `null` — the event is a marker, not a record.
+Renaming `commissionId` on writ-lifecycle event payloads to a more precise name (e.g. `rootWritId`) is a deferred follow-up; the field name is preserved verbatim so existing subscribers continue to work.
 
 ### Reserved Namespaces
 
 There is no hardcoded reserved-namespace list. Names are framework-owned per-event, claimed by a plugin's `events` kit contribution at apparatus `start()`. The merged event set tags each entry with a `pluginDeclared` flag that stays sticky-true once any plugin has claimed the name; `signal` surfaces (the anima `signal` tool, the operator `nsg signal` CLI) reject any emit on a `pluginDeclared` name even when an operator's `guild.json` entry now provides the active spec.
 
-By convention, framework plugins claim per-namespace prefixes via their `events` kit contributions — for example, the Clerk's writ-lifecycle and commission events under `<type>.{ready,completed,stuck,failed}` and `commission.*`, the Animator's `session.*` and `anima.*`, the Clockworks's own `schedule.*`, `standing-order.*`, `migration.*`, and `guild.*`, and the framework CLI's `tool.*` plugin-bootstrap events. The exact catalog of plugin-claimed names lives in each plugin's `supportKit.events` slot — there is no second copy to drift against.
+By convention, framework plugins claim per-namespace prefixes via their `events` kit contributions — the Clockworks claims its own `clockworks.*` intrinsic events (`clockworks.standing-order.failed`, `clockworks.timer`) plus the universal `writ.<type>.<status>` family (one entry per `(writType, state)` pair currently registered with the Clerk); the Animator claims `session.*`, `anima.*`, and `commission.session.ended`; the framework CLI claims `tool.*` plugin-bootstrap events. The exact catalog of plugin-claimed names lives in each plugin's `supportKit.events` slot — there is no second copy to drift against.
 
-**Writ lifecycle events** (e.g. `mandate.ready`, `task.completed`) use guild-defined type names as namespaces, but the Clerk's `events` kit declares them per writ type as the type registry changes. They are still framework-only — `validateSignal` rejects them via the merged-set framework-owned check.
+**Writ lifecycle events** (e.g. `writ.mandate.open`, `writ.task.queued`) are declared by the Clockworks's own `events` kit contribution as a state-walk over Clerk's writ-type registry. They are still framework-only — `validateSignal` rejects them via the merged-set framework-owned check.
 
 **`book.` is intentionally absent.** The CDC auto-wiring emits `book.<ownerId>.<bookName>.<verb>` events from framework code (see [CDC Events](#cdc-events) below), but the prefix is **not** reserved — the validator does not block animas from signalling spoofed `book.*` names. This is an as-is gap in the validator; closing it is a separate code-only follow-up. Operators relying on `book.*` events should treat the namespace as authoritative-by-convention rather than authoritative-by-validator.
 
@@ -242,22 +234,28 @@ export default {
 };
 ```
 
-The function form lets a plugin compute its event set from runtime data — the Clerk uses this to emit one entry per registered writ type:
+The function form lets a plugin compute its event set from runtime data. The Clockworks itself uses this pattern to declare the writ-lifecycle vocabulary — it walks every `(writType, state)` pair currently registered with the Clerk and produces one `writ.<type>.<status>` entry per pair, so the suffix list is open-ended (it grows as plugins register types with new states):
 
 ```typescript
 // In an apparatus that produces a writ-type-derived event set:
 events: (ctx) => {
   const events: Record<string, EventSpec> = {};
-  for (const writType of registeredTypes) {
-    for (const suffix of ['ready', 'completed', 'stuck', 'failed']) {
-      events[`${writType}.${suffix}`] = {
-        description: `${writType} writ entered ${suffix} phase`,
+  const clerk = guild().apparatus<ClerkApi>('clerk');
+  for (const writType of clerk.listWritTypes()) {
+    // Walk the type's full state list — every state, including initial
+    // and terminal — so the universal `writ.<type>.<status>` contract
+    // covers every transition the lifecycle observer can fire.
+    for (const state of writType.states) {
+      events[`writ.${writType.name}.${state.name}`] = {
+        description: `A writ of type "${writType.name}" entered the "${state.name}" phase.`,
       };
     }
   }
   return events;
 },
 ```
+
+Plugins that need a similar runtime-derived event set follow the same shape: read whatever runtime registry your contribution depends on (via the guild singleton), iterate, and return a flat `Record<string, EventSpec>`. Throws inside the function fail apparatus boot loud — no silent fallback.
 
 Names claimed by a plugin's `events` kit are framework-owned. The emitter calls `ClockworksApi.emit(name, payload, '<plugin-id>')` directly — `emit()` bypasses `validateSignal`, so the plugin's own emit sites are not blocked by the framework-owned check.
 
@@ -315,7 +313,7 @@ The dispatcher imports the relay by name from the registered relay set, calls it
 { "schedule": "@every 30s", "run": "reckoner-tick" }
 ```
 
-The scheduler synthesises a `schedule.fired` event row per fire (with `processed: true`) and dispatches the named relay through the same plumbing the event-driven path uses. Two schedule syntaxes are accepted: standard 5-field unix cron (`m h dom mon dow`) and `@every <N><s|m|h>`. See [The Clockworks → Scheduled Standing Orders](../architecture/clockworks.md#scheduled-standing-orders) for the full grammar and missed-fire semantics.
+The scheduler synthesises a `clockworks.timer` event row per fire (with `processed: true`) and dispatches the named relay through the same plumbing the event-driven path uses. Two schedule syntaxes are accepted: standard 5-field unix cron (`m h dom mon dow`) and `@every <N><s|m|h>`. See [The Clockworks → Scheduled Standing Orders](../architecture/clockworks.md#scheduled-standing-orders) for the full grammar and missed-fire semantics.
 
 ### Forwarding Params (`with:`)
 
@@ -349,7 +347,7 @@ The stdlib `summon-relay` (shipped with the Clockworks apparatus's `supportKit.r
 
 ```json
 {
-  "on": "mandate.ready",
+  "on": "writ.mandate.open",
   "run": "summon-relay",
   "with": {
     "role": "artificer",
@@ -375,17 +373,17 @@ When the dispatcher processes an event:
 
 1. Find all standing orders where `on:` matches the event name (string equality only).
 2. For each matching order, in registration order:
-   a. Resolve the relay named in `run:`. An unresolved relay writes an `error` dispatch row and emits `standing-order.failed`.
+   a. Resolve the relay named in `run:`. An unresolved relay writes an `error` dispatch row and emits `clockworks.standing-order.failed`.
    b. Invoke the relay's handler with `(guildEvent, { home, params })` inside a per-handler try/catch.
    c. Write a dispatch row with `started_at`, `ended_at`, `status`, and `error`.
-   d. If the handler threw, emit `standing-order.failed` with the same error string.
+   d. If the handler threw, emit `clockworks.standing-order.failed` with the same error string.
 3. Mark the event as processed.
 
 A throw from one relay never blocks sibling relays or sibling events.
 
 ### No-Provider Behaviour for `summon-relay`
 
-The Animator and the Loom are declared under Clockworks's `recommends`, not `requires`. If a `summon-relay` standing order fires while either dependency is missing, the relay throws a clear error naming the missing apparatus — the dispatcher writes an `error` dispatch row and emits `standing-order.failed`. Guilds that use Clockworks for non-anima relays can install the apparatus without dragging in the session-launch stack.
+The Animator and the Loom are declared under Clockworks's `recommends`, not `requires`. If a `summon-relay` standing order fires while either dependency is missing, the relay throws a clear error naming the missing apparatus — the dispatcher writes an `error` dispatch row and emits `clockworks.standing-order.failed`. Guilds that use Clockworks for non-anima relays can install the apparatus without dragging in the session-launch stack.
 
 ---
 
@@ -402,20 +400,20 @@ The default commission flow: patron posts → mandate dispatched → session run
   "clockworks": {
     "standingOrders": [
       {
-        "on": "mandate.ready",
+        "on": "writ.mandate.open",
         "run": "summon-relay",
         "with": {
           "role": "artificer",
           "prompt": "You have been assigned a commission.\n\n{{writ.title}}\n\n{{writ.body}}"
         }
       },
-      { "on": "commission.completed", "run": "cleanup-worktree" }
+      { "on": "writ.mandate.completed", "run": "cleanup-worktree" }
     ]
   }
 }
 ```
 
-When a commission is posted, the framework creates a `mandate` writ and emits `mandate.ready`. The standing order summons an artificer through `summon-relay`. When the artificer finishes, the mandate completes (or enters `pending` if child writs exist), `commission.completed` fires (alongside `commission.sealed`), and the cleanup relay runs. (Subscribe to one of `commission.completed` or `commission.sealed`, not both — they fire from the same transition; see the [Commission Events](#commission-events) cross-note.)
+When a commission is posted, the framework creates a `mandate` writ and the writ-lifecycle observer fires `writ.mandate.new` followed by `writ.mandate.open` once the writ is published. The standing order summons an artificer through `summon-relay`. When the artificer finishes, the mandate completes (or enters its active phase if child writs exist), `writ.mandate.completed` fires, and the cleanup relay runs.
 
 ### Multi-Level Writ Decomposition
 
@@ -426,7 +424,7 @@ A sage decomposes a mandate into child `task` writs, each dispatched independent
   "clockworks": {
     "standingOrders": [
       {
-        "on": "mandate.ready",
+        "on": "writ.mandate.open",
         "run": "summon-relay",
         "with": {
           "role": "sage",
@@ -434,20 +432,20 @@ A sage decomposes a mandate into child `task` writs, each dispatched independent
         }
       },
       {
-        "on": "task.ready",
+        "on": "writ.task.open",
         "run": "summon-relay",
         "with": {
           "role": "artificer",
           "prompt": "{{writ.title}}\n\n{{writ.body}}"
         }
       },
-      { "on": "commission.completed", "run": "cleanup-worktree" }
+      { "on": "writ.mandate.completed", "run": "cleanup-worktree" }
     ]
   }
 }
 ```
 
-The sage receives the mandate, creates `task` child writs, and finishes its session. The mandate enters `pending`. Each `task.ready` event summons an artificer. When all tasks complete, the mandate auto-transitions to `completed` → fires `commission.completed` → triggers cleanup.
+The sage receives the mandate, creates `task` child writs, and finishes its session. The mandate enters its active phase. Each `writ.task.open` event summons an artificer. When all tasks complete, the mandate auto-transitions to `completed` → fires `writ.mandate.completed` → triggers cleanup.
 
 ### Custom Writ Types
 
@@ -463,7 +461,7 @@ Guilds declare custom writ types in `guild.json` to match their workflow vocabul
 }
 ```
 
-Each type gets its own lifecycle events (`task.ready`, `feature.completed`, `bug.failed`) and can be wired to different standing orders. Multiple standing orders can match the same event — they execute in registration order.
+Each type gets its own writ-lifecycle events (`writ.task.<status>`, `writ.feature.<status>`, `writ.bug.<status>`) declared via the Clockworks's `events` kit walk over Clerk's writ-type registry; standing orders bind to the specific `(type, state)` pair the guild cares about. Multiple standing orders can match the same event — they execute in registration order.
 
 ### Periodic Engine Tick
 
@@ -479,7 +477,7 @@ A reckoner (or any other periodic apparatus) wires its tick through a scheduled 
 }
 ```
 
-Each fire writes a `schedule.fired` event row (with `processed: true`) and a matching dispatch row, so the operator can audit the cadence by querying the events book.
+Each fire writes a `clockworks.timer` event row (with `processed: true`) and a matching dispatch row, so the operator can audit the cadence by querying the events book.
 
 ### Reacting to a Custom Event
 

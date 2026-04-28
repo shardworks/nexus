@@ -160,12 +160,10 @@ describe('Clockworks — skeleton', () => {
       'event_dispatches',
     );
 
-    // The events book has exactly one row from the boot-time
-    // `guild.initialized` emission. The dispatches book is still empty
-    // until the runner / dispatcher commission claims it.
-    const initialized = await events.find({ where: [['name', '=', 'guild.initialized']] });
-    assert.equal(initialized.length, 1);
-    assert.equal(await events.count(), 1);
+    // A fresh start() emits no rows of its own — the boot-time
+    // `guild.initialized` and per-book `migration.applied` emissions
+    // were removed in C2. Both books are empty.
+    assert.equal(await events.count(), 0);
     assert.equal(await dispatches.count(), 0);
   });
 
@@ -720,18 +718,9 @@ async function buildDispatchFixture(
   const clockworks = clockworksPlugin.apparatus.provides as ClockworksApi;
   apparatusMap.set('clockworks', clockworks);
 
-  // Drain the boot-time `guild.initialized` row(s) so the dispatcher
-  // tests below see an empty pending queue. The skeleton-suite fixture
-  // (`buildFixture` above) deliberately keeps this row and asserts on
-  // it; this dispatch-suite fixture must not — its tests count rows
-  // and queue length, and a stray boot event inflates both.
+  // A fresh start() emits no boot-time rows, so no scrub pass is
+  // needed here — the events book is empty when this fixture returns.
   const eventsBook = stacks.book<EventDoc>('clockworks', 'events');
-  const bootRows = await eventsBook.find({
-    where: [['name', '=', 'guild.initialized']],
-  });
-  for (const row of bootRows) {
-    await eventsBook.delete(row.id);
-  }
 
   return {
     stacks,
@@ -909,17 +898,17 @@ describe('Clockworks — processEvents integration', () => {
 
   it('end-to-end SOF emit + loop-guard cycle through the apparatus surface', async () => {
     // Two relays — both throw — and two standing orders. The second
-    // order is bound to `standing-order.failed`, so when SOF#1 is
-    // dispatched its handler will also throw, emitting SOF#2. Per D9
+    // order is bound to `clockworks.standing-order.failed`, so when SOF#1
+    // is dispatched its handler will also throw, emitting SOF#2. Per D9
     // and the architecture doc, the loop-guard only engages on
     // SECOND-generation SOFs (whose `payload.triggeringEvent.name`
-    // equals `'standing-order.failed'`). It therefore takes three
-    // sweeps to drive the full cascade-then-suppress cycle:
+    // equals `'clockworks.standing-order.failed'`). It therefore takes
+    // three sweeps to drive the full cascade-then-suppress cycle:
     //
     //   sweep 1: process the original event → boomA throws → SOF#1
     //            emitted (triggeringEvent.name = 'demo.cycle').
     //   sweep 2: process SOF#1 → boomB throws → SOF#2 emitted
-    //            (triggeringEvent.name = 'standing-order.failed').
+    //            (triggeringEvent.name = 'clockworks.standing-order.failed').
     //   sweep 3: process SOF#2 → loop-guard engages, `'skipped'` row
     //            written, no fresh SOF emitted (D14).
     const boomA = relay({
@@ -933,7 +922,7 @@ describe('Clockworks — processEvents integration', () => {
     const fix = await buildDispatchFixture({
       standingOrders: [
         { on: 'demo.cycle', run: 'boomA' },
-        { on: 'standing-order.failed', run: 'boomB' },
+        { on: 'clockworks.standing-order.failed', run: 'boomB' },
       ],
       supportKitRelays: [boomA, boomB],
     });
@@ -954,7 +943,7 @@ describe('Clockworks — processEvents integration', () => {
     // A fresh SOF event appears in the events book with the spec'd
     // payload shape and emitter 'framework' (acceptance signal).
     const sofAfterSweep1 = await fix.events.find({
-      where: [['name', '=', 'standing-order.failed']],
+      where: [['name', '=', 'clockworks.standing-order.failed']],
       orderBy: [['id', 'asc']],
     });
     assert.equal(sofAfterSweep1.length, 1);
@@ -978,7 +967,7 @@ describe('Clockworks — processEvents integration', () => {
     // ── Sweep 2 ────────────────────────────────────────────────────
     // Process SOF#1 — boomB throws. Loop-guard does NOT engage because
     // SOF#1's payload.triggeringEvent.name === 'demo.cycle'. A fresh
-    // SOF#2 is emitted whose triggeringEvent.name === 'standing-order.failed'.
+    // SOF#2 is emitted whose triggeringEvent.name === 'clockworks.standing-order.failed'.
     const summary2 = await fix.clockworks.processEvents();
     assert.deepEqual(summary2, {
       processedEvents: 1,
@@ -987,7 +976,7 @@ describe('Clockworks — processEvents integration', () => {
       skipped: 0,
     });
     const sofAfterSweep2 = await fix.events.find({
-      where: [['name', '=', 'standing-order.failed']],
+      where: [['name', '=', 'clockworks.standing-order.failed']],
       orderBy: [['id', 'asc']],
     });
     assert.equal(sofAfterSweep2.length, 2);
@@ -997,7 +986,7 @@ describe('Clockworks — processEvents integration', () => {
     // on chronological order here).
     const secondGenSof = sofAfterSweep2.find((e) => {
       const p = e.payload as { triggeringEvent?: { name?: string } };
-      return p?.triggeringEvent?.name === 'standing-order.failed';
+      return p?.triggeringEvent?.name === 'clockworks.standing-order.failed';
     });
     assert.ok(secondGenSof, 'a second-generation SOF must be present');
 
@@ -1013,7 +1002,7 @@ describe('Clockworks — processEvents integration', () => {
       skipped: 1,
     });
     const sofAfterSweep3 = await fix.events.find({
-      where: [['name', '=', 'standing-order.failed']],
+      where: [['name', '=', 'clockworks.standing-order.failed']],
       orderBy: [['id', 'asc']],
     });
     // Cap the chain at depth 2 (D14) — sweep 3 emits no third SOF.

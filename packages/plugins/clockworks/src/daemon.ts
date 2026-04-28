@@ -373,7 +373,7 @@ export interface ForegroundDaemonInputs {
    * Function that runs one tick of the scheduler pass over the
    * in-memory schedule table. In production this is
    * `clockworks.processSchedules`. The pass runs *before* the
-   * event-processing pass each tick so a `schedule.fired` event is
+   * event-processing pass each tick so a `clockworks.timer` event is
    * persisted and any subsequent operator-emitted events from inside
    * the scheduled handler are picked up by the same tick's
    * event-processing pass (commission decision D18).

@@ -54,7 +54,7 @@ export default {
 1. **Default export is a kit.** The default export must be an object with a `relays` array. The Clockworks apparatus reads each kit's `relays` contribution at startup and registers each relay by name.
 2. **Sync or async.** Handlers can be sync or async. The dispatcher always `await`s the call.
 3. **Event may be null.** When invoked directly (not via a standing order), `event` is `null`. Guard accordingly.
-4. **Throw for errors.** If the handler throws, the Clockworks dispatcher catches the error, records a failed dispatch row, and signals `standing-order.failed`.
+4. **Throw for errors.** If the handler throws, the Clockworks dispatcher catches the error, records a failed dispatch row, and signals `clockworks.standing-order.failed`.
 5. **Use `home` for everything.** The guild root is your entry point to all guild state — books, config, file system.
 6. **Params are untyped.** `params` is `Record<string, unknown>` — cast to expected types in your handler. Provide sensible defaults.
 7. **Names are unique, first-writer-wins.** Two kits cannot register a relay under the same name. The dispatcher logs a warning and keeps the first-registered handler. User kits are wired ahead of stdlib kits, so a user kit can override a stdlib relay by reusing its name.
@@ -119,7 +119,7 @@ Relays are connected to events through standing orders in `guild.json`:
   "clockworks": {
     "standingOrders": [
       { "on": "session.ended", "run": "my-relay" },
-      { "on": "task.completed", "run": "my-relay" }
+      { "on": "writ.task.completed", "run": "my-relay" }
     ]
   }
 }
@@ -159,7 +159,7 @@ A standing order can swap its `on:` trigger for a `schedule:` expression to fire
 { "schedule": "@every 1h", "run": "tech-debt-scan", "with": { "depth": "full" } }
 ```
 
-Two syntaxes are accepted: standard 5-field unix cron (`m h dom mon dow`) and `@every <N><s|m|h>`. The relay receives a synthesized `schedule.fired` event as its `event` argument; everything else (params, error semantics, dispatch rows) is shared with the event-driven path. See [The Clockworks → Scheduled Standing Orders](../architecture/clockworks.md#scheduled-standing-orders).
+Two syntaxes are accepted: standard 5-field unix cron (`m h dom mon dow`) and `@every <N><s|m|h>`. The relay receives a synthesized `clockworks.timer` event as its `event` argument; everything else (params, error semantics, dispatch rows) is shared with the event-driven path. See [The Clockworks → Scheduled Standing Orders](../architecture/clockworks.md#scheduled-standing-orders).
 
 ### Registration in `guild.json`
 
@@ -218,7 +218,7 @@ handler: async (event, { home }) => {
 import { completeWrit } from '@shardworks/nexus-core';
 
 handler: async (event, { home }) => {
-  // Complete a writ — this automatically signals {type}.completed
+  // Complete a writ — the writ-lifecycle observer fires writ.<type>.completed
   completeWrit(home, writId);
 }
 ```
@@ -238,27 +238,27 @@ handler: async (event, { home }) => {
 }
 ```
 
-**Important:** Writ lifecycle events (like `task.completed`) are signaled automatically by `completeWrit()` and `failWrit()`. Don't double-signal — just call the appropriate function and the event fires.
+**Important:** Writ lifecycle events (e.g. `writ.task.completed`, `writ.mandate.failed`) are signaled automatically by the Clockworks's writ-lifecycle observer when the underlying writ transitions phase. Don't double-signal — call the appropriate writ-transition helper (`completeWrit()`, `failWrit()`, etc.) and the event fires from the observer.
 
 For custom events, you must declare them in `guild.json` first if animas need to signal them. Relays can signal framework events directly (they call `signalEvent()`, which doesn't go through `validateCustomEvent()`).
 
 ## Error handling
 
-### The `standing-order.failed` safety net
+### The `clockworks.standing-order.failed` safety net
 
 When a relay handler throws, the Clockworks dispatcher:
 
 1. Catches the error
 2. Records a failed dispatch row in the `event_dispatches` book (with the error message)
-3. Signals `standing-order.failed` with the original event, the standing order, and the error
+3. Signals `clockworks.standing-order.failed` with the original event, the standing order, and the error
 
-You can wire a standing order to `standing-order.failed` for alerting:
+You can wire a standing order to `clockworks.standing-order.failed` for alerting:
 
 ```json
-{ "on": "standing-order.failed", "run": "notify-patron" }
+{ "on": "clockworks.standing-order.failed", "run": "notify-patron" }
 ```
 
-**Loop guard:** If a relay invoked in response to a `standing-order.failed` event itself fails, the dispatcher suppresses the second-order failure (the dispatch row is recorded with `status: 'skipped'` and a `loop-guard:` reason) — error handlers handling errors do not cascade.
+**Loop guard:** If a relay invoked in response to a `clockworks.standing-order.failed` event itself fails, the dispatcher suppresses the second-order failure (the dispatch row is recorded with `status: 'skipped'` and a `loop-guard:` reason) — error handlers handling errors do not cascade.
 
 ### Best practices
 
@@ -333,7 +333,7 @@ describe('my-relay', () => {
     await myRelay.handler(
       {
         id: 'evt-test',
-        name: 'task.completed',
+        name: 'writ.task.completed',
         payload: { writId: writ.id },
         emitter: 'framework',
         firedAt: new Date().toISOString(),
@@ -355,7 +355,7 @@ import { guild, signalEvent } from '@shardworks/nexus-core';
 import type { ClockworksApi } from '@shardworks/clockworks-apparatus';
 
 // Signal an event
-signalEvent(home, 'task.completed', { writId: 'wrt-test' }, 'test');
+signalEvent(home, 'writ.task.completed', { writId: 'wrt-test' }, 'test');
 
 // Drain the event queue through the dispatcher (requires standing orders in guild.json)
 const clockworks = guild().apparatus<ClockworksApi>('clockworks');
@@ -380,7 +380,7 @@ export default {
       handler: async (event, { home }) => {
         if (!event) return;
 
-        // This relay responds to mandate.completed events
+        // This relay responds to writ.mandate.completed events
         const payload = event.payload as { writId?: string; commissionId?: string } | null;
         if (!payload?.writId) return;
 
@@ -406,7 +406,7 @@ Wire it in `guild.json`:
 {
   "clockworks": {
     "standingOrders": [
-      { "on": "mandate.completed", "run": "mandate-notify" }
+      { "on": "writ.mandate.completed", "run": "mandate-notify" }
     ]
   }
 }

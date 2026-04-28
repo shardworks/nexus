@@ -49,6 +49,7 @@
 import { generateId } from '@shardworks/nexus-core';
 import type { Book, BookQuery, WhereClause } from '@shardworks/stacks-apparatus';
 
+import { STANDING_ORDER_FAILED_EVENT } from './event-names.ts';
 import type { GuildEvent, RelayContext, RelayDefinition } from './relay.ts';
 import { validateStandingOrders } from './standing-order-validator.ts';
 import type {
@@ -74,7 +75,7 @@ export type { DispatchObservation } from './types.ts';
  *   - `skipped` — subset of `dispatches` whose `status` is
  *     `'skipped'`. Surfaced as a distinct counter so operators can
  *     see loop-guard activity without flipping a non-zero exit code
- *     on every cascade-suppressed `standing-order.failed` event.
+ *     on every cascade-suppressed `clockworks.standing-order.failed` event.
  */
 export interface DispatchSummary {
   processedEvents: number;
@@ -134,7 +135,7 @@ export interface DispatchSweepInputs {
   /**
    * Optional callback invoked once per real failure (thrown relay or
    * unresolved relay) so the apparatus can re-emit the failure as a
-   * `standing-order.failed` event into the events book. The dispatcher
+   * `clockworks.standing-order.failed` event into the events book. The dispatcher
    * never invokes this for loop-guard `'skipped'` rows — emitting on a
    * skip would re-open the cascade the guard exists to suppress.
    *
@@ -332,7 +333,7 @@ async function dispatchOrder(args: DispatchOrderInputs): Promise<void> {
   // convention (`startedAt = endedAt = now()`, durationMs = 0).
   if (isLoopGuardEvent) {
     const ts = now();
-    const reason = 'loop-guard: triggering event was a standing-order.failed';
+    const reason = `loop-guard: triggering event was a ${STANDING_ORDER_FAILED_EVENT}`;
     await writeDispatchRow({
       dispatches,
       eventId: eventDoc.id,
@@ -498,7 +499,7 @@ async function signalFailure(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(
-      `[clockworks] failed to emit standing-order.failed for event "${payload.triggeringEvent.id}": ${message}`,
+      `[clockworks] failed to emit ${STANDING_ORDER_FAILED_EVENT} for event "${payload.triggeringEvent.id}": ${message}`,
     );
   }
 }
@@ -517,7 +518,7 @@ export function isStandingOrderFailedTrigger(payload: unknown): boolean {
   const triggering = (payload as { triggeringEvent?: unknown }).triggeringEvent;
   if (typeof triggering !== 'object' || triggering === null) return false;
   const name = (triggering as { name?: unknown }).name;
-  return name === 'standing-order.failed';
+  return name === STANDING_ORDER_FAILED_EVENT;
 }
 
 interface WriteDispatchInputs {

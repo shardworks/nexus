@@ -1022,15 +1022,18 @@ The Clockworks becomes a recommended (not required) dependency. The Clerk checks
 
 ### Lifecycle Events
 
-The Clerk emits events into the Clockworks event stream at each phase transition. Event names use the writ's `type` as the namespace, matching the framework event catalog.
+The Clockworks's writ-lifecycle observer fires one `writ.<type>.<status>` event per writ status transition by reading the Clerk's writs CDC stream — there is no Clerk-owned emit path. The Clerk's job is to drive the transitions cleanly; the observer's job is to fan them onto the events book. Names use the writ's `type` and the target `phase` verbatim.
 
-| Transition | Event | Payload |
-|-----------|-------|---------|
-| Commission posted | `commission.posted` | `{ writId, title, type, codex }` |
-| Writ signaled open | `{type}.open` | `{ writId, title, type, codex }` |
-| `open → completed` | `{type}.completed` | `{ writId, resolution }` |
-| `open → failed` | `{type}.failed` | `{ writId, resolution }` |
-| `* → cancelled` | `{type}.cancelled` | `{ writId, resolution }` |
+| Transition | Event |
+|-----------|-------|
+| Initial creation (entry into the type's initial state) | `writ.<type>.<initial-state>` (e.g. `writ.mandate.new`) |
+| Entry into the type's active state | `writ.<type>.<active-state>` (e.g. `writ.mandate.open`) |
+| `<active> → completed` | `writ.<type>.completed` |
+| `<active> → failed` | `writ.<type>.failed` |
+| `<active> → stuck` | `writ.<type>.stuck` |
+| `* → cancelled` | `writ.<type>.cancelled` |
+
+Payload is `{ writId, writType, phase, commissionId, title, parentId? }` for every row — `commissionId` is derived by walking `parentId` to the root. See [Event Catalog → Writ Lifecycle Events](../../reference/event-catalog.md#writ-lifecycle-events) for the full contract.
 
 These events are what standing orders bind to. The canonical dispatch pattern:
 
@@ -1038,7 +1041,7 @@ These events are what standing orders bind to. The canonical dispatch pattern:
 {
   "clockworks": {
     "standingOrders": [
-      { "on": "mandate.open", "summon": "artificer", "prompt": "Read your writ with writ-show and fulfill the commission. Writ id: {{writ.id}}" }
+      { "on": "writ.mandate.open", "run": "summon-relay", "with": { "role": "artificer", "prompt": "Read your writ with writ-show and fulfill the commission. Writ id: {{writ.id}}" } }
     ]
   }
 }
@@ -1075,12 +1078,12 @@ When Sage animas and the Clockworks are available, the intake pipeline gains a p
 ```
 ├─ 1. Patron calls commission-post
 ├─ 2. Clerk creates mandate writ (phase: open)
-├─ 3. Clerk emits commission.posted
-├─ 4. Standing order on commission.posted summons a Sage
+├─ 3. Clockworks's writ-lifecycle observer fires writ.mandate.open
+├─ 4. Standing order on writ.mandate.open summons a Sage
 ├─ 5. Sage reads the mandate, creates child writs via post(parentId)
-├─ 6. Parent stays in open, children created in open phase
-├─ 7. Clerk emits {childType}.open for each child
-├─ 8. Standing orders on {childType}.open dispatch workers
+├─ 6. Parent stays in open, children created in their initial phase
+├─ 7. Clockworks fires writ.<childType>.<initial-state> for each child
+├─ 8. Standing orders on writ.<childType>.<active> dispatch workers
 ├─ 9. As children complete, parent remains in open
 └─ 10. Parent is completed explicitly when all work is done
 ```

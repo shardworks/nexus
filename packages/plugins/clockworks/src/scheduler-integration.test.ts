@@ -12,7 +12,7 @@
  *   - multiple-due orders fire in `orderIndex` ascending sequence
  *   - persisted `events` row carries `processed: true` and the D2 payload
  *   - persisted `dispatches` row goes through the existing helper shape
- *   - thrown relay produces a `standing-order.failed` event row via the
+ *   - thrown relay produces a `clockworks.standing-order.failed` event row via the
  *     same SOF callback the dispatcher uses
  *   - emitted events from a scheduled handler are picked up by the
  *     same tick's event-processing pass (D18)
@@ -213,7 +213,7 @@ describe('Scheduler integration — boot-time validation', () => {
 describe('Scheduler integration — @every', () => {
   afterEach(() => clearGuild());
 
-  it('fires once after the first interval, persists schedule.fired and a dispatch row', async () => {
+  it('fires once after the first interval, persists clockworks.timer and a dispatch row', async () => {
     let fires = 0;
     const tickRelay = relay({
       name: 'reckoner-tick',
@@ -237,10 +237,10 @@ describe('Scheduler integration — @every', () => {
     assert.equal(summary.errors, 0);
     assert.equal(fires, 1);
 
-    // Events book contains a `schedule.fired` row with processed=true
+    // Events book contains a `clockworks.timer` row with processed=true
     // and the D2 payload shape.
     const fired = await fix.events.find({
-      where: [['name', '=', 'schedule.fired']],
+      where: [['name', '=', 'clockworks.timer']],
     });
     assert.equal(fired.length, 1);
     assert.equal(fired[0]!.processed, true);
@@ -299,7 +299,7 @@ describe('Scheduler integration — multi-order ordering', () => {
 describe('Scheduler integration — failure path', () => {
   afterEach(() => clearGuild());
 
-  it('thrown relay produces an error dispatch row and a standing-order.failed event row', async () => {
+  it('thrown relay produces an error dispatch row and a clockworks.standing-order.failed event row', async () => {
     const broken = relay({
       name: 'broken',
       handler: () => { throw new Error('forced-failure'); },
@@ -327,7 +327,7 @@ describe('Scheduler integration — failure path', () => {
     // callback the dispatcher uses, so `processed:false` on creation
     // (the apparatus's emit() default).
     const sofRows = await fix.events.find({
-      where: [['name', '=', 'standing-order.failed']],
+      where: [['name', '=', 'clockworks.standing-order.failed']],
     });
     assert.equal(sofRows.length, 1);
     assert.equal(sofRows[0]!.processed, false);
@@ -336,7 +336,7 @@ describe('Scheduler integration — failure path', () => {
       triggeringEvent: { name: string };
       error: string;
     };
-    assert.equal(sofPayload.triggeringEvent.name, 'schedule.fired');
+    assert.equal(sofPayload.triggeringEvent.name, 'clockworks.timer');
     assert.equal(sofPayload.error, 'forced-failure');
   });
 });

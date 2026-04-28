@@ -241,7 +241,7 @@ describe('Clockworks — emit()', () => {
 
   it('coerces undefined payload to null', async () => {
     const fix = await buildFixture();
-    const id = await fix.clockworks.emit('guild.initialized', undefined, 'framework');
+    const id = await fix.clockworks.emit('clockworks.timer', undefined, 'framework');
     const stored = (await fix.eventsBook.get(id)) as EventDoc | null;
     assert.ok(stored);
     assert.equal(stored.payload, null, 'undefined must be coerced to null');
@@ -250,7 +250,7 @@ describe('Clockworks — emit()', () => {
 
   it('stores an explicit null payload unchanged', async () => {
     const fix = await buildFixture();
-    const id = await fix.clockworks.emit('guild.ready', null, 'framework');
+    const id = await fix.clockworks.emit('clockworks.standing-order.failed', null, 'framework');
     const stored = (await fix.eventsBook.get(id)) as EventDoc | null;
     assert.ok(stored);
     assert.equal(stored.payload, null);
@@ -275,8 +275,7 @@ describe('Clockworks — emit()', () => {
       },
     );
 
-    // The failed emit must not have written any new row beyond the
-    // boot-time `guild.initialized` emission.
+    // The failed emit must not have written any new row.
     assert.equal(await fix.eventsBook.count(), before);
   });
 
@@ -571,12 +570,12 @@ describe('Clockworks — signal tool', () => {
   it('rejects a plugin-declared name (framework-owned) when called from anima', async () => {
     await buildFixture({
       pluginEvents: [
-        { pluginId: 'clerk', value: { 'mandate.ready': { description: 'writ-lifecycle' } } },
+        { pluginId: 'clockworks', value: { 'writ.mandate.open': { description: 'writ-lifecycle' } } },
       ],
     });
 
     await assert.rejects(
-      () => invokeSignal({ name: 'mandate.ready', payload: {} }),
+      () => invokeSignal({ name: 'writ.mandate.open', payload: {} }),
       /framework-owned/,
     );
   });

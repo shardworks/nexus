@@ -315,13 +315,13 @@ describe('formatDispatchLine', () => {
     assert.equal(
       formatDispatchLine({
         eventId: 'e-1',
-        eventName: 'standing-order.failed',
+        eventName: 'clockworks.standing-order.failed',
         handlerName: 'react-to-fail',
         status: 'skipped',
         durationMs: 0,
-        error: 'loop-guard: triggering event was a standing-order.failed',
+        error: 'loop-guard: triggering event was a clockworks.standing-order.failed',
       }),
-      '[react-to-fail] skipped: loop-guard: triggering event was a standing-order.failed',
+      '[react-to-fail] skipped: loop-guard: triggering event was a clockworks.standing-order.failed',
     );
   });
 
@@ -329,7 +329,7 @@ describe('formatDispatchLine', () => {
     assert.equal(
       formatDispatchLine({
         eventId: 'e-1',
-        eventName: 'standing-order.failed',
+        eventName: 'clockworks.standing-order.failed',
         handlerName: 'react-to-fail',
         status: 'skipped',
         durationMs: 0,
@@ -616,17 +616,17 @@ describe('runTick', () => {
     const fix = makeFixture();
     fix.events.push({
       id: 'e-1',
-      name: 'standing-order.failed',
+      name: 'clockworks.standing-order.failed',
       payload: null,
       emitter: 'framework',
       firedAt: 't',
       processed: false,
     });
-    fix.orders.set('standing-order.failed', [
+    fix.orders.set('clockworks.standing-order.failed', [
       {
         handler: 'react-to-fail',
         status: 'skipped',
-        error: 'loop-guard: triggering event was a standing-order.failed',
+        error: 'loop-guard: triggering event was a clockworks.standing-order.failed',
         durationMs: 0,
       },
     ]);
@@ -636,7 +636,7 @@ describe('runTick', () => {
     // hadError stays false for a skip-only sweep (exit 0).
     assert.equal(out.hadError, false);
     assert.deepEqual(out.lines, [
-      '[react-to-fail] skipped: loop-guard: triggering event was a standing-order.failed',
+      '[react-to-fail] skipped: loop-guard: triggering event was a clockworks.standing-order.failed',
     ]);
   });
 });
@@ -798,17 +798,17 @@ describe('runRun', () => {
     const fix = makeFixture();
     fix.events.push({
       id: 'e-1',
-      name: 'standing-order.failed',
+      name: 'clockworks.standing-order.failed',
       payload: null,
       emitter: 'framework',
       firedAt: 't',
       processed: false,
     });
-    fix.orders.set('standing-order.failed', [
+    fix.orders.set('clockworks.standing-order.failed', [
       {
         handler: 'react-to-fail',
         status: 'skipped',
-        error: 'loop-guard: triggering event was a standing-order.failed',
+        error: 'loop-guard: triggering event was a clockworks.standing-order.failed',
         durationMs: 0,
       },
     ]);
@@ -819,7 +819,7 @@ describe('runRun', () => {
     // Skipped dispatch line followed by the run summary; no error
     // suffix flips the exit code.
     assert.deepEqual(out.lines, [
-      '[react-to-fail] skipped: loop-guard: triggering event was a standing-order.failed',
+      '[react-to-fail] skipped: loop-guard: triggering event was a clockworks.standing-order.failed',
       'processed 1 events',
     ]);
   });

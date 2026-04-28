@@ -15,23 +15,24 @@ dispatcher that resolves matching standing orders, invokes their
 relays, persists one dispatch row per invocation, and flips the
 event's `processed` flag — `ClockworksApi.processSchedules()` — the
 scheduler pass that fires every time-driven standing order whose
-`nextFireTime` has elapsed and synthesizes a `schedule.fired` event
-plus a dispatch row per fire — and, at startup, registers a Phase-2
-CDC watcher on every plugin-declared book (other than
+`nextFireTime` has elapsed and synthesizes a `clockworks.timer`
+event plus a dispatch row per fire — and, at startup, registers a
+Phase-2 CDC watcher on every plugin-declared book (other than
 `clockworks/events` itself) that re-emits each row
 create/update/delete as a `book.<ownerId>.<book>.<verb>` event with
 emitter `'framework'`. Startup also registers a CDC observer on
-`clerk/writs` that emits writ-lifecycle
-(`{type}.{ready|completed|stuck|failed}`) and root-mandate
-`commission.*` events as writs transition, and emits a one-shot
-`guild.initialized` the first time a guild comes up. The
-operator-facing `nsg clock list/tick/run` CLI composes on top of
-`processEvents()`. The daemon (`nsg clock start/stop/status`,
-plus the matching `clockStart` / `clockStop` / `clockStatus` core
-API and the anima-callable `clock-status` MCP tool) polls the events
-queue at a configurable interval, runs the scheduler pass before
-each event-processing pass, and drains dispatches without an
-operator at the keyboard.
+`clerk/writs` that emits one `writ.<type>.<status>` event per writ
+status transition (the universal contract — every transition fires,
+including initial creation and cancellation). A fresh `start()` adds
+no boot-time noise to the events book — the legacy
+`guild.initialized` and per-book `migration.applied` emissions were
+removed in C2. The operator-facing `nsg clock list/tick/run` CLI
+composes on top of `processEvents()`. The daemon (`nsg clock
+start/stop/status`, plus the matching `clockStart` / `clockStop` /
+`clockStatus` core API and the anima-callable `clock-status` MCP
+tool) polls the events queue at a configurable interval, runs the
+scheduler pass before each event-processing pass, and drains
+dispatches without an operator at the keyboard.
 
 See also: [`docs/architecture/clockworks.md`](../../../docs/architecture/clockworks.md).
 
@@ -79,12 +80,20 @@ is keyed by the event name with an optional human-readable description:
 }
 ```
 
-Names that match a reserved framework namespace
-(`anima.`, `commission.`, `tool.`, `migration.`, `guild.`,
-`standing-order.`, `session.`, `schedule.`) or a writ-lifecycle
-pattern (`<type>.{ready,completed,stuck,failed}` for any declared
-writ type) are owned by the framework and cannot be emitted via
-`signal`.
+Framework-owned names cannot be emitted via `signal`. There is no
+hardcoded reserved-prefix list — names are framework-owned per-event,
+claimed by a plugin's `events` kit at apparatus `start()`. The
+Clockworks itself claims `clockworks.standing-order.failed`,
+`clockworks.timer`, and the universal `writ.<type>.<status>` family
+(one entry per `(writType, state)` pair currently registered with the
+Clerk); the Animator claims `session.*`, `anima.*`, and
+`commission.session.ended`; the framework CLI claims `tool.*`. See
+[Event Catalog → Reserved Namespaces](../../../docs/reference/event-catalog.md#reserved-namespaces)
+for the canonical surface and
+[Event Catalog → Renamed/removed in this release](../../../docs/reference/event-catalog.md#renamedremoved-in-this-release)
+for the migration table from the legacy `commission.*`,
+`guild.initialized`, `migration.applied`, `schedule.fired`, and
+`standing-order.failed` vocabulary that landed in C2.
 
 ---
 
@@ -140,14 +149,15 @@ offender's index, and no events are processed.
 
 Whenever a relay throws OR an order's `run:` field names a relay that
 is not registered, the dispatcher (after writing the dispatch row)
-emits a `standing-order.failed` event into the `events` book with
-`emitter: 'framework'`. The payload carries the verbatim standing
-order, an `{id, name}` projection of the triggering event, and the
-same error string written to the dispatch row's `error` column:
+emits a `clockworks.standing-order.failed` event into the `events`
+book with `emitter: 'framework'`. The payload carries the verbatim
+standing order, an `{id, name}` projection of the triggering event,
+and the same error string written to the dispatch row's `error`
+column:
 
 ```typescript
 {
-  name: 'standing-order.failed',
+  name: 'clockworks.standing-order.failed',
   emitter: 'framework',
   payload: {
     standingOrder: { on, run, with? },
@@ -157,13 +167,14 @@ same error string written to the dispatch row's `error` column:
 }
 ```
 
-Guilds can wire standing orders against `standing-order.failed` to
-react to failures (notify the patron, summon a steward, etc.). A
+Guilds can wire standing orders against `clockworks.standing-order.failed`
+to react to failures (notify the patron, summon a steward, etc.). A
 loop guard prevents cascade: when the dispatcher processes an event
-whose `payload.triggeringEvent.name` is `'standing-order.failed'`
-(i.e. a second-generation SOF), every matching standing order is
-recorded as a `'skipped'` dispatch row, the relay is not invoked,
-and no fresh `standing-order.failed` event is emitted.
+whose `payload.triggeringEvent.name` is
+`'clockworks.standing-order.failed'` (i.e. a second-generation SOF),
+every matching standing order is recorded as a `'skipped'` dispatch
+row, the relay is not invoked, and no fresh
+`clockworks.standing-order.failed` event is emitted.
 
 Returned counts:
 
@@ -275,7 +286,7 @@ Each scheduler pass:
 
 1. Walks the in-memory schedule table in `orderIndex` ascending order.
 2. For each entry whose `nextFireTime <= now`, persists a
-   `schedule.fired` event row with `processed: true` (so the
+   `clockworks.timer` event row with `processed: true` (so the
    event-sweep does not re-fire it), invokes the resolved relay with
    a synthesized `GuildEvent`, persists a dispatch row through the
    shared helper, and advances `nextFireTime` from the parser.
@@ -288,10 +299,10 @@ The scheduler catches up over subsequent ticks, one fire at a time.
 Failure isolation matches the dispatcher:
 
 - A thrown relay produces an `error` dispatch row and a
-  `standing-order.failed` event via the same SOF callback the
-  dispatcher uses — subscribers wiring
-  `{ on: 'standing-order.failed', run: ... }` see scheduled-fire
-  failures and event-driven failures uniformly.
+  `clockworks.standing-order.failed` event via the same SOF callback
+  the dispatcher uses — subscribers wiring
+  `{ on: 'clockworks.standing-order.failed', run: ... }` see
+  scheduled-fire failures and event-driven failures uniformly.
 - An unresolved `run:` name produces an `error` dispatch row with a
   message naming the offending order index, plus the same SOF event.
 
@@ -351,36 +362,33 @@ going.
 
 ## Framework events
 
-`start()` registers a CDC observer on `clerk/writs` that produces:
+`start()` registers a CDC observer on `clerk/writs` that fires exactly
+one `writ.<type>.<status>` event per writ status transition, using the
+writ's `phase` verbatim as the suffix. The contract is universal —
+every type, every state, every transition (including initial entry
+into the type's initial state and entry into `cancelled`) fires its
+own row. Metadata-only patches (title rename, codex inheritance, etc.)
+emit nothing because the per-update phase-delta gate suppresses them.
 
-- `{type}.{ready|completed|stuck|failed}` for every writ on entry into
-  the corresponding phase. Transitions into `new` (drafts) and
-  `cancelled` are silent — the catalog has no entries for those
-  phases. Stuck → open re-entry re-emits `{type}.ready` so dispatchers
-  see the writ as available again.
-- For root mandates only (`type === 'mandate'` AND no `parentId`):
-  `commission.posted` on entry into `open`,
-  `commission.state.changed` on every phase change, both
-  `commission.sealed` AND `commission.completed` on entry into
-  `completed`, and `commission.failed` on entry into `failed`.
+For the builtin `mandate` type the concrete vocabulary is
+`writ.mandate.new`, `writ.mandate.open`, `writ.mandate.stuck`,
+`writ.mandate.completed`, `writ.mandate.failed`, and
+`writ.mandate.cancelled`. Plugin-registered types contribute their
+own state list to the universal pattern.
 
-Every payload carries a `commissionId` derived at emit time by walking
-`parentId` to the root — there is no `commissionId` column on
-`WritDoc`. All emissions go through the shared `emit()` write path with
-`emitter: 'framework'` and are wrapped in best-effort `try/catch`: a
-Clockworks failure cannot roll back the originating writ transition.
+Every payload carries `{ writId, writType, phase, commissionId, title,
+parentId? }` — `commissionId` is derived at emit time by walking
+`parentId` to the root, so there is no `commissionId` column on
+`WritDoc`. All emissions go through the shared `emit()` write path
+with `emitter: 'framework'` and are wrapped in best-effort `try/catch`:
+a Clockworks failure cannot roll back the originating writ transition.
 
-`start()` also queries the `events` book for any prior
-`guild.initialized` row and emits one if absent. The persisted row is
-the first-boot marker — subsequent boots find it and skip.
-
-`start()` also walks every `books` kit contribution and emits one
-`migration.applied` event per `(pluginId, book)` pair the first time
-each is observed (idempotency keyed off the events book itself, like
-`guild.initialized`). The catalog defines this event by name only; the
-chosen payload is `{ pluginId, book, indexes }`. First boot fires one
-event per declared book; subsequent boots fire only for newly-introduced
-books.
+A fresh `start()` writes nothing to the events book of its own — the
+legacy boot-time `guild.initialized` and per-book `migration.applied`
+emissions were removed in C2. See [Event Catalog → Renamed/removed in
+this release](../../../docs/reference/event-catalog.md#renamedremoved-in-this-release)
+for the full migration table from the legacy `commission.*`,
+`schedule.fired`, and `standing-order.failed` vocabulary.
 
 ## Tools
 
@@ -410,7 +418,7 @@ standing order:
   "clockworks": {
     "standingOrders": [
       {
-        "on": "mandate.ready",
+        "on": "writ.mandate.open",
         "run": "summon-relay",
         "with": {
           "role": "artificer",
@@ -626,9 +634,9 @@ can probe daemon liveness via `nsg clock status` and the
   | 'skipped'` set after the dispatcher settles. The `'skipped'`
   variant covers loop-guard policy suppression (the relay was not
   invoked because the triggering event was itself a
-  `standing-order.failed`); skipped rows carry their reason in the
-  `error` column with a `loop-guard:` prefix and do not count toward
-  the `errors` summary counter.
+  `clockworks.standing-order.failed`); skipped rows carry their reason
+  in the `error` column with a `loop-guard:` prefix and do not count
+  toward the `errors` summary counter.
 
 Both are owned by plugin id `clockworks`.
 

@@ -29,13 +29,13 @@
  *   - The `clockworks/event_dispatches` book *is* auto-wired (it is
  *     not part of the carve-out) — sanity-check by writing a row.
  *
- * Boot-time event interactions: the framework-event-emission commission
- * landed `guild.initialized` and `migration.applied` emissions in
- * `start()`, both of which write to `clockworks/events`. The fixture
- * captures the post-startup row set and `eventsAfter()` /
- * `countAfter()` exclude those baseline rows so the test assertions can
- * keep their pre-bootstrap row counts (the assertions never had to know
- * about the bootstrap rows, and they shouldn't start now).
+ * Boot-time event interactions: the C2 commission removed the
+ * boot-time `guild.initialized` and per-book `migration.applied`
+ * emissions, so a fresh `start()` writes nothing to `clockworks/events`
+ * of its own. The fixture still surfaces `eventsAfter()` /
+ * `countAfter()` helpers — they now amount to "everything in the
+ * events book", since the post-start baseline is empty — so test
+ * assertions can keep the pre-existing call shape without churn.
  */
 
 import { afterEach, describe, it } from 'node:test';
@@ -97,18 +97,18 @@ interface Fixture {
   stacks: StacksApi;
   clockworks: ClockworksApi;
   /**
-   * Raw handle on `clockworks/events`. Only useful for direct writes —
-   * tests asserting on visible rows should use `eventsAfter()` to
-   * exclude the boot-time bootstrap row set captured by the fixture
-   * builder.
+   * Raw handle on `clockworks/events`. Tests typically prefer
+   * `eventsAfter()` / `countAfter()` so the post-start baseline (now
+   * empty after C2) stays excluded from the assertion surface.
    */
   events: Book<EventDoc>;
   /**
    * Return only the events emitted *after* the fixture finished
-   * building. Boot-time bootstraps (`guild.initialized`,
-   * `migration.applied` for each declared book) are excluded so the
-   * test assertions can keep their pre-bootstrap row counts. Sorted by
-   * `firedAt` ascending.
+   * building. C2 removed the boot-time `guild.initialized` and
+   * per-book `migration.applied` emissions, so this is effectively
+   * "every row in the events book" — the helper is preserved as a
+   * stable call shape for the test assertions. Sorted by `firedAt`
+   * ascending.
    */
   eventsAfter(): Promise<EventDoc[]>;
   /** Count of events visible to `eventsAfter()`. */
@@ -232,12 +232,12 @@ async function buildFixture(opts: FixtureOptions = {}): Promise<Fixture> {
 
   const events = stacks.book<EventDoc>('clockworks', 'events');
 
-  // Capture the set of event ids that already exist in the events book
-  // immediately after fixture build. These are the boot-time
-  // bootstraps: `guild.initialized` once per fresh guild, plus one
-  // `migration.applied` row per `(pluginId, book)` declared in the
-  // `books` kit contributions. The test assertions are written for
-  // post-bootstrap activity, so `eventsAfter()` filters them out.
+  // C2 removed the boot-time `guild.initialized` and per-book
+  // `migration.applied` emissions, so the events book is empty after
+  // fixture build. We still capture the (empty) baseline id set so the
+  // `eventsAfter()` / `countAfter()` helper signatures stay stable —
+  // any future re-introduction of boot-time emissions will be filtered
+  // out automatically without re-plumbing every test.
   const baselineRows = await events.list();
   const baselineIds = new Set(baselineRows.map((r) => r.id));
 

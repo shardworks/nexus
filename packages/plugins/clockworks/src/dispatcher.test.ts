@@ -945,9 +945,9 @@ describe('runDispatchSweep — validator integration', () => {
   });
 });
 
-// ── standing-order.failed signaling & loop-guard ─────────────────────
+// ── clockworks.standing-order.failed signaling & loop-guard ──────────
 
-describe('runDispatchSweep — standing-order.failed signaling', () => {
+describe('runDispatchSweep — clockworks.standing-order.failed signaling', () => {
   afterEach(() => clearGuild());
 
   it('a thrown relay invokes signalStandingOrderFailed once with the verbatim order, {id,name}-only event, and the row error', async () => {
@@ -1037,7 +1037,7 @@ describe('runDispatchSweep — standing-order.failed signaling', () => {
     );
   });
 
-  it('loop-guard: an event whose payload.triggeringEvent.name is "standing-order.failed" produces a skipped row, no relay call, no SOF', async () => {
+  it('loop-guard: an event whose payload.triggeringEvent.name is "clockworks.standing-order.failed" produces a skipped row, no relay call, no SOF', async () => {
     const fix = await buildSweepFixture();
     let invoked = 0;
     fix.registerRelay(
@@ -1049,10 +1049,10 @@ describe('runDispatchSweep — standing-order.failed signaling', () => {
     // what the apparatus's `signalStandingOrderFailed` lambda forwards
     // through `api.emit`.
     const triggering = await fix.emitEvent(
-      'standing-order.failed',
+      'clockworks.standing-order.failed',
       {
         standingOrder: { on: 'whatever', run: 'react-to-fail' },
-        triggeringEvent: { id: 'e-original', name: 'standing-order.failed' },
+        triggeringEvent: { id: 'e-original', name: 'clockworks.standing-order.failed' },
         error: 'simulated cascade',
       },
       'framework',
@@ -1064,7 +1064,7 @@ describe('runDispatchSweep — standing-order.failed signaling', () => {
       events: fix.events,
       dispatches: fix.dispatches,
       resolveRelay: fix.resolveRelay,
-      standingOrders: [{ on: 'standing-order.failed', run: 'react-to-fail' }],
+      standingOrders: [{ on: 'clockworks.standing-order.failed', run: 'react-to-fail' }],
       home: '/h',
       now: makeClock('2026-01-01T00:00:00.000Z'),
       onDispatch: (obs) => {
@@ -1210,7 +1210,7 @@ describe('runDispatchSweep — standing-order.failed signaling', () => {
       warnings.some(
         (w) =>
           w.includes('[clockworks]') &&
-          w.includes('standing-order.failed') &&
+          w.includes('clockworks.standing-order.failed') &&
           w.includes('emit blew up'),
       ),
       `expected dispatcher console.warn for emit failure; got: ${warnings.join(' | ')}`,

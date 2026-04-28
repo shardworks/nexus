@@ -14,7 +14,7 @@ An event is an immutable fact: *this happened*.
 
 ```typescript
 {
-  name: string;       // e.g. "commission.sealed", "tool.installed"
+  name: string;       // e.g. "writ.mandate.completed", "tool.installed"
   payload: unknown;   // event-specific data
   emitter: string;    // who signaled it: anima name, engine name, or "framework"
   firedAt: DateTime;
@@ -25,7 +25,7 @@ Events are persisted to the Clockworks' own event queue immediately when signale
 
 #### Framework events
 
-Framework events are signaled automatically from authoritative code paths in the framework and apparatuses (`commission.*`, `session.*`, `anima.*`, writ-lifecycle `{type}.*`, `standing-order.*`, `schedule.*`, `tool.*`, `migration.*`, `guild.*`). Animas cannot signal them. The full enumeration — every event name, payload shape, emitter site, and "fires when" condition — lives in the [Event Catalog](../reference/event-catalog.md), which is the single source of truth for the framework event surface. Each event listed there is grep-findable in shipped emitter code; this document deliberately does not duplicate the table.
+Framework events are signaled automatically from authoritative code paths in the framework and apparatuses (`session.*`, `anima.*`, `commission.session.ended`, the universal writ-lifecycle `writ.<type>.<status>` family, the Clockworks's own `clockworks.standing-order.failed` and `clockworks.timer`, the framework CLI's `tool.*` plugin-bootstrap events). Animas cannot signal them. The full enumeration — every event name, payload shape, emitter site, and "fires when" condition — lives in the [Event Catalog](../reference/event-catalog.md), which is the single source of truth for the framework event surface. Each event listed there is grep-findable in shipped emitter code; this document deliberately does not duplicate the table.
 
 #### Custom guild events
 
@@ -46,7 +46,7 @@ Guilds declare their own events in `guild.json` under the `clockworks` key:
 }
 ```
 
-Custom events use any name not in a reserved framework namespace. The canonical reserved-prefix list lives in the [Event Catalog → Reserved Namespaces](../reference/event-catalog.md#reserved-namespaces); writ lifecycle events (e.g. `mandate.ready`, `task.completed`) use guild-defined type names as namespaces and live outside that list — they are framework-emitted but rejected by `validateSignal`'s separate writ-lifecycle pattern check. See the [Event Catalog](../reference/event-catalog.md#writ-lifecycle-events) for how validation handles this. Bundles may also declare events they introduce; these are merged into `guild.json` on installation.
+Custom events use any name that is not already declared by a plugin's `events` kit contribution. There is no hardcoded reserved-prefix list — names are framework-owned per-event, claimed by a plugin's `events` kit at apparatus `start()`, and tagged with a sticky `pluginDeclared` flag in the merged event set. Writ-lifecycle names (e.g. `writ.mandate.open`, `writ.task.completed`) are part of that plugin-declared set: the Clockworks itself contributes them as a state-walk over Clerk's writ-type registry, so they are framework-emitted and rejected by the merged-set framework-owned check on the unprivileged `signal` channels. See the [Event Catalog → Reserved Namespaces](../reference/event-catalog.md#reserved-namespaces) and [Writ Lifecycle Events](../reference/event-catalog.md#writ-lifecycle-events) for details. Bundles may also declare events they introduce; these are merged into `guild.json` on installation.
 
 Animas signal custom events using the `signal` tool. The tool validates the event name against declared events in `guild.json` before persisting.
 
@@ -98,8 +98,8 @@ interface StandingOrder {
 {
   "clockworks": {
     "standingOrders": [
-      { "on": "commission.sealed", "run": "cleanup-worktree" },
-      { "on": "code.reviewed",     "run": "notify-patron" },
+      { "on": "writ.mandate.completed", "run": "cleanup-worktree" },
+      { "on": "code.reviewed",          "run": "notify-patron" },
       {
         "on": "deploy.requested",
         "run": "deploy",
@@ -118,7 +118,7 @@ The **summon relay** is the stdlib relay that turns event dispatches into anima 
 
 ```json
 {
-  "on": "mandate.ready",
+  "on": "writ.mandate.open",
   "run": "summon-relay",
   "with": {
     "role": "artificer",
@@ -184,7 +184,7 @@ A standing order may swap its `on:` trigger for a `schedule:` expression to fire
 
 Schedule values are parse-checked at guild.json load time alongside the rest of the standing-order validator, so a malformed cron or `@every` value fails the apparatus boot with an error that names the offending order index.
 
-**The `schedule.fired` event.** Every fire writes a synthesized `schedule.fired` event row into the `events` book (with `processed: true` so the event-sweep does not re-fire it) plus a matching dispatch row through the same plumbing the event-driven path uses. `schedule.` is a reserved framework namespace — only the daemon's scheduler pass is authorized to emit it; animas calling the `signal` tool with a `schedule.*` name are rejected.
+**The `clockworks.timer` event.** Every fire writes a synthesized `clockworks.timer` event row into the `events` book (with `processed: true` so the event-sweep does not re-fire it) plus a matching dispatch row through the same plumbing the event-driven path uses. The Clockworks's own `events` kit declares `clockworks.timer` as framework-owned, so the merged-set check rejects any `signal('clockworks.timer', …)` from animas or the operator CLI — only the daemon's scheduler pass is authorized to emit it.
 
 **Per-tick ordering.** The daemon runs `processSchedules()` first on every tick and `processEvents()` second, so events emitted from a scheduled relay are picked up on the same tick they are produced.
 
@@ -238,14 +238,14 @@ The two-daemon coexistence with `nsg start` (the guild daemon) is intentional. D
 
 ## Error Handling
 
-Standing order failures signal a `standing-order.failed` event:
+Standing order failures signal a `clockworks.standing-order.failed` event:
 
 ```typescript
 {
-  name: "standing-order.failed",
+  name: "clockworks.standing-order.failed",
   payload: {
-    standingOrder: { on: "commission.failed", run: "notify-patron" },
-    triggeringEvent: { id: 42, name: "commission.failed", ... },
+    standingOrder: { on: "writ.mandate.failed", run: "notify-patron" },
+    triggeringEvent: { id: 42, name: "writ.mandate.failed", ... },
     error: "relay 'notify-patron' threw: SMTP connect ECONNREFUSED"
   }
 }
@@ -253,7 +253,7 @@ Standing order failures signal a `standing-order.failed` event:
 
 Guilds can respond to this event with their own standing orders — summon an anima, invoke a notification relay, whatever the guild needs. The error handling policy is itself configurable.
 
-**Loop guard**: `standing-order.failed` events are tagged. The Clockworks runner will not fire standing orders in response to a `standing-order.failed` event that was itself triggered by a `standing-order.failed` event. Errors handling errors do not cascade.
+**Loop guard**: the dispatcher reads `payload.triggeringEvent.name` on every event and suppresses any standing order whose triggering event was itself a `clockworks.standing-order.failed`. Errors handling errors do not cascade. The check is a single literal comparison against a module-level constant shared with the apparatus's emit lambdas — see `STANDING_ORDER_FAILED_EVENT` in `clockworks/src/event-names.ts`.
 
 ---
 
@@ -269,8 +269,9 @@ tool({
     payload: z.record(z.unknown()).optional().describe("Event payload")
   },
   handler: async ({ name, payload }, { home }) => {
-    // validate name against guild.json clockworks.events
-    // reject framework-reserved namespaces
+    // route through ClockworksApi.validateSignal — merged-set
+    // membership check, then framework-owned check (sticky
+    // pluginDeclared)
     // persist to Clockworks events table
   }
 })
@@ -278,7 +279,7 @@ tool({
 
 Also exposed as `nsg signal <name> [--payload <json>]` for operator use.
 
-Animas cannot signal framework events (`anima.*`, `commission.*`, `tool.*`, `session.*`, etc.) or writ lifecycle events (`mandate.ready`, `task.completed`, etc.). Only guild-declared custom events. This keeps the event record trustworthy — framework events come from authoritative code paths.
+Animas cannot signal framework events (`anima.*`, `session.*`, `tool.*`, the Clockworks's own `clockworks.standing-order.failed` / `clockworks.timer`, etc.) or any name from the universal writ-lifecycle family (`writ.mandate.open`, `writ.task.completed`, every other `writ.<type>.<status>` declared by the Clockworks's `events` kit). Only operator-declared custom events. This keeps the event record trustworthy — framework events come from authoritative code paths.
 
 ---
 
@@ -293,9 +294,9 @@ Animas cannot signal framework events (`anima.*`, `commission.*`, `tool.*`, `ses
       }
     },
     "standingOrders": [
-      { "on": "commission.sealed", "run": "cleanup-worktree" },
+      { "on": "writ.mandate.completed", "run": "cleanup-worktree" },
       {
-        "on": "mandate.ready",
+        "on": "writ.mandate.open",
         "run": "summon-relay",
         "with": {
           "role": "artificer",
@@ -379,7 +380,7 @@ interface EventDispatchDoc extends BookEntry {
 | `pending` | Dispatch row created; handler not yet attempted. |
 | `success` | Handler ran and returned without throwing. |
 | `error` | Handler threw, or the standing order's `run:` name did not resolve to a registered relay. |
-| `skipped` | The dispatcher's loop-guard policy elided the invocation (e.g. the triggering event was itself a `standing-order.failed`). The relay was not called and no `standing-order.failed` event was emitted; this is policy suppression, not a failure, and must not count toward operator error metrics. |
+| `skipped` | The dispatcher's loop-guard policy elided the invocation (e.g. the triggering event was itself a `clockworks.standing-order.failed`). The relay was not called and no `clockworks.standing-order.failed` event was emitted; this is policy suppression, not a failure, and must not count toward operator error metrics. |
 
 **Declared indexes:** `eventId`, `status`, and the compound `['eventId', 'status']`.
 
@@ -450,6 +451,6 @@ The Clockworks runner calls `module.default.handler(event, { home, params })`. P
 
 ## Deferred
 
-- **Natural language trigger syntax** — `'when a commission is posted'` instead of `'commission.posted'`. Worth pursuing once real guilds have standing orders in production and vocabulary needs are understood. Requires validation tooling to be safe.
+- **Natural language trigger syntax** — `'when a mandate becomes available'` instead of `'writ.mandate.open'`. Worth pursuing once real guilds have standing orders in production and vocabulary needs are understood. Requires validation tooling to be safe.
 - **Pre-event hooks** — cancellable `before.*` events. Powerful but complex. Start with observation-only (post-facto) events.
 - **Phase 2 daemon enhancements** — external event injection (webhooks, file watchers), log rotation, concurrency.

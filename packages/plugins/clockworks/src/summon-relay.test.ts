@@ -334,7 +334,7 @@ async function postOpenMandate(
 function buildEvent(overrides: Partial<GuildEvent> = {}): GuildEvent {
   return {
     id: overrides.id ?? 'e-test-0001',
-    name: overrides.name ?? 'mandate.ready',
+    name: overrides.name ?? 'writ.mandate.open',
     payload: overrides.payload ?? null,
     emitter: overrides.emitter ?? 'tester',
     firedAt: overrides.firedAt ?? '2026-04-25T12:00:00.000Z',
@@ -503,7 +503,7 @@ describe('summon-relay — writ binding', () => {
     });
     assert.equal(fix.animator.calls.length, 1);
     const prompt = fix.animator.calls[0].request.prompt!;
-    assert.match(prompt, /Title is: Synthetic writ for mandate.ready/);
+    assert.match(prompt, /Title is: Synthetic writ for writ\.mandate\.open/);
     assert.match(prompt, /type is: synthetic/);
     // Synthetic writs are never persisted — count remains 0.
     const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
@@ -541,7 +541,7 @@ describe('summon-relay — template hydration', () => {
     await fix.invoke(
       buildEvent({
         id: 'e-render-1',
-        name: 'mandate.ready',
+        name: 'writ.mandate.open',
         payload: { writId: writ.id, hint: 'urgent' },
       }),
       {
@@ -554,7 +554,7 @@ describe('summon-relay — template hydration', () => {
     const prompt = fix.animator.calls[0].request.prompt!;
     assert.equal(
       prompt,
-      'writ:A title|event:mandate.ready|payload:urgent|param:verbose',
+      'writ:A title|event:writ.mandate.open|payload:urgent|param:verbose',
     );
   });
 
@@ -602,7 +602,7 @@ describe('summon-relay — session launch', () => {
     await fix.invoke(
       buildEvent({
         id: 'e-meta-1',
-        name: 'mandate.ready',
+        name: 'writ.mandate.open',
         payload: { writId: writ.id },
       }),
       {
@@ -620,7 +620,7 @@ describe('summon-relay — session launch', () => {
       role: 'artificer',
       writId: writ.id,
       eventId: 'e-meta-1',
-      eventName: 'mandate.ready',
+      eventName: 'writ.mandate.open',
     });
   });
 

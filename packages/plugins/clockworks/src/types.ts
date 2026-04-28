@@ -238,8 +238,8 @@ export interface EventDispatchDoc extends BookEntry {
    *     name did not resolve to a registered relay.
    *   - `'skipped'` — the dispatcher's loop-guard policy elided the
    *     invocation (e.g. the triggering event was itself a
-   *     `standing-order.failed`). The relay was not called and no
-   *     `standing-order.failed` event was emitted; this is policy
+   *     `clockworks.standing-order.failed`). The relay was not called and no
+   *     `clockworks.standing-order.failed` event was emitted; this is policy
    *     suppression, not a failure, and must not count toward operator
    *     error metrics.
    */
@@ -393,12 +393,12 @@ export interface ClockworksApi {
    * table populated at apparatus `start()` and fire every entry whose
    * `nextFireTime <= now`.
    *
-   * Each fire writes a `schedule.fired` event row (with
+   * Each fire writes a `clockworks.timer` event row (with
    * `processed: true` so the event-sweep skips it) plus a matching
    * dispatch row through the same plumbing the event-driven path
    * uses. Failures (thrown relay or unresolved relay) emit a
-   * `standing-order.failed` event via the same SOF callback the
-   * dispatcher uses, so subscribers do not have to special-case
+   * `clockworks.standing-order.failed` event via the same SOF callback
+   * the dispatcher uses, so subscribers do not have to special-case
    * scheduled fires.
    *
    * Sequential by `orderIndex` ascending — multiple-due orders fire
@@ -427,8 +427,8 @@ export interface ClockworksApi {
  *
  *   - `'success'` / `'error'` — relay was invoked; outcome captured.
  *   - `'skipped'` — dispatcher's loop-guard suppressed the invocation.
- *     The relay was not called, no `standing-order.failed` event was
- *     emitted, and `error` carries the loop-guard reason (prefixed
+ *     The relay was not called, no `clockworks.standing-order.failed` event
+ *     was emitted, and `error` carries the loop-guard reason (prefixed
  *     with `loop-guard:`). Observers that count failures must skip
  *     this status — it is not a failure.
  */

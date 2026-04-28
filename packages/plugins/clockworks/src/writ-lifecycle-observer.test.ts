@@ -1,11 +1,13 @@
 /**
- * Clockworks — writ-lifecycle and commission CDC observer tests.
+ * Clockworks — writ-lifecycle CDC observer tests.
  *
  * Drives `handleWritLifecycle` directly with synthetic ChangeEvents so
- * the assertions stay focused on (a) the phase → catalog-suffix mapping
- * (D2/D3/D17), (b) root-mandate gating for commission events
- * (D5/D15/D19), (c) the parentId walk for `commissionId` (D4), and
- * (d) the best-effort emission contract (D13).
+ * the assertions stay focused on the universal `writ.<type>.<phase>`
+ * contract: every status transition (including initial entry into
+ * `new` and entry into `cancelled`) fires exactly one event with the
+ * writ's `phase` verbatim as the suffix; metadata-only updates fire
+ * nothing; `commissionId` is populated by walking `parentId` to the
+ * root; emission is best-effort and never propagates.
  *
  * Live integration with the Stacks CDC machinery is exercised by the
  * end-to-end integration test (`integration.test.ts`).
@@ -131,7 +133,7 @@ function makeWrit(overrides: Partial<WritDoc>): WritDoc {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
-describe('Clockworks — writ-lifecycle observer', () => {
+describe('Clockworks — writ-lifecycle observer (universal contract)', () => {
   let fix: Fixture;
 
   beforeEach(async () => {
@@ -153,9 +155,9 @@ describe('Clockworks — writ-lifecycle observer', () => {
     return all as EventDoc[];
   }
 
-  // ── Writ-lifecycle (root mandate) ──────────────────────────────────
+  // ── Mandate writ — every status transition fires writ.mandate.<status> ─
 
-  it('create-in-open root mandate → mandate.ready and commission.posted', async () => {
+  it('create-in-open root mandate fires writ.mandate.open', async () => {
     const writ = makeWrit({ id: 'w-root-1', phase: 'open' });
     // The observer reads commissionId via the writs book, so the row
     // must exist there even though the observer was driven by a
@@ -174,150 +176,36 @@ describe('Clockworks — writ-lifecycle observer', () => {
       event,
     );
 
-    assert.deepEqual(await eventNames(), [
-      'mandate.ready',
-      'commission.posted',
-      'commission.state.changed',
-    ]);
+    assert.deepEqual(await eventNames(), ['writ.mandate.open']);
 
-    const [ready] = await eventsByName('mandate.ready');
-    assert.ok(ready);
-    const payload = ready.payload as Record<string, unknown>;
+    const [opened] = await eventsByName('writ.mandate.open');
+    assert.ok(opened);
+    const payload = opened.payload as Record<string, unknown>;
     assert.equal(payload.writId, 'w-root-1');
     assert.equal(payload.commissionId, 'w-root-1');
     assert.equal(payload.phase, 'open');
-    assert.equal(ready.emitter, 'framework');
+    assert.equal(opened.emitter, 'framework');
   });
 
-  it('new → open transition (publish) re-emits ready and commission.posted', async () => {
+  it('draft creation fires writ.mandate.new (universal contract — no silent gating)', async () => {
     const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
-    const drafted = makeWrit({ id: 'w-pub-1', phase: 'new' });
-    const published = makeWrit({ id: 'w-pub-1', phase: 'open' });
-    await writsBook.put(published);
+    const drafted = makeWrit({ id: 'w-draft', phase: 'new' });
+    await writsBook.put(drafted);
 
     await handleWritLifecycle(
       { clockworks: fix.clockworks, writsBook: fix.writsBook },
       {
-        type: 'update',
+        type: 'create',
         ownerId: 'clerk',
         book: 'writs',
-        entry: published,
-        prev: drafted,
+        entry: drafted,
       },
     );
 
-    assert.deepEqual(await eventNames(), [
-      'mandate.ready',
-      'commission.posted',
-      'commission.state.changed',
-    ]);
+    assert.deepEqual(await eventNames(), ['writ.mandate.new']);
   });
 
-  it('stuck → open re-entry re-emits mandate.ready (D21 — no first-time-only tracking)', async () => {
-    const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
-    const stuck = makeWrit({ id: 'w-restart', phase: 'stuck' });
-    const reopened = makeWrit({ id: 'w-restart', phase: 'open' });
-    await writsBook.put(reopened);
-
-    await handleWritLifecycle(
-      { clockworks: fix.clockworks, writsBook: fix.writsBook },
-      {
-        type: 'update',
-        ownerId: 'clerk',
-        book: 'writs',
-        entry: reopened,
-        prev: stuck,
-      },
-    );
-
-    const names = await eventNames();
-    assert.ok(names.includes('mandate.ready'));
-    // `commission.posted` ALSO re-fires per D15 — entry into `open` is the trigger.
-    assert.ok(names.includes('commission.posted'));
-  });
-
-  it('open → completed root mandate fires sealed AND completed (D5 duplicate is intentional)', async () => {
-    const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
-    const open = makeWrit({ id: 'w-done', phase: 'open' });
-    const done = makeWrit({ id: 'w-done', phase: 'completed' });
-    await writsBook.put(done);
-
-    await handleWritLifecycle(
-      { clockworks: fix.clockworks, writsBook: fix.writsBook },
-      {
-        type: 'update',
-        ownerId: 'clerk',
-        book: 'writs',
-        entry: done,
-        prev: open,
-      },
-    );
-
-    const names = await eventNames();
-    assert.ok(names.includes('mandate.completed'));
-    assert.ok(names.includes('commission.state.changed'));
-    assert.ok(names.includes('commission.sealed'));
-    assert.ok(names.includes('commission.completed'));
-    // No `commission.posted` for completion — D15 gates `posted` to entry into `open`.
-    assert.ok(!names.includes('commission.posted'));
-  });
-
-  it('open → failed root mandate fires mandate.failed and commission.failed', async () => {
-    const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
-    const open = makeWrit({ id: 'w-bust', phase: 'open' });
-    const failed = makeWrit({ id: 'w-bust', phase: 'failed', resolution: 'no good' });
-    await writsBook.put(failed);
-
-    await handleWritLifecycle(
-      { clockworks: fix.clockworks, writsBook: fix.writsBook },
-      {
-        type: 'update',
-        ownerId: 'clerk',
-        book: 'writs',
-        entry: failed,
-        prev: open,
-      },
-    );
-
-    const names = await eventNames();
-    assert.deepEqual(names, [
-      'mandate.failed',
-      'commission.state.changed',
-      'commission.failed',
-    ]);
-    const [bust] = await eventsByName('commission.failed');
-    assert.equal(
-      (bust!.payload as { resolution?: string }).resolution,
-      'no good',
-    );
-  });
-
-  it('open → stuck root mandate fires mandate.stuck and commission.state.changed', async () => {
-    const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
-    const open = makeWrit({ id: 'w-jam', phase: 'open' });
-    const stuck = makeWrit({ id: 'w-jam', phase: 'stuck' });
-    await writsBook.put(stuck);
-
-    await handleWritLifecycle(
-      { clockworks: fix.clockworks, writsBook: fix.writsBook },
-      {
-        type: 'update',
-        ownerId: 'clerk',
-        book: 'writs',
-        entry: stuck,
-        prev: open,
-      },
-    );
-
-    const names = await eventNames();
-    assert.deepEqual(names, ['mandate.stuck', 'commission.state.changed']);
-    // No `commission.failed` — stuck is NOT terminal.
-    assert.ok(!names.includes('commission.failed'));
-  });
-
-  // ── Silent phases (D3 / D17) ───────────────────────────────────────
-
-  it('transitions into cancelled produce NO event row (D3)', async () => {
+  it('cancellation fires writ.mandate.cancelled (universal contract — no silent gating)', async () => {
     const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
     const open = makeWrit({ id: 'w-nope', phase: 'open' });
     const cancelled = makeWrit({ id: 'w-nope', phase: 'cancelled' });
@@ -334,26 +222,110 @@ describe('Clockworks — writ-lifecycle observer', () => {
       },
     );
 
-    assert.deepEqual(await eventNames(), []);
+    assert.deepEqual(await eventNames(), ['writ.mandate.cancelled']);
   });
 
-  it('draft creation (entry into new) produces NO event row (D17)', async () => {
+  it('new → open transition (publish) fires writ.mandate.open', async () => {
     const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
-    const drafted = makeWrit({ id: 'w-draft', phase: 'new' });
-    await writsBook.put(drafted);
+    const drafted = makeWrit({ id: 'w-pub-1', phase: 'new' });
+    const published = makeWrit({ id: 'w-pub-1', phase: 'open' });
+    await writsBook.put(published);
 
     await handleWritLifecycle(
       { clockworks: fix.clockworks, writsBook: fix.writsBook },
       {
-        type: 'create',
+        type: 'update',
         ownerId: 'clerk',
         book: 'writs',
-        entry: drafted,
+        entry: published,
+        prev: drafted,
       },
     );
 
-    assert.deepEqual(await eventNames(), []);
+    assert.deepEqual(await eventNames(), ['writ.mandate.open']);
   });
+
+  it('stuck → open re-entry re-emits writ.mandate.open (no first-time-only tracking)', async () => {
+    const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
+    const stuck = makeWrit({ id: 'w-restart', phase: 'stuck' });
+    const reopened = makeWrit({ id: 'w-restart', phase: 'open' });
+    await writsBook.put(reopened);
+
+    await handleWritLifecycle(
+      { clockworks: fix.clockworks, writsBook: fix.writsBook },
+      {
+        type: 'update',
+        ownerId: 'clerk',
+        book: 'writs',
+        entry: reopened,
+        prev: stuck,
+      },
+    );
+
+    assert.deepEqual(await eventNames(), ['writ.mandate.open']);
+  });
+
+  it('open → completed root mandate fires writ.mandate.completed', async () => {
+    const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
+    const open = makeWrit({ id: 'w-done', phase: 'open' });
+    const done = makeWrit({ id: 'w-done', phase: 'completed' });
+    await writsBook.put(done);
+
+    await handleWritLifecycle(
+      { clockworks: fix.clockworks, writsBook: fix.writsBook },
+      {
+        type: 'update',
+        ownerId: 'clerk',
+        book: 'writs',
+        entry: done,
+        prev: open,
+      },
+    );
+
+    assert.deepEqual(await eventNames(), ['writ.mandate.completed']);
+  });
+
+  it('open → failed root mandate fires writ.mandate.failed', async () => {
+    const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
+    const open = makeWrit({ id: 'w-bust', phase: 'open' });
+    const failed = makeWrit({ id: 'w-bust', phase: 'failed', resolution: 'no good' });
+    await writsBook.put(failed);
+
+    await handleWritLifecycle(
+      { clockworks: fix.clockworks, writsBook: fix.writsBook },
+      {
+        type: 'update',
+        ownerId: 'clerk',
+        book: 'writs',
+        entry: failed,
+        prev: open,
+      },
+    );
+
+    assert.deepEqual(await eventNames(), ['writ.mandate.failed']);
+  });
+
+  it('open → stuck root mandate fires writ.mandate.stuck', async () => {
+    const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
+    const open = makeWrit({ id: 'w-jam', phase: 'open' });
+    const stuck = makeWrit({ id: 'w-jam', phase: 'stuck' });
+    await writsBook.put(stuck);
+
+    await handleWritLifecycle(
+      { clockworks: fix.clockworks, writsBook: fix.writsBook },
+      {
+        type: 'update',
+        ownerId: 'clerk',
+        book: 'writs',
+        entry: stuck,
+        prev: open,
+      },
+    );
+
+    assert.deepEqual(await eventNames(), ['writ.mandate.stuck']);
+  });
+
+  // ── Phase-delta gating (unchanged from prior contract) ─────────────
 
   it('metadata-only update without phase delta produces NO event row', async () => {
     const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
@@ -375,9 +347,9 @@ describe('Clockworks — writ-lifecycle observer', () => {
     assert.deepEqual(await eventNames(), []);
   });
 
-  // ── Non-mandate writs / non-root writs (D5 / D19) ──────────────────
+  // ── Non-mandate / non-root writs — same universal contract ─────────
 
-  it('non-mandate writ types fire {type}.ready but NOT commission.* events', async () => {
+  it('non-mandate writ types behave identically to mandate under the universal contract', async () => {
     const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
     const piece = makeWrit({
       id: 'w-piece',
@@ -400,18 +372,19 @@ describe('Clockworks — writ-lifecycle observer', () => {
       },
     );
 
-    const names = await eventNames();
-    assert.deepEqual(names, ['piece.ready']);
-    assert.ok(!names.some((n) => n.startsWith('commission.')));
+    // Non-mandate types fire the same `writ.<type>.<status>` shape that
+    // the mandate does — no privileged commission.* family, no special
+    // gating. The universal contract is uniform across writ types.
+    assert.deepEqual(await eventNames(), ['writ.piece.open']);
 
-    const [ready] = await eventsByName('piece.ready');
+    const [ready] = await eventsByName('writ.piece.open');
     const payload = ready!.payload as { commissionId: string; parentId?: string };
     // commissionId is derived by walking parentId to the root.
     assert.equal(payload.commissionId, 'w-parent');
     assert.equal(payload.parentId, 'w-parent');
   });
 
-  it('child mandate (parentId set) fires mandate.ready but NOT commission.posted', async () => {
+  it('child mandate (parentId set) fires writ.mandate.<status> like any other writ', async () => {
     const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
     const child = makeWrit({
       id: 'w-child',
@@ -437,9 +410,7 @@ describe('Clockworks — writ-lifecycle observer', () => {
       },
     );
 
-    const names = await eventNames();
-    assert.ok(names.includes('mandate.ready'));
-    assert.ok(!names.includes('commission.posted'));
+    assert.deepEqual(await eventNames(), ['writ.mandate.open']);
   });
 
   it('commissionId walks multiple levels of parentId to the root', async () => {
@@ -471,14 +442,14 @@ describe('Clockworks — writ-lifecycle observer', () => {
       },
     );
 
-    const [ready] = await eventsByName('piece.ready');
+    const [ready] = await eventsByName('writ.piece.open');
     const payload = ready!.payload as { commissionId: string };
     assert.equal(payload.commissionId, 'w-root');
   });
 
   // ── Best-effort emission ───────────────────────────────────────────
 
-  it('emission failure does not propagate (best-effort per D13)', async () => {
+  it('emission failure does not propagate (best-effort breadcrumb)', async () => {
     const writsBook = fix.stacks.book<WritDoc>('clerk', 'writs');
     const writ = makeWrit({ id: 'w-burn', phase: 'open' });
     await writsBook.put(writ);

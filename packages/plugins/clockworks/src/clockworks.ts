@@ -60,7 +60,7 @@ import type {
   ReadOnlyBook,
   StacksApi,
 } from '@shardworks/stacks-apparatus';
-import type { WritDoc } from '@shardworks/clerk-apparatus';
+import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 
 import type {
   ClockworksApi,
@@ -76,6 +76,10 @@ import {
   type DispatchObservation,
   type DispatchSummary,
 } from './dispatcher.ts';
+import {
+  CLOCKWORKS_TIMER_EVENT,
+  STANDING_ORDER_FAILED_EVENT,
+} from './event-names.ts';
 import { isRelayDefinition, type RelayDefinition } from './relay.ts';
 import { computeNextFireTime, parseSchedule } from './schedule-parser.ts';
 import {
@@ -86,6 +90,60 @@ import {
 import { createSummonRelay } from './summon-relay.ts';
 import { clockStatusTool, signal } from './tools/index.ts';
 import { handleWritLifecycle } from './writ-lifecycle-observer.ts';
+
+// ── Function-form `events` kit contribution ─────────────────────────
+//
+// Clockworks's own `events` kit declaration. Returns the union of the
+// two intrinsic Clockworks events plus one `writ.<type>.<status>` entry
+// per `(writType, state)` pair currently registered with Clerk. Lives
+// at module scope so the supportKit reference is a stable function id
+// (no closure capture quirks under repeated start() / stop() cycles).
+function buildEventsContribution(
+  _ctx: StartupContext,
+): Record<string, EventSpec> {
+  const events: Record<string, EventSpec> = {
+    [STANDING_ORDER_FAILED_EVENT]: {
+      description:
+        'A standing-order dispatch failed — either the named relay threw or its `run:` did not resolve to a registered relay. The dispatcher writes one row per failure; the loop-guard suppresses cascades.',
+    },
+    [CLOCKWORKS_TIMER_EVENT]: {
+      description:
+        'A scheduled standing order fired at its `nextFireTime`. The row is persisted with `processed: true` so the event-sweep does not pick it up — the scheduler is the only authorized consumer of timer events.',
+    },
+  };
+
+  // Reach Clerk via the guild singleton — same idiom as the Stacks
+  // resolution in start(). In production Clerk is always installed
+  // because Clockworks declares `requires: ['clerk']`. Test fixtures
+  // that bypass that dependency contract fall through to the static
+  // intrinsic set (with a warn breadcrumb so the discrepancy surfaces).
+  let writTypes: ReturnType<ClerkApi['listWritTypes']> = [];
+  try {
+    const clerk = guild().apparatus<ClerkApi>('clerk');
+    writTypes = clerk.listWritTypes();
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[clockworks] events kit: Clerk not reachable when assembling writ-lifecycle declarations (${reason}); only intrinsic events declared.`,
+    );
+    return events;
+  }
+
+  // D22: enumerate every declared state for every type, unconditionally
+  // — no reachability filter. D23: include the builtin `mandate` on
+  // equal footing with plugin-registered types. D19: trust Clerk's
+  // validator — no defensive guard for malformed configs.
+  for (const type of writTypes) {
+    for (const state of type.states) {
+      events[`writ.${type.name}.${state.name}`] = {
+        description:
+          `A writ of type "${type.name}" entered the "${state.name}" phase. Fired by the framework's writ-lifecycle observer on every status transition.`,
+      };
+    }
+  }
+
+  return events;
+}
 
 // ── Kit contribution vocabulary ─────────────────────────────────────
 
@@ -115,9 +173,9 @@ interface RegisteredRelay {
 //
 // Stacks' CDC event tags are present-tense imperatives
 // (`'create' | 'update' | 'delete'`). The auto-wired event names use
-// past tense — `created`, `updated`, `deleted` — to match the rest of
-// the guild's event namespace (`commission.posted`, `code.reviewed`)
-// and to read naturally as a log line.
+// past tense — `created`, `updated`, `deleted` — to read naturally as
+// a log line and match the past-tense convention used elsewhere in the
+// guild's event namespace.
 const CDC_VERB_PAST_TENSE: Record<'create' | 'update' | 'delete', string> = {
   create: 'created',
   update: 'updated',
@@ -425,7 +483,9 @@ export function createClockworks(): Plugin {
       // in `start()`. We do not re-read `standingOrders` per tick — a
       // schedule edit requires an apparatus restart. Same SOF lambda
       // the dispatcher uses (D15) so subscribers see a uniform
-      // `standing-order.failed` shape regardless of trigger source.
+      // `clockworks.standing-order.failed` shape regardless of trigger
+      // source. The literal lives in `event-names.ts` (D20) so the
+      // dispatcher's loop-guard probe and this emit cannot drift apart.
       return runScheduleSweep({
         schedule,
         events,
@@ -434,7 +494,7 @@ export function createClockworks(): Plugin {
         home: g.home,
         now: () => new Date(),
         signalStandingOrderFailed: async (payload) => {
-          await api.emit('standing-order.failed', payload, 'framework');
+          await api.emit(STANDING_ORDER_FAILED_EVENT, payload, 'framework');
         },
         ...(opts?.onDispatch !== undefined ? { onDispatch: opts.onDispatch } : {}),
       });
@@ -475,7 +535,7 @@ export function createClockworks(): Plugin {
         standingOrders,
         home: g.home,
         signalStandingOrderFailed: async (payload) => {
-          await api.emit('standing-order.failed', payload, 'framework');
+          await api.emit(STANDING_ORDER_FAILED_EVENT, payload, 'framework');
         },
         ...(opts?.eventId !== undefined ? { eventId: opts.eventId } : {}),
         ...(opts?.max !== undefined ? { max: opts.max } : {}),
@@ -487,8 +547,8 @@ export function createClockworks(): Plugin {
   return {
     apparatus: {
       // Clerk is required because the writ-lifecycle observer reads
-      // `clerk/writs` to fan writ-lifecycle and commission events into
-      // the events book.
+      // `clerk/writs` to fan `writ.<type>.<phase>` events into the
+      // events book.
       requires: ['stacks', 'clerk'],
       // Animator and Loom are soft dependencies — needed by the stdlib
       // `summon-relay` (resolved lazily at handler-call time) so a guild
@@ -523,6 +583,31 @@ export function createClockworks(): Plugin {
         // additional stdlib relays append here; third-party relays use
         // a standalone `relays` kit.
         relays: [createSummonRelay()] as RelayDefinition[],
+        // Function-form `events` kit contribution — the first in-tree
+        // consumer of C1's kit-contribution mechanism. Returns the
+        // union of:
+        //
+        //   - the two intrinsic Clockworks events
+        //     (`clockworks.standing-order.failed`, `clockworks.timer`)
+        //   - one `writ.<type>.<status>` entry per `(writType, state)`
+        //     pair known to Clerk's writ-type registry at the moment
+        //     Clockworks starts (D3: snapshot at start; no in-tree
+        //     downstream registers writ types after Clockworks).
+        //
+        // We trust Clerk's validator (D19) — no defensive guard against
+        // malformed type configs. C1's build path evaluates this once
+        // per Clockworks start; no further memoization (D18).
+        //
+        // Clerk is reached via the guild singleton (D1), mirroring the
+        // existing Stacks resolution pattern in `start()` below. In
+        // production this is always reachable because the apparatus
+        // declares `requires: ['clerk']`. Test fixtures that bypass the
+        // dependency contract (registering only Stacks for unit-level
+        // isolation) will fall through to the static intrinsic set —
+        // we trap the `Apparatus "clerk" not installed` error and warn,
+        // since failing the boot here would force every unit test to
+        // wire a stub Clerk it does not otherwise need.
+        events: buildEventsContribution,
       },
 
       async start(ctx: StartupContext): Promise<void> {
@@ -676,64 +761,14 @@ export function createClockworks(): Plugin {
           }
         }
 
-        // ── First-boot guild.initialized emission ─────────────────────
-        // The persisted event row is itself the idempotency marker — we
-        // query the events book for any prior `guild.initialized` row
-        // and emit one if absent. Subsequent boots find the row and
-        // skip. Wrapped in best-effort try/catch per D13.
-        try {
-          const priorBoots = await events.find({
-            where: [['name', '=', 'guild.initialized']],
-            limit: 1,
-          });
-          if (priorBoots.length === 0) {
-            await api.emit('guild.initialized', null, 'framework');
-          }
-        } catch (err) {
-          const reason = err instanceof Error ? err.message : String(err);
-          console.warn(
-            `[clockworks] best-effort emit of "guild.initialized" failed: ${reason}`,
-          );
-        }
-
-        // ── migration.applied emission ────────────────────────────────
-        // Stacks' `reconcileSchemas` is the only authoritative migration
-        // code path today: it runs `CREATE TABLE IF NOT EXISTS` /
-        // `CREATE INDEX IF NOT EXISTS` for every book contributed via
-        // the `books` kit. Stacks runs first (clockworks `requires:
-        // stacks`), so by the time we get here the schema reconciliation
-        // is complete.
-        //
-        // We don't have a "what changed this boot" signal from Stacks
-        // (the IF NOT EXISTS calls are silent on whether they did
-        // anything). Instead, we use the events book itself as the
-        // ledger: emit one `migration.applied` per `(pluginId, book)`
-        // pair the first time we observe it, and never re-emit. First
-        // boot fires one event per declared book; subsequent boots fire
-        // events only for newly-introduced books. That matches the
-        // catalog's "a database migration is applied" semantics — each
-        // event records the moment a new schema came into existence.
-        //
-        // Idempotency is per-book, not per-boot, so adding a new book
-        // in plugin v1.2 fires `migration.applied` for that book on the
-        // next boot even though the guild itself isn't newly
-        // initialized. Wrapped in best-effort try/catch per D13.
-        try {
-          await emitMigrationsApplied(ctx, api, events);
-        } catch (err) {
-          const reason = err instanceof Error ? err.message : String(err);
-          console.warn(
-            `[clockworks] best-effort emit of "migration.applied" failed: ${reason}`,
-          );
-        }
-
-        // ── Writ-lifecycle and commission CDC observer ────────────────
+        // ── Writ-lifecycle CDC observer ───────────────────────────────
         // Watches `clerk/writs` for both create and update events. The
-        // observer fires writ-lifecycle events (`{type}.ready`, etc.)
-        // for every writ, plus the `commission.*` family for root
-        // mandates. Phase 2 (`failOnError: false`) so a slow events
-        // book write cannot stall a writ transition; per-emit try/catch
-        // already handles failure modes per D13.
+        // observer fires `writ.<type>.<phase>` on every status
+        // transition (including entry into `new` / `cancelled`) using
+        // the writ's `phase` verbatim as the suffix. Phase 2
+        // (`failOnError: false`) so a slow events book write cannot
+        // stall a writ transition; per-emit try/catch already handles
+        // failure modes.
         const writsBook: ReadOnlyBook<WritDoc> = stacks.readBook<WritDoc>(
           'clerk',
           'writs',
@@ -756,91 +791,3 @@ export function createClockworks(): Plugin {
   };
 }
 
-/**
- * Walk every `books` kit contribution from the startup context and emit
- * one `migration.applied` event per `(pluginId, book)` pair we have not
- * already announced. Idempotency is keyed off the events book itself —
- * each emitted row is the durable marker that the migration was
- * announced.
- *
- * Payload shape: `{ pluginId, book, indexes }`. The catalog defines
- * `migration.applied` only by name and namespace; we choose a payload
- * that names the affected entity (the new schema) plus its identifying
- * index list per the spec's "name the affected entity id plus any
- * disambiguating context" guidance.
- *
- * Per-emit failures (a single book's emit throwing) don't stop the
- * loop — we trap and warn so a single bad row doesn't block the rest of
- * the boot from being announced.
- */
-async function emitMigrationsApplied(
-  ctx: StartupContext,
-  api: ClockworksApi,
-  events: Book<EventDoc>,
-): Promise<void> {
-  const bookKits = ctx.kits('books');
-  if (bookKits.length === 0) return;
-
-  // Pre-load every prior `migration.applied` row so we can short-circuit
-  // re-emission without one query per book. Subsequent boots will find
-  // exactly the rows for books that were already migrated.
-  const priorRows = await events.find({
-    where: [['name', '=', 'migration.applied']],
-  });
-  const seen = new Set<string>();
-  for (const row of priorRows) {
-    const payload = row.payload as
-      | { pluginId?: unknown; book?: unknown }
-      | null
-      | undefined;
-    if (!payload || typeof payload !== 'object') continue;
-    const pluginId = (payload as { pluginId?: unknown }).pluginId;
-    const book = (payload as { book?: unknown }).book;
-    if (typeof pluginId === 'string' && typeof book === 'string') {
-      seen.add(`${pluginId}/${book}`);
-    }
-  }
-
-  for (const entry of bookKits) {
-    const books = entry.value;
-    if (typeof books !== 'object' || books === null) continue;
-    for (const [bookName, schema] of Object.entries(books as Record<string, unknown>)) {
-      const key = `${entry.pluginId}/${bookName}`;
-      if (seen.has(key)) continue;
-      const indexes = extractIndexes(schema);
-      try {
-        await api.emit(
-          'migration.applied',
-          {
-            pluginId: entry.pluginId,
-            book: bookName,
-            indexes,
-          },
-          'framework',
-        );
-        seen.add(key);
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        console.warn(
-          `[clockworks] best-effort emit of "migration.applied" for ${key} failed: ${reason}`,
-        );
-      }
-    }
-  }
-}
-
-/**
- * Pull the declared `indexes` off a per-book schema contribution.
- * Returns an empty array when the contribution is malformed or omits
- * indexes — `reconcileSchemas` already tolerates such shapes silently,
- * and we mirror that.
- */
-function extractIndexes(schema: unknown): readonly (string | string[])[] {
-  if (typeof schema !== 'object' || schema === null) return [];
-  const indexes = (schema as { indexes?: unknown }).indexes;
-  if (!Array.isArray(indexes)) return [];
-  return indexes.filter(
-    (i): i is string | string[] =>
-      typeof i === 'string' || Array.isArray(i),
-  );
-}

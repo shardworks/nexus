@@ -118,7 +118,25 @@ async function buildGuild(): Promise<Fixture> {
   const clerk = clerkPlugin.apparatus.provides as ClerkApi;
   apparatusMap.set('clerk', clerk);
 
-  await clockworksPlugin.apparatus.start(buildCtx());
+  // Surface clockworks's own `supportKit.events` declaration through
+  // ctx.kits('events') — in production Arbor's `wireKitEntries` does
+  // this for us; the unit fixture has to do it manually.
+  const clockworksEventsContribution = (clockworksPlugin.apparatus.supportKit as
+    | { events?: unknown }
+    | undefined)?.events;
+  const clockworksKitEntries: KitEntry[] =
+    clockworksEventsContribution !== undefined
+      ? [
+          {
+            pluginId: 'clockworks',
+            packageName: '@shardworks/clockworks-apparatus',
+            type: 'events',
+            value: clockworksEventsContribution,
+          },
+        ]
+      : [];
+
+  await clockworksPlugin.apparatus.start(buildCtx(clockworksKitEntries));
   const clockworks = clockworksPlugin.apparatus.provides as ClockworksApi;
   apparatusMap.set('clockworks', clockworks);
 
@@ -146,37 +164,48 @@ async function buildGuild(): Promise<Fixture> {
 describe('Clockworks — end-to-end framework event emission', () => {
   afterEach(() => clearGuild());
 
-  it('first guild boot produces exactly one guild.initialized event row', async () => {
+  it('a fresh Clockworks start() produces zero events rows (no boot-time noise)', async () => {
     const fix = await buildGuild();
-
-    const initialized = await fix.byName('guild.initialized');
-    assert.equal(initialized.length, 1);
-    assert.equal(initialized[0]!.emitter, 'framework');
+    const all = await fix.events();
+    assert.deepEqual(all, [], 'no boot-time emissions land in the events book');
   });
 
-  it('a second start of the Clockworks against the same backend does NOT add a guild.initialized row', async () => {
-    // First boot.
-    await buildGuild();
-    // Tear down the singleton, but keep the backend's persisted state.
-    // Because each buildGuild() uses a fresh MemoryBackend, simulate
-    // "second boot of the same guild" by starting Clockworks twice
-    // against the same Stacks instance — the events book retains the
-    // first emission so the second start finds the row and skips.
+  it('declares its event vocabulary via signal validation: intrinsic + writ.<type>.<status> for every state Clerk knows', async () => {
     const fix = await buildGuild();
-    const beforeCount = (await fix.byName('guild.initialized')).length;
-    assert.equal(beforeCount, 1);
 
-    // Start Clockworks again (against the SAME backend / same guild
-    // singleton) and confirm no second row appears.
-    const clockworksAgain = createClockworks();
-    if (!('apparatus' in clockworksAgain)) throw new Error('clockworks');
-    await clockworksAgain.apparatus.start({ on: () => {}, kits: () => [] });
+    // The two intrinsic Clockworks events plus every `writ.mandate.<status>`
+    // pair declared by Clerk's mandate config are framework-owned. The
+    // signal-tool validator surfaces this distinction by rejecting plugin-
+    // declared names with the framework-owned message; an undeclared name
+    // is rejected with the "not a declared event" message instead.
+    const expected = [
+      'clockworks.standing-order.failed',
+      'clockworks.timer',
+      'writ.mandate.new',
+      'writ.mandate.open',
+      'writ.mandate.stuck',
+      'writ.mandate.completed',
+      'writ.mandate.failed',
+      'writ.mandate.cancelled',
+    ];
+    for (const name of expected) {
+      assert.throws(
+        () => fix.clockworks.validateSignal(name),
+        /framework-owned event/,
+        `expected "${name}" to be framework-owned`,
+      );
+    }
 
-    const afterCount = (await fix.byName('guild.initialized')).length;
-    assert.equal(afterCount, 1, 'a re-start must not add another guild.initialized row');
+    // A name that was never declared falls into the "not a declared event"
+    // branch instead — proving the merged set's positive coverage stops at
+    // the declared list above.
+    assert.throws(
+      () => fix.clockworks.validateSignal('writ.mandate.totally-made-up'),
+      /not a declared event/,
+    );
   });
 
-  it('posting a root mandate fires mandate.ready, commission.posted, and commission.state.changed', async () => {
+  it('posting a root mandate then publishing it fires writ.mandate.new and writ.mandate.open', async () => {
     const fix = await buildGuild();
 
     const writ = await fix.clerk.post({ title: 'do work', body: 'b' });
@@ -184,33 +213,30 @@ describe('Clockworks — end-to-end framework event emission', () => {
     assert.equal(opened.phase, 'open');
 
     const names = await fix.eventNames();
-    assert.ok(names.includes('mandate.ready'));
-    assert.ok(names.includes('commission.posted'));
-    assert.ok(names.includes('commission.state.changed'));
+    assert.ok(names.includes('writ.mandate.new'));
+    assert.ok(names.includes('writ.mandate.open'));
   });
 
-  it('posting a draft followed by writ-publish fires the same set as direct creation', async () => {
+  it('posting a draft fires writ.mandate.new; publishing it fires writ.mandate.open', async () => {
     const fix = await buildGuild();
 
     const draft = await fix.clerk.post({ title: 'drafty', body: 'b', draft: true });
     assert.equal(draft.phase, 'new');
 
-    // Drafts produce no events on creation (D17).
-    const draftNames = (await fix.eventNames()).filter(
-      (n) => n !== 'guild.initialized',
-    );
-    assert.deepEqual(draftNames, []);
+    // Draft creation fires the universal `writ.mandate.new` row and
+    // nothing else.
+    assert.deepEqual(await fix.eventNames(), ['writ.mandate.new']);
 
-    // Publish (new → open) — should fire ready + posted + state.changed.
+    // Publish (new → open) fires writ.mandate.open.
     await fix.clerk.transition(draft.id, 'open');
 
-    const names = (await fix.eventNames()).filter((n) => n !== 'guild.initialized');
-    assert.ok(names.includes('mandate.ready'));
-    assert.ok(names.includes('commission.posted'));
-    assert.ok(names.includes('commission.state.changed'));
+    assert.deepEqual(await fix.eventNames(), [
+      'writ.mandate.new',
+      'writ.mandate.open',
+    ]);
   });
 
-  it('drives a root mandate through stuck → open → completed and observes the full sequence', async () => {
+  it('drives a root mandate through stuck → open → completed and observes the full writ.mandate.<status> sequence', async () => {
     const fix = await buildGuild();
 
     const writ = await fix.clerk.post({ title: 'multi-step', body: 'b' });
@@ -223,54 +249,47 @@ describe('Clockworks — end-to-end framework event emission', () => {
     // open → completed
     await fix.clerk.transition(writ.id, 'completed');
 
-    const all = (await fix.eventNames()).filter((n) => n !== 'guild.initialized');
-
-    // mandate-lifecycle suffix sequence
-    const lifecycle = all.filter((n) => n.startsWith('mandate.'));
+    // Universal contract: every transition (including initial creation)
+    // fires exactly one `writ.<type>.<phase>` row. The strict-shape
+    // assertion is the regression gate against the very change C2
+    // makes — keep `deepEqual`, do not relax to `includes`.
+    const lifecycle = (await fix.eventNames()).filter((n) => n.startsWith('writ.mandate.'));
     assert.deepEqual(lifecycle, [
-      'mandate.ready',     // new → open transition
-      'mandate.stuck',     // open → stuck
-      'mandate.ready',     // stuck → open (D21 re-entry)
-      'mandate.completed', // open → completed
+      'writ.mandate.new',       // post() → draft creation
+      'writ.mandate.open',      // new → open transition (publish)
+      'writ.mandate.stuck',     // open → stuck
+      'writ.mandate.open',      // stuck → open (re-entry)
+      'writ.mandate.completed', // open → completed
     ]);
-
-    // commission.* sequence
-    const commission = all.filter((n) => n.startsWith('commission.'));
-    // commission.posted fires twice — once per entry into open (D15).
-    assert.equal(commission.filter((n) => n === 'commission.posted').length, 2);
-    // commission.state.changed fires once per phase change (4 transitions
-    // total: new→open, open→stuck, stuck→open, open→completed).
-    assert.equal(commission.filter((n) => n === 'commission.state.changed').length, 4);
-    // sealed AND completed both fire on entry into completed (D5).
-    assert.equal(commission.filter((n) => n === 'commission.sealed').length, 1);
-    assert.equal(commission.filter((n) => n === 'commission.completed').length, 1);
 
     // commissionId on every row points at the root writ's id.
     const allDocs = await fix.events();
-    for (const doc of allDocs.filter((d) => d.name.startsWith('commission.'))) {
+    for (const doc of allDocs.filter((d) => d.name.startsWith('writ.mandate.'))) {
       const payload = doc.payload as Record<string, unknown>;
       assert.equal(payload.commissionId, writ.id);
     }
   });
 
-  it('a transition into cancelled produces NO event row (D3)', async () => {
+  it('a transition into cancelled fires writ.mandate.cancelled (universal contract)', async () => {
     const fix = await buildGuild();
 
     const writ = await fix.clerk.post({ title: 'discard', body: 'b' });
-    const beforeCancel = (await fix.eventNames()).filter((n) => n !== 'guild.initialized');
-
     await fix.clerk.transition(writ.id, 'cancelled', { resolution: 'no longer needed' });
 
-    const afterCancel = (await fix.eventNames()).filter((n) => n !== 'guild.initialized');
-    assert.deepEqual(afterCancel, beforeCancel, 'cancellation must not add events');
+    const names = await fix.eventNames();
+    assert.deepEqual(names, [
+      'writ.mandate.new',
+      'writ.mandate.cancelled',
+    ]);
   });
 
-  it('a child non-mandate writ fires {type}.ready but NOT commission.* events', async () => {
+  it('a child mandate writ behaves identically — fires writ.mandate.<status> with commissionId pointing at the root', async () => {
     const fix = await buildGuild();
 
     const root = await fix.clerk.post({ title: 'parent', body: 'b' });
     await fix.clerk.transition(root.id, 'open');
-    // Child of type 'mandate' — but parentId is set, so commission.* gates off (D5).
+    // Child of type 'mandate' — same universal contract; no privileged
+    // commission.* family.
     const child = await fix.clerk.post({
       title: 'child',
       body: 'b',
@@ -279,21 +298,16 @@ describe('Clockworks — end-to-end framework event emission', () => {
     });
     await fix.clerk.transition(child.id, 'open');
 
-    const childReady = await fix.byName('mandate.ready');
-    // mandate.ready fires for both root and child.
-    assert.ok(childReady.length >= 2);
+    // writ.mandate.open fires once for the root and once for the child.
+    const opens = await fix.byName('writ.mandate.open');
+    assert.equal(opens.length, 2);
 
-    // commission.posted fired exactly once (for the root).
-    const posted = await fix.byName('commission.posted');
-    assert.equal(posted.length, 1);
-    const payload = posted[0]!.payload as Record<string, unknown>;
-    assert.equal(payload.commissionId, root.id);
-    // Sanity: the child's lifecycle event carries the root's id as commissionId.
-    const ready = childReady.find(
+    // The child's lifecycle event carries the root's id as commissionId.
+    const childOpen = opens.find(
       (d) => (d.payload as Record<string, unknown>).writId === child.id,
     );
-    assert.ok(ready);
-    assert.equal((ready!.payload as Record<string, unknown>).commissionId, root.id);
+    assert.ok(childOpen);
+    assert.equal((childOpen!.payload as Record<string, unknown>).commissionId, root.id);
   });
 
   it('every event row is emitted with emitter="framework"', async () => {

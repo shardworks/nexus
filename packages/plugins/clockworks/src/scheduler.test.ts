@@ -257,7 +257,7 @@ describe('runScheduleSweep — @every fires on cadence', () => {
     });
     assert.deepEqual(summary, { fired: 1, errors: 0 });
     assert.equal(invoked, 1);
-    assert.deepEqual(captured, ['schedule.fired']);
+    assert.deepEqual(captured, ['clockworks.timer']);
     // nextFireTime advanced 30s.
     assert.equal(entry.nextFireTime.toISOString(), '2026-01-01T00:01:00.000Z');
 
@@ -358,7 +358,7 @@ describe('runScheduleSweep — cron fires on the natural boundary', () => {
 describe('runScheduleSweep — persisted row shapes', () => {
   afterEach(() => clearGuild());
 
-  it('writes a schedule.fired event with processed=true and the D2 payload', async () => {
+  it('writes a clockworks.timer event with processed=true and the D2 payload', async () => {
     const fix = await buildFixture();
     const start = new Date('2026-01-01T00:00:00Z');
     const clock = makeVirtualClock(start);
@@ -384,7 +384,7 @@ describe('runScheduleSweep — persisted row shapes', () => {
 
     const events = await fix.allEvents();
     assert.equal(events.length, 1);
-    assert.equal(events[0]!.name, 'schedule.fired');
+    assert.equal(events[0]!.name, 'clockworks.timer');
     assert.equal(events[0]!.processed, true);
     assert.equal(events[0]!.emitter, 'framework');
     assert.equal(events[0]!.firedAt, '2026-01-01T00:00:30.000Z');
@@ -454,7 +454,7 @@ describe('runScheduleSweep — persisted row shapes', () => {
     });
 
     const view = received as { processed?: unknown; name: string };
-    assert.equal(view.name, 'schedule.fired');
+    assert.equal(view.name, 'clockworks.timer');
     assert.equal(Object.prototype.hasOwnProperty.call(view, 'processed'), false);
   });
 
@@ -604,7 +604,7 @@ describe('runScheduleSweep — error paths', () => {
     // the synthesized triggering event id+name.
     assert.equal(sofPayloads.length, 1);
     assert.deepEqual(sofPayloads[0]!.standingOrder, order);
-    assert.equal(sofPayloads[0]!.triggeringEvent.name, 'schedule.fired');
+    assert.equal(sofPayloads[0]!.triggeringEvent.name, 'clockworks.timer');
     assert.equal(sofPayloads[0]!.error, 'boom');
   });
 
@@ -737,7 +737,7 @@ describe('runScheduleSweep — observer hook', () => {
 
     assert.equal(observed.length, 2);
     for (const obs of observed) {
-      assert.equal(obs.eventName, 'schedule.fired');
+      assert.equal(obs.eventName, 'clockworks.timer');
       assert.equal(obs.handlerName, 'r');
       assert.equal(obs.status, 'success');
     }

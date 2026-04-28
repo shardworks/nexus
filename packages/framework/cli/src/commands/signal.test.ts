@@ -233,12 +233,12 @@ describe('runSignal — error surfaces', () => {
   it('surfaces the framework-owned rejection for a plugin-claimed name', async () => {
     setupStubGuild({
       declaredNames: ['demo.declared'],
-      pluginOwnedNames: ['mandate.ready'],
+      pluginOwnedNames: ['writ.mandate.open'],
     });
 
     await assert.rejects(
-      () => runSignal({ name: 'mandate.ready', payloadJson: '{}' }),
-      /signal: "mandate\.ready" is a framework-owned event/,
+      () => runSignal({ name: 'writ.mandate.open', payloadJson: '{}' }),
+      /signal: "writ\.mandate\.open" is a framework-owned event/,
     );
   });
 

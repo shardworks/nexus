@@ -20,7 +20,7 @@ The event system — signaling, reading, and validation. Events are immutable fa
 
 Signal an event — persist it to the Clockworks event queue. Does **not** process the event.
 
-- `name` — event name (e.g. `"commission.posted"`, `"code.reviewed"`)
+- `name` — event name (e.g. `"writ.mandate.open"`, `"code.reviewed"`)
 - `payload` — JSON-serializable event data, or `null`
 - `emitter` — who signaled it: anima name, engine name, or `"framework"`
 - **Returns:** the event ID (e.g. `"evt-a3f7b2c1"`)
@@ -156,7 +156,7 @@ Commission lifecycle and writ CRUD. All entities are historical records — no d
 
 #### `commission(opts): CommissionResult`
 
-Post a commission to the guild. Creates a record with status `"posted"`, creates a mandate writ linked to the commission, and signals `commission.posted`. Validates that the workshop exists in guild.json.
+Post a commission to the guild. Creates a record with status `"posted"` and creates a mandate writ linked to the commission. Validates that the workshop exists in guild.json. Subscribers wanting to react to the new commission should bind a standing order to the writ-lifecycle event the framework fires when the mandate enters its active phase (`writ.mandate.open`); event emission is the writ-lifecycle observer's responsibility, not part of `commission()`'s contract.
 
 **Options (`CommissionOptions`):** `{ home, spec, workshop }`
 
@@ -368,7 +368,7 @@ Process a single event. If `eventId` is provided, processes that specific event.
 
 ### `clockRun(home): Promise<ClockRunResult>`
 
-Process all pending events until the queue is empty. Loops because standing order failures may generate new events (`standing-order.failed`).
+Process all pending events until the queue is empty. Loops because standing order failures may generate new events (`clockworks.standing-order.failed`).
 
 ### `clockStart(home, options?): Promise<ClockStartResult>`
 

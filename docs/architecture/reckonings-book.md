@@ -141,7 +141,7 @@ interface ReckoningDoc {
   outcome: 'accepted' | 'deferred' | 'declined' | 'no-op';
 
   /**
-   * Triggering Clockworks event id — the `schedule.fired` row that
+   * Triggering Clockworks event id — the `clockworks.timer` row that
    * produced this tick. Optional only on the patron fast path.
    * See "Tick identity".
    */
@@ -238,11 +238,11 @@ empty.
 
 The Reckoner's v0 trigger is a fixed-interval polling tick implemented
 as a Clockworks `schedule:` standing order. Every fire writes a
-synthesized `schedule.fired` event row into `clockworks/events` (see
+synthesized `clockworks.timer` event row into `clockworks/events` (see
 [clockworks.md → Scheduled Standing Orders](clockworks.md#scheduled-standing-orders))
 with a unique event id of the form `e-<base36_ts>-<hex>`.
 
-Each Reckonings record stamps the triggering `schedule.fired` event id
+Each Reckonings record stamps the triggering `clockworks.timer` event id
 into a `tickEventId` field. Together with `consideredAt`, this gives
 the consumer two complementary handles:
 
@@ -253,7 +253,7 @@ the consumer two complementary handles:
   per-petition timeline ordering without going through the events
   book.
 
-The doc deliberately reuses the framework-emitted `schedule.fired` id
+The doc deliberately reuses the framework-emitted `clockworks.timer` id
 rather than synthesizing a new "Reckoner tick id" — it earns no second
 piece of identity. There is one exception:
 
@@ -264,7 +264,7 @@ patron-posted petition with `urgency: 'immediate'` is auto-accepted at
 post time, with the writ created synchronously and no waiting for the
 next tick. The Reckonings row for an `immediate` acceptance is still
 written so the audit trail is uniform — but because the row is written
-**outside** any tick, there is no `schedule.fired` event id to stamp.
+**outside** any tick, there is no `clockworks.timer` event id to stamp.
 `tickEventId` is therefore optional, not required: present on every
 non-fast-path row, absent on patron-fast-path acceptances.
 
@@ -364,7 +364,7 @@ one query against the Reckonings book, not from a join across the
 petition-state book and the events book and a heuristic. Splitting
 the journal into "considered with state change" and "considered
 without state change" — keeping the second set in some sibling
-overlay or reconstructing it from the schedule.fired stream — would
+overlay or reconstructing it from the clockworks.timer stream — would
 duplicate the journaling work, complicate every consumer query, and
 push reasoning about completeness onto callers.
 

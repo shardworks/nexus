@@ -9,7 +9,7 @@
  *
  *   1. Iterate the in-memory schedule table in `orderIndex` ascending
  *      order (D13). For each entry whose `nextFireTime <= now`:
- *      a. Persist a `schedule.fired` event row with `processed: true`
+ *      a. Persist a `clockworks.timer` event row with `processed: true`
  *         (D5) carrying the verbatim standing order, the order's
  *         array index, and the fire time (D2).
  *      b. Synthesize a matching `GuildEvent` view (no internal
@@ -46,6 +46,10 @@
 import { generateId } from '@shardworks/nexus-core';
 import type { Book } from '@shardworks/stacks-apparatus';
 
+import {
+  CLOCKWORKS_TIMER_EVENT,
+  STANDING_ORDER_FAILED_EVENT,
+} from './event-names.ts';
 import type { GuildEvent, RelayContext, RelayDefinition } from './relay.ts';
 import { computeNextFireTime, type ParsedSchedule } from './schedule-parser.ts';
 import type {
@@ -123,8 +127,8 @@ export interface ScheduleSweepInputs {
   /**
    * Optional callback invoked once per real failure (thrown relay or
    * unresolved relay). The apparatus passes the same lambda it gives
-   * the dispatcher so a `standing-order.failed` event lands in the
-   * events book (D15). Throws are isolated.
+   * the dispatcher so a `clockworks.standing-order.failed` event lands
+   * in the events book (D15). Throws are isolated.
    */
   signalStandingOrderFailed?: (
     payload: StandingOrderFailedPayload,
@@ -209,7 +213,7 @@ interface FireEntryInputs {
 }
 
 /**
- * Fire a single scheduled entry: persist `schedule.fired`, resolve the
+ * Fire a single scheduled entry: persist `clockworks.timer`, resolve the
  * relay, invoke (with isolation), persist a dispatch row, notify the
  * observer, and forward failures via the SOF callback.
  */
@@ -229,15 +233,16 @@ async function fireScheduleEntry(args: FireEntryInputs): Promise<void> {
   const fireTime = now();
   const fireTimeIso = fireTime.toISOString();
 
-  // ── (a) Persist `schedule.fired` event row with processed=true ──
+  // ── (a) Persist `clockworks.timer` event row with processed=true ──
   //
   // D5: the row is the durable record of the fire. Marking it
   // processed at write time means the dispatcher's event-sweep does
   // not pick it up — the scheduler is the only authorized consumer
-  // of `schedule.*` events (the reserved-namespace allowlist enforces
-  // the symmetric rule on emit).
+  // of timer events. The literal lives in `event-names.ts` (D20)
+  // so the persisted row's `name` field and the synthesized
+  // in-memory `GuildEvent` view stay in lockstep.
   const eventId = generateId('e');
-  const eventName = 'schedule.fired';
+  const eventName = CLOCKWORKS_TIMER_EVENT;
   const payload = {
     standingOrder: entry.order,
     orderIndex: entry.orderIndex,
@@ -372,7 +377,7 @@ async function signalFailure(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(
-      `[clockworks] failed to emit standing-order.failed for scheduled fire "${payload.triggeringEvent.id}": ${message}`,
+      `[clockworks] failed to emit ${STANDING_ORDER_FAILED_EVENT} for scheduled fire "${payload.triggeringEvent.id}": ${message}`,
     );
   }
 }
