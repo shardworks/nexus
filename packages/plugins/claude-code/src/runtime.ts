@@ -13,6 +13,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { z } from 'zod';
+
 import { toolNameToRoute } from '@shardworks/tools-apparatus';
 
 import { extractFinalAssistantText, type StreamJsonResult } from './index.ts';
@@ -21,39 +23,54 @@ import type { SessionTerminationTag } from '@shardworks/animator-apparatus';
 
 // ── Config types ────────────────────────────────────────────────────────
 
-/** A serialized tool definition as received in the babysitter config. */
-export interface SerializedTool {
+/**
+ * Zod schema for a serialized tool definition received in the babysitter
+ * config. The `method` field determines the HTTP verb the MCP proxy uses
+ * when forwarding the call to the guild's Tool HTTP API (read tools are
+ * GET-only on the tool server; POSTing to them 404s).
+ */
+export const SerializedToolSchema = z.object({
   /** Tool name (e.g. 'writ-list'). */
-  name: string;
+  name: z.string(),
   /** Tool description. */
-  description: string;
+  description: z.string(),
   /** JSON Schema for the tool's input parameters. */
-  params: Record<string, unknown>;
+  params: z.record(z.string(), z.unknown()),
   /**
-   * HTTP method the guild tool server routes this tool under. The MCP proxy
-   * uses this to avoid POSTing to a GET-only read-tool route (which would
-   * 404). Derived from the tool's `permission` by `permissionToMethod()`.
+   * HTTP method the guild tool server routes this tool under. Derived
+   * from the tool's `permission` by `permissionToMethod()` upstream.
    */
-  method: 'GET' | 'POST' | 'DELETE';
-}
+  method: z.union([z.literal('GET'), z.literal('POST'), z.literal('DELETE')]),
+});
+
+/** A serialized tool definition as received in the babysitter config. */
+export type SerializedTool = z.infer<typeof SerializedToolSchema>;
+
+/**
+ * Zod schema for the config written to the babysitter's stdin by the
+ * spawning process. This is the source of truth for the babysitter's
+ * input contract: the {@link BabysitterConfig} type is derived from it
+ * via `z.infer`, and `readConfigFromStdin` calls `.parse()` to validate.
+ */
+export const BabysitterConfigSchema = z.object({
+  sessionId: z.string(),
+  guildToolUrl: z.string(),
+  dbPath: z.string(),
+  logDir: z.string(),
+  claudeArgs: z.array(z.string()),
+  cwd: z.string(),
+  env: z.record(z.string(), z.string()),
+  prompt: z.string(),
+  tools: z.array(SerializedToolSchema),
+  startedAt: z.string(),
+  provider: z.string(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  /** Temp directory for the system prompt file. Cleaned up in finally block. */
+  systemPromptTmpDir: z.string().optional(),
+});
 
 /** Config written to the babysitter's stdin by the spawning process. */
-export interface BabysitterConfig {
-  sessionId: string;
-  guildToolUrl: string;
-  dbPath: string;
-  logDir: string;
-  claudeArgs: string[];
-  cwd: string;
-  env: Record<string, string>;
-  prompt: string;
-  tools: SerializedTool[];
-  startedAt: string;
-  provider: string;
-  metadata?: Record<string, unknown>;
-  /** Temp directory for the system prompt file. Cleaned up in finally block. */
-  systemPromptTmpDir?: string;
-}
+export type BabysitterConfig = z.infer<typeof BabysitterConfigSchema>;
 
 // ── Source-mode predicate ───────────────────────────────────────────────
 
@@ -109,8 +126,10 @@ export function findRetryableCode(err: unknown, maxDepth: number = 5): string | 
 /**
  * Read the babysitter config from stdin.
  *
- * Reads stdin to completion, parses the JSON, and validates required fields.
- * The spawning process writes config and closes the write end.
+ * Reads stdin to completion, parses the JSON, and validates the result
+ * against {@link BabysitterConfigSchema}. The spawning process writes
+ * the config and closes the write end. Validation errors propagate as
+ * `ZodError` with the field path and issue named in the default format.
  */
 export async function readConfigFromStdin(
   stream: NodeJS.ReadableStream = process.stdin,
@@ -133,20 +152,7 @@ export async function readConfigFromStdin(
     throw new Error(`Invalid JSON config on stdin: ${raw.slice(0, 200)}`);
   }
 
-  const config = parsed as BabysitterConfig;
-
-  // Validate required fields
-  const required: (keyof BabysitterConfig)[] = [
-    'sessionId', 'guildToolUrl', 'dbPath', 'logDir', 'claudeArgs',
-    'cwd', 'env', 'prompt', 'tools', 'startedAt', 'provider',
-  ];
-  for (const field of required) {
-    if (config[field] === undefined || config[field] === null) {
-      throw new Error(`Missing required config field: ${field}`);
-    }
-  }
-
-  return config;
+  return BabysitterConfigSchema.parse(parsed);
 }
 
 // ── HTTP retry helper ───────────────────────────────────────────────────

@@ -130,9 +130,13 @@ describe('readConfigFromStdin()', () => {
 
   it('throws on missing required fields', async () => {
     const stream = streamFromString(JSON.stringify({ sessionId: 'x' }));
+    // Zod's structured error names the field path and the specific
+    // issue (e.g. "expected string, received undefined") in its default
+    // format. We assert the issue keyword rather than the legacy
+    // hand-rolled "Missing required config field" wording.
     await assert.rejects(
       () => readConfigFromStdin(stream),
-      /Missing required config field/,
+      /invalid_type|expected string, received undefined/,
     );
   });
 
@@ -753,9 +757,12 @@ describe('readConfigFromStdin() logDir validation', () => {
       provider: 'claude-code',
     };
     const stream = streamFromString(JSON.stringify(config));
+    // Zod surfaces the offending field path (`["logDir"]`) and the
+    // specific issue in its default error format. Pin against both so a
+    // future regression on either dimension is caught.
     await assert.rejects(
       () => readConfigFromStdin(stream),
-      /Missing required config field: logDir/,
+      /"logDir"[\s\S]*expected string, received undefined/,
     );
   });
 
