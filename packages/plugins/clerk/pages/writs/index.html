@@ -77,6 +77,14 @@
   <h1>Writs</h1>
 
   <div id="writ-list-view">
+  <!--
+    URL-state validation banner. Surfaced when the page is loaded with a
+    URL filter value that does not match any known classification, type,
+    sort column, or sort direction (D6 fail-loud). Pages must not
+    silently fall back to a default — the operator copy-pasting a URL
+    needs honest feedback so they can recover.
+  -->
+  <div id="url-error-banner" class="error-msg" style="display:none;margin-bottom:12px;padding:0.6rem 0.8rem;background:var(--bg2,#1a1b26);border:1px solid var(--red,#f7768e);border-radius:6px;font-size:0.9rem"></div>
   <div class="card" style="margin-bottom: 16px;">
   <div class="toolbar" id="toolbar">
     <button class="btn btn--primary" id="btn-new-writ">New Writ</button>
@@ -221,33 +229,188 @@
     const DEPTH_CAP = 8;
 
     // ── URL handling ───────────────────────────────────────────────────
+    //
+    // All deep-linkable view state for this page rides on
+    // `window.NexusUrl` — the shared helper auto-injected by oculus's
+    // chrome pass. The earlier inline `currentUrlParams` / `updateUrl`
+    // copies are gone (commission moix23w5).
+    //
+    // URL keys, all client-side except `?writ=`, `?classification=`,
+    // and `?type=` which are also accepted by /api/writ/* endpoints:
+    //   ?classification= one of '' | 'initial' | 'active' | 'terminal'.
+    //                    Default '' (All); omitted when default (D4).
+    //   ?type=A&type=B   Repeated keys (D3). Omitted when every known
+    //                    type is selected (the default). Subset → emit
+    //                    each currently-selected type. The empty-set
+    //                    edge case collapses to default on round-trip
+    //                    (operators don't share empty list states).
+    //   ?q=              Search text. Omitted when empty.
+    //   ?sort=           One of phase | title | type | id | createdAt.
+    //                    Default 'createdAt'; omitted when default.
+    //   ?dir=            'asc' | 'desc'. Default 'desc'; omitted when
+    //                    default.
+    //   ?children=       'true' | 'false' (D7). Default true; omitted
+    //                    when default.
+    //   ?cancelled=      'true' | 'false'. Default false; omitted when
+    //                    default.
+    //   ?writ=ID         Detail deep-link; opening pushes (D5).
 
-    /**
-     * Read the current querystring as a `URLSearchParams`. A live snapshot —
-     * always read at call time, never cached, so reasoning stays local.
-     */
-    function currentUrlParams() {
-      return new URLSearchParams(window.location.search);
+    const SORT_COLS = new Set(['phase', 'title', 'type', 'id', 'createdAt']);
+    const SORT_DIRS = new Set(['asc', 'desc']);
+    const CLASSIFICATIONS = new Set(['', 'initial', 'active', 'terminal']);
+
+    /** Append a fail-loud message to the URL-error banner (D6). */
+    function showUrlError(msg) {
+      const el = document.getElementById('url-error-banner');
+      if (!el) return;
+      // Append rather than replace so multiple invalid params each get
+      // their own line — operators see every recovery hint at once.
+      const line = document.createElement('div');
+      line.textContent = msg;
+      el.appendChild(line);
+      el.style.display = 'block';
+    }
+
+    /** Clear the URL-error banner — used before a fresh validation pass. */
+    function clearUrlErrors() {
+      const el = document.getElementById('url-error-banner');
+      if (!el) return;
+      el.innerHTML = '';
+      el.style.display = 'none';
     }
 
     /**
-     * Apply the given key/value changes to the current querystring and
-     * `pushState` the result, preserving any unrelated params already
-     * present. A null/undefined/empty value deletes the key. Mirrors
-     * Ratchet's `updateUrl` (D9). Always pushes — `back-to-list` does
-     * `updateUrl({writ: null})` so the operator's Back button returns to
-     * whatever page they came from rather than collapsing inside the
-     * page's own history (D11).
+     * Apply current filter state to the URL via NexusUrl.update. Always
+     * a replace (D5 default) — filter changes do not push history
+     * entries. When a filter is at its declared default the
+     * corresponding key is omitted (D4). Type[] is omitted when every
+     * known type is selected (the operator-default).
      */
-    function updateUrl(changes) {
-      const params = currentUrlParams();
-      for (const [key, value] of Object.entries(changes)) {
-        if (value === null || value === undefined || value === '') params.delete(key);
-        else params.set(key, value);
+    function writeFiltersToUrl() {
+      const allKnown = knownTypes.length > 0 && knownTypes.every(t => currentType.has(t));
+      const noneSelected = currentType.size === 0;
+      const typeArray = (allKnown || noneSelected) ? null : [...currentType];
+      window.NexusUrl.update({
+        classification: currentClassification === '' ? null : currentClassification,
+        type: typeArray,
+        q: searchText === '' ? null : searchText,
+        sort: sortCol === 'createdAt' ? null : sortCol,
+        dir: sortDir === 'desc' ? null : sortDir,
+        children: showChildren === true ? null : false,
+        cancelled: showCancelled === false ? null : true,
+      });
+    }
+
+    /**
+     * Read the URL filter state into module-level variables. Validates
+     * each value against its known set and surfaces an error banner
+     * for any unknown value (D6 fail-loud). Returns the writ id, if
+     * any, so the caller can route into the detail view.
+     *
+     * Must be called after loadWritTypes() so knownTypes is populated
+     * and the type[] validation can fire.
+     */
+    function readFiltersFromUrl() {
+      clearUrlErrors();
+      const params = window.NexusUrl.read();
+
+      // ── classification ────────────────────────────────────────────
+      const classification = params.get('classification');
+      if (classification !== null) {
+        if (CLASSIFICATIONS.has(classification)) {
+          currentClassification = classification;
+        } else {
+          showUrlError(`Unknown classification "${classification}". Expected one of: initial, active, terminal.`);
+        }
       }
-      const qs = params.toString();
-      const next = window.location.pathname + (qs ? '?' + qs : '');
-      window.history.pushState({}, '', next);
+
+      // ── type[] ─────────────────────────────────────────────────────
+      const typeValues = params.getAll('type');
+      if (typeValues.length > 0) {
+        const knownSet = new Set(knownTypes);
+        const unknown = typeValues.filter(t => !knownSet.has(t));
+        if (unknown.length > 0) {
+          for (const u of unknown) {
+            showUrlError(`Unknown writ type "${u}". The current type registry does not declare this name.`);
+          }
+        } else {
+          currentType = new Set(typeValues);
+        }
+      }
+      // Otherwise leave currentType at its default (set by buildTypeFilterBar to all known types).
+
+      // ── search text ────────────────────────────────────────────────
+      const q = params.get('q');
+      if (q !== null) searchText = q;
+
+      // ── sort ───────────────────────────────────────────────────────
+      const sort = params.get('sort');
+      if (sort !== null) {
+        if (SORT_COLS.has(sort)) {
+          sortCol = sort;
+        } else {
+          showUrlError(`Unknown sort column "${sort}". Expected one of: ${[...SORT_COLS].join(', ')}.`);
+        }
+      }
+      const dir = params.get('dir');
+      if (dir !== null) {
+        if (SORT_DIRS.has(dir)) {
+          sortDir = dir;
+        } else {
+          showUrlError(`Unknown sort direction "${dir}". Expected "asc" or "desc".`);
+        }
+      }
+
+      // ── boolean toggles ───────────────────────────────────────────
+      const childrenRaw = params.get('children');
+      if (childrenRaw !== null) {
+        if (childrenRaw === 'true') showChildren = true;
+        else if (childrenRaw === 'false') showChildren = false;
+        else showUrlError(`Invalid children value "${childrenRaw}". Expected "true" or "false".`);
+      }
+      const cancelledRaw = params.get('cancelled');
+      if (cancelledRaw !== null) {
+        if (cancelledRaw === 'true') showCancelled = true;
+        else if (cancelledRaw === 'false') showCancelled = false;
+        else showUrlError(`Invalid cancelled value "${cancelledRaw}". Expected "true" or "false".`);
+      }
+
+      return params.get('writ');
+    }
+
+    /**
+     * Sync the toolbar UI to current filter state. Called after URL
+     * restore (init / popstate) so visible button fills, the search
+     * input, and the type-filter bar match what the URL describes.
+     */
+    function syncFilterUiFromState() {
+      // Classification buttons
+      document.querySelectorAll('.filter-btn[data-classification]').forEach(btn => {
+        btn.classList.toggle('active-filter', btn.dataset.classification === currentClassification);
+      });
+
+      // Type-filter pills
+      const bar = document.getElementById('type-filter-bar');
+      if (bar) {
+        const allBtn = bar.querySelector('.type-filter-btn[data-type=""]');
+        const typeBtns = [...bar.querySelectorAll('.type-filter-btn:not([data-type=""])')];
+        const allTypeNames = typeBtns.map(b => b.dataset.type);
+        const allActive = allTypeNames.length > 0 && allTypeNames.every(t => currentType.has(t));
+        if (allBtn) allBtn.classList.toggle('active-filter', allActive);
+        typeBtns.forEach(btn => {
+          btn.classList.toggle('active-filter', currentType.has(btn.dataset.type));
+        });
+      }
+
+      // Search input
+      const searchInput = document.getElementById('search-input');
+      if (searchInput && searchInput.value !== searchText) searchInput.value = searchText;
+
+      // Toggles
+      const childrenBtn = document.getElementById('btn-toggle-children');
+      if (childrenBtn) childrenBtn.classList.toggle('active-filter', showChildren);
+      const cancelledBtn = document.getElementById('btn-toggle-cancelled');
+      if (cancelledBtn) cancelledBtn.classList.toggle('active-filter', showCancelled);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────
@@ -1451,7 +1614,7 @@
         writ = await api('GET', '/api/writ/show?id=' + encodeURIComponent(id));
       } catch (e) {
         console.error('Failed to load writ detail:', e);
-        if (!skipUrlPush) updateUrl({ writ: id });
+        if (!skipUrlPush) window.NexusUrl.update({ writ: id }, { push: true });
         renderDetailNotFound(id);
         return;
       }
@@ -1472,8 +1635,9 @@
 
       // Centralised URL push — every callsite into showWritDetail emits
       // ?writ=ID for free, except the popstate-driven path which would
-      // otherwise re-push the current URL.
-      if (!skipUrlPush) updateUrl({ writ: id });
+      // otherwise re-push the current URL. Detail open is a navigation
+      // event (pushes), per the D5 push-vs-replace split.
+      if (!skipUrlPush) window.NexusUrl.update({ writ: id }, { push: true });
 
       // Toggle views
       document.getElementById('writ-list-view').style.display = 'none';
@@ -1505,15 +1669,15 @@
     }
 
     /** Switch back from the detail view to the list view. Centralised so
-     *  the URL clear (`updateUrl({writ: null})`) and the DOM toggle stay
-     *  paired. Per D11 we never call `history.back()` — clicking "Back to
-     *  list" pushes a clean URL so the operator's forward button keeps
-     *  doing what they expect. */
+     *  the URL clear (`{ writ: null }`) and the DOM toggle stay paired.
+     *  Per D11 we never call `history.back()` — clicking "Back to list"
+     *  pushes a clean URL so the operator's forward button keeps doing
+     *  what they expect. */
     function showWritList(opts) {
       const skipUrlPush = !!(opts && opts.skipUrlPush);
       document.getElementById('writ-detail-view').style.display = 'none';
       document.getElementById('writ-list-view').style.display = '';
-      if (!skipUrlPush) updateUrl({ writ: null });
+      if (!skipUrlPush) window.NexusUrl.update({ writ: null }, { push: true });
     }
 
     // ── Data loading ────────────────────────────────────────────────────
@@ -1848,6 +2012,7 @@
       document.querySelectorAll('.filter-btn[data-classification]').forEach(btn => {
         btn.classList.toggle('active-filter', btn.dataset.classification === classification);
       });
+      writeFiltersToUrl();
       loadWrits(true);
     }
 
@@ -1884,6 +2049,7 @@
         btn.classList.toggle('active-filter', currentType.has(btn.dataset.type));
       });
 
+      writeFiltersToUrl();
       loadWrits(true);
     }
 
@@ -1901,16 +2067,17 @@
     document.getElementById('btn-refresh').addEventListener('click', () => loadWrits(true));
 
     document.getElementById('back-btn').addEventListener('click', () => {
-      // D11: push a clean URL via showWritList → updateUrl, never call
-      // history.back(). Survives deep-link entries (the operator may have
-      // arrived directly at ?writ=ID with no prior list-view entry to
-      // pop back to), and keeps Forward navigation predictable.
+      // D11: push a clean URL via showWritList → NexusUrl.update, never
+      // call history.back(). Survives deep-link entries (the operator
+      // may have arrived directly at ?writ=ID with no prior list-view
+      // entry to pop back to), and keeps Forward navigation predictable.
       showWritList();
     });
 
     document.getElementById('btn-toggle-children').addEventListener('click', () => {
       showChildren = !showChildren;
       document.getElementById('btn-toggle-children').classList.toggle('active-filter', showChildren);
+      writeFiltersToUrl();
       renderTable();
     });
 
@@ -1920,6 +2087,7 @@
       // cancelled rows when the toggle is off.
       showCancelled = !showCancelled;
       document.getElementById('btn-toggle-cancelled').classList.toggle('active-filter', showCancelled);
+      writeFiltersToUrl();
       renderTable();
     });
 
@@ -1937,6 +2105,7 @@
 
     document.getElementById('search-input').addEventListener('input', e => {
       searchText = e.target.value;
+      writeFiltersToUrl();
       renderTable();
     });
 
@@ -1949,6 +2118,7 @@
           sortCol = col;
           sortDir = 'asc';
         }
+        writeFiltersToUrl();
         renderTable();
       });
     });
@@ -1957,18 +2127,25 @@
 
     /**
      * Reflect browser navigation (Back / Forward) into the page's view
-     * state. The popstate handler reads `?writ=` from the new URL and
-     * either shows the matching detail (without re-pushing the URL,
-     * which the browser has already done) or returns to the list. This
-     * pairs with the central push inside showWritDetail so the
-     * round-trip stays balanced (D11/D12).
+     * state. The popstate handler now restores the full filter state in
+     * addition to the detail-id state — Back from a deep-linked
+     * filtered URL must reproduce the original filtered view, not just
+     * its detail open/close axis (commission moix23w5).
+     *
+     * The browser has already updated the URL by the time popstate
+     * fires, so showWritDetail / showWritList run with skipUrlPush; the
+     * filter restore reads from `window.location.search` directly via
+     * readFiltersFromUrl and never writes back.
      */
     window.addEventListener('popstate', () => {
-      const writId = currentUrlParams().get('writ');
+      const writId = readFiltersFromUrl();
+      syncFilterUiFromState();
       if (writId) {
         showWritDetail(writId, { skipUrlPush: true });
       } else {
         showWritList({ skipUrlPush: true });
+        // Refresh the list with the restored filter state.
+        loadWrits(true);
       }
     });
 
@@ -1976,12 +2153,19 @@
     loadCodexes();
     loadLinkKinds();
 
-    // Deep-link: ?writ=ID
+    // Deep-link: ?writ=ID and filter state
     (async function () {
-      // Load writ types first so currentType default is set before fetching writs
+      // Load writ types first so currentType default is set and known
+      // type names are populated — the URL-restore step needs them to
+      // validate ?type= against the registry.
       await loadWritTypes();
 
-      var writId = currentUrlParams().get('writ');
+      // Read URL filter state AFTER buildTypeFilterBar (inside
+      // loadWritTypes) so default-fill does not clobber URL-restored
+      // selections. readFiltersFromUrl validates each value and routes
+      // unknowns to the fail-loud banner per D6.
+      var writId = readFiltersFromUrl();
+      syncFilterUiFromState();
 
       await loadWrits(true);
 

@@ -1405,17 +1405,16 @@ describe('Deep descendant rendering in detail view', () => {
   });
 });
 
-describe('URL deep-link helpers (currentUrlParams + updateUrl + popstate cycle)', () => {
-  // Mirrors the URL helpers in index.html. The page IIFE reads from
-  // `window.location.search` and pushes via `window.history.pushState`;
-  // here we test the shape of those interactions by injecting a fake
-  // window. Keeping these tests beside the rest of the page logic locks
-  // in the contract that:
-  //   - showWritDetail pushes ?writ=ID
-  //   - showWritList clears ?writ
-  //   - skipUrlPush suppresses the push (the popstate-driven path)
-  //   - the popstate handler reads ?writ from the new URL and routes
-  //     into showWritDetail (skipUrlPush) or showWritList (skipUrlPush)
+describe('URL deep-link contract (window.NexusUrl + filter state + popstate cycle)', () => {
+  // The page now relies on the shared `window.NexusUrl` helper that
+  // oculus auto-injects. The inline `currentUrlParams` / `updateUrl`
+  // copies were removed in commission moix23w5; the source of truth
+  // for these tests is `packages/plugins/oculus/src/static/nexus-url.js`.
+  //
+  // We model the page's contract directly: detail open pushes a new
+  // history entry, filter changes replace, and the popstate-driven
+  // path uses skipUrlPush so it never re-pushes.
+
   function makeWindow(initialSearch) {
     const w = {
       location: {
@@ -1424,10 +1423,15 @@ describe('URL deep-link helpers (currentUrlParams + updateUrl + popstate cycle)'
       },
       history: {
         pushed: [],
-        pushState(state, _title, url) {
+        replaced: [],
+        pushState(_state, _title, url) {
           this.pushed.push(url);
-          // Reflect the push back into location so subsequent reads
-          // see the new querystring — matching real browser behaviour.
+          const idx = url.indexOf('?');
+          w.location.search = idx === -1 ? '' : url.slice(idx);
+          w.location.pathname = idx === -1 ? url : url.slice(0, idx);
+        },
+        replaceState(_state, _title, url) {
+          this.replaced.push(url);
           const idx = url.indexOf('?');
           w.location.search = idx === -1 ? '' : url.slice(idx);
           w.location.pathname = idx === -1 ? url : url.slice(0, idx);
@@ -1435,62 +1439,107 @@ describe('URL deep-link helpers (currentUrlParams + updateUrl + popstate cycle)'
       },
       _popstate: null,
       addEventListener(name, fn) { if (name === 'popstate') this._popstate = fn; },
+      removeEventListener() {},
     };
     return w;
   }
 
-  function makeUrlHelpers(w) {
-    function currentUrlParams() {
-      return new URLSearchParams(w.location.search);
+  /** Mount NexusUrl into a fake window by inlining its IIFE shape. */
+  function mountNexusUrl(w) {
+    function read() { return new URLSearchParams(w.location.search); }
+    function isEmpty(v) {
+      if (v === null || v === undefined) return true;
+      if (Array.isArray(v)) return v.length === 0;
+      if (v === '') return true;
+      return false;
     }
-    function updateUrl(changes) {
-      const params = currentUrlParams();
-      for (const [key, value] of Object.entries(changes)) {
-        if (value === null || value === undefined || value === '') params.delete(key);
-        else params.set(key, value);
+    function applyChange(p, k, v) {
+      if (isEmpty(v)) { p.delete(k); return; }
+      if (Array.isArray(v)) {
+        p.delete(k);
+        for (const x of v) {
+          if (x === null || x === undefined || x === '') continue;
+          p.append(k, String(x));
+        }
+        return;
       }
-      const qs = params.toString();
-      const next = w.location.pathname + (qs ? '?' + qs : '');
-      w.history.pushState({}, '', next);
+      if (typeof v === 'boolean') { p.set(k, v ? 'true' : 'false'); return; }
+      p.set(k, String(v));
     }
-    return { currentUrlParams, updateUrl };
+    w.NexusUrl = {
+      read,
+      update(changes, opts) {
+        const p = read();
+        for (const k of Object.keys(changes ?? {})) applyChange(p, k, changes[k]);
+        const qs = p.toString();
+        const next = w.location.pathname + (qs ? '?' + qs : '');
+        if (opts && opts.push) w.history.pushState({}, '', next);
+        else w.history.replaceState({}, '', next);
+        return p;
+      },
+    };
   }
 
-  it('updateUrl({writ: id}) pushes ?writ=ID onto a clean URL', () => {
+  it('detail open pushes ?writ=ID (push: true)', () => {
     const w = makeWindow();
-    const { updateUrl } = makeUrlHelpers(w);
-    updateUrl({ writ: 'w-abc' });
+    mountNexusUrl(w);
+    w.NexusUrl.update({ writ: 'w-abc' }, { push: true });
     assert.deepEqual(w.history.pushed, ['/pages/writs/?writ=w-abc']);
+    assert.equal(w.history.replaced.length, 0);
   });
 
-  it('updateUrl({writ: null}) clears the param while preserving others', () => {
+  it('back-to-list pushes a clean URL (writ: null clears the key)', () => {
     const w = makeWindow('?writ=w-old&keep=me');
-    const { updateUrl } = makeUrlHelpers(w);
-    updateUrl({ writ: null });
-    assert.equal(w.history.pushed.length, 1);
-    assert.equal(w.history.pushed[0], '/pages/writs/?keep=me');
+    mountNexusUrl(w);
+    w.NexusUrl.update({ writ: null }, { push: true });
+    assert.deepEqual(w.history.pushed, ['/pages/writs/?keep=me']);
   });
 
-  it('updateUrl percent-encodes ids that include special characters', () => {
+  it('filter changes replace, never push (D5)', () => {
     const w = makeWindow();
-    const { updateUrl } = makeUrlHelpers(w);
-    updateUrl({ writ: 'w with spaces' });
-    // URLSearchParams encodes spaces as `+`; either form is valid in a
-    // querystring, but the regex below pins what URLSearchParams
-    // actually emits so wording drift breaks the suite.
-    assert.equal(w.history.pushed[0], '/pages/writs/?writ=w+with+spaces');
+    mountNexusUrl(w);
+    w.NexusUrl.update({ classification: 'active' });
+    w.NexusUrl.update({ q: 'hello' });
+    w.NexusUrl.update({ children: false });
+    assert.equal(w.history.pushed.length, 0, 'filter changes must not push');
+    assert.equal(w.history.replaced.length, 3);
+    assert.equal(w.location.search, '?classification=active&q=hello&children=false');
+  });
+
+  it('omit-defaults clears keys when set to default (D4)', () => {
+    const w = makeWindow('?classification=active&q=hello&children=false');
+    mountNexusUrl(w);
+    w.NexusUrl.update({ classification: null, q: null, children: null });
+    assert.equal(w.location.search, '');
+  });
+
+  it('repeated-keys array encoding for type filter (D3)', () => {
+    const w = makeWindow();
+    mountNexusUrl(w);
+    w.NexusUrl.update({ type: ['mandate', 'bug'] });
+    const params = new URLSearchParams(w.location.search);
+    assert.deepEqual(params.getAll('type'), ['mandate', 'bug']);
+  });
+
+  it('boolean encoding uses true/false strings (D7)', () => {
+    const w = makeWindow();
+    mountNexusUrl(w);
+    w.NexusUrl.update({ children: false, cancelled: true });
+    const params = new URLSearchParams(w.location.search);
+    assert.equal(params.get('children'), 'false');
+    assert.equal(params.get('cancelled'), 'true');
   });
 
   it('a full select → back-to-list → select cycle pushes the right URL sequence', () => {
     const w = makeWindow();
-    const { updateUrl } = makeUrlHelpers(w);
+    mountNexusUrl(w);
 
     // Operator clicks into a writ → showWritDetail pushes ?writ=
-    updateUrl({ writ: 'w-1' });
+    w.NexusUrl.update({ writ: 'w-1' }, { push: true });
     // Back to list → showWritList clears ?writ=
-    updateUrl({ writ: null });
+    w.NexusUrl.update({ writ: null }, { push: true });
     // Operator opens another writ
-    updateUrl({ writ: 'w-2' });
+    w.NexusUrl.update({ writ: 'w-2' }, { push: true });
 
     assert.deepEqual(w.history.pushed, [
       '/pages/writs/?writ=w-1',
@@ -1501,18 +1550,13 @@ describe('URL deep-link helpers (currentUrlParams + updateUrl + popstate cycle)'
 
   it('popstate-driven path does not push (the browser already updated the URL)', () => {
     const w = makeWindow('?writ=w-1');
-    const { currentUrlParams, updateUrl } = makeUrlHelpers(w);
+    mountNexusUrl(w);
 
-    // Simulate the popstate dispatch: the page reads ?writ from the
-    // current URL and calls showWritDetail with skipUrlPush=true. We
-    // model showWritDetail's URL-push branch here as "if not
-    // skipUrlPush, updateUrl({writ: id})" — see the index.html
-    // implementation. The expected behaviour is zero pushes.
     function simulateShowWritDetail(id, skipUrlPush) {
-      if (!skipUrlPush) updateUrl({ writ: id });
+      if (!skipUrlPush) w.NexusUrl.update({ writ: id }, { push: true });
     }
     function simulateShowWritList(skipUrlPush) {
-      if (!skipUrlPush) updateUrl({ writ: null });
+      if (!skipUrlPush) w.NexusUrl.update({ writ: null }, { push: true });
     }
 
     // Forward to detail (programmatic, normal) — pushes once.
@@ -1533,25 +1577,33 @@ describe('URL deep-link helpers (currentUrlParams + updateUrl + popstate cycle)'
     assert.equal(w.history.pushed[1], '/pages/writs/');
   });
 
-  it('popstate handler reads ?writ from the new URL (round-trip simulation)', () => {
+  it('popstate handler reads ?writ from the new URL and restores filter state', () => {
     const w = makeWindow();
-    const { currentUrlParams, updateUrl } = makeUrlHelpers(w);
+    mountNexusUrl(w);
 
-    // Track which view the page would be showing.
+    // Track which view the page would be showing AND the filter state.
     let view = 'list';
     let detailId = null;
+    let appliedClassification = '';
+    let appliedSearch = '';
     function showWritDetail(id, opts) {
       view = 'detail';
       detailId = id;
-      if (!(opts && opts.skipUrlPush)) updateUrl({ writ: id });
+      if (!(opts && opts.skipUrlPush)) w.NexusUrl.update({ writ: id }, { push: true });
     }
     function showWritList(opts) {
       view = 'list';
       detailId = null;
-      if (!(opts && opts.skipUrlPush)) updateUrl({ writ: null });
+      if (!(opts && opts.skipUrlPush)) w.NexusUrl.update({ writ: null }, { push: true });
+    }
+    function readFilters() {
+      const p = w.NexusUrl.read();
+      appliedClassification = p.get('classification') ?? '';
+      appliedSearch = p.get('q') ?? '';
+      return p.get('writ');
     }
     function popstate() {
-      const id = currentUrlParams().get('writ');
+      const id = readFilters();
       if (id) showWritDetail(id, { skipUrlPush: true });
       else showWritList({ skipUrlPush: true });
     }
@@ -1563,21 +1615,158 @@ describe('URL deep-link helpers (currentUrlParams + updateUrl + popstate cycle)'
     assert.equal(detailId, 'w-1');
     assert.equal(w.location.search, '?writ=w-1');
 
-    // Browser Back → URL would revert; simulate the browser flipping
-    // the URL state back to the prior entry, then dispatching popstate.
-    w.location.search = '';
+    // Browser Back to a filtered list view (?classification=active&q=foo)
+    w.location.search = '?classification=active&q=foo';
     w._popstate({});
     assert.equal(view, 'list', 'popstate to list-view');
     assert.equal(detailId, null);
+    assert.equal(appliedClassification, 'active', 'classification filter restored from URL');
+    assert.equal(appliedSearch, 'foo', 'search text restored from URL');
     // No additional pushes from the popstate-driven render.
     assert.equal(w.history.pushed.length, 1);
+  });
+});
 
-    // Browser Forward → URL flips forward; popstate fires again.
-    w.location.search = '?writ=w-1';
-    w._popstate({});
-    assert.equal(view, 'detail');
-    assert.equal(detailId, 'w-1');
-    assert.equal(w.history.pushed.length, 1, 'forward popstate still does not push');
+describe('Clerk writs URL state — filter restore from initial URL', () => {
+  // Mirrors the page's readFiltersFromUrl logic. Asserts:
+  //   (a) changing a filter writes the expected URL key with the
+  //       expected value (covered by the URL-helper tests above),
+  //   (b) initial load with the URL key present applies the filter,
+  //   (c) popstate restoration re-applies the filter (covered above).
+  // This block focuses on the (b) case for each filter key.
+
+  /**
+   * Distilled mirror of readFiltersFromUrl in index.html. Returns the
+   * filter state derived from a query string. Validation errors (D6
+   * fail-loud) are returned as a `errors` list — the page surfaces
+   * them in a top-of-page banner, but here we just assert the shape.
+   */
+  function readFiltersFromUrl(search, knownTypes) {
+    const SORT_COLS = new Set(['phase', 'title', 'type', 'id', 'createdAt']);
+    const SORT_DIRS = new Set(['asc', 'desc']);
+    const CLASSIFICATIONS = new Set(['', 'initial', 'active', 'terminal']);
+    const params = new URLSearchParams(search);
+
+    const errors = [];
+    let classification = '';
+    let currentType = new Set(knownTypes);
+    let q = '';
+    let sortCol = 'createdAt';
+    let sortDir = 'desc';
+    let showChildren = true;
+    let showCancelled = false;
+
+    const c = params.get('classification');
+    if (c !== null) {
+      if (CLASSIFICATIONS.has(c)) classification = c;
+      else errors.push(`classification: "${c}"`);
+    }
+    const types = params.getAll('type');
+    if (types.length > 0) {
+      const known = new Set(knownTypes);
+      const unknown = types.filter(t => !known.has(t));
+      if (unknown.length > 0) errors.push(...unknown.map(u => `type: "${u}"`));
+      else currentType = new Set(types);
+    }
+    const queryText = params.get('q');
+    if (queryText !== null) q = queryText;
+    const sort = params.get('sort');
+    if (sort !== null) {
+      if (SORT_COLS.has(sort)) sortCol = sort;
+      else errors.push(`sort: "${sort}"`);
+    }
+    const dir = params.get('dir');
+    if (dir !== null) {
+      if (SORT_DIRS.has(dir)) sortDir = dir;
+      else errors.push(`dir: "${dir}"`);
+    }
+    const ch = params.get('children');
+    if (ch !== null) {
+      if (ch === 'true') showChildren = true;
+      else if (ch === 'false') showChildren = false;
+      else errors.push(`children: "${ch}"`);
+    }
+    const cn = params.get('cancelled');
+    if (cn !== null) {
+      if (cn === 'true') showCancelled = true;
+      else if (cn === 'false') showCancelled = false;
+      else errors.push(`cancelled: "${cn}"`);
+    }
+
+    return { classification, currentType, q, sortCol, sortDir, showChildren, showCancelled, errors };
+  }
+
+  it('initial load with ?classification=active applies the classification filter', () => {
+    const s = readFiltersFromUrl('?classification=active', ['mandate', 'bug']);
+    assert.equal(s.classification, 'active');
+    assert.equal(s.errors.length, 0);
+  });
+
+  it('initial load with ?type=mandate&type=bug applies the type filter', () => {
+    const s = readFiltersFromUrl('?type=mandate&type=bug', ['mandate', 'bug', 'task']);
+    assert.deepEqual(s.currentType, new Set(['mandate', 'bug']));
+    assert.equal(s.errors.length, 0);
+  });
+
+  it('initial load with ?q=hello applies the search text', () => {
+    const s = readFiltersFromUrl('?q=hello', ['mandate']);
+    assert.equal(s.q, 'hello');
+  });
+
+  it('initial load with ?sort=title&dir=asc applies sort col + direction', () => {
+    const s = readFiltersFromUrl('?sort=title&dir=asc', ['mandate']);
+    assert.equal(s.sortCol, 'title');
+    assert.equal(s.sortDir, 'asc');
+  });
+
+  it('initial load with ?children=false applies the children toggle', () => {
+    const s = readFiltersFromUrl('?children=false', ['mandate']);
+    assert.equal(s.showChildren, false);
+  });
+
+  it('initial load with ?cancelled=true applies the cancelled toggle', () => {
+    const s = readFiltersFromUrl('?cancelled=true', ['mandate']);
+    assert.equal(s.showCancelled, true);
+  });
+
+  it('absent keys leave each filter at its declared default (D4)', () => {
+    const s = readFiltersFromUrl('', ['mandate', 'bug']);
+    assert.equal(s.classification, '');
+    assert.deepEqual(s.currentType, new Set(['mandate', 'bug']));
+    assert.equal(s.q, '');
+    assert.equal(s.sortCol, 'createdAt');
+    assert.equal(s.sortDir, 'desc');
+    assert.equal(s.showChildren, true);
+    assert.equal(s.showCancelled, false);
+    assert.equal(s.errors.length, 0);
+  });
+
+  it('fail-loud — invalid classification surfaces an error and does not fall back silently (D6)', () => {
+    const s = readFiltersFromUrl('?classification=bogus', ['mandate']);
+    assert.equal(s.errors.length, 1);
+    assert.match(s.errors[0], /classification.*bogus/);
+    // The default value stays at '' — but the error must be surfaced.
+    assert.equal(s.classification, '');
+  });
+
+  it('fail-loud — unknown type surfaces an error', () => {
+    const s = readFiltersFromUrl('?type=bogus', ['mandate']);
+    assert.equal(s.errors.length, 1);
+    assert.match(s.errors[0], /type.*bogus/);
+  });
+
+  it('fail-loud — invalid sort column / direction', () => {
+    const s = readFiltersFromUrl('?sort=banana&dir=sideways', ['mandate']);
+    assert.equal(s.errors.length, 2);
+    assert.ok(s.errors.some(e => /sort.*banana/.test(e)));
+    assert.ok(s.errors.some(e => /dir.*sideways/.test(e)));
+  });
+
+  it('fail-loud — invalid boolean values', () => {
+    const s = readFiltersFromUrl('?children=maybe&cancelled=perhaps', ['mandate']);
+    assert.equal(s.errors.length, 2);
+    assert.ok(s.errors.some(e => /children.*maybe/.test(e)));
+    assert.ok(s.errors.some(e => /cancelled.*perhaps/.test(e)));
   });
 });
 
