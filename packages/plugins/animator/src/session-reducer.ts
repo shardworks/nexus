@@ -15,9 +15,14 @@
  *  - **Preserve from existing:** `startedAt`, `provider`, `authorizedTools`.
  *    Once these are set on the row they never get rewritten — the
  *    canonical first-write owns them.
- *  - **Deep-merge:** `metadata`, `cancelHandle`. Existing keys win when
- *    the transition does not provide a replacement; transition keys
- *    overlay existing keys when both are present.
+ *  - **Deep-merge:** `metadata`. Existing keys win when the transition
+ *    does not provide a replacement; transition keys overlay existing
+ *    keys when both are present.
+ *  - **Replace:** `cancelHandle`. The handle is a tagged union the
+ *    provider owns end-to-end (see `CancelHandle`); a transition that
+ *    supplies one supplies a complete handle. Partial overlays would
+ *    require the transition to know the existing variant — simpler to
+ *    let the producer hand a fresh handle in.
  *  - **Refresh `lastActivityAt` only from per-variant payload.** Variants
  *    whose payload carries a `lastActivityAt` field write it; other
  *    variants leave the existing value untouched. This makes the
@@ -45,6 +50,7 @@
  */
 
 import type {
+  CancelHandle,
   SessionDoc,
   SessionTerminationTag,
   TerminationDiagnostic,
@@ -103,7 +109,7 @@ export interface AttachRunningTransition {
   provider: string;
   conversationId?: string;
   metadata?: Record<string, unknown>;
-  cancelHandle?: Record<string, unknown>;
+  cancelHandle?: CancelHandle;
 }
 
 /**
@@ -125,7 +131,7 @@ export interface DetachedReadyTransition {
   lastActivityAt: string;
   conversationId?: string;
   metadata?: Record<string, unknown>;
-  cancelHandle?: Record<string, unknown>;
+  cancelHandle?: CancelHandle;
 }
 
 /**
@@ -298,7 +304,7 @@ function reduceAttachRunning(
     merged.metadata = { ...(existing?.metadata ?? {}), ...(t.metadata ?? {}) };
   }
   if (t.cancelHandle !== undefined) {
-    merged.cancelHandle = { ...(existing?.cancelHandle ?? {}), ...t.cancelHandle };
+    merged.cancelHandle = t.cancelHandle;
   }
   return merged;
 }
@@ -316,7 +322,7 @@ function reduceDetachedReady(
       lastActivityAt: t.lastActivityAt,
     };
     if (t.cancelHandle !== undefined) {
-      merged.cancelHandle = { ...(existing.cancelHandle ?? {}), ...t.cancelHandle };
+      merged.cancelHandle = t.cancelHandle;
     }
     return merged;
   }
@@ -337,7 +343,7 @@ function reduceDetachedReady(
     merged.metadata = { ...(existing?.metadata ?? {}), ...t.metadata };
   }
   if (t.cancelHandle !== undefined) {
-    merged.cancelHandle = { ...(existing?.cancelHandle ?? {}), ...t.cancelHandle };
+    merged.cancelHandle = t.cancelHandle;
   }
   return merged;
 }

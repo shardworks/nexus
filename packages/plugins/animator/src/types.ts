@@ -362,7 +362,7 @@ export interface AnimatorSessionProvider {
      *
      * Optional — providers that don't support cancellation omit this.
      */
-    processInfo?: Promise<Record<string, unknown>>;
+    processInfo?: Promise<CancelHandle>;
   };
 
   /**
@@ -373,7 +373,7 @@ export interface AnimatorSessionProvider {
    *
    * Optional — providers that don't support cancellation omit this.
    */
-  cancel?(cancelMetadata: Record<string, unknown>): Promise<void>;
+  cancel?(cancelMetadata: CancelHandle): Promise<void>;
 }
 
 export interface SessionProviderConfig {
@@ -504,6 +504,25 @@ export interface SessionProviderResult {
   signal?: string;
 }
 
+// ── Cross-process cancellation handle ───────────────────────────────
+
+/**
+ * Provider-owned opaque handle for cross-process cancellation. The
+ * discriminated union of one variant the codebase actually implements
+ * end-to-end today: a local process group identified by its PGID. New
+ * variants (container, remote) get added when the corresponding backend
+ * lands — pre-typing fictive future shapes obscures which kinds the
+ * runtime can actually interpret.
+ *
+ * The Animator does not interpret the handle — it passes it back to the
+ * provider's `cancel()` method when cancellation is requested. The
+ * `kind` discriminator lets the provider's `cancel()` switch on the
+ * variant exhaustively (see `claude-code/src/index.ts`).
+ */
+export type LocalPgidHandle = { kind: 'local-pgid'; pgid: number };
+
+export type CancelHandle = LocalPgidHandle;
+
 // ── Stacks document type ─────────────────────────────────────────────
 
 /**
@@ -535,16 +554,11 @@ export interface SessionDoc {
   output?: string;
   /**
    * Provider-owned opaque handle for cross-process cancellation.
-   * Written by the Animator from the provider's processInfo at session launch.
-   * The Animator does not interpret this — it passes it back to the provider's
-   * cancel() method when cancellation is requested.
-   *
-   * Shape is tagged by host type:
-   * - local process: { kind: 'local-pgid', pgid: number }
-   * - future container: { kind: 'container', containerId: string }
-   * - future remote: { kind: 'remote', jobId: string, host: string }
+   * Written by the Animator from the provider's processInfo at session
+   * launch. See `CancelHandle` for the discriminated-union catalog of
+   * shapes the runtime can interpret.
    */
-  cancelHandle?: Record<string, unknown>;
+  cancelHandle?: CancelHandle;
   /**
    * ISO timestamp of the last lifecycle signal from the session host.
    *

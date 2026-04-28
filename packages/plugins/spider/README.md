@@ -410,7 +410,9 @@ Built-in block types contributed via the Spider's support kit:
 | `scheduled-time` | 30s | `{ resumeAt: ISO-8601 }` | Blocks until a wall-clock timestamp is reached. |
 | `book-updated` | 10s | `{ book, sinceId? }` | Blocks until a book gets a new entry. |
 | `patron-input` | 10s | `{ requestId }` | Blocks until an `InputRequestDoc` is answered or rejected. |
-| `animator-paused` | 10s | `{ sessionId? }` | Blocks until the Animator's rate-limit back-off machine reports `state === 'running'` OR `pausedUntil` has elapsed. Entered via `tryCollect` when a session terminates with `status: 'rate-limited'`. |
+| `animator-paused` | 10s | `{ sessionId? }`[^1] | Blocks until the Animator's dispatch-status doc reports dispatchable (see `isDispatchable` helper). Entered via `tryCollect` when a session terminates with `status: 'rate-limited'`. |
+
+[^1]: Legacy holds written before this commission may carry no condition payload at all (the predicate ignores the body and just reads dispatch-status); the column shape is `{ sessionId? }` for new holds.
 
 ### Engines
 

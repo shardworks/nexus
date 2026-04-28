@@ -29,6 +29,9 @@ export {
   type AnimatorPauseReason,
   type SessionTerminationTag,
   type TerminationDiagnostic,
+  // Cross-process cancellation handle (discriminated union)
+  type CancelHandle,
+  type LocalPgidHandle,
   // Provider types (for implementors)
   type AnimatorSessionProvider,
   type SessionProviderConfig,
@@ -42,6 +45,12 @@ export { createAnimator } from './animator.ts';
 // `animator-paused` block-type, etc.) compose against a single source of
 // truth instead of hand-rolling their own equivalent.
 export { isDispatchable } from './rate-limit-backoff.ts';
+
+// ── Canonical fresh-status doc factory ────────────────────────────────
+// Re-exported so test fixtures and other consumers can produce a
+// default `running, no pause` AnimatorStatusDoc without hand-rolling a
+// literal that drifts from the canonical shape.
+export { freshStatusDoc } from './rate-limit-backoff.ts';
 
 // ── Default export: the apparatus plugin ──────────────────────────────
 

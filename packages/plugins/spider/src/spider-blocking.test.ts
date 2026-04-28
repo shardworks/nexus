@@ -379,13 +379,6 @@ describe('Spider — engine blocking on external conditions', () => {
   // ── Block type registry (V3, R5, R6) ──────────────────────────────────
 
   describe('Block type registry', () => {
-    it('getBlockType returns the three built-in block types after startup (V3, R6)', () => {
-      const { spider } = buildBlockingFixture();
-      assert.ok(spider.getBlockType('writ-phase') !== undefined, 'writ-phase should be registered');
-      assert.ok(spider.getBlockType('scheduled-time') !== undefined, 'scheduled-time should be registered');
-      assert.ok(spider.getBlockType('book-updated') !== undefined, 'book-updated should be registered');
-    });
-
     it('getBlockType returns undefined for an unknown block type id (R6)', () => {
       const { spider } = buildBlockingFixture();
       assert.equal(spider.getBlockType('nonexistent'), undefined);

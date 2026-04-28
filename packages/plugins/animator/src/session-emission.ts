@@ -38,9 +38,10 @@ const FRAMEWORK_EMITTER = 'framework';
  *
  * Wired into the apparatus literal as `supportKit.events` so the
  * Clockworks's `start()`-time merge marks these names framework-owned
- * and rejects unprivileged emit attempts. Co-located here with the
- * emit-name string literals so the kit-declared names and the literals
- * the helpers pass to `safeEmit` cannot drift out of sync (D3).
+ * and rejects unprivileged emit attempts. Co-location rule (D3): the
+ * kit-declared names and the literals the helpers pass to `safeEmit`
+ * live in this file together, so the registry and the call sites
+ * cannot drift out of sync.
  */
 export const ANIMATOR_EVENTS: Record<string, EventSpec> = {
   'animator.session.started': {

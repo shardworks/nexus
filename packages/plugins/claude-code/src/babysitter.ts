@@ -37,7 +37,7 @@ import {
   type StreamJsonResult,
 } from './index.ts';
 
-import type { SessionTerminationTag } from '@shardworks/animator-apparatus';
+import type { CancelHandle, SessionTerminationTag } from '@shardworks/animator-apparatus';
 
 import {
   isSourcePath,
@@ -229,7 +229,7 @@ async function runSteadyStatePhase(
   }
 
   // 5. Report "running" status (don't await — fire and forget with retry)
-  const cancelHandle = { kind: 'local-pgid' as const, pgid: process.pid };
+  const cancelHandle: CancelHandle = { kind: 'local-pgid', pgid: process.pid };
   const runningPromise = reportRunning(config, cancelHandle, ctx.retryTimeoutMs).catch((err) => {
     process.stderr.write(`[babysitter] Failed to report running: ${err}\n`);
   });

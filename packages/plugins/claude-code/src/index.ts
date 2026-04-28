@@ -17,6 +17,7 @@
 import type { Plugin } from '@shardworks/nexus-core';
 import type {
   AnimatorSessionProvider,
+  CancelHandle,
   SessionProviderConfig,
   SessionProviderResult,
   SessionChunk,
@@ -114,35 +115,51 @@ export function extractFinalAssistantText(transcript: Record<string, unknown>[])
 const provider: AnimatorSessionProvider = {
   name: 'claude-code',
 
-  async cancel(cancelMetadata: Record<string, unknown>): Promise<void> {
-    const kind = cancelMetadata.kind as string | undefined;
-
-    if (kind === 'local-pgid') {
-      const pgid = cancelMetadata.pgid as number | undefined;
-      if (pgid === undefined) return;
-      try {
-        process.kill(-pgid, 'SIGTERM');
-      } catch (err: unknown) {
-        if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
-          // Process group already dead — expected for race conditions. Silent no-op.
-          return;
+  async cancel(cancelMetadata: CancelHandle): Promise<void> {
+    // Discriminator switch keyed on the tagged-union `kind`. The runtime
+    // guard against a missing or unknown `kind` stays in place even
+    // though TypeScript's `CancelHandle` rules it out — handles arrive
+    // from the SessionDoc (a plain JSON row) and Stacks does not validate
+    // shape at read time, so a malformed legacy row should warn-and-skip
+    // rather than throw.
+    switch (cancelMetadata.kind) {
+      case 'local-pgid': {
+        const { pgid } = cancelMetadata;
+        if (typeof pgid !== 'number') return;
+        try {
+          process.kill(-pgid, 'SIGTERM');
+        } catch (err: unknown) {
+          if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
+            // Process group already dead — expected for race
+            // conditions. Silent no-op.
+            return;
+          }
+          throw err;
         }
-        throw err;
+        return;
       }
-      return;
-    }
-
-    // Unknown kind — log and skip. Use process.stderr.write to match the
-    // package's other diagnostic sites; semantic behavior is unchanged.
-    if (kind) {
-      process.stderr.write(`[claude-code] Unknown cancelHandle kind: ${kind}\n`);
+      default: {
+        // Exhaustiveness guard. If a new variant lands in
+        // `CancelHandle` without an arm above, TypeScript flags
+        // `_exhaustive` as `never`-incompatible at compile time so we
+        // can't ship a silent miss. At runtime, an unknown kind from a
+        // legacy row falls through to the warn-and-skip path. Using
+        // process.stderr.write to match the package's standardized
+        // diagnostic surface (see: claude-code logging standardization).
+        const _exhaustive: never = cancelMetadata.kind;
+        const kind = (cancelMetadata as { kind?: string }).kind;
+        if (kind) {
+          process.stderr.write(`[claude-code] Unknown cancelHandle kind: ${kind}\n`);
+        }
+        return _exhaustive;
+      }
     }
   },
 
   launch(config: SessionProviderConfig): {
     chunks: AsyncIterable<SessionChunk>;
     result: Promise<SessionProviderResult>;
-    processInfo?: Promise<Record<string, unknown>>;
+    processInfo?: Promise<CancelHandle>;
   } {
     return launchDetached(config);
   },

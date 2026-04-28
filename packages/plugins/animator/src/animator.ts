@@ -20,6 +20,7 @@ import type {
   AnimatorConfig,
   AnimateRequest,
   AnimatorStatusDoc,
+  CancelHandle,
   SummonRequest,
   SessionResult,
   SessionChunk,
@@ -375,14 +376,14 @@ async function recordRunning(
   startedAt: string,
   providerName: string,
   request: AnimateRequest,
-  cancelHandle?: Record<string, unknown>,
+  cancelHandle?: CancelHandle,
 ): Promise<void> {
   try {
     // Merge with any pre-existing doc (e.g. `pending` pre-written by
     // launchDetached, or `running` already written by the babysitter via
     // the session-running tool). The reducer encodes the merge invariants
-    // (preserve startedAt/provider; deep-merge metadata/cancelHandle;
-    // no-op on terminal-state regression).
+    // (preserve startedAt/provider; deep-merge metadata; replace
+    // cancelHandle; no-op on terminal-state regression).
     const existing = await sessions.get(id);
     const merged = reduceSessionTransition(existing, {
       kind: 'attach-running',
@@ -464,9 +465,11 @@ export function createAnimator(): Plugin {
       if (sessionIds.length === 0) return result;
 
       // Single bulk query against the sessions book — avoids the per-id
-      // round-trip pattern that the previous rig-view path used. Sessions
-      // not present in the book are silently omitted (D6): `find` simply
-      // returns fewer rows than were requested.
+      // round-trip pattern that the previous rig-view path used. Skip-
+      // when-unset rule (D6): sessions not present in the book are
+      // silently omitted from the result Map; `find` simply returns
+      // fewer rows than were requested, and callers decide whether
+      // missing means "zero contribution" or something else.
       const docs = await sessions.find({
         where: [['id', 'IN', sessionIds]],
       });
@@ -658,8 +661,12 @@ export function createAnimator(): Plugin {
             result: Promise.resolve(rejection),
           };
         }
-        // Gate open — record the dispatch attempt so the next rate-limit
-        // terminal increments back-off rather than coalescing (D8).
+        // Gate open — record the dispatch attempt. Coalesce-vs-increment
+        // rule (D8): a rate-limit terminal in the same window as the
+        // last dispatch coalesces with no level bump; a rate-limit
+        // terminal after a fresh dispatch increments the back-off level.
+        // The note-on-dispatch is what flips the next terminal from
+        // coalesce into increment.
         backoff.noteDispatch();
       }
 
@@ -709,7 +716,7 @@ export function createAnimator(): Plugin {
       // Write initial record (fire and forget — don't block streaming).
       // Await processInfo so cancelHandle is persisted with the running record.
       const initPromise = (async () => {
-        let cancelHandle: Record<string, unknown> | undefined;
+        let cancelHandle: CancelHandle | undefined;
         if (processInfoPromise) {
           try {
             cancelHandle = await processInfoPromise;

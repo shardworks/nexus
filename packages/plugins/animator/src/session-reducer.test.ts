@@ -251,23 +251,24 @@ describe('attach-running', () => {
     assert.deepEqual(next.metadata, { writId: 'wrt-orig' });
   });
 
-  it('deep-merges cancelHandle when both supply it', () => {
+  it('replaces cancelHandle with the transition value when both supply it', () => {
+    // The reducer's cancelHandle merge is a straight replacement: the
+    // transition's complete `LocalPgidHandle` wins, the existing handle
+    // is dropped. Producers (the babysitter, the detached fallback)
+    // always hand a fully formed handle in; partial overlays would
+    // require the transition to know the existing variant.
     const existing = makeDoc({
       status: 'pending',
-      cancelHandle: { kind: 'local-pgid', pgid: 1, extraField: 'keep' },
+      cancelHandle: { kind: 'local-pgid', pgid: 1 },
     });
     const next = reduceSessionTransition(existing, {
       kind: 'attach-running',
       id: existing.id,
       startedAt: existing.startedAt,
       provider: existing.provider,
-      cancelHandle: { pgid: 99 },
+      cancelHandle: { kind: 'local-pgid', pgid: 99 },
     });
-    assert.deepEqual(next.cancelHandle, {
-      kind: 'local-pgid',
-      pgid: 99,
-      extraField: 'keep',
-    });
+    assert.deepEqual(next.cancelHandle, { kind: 'local-pgid', pgid: 99 });
   });
 
   it('prefers transition.conversationId over existing', () => {
@@ -386,10 +387,12 @@ describe('detached-ready', () => {
     assert.deepEqual(next.cancelHandle, { kind: 'local-pgid', pgid: 1 });
   });
 
-  it('deep-merges cancelHandle on running → running', () => {
+  it('replaces cancelHandle on running → running with the transition value', () => {
+    // Same straight-replace rule as the attach-running path — the
+    // transition supplies a complete handle, no overlay is attempted.
     const existing = makeDoc({
       status: 'running',
-      cancelHandle: { kind: 'local-pgid', pgid: 1, keep: 'me' },
+      cancelHandle: { kind: 'local-pgid', pgid: 1 },
     });
     const next = reduceSessionTransition(existing, {
       kind: 'detached-ready',
@@ -397,9 +400,9 @@ describe('detached-ready', () => {
       startedAt: existing.startedAt,
       provider: existing.provider,
       lastActivityAt: '2026-04-01T10:01:00Z',
-      cancelHandle: { pgid: 42 },
+      cancelHandle: { kind: 'local-pgid', pgid: 42 },
     });
-    assert.deepEqual(next.cancelHandle, { kind: 'local-pgid', pgid: 42, keep: 'me' });
+    assert.deepEqual(next.cancelHandle, { kind: 'local-pgid', pgid: 42 });
   });
 
   it('pending → running deep-merges metadata', () => {

@@ -32,7 +32,12 @@ export default tool({
     provider: z.string().describe('Provider name (e.g. "claude-code")'),
     conversationId: z.string().optional().describe('For --resume sessions'),
     metadata: z.record(z.string(), z.unknown()).optional().describe('Session metadata (writId, engineId, etc.)'),
-    cancelHandle: z.union([
+    // Discriminated-union schema mirroring the `CancelHandle` /
+    // `LocalPgidHandle` aliases exported from the animator types — the
+    // `local-pgid` variant is the only shape implemented end-to-end. New
+    // variants land here when the matching backend (container, remote,
+    // …) gets wired up.
+    cancelHandle: z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('local-pgid'), pgid: z.number() }),
     ]).optional().describe('Tagged cancel handle for cross-process cancellation'),
   },
@@ -59,9 +64,11 @@ export default tool({
     }
 
     // Both the pending→running normal path and the running→running
-    // refresh path go through the reducer's `detached-ready` variant —
-    // the reducer detects the running→running case internally (D9) and
-    // applies the metadata-preserving refresh.
+    // refresh path go through the reducer's `detached-ready` variant.
+    // Internal-refresh-detection rule (D9): the reducer detects the
+    // running→running case from `existing.status` itself and applies
+    // the metadata-preserving refresh, so callers do not need a
+    // separate transition variant for ready-report-against-running.
     const doc = reduceSessionTransition(existing, {
       kind: 'detached-ready',
       id: params.sessionId,

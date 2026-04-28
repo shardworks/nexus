@@ -1464,7 +1464,7 @@ describe('Animator', () => {
       });
     });
 
-    it('omits missing session ids from the returned Map (D6)', async () => {
+    it('skip-when-unset rule: omits missing session ids from the returned Map (D6)', async () => {
       const result = await animator.getSessionCosts(['ses-does-not-exist']);
       assert.equal(result.size, 0);
       assert.equal(result.has('ses-does-not-exist'), false);
@@ -1532,7 +1532,7 @@ describe('Animator', () => {
       await animator.getStatus();
     }
 
-    it('synthesizes a rate-limited SessionResult when paused (D12)', async () => {
+    it('pre-check rejection: synthesizes a rate-limited SessionResult when paused (D12)', async () => {
       await setPaused(60_000);
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -1548,7 +1548,7 @@ describe('Animator', () => {
       assert.ok(doc == null, `Expected no SessionDoc for rejected call; got ${JSON.stringify(doc)}`);
     });
 
-    it('allows dispatch when the pause window has elapsed (D24)', async () => {
+    it('canonical dispatchability predicate: allows dispatch when the pause window has elapsed (D24)', async () => {
       // Seed a paused doc whose window has already elapsed.
       const stateBook = stacks.book('animator', 'state');
       await stateBook.put({
@@ -1595,7 +1595,7 @@ describe('Animator', () => {
 
   // ── Boot-time reconciliation of pause-window expiry ─────────────
 
-  describe('animate() eager boot reconciliation (D22)', () => {
+  describe('animate() eager boot reconciliation of pause-window expiry (D22)', () => {
     afterEach(() => {
       clearGuild();
     });

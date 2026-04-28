@@ -19,7 +19,7 @@ import { toolNameToRoute } from '@shardworks/tools-apparatus';
 
 import { extractFinalAssistantText, type StreamJsonResult } from './index.ts';
 
-import type { SessionTerminationTag } from '@shardworks/animator-apparatus';
+import type { CancelHandle, SessionTerminationTag } from '@shardworks/animator-apparatus';
 
 // ── Config types ────────────────────────────────────────────────────────
 
@@ -347,7 +347,7 @@ export function writeTranscript(
  */
 export async function reportRunning(
   config: BabysitterConfig,
-  cancelHandle: Record<string, unknown>,
+  cancelHandle: CancelHandle,
   timeoutMs?: number,
 ): Promise<void> {
   const route = toolNameToRoute('session-running');

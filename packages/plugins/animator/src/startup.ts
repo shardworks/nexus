@@ -106,8 +106,12 @@ export async function recoverOrphans(
 
   for (const doc of activeSessions) {
     // Legacy record without lastActivityAt — backfill via the reducer's
-    // heartbeat-touch variant (D17). The doc is already in hand from
-    // the find() iteration, so the read+reduce+put is one round-trip.
+    // heartbeat-touch variant. Legacy-row backfill rule (D17): pre-
+    // reducer rows are missing the lastActivityAt field; touching them
+    // through the reducer keeps the merge semantics in one place
+    // instead of having a bespoke patch path here. The doc is already
+    // in hand from the find() iteration, so the read+reduce+put is one
+    // round-trip.
     if (!doc.lastActivityAt) {
       try {
         const touched = reduceSessionTransition(doc, {

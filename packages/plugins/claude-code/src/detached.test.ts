@@ -592,7 +592,7 @@ describe('pollForProcessInfo()', () => {
     assert.deepEqual(info, { kind: 'local-pgid', pgid: 99 });
   });
 
-  it('returns empty when session terminates before cancelHandle', async () => {
+  it('returns null when session terminates before cancelHandle', async () => {
     const doc = makeSessionDoc({
       status: 'completed',
       exitCode: 0,
@@ -601,17 +601,17 @@ describe('pollForProcessInfo()', () => {
 
     const info = await pollForProcessInfo(book, 'ses-test-001', 50, 1000);
 
-    assert.deepEqual(info, {});
+    assert.equal(info, null);
   });
 
-  it('returns empty on timeout', async () => {
+  it('returns null on timeout', async () => {
     const book = createMockSessionsBook(
       new Map([['ses-test-001', makeSessionDoc({ status: 'running' })]]),
     );
 
     const info = await pollForProcessInfo(book, 'ses-test-001', 50, 200);
 
-    assert.deepEqual(info, {});
+    assert.equal(info, null);
   });
 });
 
@@ -930,9 +930,11 @@ describe('launchDetached()', () => {
     assert.match(providerResult.error!, /Failed to initialize/);
     assert.match(providerResult.error!, /Database write failed/);
 
-    // processInfo should return empty (no spawn happened)
-    const info = await processInfo!;
-    assert.deepEqual(info, {});
+    // processInfo rejects when init fails — there is no babysitter to
+    // construct a CancelHandle for. The Animator's await site catches
+    // the rejection and proceeds without a cancelHandle on the
+    // SessionDoc.
+    await assert.rejects(processInfo!, /Database write failed/);
   });
 
   it('serializes tools in babysitter config', async () => {

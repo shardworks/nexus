@@ -17,6 +17,7 @@ import { z } from 'zod';
 
 import { guild } from '@shardworks/nexus-core';
 import type {
+  CancelHandle,
   SessionProviderConfig,
   SessionProviderResult,
   SessionChunk,
@@ -269,7 +270,7 @@ export async function pollForProcessInfo(
   sessionId: string,
   pollIntervalMs: number = POLL_INTERVAL_MS,
   pollTimeoutMs: number = 60_000,
-): Promise<Record<string, unknown>> {
+): Promise<CancelHandle | null> {
   const deadline = Date.now() + pollTimeoutMs;
 
   while (Date.now() < deadline) {
@@ -279,9 +280,9 @@ export async function pollForProcessInfo(
       return doc.cancelHandle;
     }
 
-    // If the session already terminated, return empty (no process to cancel)
+    // If the session already terminated, return null (no process to cancel)
     if (doc && doc.status !== 'running' && doc.status !== 'pending') {
-      return {};
+      return null;
     }
 
     const remaining = deadline - Date.now();
@@ -290,9 +291,9 @@ export async function pollForProcessInfo(
     await new Promise((resolve) => setTimeout(resolve, Math.min(pollIntervalMs, remaining)));
   }
 
-  // Timeout — return empty rather than throwing. The babysitter PID is a
+  // Timeout — return null rather than throwing. The babysitter PID is a
   // fallback anyway, and the session might still be starting up.
-  return {};
+  return null;
 }
 
 // ── Detached launch ────────────────────────────────────────────────────
@@ -335,7 +336,7 @@ export function launchDetached(
 ): {
   chunks: AsyncIterable<SessionChunk>;
   result: Promise<SessionProviderResult>;
-  processInfo?: Promise<Record<string, unknown>>;
+  processInfo?: Promise<CancelHandle>;
 } {
   const babysitterPath = opts?.babysitterPath ?? resolveBabysitterPath();
   const pollIntervalMs = opts?.pollIntervalMs ?? POLL_INTERVAL_MS;
@@ -453,13 +454,8 @@ export function launchDetached(
 
   // processInfo: await init, then poll for cancelHandle (contains PGID
   // from babysitter). Falls back to the babysitter's own PID as PGID.
-  const processInfo = (async (): Promise<Record<string, unknown>> => {
-    let proc;
-    try {
-      proc = await init;
-    } catch {
-      return {};
-    }
+  const processInfo = (async (): Promise<CancelHandle> => {
+    const proc = await init;
     try {
       const sessionsBook = getSessionsBook();
       const info = await pollForProcessInfo(
@@ -467,12 +463,21 @@ export function launchDetached(
         config.sessionId,
         pollIntervalMs,
       );
-      if (Object.keys(info).length > 0) return info;
+      if (info) return info;
     } catch {
       // Fall through to babysitter PID
     }
     // Fallback: construct cancel handle from babysitter PID (which is its PGID
-    // because it was spawned with detached: true → setsid())
+    // because it was spawned with detached: true → setsid()). `proc.pid`
+    // is typed `number | undefined` because Node only populates it once
+    // the spawn succeeds; by the time we get here, `init` has resolved
+    // with the same proc, so the pid is always defined — but we still
+    // guard so we don't synthesize a `pgid: undefined` handle.
+    if (proc.pid === undefined) {
+      throw new Error(
+        `[claude-code] Cannot construct cancelHandle for ${config.sessionId}: babysitter has no pid`,
+      );
+    }
     return { kind: 'local-pgid', pgid: proc.pid };
   })();
 

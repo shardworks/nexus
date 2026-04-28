@@ -28,6 +28,7 @@ import type { ClerkApi, WritDoc, WritTypeConfig } from '@shardworks/clerk-appara
 import { createFabricator } from '@shardworks/fabricator-apparatus';
 import type { FabricatorApi } from '@shardworks/fabricator-apparatus';
 
+import { freshStatusDoc } from '@shardworks/animator-apparatus';
 import type { AnimatorApi, SummonRequest, AnimateHandle, SessionChunk, SessionResult, SessionDoc } from '@shardworks/animator-apparatus';
 
 import { createSpider } from './spider.ts';
@@ -363,7 +364,7 @@ export function buildFixture(
       return { id: sessionId, status: 'cancelled', startedAt: '', endedAt: '', durationMs: 0, provider: 'mock', exitCode: 1 } as SessionDoc;
     },
     async getSessionCosts() { return new Map(); },
-    async getStatus() { return {} as never; },
+    async getStatus() { return freshStatusDoc(); },
   };
   apparatusMap.set('animator', mockAnimatorApi);
 

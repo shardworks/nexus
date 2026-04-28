@@ -329,7 +329,15 @@ The Animator contributes two books, inspection/dispatch tools, an Oculus page, a
 
 The `summon` and `session-cancel` tools are patron-only (`callableBy: 'patron'`). The `session-running`, `session-record`, and `session-heartbeat` tools are infrastructure-facing (`callableBy: 'anima'`) — called by session babysitters over the Tool HTTP API to report detached session lifecycle events. See `docs/architecture/detached-sessions.md`.
 
+#### Response-enrichment convention
+
+Tools may compute display-only derived fields whose source data is in the API's verbatim return; the API itself stays verbatim. The convention is: keep the public `AnimatorApi` shape free of presentation-layer fields, and let the tool — sitting at the request-time boundary — decorate the response with anything that requires `now()` or otherwise depends on call time.
+
+The canonical example is the `animator-status` tool. Its underlying API call is `getStatus()`, which returns the persisted `AnimatorStatusDoc` verbatim — the doc never carries a `dispatchable` field. The tool's response, on the other hand, includes a server-computed `dispatchable: boolean` derived from the canonical `isDispatchable(doc)` predicate at request time. Non-TypeScript callers (the Oculus pause banner) read the enriched field; TypeScript callers compose against `isDispatchable(doc)` directly. The persisted shape stays narrow, the wire shape stays self-contained, and the predicate has exactly one source of truth.
+
 ### Startup Routines
+
+Before the operational stages below run, `start()` performs three boot-time preconditions on the apparatus literal: `validateBackoffConfig` (fail-loud check on the persisted back-off configuration — bad config refuses to boot rather than silently using defaults), `setBackoffMachine` (registers the back-off machine with the session-record handler so terminal writes can hand the rate-limit signal to the back-off state machine), and `setEmitter` (registers the lifecycle-event emitter with the same handler so terminal writes also fire `animator.session.ended` and `animator.session.record-failed` through one call site). These are wiring, not operational stages; they finish before the numbered list begins.
 
 On startup the Animator runs the following sequence. The `start()` method is `async`; it `await`s the initial pause-state read up front so `peek()` reflects persisted state by the time `start()` returns. DLQ drain and reconciliation run in an async IIFE afterwards (fire-and-forget from Arbor's perspective):
 
