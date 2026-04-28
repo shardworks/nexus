@@ -34,6 +34,38 @@
   var actionBar          = document.getElementById('action-bar');
   var successToast       = document.getElementById('success-toast');
 
+  // ── URL handling ───────────────────────────────────────────────────────
+
+  /**
+   * Read the current querystring as a `URLSearchParams`. Live snapshot.
+   */
+  function currentUrlParams() {
+    return new URLSearchParams(window.location.search);
+  }
+
+  /**
+   * Apply the given key/value changes to the current querystring and
+   * `pushState` the result. Null/undefined/empty value deletes the key.
+   * Mirrors Ratchet's `updateUrl` (D9). The feedback param shape is
+   * `?feedback=ID` (D10) — keyed on the request id (req.id), which is
+   * stable across the list reorderings the 12 s polling loop can
+   * trigger. The legacy index-based showDetail path now translates
+   * index → id at the click site.
+   */
+  function updateUrl(changes) {
+    var params = currentUrlParams();
+    var keys = Object.keys(changes);
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      var value = changes[key];
+      if (value === null || value === undefined || value === '') params.delete(key);
+      else params.set(key, value);
+    }
+    var qs = params.toString();
+    var next = window.location.pathname + (qs ? '?' + qs : '');
+    window.history.pushState({}, '', next);
+  }
+
   // ── Helpers ────────────────────────────────────────────────────────────
 
   function esc(s) {
@@ -121,9 +153,35 @@
 
   // ── Detail view ────────────────────────────────────────────────────────
 
-  function showDetail(index) {
+  /**
+   * Render a "not found" empty state inside the detail view for a
+   * deep-linked id that does not resolve. Per D16 the URL param is
+   * preserved.
+   */
+  function renderFeedbackNotFound(id) {
+    currentRequest = null;
+    listView.style.display = 'none';
+    detailView.style.display = '';
+    detailBanner.innerHTML = '';
+    detailMessage.innerHTML =
+      '<div class="empty-state" style="padding:1.5rem">' +
+      'No feedback request with id <code>' + esc(id) + '</code> exists. ' +
+      'It may have been completed, rejected, or the id may be mistyped.</div>';
+    questionsContainer.innerHTML = '';
+    actionBar.innerHTML = '';
+    var oldToolbar = document.getElementById('tag-filter-toolbar');
+    if (oldToolbar) oldToolbar.remove();
+  }
+
+  function showDetail(index, opts) {
+    var skipUrlPush = !!(opts && opts.skipUrlPush);
     currentRequest = requests[index];
     if (!currentRequest) return;
+
+    // Centralised URL push (D12) — keyed on the request id so the URL
+    // survives list reorderings between the 12 s polls. Translation
+    // index → id happens here, not at the click site.
+    if (!skipUrlPush) updateUrl({ feedback: currentRequest.id });
 
     // Initialize local answers from server state
     localAnswers = {};
@@ -149,6 +207,44 @@
     listView.style.display = 'none';
     detailView.style.display = '';
     renderDetail();
+  }
+
+  /**
+   * Open the detail view for a request id. Looks up the local list
+   * first; falls back to /api/input/request-show. On miss, renders the
+   * not-found state without rewriting the URL (D16).
+   */
+  function showDetailById(id, opts) {
+    var skipUrlPush = !!(opts && opts.skipUrlPush);
+    var index = -1;
+    for (var i = 0; i < requests.length; i++) {
+      if (requests[i] && requests[i].id === id) { index = i; break; }
+    }
+    if (index >= 0) {
+      showDetail(index, { skipUrlPush: skipUrlPush });
+      return;
+    }
+    fetch(API.show + '?id=' + encodeURIComponent(id))
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (req) {
+        if (!req || !req.id) {
+          if (!skipUrlPush) updateUrl({ feedback: id });
+          renderFeedbackNotFound(id);
+          return;
+        }
+        // Splice the deep-linked request into `requests` so the
+        // existing index-based UI path can resolve it. Append rather
+        // than replace so the operator's filtered list stays intact.
+        requests.push(req);
+        showDetail(requests.length - 1, { skipUrlPush: skipUrlPush });
+      })
+      .catch(function () {
+        if (!skipUrlPush) updateUrl({ feedback: id });
+        renderFeedbackNotFound(id);
+      });
   }
 
   function renderDetail() {
@@ -492,7 +588,8 @@
 
   // ── Navigation ─────────────────────────────────────────────────────────
 
-  function navigateToList() {
+  function navigateToList(opts) {
+    var skipUrlPush = !!(opts && opts.skipUrlPush);
     currentRequest = null;
     localAnswers = {};
     // Clear debounce timers
@@ -505,6 +602,10 @@
 
     detailView.style.display = 'none';
     listView.style.display = '';
+    // D11: push a clean URL so deep-link entries survive the Back
+    // button. Never pop history — the operator may have arrived
+    // directly at ?feedback=ID.
+    if (!skipUrlPush) updateUrl({ feedback: null });
     fetchList();
     startPoll();
   }
@@ -750,9 +851,34 @@
     }, 800);
   }
 
+  // ── Browser navigation (popstate) ──────────────────────────────────────
+
+  // Read ?feedback=ID from the new URL and either re-open the matching
+  // detail (skipUrlPush=true) or return to the list. Pairs with the
+  // central push inside showDetail (D11/D12).
+  window.addEventListener('popstate', function () {
+    var feedbackId = currentUrlParams().get('feedback');
+    if (feedbackId) {
+      showDetailById(feedbackId, { skipUrlPush: true });
+    } else {
+      navigateToList({ skipUrlPush: true });
+    }
+  });
+
   // ── Init ───────────────────────────────────────────────────────────────
 
   fetchList();
   startPoll();
+
+  // Deep-link: ?feedback=ID — open that request's detail after the
+  // first list fetch lands. The list-fetch is async so we wait for it
+  // by polling `requests.length` once via a microtask; on a miss, the
+  // /api/input/request-show fallback inside showDetailById handles it.
+  // A missing/deleted/mistyped id renders a "not found" state without
+  // rewriting the URL (D16).
+  var initialFeedbackId = currentUrlParams().get('feedback');
+  if (initialFeedbackId) {
+    showDetailById(initialFeedbackId, { skipUrlPush: true });
+  }
 
 })();

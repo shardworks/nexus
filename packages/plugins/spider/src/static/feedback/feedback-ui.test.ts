@@ -312,3 +312,100 @@ describe('feedback.js tag filter toolbar', () => {
     );
   });
 });
+
+// ── Deep-link URL state (?feedback=ID) ──────────────────────────────────
+
+describe('feedback.js — deep-link URL state', () => {
+  it('exposes currentUrlParams + updateUrl helpers (D9 — Ratchet pattern)', () => {
+    assert.match(
+      feedbackJs,
+      /function currentUrlParams\(\)\s*\{[\s\S]*?new URLSearchParams\(window\.location\.search\)/,
+      'currentUrlParams reads window.location.search live',
+    );
+    assert.match(
+      feedbackJs,
+      /function updateUrl\(changes\)\s*\{[\s\S]*?window\.history\.pushState/,
+      'updateUrl pushes via history.pushState',
+    );
+  });
+
+  it('showDetail pushes ?feedback=ID using the request id (stable across reorderings)', () => {
+    const block = feedbackJs.match(
+      /function showDetail\(index(?:, opts)?\)[\s\S]*?(?=\n  \/\*\*|\n  function )/,
+    );
+    assert.ok(block, 'should find showDetail body');
+    assert.match(
+      block[0],
+      /updateUrl\(\{\s*feedback:\s*currentRequest\.id\s*\}\)/,
+      'showDetail pushes ?feedback=<currentRequest.id> — keyed on the id, not the index',
+    );
+    assert.match(block[0], /skipUrlPush/, 'showDetail accepts a skipUrlPush opt');
+  });
+
+  it('navigateToList clears ?feedback via updateUrl({feedback: null}) — never pops history (D11)', () => {
+    const block = feedbackJs.match(
+      /function navigateToList\((?:opts)?\)[\s\S]*?fetchList\(\);[\s\S]*?startPoll\(\);\s*\}/,
+    );
+    assert.ok(block, 'should find navigateToList body');
+    assert.match(
+      block[0],
+      /updateUrl\(\{\s*feedback:\s*null\s*\}\)/,
+      'navigateToList should push a clean URL via updateUrl({feedback: null})',
+    );
+    assert.ok(
+      !/window\.history\.back\s*\(/.test(block[0]),
+      'navigateToList should never invoke history.back',
+    );
+  });
+
+  it('a popstate listener routes browser navigation back through the page', () => {
+    assert.match(
+      feedbackJs,
+      /window\.addEventListener\(\s*['"]popstate['"]/,
+      'feedback.js registers a popstate listener',
+    );
+    const block = feedbackJs.match(
+      /addEventListener\(\s*['"]popstate['"][\s\S]*?\}\)/,
+    );
+    assert.ok(block, 'should find popstate handler body');
+    assert.match(
+      block[0],
+      /currentUrlParams\(\)\.get\(['"]feedback['"]\)/,
+      'popstate handler reads ?feedback from the new URL',
+    );
+    assert.match(
+      block[0],
+      /skipUrlPush:\s*true/,
+      'popstate-driven path passes skipUrlPush to avoid double-push',
+    );
+  });
+
+  it('init reads ?feedback=ID and resolves it via showDetailById', () => {
+    assert.match(
+      feedbackJs,
+      /var initialFeedbackId\s*=\s*currentUrlParams\(\)\.get\(['"]feedback['"]\)/,
+      'init reads ?feedback from the URL',
+    );
+    assert.match(
+      feedbackJs,
+      /showDetailById\(\s*initialFeedbackId\s*,\s*\{\s*skipUrlPush:\s*true\s*\}\)/,
+      'init opens the detail via showDetailById with skipUrlPush=true',
+    );
+  });
+
+  it('renderFeedbackNotFound preserves the URL param (D16)', () => {
+    const block = feedbackJs.match(
+      /function renderFeedbackNotFound\([\s\S]*?(?=\n  function )/,
+    );
+    assert.ok(block, 'should find renderFeedbackNotFound body');
+    assert.ok(
+      !/updateUrl/.test(block[0]),
+      'renderFeedbackNotFound must not rewrite the URL',
+    );
+    assert.match(
+      block[0],
+      /No feedback request with id/,
+      'renderFeedbackNotFound surfaces a "not found" message',
+    );
+  });
+});
