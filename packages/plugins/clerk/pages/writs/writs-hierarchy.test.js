@@ -216,6 +216,23 @@ function rowActions(w) {
 }
 
 /**
+ * Drop nodes whose state attrs include `cancelled` (and their entire
+ * subtrees). Mirror of `pruneByCancelled` in index.html. Type-agnostic:
+ * `attrs` come from the test-side `derivePresentation` helper, so any
+ * plugin-contributed type whose cancelled state declares the `cancelled`
+ * attr is hidden too.
+ */
+function pruneByCancelled(node) {
+  const writ = node.writ;
+  const present = derivePresentation(writ.type, writ.phase);
+  if (present.attrs.includes('cancelled')) return null;
+  const prunedChildren = (node.children ?? [])
+    .map(pruneByCancelled)
+    .filter(Boolean);
+  return { writ, children: prunedChildren };
+}
+
+/**
  * Prune a tree by title match. Semantics: a matching node keeps its
  * entire subtree (the user found the work they were looking for and
  * wants to see its breakdown); a non-matching node is kept only when at
@@ -260,16 +277,24 @@ function sortedFilteredWrits(forest, opts) {
   const {
     collapsedSet = new Set(),
     showChildren = true,
+    showCancelled = false,
     searchText = '',
     sortCol = 'createdAt',
     sortDir = 'desc',
     depthCap = 8,
   } = opts ?? {};
 
+  // Cancelled prune layers in addition to the State / Type / search
+  // pipeline. Applied first so the title search doesn't surface a
+  // cancelled root via a non-cancelled descendant.
+  const cancelledFiltered = showCancelled
+    ? forest
+    : forest.map(pruneByCancelled).filter(Boolean);
+
   const q = searchText.toLowerCase();
   const pruned = q
-    ? forest.map((t) => pruneByTitleMatch(t, q)).filter(Boolean)
-    : forest;
+    ? cancelledFiltered.map((t) => pruneByTitleMatch(t, q)).filter(Boolean)
+    : cancelledFiltered;
 
   const sortedRoots = [...pruned].sort((a, b) => {
     const cmp = compareVal(a.writ, b.writ, sortCol);
@@ -671,6 +696,108 @@ describe('sortedFilteredWrits — ancestor-preserve title search', () => {
     // current intentional behavior.
     const rows = sortedFilteredWrits(forest, { searchText: 'login', collapsedSet: new Set(['a']) });
     assert.deepEqual(rows.map((r) => r.writ.id), ['a']);
+  });
+});
+
+describe('sortedFilteredWrits — Cancelled toggle prune', () => {
+  // Forest fixtures use mandate vocabulary — `cancelled` is the terminal
+  // state declaring the `cancelled` attr in MANDATE_TYPE_INFO above. The
+  // prune is type-agnostic by construction: any state whose attrs include
+  // `cancelled` (any type) drops the node and its subtree.
+
+  it('default (showCancelled=false) drops a cancelled root and its subtree', () => {
+    const forest = [
+      tree({ id: 'a', phase: 'open', children: [{ id: 'a1', phase: 'open' }] }),
+      tree({ id: 'b', phase: 'cancelled', children: [{ id: 'b1', phase: 'open' }] }),
+    ];
+    const rows = sortedFilteredWrits(forest, { sortCol: 'createdAt', sortDir: 'asc' });
+    // 'b' is cancelled → both b and b1 disappear; only a + a1 remain.
+    assert.deepEqual(rows.map((r) => r.writ.id), ['a', 'a1']);
+  });
+
+  it('drops a cancelled descendant and its subtree but preserves siblings', () => {
+    const forest = [
+      tree({ id: 'r', phase: 'open', children: [
+        { id: 'kept', phase: 'open' },
+        { id: 'gone', phase: 'cancelled', children: [{ id: 'g1', phase: 'open' }] },
+        { id: 'survivor', phase: 'open' },
+      ]}),
+    ];
+    const rows = sortedFilteredWrits(forest, { sortCol: 'createdAt', sortDir: 'asc' });
+    // 'gone' (cancelled) and its descendant g1 are dropped; siblings kept.
+    assert.deepEqual(rows.map((r) => r.writ.id), ['r', 'kept', 'survivor']);
+  });
+
+  it('non-cancelled descendants of a cancelled ancestor are also dropped', () => {
+    const forest = [
+      tree({ id: 'r', phase: 'cancelled', children: [
+        { id: 'a', phase: 'open' },
+        { id: 'b', phase: 'completed' },
+      ]}),
+    ];
+    const rows = sortedFilteredWrits(forest, {});
+    // Cancelled root takes its whole subtree with it — even non-cancelled descendants.
+    assert.equal(rows.length, 0);
+  });
+
+  it('showCancelled=true reveals cancelled writs and their descendants', () => {
+    const forest = [
+      tree({ id: 'r', phase: 'cancelled', children: [{ id: 'r1', phase: 'open' }] }),
+    ];
+    const rows = sortedFilteredWrits(forest, { showCancelled: true });
+    assert.deepEqual(rows.map((r) => r.writ.id), ['r', 'r1']);
+  });
+
+  it('cancelled prune is independent of state filter (D2)', () => {
+    // Even when the operator selects only terminal writs, cancelled rows
+    // remain hidden when the toggle is OFF. The State filter is applied
+    // server-side via `currentClassification` (not exercised by this
+    // helper), so the helper's view here is "every terminal writ from
+    // the server" — completed and cancelled both classified as terminal.
+    const forest = [
+      tree({ id: 'done', phase: 'completed' }),
+      tree({ id: 'failed', phase: 'failed' }),
+      tree({ id: 'cancelled', phase: 'cancelled' }),
+    ];
+    const rows = sortedFilteredWrits(forest, { showCancelled: false });
+    assert.deepEqual(rows.map((r) => r.writ.id), ['done', 'failed']);
+  });
+
+  it('cancelled prune layers under title search — search across non-cancelled writs', () => {
+    const forest = [
+      tree({ id: 'live', phase: 'open', title: 'Login fix' }),
+      tree({ id: 'gone', phase: 'cancelled', title: 'Login refactor' }),
+    ];
+    const rows = sortedFilteredWrits(forest, { searchText: 'login' });
+    // Cancelled-prune runs first; only the live writ survives the search.
+    assert.deepEqual(rows.map((r) => r.writ.id), ['live']);
+  });
+});
+
+describe('pruneByCancelled — pure helper', () => {
+  it('returns null for a cancelled root with no children', () => {
+    const node = tree({ id: 'c', phase: 'cancelled' });
+    assert.equal(pruneByCancelled(node), null);
+  });
+
+  it('returns null for a cancelled root with descendants', () => {
+    const node = tree({ id: 'c', phase: 'cancelled', children: [{ id: 'c1', phase: 'open' }] });
+    assert.equal(pruneByCancelled(node), null);
+  });
+
+  it('keeps a non-cancelled root with cancelled children dropped', () => {
+    const node = tree({
+      id: 'r',
+      phase: 'open',
+      children: [
+        { id: 'kept', phase: 'open' },
+        { id: 'cancelled-child', phase: 'cancelled' },
+      ],
+    });
+    const result = pruneByCancelled(node);
+    assert.ok(result, 'expected the root to be preserved');
+    assert.equal(result.writ.id, 'r');
+    assert.deepEqual(result.children.map((c) => c.writ.id), ['kept']);
   });
 });
 

@@ -97,10 +97,17 @@
     </span>
     <span id="type-filter-bar" style="display:inline-flex;gap:0.4rem;flex-wrap:wrap;align-items:center">
       <span style="font-size:0.875rem;opacity:0.6">Type:</span>
-      <button class="btn type-filter-btn active-filter" data-type="">All</button>
+      <button class="btn filter-btn type-filter-btn active-filter" data-type="">All</button>
     </span>
     <input type="text" id="search-input" placeholder="Search title...">
-    <button class="btn active-filter" id="btn-toggle-children">Children</button>
+    <!--
+      Toggles share the State filter's `.btn filter-btn` markup so the
+      existing `.filter-btn.active-filter` rule paints them the same way.
+      Children defaults ON (children visible); Cancelled defaults OFF
+      (cancelled writs hidden) — matching D4.
+    -->
+    <button class="btn filter-btn active-filter" id="btn-toggle-children">Children</button>
+    <button class="btn filter-btn" id="btn-toggle-cancelled">Cancelled</button>
   </div>
   </div>
 
@@ -196,6 +203,10 @@
     let sortCol = 'createdAt';
     let sortDir = 'desc';
     let showChildren = true; // global Children toggle — children shown by default
+    // Global Cancelled toggle — cancelled writs hidden by default (D4).
+    // Layered in addition to State / Type / search filters; never short-
+    // circuited when State=terminal (D2).
+    let showCancelled = false;
     let collapsedSet = new Set(); // per-row collapse state, keyed by writ id
     let repostSourceId = null;
     let linkKinds = [];      // [{ id, ownerPlugin, description }] — registered writ link kinds
@@ -377,6 +388,27 @@
     }
 
     /**
+     * Drop nodes whose state attrs include `cancelled` (and their entire
+     * subtrees). Type-agnostic: `attrs` come from the page's
+     * `derivePresentation` helper, so any plugin-contributed type whose
+     * cancelled state declares the `cancelled` attr is hidden too.
+     *
+     * Mirrors Ratchet's `pruneByStatus` shape (D1) — a non-matching node is
+     * dropped together with everything beneath it. Returns null when this
+     * subtree should disappear entirely; otherwise returns a fresh node
+     * with pruned children.
+     */
+    function pruneByCancelled(node) {
+      const writ = node.writ;
+      const present = derivePresentation(writ.type, writ.phase);
+      if (present.attrs.includes('cancelled')) return null;
+      const prunedChildren = (node.children ?? [])
+        .map(pruneByCancelled)
+        .filter(Boolean);
+      return { writ, children: prunedChildren };
+    }
+
+    /**
      * Flatten the current forest into rows annotated with depth, respecting
      * the global Children toggle, per-node collapse state, ancestor-preserve
      * title search, and the depth cap (with an overflow marker beyond it).
@@ -390,10 +422,17 @@
      * shape of the tree stays stable when the operator changes columns.
      */
     function sortedFilteredWrits() {
+      // Cancelled prune layers in addition to the State / Type / search
+      // pipeline (D2). Applied first so a cancelled root's title-search
+      // descendants don't accidentally surface their hidden ancestor.
+      const cancelledFiltered = showCancelled
+        ? forest
+        : forest.map(pruneByCancelled).filter(Boolean);
+
       const q = searchText.toLowerCase();
       const pruned = q
-        ? forest.map(t => pruneByTitleMatch(t, q)).filter(Boolean)
-        : forest;
+        ? cancelledFiltered.map(t => pruneByTitleMatch(t, q)).filter(Boolean)
+        : cancelledFiltered;
 
       const sortedRoots = [...pruned].sort((a, b) => {
         const cmp = compareVal(a.writ, b.writ, sortCol);
@@ -1490,9 +1529,11 @@
       // Clear existing buttons (keep the label span)
       bar.innerHTML = '<span style="font-size:0.875rem;opacity:0.6">Type:</span>';
 
-      // "All" button
+      // "All" button. Carries `.filter-btn` so the shared
+      // `.filter-btn.active-filter` rule paints the active fill (D6);
+      // `.type-filter-btn` stays as a JS selector hook only.
       const allBtn = document.createElement('button');
-      allBtn.className = 'btn type-filter-btn';
+      allBtn.className = 'btn filter-btn type-filter-btn';
       allBtn.dataset.type = '';
       allBtn.textContent = 'All';
       bar.appendChild(allBtn);
@@ -1500,7 +1541,7 @@
       // One button per known type
       for (const t of types) {
         const btn = document.createElement('button');
-        btn.className = 'btn type-filter-btn';
+        btn.className = 'btn filter-btn type-filter-btn';
         btn.dataset.type = t.name;
         btn.textContent = t.name;
         if (t.description) btn.title = t.description;
@@ -1691,7 +1732,10 @@
 
     function setActiveFilter(classification) {
       currentClassification = classification;
-      document.querySelectorAll('.filter-btn').forEach(btn => {
+      // Scope the visual toggle to State buttons (those carrying
+      // `data-classification`). Other `.filter-btn` toggles in the toolbar
+      // (Children, Cancelled, type-filter pills) own their own state.
+      document.querySelectorAll('.filter-btn[data-classification]').forEach(btn => {
         btn.classList.toggle('active-filter', btn.dataset.classification === classification);
       });
       loadWrits(true);
@@ -1704,25 +1748,26 @@
       const allTypeNames = typeBtns.map(b => b.dataset.type);
 
       if (type === '') {
-        // "All" clicked: select all individual types
-        currentType = new Set(allTypeNames);
+        // "All" is a true toggle (D8): if every type is currently
+        // selected, clear; otherwise select every type. There is no
+        // intermediate "All means partial" state.
+        const allSelected = allTypeNames.length > 0 && allTypeNames.every(t => currentType.has(t));
+        currentType = allSelected ? new Set() : new Set(allTypeNames);
       } else {
-        // Check if "All" is currently active (all types selected)
-        const allActive = allTypeNames.length > 0 && allTypeNames.every(t => currentType.has(t));
-        if (allActive) {
-          // "All" was active — deselect everything except the clicked type
-          currentType = new Set([type]);
+        // Individual type click: toggle exactly that type (D7). The
+        // previous behaviour of "All-active collapses to one type" is
+        // gone — clicking one pill always leaves the others untouched.
+        if (currentType.has(type)) {
+          currentType.delete(type);
         } else {
-          // Normal toggle
-          if (currentType.has(type)) {
-            currentType.delete(type);
-          } else {
-            currentType.add(type);
-          }
+          currentType.add(type);
         }
       }
 
-      // Update button visual state
+      // Update button visual state. The All button is filled iff every
+      // type is currently selected — that mirrors the operator's mental
+      // model of "All means: I have every type on" without ever
+      // claiming "All" when it isn't true.
       const nowAllActive = allTypeNames.length > 0 && allTypeNames.every(t => currentType.has(t));
       allBtn.classList.toggle('active-filter', nowAllActive);
       typeBtns.forEach(btn => {
@@ -1756,11 +1801,24 @@
       renderTable();
     });
 
+    document.getElementById('btn-toggle-cancelled').addEventListener('click', () => {
+      // Cancelled toggle: filled = showing cancelled writs. Independent
+      // of the State filter (D2) — a State=terminal selection still hides
+      // cancelled rows when the toggle is off.
+      showCancelled = !showCancelled;
+      document.getElementById('btn-toggle-cancelled').classList.toggle('active-filter', showCancelled);
+      renderTable();
+    });
+
     document.getElementById('post-submit-btn').addEventListener('click', submitPostForm);
 
     document.getElementById('load-more-btn').addEventListener('click', () => loadWrits(false));
 
-    document.querySelectorAll('.filter-btn').forEach(btn => {
+    // Only State buttons (those with `data-classification`) trigger the
+    // classification filter. The Children / Cancelled / type-filter pills
+    // also carry `.filter-btn` (for the active-filter fill) but own their
+    // own click wiring elsewhere.
+    document.querySelectorAll('.filter-btn[data-classification]').forEach(btn => {
       btn.addEventListener('click', () => setActiveFilter(btn.dataset.classification));
     });
 

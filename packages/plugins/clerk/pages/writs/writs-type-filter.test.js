@@ -94,7 +94,11 @@ let currentType = new Set();
 
 /**
  * Builds type filter buttons from a types array into a bar element.
- * Returns the currentType Set for testability.
+ * Returns the currentType Set for testability. Mirrors
+ * buildTypeFilterBar in index.html — the All button and each type pill
+ * carry `btn filter-btn type-filter-btn` so the existing
+ * `.filter-btn.active-filter` rule paints them; `.type-filter-btn` stays
+ * as a JS selector hook only.
  */
 function buildTypeFilterBar(types, bar) {
   // Clear existing buttons (keep label span)
@@ -108,7 +112,7 @@ function buildTypeFilterBar(types, bar) {
 
   // "All" button
   const allBtn = createElement('button');
-  allBtn.className = 'btn type-filter-btn';
+  allBtn.className = 'btn filter-btn type-filter-btn';
   allBtn.dataset.type = '';
   allBtn.textContent = 'All';
   bar.appendChild(allBtn);
@@ -116,7 +120,7 @@ function buildTypeFilterBar(types, bar) {
   // One button per known type
   for (const t of types) {
     const btn = createElement('button');
-    btn.className = 'btn type-filter-btn';
+    btn.className = 'btn filter-btn type-filter-btn';
     btn.dataset.type = t.name;
     btn.textContent = t.name;
     if (t.description) btn.title = t.description;
@@ -135,6 +139,15 @@ function buildTypeFilterBar(types, bar) {
 /**
  * Multi-select type filter toggle (mirrors setTypeFilter in index.html).
  * Does not call loadWrits — just updates state and button classes.
+ *
+ * Behaviour:
+ *  - `type === ''` (the All button) is a true toggle: if every individual
+ *    type is selected, clear everything; otherwise select every type.
+ *  - `type` is a known type name: toggle exactly that type in/out of
+ *    `currentType`. Every other selection is left untouched — the
+ *    All-active collapses-to-one branch is gone.
+ *  - The All button's `.active-filter` reflects whether every type is
+ *    currently selected.
  */
 function applyTypeFilter(bar, type) {
   const allBtn = bar.querySelector('.type-filter-btn[data-type=""]');
@@ -142,25 +155,16 @@ function applyTypeFilter(bar, type) {
   const allTypeNames = typeBtns.map(b => b.dataset.type);
 
   if (type === '') {
-    // "All" clicked: select all individual types
-    currentType = new Set(allTypeNames);
+    const allSelected = allTypeNames.length > 0 && allTypeNames.every(t => currentType.has(t));
+    currentType = allSelected ? new Set() : new Set(allTypeNames);
   } else {
-    // Check if "All" is currently active (all types selected)
-    const allActive = allTypeNames.length > 0 && allTypeNames.every(t => currentType.has(t));
-    if (allActive) {
-      // "All" was active — deselect everything except the clicked type
-      currentType = new Set([type]);
+    if (currentType.has(type)) {
+      currentType.delete(type);
     } else {
-      // Normal toggle
-      if (currentType.has(type)) {
-        currentType.delete(type);
-      } else {
-        currentType.add(type);
-      }
+      currentType.add(type);
     }
   }
 
-  // Update button visual state
   const nowAllActive = allTypeNames.length > 0 && allTypeNames.every(t => currentType.has(t));
   allBtn.classList.toggle('active-filter', nowAllActive);
   typeBtns.forEach(btn => {
@@ -277,7 +281,7 @@ describe('buildTypeFilterBar()', () => {
   });
 });
 
-describe('applyTypeFilter() — multi-select', () => {
+describe('applyTypeFilter() — independent toggle (D7) and true All toggle (D8)', () => {
   let bar;
 
   beforeEach(() => {
@@ -290,68 +294,88 @@ describe('applyTypeFilter() — multi-select', () => {
     ], bar);
   });
 
-  it('clicking type when All is active deselects all except clicked', () => {
-    // Initially all types are selected (All is active)
+  it('clicking an individual type when All is active toggles only that type — others stay selected (D7)', () => {
+    // Replaces the legacy "All-active collapses to one type" behaviour.
+    // The brief is verbatim: leave the others untouched.
     applyTypeFilter(bar, 'task');
 
-    assert.deepEqual(currentType, new Set(['task']));
+    assert.deepEqual(currentType, new Set(['mandate', 'bug']));
     const btns = bar.querySelectorAll('.type-filter-btn');
     const taskBtn = btns.find(b => b.dataset.type === 'task');
     const mandateBtn = btns.find(b => b.dataset.type === 'mandate');
+    const bugBtn = btns.find(b => b.dataset.type === 'bug');
     const allBtn = btns.find(b => b.dataset.type === '');
 
-    assert.ok(taskBtn.classList.contains('active-filter'));
-    assert.ok(!mandateBtn.classList.contains('active-filter'));
-    assert.ok(!allBtn.classList.contains('active-filter'));
+    assert.ok(!taskBtn.classList.contains('active-filter'), 'clicked type loses active fill');
+    assert.ok(mandateBtn.classList.contains('active-filter'), 'untouched type keeps active fill');
+    assert.ok(bugBtn.classList.contains('active-filter'), 'untouched type keeps active fill');
+    assert.ok(!allBtn.classList.contains('active-filter'), 'All loses fill once any type is missing');
   });
 
-  it('clicking "All" selects all types', () => {
-    // First deselect all by breaking the "all active" state
-    applyTypeFilter(bar, 'task'); // only task selected now
-    applyTypeFilter(bar, 'task'); // deselect task — empty set
+  it('clicking the same individual type twice toggles it back on with the rest unchanged', () => {
+    applyTypeFilter(bar, 'task'); // off
+    assert.deepEqual(currentType, new Set(['mandate', 'bug']));
+    applyTypeFilter(bar, 'task'); // back on
+    assert.deepEqual(currentType, new Set(['mandate', 'task', 'bug']));
+    const btns = bar.querySelectorAll('.type-filter-btn');
+    const allBtn = btns.find(b => b.dataset.type === '');
+    assert.ok(allBtn.classList.contains('active-filter'),
+      'All re-fills once every type is selected again');
+  });
 
-    applyTypeFilter(bar, ''); // click All
+  it('All button is filled iff every individual type is currently selected', () => {
+    const btns = bar.querySelectorAll('.type-filter-btn');
+    const allBtn = btns.find(b => b.dataset.type === '');
+    // Initial build: every type selected → All filled.
+    assert.ok(allBtn.classList.contains('active-filter'));
+
+    // Drop one → All loses fill.
+    applyTypeFilter(bar, 'mandate');
+    assert.ok(!allBtn.classList.contains('active-filter'));
+
+    // Bring it back → All fills again.
+    applyTypeFilter(bar, 'mandate');
+    assert.ok(allBtn.classList.contains('active-filter'));
+  });
+
+  it('All clicked when filled clears every type (D8 — true toggle direction A)', () => {
+    // Initial state: every type selected, All filled.
+    applyTypeFilter(bar, '');
+
+    assert.equal(currentType.size, 0, 'no types selected after All-clear');
+    const btns = bar.querySelectorAll('.type-filter-btn');
+    const activeCount = btns.filter(b => b.classList.contains('active-filter')).length;
+    assert.equal(activeCount, 0, 'no buttons retain active fill');
+  });
+
+  it('All clicked when not filled selects every type (D8 — true toggle direction B)', () => {
+    // Move into "not all selected" by toggling a type off.
+    applyTypeFilter(bar, 'mandate');
+    assert.deepEqual(currentType, new Set(['task', 'bug']));
+
+    applyTypeFilter(bar, '');
 
     assert.deepEqual(currentType, new Set(['mandate', 'task', 'bug']));
     const btns = bar.querySelectorAll('.type-filter-btn');
     for (const btn of btns) {
-      assert.ok(btn.classList.contains('active-filter'), `${btn.textContent} should be active`);
+      assert.ok(btn.classList.contains('active-filter'),
+        `${btn.textContent} should be active after All-fill`);
     }
   });
 
-  it('toggling individual types on/off when All is not active', () => {
-    // Break "All" state first
-    applyTypeFilter(bar, 'mandate'); // only mandate selected
-    assert.deepEqual(currentType, new Set(['mandate']));
+  it('All clicked when none are selected selects every type', () => {
+    // Reach the empty state explicitly.
+    applyTypeFilter(bar, ''); // all → none
+    assert.equal(currentType.size, 0);
 
-    // Toggle on 'task'
-    applyTypeFilter(bar, 'task');
-    assert.deepEqual(currentType, new Set(['mandate', 'task']));
-
-    // Toggle off 'mandate'
-    applyTypeFilter(bar, 'mandate');
-    assert.deepEqual(currentType, new Set(['task']));
-  });
-
-  it('auto-activates All when all types manually selected', () => {
-    // Break "All" state
-    applyTypeFilter(bar, 'mandate'); // only mandate
-    // Add task
-    applyTypeFilter(bar, 'task'); // mandate + task
-    // Add bug — now all types are selected
-    applyTypeFilter(bar, 'bug'); // mandate + task + bug
-
+    applyTypeFilter(bar, ''); // none → all
     assert.deepEqual(currentType, new Set(['mandate', 'task', 'bug']));
-    const btns = bar.querySelectorAll('.type-filter-btn');
-    const allBtn = btns.find(b => b.dataset.type === '');
-    assert.ok(allBtn.classList.contains('active-filter'), 'All should auto-activate');
   });
 
-  it('empty set when all types deselected — no buttons active', () => {
-    // Break "All" state by clicking one type
-    applyTypeFilter(bar, 'task'); // only task
-    // Deselect task
-    applyTypeFilter(bar, 'task'); // empty set
+  it('toggling all individual types off one by one ends in the empty state with All unfilled', () => {
+    applyTypeFilter(bar, 'mandate');
+    applyTypeFilter(bar, 'task');
+    applyTypeFilter(bar, 'bug');
 
     assert.equal(currentType.size, 0);
     const btns = bar.querySelectorAll('.type-filter-btn');
@@ -359,14 +383,18 @@ describe('applyTypeFilter() — multi-select', () => {
     assert.equal(activeCount, 0);
   });
 
-  it('clicking All after partial selection selects all', () => {
-    // Break "All" state
-    applyTypeFilter(bar, 'mandate'); // only mandate
-    // Add bug
-    applyTypeFilter(bar, 'bug'); // mandate + bug
-
-    // Click All
+  it('toggling all individual types on after starting empty refills All automatically', () => {
+    // Drop into empty.
     applyTypeFilter(bar, '');
+    // Click each type back on.
+    applyTypeFilter(bar, 'mandate');
+    applyTypeFilter(bar, 'task');
+    applyTypeFilter(bar, 'bug');
+
     assert.deepEqual(currentType, new Set(['mandate', 'task', 'bug']));
+    const btns = bar.querySelectorAll('.type-filter-btn');
+    const allBtn = btns.find(b => b.dataset.type === '');
+    assert.ok(allBtn.classList.contains('active-filter'),
+      'All auto-fills when every type comes back');
   });
 });
