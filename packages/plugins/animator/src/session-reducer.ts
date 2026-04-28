@@ -38,10 +38,10 @@
  * The reducer is a pure synchronous function. It performs no I/O, takes
  * no clock dependency, and never emits. `lastActivityAt` is supplied by
  * the caller per variant (the call site reads `Date.now()` and passes it
- * in). Lifecycle event emission (`session.started`, `session.ended`,
- * `session.record-failed`) stays at the call sites — they compare
- * pre-reducer `existing?.status` against the post-reducer doc's status
- * to decide whether to emit.
+ * in). Lifecycle event emission (`animator.session.started`,
+ * `animator.session.ended`, `animator.session.record-failed`) stays at
+ * the call sites — they compare pre-reducer `existing?.status` against
+ * the post-reducer doc's status to decide whether to emit.
  */
 
 import type {

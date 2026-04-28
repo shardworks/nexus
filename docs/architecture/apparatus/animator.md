@@ -4,7 +4,7 @@ Status: **Draft — MVP**
 
 Package: `@shardworks/animator-apparatus` · Plugin id: `animator`
 
-> **⚠️ MVP scope.** This spec covers session launch, structured telemetry recording, streaming output, error guarantees, and session inspection tools. There is no MCP tool server, no Instrumentarium dependency, no role awareness, and no event signalling. The Animator receives a woven context and a working directory, launches a session provider process, and records what happened. See the Future sections for the target design.
+> **⚠️ MVP scope.** This spec covers session launch, structured telemetry recording, streaming output, error guarantees, and session inspection tools. There is no MCP tool server, no Instrumentarium dependency, and no role awareness. The Animator receives a woven context and a working directory, launches a session provider process, and records what happened. Framework events (`animator.session.*`) are defined in [`docs/reference/event-catalog.md`](../../reference/event-catalog.md). See the Future sections for the target design.
 
 ---
 
@@ -614,20 +614,6 @@ This is intentional: stderr carries progress output, stdout carries the structur
 - ~~**Provider discovery.** How does The Animator find installed session providers?~~ **Resolved:** the `guild.json["animator"]["sessionProvider"]` config field names the plugin id of the provider apparatus. The Animator looks it up via `guild().apparatus()`. Defaults to `'claude-code'`.
 - **Timeout.** How are session timeouts configured? MVP: no timeout (the session runs until the provider exits).
 - **Concurrency.** Can multiple sessions run simultaneously? Current answer: yes, each `animate()` call is independent.
-
----
-
-## Future: Event Signalling
-
-When The Clockworks integration is updated, The Animator will signal lifecycle events:
-
-- **`session.started`** — fired after step 2 (initial record written). Payload includes `sessionId`, `provider`, `startedAt`, and caller-supplied `metadata`.
-- **`session.ended`** — fired after step 5 (result recorded). Payload includes `sessionId`, `status`, `exitCode`, `durationMs`, `costUsd`, `error`, and `metadata`.
-- **`session.record-failed`** — fired if the Stacks write in step 5 fails. Payload includes `sessionId` and the recording error. This is a diagnostic event — it means session data was lost.
-
-These events are essential for clockworks standing orders (e.g. retry-on-failure, cost alerting, session auditing). The Animator fires them best-effort — event signalling failures are logged but never mask session results.
-
-Blocked on: Clockworks apparatus spec finalization.
 
 ---
 

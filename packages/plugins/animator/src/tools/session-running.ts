@@ -75,9 +75,9 @@ export default tool({
 
     await sessions.put(doc);
 
-    // Detached running tool — fire `session.started` for the canonical
-    // first-time pending → running transition. Compare pre-reducer
-    // existing.status against the post-reducer status: the
+    // Detached running tool — fire `animator.session.started` for the
+    // canonical first-time pending → running transition. Compare
+    // pre-reducer existing.status against the post-reducer status: the
     // running→running refresh path leaves status at `'running'` so the
     // `existing?.status !== 'running'` guard suppresses the duplicate
     // emission, exactly as before.

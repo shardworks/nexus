@@ -118,7 +118,7 @@ Relays are connected to events through standing orders in `guild.json`:
 {
   "clockworks": {
     "standingOrders": [
-      { "on": "session.ended", "run": "my-relay" },
+      { "on": "animator.session.ended", "run": "my-relay" },
       { "on": "writ.task.completed", "run": "my-relay" }
     ]
   }

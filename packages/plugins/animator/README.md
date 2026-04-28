@@ -429,40 +429,35 @@ The default export is a pre-created apparatus plugin instance:
 
 ```typescript
 import animator from '@shardworks/animator-apparatus';
-// animator is { apparatus: { requires: ['stacks'], recommends: ['loom', 'oculus', 'clockworks', 'clerk'], provides: AnimatorApi, ... } }
+// animator is { apparatus: { requires: ['stacks'], recommends: ['loom', 'oculus', 'clockworks'], provides: AnimatorApi, ... } }
 ```
 
 ---
 
 ## Framework events
 
-When the Clockworks is installed, every terminal session site fires
-framework events. Names follow the catalog
-(`docs/reference/event-catalog.md`) — past-tense lifecycle verbs:
+The Animator declares three framework-owned events via its
+`supportKit.events` kit contribution. The Clockworks merges these names
+into its authoritative event set at startup, marking them
+plugin-declared (so unprivileged emit channels — the anima `signal`
+tool, the operator `nsg signal` CLI — reject them). Names follow the
+catalog (`docs/reference/event-catalog.md`):
 
-- `session.started` — written from every running-state transition site
-  (in-process attached, detached `session-running` ready report).
-- `session.ended` — written from every terminal site (in-process
-  attached on completion/failure/timeout/rate-limited, detached
-  `session-record`, in-process `cancel()`, orphan recovery).
-- `commission.session.ended` — fired alongside `session.ended` when
-  `metadata.writId` resolves (by walking `parentId`) to a root
-  mandate. The root id is the `commissionId` on the payload.
-- `session.record-failed` — fired from the catch path of session-doc
-  / transcript writes that themselves failed (the only path the CDC
-  observer on the sessions book cannot see). The `phase` field follows
-  the catalog's three-phase taxonomy: `'insert'` for the initial
-  running row, `'update-row'` for terminal-state SessionDoc overwrites
-  (recordSession failure, cancel, orphan recovery, detached terminal),
-  and `'write-record'` for transcript writes.
-- `anima.manifested` — fired alongside `session.started` whenever the
-  session's metadata carries an anima `role`. The catalog's other two
-  `anima.*` events (`anima.instantiated`, `anima.state.changed`) are
-  deferred until the Roster apparatus lands; there is no aspirant →
-  active state machine to observe today.
-- `anima.session.ended` — fired alongside `session.ended` whenever the
-  session's metadata carries an anima `role`. Same payload shape as
-  `session.ended`.
+- `animator.session.started` — written from every running-state
+  transition site (in-process attached, detached `session-running`
+  ready report).
+- `animator.session.ended` — written from every terminal site
+  (in-process attached on completion/failure/timeout/rate-limited,
+  detached `session-record`, in-process `cancel()`, orphan recovery).
+  Payload carries `exitCode`, `durationMs`, `costUsd`, and (when
+  present) `error`.
+- `animator.session.record-failed` — fired from the catch path of
+  session-doc / transcript writes that themselves failed (the only
+  path the CDC observer on the sessions book cannot see). The `phase`
+  field follows the catalog's three-phase taxonomy: `'insert'` for the
+  initial running row, `'update-row'` for terminal-state SessionDoc
+  overwrites (recordSession failure, cancel, orphan recovery, detached
+  terminal), and `'write-record'` for transcript writes.
 
 The rate-limit pre-check rejection path does NOT emit — no SessionDoc
 was authoritatively written.
@@ -470,6 +465,10 @@ was authoritatively written.
 The Clockworks is in `recommends`, not `requires`: the helpers resolve
 it lazily and silently no-op when it isn't installed, mirroring the
 `summon()` → `LoomApi` resolution pattern.
+
+Anima-lifecycle events are deferred until the future Roster apparatus
+lands — there is no aspirant → active state machine to observe today,
+so the Animator does not emit any `anima.*` names.
 
 ---
 
@@ -506,8 +505,8 @@ Invariants encoded once in the reducer:
 The reducer is a pure synchronous function: no I/O, no clock dependency,
 no emission. Lifecycle event emission stays at the call sites — they
 compare pre-reducer `existing?.status` against the post-reducer doc's
-status to decide whether to emit `session.started` / `session.ended` /
-`session.record-failed`.
+status to decide whether to emit `animator.session.started` /
+`animator.session.ended` / `animator.session.record-failed`.
 
 The reducer module also owns the `TERMINAL_STATUSES` set; the four
 duplicate locals previously scattered across the package are gone, and

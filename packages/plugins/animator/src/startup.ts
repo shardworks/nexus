@@ -149,18 +149,19 @@ export async function recoverOrphans(
     try {
       await sessions.put(updated);
       recovered++;
-      // Orphan recovery is a terminal session site — fire `session.ended`
-      // (and `commission.session.ended` when the writ chain resolves).
+      // Orphan recovery is a terminal session site — fire
+      // `animator.session.ended`.
       await emitSessionEnded(updated);
     } catch (err) {
       console.warn(
         `[animator] Failed to recover stale session ${doc.id}: ${err instanceof Error ? err.message : err}`,
       );
-      // The session-doc rewrite failed — fire `session.record-failed`
-      // so standing orders bound to it can react. CDC won't observe
-      // this case (no row was authoritatively written). Phase
-      // `'update-row'` per the catalog: orphan recovery overwrites an
-      // existing running row to its terminal failed state.
+      // The session-doc rewrite failed — fire
+      // `animator.session.record-failed` so standing orders bound to
+      // it can react. CDC won't observe this case (no row was
+      // authoritatively written). Phase `'update-row'` per the
+      // catalog: orphan recovery overwrites an existing running row to
+      // its terminal failed state.
       await emitSessionRecordFailed(doc.id, 'update-row', err);
     }
   }

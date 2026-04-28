@@ -249,7 +249,7 @@ describe('Animator emission — end-to-end terminal sites', () => {
       fix = await setupFixture();
     });
 
-    it('emits session.started + session.ended through animate()', async () => {
+    it('emits animator.session.started + animator.session.ended through animate()', async () => {
       const result = await fix.animator.animate({
         context: { systemPrompt: 'test' },
         cwd: '/tmp/wd',
@@ -258,10 +258,10 @@ describe('Animator emission — end-to-end terminal sites', () => {
 
       assert.equal(result.status, 'completed');
 
-      const started = await fix.byName('session.started');
-      const ended = await fix.byName('session.ended');
-      assert.equal(started.length, 1, 'session.started fires exactly once');
-      assert.equal(ended.length, 1, 'session.ended fires exactly once');
+      const started = await fix.byName('animator.session.started');
+      const ended = await fix.byName('animator.session.ended');
+      assert.equal(started.length, 1, 'animator.session.started fires exactly once');
+      assert.equal(ended.length, 1, 'animator.session.ended fires exactly once');
 
       const startPayload = started[0].payload as Record<string, unknown>;
       assert.equal(startPayload.sessionId, result.id);
@@ -274,34 +274,7 @@ describe('Animator emission — end-to-end terminal sites', () => {
       assert.equal(typeof endPayload.durationMs, 'number');
     });
 
-    it('co-emits anima.manifested + anima.session.ended when role is set', async () => {
-      const result = await fix.animator.animate({
-        context: { systemPrompt: 'test' },
-        cwd: '/tmp/wd',
-        metadata: { role: 'sage' },
-      }).result;
-
-      const manifested = await fix.byName('anima.manifested');
-      const animaEnded = await fix.byName('anima.session.ended');
-      assert.equal(manifested.length, 1, 'anima.manifested fires once at running');
-      assert.equal(animaEnded.length, 1, 'anima.session.ended fires once at terminal');
-
-      const m = manifested[0].payload as Record<string, unknown>;
-      assert.equal(m.sessionId, result.id);
-      assert.equal(m.anima, 'sage');
-    });
-
-    it('does NOT co-emit anima.* when metadata.role is absent', async () => {
-      await fix.animator.animate({
-        context: { systemPrompt: 'test' },
-        cwd: '/tmp/wd',
-      }).result;
-
-      assert.equal((await fix.byName('anima.manifested')).length, 0);
-      assert.equal((await fix.byName('anima.session.ended')).length, 0);
-    });
-
-    it('emits session.ended with error and non-zero exitCode when provider throws', async () => {
+    it('emits animator.session.ended with error and non-zero exitCode when provider throws', async () => {
       // New fixture wired to a throwing provider — beforeEach already
       // wired a completing one, so we re-build.
       clearGuild();
@@ -316,7 +289,7 @@ describe('Animator emission — end-to-end terminal sites', () => {
         }).result,
       );
 
-      const ended = await fix.byName('session.ended');
+      const ended = await fix.byName('animator.session.ended');
       assert.equal(ended.length, 1);
       const payload = ended[0].payload as Record<string, unknown>;
       assert.equal(payload.error, 'boom');
@@ -325,7 +298,7 @@ describe('Animator emission — end-to-end terminal sites', () => {
   });
 
   describe('rate-limit pre-check rejection path', () => {
-    it('does NOT emit session.started or session.ended (no SessionDoc was authoritatively written)', async () => {
+    it('does NOT emit animator.session.started or animator.session.ended (no SessionDoc was authoritatively written)', async () => {
       // Pause far enough into the future that `isDispatchable` returns
       // false. The pre-check rejection path returns a synthesized
       // rejection result without ever writing a session doc — and
@@ -344,11 +317,9 @@ describe('Animator emission — end-to-end terminal sites', () => {
       // The result indicates rate-limited:
       assert.equal(result.status, 'rate-limited');
 
-      // No session.started / .ended / anima.* emissions.
-      assert.equal((await fix.byName('session.started')).length, 0);
-      assert.equal((await fix.byName('session.ended')).length, 0);
-      assert.equal((await fix.byName('anima.manifested')).length, 0);
-      assert.equal((await fix.byName('anima.session.ended')).length, 0);
+      // No animator.session.* emissions.
+      assert.equal((await fix.byName('animator.session.started')).length, 0);
+      assert.equal((await fix.byName('animator.session.ended')).length, 0);
     });
   });
 
@@ -357,7 +328,7 @@ describe('Animator emission — end-to-end terminal sites', () => {
       fix = await setupFixture();
     });
 
-    it('emits session.ended exactly once when cancel() is called on a running session', async () => {
+    it('emits animator.session.ended exactly once when cancel() is called on a running session', async () => {
       // Pre-write a running SessionDoc — animator.cancel() reads from
       // the sessions book and overwrites with a cancelled state.
       const id = generateId('ses', 4);
@@ -372,8 +343,8 @@ describe('Animator emission — end-to-end terminal sites', () => {
       const cancelled = await fix.animator.cancel(id, { reason: 'aborted' });
       assert.equal(cancelled.status, 'cancelled');
 
-      const ended = await fix.byName('session.ended');
-      assert.equal(ended.length, 1, 'cancel() fires session.ended exactly once');
+      const ended = await fix.byName('animator.session.ended');
+      assert.equal(ended.length, 1, 'cancel() fires animator.session.ended exactly once');
       const payload = ended[0].payload as Record<string, unknown>;
       assert.equal(payload.sessionId, id);
       assert.equal(payload.error, 'aborted');
@@ -392,7 +363,7 @@ describe('Animator emission — end-to-end terminal sites', () => {
       });
 
       await fix.animator.cancel(id);
-      assert.equal((await fix.byName('session.ended')).length, 0);
+      assert.equal((await fix.byName('animator.session.ended')).length, 0);
     });
   });
 
@@ -401,7 +372,7 @@ describe('Animator emission — end-to-end terminal sites', () => {
       fix = await setupFixture();
     });
 
-    it('emits session.ended for a detached terminal record', async () => {
+    it('emits animator.session.ended for a detached terminal record', async () => {
       // Pre-write a running record (the babysitter would have done
       // this), then dispatch a terminal session-record payload.
       const id = generateId('ses', 4);
@@ -419,18 +390,15 @@ describe('Animator emission — end-to-end terminal sites', () => {
         exitCode: 0,
       });
 
-      const ended = await fix.byName('session.ended');
+      const ended = await fix.byName('animator.session.ended');
       assert.equal(ended.length, 1);
       const payload = ended[0].payload as Record<string, unknown>;
       assert.equal(payload.sessionId, id);
       assert.equal(payload.exitCode, 0);
       assert.equal(payload.anima, 'artificer');
-
-      // anima.session.ended also fires (role is present on metadata).
-      assert.equal((await fix.byName('anima.session.ended')).length, 1);
     });
 
-    it('does NOT emit session.ended when the session is already terminal (idempotency)', async () => {
+    it('does NOT emit animator.session.ended when the session is already terminal (idempotency)', async () => {
       const id = generateId('ses', 4);
       // Pre-write a terminal session. The handler sees the
       // already-terminal state and short-circuits without overwriting
@@ -450,7 +418,7 @@ describe('Animator emission — end-to-end terminal sites', () => {
         exitCode: 0,
       });
 
-      assert.equal((await fix.byName('session.ended')).length, 0);
+      assert.equal((await fix.byName('animator.session.ended')).length, 0);
     });
   });
 
@@ -459,7 +427,7 @@ describe('Animator emission — end-to-end terminal sites', () => {
       fix = await setupFixture();
     });
 
-    it('emits session.ended for a stale session reconciled to failed', async () => {
+    it('emits animator.session.ended for a stale session reconciled to failed', async () => {
       // Plant a stale session — heartbeat older than the staleness
       // threshold so recoverOrphans() flips it to `failed`.
       const id = generateId('ses', 4);
@@ -476,12 +444,10 @@ describe('Animator emission — end-to-end terminal sites', () => {
       const recovered = await recoverOrphans(fix.sessions, 0);
       assert.equal(recovered, 1);
 
-      const ended = await fix.byName('session.ended');
+      const ended = await fix.byName('animator.session.ended');
       assert.equal(ended.length, 1);
       const payload = ended[0].payload as Record<string, unknown>;
       assert.equal(payload.sessionId, id);
-      // anima.session.ended also fires (role is present on metadata).
-      assert.equal((await fix.byName('anima.session.ended')).length, 1);
     });
   });
 

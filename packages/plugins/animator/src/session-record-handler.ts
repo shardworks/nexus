@@ -54,8 +54,8 @@ export function setBackoffMachine(observer: BackoffObserver | null): void {
 
 /**
  * Callback shape the Animator apparatus registers during startup so the
- * session-record-handler can fire `session.ended` (and the failed-write
- * companions) without re-resolving `guild()` per call.
+ * session-record-handler can fire `animator.session.ended` (and the
+ * failed-write companions) without re-resolving `guild()` per call.
  *
  * The handler runs from two entry points (the `session-record` tool and
  * the DLQ drain) — both inside the apparatus context AND from
@@ -216,10 +216,9 @@ export async function handleSessionRecord(
     }
   }
 
-  // Step 3.5: Emit `session.ended` (and possibly
-  // `commission.session.ended`) for the detached terminal path. Skipped
-  // when the SessionDoc write itself failed — the operator already
-  // received `session.record-failed`.
+  // Step 3.5: Emit `animator.session.ended` for the detached terminal
+  // path. Skipped when the SessionDoc write itself failed — the
+  // operator already received `animator.session.record-failed`.
   if (sessionDocWritten && emitter) {
     try {
       await emitter.emitSessionEnded(doc);

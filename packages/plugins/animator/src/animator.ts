@@ -48,6 +48,7 @@ import {
 } from './rate-limit-backoff.ts';
 import { setBackoffMachine, setEmitter } from './session-record-handler.ts';
 import {
+  ANIMATOR_EVENTS,
   emitSessionStarted,
   emitSessionEnded,
   emitSessionRecordFailed,
@@ -336,9 +337,9 @@ async function recordSession(
     console.warn(
       `[animator] Failed to record session ${result.id}: ${err instanceof Error ? err.message : err}`,
     );
-    // The SessionDoc write failed — fire `session.record-failed` so
-    // standing orders bound to it can react. This is the only path that
-    // CDC on the sessions book cannot observe (the row was never
+    // The SessionDoc write failed — fire `animator.session.record-failed`
+    // so standing orders bound to it can react. This is the only path
+    // that CDC on the sessions book cannot observe (the row was never
     // authoritatively written). Phase is `'update-row'` per the catalog
     // taxonomy: this is a terminal-state overwrite of a row that
     // recordRunning() already inserted.
@@ -356,10 +357,10 @@ async function recordSession(
     }
   }
 
-  // Fire `session.ended` (and possibly `commission.session.ended`) for
-  // the in-process attached path. Skip when the SessionDoc write itself
-  // failed — there is no authoritative session-end to announce; the
-  // operator has already received `session.record-failed` instead.
+  // Fire `animator.session.ended` for the in-process attached path.
+  // Skip when the SessionDoc write itself failed — there is no
+  // authoritative session-end to announce; the operator has already
+  // received `animator.session.record-failed` instead.
   if (sessionDocWritten) {
     await emitSessionEnded(result);
   }
@@ -394,11 +395,11 @@ async function recordRunning(
     });
     await sessions.put(merged);
 
-    // Emit `session.started` once per running transition. Compare the
-    // pre-reducer existing.status against the post-reducer status —
-    // the reducer's terminal-immutability rule means existing terminal
-    // docs come back unchanged, and the running → running refresh
-    // suppresses the emission for duplicate ready reports.
+    // Emit `animator.session.started` once per running transition.
+    // Compare the pre-reducer existing.status against the post-reducer
+    // status — the reducer's terminal-immutability rule means existing
+    // terminal docs come back unchanged, and the running → running
+    // refresh suppresses the emission for duplicate ready reports.
     if (existing?.status !== 'running' && merged.status === 'running') {
       await emitSessionStarted(merged);
     }
@@ -406,10 +407,11 @@ async function recordRunning(
     console.warn(
       `[animator] Failed to write initial session record ${id}: ${err instanceof Error ? err.message : err}`,
     );
-    // Initial running-record write failed — fire `session.record-failed`
-    // so standing orders see the session at all. Phase is `'insert'`
-    // per the catalog taxonomy: this is the first row write that
-    // creates the running session record.
+    // Initial running-record write failed — fire
+    // `animator.session.record-failed` so standing orders see the
+    // session at all. Phase is `'insert'` per the catalog taxonomy:
+    // this is the first row write that creates the running session
+    // record.
     await emitSessionRecordFailed(id, 'insert', err);
   }
 }
@@ -535,10 +537,10 @@ export function createAnimator(): Plugin {
         }
       }
 
-      // Cancellation is a terminal session site — fire `session.ended`
-      // (and `commission.session.ended` when the writ chain resolves).
-      // Skipped when the SessionDoc write itself failed: the operator
-      // already received `session.record-failed` instead.
+      // Cancellation is a terminal session site — fire
+      // `animator.session.ended`. Skipped when the SessionDoc write
+      // itself failed: the operator already received
+      // `animator.session.record-failed` instead.
       if (cancelDocWritten) {
         await emitSessionEnded(updated);
       }
@@ -801,15 +803,20 @@ export function createAnimator(): Plugin {
     apparatus: {
       requires: ['stacks'],
       // Clockworks is a soft dependency: when it's installed every
-      // session lifecycle event (session.started / .ended /
-      // .record-failed, commission.session.ended, anima.manifested,
-      // anima.session.ended) flows into the events book; when it's
-      // not, the helpers no-op silently. Resolution is lazy inside the
-      // helpers so an Animator-without-Clockworks install remains
-      // viable. Mirrors `summon()` → `LoomApi`.
-      recommends: ['loom', 'oculus', 'clockworks', 'clerk'],
+      // session lifecycle event (`animator.session.started`,
+      // `animator.session.ended`, `animator.session.record-failed`)
+      // flows into the events book; when it's not, the helpers no-op
+      // silently. Resolution is lazy inside the helpers so an
+      // Animator-without-Clockworks install remains viable. Mirrors
+      // `summon()` → `LoomApi`.
+      recommends: ['loom', 'oculus', 'clockworks'],
 
       supportKit: {
+        // Declare the three Animator-owned framework events. Once the
+        // Clockworks's start()-time merge runs, these names are
+        // framework-owned and unprivileged emit channels (the anima
+        // `signal` tool, the operator `nsg signal` CLI) reject them.
+        events: ANIMATOR_EVENTS,
         books: {
           sessions: {
             indexes: ['startedAt', 'status', 'conversationId', 'provider'],
@@ -866,9 +873,10 @@ export function createAnimator(): Plugin {
         setBackoffMachine({ observeTerminal: backoff.observeTerminal });
 
         // Register the session-lifecycle emitter so the detached
-        // `handleSessionRecord` path can fire `session.ended` and
-        // `session.record-failed` without re-resolving `guild()` per
-        // call. Mirrors the `setBackoffMachine` hook just above.
+        // `handleSessionRecord` path can fire `animator.session.ended`
+        // and `animator.session.record-failed` without re-resolving
+        // `guild()` per call. Mirrors the `setBackoffMachine` hook just
+        // above.
         setEmitter({
           emitSessionEnded: (doc) => emitSessionEnded(doc),
           emitSessionRecordFailed: (sessionId, phase, err) =>

@@ -4,19 +4,11 @@
  * Every terminal session site (in-process attached dispatch, detached
  * `handleSessionRecord`, the detached `session-running` tool, orphan
  * recovery in `startup.ts`) routes through this module so the
- * `session.started`, `session.ended`, `session.record-failed`, and
- * `commission.session.ended` events fire from a single payload-shape
- * source of truth. Names follow the catalog (past tense) — see
+ * `animator.session.started`, `animator.session.ended`, and
+ * `animator.session.record-failed` events fire from a single
+ * payload-shape source of truth. Names follow the catalog (past tense,
+ * `animator.` prefix per the events-kit contribution) — see
  * `docs/reference/event-catalog.md`.
- *
- * Also fires the `anima.*` lifecycle events for sessions that carry an
- * anima `role` on their metadata: `anima.manifested` at the canonical
- * pending → running transition, `anima.session.ended` alongside the
- * terminal-emit pair. The catalog's other two `anima.*` events
- * (`anima.instantiated`, `anima.state.changed`) are deferred until the
- * Roster apparatus lands — there is no aspirant → active state machine
- * to observe today, so emitting from here would invent semantics. See
- * the README for the deferral.
  *
  * `ClockworksApi` is resolved lazily via `guild().apparatus()` inside a
  * try/catch. When the Clockworks is not installed (it is in Animator's
@@ -24,22 +16,15 @@
  * idiom `summon()` already uses for `LoomApi`.
  *
  * Every `emit()` is wrapped in best-effort try/catch with a `console.warn`
- * breadcrumb (commission decision D13). A Clockworks emission failure
- * must never roll back the originating session-record write.
- *
- * `commissionId` for `commission.session.ended` is derived at emit time
- * by reading `metadata.writId` and walking the writ's `parentId` chain
- * to a root mandate (D6). Sessions without `metadata.writId` (or where
- * the chain doesn't resolve to a root mandate) emit `session.ended`
- * only.
+ * breadcrumb. A Clockworks emission failure must never roll back the
+ * originating session-record write.
  *
  * Payloads omit `workshop` and `workspaceKind` because the data model
- * doesn't carry those fields — D7's "skip-when-unset" rule.
+ * doesn't carry those fields — the "skip-when-unset" rule.
  */
 
 import { guild } from '@shardworks/nexus-core';
-import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
-import type { ClockworksApi } from '@shardworks/clockworks-apparatus';
+import type { ClockworksApi, EventSpec } from '@shardworks/clockworks-apparatus';
 
 import type { SessionDoc, SessionResult } from './types.ts';
 
@@ -47,6 +32,30 @@ import type { SessionDoc, SessionResult } from './types.ts';
 
 /** Plugin id used as the literal `emitter` value on every framework event. */
 const FRAMEWORK_EMITTER = 'framework';
+
+/**
+ * The events kit-contribution surface for the Animator apparatus.
+ *
+ * Wired into the apparatus literal as `supportKit.events` so the
+ * Clockworks's `start()`-time merge marks these names framework-owned
+ * and rejects unprivileged emit attempts. Co-located here with the
+ * emit-name string literals so the kit-declared names and the literals
+ * the helpers pass to `safeEmit` cannot drift out of sync (D3).
+ */
+export const ANIMATOR_EVENTS: Record<string, EventSpec> = {
+  'animator.session.started': {
+    description:
+      'A session has transitioned from pending to running — the Animator has dispatched the provider and the run is in flight.',
+  },
+  'animator.session.ended': {
+    description:
+      'A session has reached a terminal status (completed, failed, timeout, cancelled, or rate-limited). Payload carries exitCode, durationMs, costUsd, and (when present) error.',
+  },
+  'animator.session.record-failed': {
+    description:
+      'A SessionDoc / transcript write failed inside the Animator\'s session-record path. `phase` distinguishes the failing write: `insert` (initial running row), `write-record` (transcript JSON), or `update-row` (terminal overwrite).',
+  },
+};
 
 // ── Apparatus resolution ─────────────────────────────────────────────
 
@@ -59,18 +68,6 @@ const FRAMEWORK_EMITTER = 'framework';
 function tryResolveClockworks(): ClockworksApi | null {
   try {
     return guild().apparatus<ClockworksApi>('clockworks');
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Resolve the Clerk at call time. Returns null when it isn't installed
- * — `commission.session.ended` simply does not fire in that case.
- */
-function tryResolveClerk(): ClerkApi | null {
-  try {
-    return guild().apparatus<ClerkApi>('clerk');
   } catch {
     return null;
   }
@@ -99,8 +96,8 @@ interface SessionLifecyclePayload {
   sessionId: string;
   /**
    * Anima role recorded on the session's metadata, if present.
-   * Populated from `metadata.role`. Per D7, omitted entirely when the
-   * data model does not carry it.
+   * Populated from `metadata.role`. Omitted entirely when the data
+   * model does not carry it ("skip-when-unset").
    */
   anima?: string;
   /** What kicked off the session, recorded on `metadata.trigger`. */
@@ -114,7 +111,7 @@ interface SessionLifecyclePayload {
   /** Error message when the session failed. */
   error?: string;
   // NB: `workshop` and `workspaceKind` are intentionally omitted — the
-  // data model does not carry those fields. D7 "skip-when-unset".
+  // data model does not carry those fields. "skip-when-unset" rule.
 }
 
 function buildBasePayload(
@@ -131,79 +128,25 @@ function buildBasePayload(
   return out;
 }
 
-// ── Commission discovery ─────────────────────────────────────────────
-
-/**
- * Walk `metadata.writId` to the root mandate. Returns the root id when
- * the chain resolves to a root mandate (`type === 'mandate'` AND no
- * `parentId`); returns null otherwise — no `writId`, the writ doesn't
- * exist, the chain dead-ends at a non-mandate root, or Clerk isn't
- * installed.
- *
- * Per D6, `commission.session.ended` only fires when this returns a
- * non-null id.
- */
-async function deriveCommissionIdForSession(
-  metadata: Record<string, unknown> | undefined,
-): Promise<string | null> {
-  if (!metadata || typeof metadata.writId !== 'string') return null;
-  const clerk = tryResolveClerk();
-  if (!clerk) return null;
-
-  let current: WritDoc;
-  try {
-    current = await clerk.show(metadata.writId);
-  } catch {
-    return null;
-  }
-
-  // Walk up to the root.
-  while (current.parentId) {
-    try {
-      current = await clerk.show(current.parentId);
-    } catch {
-      return null;
-    }
-  }
-
-  return current.type === 'mandate' ? current.id : null;
-}
-
 // ── Emit helpers ─────────────────────────────────────────────────────
 
 /**
- * Emit `session.started` for a session that has just begun (in-process
- * attached, detached `session-running` ready report, etc.). When the
- * session's metadata carries a `role`, also emits `anima.manifested`
- * with the same payload — per the catalog: "an anima is launched for a
- * session". The doc must carry the canonical `metadata` set by the
- * caller (`role`, `trigger`, etc.). No-op when Clockworks is not
- * installed.
+ * Emit `animator.session.started` for a session that has just begun
+ * (in-process attached, detached `session-running` ready report, etc.).
+ * The doc must carry the canonical `metadata` set by the caller
+ * (`role`, `trigger`, etc.). No-op when Clockworks is not installed.
  */
 export async function emitSessionStarted(doc: SessionDoc): Promise<void> {
   const clockworks = tryResolveClockworks();
   if (!clockworks) return;
 
   const payload = buildBasePayload(doc.id, doc.metadata);
-  await safeEmit(clockworks, 'session.started', payload);
-
-  // anima.manifested — catalog semantics: "an anima is launched for a
-  // session". The pending → running transition is the precise moment
-  // the anima becomes active in a session, so we co-emit here. We only
-  // fire when an anima role is actually known; sessions without a role
-  // (e.g. a detached `animate()` call with no metadata) don't have an
-  // anima to announce.
-  if (typeof payload.anima === 'string') {
-    await safeEmit(clockworks, 'anima.manifested', payload);
-  }
+  await safeEmit(clockworks, 'animator.session.started', payload);
 }
 
 /**
- * Emit `session.ended` (and, when the chain resolves to a root mandate,
- * `commission.session.ended`) for a terminal session. When the session
- * carries an anima `role` on its metadata, also emits
- * `anima.session.ended` with the same payload. Accepts either a
- * `SessionResult` (in-process path) or a `SessionDoc` (detached /
+ * Emit `animator.session.ended` for a terminal session. Accepts either
+ * a `SessionResult` (in-process path) or a `SessionDoc` (detached /
  * orphan-recovery paths) — they share the field set this helper reads.
  */
 export async function emitSessionEnded(
@@ -220,27 +163,7 @@ export async function emitSessionEnded(
   if (typeof result.costUsd === 'number') payload.costUsd = result.costUsd;
   if (typeof result.error === 'string') payload.error = result.error;
 
-  await safeEmit(clockworks, 'session.ended', payload);
-
-  // anima.session.ended — co-emitted alongside `session.ended` when an
-  // anima role is recorded on the session. Same payload as
-  // `session.ended` so subscribers can switch on event name without
-  // having to re-derive context.
-  if (typeof payload.anima === 'string') {
-    await safeEmit(clockworks, 'anima.session.ended', payload);
-  }
-
-  // Derive the root mandate via Clerk and emit
-  // `commission.session.ended` when it resolves. Per D6 we degrade
-  // cleanly when there is no `writId` or the chain doesn't lead to a
-  // root mandate.
-  const commissionId = await deriveCommissionIdForSession(metadata);
-  if (commissionId !== null) {
-    await safeEmit(clockworks, 'commission.session.ended', {
-      ...payload,
-      commissionId,
-    });
-  }
+  await safeEmit(clockworks, 'animator.session.ended', payload);
 }
 
 /**
@@ -255,8 +178,8 @@ export async function emitSessionEnded(
 export type SessionRecordFailurePhase = 'insert' | 'write-record' | 'update-row';
 
 /**
- * Emit `session.record-failed` from the catch path of a session-record
- * write that itself failed.
+ * Emit `animator.session.record-failed` from the catch path of a
+ * session-record write that itself failed.
  *
  * `phase` follows the catalog's three-phase taxonomy: `'insert'` for the
  * initial running-row write, `'update-row'` for terminal SessionDoc
@@ -273,7 +196,7 @@ export async function emitSessionRecordFailed(
   if (!clockworks) return;
 
   const message = error instanceof Error ? error.message : String(error);
-  await safeEmit(clockworks, 'session.record-failed', {
+  await safeEmit(clockworks, 'animator.session.record-failed', {
     sessionId,
     phase,
     error: message,

@@ -10,40 +10,23 @@ Framework events are emitted by core modules and the Clockworks runner. They are
 
 Payload shapes use inline records `{ field, optional? }` where `?` marks an optional field.
 
-### Commission Session Events
-
-Emitted by `animator/src/session-emission.ts`. The Clockworks no longer fans a separate `commission.*` family from writ lifecycle transitions — that vocabulary is gone (see [Renamed/removed in this release](#renamedremoved-in-this-release)). The single survivor is the session-co-emit below, which reports a session result against the root commission a writ chains up to.
-
-| Event | Payload | Emitter | When |
-|-------|---------|---------|------|
-| `commission.session.ended` | `{ sessionId, anima?, trigger?, exitCode?, durationMs?, costUsd?, error?, commissionId }` | `framework` | A session whose `metadata.writId` chains to a root mandate completes. Co-emitted alongside `session.ended` only when the chain resolves |
-
-**`commission.session.ended`** fires after `session.ended` and only when the underlying session was triggered by a writ that chains up to a root mandate. Sessions without `metadata.writId`, or whose chain doesn't reach a root mandate, emit `session.ended` only.
-
 ### Session Events
 
-Emitted by the shared session-emission helpers in `animator/src/session-emission.ts`. Every terminal session site (in-process attached dispatch, detached `handleSessionRecord`, the detached `session-running` tool, orphan recovery in `startup.ts`) routes through these helpers so the payloads come from a single source of truth.
+Emitted by the shared session-emission helpers in `animator/src/session-emission.ts`, declared via the Animator's `supportKit.events` kit contribution. Every terminal session site (in-process attached dispatch, detached `handleSessionRecord`, the detached `session-running` tool, orphan recovery in `startup.ts`) routes through these helpers so the payloads come from a single source of truth.
 
 | Event | Payload | Emitter | When |
 |-------|---------|---------|------|
-| `session.started` | `{ sessionId, anima?, trigger? }` | `framework` | A session begins — pending → running transition. `anima` is present when the session's `metadata.role` is set; `trigger` is present when `metadata.trigger` is set |
-| `session.ended` | `{ sessionId, anima?, trigger?, exitCode?, durationMs?, costUsd?, error? }` | `framework` | A session terminates (success or failure). Optional fields are populated from the `SessionResult` / `SessionDoc`; missing fields are omitted entirely (no `null` placeholders) |
-| `session.record-failed` | `{ sessionId, phase, error }` | `framework` | A session-record write itself failed. `phase` is one of `'insert'` (initial running-row write), `'write-record'` (transcript JSON), or `'update-row'` (terminal SessionDoc overwrite) |
+| `animator.session.started` | `{ sessionId, anima?, trigger? }` | `framework` | A session begins — pending → running transition. `anima` is present when the session's `metadata.role` is set; `trigger` is present when `metadata.trigger` is set |
+| `animator.session.ended` | `{ sessionId, anima?, trigger?, exitCode?, durationMs?, costUsd?, error? }` | `framework` | A session terminates (success or failure). Optional fields are populated from the `SessionResult` / `SessionDoc`; missing fields are omitted entirely (no `null` placeholders) |
+| `animator.session.record-failed` | `{ sessionId, phase, error }` | `framework` | A session-record write itself failed. `phase` is one of `'insert'` (initial running-row write), `'write-record'` (transcript JSON), or `'update-row'` (terminal SessionDoc overwrite) |
 
-**`session.ended` is guaranteed.** The session funnel wraps the provider call in try/finally — it fires even if the provider threw. The `error` field is present when the session terminated with an error; `exitCode`, `durationMs`, and `costUsd` are populated from the provider's report and may be omitted if the provider doesn't supply them.
+**`animator.session.ended` is guaranteed.** The session funnel wraps the provider call in try/finally — it fires even if the provider threw. The `error` field is present when the session terminated with an error; `exitCode`, `durationMs`, and `costUsd` are populated from the provider's report and may be omitted if the provider doesn't supply them.
 
-**`session.record-failed`** is a diagnostic event. Subscribers wiring to it should not assume anything about the underlying session's state — the failure was in the bookkeeping, not the session itself.
+**`animator.session.record-failed`** is a diagnostic event. Subscribers wiring to it should not assume anything about the underlying session's state — the failure was in the bookkeeping, not the session itself.
 
 ### Anima Events
 
-Emitted by `animator/src/session-emission.ts` alongside the session events. Anima events fire only when the session's `metadata.role` is populated — sessions with no anima role (e.g. a detached `animate()` call with no metadata) produce session events without anima co-emissions.
-
-| Event | Payload | Emitter | When |
-|-------|---------|---------|------|
-| `anima.manifested` | `{ sessionId, anima, trigger? }` | `framework` | An anima is launched for a session — co-emitted with `session.started` when the session metadata carries a `role` |
-| `anima.session.ended` | `{ sessionId, anima, trigger?, exitCode?, durationMs?, costUsd?, error? }` | `framework` | An anima session terminates — co-emitted with `session.ended` when the session metadata carries a `role` |
-
-Only the two anima events listed above fire today. The Roster apparatus is the natural home for additional anima lifecycle events (e.g. an aspirant → active state machine); when it ships, this section will be extended.
+**Deferred — pending the future Roster apparatus.** No `anima.*` events fire today. Animas have no aspirant → active state machine to observe yet, so emitting from here would invent semantics. When the Roster lands, it becomes the natural home for anima lifecycle events (e.g. `anima.manifested`, `anima.session.ended`, plus an instantiation / state-change pair) and will declare them through its own `supportKit.events` kit contribution. Until then, callers wanting "an anima ran a session" subscribe to `animator.session.started` / `animator.session.ended` and read the `anima` field on the payload (populated when the session's `metadata.role` is set).
 
 ### Writ Lifecycle Events
 
@@ -100,17 +83,23 @@ The events use the `tool.` namespace because plugins are the framework's tool-de
 
 ### Renamed/removed in this release
 
-The C2 commission migrated Clockworks's event vocabulary onto the kit-contribution mechanism. Operators with `guild.json` standing orders bound to the legacy names below should update their bindings — bindings to deleted names silently stop firing, and bindings to renamed names will not match the new persisted event-row `name` field.
+The C2 commission migrated Clockworks's event vocabulary onto the kit-contribution mechanism, and the C4 commission migrated the Animator's session events the same way. Operators with `guild.json` standing orders bound to the legacy names below should update their bindings — bindings to deleted names silently stop firing, and bindings to renamed names will not match the new persisted event-row `name` field.
 
 | Before | After | Notes |
 |--------|-------|-------|
 | `standing-order.failed` | `clockworks.standing-order.failed` | Renamed; payload shape unchanged |
 | `schedule.fired` | `clockworks.timer` | Renamed; payload shape unchanged. The row is still written with `processed: true` |
+| `session.started` | `animator.session.started` | Renamed; payload shape unchanged |
+| `session.ended` | `animator.session.ended` | Renamed; payload shape unchanged |
+| `session.record-failed` | `animator.session.record-failed` | Renamed; payload shape unchanged |
 | `commission.posted` | *(deleted)* | Use `writ.mandate.open` instead — fires every time a root mandate enters the active phase |
 | `commission.state.changed` | *(deleted)* | Use the matching `writ.mandate.<status>` row for the target phase |
 | `commission.sealed` | *(deleted)* | Use `writ.mandate.completed` |
 | `commission.completed` | *(deleted)* | Use `writ.mandate.completed` |
 | `commission.failed` | *(deleted)* | Use `writ.mandate.failed`. The lifecycle payload does not include `resolution`; subscribers that need it read the writ from the Clerk |
+| `commission.session.ended` | *(deleted)* | Use `animator.session.ended`. The renamed payload no longer carries `commissionId`; subscribers needing it walk the writ chain via the Clerk |
+| `anima.manifested` | *(deleted)* | Subsumed by `animator.session.started` for v0; read the `anima` field on the payload (populated when the session's `metadata.role` is set). Anima identity events return when the Roster apparatus lands |
+| `anima.session.ended` | *(deleted)* | Subsumed by `animator.session.ended` for v0; read the `anima` field on the payload. Anima identity events return when the Roster apparatus lands |
 | `guild.initialized` | *(deleted)* | No replacement. A fresh Clockworks `start()` now writes zero rows of its own to the events book |
 | `migration.applied` | *(deleted)* | No replacement. Stacks reconciles `CREATE … IF NOT EXISTS` silently; subscribers needing migration visibility consult Stacks directly |
 
@@ -120,7 +109,7 @@ Renaming `commissionId` on writ-lifecycle event payloads to a more precise name 
 
 There is no hardcoded reserved-namespace list. Names are framework-owned per-event, claimed by a plugin's `events` kit contribution at apparatus `start()`. The merged event set tags each entry with a `pluginDeclared` flag that stays sticky-true once any plugin has claimed the name; `signal` surfaces (the anima `signal` tool, the operator `nsg signal` CLI) reject any emit on a `pluginDeclared` name even when an operator's `guild.json` entry now provides the active spec.
 
-By convention, framework plugins claim per-namespace prefixes via their `events` kit contributions — the Clockworks claims its own `clockworks.*` intrinsic events (`clockworks.standing-order.failed`, `clockworks.timer`) plus the universal `writ.<type>.<status>` family (one entry per `(writType, state)` pair currently registered with the Clerk); the Animator claims `session.*`, `anima.*`, and `commission.session.ended`; the framework CLI claims `tool.*` plugin-bootstrap events. The exact catalog of plugin-claimed names lives in each plugin's `supportKit.events` slot — there is no second copy to drift against.
+By convention, framework plugins claim per-namespace prefixes via their `events` kit contributions — the Clockworks claims its own `clockworks.*` intrinsic events (`clockworks.standing-order.failed`, `clockworks.timer`) plus the universal `writ.<type>.<status>` family (one entry per `(writType, state)` pair currently registered with the Clerk); the Animator claims `animator.session.*` (`animator.session.started`, `animator.session.ended`, `animator.session.record-failed`); the framework CLI claims `tool.*` plugin-bootstrap events. The exact catalog of plugin-claimed names lives in each plugin's `supportKit.events` slot — there is no second copy to drift against.
 
 **Writ lifecycle events** (e.g. `writ.mandate.open`, `writ.task.queued`) are declared by the Clockworks's own `events` kit contribution as a state-walk over Clerk's writ-type registry. They are still framework-only — `validateSignal` rejects them via the merged-set framework-owned check.
 
@@ -302,7 +291,7 @@ interface StandingOrder {
 ### Event-Driven Orders (`on:`)
 
 ```json
-{ "on": "session.ended", "run": "completion-rollup" }
+{ "on": "animator.session.ended", "run": "completion-rollup" }
 ```
 
 The dispatcher imports the relay by name from the registered relay set, calls its handler with the triggering `GuildEvent` and a `RelayContext`, and writes a dispatch row.
