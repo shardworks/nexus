@@ -153,6 +153,7 @@ export function injectChrome(
   stylesheetPath: string,
   navHtml: string,
   scriptPath?: string,
+  scriptPath2?: string,
 ): string {
   // Check for </head> case-insensitively
   const headCloseMatch = html.match(/<\/head>/i);
@@ -163,17 +164,25 @@ export function injectChrome(
 
   let result = html;
 
-  // Build the bundle to inject before </head>: stylesheet link plus an
-  // optional shared-formatter script tag. The script is injected in
-  // <head> (not end-of-body) so that window.NexusFormat is defined
-  // before any dashboard IIFE — which always lives at end-of-<body> —
-  // executes. This makes the shared namespace available to every
-  // dashboard by construction.
+  // Build the bundle to inject before </head>: stylesheet link plus
+  // optional shared-helper script tags. Scripts are injected in
+  // <head> (not end-of-body) so that window.NexusFormat and
+  // window.NexusUrl are defined before any dashboard IIFE — which
+  // always lives at end-of-<body> — executes. This makes the shared
+  // namespaces available to every dashboard by construction.
+  //
+  // Two script slots are provided rather than an array because the
+  // current Oculus chrome ships exactly two helpers (the formatter
+  // and the URL-state helper). If the registry grows, this is the
+  // right place to lift it into a real list.
   if (headCloseMatch && headCloseMatch.index !== undefined) {
     const idx = headCloseMatch.index;
     let headInsert = `<link rel="stylesheet" href="${stylesheetPath}">`;
     if (scriptPath) {
       headInsert += `<script src="${scriptPath}"></script>`;
+    }
+    if (scriptPath2) {
+      headInsert += `<script src="${scriptPath2}"></script>`;
     }
     result = result.slice(0, idx) + headInsert + result.slice(idx);
   }
@@ -397,6 +406,7 @@ export function createOculus(): Plugin {
                   "/static/style.css",
                   navHtml,
                   "/static/nexus-format.js",
+                  "/static/nexus-url.js",
                 );
                 return new Response(injected, {
                   headers: { "Content-Type": "text/html; charset=utf-8" },

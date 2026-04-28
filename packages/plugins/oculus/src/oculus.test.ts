@@ -516,6 +516,55 @@ describe('injectChrome', () => {
       'shared formatter must be injected before the dashboard script so window.NexusFormat is defined when the dashboard IIFE runs',
     );
   });
+
+  // ── Second shared-helper script slot ──────────────────────────────
+
+  it('injects a second <script src> tag into <head> when scriptPath2 is provided', () => {
+    const html = '<html><head><title>Test</title></head><body><p>Hi</p></body></html>';
+    const result = injectChrome(
+      html,
+      '/static/style.css',
+      '<nav>NAV</nav>',
+      '/static/nexus-format.js',
+      '/static/nexus-url.js',
+    );
+    assert.ok(result.includes('<script src="/static/nexus-format.js"></script>'));
+    assert.ok(result.includes('<script src="/static/nexus-url.js"></script>'));
+    const formatIdx = result.indexOf('<script src="/static/nexus-format.js">');
+    const urlIdx = result.indexOf('<script src="/static/nexus-url.js">');
+    const headCloseIdx = result.indexOf('</head>');
+    assert.ok(formatIdx >= 0 && formatIdx < headCloseIdx, 'formatter must be in <head>');
+    assert.ok(urlIdx >= 0 && urlIdx < headCloseIdx, 'URL helper must be in <head>');
+  });
+
+  it('does not inject the second script tag when scriptPath2 is omitted', () => {
+    const html = '<html><head><title>Test</title></head><body></body></html>';
+    const result = injectChrome(
+      html,
+      '/static/style.css',
+      '<nav>NAV</nav>',
+      '/static/nexus-format.js',
+    );
+    assert.ok(result.includes('<script src="/static/nexus-format.js">'));
+    assert.ok(!result.includes('nexus-url.js'), 'URL helper script must not appear when scriptPath2 is absent');
+  });
+
+  it('both shared scripts precede any dashboard script placed at end-of-body', () => {
+    const html =
+      '<html><head><title>Test</title></head><body><script src="dashboard.js"></script></body></html>';
+    const result = injectChrome(
+      html,
+      '/static/style.css',
+      '<nav>NAV</nav>',
+      '/static/nexus-format.js',
+      '/static/nexus-url.js',
+    );
+    const formatIdx = result.indexOf('<script src="/static/nexus-format.js">');
+    const urlIdx = result.indexOf('<script src="/static/nexus-url.js">');
+    const dashboardScriptIdx = result.indexOf('<script src="dashboard.js">');
+    assert.ok(formatIdx >= 0 && formatIdx < dashboardScriptIdx);
+    assert.ok(urlIdx >= 0 && urlIdx < dashboardScriptIdx);
+  });
 });
 
 // ── Integration tests: server lifecycle ──────────────────────────────
@@ -643,14 +692,22 @@ describe('Oculus page serving', () => {
     const text = await res.text();
     assert.ok(text.includes('<link rel="stylesheet" href="/static/style.css">'));
     assert.ok(text.includes('<script src="/static/nexus-format.js"></script>'));
+    // The shared URL-state helper is injected alongside the formatter so
+    // every contributed page can reach window.NexusUrl from its IIFE.
+    assert.ok(
+      text.includes('<script src="/static/nexus-url.js"></script>'),
+      'shared URL helper script must be present',
+    );
     assert.ok(text.includes('<nav id="oculus-nav">'));
     assert.ok(text.includes('<a href="/">Guild</a>'));
     assert.ok(text.includes('/pages/my-page/'));
-    // The shared formatter script must resolve before dashboard scripts
-    // execute, so it lives in <head> — not at end-of-body.
-    const scriptIdx = text.indexOf('<script src="/static/nexus-format.js">');
+    // Both shared scripts must resolve before dashboard scripts execute,
+    // so they live in <head> — not at end-of-body.
+    const formatIdx = text.indexOf('<script src="/static/nexus-format.js">');
+    const urlIdx = text.indexOf('<script src="/static/nexus-url.js">');
     const headCloseIdx = text.indexOf('</head>');
-    assert.ok(scriptIdx >= 0 && scriptIdx < headCloseIdx, 'formatter script must be in <head>');
+    assert.ok(formatIdx >= 0 && formatIdx < headCloseIdx, 'formatter script must be in <head>');
+    assert.ok(urlIdx >= 0 && urlIdx < headCloseIdx, 'URL helper script must be in <head>');
   });
 
   it('serves index.html at explicit /index.html path with injection', async () => {
@@ -659,6 +716,7 @@ describe('Oculus page serving', () => {
     const text = await res.text();
     assert.ok(text.includes('<link rel="stylesheet" href="/static/style.css">'));
     assert.ok(text.includes('<script src="/static/nexus-format.js"></script>'));
+    assert.ok(text.includes('<script src="/static/nexus-url.js"></script>'));
     assert.ok(text.includes('<nav id="oculus-nav">'));
   });
 
