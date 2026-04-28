@@ -993,6 +993,15 @@ describe('Reckoner apparatus', () => {
         { failOnError: false },
       );
 
+      // Seal the registry and resolve the active scheduler — the
+      // Reckoner's pre-seal guard short-circuits `runScheduler` until
+      // `phase:started` fires, so a CDC handler invocation that
+      // arrives before this point produces no row even when every
+      // gate would otherwise pass. Fired after the observer's
+      // `stacks.watch()` so the CDC registry has not sealed when
+      // the test's own watcher registers.
+      await fix.firePhaseStarted();
+
       // A pre-existing sibling and the draft writ — both posted
       // outside the under-test transaction so they exist (and have
       // emitted their own CREATE events) before we begin observing.

@@ -244,17 +244,31 @@ export type ReckoningDeclineReason =
 
 /**
  * Defer-reason enum for a Reckonings record with `outcome: 'deferred'`.
- * v0 of the CDC handler does not emit deferred rows; the type is
- * declared here so consumer code matching against the journal pattern
- * matches the architecture doc verbatim.
  *
- * See: docs/architecture/reckonings-book.md §"Defer reasons".
+ * The `dependency_pending` and `dependency_failed` reasons are emitted
+ * by the dependency-aware consideration gate (D1–D13 of the
+ * dependency-aware-consideration commission): a held petition with one
+ * or more outbound `depends-on` links whose targets are not all
+ * `cleared` (terminal + success-or-cancelled attrs) is left in `new`
+ * phase and a deferred Reckonings row is written. `dependency_failed`
+ * carries failed-precedence — when at least one dependency target
+ * resolves to a `failed` classification, the gate emits
+ * `dependency_failed` regardless of how many other deps are still
+ * gating. The remaining values (`priority`, `queue_depth`,
+ * `time_hold`, `patron_policy`, `other`) remain reserved for future
+ * commissions; the v0 scheduler-emitted defer path still writes no
+ * row (only the dependency gate emits deferred rows in v0).
+ *
+ * See: docs/architecture/reckonings-book.md §"Defer reasons" and
+ * docs/architecture/apparatus/reckoner.md §"Dependency-aware defer".
  */
 export type ReckoningDeferReason =
   | 'priority'
   | 'queue_depth'
   | 'time_hold'
   | 'patron_policy'
+  | 'dependency_pending'
+  | 'dependency_failed'
   | 'other';
 
 /**

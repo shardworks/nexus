@@ -48,21 +48,44 @@ What ships here:
   consumer call so operators can hot-edit without restarting the guild.
 - A **Phase 2 CDC handler** that watches `clerk/writs` for held
   petitions (writs in `new` phase carrying `ext.reckoner`), runs the
-  rule sequence (skip / disabled-source / source-check / scheduler-
-  evaluate), drives `clerk.transition(...)` to the type's active state
-  on accept (or to `cancelled` with a structured resolution on
-  decline), and idempotently appends one row to the `reckoner/reckonings`
-  book per consideration. The scheduler call site (Rule 5) routes
-  through the registry-resolved active scheduler — the default
-  `reckoner.always-approve` instance approves every held petition
-  that clears the source / disabled / registration gates. The
-  configured scheduler can also emit `defer` (no transition, no row)
-  or `decline` (transition to `cancelled` with the decision's reason
-  recorded as the resolution string + a Reckonings row carrying
-  `declineReason: 'other'`). The other decline path remains
-  `enforceRegistration: true` against an unregistered source, which
-  produces an `outcome: 'declined'` row with
-  `declineReason: 'source_unregistered'`.
+  rule sequence (skip / disabled-source / source-check /
+  dependency-gate / scheduler-evaluate), drives `clerk.transition(...)`
+  to the type's active state on accept (or to `cancelled` with a
+  structured resolution on decline), and idempotently appends one row
+  to the `reckoner/reckonings` book per state-change. The scheduler
+  call site routes through the registry-resolved active scheduler —
+  the default `reckoner.always-approve` instance approves every held
+  petition that clears the source / disabled / registration gates and
+  whose dependency gate proceeds. The configured scheduler can also
+  emit `defer` (no transition, no row) or `decline` (transition to
+  `cancelled` with the decision's reason recorded as the resolution
+  string + a Reckonings row carrying `declineReason: 'other'`). The
+  other decline path remains `enforceRegistration: true` against an
+  unregistered source, which produces an `outcome: 'declined'` row
+  with `declineReason: 'source_unregistered'`.
+- A **dependency-aware defer rule**, slotted into the rule sequence
+  between source-registration enforcement and the scheduler call. The
+  rule walks each held petition's outbound `depends-on` links
+  (filtered by `link.kind === 'depends-on'`), resolves each target via
+  the writs book, and classifies the target via its writ-type config
+  attrs: a target is *cleared* iff its current state is terminal AND
+  its attrs include `success` or `cancelled`; a terminal-but-not-
+  cleared target is *failed*; any non-terminal target is *gating*. A
+  dangling target is treated as gating. Failed-precedence aggregation
+  produces one of three outcomes — `proceed` (all targets cleared, or
+  no `depends-on` links exist), `defer-pending` (≥1 gating, none
+  failed), or `defer-failed` (≥1 failed). Defer outcomes leave the
+  writ in `new` phase and emit a `deferred` Reckonings row carrying
+  `deferReason: 'dependency_pending'` or `'dependency_failed'` and
+  `deferNote` listing the gating / failed dep writ ids. The dep gate
+  re-evaluates on every Reckoner tick (the polling cadence is the v0
+  wake-up mechanism); the row write is suppressed when the outcome
+  shape is identical to the writ's most recent deferred row, so a
+  long-deferred dependent does not produce a heartbeat duplicate per
+  tick. The deferred-petition staleness diagnostic (cycle visibility,
+  dangling-target escalation, running counters, `dependency_failed`
+  petitioner notification) belongs to a sibling commission; the
+  Reckoner stops at "petition stays deferred."
 - A **startup catch-up scan** that re-routes pre-existing held
   petitions through the same handler at apparatus start so a process
   restart does not strand work.

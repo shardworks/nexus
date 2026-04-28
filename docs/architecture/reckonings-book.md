@@ -254,6 +254,8 @@ interface ReckoningDoc {
     | 'queue_depth'
     | 'time_hold'
     | 'patron_policy'
+    | 'dependency_pending'
+    | 'dependency_failed'
     | 'other';
   deferUntil?: string;            // ISO timestamp, optional
   deferSignal?: string;           // event-pattern reservation, optional
@@ -393,7 +395,7 @@ a discriminated union:
 | Outcome     | Top-level fields populated                                                                                  |
 |-------------|-------------------------------------------------------------------------------------------------------------|
 | `accepted`  | (none — only the projection and the tick stamp; the phase transition itself is recorded by Clerk on the writ) |
-| `deferred`  | `deferReason`, `deferUntil?`, `deferSignal?`, `deferCount`, `firstDeferredAt`, `lastDeferredAt`, `deferNote?` |
+| `deferred`  | `deferReason`, `deferUntil?`, `deferSignal?`, `deferCount?`, `firstDeferredAt?`, `lastDeferredAt?`, `deferNote?`. The dependency-aware-consideration commission ships `dependency_pending` / `dependency_failed` rows that populate `deferReason` + `deferNote` only — the wake-up companions and running counters are absent on those rows pending the staleness-diagnostic commission. |
 | `declined`  | `declineReason`, `remediationHint?`                                                                          |
 | `no-op`     | (none — only the projection and the tick stamp)                                                              |
 
@@ -452,11 +454,13 @@ that mode. `source_banned`, by contrast, applies regardless of
 ### Defer reasons
 
 ```
-'priority'       // a higher-priority petition is ahead in the queue
-'queue_depth'    // the active rig set is full; hold for capacity
-'time_hold'      // operator-set hold until a wall-clock time
-'patron_policy'  // guild-policy says this category is paused
-'other'          // freeform — `deferNote` carries the detail
+'priority'           // a higher-priority petition is ahead in the queue
+'queue_depth'        // the active rig set is full; hold for capacity
+'time_hold'          // operator-set hold until a wall-clock time
+'patron_policy'      // guild-policy says this category is paused
+'dependency_pending' // ≥1 outbound depends-on target is non-terminal
+'dependency_failed'  // ≥1 outbound depends-on target is failed-terminal
+'other'              // freeform — `deferNote` carries the detail
 ```
 
 `deferUntil` is populated when the Reckoner can name a wall-clock
@@ -469,12 +473,24 @@ sibling held writ resolves"). At least one of `deferUntil` and
 both being empty is allowed for the rare `other`-reason hold but
 should produce a `deferNote` for the audit trail.
 
-The actual wake-up dispatch path — how the Reckoner converts a
-populated `deferSignal` into a Clockworks standing-order subscription,
-how `deferUntil` is converted into a `schedule:` order, and how the
-re-tick fires against the deferred petition — is owned by the
-Reckoner-core commission. This doc names the schema fields the
-mechanism stamps; the mechanism itself is settled there.
+**v0 carve-out for `dependency_pending` / `dependency_failed`.** The
+dependency-aware-consideration commission ships these two reasons
+without populating `deferUntil` or `deferSignal`. The wake-up
+mechanism is the polling tick — deferred dependents are re-evaluated
+on every Reckoner tick and release naturally as their dependencies
+clear. `deferNote` is populated unconditionally on these rows with a
+comma-separated list of the gating or failed dep writ ids (e.g.
+`gating: w-abc, w-def` or `failed: w-xyz`); that is the audit trail
+the staleness diagnostic indexes against until a future commission
+extends the row shape.
+
+The actual wake-up dispatch path for the polling-tick-independent
+reasons — how the Reckoner converts a populated `deferSignal` into
+a Clockworks standing-order subscription, how `deferUntil` is
+converted into a `schedule:` order, and how the re-tick fires against
+the deferred petition — is owned by the Reckoner-core commission.
+This doc names the schema fields the mechanism stamps; the mechanism
+itself is settled there.
 
 `deferCount`, `firstDeferredAt`, and `lastDeferredAt` are running
 counters: each new deferral on the same writ increments `deferCount`
@@ -482,7 +498,12 @@ and refreshes `lastDeferredAt`, while `firstDeferredAt` is preserved
 across deferrals as the writ's first-seen-as-deferred timestamp. The
 Reckoner reads the prior Reckonings row for the writ to compute the
 running counter; the journal is its own source of truth for the
-deferral history.
+deferral history. The dependency-aware commission deliberately
+leaves the running counters unwired on its rows; wiring them is
+owned by the deferred-petition staleness diagnostic. Until that
+commission ships, the count of dependency-defer rows is derivable
+from `count(*) WHERE writId = X AND outcome = 'deferred' AND
+deferReason IN ('dependency_pending', 'dependency_failed')`.
 
 **The counter advances only on `outcome: 'deferred'` rows.** A
 `no-op` row produced when the Reckoner re-weighed a held writ and
@@ -491,7 +512,10 @@ counter records distinct deferrals, not re-evaluations of an existing
 hold; "how many times has the Reckoner deferred this writ?" is
 answered by `count(*) WHERE writId = X AND outcome = 'deferred'`, and
 the running counter on the most recent deferred row matches that
-count.
+count. The dependency-aware-consideration commission's no-op-row
+suppression rule preserves this invariant: the Reckoner only emits
+a fresh deferred row on dependency-state-shape changes, so the row
+count and the (eventual) running counter stay aligned.
 
 ### Acceptance metadata
 

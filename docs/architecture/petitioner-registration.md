@@ -186,9 +186,22 @@ events. For each writ event, it inspects the writ:
    and decides:
    - **Approve** → transition `new` → `open` (or the type's
      equivalent active state). Spider then picks up.
-   - **Defer** → leave in `new`. Append a reckoning entry to the
-     Reckonings book noting the deferral. Re-evaluate on the
-     next scheduling tick or the next state-relevant event.
+   - **Defer (dependency-aware)** → leave in `new`. Append a
+     `deferred` Reckonings row carrying `deferReason:
+     'dependency_pending'` (one or more outbound `depends-on`
+     targets are still non-terminal) or `deferReason:
+     'dependency_failed'` (failed-precedence: at least one target
+     reached a non-cleared terminal state). The dep gate runs
+     ahead of the scheduler and re-evaluates on every Reckoner
+     tick — a deferred dependent releases naturally as its
+     dependencies clear, with no-op-row suppression keeping the
+     journal lean. The classifier reads the target's writ-type
+     config attrs (cleared = terminal + success-or-cancelled);
+     cancelled deps are success-equivalent in v0.
+   - **Defer (scheduler-emitted)** → leave in `new`, no row. The
+     scheduler-emitted defer outcome is row-less in v0; richer
+     scheduling-policy deferrals are reserved for future
+     commissions.
    - **Decline** → transition `new` → `cancelled`. The decline
      reason is stamped on the writ via the resolution field.
 

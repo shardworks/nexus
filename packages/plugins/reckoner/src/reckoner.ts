@@ -27,13 +27,18 @@
  *   6. A Phase 2 CDC handler on `clerk/writs` that observes update
  *      events on held petitions (writs in `new` phase carrying
  *      `ext.reckoner`), runs the rule sequence (skip / disabled /
- *      source-check / scheduler-evaluate), drives
+ *      source-check / dependency-gate / scheduler-evaluate), drives
  *      `clerk.transition()` on accept or decline, and idempotently
- *      appends one Reckonings row per consideration. v0's stub is
- *      always-approve; the only decline path is the source-
- *      unregistered + `enforceRegistration: true` rule.
+ *      appends one Reckonings row per consideration. The default
+ *      scheduler is always-approve; petitions can decline through
+ *      the source-unregistered + `enforceRegistration: true` rule
+ *      and defer through the dependency-aware gate (rule 5) when an
+ *      outbound `depends-on` target is not yet cleared.
  *   7. A startup catch-up scan that re-routes pre-existing held
- *      petitions through the same handler at boot.
+ *      petitions through the same handler at boot. Dependency-
+ *      deferred petitions surface here every time the scan runs and
+ *      release naturally as their dependencies clear (the v0 wake-
+ *      up mechanism is the polling tick).
  *
  * The structural template for the kit-static registry is the
  * Clerk's `registerKitLinkKinds` (link-kind registry); the seal
@@ -51,8 +56,16 @@
  *     field, or wrap `petition()` in a Stacks transaction. The
  *     orphan window of the two-step flow is recorded as
  *     observation `obs-4` / `obs-5` for future consideration.
- *   - implement deferral, no-op, throttling, or per-source quotas —
- *     all reserved for future commissions.
+ *   - implement no-op, throttling, or per-source quotas — reserved
+ *     for future commissions. (Dependency-aware deferral is
+ *     implemented; the scheduler-emitted `defer` outcome remains
+ *     row-less.)
+ *   - implement the deferred-petition staleness diagnostic,
+ *     dangling-target escalation, or `dependency_failed`
+ *     petitioner notification — those belong to a sibling
+ *     commission. Stop at "petition stays deferred"; the v0 row
+ *     emits a `deferNote` audit trail and that is all the surface
+ *     this commission ships.
  *
  * See: docs/architecture/petitioner-registration.md (the
  * load-bearing contract document),
@@ -698,12 +711,192 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
     return typeof writ.type === 'string' && writ.type.length > 0 ? writ.type : '<missing>';
   }
 
+  // ── Dependency-aware consideration gate (D1–D13) ───────────────────
+  //
+  // The Reckoner reads outbound `depends-on` links on each held
+  // petition under consideration and defers acceptance until every
+  // dependency target has reached a *cleared* state. Without this
+  // gate, the petitioner could fill the active-WIP cap with writs
+  // that are still gated on incomplete dependencies — Spider's
+  // existing dispatch-time gate cannot fix that because Spider only
+  // fires after the Reckoner has already promoted the writ to
+  // `active`. The deadlock has to be prevented at the consideration
+  // layer.
+  //
+  // Classifier (D2): one target writ → `cleared` | `failed` | `gating`
+  //   - `cleared`  iff the target's stored phase has classification
+  //                `terminal` AND attrs include `success` OR
+  //                `cancelled` (cancelled is success-equivalent for
+  //                v0).
+  //   - `failed`   iff classification is `terminal` and the cleared
+  //                attrs are absent (catches `failure`, `stuck` if
+  //                terminal, or any plugin-contributed terminal that
+  //                does not declare success/cancelled).
+  //   - `gating`   iff classification is not terminal.
+  //
+  // Aggregator (D2, failed-precedence): many targets → one of three
+  //   outcomes — `proceed`, `defer-pending`, `defer-failed`. Any
+  //   failed dep wins regardless of how many other deps are still
+  //   gating; the `dependency_failed` defer reason surfaces that
+  //   shape on the Reckonings row.
+  //
+  // The classifier inspects every outbound `depends-on` link
+  // regardless of target type (D13) — plugin-contributed types work
+  // transparently as long as they declare the relevant attrs.
+  // Dangling targets are treated as `gating` (D2/Spider precedent):
+  // the link was created against a live target, so a missing target
+  // is an operator/data-integrity condition better surfaced as
+  // "still gated" than as "ready".
+
+  /** Per-target classification produced by `classifyDependencyTarget`. */
+  type DependencyTargetClass = 'cleared' | 'failed' | 'gating';
+
+  /**
+   * Aggregated dependency-gate outcome for one held petition.
+   *
+   * `proceed` — all outbound `depends-on` targets are cleared (or
+   * the writ has no outbound `depends-on` links).
+   * `defer-pending` — at least one target is `gating` and none are
+   * `failed`.
+   * `defer-failed` — at least one target is `failed` (failed-
+   * precedence: takes priority over any gating targets).
+   */
+  type DependencyOutcome =
+    | { kind: 'proceed' }
+    | { kind: 'defer-pending'; gatingIds: string[] }
+    | { kind: 'defer-failed'; failedIds: string[] };
+
+  /**
+   * Classify one dependency target via its writ-type config attrs.
+   * Mirrors `resolveActiveTargetPhase`'s diagnostic style: fail-loud
+   * with `[reckoner]` prefix when the target's writ-type is not
+   * registered or its stored phase is not declared in the config.
+   * A target reachable via a `depends-on` link with no registered
+   * type config is a configuration error, not a transient — defer-
+   * as-gating or treat-as-failed would silently absorb registration
+   * drift (D10).
+   */
+  function classifyDependencyTarget(target: WritDoc): DependencyTargetClass {
+    const config: WritTypeConfig | undefined = clerk.getWritTypeConfig(target.type);
+    if (!config) {
+      throw new Error(
+        `[reckoner] dependency: target writ "${target.id}" has type "${writt(target)}" with no registered WritTypeConfig — refusing to classify dependency state.`,
+      );
+    }
+    const state = config.states.find((s) => s.name === target.phase);
+    if (!state) {
+      throw new Error(
+        `[reckoner] dependency: target writ "${target.id}" type "${target.type}" has no declared state "${target.phase}" in its WritTypeConfig — refusing to classify dependency state.`,
+      );
+    }
+    if (state.classification !== 'terminal') return 'gating';
+    const attrs = state.attrs ?? [];
+    if (attrs.includes('success') || attrs.includes('cancelled')) {
+      return 'cleared';
+    }
+    return 'failed';
+  }
+
+  /**
+   * Walk a held writ's outbound `depends-on` links and aggregate the
+   * per-target classifications.
+   *
+   * Reads links via `clerk.links()` and filters to `kind === 'depends-on'`
+   * — the namespace-free Clerk-contributed link kind. The Reckoner
+   * does not read any Spider-side link convention; the dep gate
+   * keys exclusively on the registered Clerk kind.
+   *
+   * Resolves each target via a `ReadOnlyBook<WritDoc>` obtained from
+   * `stacks.readBook('clerk', 'writs')` (D8) — mirrors the catch-up
+   * scan's pattern and Spider's gate evaluator. `book.get(targetId)`
+   * returns `undefined` for missing targets, no throw.
+   *
+   * Aggregation is failed-precedence (D2): any failed → `defer-failed`;
+   * else any gating (or dangling) → `defer-pending`; else `proceed`.
+   */
+  async function evaluateDependencyGate(writId: string): Promise<DependencyOutcome> {
+    const { outbound } = await clerk.links(writId);
+    const targetIds = outbound
+      .filter((l) => l.kind === 'depends-on')
+      .map((l) => l.targetId);
+    if (targetIds.length === 0) return { kind: 'proceed' };
+
+    if (!stacks) {
+      // Defensive: stacks is set in start(); the gate cannot run
+      // without it. Falling through to proceed would silently
+      // bypass the gate, so fail-loud-skip with a warning instead.
+      // (In practice this branch is unreachable — start() runs
+      // before considerWrit can fire.)
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[reckoner] dependency: stacks handle is unavailable; skipping dependency gate for writ "${writId}".`,
+      );
+      return { kind: 'proceed' };
+    }
+    const writsBook: ReadOnlyBook<WritDoc> = stacks.readBook<WritDoc>('clerk', 'writs');
+
+    const failedIds: string[] = [];
+    const gatingIds: string[] = [];
+    for (const targetId of targetIds) {
+      const target = await writsBook.get(targetId);
+      if (!target) {
+        // Dangling target — treat as gating (D2/Spider precedent).
+        gatingIds.push(targetId);
+        continue;
+      }
+      const cls = classifyDependencyTarget(target);
+      if (cls === 'failed') {
+        failedIds.push(targetId);
+      } else if (cls === 'gating') {
+        gatingIds.push(targetId);
+      }
+      // cleared → contributes nothing to either bucket
+    }
+
+    if (failedIds.length > 0) {
+      return { kind: 'defer-failed', failedIds };
+    }
+    if (gatingIds.length > 0) {
+      return { kind: 'defer-pending', gatingIds };
+    }
+    return { kind: 'proceed' };
+  }
+
+  /**
+   * Format the `deferNote` for a dependency-defer Reckonings row
+   * (D5): `gating: <id>, <id>` for `dependency_pending` or
+   * `failed: <id>, <id>` for `dependency_failed`. The dep ids are
+   * sorted so the note shape is deterministic — re-evaluations at
+   * the same outcome produce byte-identical notes, which the
+   * no-op-row suppression check (D12) keys on.
+   */
+  function buildDependencyDeferNote(
+    kind: 'defer-pending' | 'defer-failed',
+    ids: readonly string[],
+  ): string {
+    const prefix = kind === 'defer-failed' ? 'failed' : 'gating';
+    const sorted = [...ids].sort();
+    return `${prefix}: ${sorted.join(', ')}`;
+  }
+
   /**
    * Idempotency lookup. Reuses the `[writId, consideredAt]` index
    * (D6/D9) to fetch every prior row for `writId`, then filters
-   * in-process on `writUpdatedAt` to detect a duplicate consideration
-   * for the same triggering writ-version. Returns `true` when a row
-   * already exists for the (`writId`, `writUpdatedAt`) pair.
+   * in-process on `writUpdatedAt` to detect a duplicate terminal
+   * consideration for the same triggering writ-version. Returns
+   * `true` when a non-deferred row already exists for the
+   * (`writId`, `writUpdatedAt`) pair.
+   *
+   * Deferred rows do *not* count as "already considered". The
+   * dependency-aware defer path (D6 of the dependency-aware-
+   * consideration commission) writes deferred rows as state-change
+   * audit entries while leaving the writ in `new` phase; subsequent
+   * ticks must remain free to re-run the gate at the same
+   * `writUpdatedAt` and accept (or decline, or re-defer with no-op
+   * suppression) once the gate clears. Skipping deferred rows here
+   * is what enables that. The accept/decline writes (the only paths
+   * that actually advance the writ's phase) still dedupe against
+   * the same `writUpdatedAt`.
    */
   async function alreadyConsidered(
     book: Book<ReckoningDoc>,
@@ -714,9 +907,45 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
       where: [['writId', '=', writId]],
     });
     for (const row of candidates) {
-      if (row.writUpdatedAt === writUpdatedAt) return true;
+      if (row.writUpdatedAt !== writUpdatedAt) continue;
+      // Deferred rows are state-change records, not terminal
+      // dispositions — they do not gate re-evaluation on the next
+      // tick. Only accept/decline rows constitute "already considered".
+      if (row.outcome === 'deferred') continue;
+      return true;
     }
     return false;
+  }
+
+  /**
+   * Look up the most-recent deferred Reckonings row for `writId`.
+   *
+   * Used by the dependency-aware defer path to implement no-op-row
+   * suppression (D12 of the dependency-aware-consideration
+   * commission): when the dep gate produces a defer outcome whose
+   * `(deferReason, deferNote)` shape matches the writ's most recent
+   * deferred row, we suppress the row write rather than emit a
+   * heartbeat duplicate. A fresh row is emitted only when the
+   * outcome shape changes (a dep cleared, a new dep failed, or the
+   * dep set's classification mix changed).
+   *
+   * Returns `undefined` when the writ has never been deferred.
+   */
+  async function findLastDeferredRow(
+    book: Book<ReckoningDoc>,
+    writId: string,
+  ): Promise<ReckoningDoc | undefined> {
+    const rows = await book.find({
+      where: [['writId', '=', writId]],
+    });
+    let latest: ReckoningDoc | undefined;
+    for (const row of rows) {
+      if (row.outcome !== 'deferred') continue;
+      if (!latest || row.consideredAt > latest.consideredAt) {
+        latest = row;
+      }
+    }
+    return latest;
   }
 
   /**
@@ -726,14 +955,26 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
    * derived from the same `now` Date the caller sampled at handler
    * entry (D17), keeping the row's id and `consideredAt` consistent
    * within a single consideration.
+   *
+   * The `'deferred'` branch is populated only by the dependency-aware
+   * defer path (D5 of the dependency-aware-consideration commission):
+   * `deferReason` is one of the two dependency-defer enum values and
+   * `deferNote` carries a comma-separated list of the gating/failed
+   * dep writ ids. The running counters (`deferCount`,
+   * `firstDeferredAt`, `lastDeferredAt`) and the wake-up companions
+   * (`deferUntil`, `deferSignal`) are intentionally absent — the v0
+   * carve-out hands those to a future staleness-diagnostic
+   * commission (D4).
    */
   function buildReckoningRow(params: {
     now: Date;
     writ: WritDoc;
     ext: ReckonerExt;
-    outcome: 'accepted' | 'declined';
+    outcome: 'accepted' | 'declined' | 'deferred';
     declineReason?: ReckoningDoc['declineReason'];
     remediationHint?: string;
+    deferReason?: ReckoningDoc['deferReason'];
+    deferNote?: string;
     /**
      * Scheduler-emitted weight (D5). Threaded through verbatim onto
      * the resulting Reckonings row when present; absent for
@@ -760,6 +1001,14 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
         row.remediationHint = params.remediationHint;
       }
     }
+    if (params.outcome === 'deferred') {
+      if (params.deferReason !== undefined) {
+        row.deferReason = params.deferReason;
+      }
+      if (params.deferNote !== undefined) {
+        row.deferNote = params.deferNote;
+      }
+    }
     if (params.weight !== undefined) {
       row.weight = params.weight;
     }
@@ -783,15 +1032,34 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
    * Decline path (writes a row, transitions to `cancelled`):
    *   - source unregistered + `enforceRegistration: true` (D8)
    *
-   * Scheduler path (Rule 5):
-   *   - source registered, OR source unregistered with
-   *     `enforceRegistration: false`. Delegated to `runScheduler`,
-   *     which calls the registry-resolved active scheduler and maps
-   *     its decision per D21.
+   * Dependency-defer path (writes a row, no transition):
+   *   - the writ has one or more outbound `depends-on` links whose
+   *     targets are not all in a *cleared* state. Failed-precedence
+   *     aggregation chooses between `dependency_pending` and
+   *     `dependency_failed`. The dep gate runs every tick (outside
+   *     the `(writId, writUpdatedAt)` dedupe short-circuit); the
+   *     row write is suppressed when the outcome shape is
+   *     unchanged from the writ's most-recent deferred row, so
+   *     re-evaluation at the same state does not produce a
+   *     heartbeat duplicate (D6/D12).
    *
-   * Idempotency: each non-skip path consults `alreadyConsidered`
+   * Scheduler path:
+   *   - source registered (or `enforceRegistration: false`) and the
+   *     dependency gate has produced `proceed`. Delegated to
+   *     `runScheduler`, which calls the registry-resolved active
+   *     scheduler and maps its decision per D21.
+   *
+   * Rule ordering (D11): disabled-source skip and registration
+   * enforcement run *before* the dependency check. A disabled-
+   * source writ produces no row and no dep evaluation; an
+   * unregistered-source writ under `enforceRegistration: true`
+   * declines + transitions and never reaches the dep check.
+   *
+   * Idempotency: the accept/decline paths consult `alreadyConsidered`
    * before writing — a re-delivery of the same (writId,
-   * writUpdatedAt) short-circuits without a second row or transition.
+   * writUpdatedAt) short-circuits without a second row or
+   * transition. Deferred rows do not count as "already considered"
+   * (the gate must remain free to re-evaluate every tick).
    */
   async function considerWrit(writ: WritDoc): Promise<void> {
     if (!reckoningsBook) {
@@ -872,7 +1140,69 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
       return;
     }
 
-    // Rule 5 — registry-resolved scheduler.
+    // Rule 5 — dependency-aware defer (D1 of the dependency-aware-
+    // consideration commission). Runs every tick, *outside* the
+    // `(writId, writUpdatedAt)` dedupe short-circuit (which lives
+    // inside `runScheduler`) so a deferred-with-deps writ keeps
+    // being re-evaluated as its dependencies clear (D6). Only the
+    // row write is dedupe-aware — the no-op-row suppression below
+    // compares the new outcome shape to the writ's most-recent
+    // deferred row.
+    let depOutcome: DependencyOutcome;
+    try {
+      depOutcome = await evaluateDependencyGate(writ.id);
+    } catch (err) {
+      // The classifier fail-loud throws on missing/unknown writ-type
+      // config (D10). Surface but do not crash the watcher; Phase 2
+      // absorbs throws via failOnError: false.
+      const msg = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[reckoner] cdc: dependency gate threw for writ "${writ.id}" — leaving in new without a row. ${msg}`,
+      );
+      return;
+    }
+    if (depOutcome.kind !== 'proceed') {
+      const reason: ReckoningDoc['deferReason'] =
+        depOutcome.kind === 'defer-failed' ? 'dependency_failed' : 'dependency_pending';
+      const ids =
+        depOutcome.kind === 'defer-failed' ? depOutcome.failedIds : depOutcome.gatingIds;
+      const deferNote = buildDependencyDeferNote(depOutcome.kind, ids);
+
+      // No-op-row suppression (D12). Re-evaluation at the same
+      // outcome shape produces no row. A new row appears only when
+      // a dep cleared, a new dep failed, or the dep set's
+      // classification mix changed.
+      const last = await findLastDeferredRow(reckoningsBook, writ.id);
+      if (
+        last &&
+        last.deferReason === reason &&
+        last.deferNote === deferNote
+      ) {
+        return;
+      }
+
+      const row = buildReckoningRow({
+        now,
+        writ,
+        ext,
+        outcome: 'deferred',
+        deferReason: reason,
+        deferNote,
+      });
+      try {
+        await reckoningsBook.put(row);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[reckoner] cdc: failed to persist Reckonings row for writ "${writ.id}" (dependency-defer path): ${msg}`,
+        );
+      }
+      return;
+    }
+
+    // Rule 6 — registry-resolved scheduler.
     await runScheduler(writ, ext, now);
   }
 
@@ -1013,7 +1343,13 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
 
     // 6. Outcome mapping (D21).
     if (decision.outcome === 'defer') {
-      // No transition, no row. v0 defer means absence-of-row signal.
+      // No transition, no row. The scheduler-emitted defer path
+      // remains row-less in v0 — only the dependency-aware defer
+      // path in `considerWrit` writes deferred rows (the
+      // `SchedulerDecision` shape does not carry the
+      // `deferReason` / `deferNote` metadata required to populate
+      // a deferred row faithfully). Extending scheduler-emitted
+      // defers to write rows is a separately-scoped commission.
       return;
     }
 

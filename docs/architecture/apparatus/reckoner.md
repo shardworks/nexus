@@ -32,11 +32,13 @@ In v0 the Reckoner evaluates held petitions through a Phase-2 CDC
 handler on `clerk/writs` (see "What the Reckoner does NOT do" for
 the policy carve-outs that remain out of scope). The handler runs
 the rule sequence (skip / disabled-source / source-check /
-scheduler-evaluate), drives `clerk.transition()` on accept or
-decline, and idempotently appends one row per consideration to the
-`reckoner/reckonings` book. The v0 scheduling stub is always-
-approve; petitioners may withdraw a held writ via `withdraw()` (a
-thin wrapper over `clerk.transition(writId, 'cancelled', …)`).
+dependency-gate / scheduler-evaluate), drives `clerk.transition()`
+on accept or decline, defers (no transition, deferred row) when the
+dependency gate fires, and idempotently appends one row per
+state-change to the `reckoner/reckonings` book. The default
+scheduler is always-approve; petitioners may withdraw a held writ
+via `withdraw()` (a thin wrapper over `clerk.transition(writId,
+'cancelled', …)`).
 
 The Reckoner is the canonical Workflow-2 path. Workflow-1 callers
 (direct `clerk.post()` + `clerk.setWritExt()`) get the same on-disk
@@ -482,15 +484,73 @@ The three `SchedulerDecision` outcomes map to apparatus actions:
 | Outcome   | Phase transition       | Reckonings row | Notes |
 |-----------|------------------------|----------------|-------|
 | `approve` | `new` → active target  | `accepted`     | The target is the writ-type config's active state; weight (if present) is threaded onto the row. |
-| `defer`   | none                   | none           | The writ stays in `new`; absence of a row is itself a signal. |
+| `defer`   | none                   | none           | The writ stays in `new`. The scheduler-emitted defer path is row-less because `SchedulerDecision` does not carry the `deferReason` / `deferNote` metadata required to populate a faithful deferred row. (The dependency-aware defer path — see "Dependency-aware defer" below — does emit deferred rows; that path runs in the apparatus's rule sequence before the scheduler is invoked.) |
 | `decline` | `new` → `cancelled`    | `declined`     | The decision's `reason` is recorded as the writ's resolution string; the row carries `declineReason: 'other'` and the reason in `remediationHint`. |
+
+### Dependency-aware defer
+
+Between source-registration enforcement and the scheduler call, the
+Reckoner runs a per-petition dependency gate. Every held writ's
+outbound `depends-on` links are walked (filtered by `link.kind ===
+'depends-on'`), each target is classified via the target's writ-type
+config attrs, and the per-target classifications are aggregated into
+one of three outcomes:
+
+| Outcome           | Phase transition | Reckonings row | Notes |
+|-------------------|------------------|----------------|-------|
+| `proceed`         | none yet         | none yet       | All targets are *cleared* (or the writ has no `depends-on` links). The scheduler runs next. |
+| `defer-pending`   | none             | `deferred`     | At least one target is non-terminal (gating). The row carries `deferReason: 'dependency_pending'` and `deferNote: 'gating: <id>, ...'`. |
+| `defer-failed`    | none             | `deferred`     | At least one target is terminal-but-not-cleared (failed-precedence: takes priority over any gating targets). The row carries `deferReason: 'dependency_failed'` and `deferNote: 'failed: <id>, ...'`. |
+
+**Per-target classification (D2 of the dependency-aware-consideration
+commission).** Read `clerk.getWritTypeConfig(target.type)` and look up
+the state matching `target.phase`:
+
+- **cleared** iff `state.classification === 'terminal'` AND `state.attrs` includes `'success'` OR `'cancelled'`.
+- **failed**  iff `state.classification === 'terminal'` (and the cleared attrs are absent — catches `failure`, terminal-`stuck`, or any plugin-contributed terminal that does not declare success/cancelled).
+- **gating**  iff `state.classification !== 'terminal'`.
+
+Cancelled is success-equivalent in v0 — a withdrawn dependency
+releases its dependents the same way a successful one does (D2).
+A dangling target (the link points at a writ that no longer exists in
+the writs book) is treated as gating per Spider precedent — the link
+was created against a live target, so a missing target is an
+operator/data-integrity condition better surfaced as "still gated"
+than as "ready". A target whose writ-type config is missing or whose
+stored phase is not declared in its config throws fail-loud with the
+`[reckoner]` diagnostic prefix; defer-as-gating or treat-as-failed
+would silently absorb registration drift.
+
+**v0 row-shape carve-out.** Dependency-defer rows omit `deferUntil`,
+`deferSignal`, and the running counters (`deferCount`,
+`firstDeferredAt`, `lastDeferredAt`); their audit trail is the
+`deferNote` field, which lists the gating or failed dep writ ids.
+Wiring those companion fields is owned by the deferred-petition
+staleness diagnostic, a separately-scoped sibling commission.
+
+**Rule ordering.** Disabled-source skip and source-registration
+enforcement run *before* the dependency check. A disabled-source writ
+produces no row and no dep evaluation; an unregistered-source writ
+under `enforceRegistration: true` declines + transitions and never
+reaches the dep check.
+
+**Cadence and idempotency.** The dependency check runs on every
+consideration tick — it is not gated by the existing `(writId,
+writUpdatedAt)` dedupe (which lives inside the scheduler call and
+gates only acceptance/decline writes). Re-evaluating a deferred writ
+at the same outcome shape suppresses the row write rather than
+emitting a heartbeat duplicate; a fresh row appears only when the
+outcome shape changes (a dep cleared, a new dep failed, the dep set's
+classification mix changed). The wake-up mechanism in v0 is the
+polling tick — deferred dependents do not subscribe to wake-up
+events on dependency-target updates.
 
 ### Failure modes
 
 | Condition                                                          | Behavior |
 |---|---|
 | CDC event arrives before `phase:started`                           | Silently skipped; the catch-up scan reprocesses the writ post-seal. |
-| Dedupe lookup short-circuits on the same `(writId, writUpdatedAt)` | No `evaluate` call, no row, no transition. |
+| Dedupe lookup short-circuits on the same `(writId, writUpdatedAt)` | No `evaluate` call, no acceptance/decline row, no transition. The dedupe runs inside the scheduler call and counts only non-deferred prior rows — the dependency gate (which runs *before* the scheduler) re-evaluates every tick regardless. |
 | `validateConfig` throws                                            | Fail-loud log via the `[reckoner] scheduler:` prefix; evaluation is skipped (no row, no transition). |
 | `evaluate` throws or does not return an array                      | Fail-loud log; evaluation skipped. |
 | Decision carries a `writId` not in the candidate set               | Per-decision `console.warn` naming the offending id; ignore-and-continue. |
@@ -591,10 +651,25 @@ present, or when the writ id does not exist. See the
   inside a single transaction is the petitioner's concern via the
   stamp-only form composed with `stacks.transaction(...)` (see
   above).
-- **No deferral, no-op, throttling, or per-source quotas.** The
-  v0 scheduling stub is always-approve for held petitions that pass
-  the source / disabled / registration gates; richer scheduling
-  policy is reserved for the Reckoner-core scheduling commission.
+- **No no-op, throttling, or per-source quotas.** The default
+  scheduler is always-approve for held petitions that pass the
+  source / disabled / registration gates and clear the dependency
+  gate; richer scheduling policy is reserved for the Reckoner-core
+  scheduling commission. (Deferral *is* implemented for the
+  dependency-aware path — see "Dependency-aware defer" above —
+  but the scheduler-emitted `defer` outcome remains row-less.)
+- **No deferred-petition staleness diagnostic.** Cycle visibility,
+  dangling-target escalation, `dependency_failed` petitioner
+  notification, and the running-counter fields (`deferCount`,
+  `firstDeferredAt`, `lastDeferredAt`) belong to a sibling
+  commission. The Reckoner stops at "petition stays deferred";
+  surfacing long-deferred writs is the staleness diagnostic's
+  concern.
+- **No event-driven wake-up via `defer_signal`.** `deferSignal`
+  remains reserved on the Reckonings record. Dependency-deferred
+  petitions wake up on the next polling tick only — the Reckoner
+  does not subscribe to writ-completion events on the dep target's
+  side to drive an immediate re-evaluation.
 - **No `ext` field on `clerk.post()`.** Clerk's
   `PostCommissionRequest` is unchanged; the ext slot is written
   via the `setWritExt` call.
