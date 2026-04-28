@@ -100,8 +100,12 @@ interface Fixture {
   clerk: ClerkApi;
   reckoner: ReckonerApi;
   keeper: VisionKeeperApi;
-  /** Manually re-fire `phase:started` against every registered handler. */
-  firePhaseStarted: () => void;
+  /**
+   * Manually re-fire `phase:started` against every registered
+   * handler. Awaits async handlers (the Reckoner's seal handler runs
+   * the catch-up scan async).
+   */
+  firePhaseStarted: () => Promise<void>;
 }
 
 function buildFakeGuild(
@@ -215,10 +219,9 @@ async function buildFixture(): Promise<Fixture> {
 
   // Track phase:started handlers so the test can drive seal manually.
   const phaseStartedHandlers: Array<(...args: unknown[]) => void | Promise<void>> = [];
-  const firePhaseStarted = () => {
+  const firePhaseStarted = async (): Promise<void> => {
     for (const handler of phaseStartedHandlers) {
-      const result = handler();
-      void result;
+      await handler();
     }
   };
 
@@ -248,8 +251,15 @@ async function buildFixture(): Promise<Fixture> {
   // Reckoner — wire vision-keeper's supportKit.petitioners through as
   // a KitEntry so the registration runs against the production code
   // path. We build the kit entries from the keeper plugin's
-  // supportKit, mirroring what the real Wire phase does.
+  // supportKit, mirroring what the real Wire phase does. The
+  // Reckoner's own supportKit.schedulers (the built-in always-approve
+  // instance) is surfaced the same way so the scheduler registry
+  // picks it up.
   const keeperSupport = readSupportKit(keeperPlugin);
+  const reckonerSchedulers = (reckonerPlugin.apparatus.supportKit as
+    | { schedulers?: unknown[] }
+    | undefined
+  )?.schedulers;
   const petitionerKitEntries: KitEntry[] = [
     {
       pluginId: 'vision-keeper',
@@ -257,6 +267,16 @@ async function buildFixture(): Promise<Fixture> {
       type: 'petitioners',
       value: keeperSupport.petitioners,
     },
+    ...(reckonerSchedulers
+      ? [
+          {
+            pluginId: 'reckoner',
+            packageName: '@shardworks/reckoner-apparatus',
+            type: 'schedulers',
+            value: reckonerSchedulers,
+          } satisfies KitEntry,
+        ]
+      : []),
   ];
   await reckonerPlugin.apparatus.start(buildCtx(petitionerKitEntries));
   const reckoner = reckonerPlugin.apparatus.provides as ReckonerApi;
@@ -267,8 +287,9 @@ async function buildFixture(): Promise<Fixture> {
   const keeper = keeperPlugin.apparatus.provides as VisionKeeperApi;
   apparatusMap.set('vision-keeper', keeper);
 
-  // Seal by firing phase:started so the petitioner registry locks down.
-  firePhaseStarted();
+  // Seal by firing phase:started so the petitioner registry locks
+  // down and the Reckoner resolves its active scheduler.
+  await firePhaseStarted();
 
   return { stacks, clerk, reckoner, keeper, firePhaseStarted };
 }

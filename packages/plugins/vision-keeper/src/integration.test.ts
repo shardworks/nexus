@@ -253,6 +253,14 @@ async function buildGuild(opts: {
     | undefined;
   if (!keeperSupport) throw new Error('vision-keeper supportKit missing');
 
+  // Surface the Reckoner's own supportKit.schedulers (the built-in
+  // always-approve instance) as a kit entry so the registry picks it
+  // up — Arbor does this in production from each apparatus's
+  // supportKit.
+  const reckonerSchedulers = (reckonerPlugin.apparatus.supportKit as
+    | { schedulers?: unknown[] }
+    | undefined
+  )?.schedulers;
   const petitionerKitEntries: KitEntry[] = [
     {
       pluginId: 'vision-keeper',
@@ -260,6 +268,16 @@ async function buildGuild(opts: {
       type: 'petitioners',
       value: keeperSupport.petitioners,
     },
+    ...(reckonerSchedulers
+      ? [
+          {
+            pluginId: 'reckoner',
+            packageName: '@shardworks/reckoner-apparatus',
+            type: 'schedulers',
+            value: reckonerSchedulers,
+          } satisfies KitEntry,
+        ]
+      : []),
   ];
   await reckonerPlugin.apparatus.start(buildCtx(petitionerKitEntries));
   const reckoner = reckonerPlugin.apparatus.provides as ReckonerApi;
@@ -365,10 +383,10 @@ async function buildGuild(opts: {
   const keeper = keeperPlugin.apparatus.provides as VisionKeeperApi;
   apparatusMap.set('vision-keeper', keeper);
 
-  // Seal — run any registered phase:started handlers.
+  // Seal — run any registered phase:started handlers. The Reckoner's
+  // handler is async (it runs the catch-up scan), so await each.
   for (const handler of phaseStartedHandlers) {
-    const result = handler();
-    void result;
+    await handler();
   }
 
   // Capture console.log so the integration test can assert on the
