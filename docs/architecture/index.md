@@ -295,7 +295,8 @@ Some opt-ins form coherent stacks that only make sense when installed together �
 | **[The Lattice](apparatus/lattice.md)** | `lattice` | Notification substrate — part of the opt-in notifications stack |
 | **The Lattice-Discord** | `lattice-discord` | Discord channel for Lattice pulses — part of the opt-in notifications stack |
 | **The Oculus** | `oculus` | Web dashboard — serves an HTTP dashboard with kit-contributed pages and routes |
-| **[The Reckoner](apparatus/reckoner.md)** | `reckoner` | Stall, failure, and drain observer — part of the opt-in notifications stack |
+| **[The Sentinel](apparatus/sentinel.md)** | `sentinel` | Stall, failure, and drain observer — part of the opt-in notifications stack |
+| **[The Reckoner](apparatus/reckoner.md)** | `reckoner` | Petitioner-scheduler contract surface — kit-static petitioner registry and `petition()` / `withdraw()` helpers |
 
 Today the default apparatus each contribute their own supportKits (tools, engines, relays); no standalone default kits ship.
 

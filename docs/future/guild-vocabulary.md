@@ -20,13 +20,23 @@ See `docs/architecture/apparatus/lattice.md`.
 
 A single notification event — one immutable record on the Lattice, marking one thing worth telling. A pulse names its trigger (what happened), its source (who emitted it), and the subject it concerns. Pulses accumulate in the Lattice's book as the guild's chronological record of things announced, distinct from the Daybook's broader chronicle of everything the guild did.
 
-### The Reckoner
+### The Sentinel
 
 A narrow observer that watches the guild's work and announces when things go wrong or go quiet.
 
-The Reckoner reads the Clerk's books and listens for three specific conditions: a commission that stalls (stuck), a commission that fails, and the moment the guild's work queue drains entirely. When any of these conditions is met, the Reckoner emits a pulse to the Lattice. It does not judge how the news should be delivered; that is the Lattice's work. It does not modify writs, does not reach into rig internals, and does not participate in dispatch — it only observes and announces.
+The Sentinel reads the Clerk's books and listens for three specific conditions: a commission that stalls (stuck), a commission that fails, and the moment the guild's work queue drains entirely. When any of these conditions is met, the Sentinel emits a pulse to the Lattice. It does not judge how the news should be delivered; that is the Lattice's work. It does not modify writs, does not reach into rig internals, and does not participate in dispatch — it only observes and announces.
 
-The Reckoner is the first observer to sit atop the Lattice substrate. Others are anticipated — balance alerts, anima completion, vision-keepers — each with its own narrow remit, each speaking through the same substrate.
+The Sentinel is the first observer to sit atop the Lattice substrate. Others are anticipated — balance alerts, anima completion, vision-keepers — each with its own narrow remit, each speaking through the same substrate.
+
+See `docs/architecture/apparatus/sentinel.md`.
+
+### The Reckoner
+
+The petitioner-scheduler — the authority that decides which held petitions become live work.
+
+A petitioner is anything that wants the guild to consider doing something — a vision-keeper noticing drift, a patron-bridge surfacing a request, a tech-debt detector flagging accumulating debt. Each petition arrives as a writ in `new` phase carrying a structured priority claim, and lives there until the Reckoner approves it (transitions it to `open`), defers it (leaves it in `new` for re-evaluation), or declines it (transitions it to `cancelled`). Spider does not dispatch from `new`; the Reckoner is the gate.
+
+The Reckoner maintains a kit-static registry of recognized petitioner sources, a typed contract for the priority dimensions every petition declares, and the canonical helpers (`petition()`, `withdraw()`) that petitioner authors use. Future commissions add the consideration loop and the Reckonings book.
 
 See `docs/architecture/apparatus/reckoner.md`.
 

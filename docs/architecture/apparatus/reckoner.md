@@ -2,66 +2,134 @@
 
 Status: **Draft**
 
-Package: `@shardworks/sentinel-apparatus` · Plugin id: `reckoner`
+Package: `@shardworks/reckoner-apparatus` · Plugin id: `reckoner`
 
-> **⚠️ MVP scope.** MVP ships three trigger types (`writ-stuck`,
-> `writ-failed`, `queue-drained`) and roots-only scoping. Every other
-> Reckoner-style trigger (`needs-review`, anima completion, coinmaster
-> alerts, …) is out of scope.
+> **⚠️ v0 scope.** v0 ships the contract surface only — the
+> kit-static petitioner registry, the `petition()` /
+> `withdraw()` helpers (Workflow 2 in the contract document),
+> the `enforceRegistration` and `disabledSources` config keys,
+> and the inspection helpers on `provides`. There is no CDC
+> handler, no Lattice pulse emission, and no Reckonings book in
+> this commission — those land in follow-on work. The legacy
+> stall/fail/drain pulse emitter (formerly named "the Reckoner")
+> now lives at [sentinel.md](sentinel.md) under the `sentinel`
+> plugin id.
 
 ---
 
 ## Purpose
 
-The Reckoner is a narrow observer: a Phase 2 CDC watcher on `clerk/writs`
-that emits Lattice pulses when a *commission* stalls, fails, or when the
-guild's work queue drains. It turns the Clerk's phase-transition events into
-the first three observer-emitted pulses on the Lattice substrate.
+The Reckoner is the petitioner-scheduler apparatus. It owns the
+**contract surface** that lets any apparatus post a Reckoner-gated
+writ — a writ in `new` phase carrying `writ.ext['reckoner']` — and
+maintains the registry of recognized petitioner sources.
 
-The Reckoner does **not** decide how pulses are delivered; that is the
-Lattice's job. It does not modify writs, does not inspect rig internals, and
-does not interact with Spider's dispatch path. It reads two books
-(`clerk/writs` and `spider/rigs`) and writes one API (`LatticeApi.emit`).
+In v0 the Reckoner does **not** evaluate or transition petitions;
+it only stands up the contract. Petitions land in `new` phase and
+wait there until the follow-on CDC handler commission picks them
+up. Petitioners may withdraw a held writ via `withdraw()` (a thin
+wrapper over `clerk.transition(writId, 'cancelled', …)`).
 
-The Reckoner is install-only configurable: there is no `guild.json` section
-for it. Install turns it on, uninstall turns it off. Decisions about *which*
-pulses get delivered live on the Lattice's channel-configuration side, not
-here.
+The Reckoner is the canonical Workflow-2 path. Workflow-1 callers
+(direct `clerk.post()` + `clerk.setWritExt()`) get the same on-disk
+shape and are equally welcome — the helper exists for ergonomics,
+default-fill, and registry validation, not as a gate.
+
+See: the load-bearing contract document at
+[../petitioner-registration.md](../petitioner-registration.md).
 
 ---
 
 ## Dependencies
 
 ```
-requires:   ['clerk', 'lattice', 'stacks']
-recommends: ['spider', 'oculus']
+requires: ['clerk']
+consumes: ['petitioners']
 ```
 
-- **The Clerk** (required) — source of writ transitions the Reckoner
-  watches.
-- **The Lattice** (required) — consumer of every pulse the Reckoner emits.
-- **The Stacks** (required) — CDC substrate plus the rigs book the
-  Reckoner reads for drain counts.
-- **Spider** (recommended) — owner of the `rigs` book consulted by the
-  drain predicate. When Spider is absent the rig counts resolve to zero,
-  so `isQueueDrained` reduces to `open == 0`.
-- **Oculus** (recommended) — future patron-facing surface for pulse
-  inspection.
+- **The Clerk** (required) — `clerk.post()` is the writ-creation
+  primitive `petition()` calls; `clerk.setWritExt()` writes the
+  `writ.ext['reckoner']` slot; `clerk.transition()` drives
+  `withdraw()`. Stacks is a transitive `requires` via Clerk and is
+  not declared explicitly (D16).
 
 ---
 
 ## Kit Interface
 
-The Reckoner consumes no kit contributions. It exposes a narrow
-`ReckonerApi` (`source`, `triggerTypes`) for surfaces that want to list what
-this observer emits, but has no extensibility hooks.
+The Reckoner consumes the new `petitioners` kit-contribution type
+— the third kit-static contribution registry in the framework
+after Clerk's `linkKinds` and Spider's `rigTemplateMappings`.
+
+A kit (or apparatus's `supportKit`) declares one or more
+petitioner descriptors under the `petitioners` array:
+
+```typescript
+export default {
+  kit: {
+    requires: ['reckoner'],
+    petitioners: [
+      {
+        source: 'vision-keeper.snapshot',
+        description:
+          'Periodic vision-vs-reality snapshots emitted when ' +
+          'the keeper observes drift worth surfacing.',
+      },
+    ],
+  },
+} satisfies Plugin;
+
+interface PetitionerDescriptor {
+  /** Fully-qualified source id of the form `{pluginId}.{kebab-suffix}`. */
+  source:      string;
+  /** Human-readable description of what this petitioner emits. */
+  description: string;
+}
+```
+
+### Source-id grammar
+
+A source id has the form **`{pluginId}.{kebab-suffix}`** — the
+contributing plugin's derived id, a literal `.`, then a kebab-case
+suffix (lowercase letters, digits, and hyphens; not starting or
+ending with a hyphen). Mirrors Lattice trigger-types and Clerk
+link-kinds (D2). Examples:
+
+- `vision-keeper.snapshot`
+- `patron-bridge.commission`
+- `tech-debt.detected`
+
+The kebab-case suffix grammar is the same regex Clerk uses for
+link-kinds: `^[a-z0-9]+(?:-[a-z0-9]+)*$`.
+
+### Validation policy
+
+- **Prefix mismatch.** When a `petitioners` entry's source prefix
+  does not equal the contributing plugin's id, startup hard-fails
+  with a diagnostic naming the offending source and the
+  contributing kit (D3). The kit author either named the wrong
+  prefix or named the wrong kit; either way the registry should
+  not paper over the drift.
+- **Malformed kebab-case suffix.** Same hard-fail policy (D4).
+- **Duplicate source.** When two `petitioners` entries (across
+  any kits, including the same kit) share a `source` string,
+  startup hard-fails with a diagnostic naming **both** contributing
+  kit ids and the conflicting source. Mirrors Clerk's link-kind
+  collision rule, Spider's `rigTemplateMappings` collision rule,
+  and Fabricator's engine-design collision rule.
+- **Sealing.** The registry seals at the framework's
+  `phase:started` signal — the same moment Clerk seals its
+  writ-type registry (D5). Post-seal registration attempts throw
+  a sealed-registry error patterned on Clerk's `[clerk]
+  registerWritType:` diagnostic.
 
 ---
 
 ## Support Kit
 
-None — the Reckoner contributes no books, no tools, and no pages. Its
-effect on the guild is purely the pulses it writes to the Lattice.
+None — the Reckoner contributes no books, no tools, and no pages
+in v0. Its effect on the guild is the contract surface and the
+`provides` API.
 
 ---
 
@@ -69,308 +137,246 @@ effect on the guild is purely the pulses it writes to the Lattice.
 
 ```typescript
 interface ReckonerApi {
-  /** Emitter plugin id stamped onto `pulse.source`. Always `'reckoner'`. */
-  readonly source: string;
-  /** The three trigger types this observer produces. */
-  readonly triggerTypes: readonly string[];
+  /**
+   * Post a writ in `new` phase with `writ.ext['reckoner']` set
+   * correctly.
+   *
+   * Resolves the source against the registry. When the source is
+   * not registered:
+   *   - `enforceRegistration: true`  — throws fail-loud, no writ
+   *     is created.
+   *   - `enforceRegistration: false` (default) — logs a warning
+   *     and proceeds.
+   *
+   * Validates every priority dimension against its enum. Applies
+   * defaults to omitted priority dimensions (field-by-field
+   * merge). Calls `clerk.post()` then `clerk.setWritExt()` —
+   * two-step, non-atomic.
+   *
+   * Returns the writ document with `ext.reckoner` populated.
+   */
+  petition(request: PetitionRequest): Promise<WritDoc>;
+
+  /**
+   * Withdraw a held writ by transitioning it to `cancelled`.
+   *
+   * Thin wrapper around `clerk.transition(writId, 'cancelled',
+   * { resolution: reason })`. No source check, no owner check,
+   * no ext check. Reason passes through verbatim — undefined
+   * stays undefined.
+   */
+  withdraw(writId: string, reason?: string): Promise<WritDoc>;
+
+  /** True when `source` is in the kit-static petitioner registry. */
+  isSourceRegistered(source: string): boolean;
+
+  /**
+   * True when `source` is currently in the live `disabledSources`
+   * config list. Re-reads `guild.json` on every call so operators
+   * can hot-edit (D20).
+   */
+  isSourceDisabled(source: string): boolean;
+
+  /** Project every registered petitioner descriptor (source + description). */
+  listPetitioners(): PetitionerDescriptor[];
 }
+
+interface PetitionRequest {
+  // ── writ fields (passed through to clerk.post) ────────
+  type?:     string;
+  title:     string;
+  body:      string;
+  codex?:    string;
+  parentId?: string;
+
+  // ── ext.reckoner fields ───────────────────────────────
+  source:      string;
+  priority?:   Partial<Priority>;
+  complexity?: ComplexityTier;
+  payload?:    unknown;
+  labels?:     Record<string, string>;
+}
+
+type Priority = {
+  visionRelation:
+    | 'vision-blocker' | 'vision-violator'
+    | 'vision-advancer' | 'vision-neutral';
+  severity: 'critical' | 'serious' | 'moderate' | 'minor';
+  scope:    'whole-product' | 'major-area' | 'minor-area';
+  time:     { decay: boolean; deadline: string | null };
+  domain:   Array<
+    | 'security' | 'compliance' | 'cost' | 'feature' | 'quality'
+    | 'infrastructure' | 'documentation' | 'research' | 'ergonomics'
+  >;
+};
+
+type ComplexityTier =
+  | 'mechanical' | 'bounded' | 'exploratory' | 'open-ended';
 ```
 
-### Trigger types
+### Default priority
 
-| Trigger | `writId` | Emitted on |
-|---------|----------|-----------|
-| `reckoner.writ-stuck` | root writ id | root writ enters `stuck`. |
-| `reckoner.writ-failed` | root writ id | root writ enters `failed`. When the failure originated in an engine retry-budget exhaustion, the pulse's context carries an additional `engineFailure` block (see "Engine-failure enrichment" below). |
-| `reckoner.queue-drained` | `null` | any terminal writ transition that brings the guild to `open = 0 AND active rigs = 0`. |
-
-### Context payloads (D30)
-
-Each trigger emits a typed `context` payload. Channels use these to render
-richer notifications without having to re-parse the summary.
+`petition()` accepts a `Partial<Priority>`. Omitted dimensions are
+filled with the contract defaults at the helper boundary (D15):
 
 ```typescript
-interface WritStuckContext {
-  writShortId: string;   // `w-abc123`
-  writPhase: 'stuck';
-  writTitle: string;
-  writType: string;
-  writUpdatedAt: string;      // dedupe identity — see "Idempotency under replay"
-  stuckCause?: string;        // from status.spider
-}
-
-interface WritFailedContext {
-  writShortId: string;
-  writTitle: string;
-  writType: string;
-  writUpdatedAt: string;      // dedupe identity — see "Idempotency under replay"
-  resolution?: string;        // the writ's resolution text
-  childFailures?: string[];   // chase-chain of cascaded leaf-cause short ids
-                              // (outer→inner; populated from status['clerk'])
-  engineFailure?: EngineFailureContext; // engine-failure enrichment (see below)
-}
-
-interface EngineFailureContext {
-  rigId: string;              // the rig whose failed engine produced this enrichment
-  engineId: string;           // engine instance id within the rig (e.g. 'implement')
-  engineDesignId: string;     // engine design id — the Fabricator design key
-  attemptCount?: number;      // retry budget consumed by the failed engine
-  lastError?: string;         // tail attempt's `error` string when status === 'failed'
-  attemptsSummary: EngineAttemptSummary[]; // ordered per-attempt summary (yields dropped)
-}
-
-interface EngineAttemptSummary {
-  startedAt?: string;         // ISO timestamp when the attempt started
-  endedAt?: string;           // ISO timestamp when the attempt terminated
-  status?: 'completed' | 'failed';
-  error?: string;             // error message if `status === 'failed'`
-  sessionId?: string;         // Animator session id, if any
-  // (yields are intentionally dropped — pulse is a diagnostic surface, not an audit log)
-}
-
-interface QueueDrainedContext {
-  drainedAt: string;
-  lastTerminalWritId: string;
-  writUpdatedAt: string;      // dedupe identity — see "Idempotency under replay"
+{
+  visionRelation: 'vision-neutral',
+  severity:       'minor',
+  scope:          'minor-area',
+  time:           { decay: false, deadline: null },
+  domain:         [],
 }
 ```
 
----
+The default-priority function is intentionally **not exported** —
+the patron override (D14) keeps it internal. Workflow-1 callers
+who hand-build the ext supply their own priority values.
 
-## Engine-failure enrichment on `writ-failed`
+### Two-step post (D7)
 
-When a root mandate enters `failed` because Spider's engine-retry path
-exhausted its budget, the pulse's context carries an additional
-`engineFailure` block populated from the rigs book. The block surfaces
-the failed engine's identity, retry counter, last attempt error, and a
-per-attempt history summary so the patron can identify the failed engine
-and read the attempt trail without dropping into `nsg rig show`.
+`petition()` runs two non-atomic Clerk calls:
 
-The lookup is a separate resolver module (`engine-context.ts`) called
-from the writ-failed emit path after the dedupe guard and before
-`lattice.emit()`. It queries the rigs book for the most-recent failed
-rig keyed to the writ (`status='failed'` ordered by `createdAt desc`,
-`limit 1`), scans the rig's `engines` array for the first engine in
-`status='failed'`, and assembles the `EngineFailureContext`. When the
-writ has no rig, the rig is not failed, or no engine on the rig is
-failed (patron-driven failure, cascade-only failure), the resolver
-returns `undefined` and the pulse emits with the legacy `WritFailedContext`
-shape unchanged.
+1. `clerk.post(...)` — creates the writ in `new` phase with the
+   writ-shape fields (`type`, `title`, `body`, `codex`, `parentId`).
+   `type` defaults to the guild's configured default writ type
+   when omitted (D21).
+2. `clerk.setWritExt(writId, 'reckoner', ext)` — writes the
+   `writ.ext['reckoner']` slot. The `pluginId` argument is the
+   hardcoded literal `'reckoner'` (D11): the constant *is* the
+   contract slot key.
 
-The resolver **never throws** past the boundary — book-read errors are
-caught and surfaced as `undefined`, preserving the Phase 2 watcher's
-`failOnError: false` semantics.
-
-The dedupe identity for `reckoner.writ-failed` is unchanged
-(`(writId, triggerType, writUpdatedAt)`); the enrichment widens the
-context payload but does not affect idempotency.
-
-The Reckoner re-declares narrow `RigRow` / `EngineInstance` /
-`EngineAttempt` row shapes locally rather than importing from
-`@shardworks/spider-apparatus`, mirroring the existing
-`ClerkChildCascadeStatus` precedent. Spider remains a `recommend`, not
-a `require`.
-
-The enrichment is failed-only: `reckoner.writ-stuck`,
-`reckoner.queue-drained`, and any other trigger are never enriched
-with engine context. Stuck transitions in the post-reshape model carry
-no engine-failure information; adding fields with no producer is
-structure with no consumer.
-
----
-
-## Roots-only scoping (D23)
-
-Only writs with no `parentId` emit their own stuck / failed pulses. Child
-writs transitioning to stuck or failed do **not** produce per-child pulses
-— the Clerk's children-behavior cascade engine drives the parent's
-terminal transition, and the parent's pulse surfaces the leaf cause via
-the chase-chain mechanism described below.
-
-Net effect: one commission produces at most one pulse per trigger, no
-matter how deep the child tree is.
-
-The drain check (below) is exempt from roots-only. It runs on every
-terminal transition — including child transitions — because a child
-completion can genuinely drain the queue.
-
-### Leaf-cause chase-chain
-
-The Clerk's children-behavior cascade engine writes a structured record
-onto the parent's Clerk-owned status sub-slot
-(`status['clerk'].triggeringChildId`) before each cascaded transition.
-The slot carries the *immediate* triggering child id — exactly the writ
-whose terminal transition fired the cascade onto this parent.
-
-At emit time, the Reckoner walks the chain by reading each successive
-writ's own `status['clerk'].triggeringChildId`: starting from the pulse's
-writ, it follows the slot down through one or more cascaded ancestors
-until a writ has no triggeringChildId. The terminating writ is the leaf
-cause; the resulting ordered list of short ids is what populates
-`WritFailedContext.childFailures` and the "Originated from child …"
-fragment in the pulse summary (for both `writ-stuck` and `writ-failed`
-pulses).
-
-Cascade depth is bounded by the Stacks `MAX_CASCADE_DEPTH = 16` invariant.
-The chase-chain walk is bounded above that cap defensively (a corrupt
-forward-cycle in the slot graph would otherwise be unbounded), but a
-legitimate cascade is never truncated.
-
----
-
-## Drain predicate (D7)
-
-```typescript
-isQueueDrained = (writsCount('phase = open') === 0)
-                  AND (rigsCount('status IN (running, blocked)') === 0)
-```
-
-Stuck writs are intentionally excluded: retryable stucks flip back to
-`open` within one retry tick (so would count as still-runnable in one
-reading but not the other), and terminal stucks are effectively drained
-from the auto-dispatcher's viewpoint. The simple two-count definition
-mirrors Spider's `trySpawn` filter without reimplementing it.
-
-There is intentionally **no dedupe across bursts** in MVP. If multiple
-terminal transitions land in rapid succession and each sees the drain
-condition, each will emit. The accepted cost is documented here and in the
-brief's primer observations.
-
----
-
-## Phase 2 watcher — why
-
-```typescript
-stacks.watch<WritDoc>('clerk', 'writs', handler, { failOnError: false });
-```
-
-- `failOnError: false` — a pulse is a layered notification. A failure here
-  must not void the underlying writ transition.
-- Post-commit — at emit time the Reckoner may read the same writs book
-  the Clerk just committed to (to look up siblings, to count active rigs,
-  etc.). Running inside the triggering transaction would re-enter the CDC
-  dispatch and risk recursion.
-
----
-
-## Startup behavior (D27)
-
-No backfill. The Reckoner fires on transitions only. Restarting a guild
-with pre-existing stuck or failed writs does not double-ping — the CDC
-watcher observes transitions, not state snapshots.
-
----
-
-## Idempotency under replay
-
-The Phase 2 observer is idempotent under same-transition replay: a
-duplicated CDC delivery of the same writ transition produces at most
-one pulse row per trigger type, and the guarantee survives a process
-restart.
-
-### Dedupe identity
-
-Every Clerk transition bumps the writ's `updatedAt`, so
-`(writId, triggerType, writUpdatedAt)` is a true per-transition
-identity. A CDC replay fires with the same `updatedAt` and is
-suppressed; a legitimate re-visit of the same phase pair (e.g. stuck →
-open → stuck) carries a fresh `updatedAt` and produces a fresh pulse.
-
-For `reckoner.queue-drained` — which is not scoped to a single writ
-(its `pulse.writId` is `null`) — the identity is
-`(triggerType = reckoner.queue-drained, writId = null,
-lastTerminalWritId, writUpdatedAt)`, where `writUpdatedAt` is the
-triggering terminal writ's own `updatedAt` at evaluation time.
-
-Every Reckoner context payload (`WritStuckContext`, `WritFailedContext`,
-`QueueDrainedContext`) carries a `writUpdatedAt` field that records the
-identifying timestamp so the guard can re-check it after a restart.
-
-### Persisted lookup
-
-Before each `lattice.emit()`, the observer queries the persisted
-`lattice/pulses` book for a prior pulse matching the identity above. The
-lookup narrows on the already-indexed columns (`writId`, `triggerType`)
-and filters the handful of candidates in-process on the `writUpdatedAt`
-field inside `pulse.context`. No new index is required.
-
-Because the check hits the persisted book rather than an in-memory set,
-a restart that replays the same transition still finds the prior pulse
-and suppresses the duplicate.
-
-### Scope
-
-The guard is **emitter-local**: it lives inside the Reckoner observer
-and reads the pulses book directly rather than changing the Lattice's
-`EmitPulseRequest` contract. The Reckoner is the only pulse emitter
-today; promoting the check into `LatticeApi.emit` is a follow-up to be
-earned when a second emitter appears.
-
-The guard runs strictly **after** the existing predicate gating
-(roots-only, `isTerminalStuck`, drain predicate). The predicates decide
-whether a transition is pulse-worthy in principle; the guard decides
-whether this particular delivery of a pulse-worthy transition has
-already been handled.
-
-### Cross-apparatus contract
-
-This invariant depends on the Stacks' Phase 2 exactly-once delivery
-contract for coalesced post-commit events. Any future relaxation on the
-Stacks side (at-least-once delivery, durable outbox, etc.) must audit
-downstream pulse emitters for idempotency before loosening the
-guarantee. The Stacks apparatus doc carries a matching note.
+There is a small orphan window between these two calls. The
+contract document (`docs/architecture/petitioner-registration.md`,
+observation `obs-4`/`obs-5`) records the trade-off; in v0 the
+window is acceptable and recoverable. Wrapping `petition()` in a
+Stacks transaction would cross a layering boundary not earned by
+this commission.
 
 ---
 
 ## Configuration
 
-None. The brief's D12 explicitly rules out a configuration surface on the
-Reckoner itself; trigger-gating belongs on the Lattice's delivery side
-(future channel-filter work).
+The Reckoner reads its configuration from `guild.json` under the
+`reckoner` key. Both fields are optional:
+
+```json
+{
+  "reckoner": {
+    "enforceRegistration": false,
+    "disabledSources": []
+  }
+}
+```
+
+- **`enforceRegistration`** (boolean, default `false`) — when
+  `true`, `petition()` with an unregistered source throws fail-
+  loud at the helper boundary and does not post a writ. When
+  `false`, it logs a warning and proceeds.
+- **`disabledSources`** (string array, default `[]`) — sources
+  the operator wants to skip. Surfaced through
+  `isSourceDisabled()`. The list is re-read on every call (D20)
+  so operators can hot-edit `guild.json` without restarting the
+  guild.
+
+When the entire `reckoner` block is missing, both fields take
+their defaults silently. When the block is present, type
+mismatches in either field throw fail-loud at the read site (D12).
 
 ---
 
-## Failure Behaviour Matrix
+## Workflow-2: petition()
 
-| Situation | Effect |
-|-----------|--------|
-| Emit call throws | Swallowed by the Phase 2 watcher (`failOnError: false`); writ transition is unaffected. |
-| Rigs book missing (Spider absent) | `readBook` returns a zero-count handle; the drain predicate reduces to `open == 0 AND active rigs == 0` with `active rigs == 0` trivially satisfied. |
+```typescript
+import type { ReckonerApi } from '@shardworks/reckoner-apparatus';
+import { guild } from '@shardworks/nexus-core';
+
+const reckoner = guild().apparatus<ReckonerApi>('reckoner');
+
+const writ = await reckoner.petition({
+  source: 'vision-keeper.snapshot',
+  title:  'Address vision drift detected at 04:00 UTC',
+  body:   '...',
+  codex:  'nexus',
+  parentId: 'w-...',
+  priority: {
+    visionRelation: 'vision-violator',
+    severity:       'serious',
+    scope:          'major-area',
+    time: { decay: true, deadline: null },
+    domain: ['quality'],
+  },
+  complexity: 'bounded',
+  payload: { /* opaque petitioner-defined data */ },
+  labels:  { 'vision-keeper.io/vision-id': 'nexus' },
+});
+```
+
+After this call, the writ exists in `new` phase, with
+`writ.ext.reckoner = { source, priority, complexity, payload,
+labels }`. The follow-on CDC handler picks it up.
+
+---
+
+## What the Reckoner does NOT do (in v0)
+
+- **No CDC observer.** No subscription to `clerk/writs`. The
+  follow-on commission (`w-mohuvpu2`) wires that.
+- **No Lattice pulses.** The Reckoner does not emit pulses.
+- **No Reckonings book.** The evaluation log lives in a separate
+  parallel commission.
+- **No Stacks transaction wrapping `petition()`.** The two-step
+  flow is the chosen design (D7). The orphan-window observations
+  are recorded in the contract document.
+- **No `ext` field on `clerk.post()`.** Clerk's
+  `PostCommissionRequest` is unchanged; the ext slot is written
+  via the second `setWritExt` call.
+- **No `defaultPriority()` export.** Internal helper only (D14).
+- **No `contributingPluginId` / timestamps on
+  `PetitionerDescriptor`.** Contract floor only (D19).
+- **No source/owner check inside `withdraw()`.** Thin pass-through
+  (D10).
+- **No `recommends: ['oculus']` or explicit Stacks dependency.**
+  `requires: ['clerk']` only (D16).
+- **No `nsg reckoner list-petitioners` CLI tool.** Recorded as
+  observation `obs-8`.
 
 ---
 
 ## Open Questions
 
-- **Drain dedupe.** Burst-induced duplicate drain pulses are an accepted
-  MVP cost. A future commission may add a short suppressive window.
-- **`reckoner.writ-cancelled`.** Patron-initiated cancellations currently
-  produce no pulse. If this proves a gap in practice, adding the fourth
-  trigger is a straightforward follow-up.
-- **Idempotency as a cross-apparatus contract.** The "Idempotency under
-  replay" invariant (exactly one pulse row per
-  `(writId, triggerType, writUpdatedAt)` identity, persisted across
-  restart) depends on the Stacks' Phase 2 exactly-once delivery
-  contract for coalesced post-commit events. A future Stacks change
-  that relaxes this (at-least-once, durable outbox, shared-process
-  distribution, etc.) must audit downstream pulse emitters — the
-  Reckoner today, and any future emitter — for idempotency before
-  loosening the invariant. When a second emitter appears, promoting
-  the emitter-local guard into `LatticeApi.emit` (via an explicit
-  `EmitPulseRequest` idempotency key) is the natural follow-up.
+- **Combination function.** How does the future Reckoner-core
+  combine the five priority dimensions plus complexity into a
+  scheduling weight? Owned by the Reckoner-core scheduling
+  prototype.
+- **Workflow-1 / Workflow-2 parity.** v0 ships Workflow-2; the
+  contract document specifies that Workflow-1 (direct
+  `clerk.post()`) reaches the same on-disk shape. The CDC
+  handler commission will validate this once observation lands.
+- **Atomicity of `petition()`.** Recorded as `obs-4` / `obs-5`.
+  The orphan window is small and recoverable; promoting to a
+  Stacks transaction is reserved for when a named bug surfaces.
 
 ---
 
 ## Implementation Notes
 
-- The Reckoner reads `writ.status?.spider` through an inline narrow cast
-  (`as { stuckCause?: string }`) at the single read site rather than
-  naming a shared type. Spider is a recommend, not a require; the inline
-  cast keeps the dependency direction one-way.
-- The Reckoner re-declares a narrow `ClerkChildCascadeStatus` shape
-  locally (`{ triggeringChildId?: string }`) and reads
-  `writ.status?.clerk` through that type. This mirrors the Spider
-  precedent — writer-owned shape, consumer-side narrow re-declaration —
-  rather than depending on a Clerk type re-export.
-- Drain detection uses `isQueueDrained(writs, rigs)`, which issues two
-  `count` queries in parallel and returns a boolean. The parallelism keeps
-  the per-transition overhead small.
+- The `reckoner` config block is re-read on every consumer call
+  (D20). No caching at startup. Operators can disable a
+  misbehaving petitioner by adding it to `disabledSources` and
+  reloading the file — no restart required.
+- Diagnostic prefixes match Clerk: `[reckoner]` for general
+  errors, `[reckoner] Kit "<id>" petitioners:` for kit-validation
+  errors. Two-kit collision diagnostics name both kits ("...
+  already registered by kit \"<earlier-kit>\"...").
+- The kebab-case suffix regex is duplicated across Clerk
+  link-kinds, Lattice trigger-types, and the Reckoner. Extracting
+  a shared `validateKebabSegmentSuffix` helper to nexus-core is
+  observation `obs-6` — earned when a third consumer asks.
+- The `RECKONER_PLUGIN_ID` constant in
+  `@shardworks/sentinel-apparatus` (the Sentinel's source-id
+  string for its Lattice pulses) and the `reckoner.writ-stuck` /
+  `reckoner.writ-failed` / `reckoner.queue-drained` trigger
+  strings are unrelated to this apparatus — they are baked into
+  Lattice channel configurations and on-disk pulse rows. Renaming
+  them is deferred to a separate scoped commission (D24).

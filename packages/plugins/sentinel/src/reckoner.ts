@@ -25,9 +25,9 @@
  * `(lastTerminalWritId, writUpdatedAt)` for drain). If a prior pulse
  * exists, the emission is skipped. Because the check hits the persisted
  * book — not an in-memory set — it survives a process restart. See
- * `docs/architecture/apparatus/reckoner.md` §"Idempotency under replay".
+ * `docs/architecture/apparatus/sentinel.md` §"Idempotency under replay".
  *
- * See: docs/architecture/apparatus/reckoner.md
+ * See: docs/architecture/apparatus/sentinel.md
  */
 
 import type { Plugin, StartupContext } from '@shardworks/nexus-core';

@@ -5,7 +5,8 @@ Status: **Draft**
 Owner plugin: `reckoner` · Book name: `reckonings` · Sibling docs:
 [clockworks.md](clockworks.md), [apparatus/lattice.md](apparatus/lattice.md),
 [apparatus/animator.md](apparatus/animator.md),
-[apparatus/reckoner.md](apparatus/reckoner.md).
+[apparatus/reckoner.md](apparatus/reckoner.md),
+[apparatus/sentinel.md](apparatus/sentinel.md).
 
 > **⚠️ Forward-looking design.** This document specifies the
 > Reckoner's evaluation-log book before the Reckoner core itself is
@@ -777,7 +778,7 @@ resolution.
   `@shardworks/sentinel-apparatus` is a narrow CDC observer that
   emits `reckoner.writ-stuck` / `reckoner.writ-failed` /
   `reckoner.queue-drained` Lattice pulses (see
-  [apparatus/reckoner.md](apparatus/reckoner.md)). It was renamed
+  [apparatus/sentinel.md](apparatus/sentinel.md)). It was renamed
   out of the `reckoner` plugin id so that id can be reused for the
   new petition-scheduling Reckoner. An open question is whether the
   queue-observer's responsibilities (writ-lifecycle observation
@@ -821,8 +822,13 @@ resolution.
   — the lean-record / heavy-blob book split (the alternative
   considered and rejected here).
 - [docs/architecture/apparatus/reckoner.md](apparatus/reckoner.md)
-  — the existing queue-observer the new Reckoner shares an id
-  with after the rename.
+  — the new petition-scheduling Reckoner whose contract surface
+  this book layers on top of.
+- [docs/architecture/apparatus/sentinel.md](apparatus/sentinel.md)
+  — the renamed queue-observer apparatus that previously held the
+  `reckoner` plugin id and continues to emit
+  `reckoner.writ-stuck` / `reckoner.writ-failed` /
+  `reckoner.queue-drained` Lattice pulses.
 - [docs/reference/event-catalog.md](../reference/event-catalog.md)
   — CDC event names, reserved namespaces, validator policy.
 - [docs/architecture/apparatus/_template.md](apparatus/_template.md)

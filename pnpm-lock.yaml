@@ -385,6 +385,22 @@ importers:
         specifier: 25.5.0
         version: 25.5.0
 
+  packages/plugins/reckoner:
+    dependencies:
+      '@shardworks/clerk-apparatus':
+        specifier: workspace:*
+        version: link:../clerk
+    devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
+      '@shardworks/stacks-apparatus':
+        specifier: workspace:*
+        version: link:../stacks
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
   packages/plugins/sentinel:
     dependencies:
       '@shardworks/clerk-apparatus':

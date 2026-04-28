@@ -1,11 +1,20 @@
 # `@shardworks/sentinel-apparatus`
 
-The Reckoner — a narrow observer that emits Lattice pulses when a
+The Sentinel — a narrow observer that emits Lattice pulses when a
 root writ stalls, fails, or when the guild's work queue drains. It is the
 first consumer of the Lattice substrate: a Phase 2 CDC watcher on
 `clerk/writs` that emits three trigger types.
 
-See also: [`docs/architecture/apparatus/reckoner.md`](../../../docs/architecture/apparatus/reckoner.md).
+> Historical artefacts in this apparatus's source still carry the
+> literal string `'reckoner'` (`RECKONER_PLUGIN_ID`,
+> `reckoner.writ-stuck` / `reckoner.writ-failed` /
+> `reckoner.queue-drained` trigger ids) because those strings are
+> baked into Lattice channel configurations and on-disk pulse rows.
+> Renaming them is deferred to a separate scoped commission. The new
+> `reckoner` plugin id is held by
+> [`@shardworks/reckoner-apparatus`](../reckoner/README.md).
+
+See also: [`docs/architecture/apparatus/sentinel.md`](../../../docs/architecture/apparatus/sentinel.md).
 
 ---
 
@@ -150,7 +159,7 @@ replays (see "Idempotency under replay" below).
   `(lastTerminalWritId, writUpdatedAt)` for drain) and skips the emit
   if one is already present. Because the check hits the persisted
   book, the guarantee survives a process restart. See
-  [`docs/architecture/apparatus/reckoner.md`](../../../docs/architecture/apparatus/reckoner.md)
+  [`docs/architecture/apparatus/sentinel.md`](../../../docs/architecture/apparatus/sentinel.md)
   §"Idempotency under replay" for the full contract.
 
 ---

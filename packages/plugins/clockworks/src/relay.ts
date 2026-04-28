@@ -92,9 +92,9 @@ export interface RelayContext {
  * manual `nsg clock run`, or a process restart mid-replay) the same
  * event may be handed to a relay's handler again. Side effects must
  * tolerate this — guard externally-observable work with a dedupe
- * identity carried on the event payload, mirror the Reckoner's
+ * identity carried on the event payload, mirror the Sentinel's
  * `pulse.context` pattern (see
- * `docs/architecture/apparatus/reckoner.md`), or shape the handler so
+ * `docs/architecture/apparatus/sentinel.md`), or shape the handler so
  * a second invocation is a no-op. The contract is qualitative: design
  * for "may run more than once", not for a specific bound.
  */

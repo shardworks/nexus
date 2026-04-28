@@ -267,7 +267,7 @@ You can wire a standing order to `standing-order.failed` for alerting:
   - **Dispatcher-restart replay.** A process restart mid-sweep may re-deliver an event that was invoked but not yet flagged `processed`.
   - **Cross-process overlap.** The Clockworks dispatch sweep (read-pending → invoke → patch-processed) is not atomic across processes. When two callers overlap — e.g. the unattended daemon plus a manual `nsg clock run`, or two manual runs — both can read the same pending events and both will invoke each matching relay. Substrate-level row locking is intentionally deferred; the contract is upheld at the handler boundary.
 
-  Design side effects so a second invocation is a no-op. The canonical pattern is the Reckoner observer's `pulse.context` dedupe identity (using the triggering writ's `updatedAt` as the dedupe key) — see [the Reckoner architecture doc](../architecture/apparatus/reckoner.md#idempotency-under-replay) for the worked example. The contract is qualitative: design for "may run more than once," not for a specific bound.
+  Design side effects so a second invocation is a no-op. The canonical pattern is the Sentinel observer's `pulse.context` dedupe identity (using the triggering writ's `updatedAt` as the dedupe key) — see [the Sentinel architecture doc](../architecture/apparatus/sentinel.md#idempotency-under-replay) for the worked example. The contract is qualitative: design for "may run more than once," not for a specific bound.
 - **Guard against missing data.** Event payloads may be incomplete. Check for null/undefined before accessing fields.
 
 ## Multi-relay kits

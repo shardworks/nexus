@@ -279,7 +279,7 @@ Phase 2 handlers see exactly one event per document. They never see intermediate
 > coalesced post-commit event to its registered watchers **exactly
 > once per transaction**. Downstream pulse emitters rely on this to
 > keep their own observable output idempotent without a cross-process
-> dedupe store. The [Reckoner](./reckoner.md#idempotency-under-replay)
+> dedupe store. The [Sentinel](./sentinel.md#idempotency-under-replay)
 > is the current example: it uses the triggering writ's `updatedAt` as
 > a dedupe identity inside `pulse.context` so that a *same-transition*
 > replay still de-duplicates, but that fallback is defence-in-depth on

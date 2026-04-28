@@ -31,7 +31,7 @@ export interface ReckonerApi {
  * per-transition identity. A CDC replay fires with the same `updatedAt`
  * and is suppressed by the emitter's idempotency guard; a legitimate
  * re-visit of the same phase pair gets a fresh `updatedAt` and a fresh
- * pulse. See `docs/architecture/apparatus/reckoner.md` §"Idempotency
+ * pulse. See `docs/architecture/apparatus/sentinel.md` §"Idempotency
  * under replay".
  *
  * For `QueueDrainedContext`, this carries the triggering (terminal)
