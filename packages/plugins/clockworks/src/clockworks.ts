@@ -27,12 +27,6 @@
  *     fail-loud boot guards — plugin-vs-plugin name collision, function-
  *     form throw or non-object return, malformed kit value, malformed
  *     guild.json value — surface at apparatus boot time.
- *   - Auto-wires every plugin-declared book (other than
- *     `clockworks/events` itself) as a CDC observer that re-emits each
- *     row create/update/delete as a `book.<ownerId>.<book>.<verb>`
- *     event with emitter `'framework'`. Standing orders can therefore
- *     bind directly to book mutations without each plugin having to
- *     call `emit()` from every write site.
  *   - Exposes `processEvents()` — the event-triggered dispatch entry
  *     point. Each call re-reads `clockworks.standingOrders` from
  *     `guild.json`, validates them via the standing-order validator,
@@ -40,8 +34,8 @@
  *     `dispatcher.ts`. The CLI (later commission) and daemon (later
  *     commission) compose on top of the same primitive.
  *
- * `start()` primes the book handles, the registry, the CDC watchers,
- * and the dispatch path; `stop()` is currently a no-op — Arbor's
+ * `start()` primes the book handles, the registry, and the dispatch
+ * path; `stop()` is currently a no-op — Arbor's
  * `StartedGuild.shutdown()` invokes it during reverse-topo teardown
  * (the apparatus has no in-flight handles of its own to release; the
  * Clockworks daemon's poll loop is owned by `runForegroundDaemon`,
@@ -54,9 +48,6 @@ import type { KitEntry, Plugin, StartupContext } from '@shardworks/nexus-core';
 import { generateId, guild } from '@shardworks/nexus-core';
 import type {
   Book,
-  BookEntry,
-  BookSchema,
-  ChangeEvent,
   ReadOnlyBook,
   StacksApi,
 } from '@shardworks/stacks-apparatus';
@@ -168,19 +159,6 @@ interface RegisteredRelay {
   pluginId: string;
   relay: RelayDefinition;
 }
-
-// ── CDC verb mapping ─────────────────────────────────────────────────
-//
-// Stacks' CDC event tags are present-tense imperatives
-// (`'create' | 'update' | 'delete'`). The auto-wired event names use
-// past tense — `created`, `updated`, `deleted` — to read naturally as
-// a log line and match the past-tense convention used elsewhere in the
-// guild's event namespace.
-const CDC_VERB_PAST_TENSE: Record<'create' | 'update' | 'delete', string> = {
-  create: 'created',
-  update: 'updated',
-  delete: 'deleted',
-};
 
 export function createClockworks(): Plugin {
   // Handles primed during start() and retained for the factory's
@@ -527,7 +505,7 @@ export function createClockworks(): Plugin {
       // re-using emit's payload pre-validation and id generation
       // rather than re-implementing them here. The emitter string
       // `'framework'` matches the events-table convention used by
-      // the CDC auto-wiring above.
+      // every framework-internal emit site.
       return runDispatchSweep({
         events,
         dispatches,
@@ -687,78 +665,6 @@ export function createClockworks(): Plugin {
             parsed: parsed.parsed,
             nextFireTime: computeNextFireTime(parsed.parsed, startTime),
           });
-        }
-
-        // ── CDC auto-wiring ───────────────────────────────────────────
-        //
-        // Make every plugin-declared book observable as a Clockworks
-        // event automatically: register a Phase-2 (post-commit) Stacks
-        // CDC watcher on each declared book that re-emits each
-        // create/update/delete row mutation as a
-        // `book.<ownerId>.<bookName>.<verb>` event with emitter
-        // `'framework'`.
-        //
-        // Lifecycle: registration MUST happen here in start(), because
-        // the Stacks CDC registry seals at `phase:started`; no later
-        // registration is possible.
-        //
-        // Carve-out: `clockworks/events` is excluded. This is an
-        // *architectural boundary* — auto-wiring the events book would
-        // pollute the framework event stream with `book.clockworks.
-        // events.created` rows describing the very acts of emission,
-        // which is feedback noise without a consumer. The Stacks
-        // substrate now enforces a Phase-2 cross-transaction re-entry
-        // depth bound (`MAX_PHASE2_REENTRY_DEPTH` in `stacks-core.ts`)
-        // that would terminate any runaway loop, so this carve-out is
-        // no longer the load-bearing safety net it once was — the
-        // substrate is. Future maintainers: do not remove the carve-out
-        // on the assumption that the substrate now covers it. The two
-        // serve different purposes: the substrate caps depth; the
-        // carve-out keeps the events book free of self-feedback in the
-        // first place. Every other book — including
-        // `clockworks/event_dispatches` — is auto-wired.
-        //
-        // Phase 2 (failOnError: false): the handler runs after the
-        // triggering transaction commits. Emit-handler errors are
-        // logged via Stacks' Phase-2 error path and do not roll back
-        // the primary write — observation is layered on top of the
-        // substrate, not gating it.
-        //
-        // Enumeration mirrors Stacks' own `reconcileSchemas()`: walk
-        // `ctx.kits('books')`, treat each entry's value as a record
-        // of book name → BookSchema, skip silently when the value is
-        // not a non-null object (matching Stacks' guard exactly so
-        // divergent reactions to the same malformed contribution
-        // cannot occur).
-        for (const entry of ctx.kits('books')) {
-          const books = entry.value;
-          if (typeof books !== 'object' || books === null) continue;
-          for (const bookName of Object.keys(books as Record<string, BookSchema>)) {
-            // Recursion guard — see above.
-            if (entry.pluginId === 'clockworks' && bookName === 'events') continue;
-
-            stacks.watch<BookEntry>(
-              entry.pluginId,
-              bookName,
-              async (event: ChangeEvent<BookEntry>) => {
-                // Compose the event name from the delivered CDC event
-                // — equivalent to (entry.pluginId, bookName) at runtime
-                // but slightly more robust to future Stacks changes
-                // and matches the architecture-doc reference sketch.
-                const verb = CDC_VERB_PAST_TENSE[event.type];
-                const name = `book.${event.ownerId}.${event.book}.${verb}`;
-                // Pass the CDC event object through unchanged — there
-                // is no second consumer to earn a normalized shape, so
-                // passthrough preserves all available context.
-                //
-                // No try/catch: Stacks' Phase-2 error path already
-                // logs `[stacks] Phase 2 handler error (...)`. Wrapping
-                // would either duplicate or mask that log line.
-                await api.emit(name, event, 'framework');
-              },
-              { failOnError: false },
-            );
-          }
         }
 
         // ── Writ-lifecycle CDC observer ───────────────────────────────

@@ -1,7 +1,9 @@
 /**
- * Clockworks — CDC auto-wiring behavioral tests.
+ * Clockworks↔Stacks signals bridge — CDC auto-wiring behavioural tests.
  *
- * Covers task 8 of the Clockworks build (commission c-modnk8ww):
+ * Migrated from `packages/plugins/clockworks/src/clockworks-cdc.test.ts`
+ * as part of relocating the CDC auto-wiring out of the Clockworks
+ * apparatus and into this dedicated bridge plugin.
  *
  *   - At start(), every plugin-declared book (other than
  *     `clockworks/events` itself) is registered as a Phase-2 Stacks
@@ -29,13 +31,9 @@
  *   - The `clockworks/event_dispatches` book *is* auto-wired (it is
  *     not part of the carve-out) — sanity-check by writing a row.
  *
- * Boot-time event interactions: the C2 commission removed the
- * boot-time `guild.initialized` and per-book `migration.applied`
- * emissions, so a fresh `start()` writes nothing to `clockworks/events`
- * of its own. The fixture still surfaces `eventsAfter()` /
- * `countAfter()` helpers — they now amount to "everything in the
- * events book", since the post-start baseline is empty — so test
- * assertions can keep the pre-existing call shape without churn.
+ * The fixture installs Stacks, Clockworks, and the bridge together;
+ * the bridge is the apparatus under test. Stacks and Clockworks are
+ * real dependencies with no doubles.
  */
 
 import { afterEach, describe, it } from 'node:test';
@@ -59,12 +57,14 @@ import type {
   StacksApi,
 } from '@shardworks/stacks-apparatus';
 
-import { createClockworks } from './clockworks.ts';
+import { createClockworks } from '@shardworks/clockworks-apparatus';
 import type {
   ClockworksApi,
   EventDispatchDoc,
   EventDoc,
-} from './types.ts';
+} from '@shardworks/clockworks-apparatus';
+
+import { createClockworksStacksSignals } from './clockworks-stacks-signals.ts';
 
 // ── Test fixture ──────────────────────────────────────────────────────
 
@@ -120,9 +120,11 @@ async function buildFixture(opts: FixtureOptions = {}): Promise<Fixture> {
   const backend = new MemoryBackend();
   const stacksPlugin = createStacksApparatus(backend);
   const clockworksPlugin = createClockworks();
+  const bridgePlugin = createClockworksStacksSignals();
 
   if (!('apparatus' in stacksPlugin)) throw new Error('stacks must be apparatus');
   if (!('apparatus' in clockworksPlugin)) throw new Error('clockworks must be apparatus');
+  if (!('apparatus' in bridgePlugin)) throw new Error('bridge must be apparatus');
 
   const apparatusMap = new Map<string, unknown>();
 
@@ -180,7 +182,7 @@ async function buildFixture(opts: FixtureOptions = {}): Promise<Fixture> {
   }
 
   // Pre-create any synthetic-plugin books and assemble the kit entries
-  // the fake context will surface to clockworks.start().
+  // the fake context will surface to the bridge's start().
   const kitEntries: KitEntry[] = [];
 
   // Group synthetic books by pluginId so each plugin contributes a
@@ -225,10 +227,19 @@ async function buildFixture(opts: FixtureOptions = {}): Promise<Fixture> {
     });
   }
 
+  // Start Clockworks before the bridge so the bridge can resolve
+  // `apparatus<ClockworksApi>('clockworks')`. The bridge declares
+  // `requires: ['stacks', 'clockworks']`; the framework's start-order
+  // gate enforces the same ordering live.
   const clockworksApparatus = clockworksPlugin.apparatus;
   await clockworksApparatus.start(buildCtx(kitEntries));
   const clockworks = clockworksApparatus.provides as ClockworksApi;
   apparatusMap.set('clockworks', clockworks);
+
+  // Now start the bridge — its `start()` walks the same kit-entry
+  // snapshot and registers the Stacks watchers.
+  const bridgeApparatus = bridgePlugin.apparatus;
+  await bridgeApparatus.start(buildCtx(kitEntries));
 
   const events = stacks.book<EventDoc>('clockworks', 'events');
 
@@ -264,7 +275,7 @@ interface MyDoc extends BookEntry {
 
 // ── CDC auto-wiring: create / update / delete event shape ─────────────
 
-describe('Clockworks — CDC auto-wiring (book.* events)', () => {
+describe('clockworks-stacks-signals — CDC auto-wiring (book.* events)', () => {
   afterEach(() => clearGuild());
 
   it('emits exactly one book.<owner>.<book>.created on a put() of a new row', async () => {
@@ -399,7 +410,7 @@ describe('Clockworks — CDC auto-wiring (book.* events)', () => {
 
 // ── Recursion guard for clockworks/events ─────────────────────────────
 
-describe('Clockworks — CDC auto-wiring recursion guard', () => {
+describe('clockworks-stacks-signals — CDC auto-wiring recursion guard', () => {
   afterEach(() => clearGuild());
 
   it('emit() writes exactly one row to clockworks/events with no echo', async () => {
@@ -440,7 +451,7 @@ describe('Clockworks — CDC auto-wiring recursion guard', () => {
 
 // ── Malformed-contribution tolerance ─────────────────────────────────
 
-describe('Clockworks — CDC auto-wiring kit-entry tolerance', () => {
+describe('clockworks-stacks-signals — CDC auto-wiring kit-entry tolerance', () => {
   afterEach(() => clearGuild());
 
   it('silently skips books-kit entries whose value is null', async () => {
