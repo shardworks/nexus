@@ -413,6 +413,12 @@ importers:
         specifier: workspace:*
         version: link:../stacks
     devDependencies:
+      '@shardworks/animator-apparatus':
+        specifier: workspace:*
+        version: link:../animator
+      '@shardworks/fabricator-apparatus':
+        specifier: workspace:*
+        version: link:../fabricator
       '@shardworks/lattice-discord-kit':
         specifier: workspace:*
         version: link:../lattice-discord

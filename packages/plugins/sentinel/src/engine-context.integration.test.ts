@@ -14,6 +14,11 @@
  * end-to-end, with deterministic timing (fast-forwarding the back-off
  * window via direct rigs-book patches between crawl ticks). The pulse
  * must fire exactly once.
+ *
+ * Retry behavior here is intrinsic to the engine design (the `retry:
+ * { maxAttempts }` block on the test engine), not driven by the retired
+ * clockworks-retry handshake — Spider's engine-level retry path covers
+ * what that plugin used to do.
  */
 
 import { describe, it, afterEach } from 'node:test';
@@ -38,9 +43,6 @@ import type { ClerkApi } from '@shardworks/clerk-apparatus';
 
 import { createLattice } from '@shardworks/lattice-apparatus';
 import type { LatticeApi, PulseDoc } from '@shardworks/lattice-apparatus';
-
-import { createClockworksRetry } from '@shardworks/clockworks-retry-apparatus';
-import type { ClockworksRetryApi } from '@shardworks/clockworks-retry-apparatus';
 
 import { createFabricator } from '@shardworks/fabricator-apparatus';
 import type { EngineDesign, FabricatorApi } from '@shardworks/fabricator-apparatus';
@@ -87,7 +89,6 @@ async function buildFixture(
   const clerkPlugin = createClerk();
   const latticePlugin = createLattice();
   const reckonerPlugin = createReckoner();
-  const retryPlugin = createClockworksRetry();
   const fabricatorPlugin = createFabricator();
   const spiderPlugin = createSpider();
 
@@ -95,7 +96,6 @@ async function buildFixture(
   if (!('apparatus' in clerkPlugin)) throw new Error('clerk');
   if (!('apparatus' in latticePlugin)) throw new Error('lattice');
   if (!('apparatus' in reckonerPlugin)) throw new Error('reckoner');
-  if (!('apparatus' in retryPlugin)) throw new Error('retry');
   if (!('apparatus' in fabricatorPlugin)) throw new Error('fabricator');
   if (!('apparatus' in spiderPlugin)) throw new Error('spider');
 
@@ -242,13 +242,6 @@ async function buildFixture(
   await latticePlugin.apparatus.start(buildCtx());
   const lattice = latticePlugin.apparatus.provides as LatticeApi;
   apparatusMap.set('lattice', lattice);
-
-  // ── Start clockworks-retry ──
-  await retryPlugin.apparatus.start(buildCtx());
-  apparatusMap.set(
-    'clockworks-retry',
-    retryPlugin.apparatus.provides as ClockworksRetryApi,
-  );
 
   // ── Start fabricator with our test engine ──
   const spiderKit = (spiderPlugin.apparatus as {

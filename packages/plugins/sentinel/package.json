@@ -26,6 +26,8 @@
     "@shardworks/stacks-apparatus": "workspace:*"
   },
   "devDependencies": {
+    "@shardworks/animator-apparatus": "workspace:*",
+    "@shardworks/fabricator-apparatus": "workspace:*",
     "@shardworks/lattice-discord-kit": "workspace:*",
     "@shardworks/nexus-core": "workspace:*",
     "@shardworks/spider-apparatus": "workspace:*",

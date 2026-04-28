@@ -45,7 +45,7 @@ export default tool({
       .default(0)
       .describe('Number of results to skip (default: 0).'),
   },
-  permission: 'lattice:read',
+  permission: 'read',
   handler: async (params): Promise<PulseDoc[]> => {
     const g = guild();
     const lattice = g.apparatus<LatticeApi>('lattice');

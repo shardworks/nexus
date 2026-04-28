@@ -14,7 +14,7 @@ export default tool({
   params: {
     id: z.string().describe('Pulse id (full or unique prefix).'),
   },
-  permission: 'lattice:read',
+  permission: 'read',
   handler: async (params): Promise<PulseDoc> => {
     const lattice = guild().apparatus<LatticeApi>('lattice');
     const resolvedId = await lattice.resolveId(params.id);

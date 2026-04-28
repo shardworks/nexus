@@ -749,32 +749,55 @@ describe('Reckoner — multi-type guild', () => {
     assert.equal(ctx.lastTerminalWritId, mandate.id);
   });
 
-  it('orphan child blocks drain past parent cancellation, then drains on its own terminal', async () => {
-    // Per the primer's obs-8 / brief: a cancelled mandate parent
-    // with a non-mandate child whose type does not declare a
-    // cascade-cancel transition leaves the child active. Drain must
-    // remain false while the orphan is active and fire when the
-    // orphan reaches its own terminal.
+  it('mandate parentTerminal cascade reaches non-mandate children: parent cancellation auto-cancels the orphan, drain fires', async () => {
+    // The mandate type opts into childrenBehavior.parentTerminal with
+    // `transition: 'cancelled'`, so cancelling a mandate cascades the
+    // cancel down through every non-terminal descendant — regardless of
+    // whether the descendant's own type declares a parentTerminal action.
+    // (Per `caf9ecc` clerk: the engine consults the *parent* type's
+    // childrenBehavior, not the child's, so heterogeneous children are
+    // swept too as long as the cascade target is a transition the child
+    // can actually accept.)
+    //
+    // The earlier "orphan child holds drain back" semantics were removed
+    // by that commit; clerk's children-behavior-engine.test.ts covers the
+    // cascade itself, and this test asserts the drain-side surface: the
+    // cascade leaves the queue genuinely drained and the Reckoner's
+    // queue-drained pulse fires for the cascaded terminal transitions.
+    //
+    // Two drain pulses surface here, not one: the dedupe key for drain
+    // is `(triggerType, lastTerminalWritId, writUpdatedAt)`, and the
+    // parent's cancellation and the child's cascaded cancellation are
+    // distinct terminal transitions on distinct writs. Each fires its
+    // own drain check; each sees zero active writs at its CDC instant
+    // and emits. Both pulses must name a real terminal writ.
     const parent = await fix.postOpen({ title: 'parent mandate', body: '' });
     const child = await fix.clerk.post({
-      title: 'orphan task',
+      title: 'task under parent',
       body: '',
       type: 'task',
       parentId: parent.id,
     });
     await fix.clerk.transition(child.id, 'running');
 
-    // Cancel the parent. The task type has no cascade-cancel
-    // transition, so the child stays in `running` (active).
     await fix.clerk.transition(parent.id, 'cancelled', { resolution: 'withdrawn' });
-    let pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
-    assert.equal(pulses.length, 0, 'orphan child holds drain back past parent cancellation');
 
-    // Drive the child to its own terminal. Drain should fire.
-    await fix.clerk.transition(child.id, 'done');
-    pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
-    assert.equal(pulses.length, 1);
-    const ctx = pulses[0]?.context as { lastTerminalWritId?: string };
-    assert.equal(ctx.lastTerminalWritId, child.id);
+    // Cascade has run — the child is also terminal now.
+    const cascadedChild = await fix.clerk.show(child.id);
+    assert.equal(cascadedChild.phase, 'cancelled');
+
+    // Manually driving the child to a terminal again would be invalid
+    // (already terminal), so the drain pulses observed below are the
+    // direct product of the cascade-cancel sequence.
+    const pulses = await fix.pulsesOf(TRIGGER_QUEUE_DRAINED);
+    assert.equal(pulses.length, 2, 'one drain pulse per cascade-cancelled writ');
+    const triggerIds = pulses
+      .map((p) => (p.context as { lastTerminalWritId?: string }).lastTerminalWritId)
+      .sort();
+    assert.deepEqual(
+      triggerIds,
+      [child.id, parent.id].sort(),
+      'drain pulses name parent and cascaded child',
+    );
   });
 });

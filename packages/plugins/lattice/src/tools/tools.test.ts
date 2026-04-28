@@ -348,9 +348,14 @@ describe('pulse-show — prefix resolution', () => {
 });
 
 describe('pulse-list / pulse-show — permission and shape', () => {
-  it('declares permission: "lattice:read" on both tools', () => {
-    assert.equal(pulseList.permission, 'lattice:read');
-    assert.equal(pulseShow.permission, 'lattice:read');
+  it('declares bare-level permission: "read" on both tools', () => {
+    // Tool permissions are normalized to bare-level form (per the
+    // workspace-wide `fix(tools): normalize tool permissions to
+    // bare-level form` change). The Loom maps bare-level levels onto
+    // the plugin namespace at role-resolution time, so the on-tool
+    // value stays bare.
+    assert.equal(pulseList.permission, 'read');
+    assert.equal(pulseShow.permission, 'read');
   });
 
   it('returns raw pulse documents (no pre-rendering)', async () => {
