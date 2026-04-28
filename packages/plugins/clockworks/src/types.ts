@@ -9,10 +9,12 @@
  * event to every matching standing order, recording one
  * `clockworks/event_dispatches` document per handler invocation.
  *
- * This commission ships the type surface and the module augmentation
- * only. The apparatus factory and the CLI stubs live next to it; the
- * runtime (emit, dispatch, runner, CDC auto-wiring, daemon) arrives in
- * later commissions.
+ * This module owns the type surface and the module augmentation. The
+ * apparatus factory, the CLI stubs, the dispatcher, the runner, and
+ * the daemon all live next to it. Stacks change-data-capture (CDC) →
+ * Clockworks `book.*` event auto-wiring lives in the dedicated
+ * `@shardworks/clockworks-stacks-signals-apparatus` bridge plugin;
+ * Clockworks does not reach into Stacks at startup.
  */
 
 // The explicit import anchors this file to `@shardworks/nexus-core` so
@@ -189,8 +191,8 @@ export interface EventDoc extends BookEntry {
   firedAt: string;
   /**
    * Whether every matching standing order has been dispatched. The
-   * runner flips this to true after dispatch; the CDC auto-wiring task
-   * will rely on it to filter the work queue.
+   * runner flips this to true after dispatch; the dispatcher uses it
+   * to filter the work queue (`processed: false` rows are pending).
    */
   processed: boolean;
 }
@@ -258,10 +260,15 @@ export interface EventDispatchDoc extends BookEntry {
  * The Clockworks' runtime API — retrieved via
  * `guild().apparatus<ClockworksApi>('clockworks')`.
  *
- * This commission extends the surface with both `emit()` (the trusted
- * write path) and `resolveRelay()` (the registry read method). The
- * dispatcher, runner, standing-order engine, and CDC auto-wiring arrive
- * in later commissions and will extend this surface as needed.
+ * The surface includes `emit()` (the trusted write path),
+ * `validateSignal()` (the merged-set guard the unprivileged signal
+ * surfaces consult), `resolveRelay()` (the registry read method),
+ * `processEvents()` (the bulk-drain dispatcher), and
+ * `processSchedules()` (the scheduler pass). Stacks change-data-capture
+ * (CDC) → Clockworks `book.*` event auto-wiring is owned by the
+ * `@shardworks/clockworks-stacks-signals-apparatus` bridge plugin; it
+ * routes its observations through `emit()` like any other framework
+ * caller.
  */
 export interface ClockworksApi {
   /**

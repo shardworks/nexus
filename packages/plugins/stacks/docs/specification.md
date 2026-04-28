@@ -491,7 +491,9 @@ Caller: writs.put({ ...parentWrit, status: 'cancelled' })
      → child3:  { type: 'update', prev: pre-transaction state, entry: final state }
 
   8. Fire Phase 2 handlers with coalesced events
-     → Clockworks emits book.nexus-ledger.writs.updated for each
+     → clockworks-stacks-signals bridge emits
+       book.nexus-ledger.writs.updated for each (the bridge owns the
+       Stacks→Clockworks book.* re-emission contract)
      → Other notification handlers run
 
   9. put() returns to caller. Done.

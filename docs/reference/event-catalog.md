@@ -102,13 +102,13 @@ By convention, framework plugins claim per-namespace prefixes via their `events`
 
 **Writ lifecycle events** (e.g. `writ.mandate.open`, `writ.task.queued`) are declared by the Clockworks's own `events` kit contribution as a state-walk over Clerk's writ-type registry. They are still framework-only — `validateSignal` rejects them via the merged-set framework-owned check.
 
-**`book.` is intentionally absent.** The CDC auto-wiring emits `book.<ownerId>.<bookName>.<verb>` events from framework code (see [CDC Events](#cdc-events) below), but the prefix is **not** reserved — the validator does not block animas from signalling spoofed `book.*` names. This is an as-is gap in the validator; closing it is a separate code-only follow-up. Operators relying on `book.*` events should treat the namespace as authoritative-by-convention rather than authoritative-by-validator.
+**`book.<owner>.<book>.<verb>` events** are declared by the `clockworks-stacks-signals` bridge plugin's function-form `events` kit (one entry per `(pluginId, bookName, verb)` triple at bridge `start()`). Once the bridge is installed those concrete names are plugin-declared in the merged event set, so the framework-owned check rejects animas calling `signal('book.<owner>.<book>.<verb>', ...)`. The carve-out for `clockworks/events` is mirrored on the declared set — the bridge does **not** declare `book.clockworks.events.*`, so for those specific names rejection falls back to the merged-set membership check (`signal: "<name>" is not a declared event …`). See [CDC Events](#cdc-events) below for the full surface.
 
 ---
 
 ## CDC Events
 
-The Clockworks apparatus auto-wires Stacks change-data-capture (CDC) handlers across every declared book at startup. Each `create` / `update` / `delete` becomes one row in `clockworks/events`:
+The `clockworks-stacks-signals` bridge plugin auto-wires Stacks change-data-capture (CDC) handlers across every declared book at startup. Each `create` / `update` / `delete` becomes one row in `clockworks/events`:
 
 | Event Pattern | Payload | Emitter | When |
 |---------------|---------|---------|------|
@@ -116,7 +116,11 @@ The Clockworks apparatus auto-wires Stacks change-data-capture (CDC) handlers ac
 | `book.<ownerId>.<bookName>.updated` | `ChangeEvent<T>` (Stacks event passed through verbatim) | `framework` | An existing entry is patched in the named book |
 | `book.<ownerId>.<bookName>.deleted` | `ChangeEvent<T>` (Stacks event passed through verbatim) | `framework` | An entry is removed from the named book |
 
+See [`docs/architecture/apparatus/clockworks-stacks-signals.md`](../architecture/apparatus/clockworks-stacks-signals.md) for the bridge's full apparatus contract.
+
 The `<ownerId>` parameter is the contributing plugin's id (e.g. `clerk`, `astrolabe`, `clockworks`); `<bookName>` is the book name within that plugin (e.g. `writs`, `events`, `event_dispatches`). Concrete examples: `book.clerk.writs.updated`, `book.clockworks.event_dispatches.created`, `book.astrolabe.plans.deleted`. The set of valid `(ownerId, bookName)` pairs is unbounded — it grows whenever a plugin contributes a new book.
+
+**Bridge installation.** A guild that installs Stacks + Clockworks without the bridge gets the `signal` validator and the standing-order engine but no `book.*` events; standing orders bound to `book.*` names will silently not-match. The bridge is not auto-attached to fresh guilds — install `@shardworks/clockworks-stacks-signals-apparatus` explicitly to restore the prior auto-wiring behaviour.
 
 **How subscribers wire concrete names.** Standing orders bind to a fully-qualified name; there is no wildcard syntax in `on:`. Wire one standing order per book the operator cares about:
 
@@ -124,13 +128,13 @@ The `<ownerId>` parameter is the contributing plugin's id (e.g. `clerk`, `astrol
 { "on": "book.clerk.writs.updated", "run": "audit-writ-changes" }
 ```
 
-**What triggers the family.** At apparatus `start()`, the Clockworks walks every `books` kit contribution and registers a Phase-2 (post-commit) Stacks watcher on each. The handler composes the event name from the delivered CDC event (`book.${event.ownerId}.${event.book}.${verb}` where verb is `created` / `updated` / `deleted`) and forwards the verbatim `ChangeEvent` as the payload.
+**What triggers the family.** At the bridge's `start()`, it walks every `books` kit contribution and registers a Phase-2 (post-commit) Stacks watcher on each. The handler composes the event name from the delivered CDC event (`book.${event.ownerId}.${event.book}.${verb}` where verb is `created` / `updated` / `deleted`) and forwards the verbatim `ChangeEvent` as the payload through `clockworks.emit(name, event, 'framework')`.
 
 **What's excluded from auto-wiring.** The `clockworks/events` book itself is not watched — observing it would re-emit forever. Everything else, including `clockworks/event_dispatches`, is auto-wired. Books contributed by plugins installed *after* `start()` are not picked up; the registry seals at `phase:started`.
 
 **Phase-2 isolation.** Auto-wiring runs as `failOnError: false`, so an emit handler error cannot roll back the triggering write — Stacks' Phase-2 error path logs the failure and the system keeps going.
 
-**Reserved-namespace gap.** The `book.` prefix is **not** in `RESERVED_EVENT_NAMESPACES` — animas calling `signal('book.clerk.writs.updated', ...)` are rejected only by Layer 3 (the event must be declared in `guild.json`), not by the namespace check. In theory an operator who declared `book.clerk.writs.updated` under `clockworks.events` would let animas signal a spoofed change event. Closing this gap is a separate follow-up; the documentation reflects the as-is state.
+**Reserved-namespace status.** The bridge's function-form `events` kit declares each `book.<owner>.<book>.<verb>` name it emits, so once the bridge is installed those names are framework-owned in the merged event set and the merged-set framework-owned check on the unprivileged `signal` channels rejects animas calling `signal('book.clerk.writs.updated', ...)`. The carve-out for `clockworks/events` mirrors the watcher: the bridge does **not** declare `book.clockworks.events.*`, so those specific names are still rejected only by the merged-set membership check (`signal: "<name>" is not a declared event …`) rather than by the framework-owned check. Closing the spoofing-vector residue on the carved-out names is a separate follow-up captured in the bridge's apparatus doc; in a guild that does not install the bridge, the `book.` prefix is not declared at all and animas signalling `book.*` names are rejected purely by the merged-set membership check.
 
 ---
 

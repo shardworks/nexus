@@ -819,8 +819,9 @@ book.reckoner.reckonings.created
 ```
 
 The change-event payload is the Stacks `ChangeEvent<ReckoningDoc>`
-passed through verbatim by the Clockworks CDC bridge (see
-[clockworks.md → Book change events](clockworks.md#book-change-events-stacks-auto-wiring)
+passed through verbatim by the `clockworks-stacks-signals` bridge
+plugin (see
+[clockworks-stacks-signals.md](apparatus/clockworks-stacks-signals.md)
 and [event-catalog.md → CDC Events](../reference/event-catalog.md#cdc-events)).
 Subscribers that want to filter to a specific outcome do so in their
 relay handler, against `event.entry.outcome`:
@@ -847,10 +848,11 @@ which they would earn their keep.
 
 ### No carve-out from auto-wiring
 
-The Clockworks apparatus carves `clockworks/events` itself out of CDC
-auto-wiring because a watcher on the events book would observe its
-own emit and re-emit forever — see
-[clockworks.ts: auto-wiring carve-out](../../packages/plugins/clockworks/src/clockworks.ts).
+The `clockworks-stacks-signals` bridge plugin carves
+`clockworks/events` itself out of CDC auto-wiring because a watcher
+on the events book would observe its own emit and re-emit forever —
+see
+[clockworks-stacks-signals.md → Carve-out](apparatus/clockworks-stacks-signals.md#carve-out-clockworksevents).
 Reckonings has **no** such recursion: the Reckoner does not write a
 Reckonings row in response to a Reckonings change event, and no
 downstream petitioner loops back into the Reckoner's tick path

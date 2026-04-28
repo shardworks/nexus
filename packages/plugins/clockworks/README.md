@@ -4,25 +4,21 @@ The Clockworks — Pillar 5 of the guild architecture. The event substrate
 and standing-order engine: declares events, accepts emissions, and fans
 them out to registered handlers (relays, summons, briefs).
 
-**Status:** Write path, event-triggered dispatcher, CDC auto-wiring,
-the manual operator CLI, framework-event emission from real
-lifecycle activity, the unattended Clockworks daemon, AND the
-time-driven scheduler are all live. The Clockworks exposes
-`ClockworksApi.emit` for trusted framework callers, a validated
-`signal` tool for animas (with an operator-facing `nsg signal` CLI
-counterpart), `ClockworksApi.processEvents()` — the bulk-drain
-dispatcher that resolves matching standing orders, invokes their
-relays, persists one dispatch row per invocation, and flips the
-event's `processed` flag — `ClockworksApi.processSchedules()` — the
-scheduler pass that fires every time-driven standing order whose
-`nextFireTime` has elapsed and synthesizes a `clockworks.timer`
-event plus a dispatch row per fire — and, at startup, registers a
-Phase-2 CDC watcher on every plugin-declared book (other than
-`clockworks/events` itself) that re-emits each row
-create/update/delete as a `book.<ownerId>.<book>.<verb>` event with
-emitter `'framework'`. Startup also registers a CDC observer on
-`clerk/writs` that emits one `writ.<type>.<status>` event per writ
-status transition (the universal contract — every transition fires,
+**Status:** Write path, event-triggered dispatcher, the manual
+operator CLI, framework-event emission from real lifecycle activity,
+the unattended Clockworks daemon, AND the time-driven scheduler are
+all live. The Clockworks exposes `ClockworksApi.emit` for trusted
+framework callers, a validated `signal` tool for animas (with an
+operator-facing `nsg signal` CLI counterpart),
+`ClockworksApi.processEvents()` — the bulk-drain dispatcher that
+resolves matching standing orders, invokes their relays, persists one
+dispatch row per invocation, and flips the event's `processed`
+flag — `ClockworksApi.processSchedules()` — the scheduler pass that
+fires every time-driven standing order whose `nextFireTime` has
+elapsed and synthesizes a `clockworks.timer` event plus a dispatch
+row per fire. Startup also registers a CDC observer on `clerk/writs`
+that emits one `writ.<type>.<status>` event per writ status
+transition (the universal contract — every transition fires,
 including initial creation and cancellation). A fresh `start()` adds
 no boot-time noise to the events book — the legacy
 `guild.initialized` and per-book `migration.applied` emissions were
@@ -33,6 +29,12 @@ start/stop/status`, plus the matching `clockStart` / `clockStop` /
 tool) polls the events queue at a configurable interval, runs the
 scheduler pass before each event-processing pass, and drains
 dispatches without an operator at the keyboard.
+
+Stacks change-data-capture (CDC) → Clockworks `book.*` event
+auto-wiring lives in the dedicated
+[`@shardworks/clockworks-stacks-signals-apparatus`](../clockworks-stacks-signals/README.md)
+bridge plugin; install it alongside Stacks and Clockworks to surface
+row mutations as Clockworks events.
 
 See also: [`docs/architecture/clockworks.md`](../../../docs/architecture/clockworks.md).
 
@@ -325,38 +327,10 @@ through Clockworks rather than maintaining its own scheduler:
 
 ## CDC auto-wiring
 
-At `start()`, the Clockworks walks every `books` kit contribution
-collected during the Wire phase and registers a Phase-2 (post-commit)
-Stacks CDC watcher on each declared book. Every `create` / `update` /
-`delete` becomes one row in `clockworks/events`:
-
-- `name`    — `book.<ownerId>.<book>.<created|updated|deleted>`
-- `emitter` — the literal string `'framework'`
-- `payload` — the Stacks CDC event object verbatim
-
-Standing orders can therefore bind to row mutations directly without
-each plugin author having to call `emit()` or `signal()` from every
-write site.
-
-The `clockworks/events` book is the only book excluded from
-auto-wiring. The carve-out is an *architectural boundary* — auto-wiring
-the events book would re-emit every emission as a `book.clockworks.
-events.created` event, polluting the framework event stream with
-self-feedback that has no consumer. The Stacks substrate now enforces
-a Phase-2 cross-transaction re-entry depth bound that would terminate
-any runaway chain at 16 hops, so the carve-out is no longer the
-load-bearing safety net it once was — but it stays in place to keep
-the events book free of self-feedback in the first place. Future
-maintainers: do not remove the carve-out on the assumption that the
-substrate now covers it. Everything else, including
-`clockworks/event_dispatches`, is auto-wired. Books contributed by
-plugins installed *after* `start()` are not picked up; the registry
-seals at `phase:started`.
-
-Auto-wiring runs as Phase 2 (`failOnError: false`), so an
-emit-handler error cannot roll back the triggering row write — Stacks'
-existing Phase-2 error path logs the failure and the system keeps
-going.
+`book.<ownerId>.<book>.<verb>` events are owned by the
+`clockworks-stacks-signals` bridge plugin — see its
+[README](../clockworks-stacks-signals/README.md) and
+[apparatus contract](../../../docs/architecture/apparatus/clockworks-stacks-signals.md).
 
 ---
 

@@ -52,28 +52,7 @@ Animas signal custom events using the `signal` tool. The tool validates the even
 
 #### Book change events (Stacks auto-wiring)
 
-The Clockworks apparatus registers CDC handlers across all declared books at startup via The Stacks' `watch()` API (see [stacks.md](apparatus/stacks.md#6-change-data-capture-cdc)). This emits `book.<ownerId>.<bookName>.created`, `book.<ownerId>.<bookName>.updated`, and `book.<ownerId>.<bookName>.deleted` events into the Clockworks event stream automatically — no per-book configuration needed.
-
-```typescript
-// In clockworks apparatus start()
-const stacks = ctx.apparatus<StacksApi>('stacks')
-for (const plugin of ctx.plugins) {
-  const bookNames = Object.keys(plugin.books ?? {})
-  for (const bookName of bookNames) {
-    stacks.watch(plugin.id, bookName, async (event) => {
-      await clockworksApi.emit(`book.${event.ownerId}.${event.book}.${event.type}`, event)
-    }, { failOnError: false })  // clockworks failure must not block writes
-  }
-}
-```
-
-This means any book mutation from any plugin is observable via standing orders without the originating plugin needing to signal events explicitly. Standing orders can respond to book change events just like framework or custom events:
-
-```json
-{ "on": "book.clerk.writs.updated", "run": "audit-writ-changes" }
-```
-
-**Carve-out: `clockworks/events` is intentionally not auto-wired.** A watcher on the events book would observe its own `emit()` write and re-emit it as `book.clockworks.events.created`, polluting the framework event stream with feedback noise that has no consumer. The carve-out is an *architectural boundary* that keeps the events book clean — it is **not** the loop-protection mechanism. The Stacks substrate now enforces a Phase-2 cross-transaction re-entry depth bound (`MAX_PHASE2_REENTRY_DEPTH`, default 16; see [Cascade depth limiting](apparatus/stacks.md#cascade-depth-limiting)) that would catch any runaway Phase-2 self-write chain — including the events-book scenario — at the substrate level. Future maintainers: do not remove the Clockworks carve-out on the assumption that the substrate now covers it. The two serve different purposes — the substrate caps depth as a CPU-pin guard; the carve-out keeps the events book free of self-feedback in the first place. Removing the carve-out would buy nothing and would lose a useful boundary.
+`book.<ownerId>.<bookName>.<verb>` events are owned by the `clockworks-stacks-signals` bridge plugin — see [`docs/architecture/apparatus/clockworks-stacks-signals.md`](apparatus/clockworks-stacks-signals.md) for the full apparatus contract and carve-out rationale.
 
 ---
 
