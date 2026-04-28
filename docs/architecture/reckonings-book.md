@@ -23,13 +23,30 @@ Owner plugin: `reckoner` · Book name: `reckonings` · Sibling docs:
 ## Intent
 
 The Reckonings book is the Reckoner's **evaluation journal**: one
-append-only row per petition consideration, persisted to The Stacks as
-`stacks.book('reckoner', 'reckonings')`. Every tick of the Reckoner's
-fixed-interval polling pass produces a row for each petition it weighed
-— accepted, deferred, declined, or held without a state change — so a
-patron, a downstream petitioner, or a future ethnographer can ask "did
-the Reckoner ever look at this petition, and what did it decide?" with
-a single book query.
+append-only row per meaningful consideration, persisted to The Stacks
+as `stacks.book('reckoner', 'reckonings')`. The journal is
+**event-shaped, not tick-shaped** — the Reckoner writes a row when a
+consideration produced a state transition (accept / defer / decline)
+or when a re-evaluation was substantive enough to record (e.g. a
+wake-up signal fired and the Reckoner re-weighed against current
+conditions). Ticks where the Reckoner did not reach a petition, or
+re-encountered an unchanged condition and held the same conclusion,
+produce no row.
+
+This means **absence-of-row is itself a signal**: a patron, a
+downstream petitioner, or a future ethnographer asking "what has the
+Reckoner decided about this petition?" gets the answer from the rows
+that exist; the lack of any row for a petition since timestamp T means
+"the Reckoner has not reached it yet, or no condition has changed
+that warranted re-evaluation."
+
+*Which* petitions get weighed on a given tick — and the per-tick
+budget that bounds how far down the priority order the Reckoner walks
+— is a Reckoner-core scoping-policy decision, not a journal-schema
+decision, and lives in the Reckoner-core commission. The schema here
+accommodates either a sweep-everything-every-tick policy or a
+priority-bounded walk; the journal records what was considered, not
+the policy that picked it.
 
 This doc settles the schema, the index set, the retention stance, the
 CDC attachment, and the conceptual framing relative to the
@@ -78,11 +95,16 @@ Every Reckonings record carries a four-state `outcome`:
   Reasons) — "this work isn't worth doing on merit" is patron
   territory and produces a `withdrawn` transition by the patron, not
   a Reckoner-issued decline.
-- **no-op** — the Reckoner weighed the petition this tick but produced
-  no state transition. Deferred petitions whose wake-up signal has not
-  yet fired are the typical case; so are pending petitions blocked
-  behind a higher-priority sibling. No-ops are first-class — see No-op
-  Handling.
+- **no-op** — the Reckoner re-weighed the petition this tick against
+  changed conditions and chose to hold without a state transition.
+  Typical examples: a deferred petition's wake-up signal fired and the
+  Reckoner re-evaluated but still held; a sibling resolution shifted
+  the priority queue and the Reckoner re-checked this petition's
+  position; capacity changed and the Reckoner reconsidered. A `no-op`
+  row records that the Reckoner did real work — not the heartbeat of
+  the polling loop. See No-op Handling for the absence-of-row
+  convention that distinguishes "we weighed and held" from "we haven't
+  reached this yet."
 
 `withdrawn` is a petitioner-initiated transition and is **not** a
 Reckoner-consideration outcome, so it does not produce a Reckonings
@@ -292,6 +314,19 @@ fields at the top level and reserving free-form context for a
 purpose-built blob; the Reckonings record has no free-form blob
 because every meaningful field is named and filterable.
 
+#### Writer-enforced invariant
+
+The iff-outcome invariant — "a row populates exactly the reason fields
+keyed to its `outcome` and no others" — is **writer-enforced by the
+Reckoner core**. The Stacks book schema does not validate it: persisted
+records can in principle hold inconsistent shapes (e.g. an `accepted`
+row carrying a stray `declineReason`). The contract is that the
+Reckoner core is the only writer of this book, and it constructs every
+row through a single discriminated-union builder before persisting.
+Consumer types decode against the same discriminated union, so a
+malformed row would surface as a parse error at read time — not as a
+silently-tolerated invalid state.
+
 ### Decline reasons (settled upstream)
 
 The decline-reason enum is intentionally narrow:
@@ -329,6 +364,13 @@ in normal operation; both being empty is allowed for the rare
 `other`-reason hold but should produce a `deferNote` for the audit
 trail.
 
+The actual wake-up dispatch path — how the Reckoner converts a
+populated `deferSignal` into a Clockworks standing-order subscription,
+how `deferUntil` is converted into a `schedule:` order, and how the
+re-tick fires against the deferred petition — is owned by the
+Reckoner-core commission. This doc names the schema fields the
+mechanism stamps; the mechanism itself is settled there.
+
 `deferCount`, `firstDeferredAt`, and `lastDeferredAt` are running
 counters: each new deferral on the same petition increments
 `deferCount` and refreshes `lastDeferredAt`, while
@@ -336,6 +378,15 @@ counters: each new deferral on the same petition increments
 first-seen-as-deferred timestamp. The Reckoner reads the prior
 Reckonings row for the petition to compute the running counter; the
 journal is its own source of truth for the deferral history.
+
+**The counter advances only on `outcome: 'deferred'` rows.** A
+`no-op` row produced when the Reckoner re-weighed a deferred petition
+and chose to keep holding does **not** increment `deferCount`. The
+counter records distinct deferrals, not re-evaluations of an existing
+hold; "how many times has the Reckoner deferred this petition?" is
+answered by `count(*) WHERE petitionId = X AND outcome = 'deferred'`,
+and the running counter on the most recent deferred row matches that
+count.
 
 ### Acceptance metadata
 
@@ -354,33 +405,65 @@ A row with `outcome: 'accepted'` carries:
 
 ## No-op Handling
 
-**Every consideration produces a row, including no-ops.** The
-Reckoner does not silently drop a tick where it weighed a petition
-without producing a transition.
+A `no-op` row records that **the Reckoner did real evaluative work
+that did not produce a state transition**. It is not the heartbeat of
+the polling loop — ticks where the Reckoner did not reach a petition,
+or re-encountered an unchanged condition and held the same conclusion,
+produce no row at all.
 
-The single-audit-trail-truth argument is the rationale: a petitioner
-asking "did the Reckoner ever look at me?" should get the answer from
-one query against the Reckonings book, not from a join across the
-petition-state book and the events book and a heuristic. Splitting
-the journal into "considered with state change" and "considered
-without state change" — keeping the second set in some sibling
-overlay or reconstructing it from the clockworks.timer stream — would
-duplicate the journaling work, complicate every consumer query, and
-push reasoning about completeness onto callers.
+### When a no-op row is written
 
-The journal is the audit trail; the petition-state book is not asked
-to double as event journal.
+The Reckoner writes a `no-op` row when a consideration was
+*substantive* but the conclusion was still "hold." The canonical
+cases:
+
+- A deferred petition's `deferSignal` fired (its wake-up event
+  pattern matched). The Reckoner re-weighed against current state
+  and chose to keep holding rather than transition. The wake-up was
+  meaningful even though the outcome did not change.
+- A deferred petition's `deferUntil` deadline passed and the
+  Reckoner's scheduled re-tick re-evaluated it. Same logic — the
+  re-evaluation was real work, recorded, even if the conclusion did
+  not transition.
+- A pending petition was re-weighed because a sibling resolved
+  (acceptance or withdrawal shifted the priority queue) or capacity
+  changed, and the Reckoner re-checked this petition's standing.
+  The re-evaluation was triggered by a change in conditions, not by
+  the tick itself.
+
+### When a row is **not** written
+
+- The Reckoner did not reach the petition this tick (priority-bounded
+  walk stopped before it). No row.
+- The Reckoner ticked, encountered the petition, but no condition had
+  changed since the last consideration — same priority order, same
+  capacity, same wake-up state. No row. The prior conclusion stands
+  by inheritance.
+
+### Absence-of-row is the signal
+
+The "did anyone look at me?" question is answered by **any** row
+existing for the petition. A petition with no rows has not yet been
+reached or has had no condition change warrant re-evaluation; that is
+itself meaningful information. A petition with a recent terminal row
+(`accepted` / `declined`) has its outcome on file. A petition with a
+deferred row and several no-op rows has been actively re-weighed
+multiple times since the last transition.
+
+This convention shifts a small amount of reasoning onto callers ("no
+row" means a specific thing) in exchange for an event-shaped journal
+that scales with decision events rather than with tick frequency. The
+storage-growth math (next section) reflects this design.
 
 ### No-op records carry the same projection as state-transition records
 
-A no-op row carries `source` and `urgency` exactly like every other
-outcome — same lean snapshot, same tick stamp, same `consideredAt`.
-The modest byte savings of a stripped no-op shape don't justify
-branching the read path for every consumer query: filters like "since
-T, all considerations of urgent petitions" must work uniformly across
-all four outcomes, and the index that supports that filter
-(`urgency`-keyed, paired with `consideredAt` in the compound
-`['outcome', 'consideredAt']`) needs every row to be the same shape.
+When a `no-op` row *is* written, it carries `source` and `urgency`
+exactly like every other outcome — same lean snapshot, same tick
+stamp, same `consideredAt`. The modest byte savings of a stripped
+no-op shape don't justify branching the read path for every consumer
+query: filters like "since T, all considerations of urgent petitions"
+must work uniformly across all four outcomes, and the indexes that
+support those filters need every row to be the same shape.
 
 This uniformity also keeps the discriminated-union consumer type
 clean: no fork between "full record" and "stub record"; the
@@ -392,8 +475,8 @@ absent.
 ## Retention
 
 **Append-only forever.** The Reckonings book has no rolling-window
-default, no built-in archival relay, no prune job. Every consideration
-the Reckoner ever weighs persists until an explicit operator action
+default, no built-in archival relay, no prune job. Every row the
+Reckoner ever writes persists until an explicit operator action
 removes it.
 
 This matches the sibling event-log books — `clockworks/events`,
@@ -410,28 +493,53 @@ post-mortem six months later needs.
 
 ### Storage-growth math
 
-The worst-case ceiling, based on the settled v0 cadence and a
-representative pending-set size:
+The journal is event-shaped, so volume scales with decision events
+rather than with tick frequency. A representative steady-state model
+based on the v0 cadence (1 tick / minute) and a moderately active
+guild:
 
 ```
-1 tick / minute  ×  10 petitions weighed per tick  ×  365 days
-  = 5,256,000 rows / year
-  ≈ 2.5 GB / year   at  ~500 bytes / row (lean projection)
-  ≈ 10.5 GB / year  at  ~2 KB  / row (with full deferral metadata)
+state-transition rows (accepts + defers + declines)
+  ≈ 2–10 / hour during active operation
+  ≈ 0–2 / hour during idle stretches
+
+substantive no-op rows (wake-up re-evaluations, sibling resolutions
+                        prompting re-weighs, capacity changes)
+  ≈ 5–30 / hour during active operation
+  ≈ 0–5 / hour during idle stretches
+
+steady-state composite
+  ≈ 1–3 rows / minute averaged across active and idle periods
+  ≈ 525,000 – 1,575,000 rows / year
+  ≈ 250 MB – 800 MB / year   at  ~500 bytes / row (lean projection)
 ```
 
-SQLite handles 5M-row tables cleanly with the indexes declared below
-— primary-key lookups stay sub-millisecond, the indexed range scans
-on `consideredAt` and the per-petition timeline use the compound
-indexes directly, and table size at this magnitude is well within the
-Animator's transcripts-book scale (~30–300 MB / day) that the same
-substrate is already exercised at.
+This is roughly an order of magnitude below what a sweep-everything-
+every-tick policy would produce (the earlier draft of this doc
+projected ~5.3M rows / year on that assumption). The order-of-
+magnitude difference is the load-bearing payoff of the event-shaped
+design: the journal records decisions, not heartbeats.
 
-The math shows we are not in trouble. It also identifies the
-trip-wires that warrant revisiting: a 10× cadence, a 10× pending-set
-size, or a sustained 6-month measurement that diverges materially
-from this projection. The trip-wires belong in Open Questions, not
-in the v0 retention design.
+SQLite handles tables at this scale comfortably with the indexes
+declared below — primary-key lookups stay sub-millisecond, the
+indexed range scans on `consideredAt` and the per-petition timeline
+use the compound indexes directly, and table size at this magnitude
+is well within the Animator's transcripts-book scale (~30–300 MB /
+day) that the same substrate is already exercised at.
+
+Trip-wires that warrant revisiting:
+
+- An order-of-magnitude increase in tick cadence (e.g. 10×
+  faster) **combined with** a Reckoner-core scoping policy that
+  produces no-ops more eagerly than the substantive-only convention
+  above.
+- A sustained 6-month measurement that exceeds 2M rows / year
+  (more than 25% above the projection's upper bound).
+- An operator-visible query latency regression on the per-petition
+  timeline or since-T sweeps.
+
+The trip-wires belong in Open Questions, not in the v0 retention
+design.
 
 ### Future archival pattern (named, not built)
 
@@ -467,10 +575,14 @@ are not added.
 | **Decline-by-reason audit** — every petition declined for reason R | `outcome = 'declined' AND declineReason = R` | `declineReason` (with the `outcome` filter narrowing the candidate set further) |
 | **Per-source filtering** — every consideration of petitions emitted by source S | `source = S` (optionally + `consideredAt`) | `source` |
 | **Recent-by-outcome** — most recent N rows for outcome O | `outcome = O` ORDER BY `consideredAt desc` | `['outcome', 'consideredAt']` |
-| **Urgency-filtered timeline** — recent considerations of urgent petitions | `outcome = O AND consideredAt >= T` (with in-process urgency narrow), or via the same compound | `['outcome', 'consideredAt']` |
+| **Urgency-led timeline** — recent considerations of immediate / urgent petitions, regardless of outcome | `urgency = U` ORDER BY `consideredAt desc` | `['urgency', 'consideredAt']` |
 | **Outcome-only filter** — count or list rows by outcome | `outcome = O` | `outcome` |
 
 ### Declared index set
+
+> **Illustrative — declared in the Reckoner-core commission, not here.**
+> The list below is the contract this design hands forward; the actual
+> `indexes:` block ships from the Reckoner-core book registration.
 
 ```typescript
 indexes: [
@@ -478,8 +590,10 @@ indexes: [
   'consideredAt',
   'outcome',
   'source',
+  'urgency',
   'declineReason',
   ['outcome', 'consideredAt'],
+  ['urgency', 'consideredAt'],
   ['petitionId', 'consideredAt'],
 ]
 ```
@@ -500,26 +614,28 @@ Tracing each entry back to the queries it supports:
   from a single petitioner). The petitioners-registration commission
   will likely want to surface this as part of an operator's
   per-petitioner page.
+- **`urgency`** — priority-led queries: "every immediate petition
+  the Reckoner has ever weighed," "show me the urgent backlog the
+  Reckoner has touched in the last hour." Priority is the
+  Reckoner's organizing axis, so an urgency-led query is a primary
+  dashboard shape, not a secondary filter.
 - **`declineReason`** — the decline-by-reason audit. The flat
-  schema layout (D10) is what makes this an indexable top-level
-  field; a nested `reason: { … }` would not.
+  schema layout is what makes this an indexable top-level field; a
+  nested `reason: { … }` would not.
 - **`['outcome', 'consideredAt']`** — recent-by-outcome compound,
   serving the most common dashboard query: "what did the Reckoner
   decide in the last hour, grouped by outcome." The leading
   `outcome` column is low-cardinality (4 values), so this index
   doubles as a fast histogram input.
+- **`['urgency', 'consideredAt']`** — urgency-led timeline without
+  a re-sort. Pairs with the standalone `urgency` index for
+  priority-leading dashboard widgets and operator queries that
+  combine "level X petitions" with "since T."
 - **`['petitionId', 'consideredAt']`** — per-petition timeline
   ordering without a re-sort. Critical for the petitioner-side "show
   me my petition's full history" view.
 
-`urgency` is not indexed in v0. It is filterable in-process from any
-of the time-or-outcome-led results, and the dashboards currently
-described do not lead with urgency. If a future query shape leads
-with `urgency` (e.g. an Oculus widget that sweeps "every immediate
-petition the Reckoner has ever weighed"), adding `urgency` or the
-compound `['urgency', 'consideredAt']` is the natural follow-up.
-
-`tickEventId` is similarly not indexed. The expected access pattern
+`tickEventId` is not indexed. The expected access pattern
 is "look up the Reckonings row by id, then walk to the tick" — not
 "find every row produced by tick T," which is rare and tolerates the
 full scan or a join through `consideredAt`. Adding the index later
