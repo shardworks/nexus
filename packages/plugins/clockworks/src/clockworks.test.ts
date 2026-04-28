@@ -87,6 +87,10 @@ async function buildFixture(): Promise<Fixture> {
       if (!api) throw new Error(`Apparatus "${name}" not installed`);
       return api as T;
     },
+
+    tryApparatus<T>(name: string): T | null {
+      try { return this.apparatus<T>(name); } catch { return null; }
+    },
     config<T>(_pluginId: string): T {
       return {} as T;
     },
@@ -326,6 +330,10 @@ async function buildRegistryFixture(
       const api = apparatusMap.get(name);
       if (!api) throw new Error(`Apparatus "${name}" not installed`);
       return api as T;
+    },
+
+    tryApparatus<T>(name: string): T | null {
+      try { return this.apparatus<T>(name); } catch { return null; }
     },
     config<T>(_pluginId: string): T {
       return {} as T;
@@ -675,6 +683,10 @@ async function buildDispatchFixture(
       const apiObj = apparatusMap.get(name);
       if (!apiObj) throw new Error(`Apparatus "${name}" not installed`);
       return apiObj as T;
+    },
+
+    tryApparatus<T>(name: string): T | null {
+      try { return this.apparatus<T>(name); } catch { return null; }
     },
     config<T>(_pluginId: string): T { return {} as T; },
     writeConfig(): void {},

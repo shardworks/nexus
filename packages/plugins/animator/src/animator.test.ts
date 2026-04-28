@@ -188,6 +188,10 @@ async function setup(
       if (!api) throw new Error(`Apparatus "${name}" not installed`);
       return api as T;
     },
+
+    tryApparatus<T>(name: string): T | null {
+      try { return this.apparatus<T>(name); } catch { return null; }
+    },
     config<T>(pluginId: string): T {
       if (pluginId === 'animator') {
         return { sessionProvider: sessionProviderPluginId } as T;
@@ -259,7 +263,7 @@ describe('Animator', () => {
       await setup();
     });
 
-    it('returns an AnimateHandle with chunks and result', () => {
+    it('returns an AnimateHandle with chunks and result', async () => {
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
         cwd: '/tmp/workdir',
@@ -267,6 +271,10 @@ describe('Animator', () => {
 
       assert.ok(handle.chunks, 'should have chunks');
       assert.ok(handle.result instanceof Promise, 'result should be a Promise');
+      // Drain the deferred work so it cannot run past `afterEach`'s
+      // `clearGuild()` and surface as an unhandled rejection from a
+      // dangling background `guild()` call.
+      await handle.result;
     });
 
     it('completes a session and records to Stacks', async () => {
@@ -472,6 +480,10 @@ describe('Animator', () => {
           const api = apparatusMap.get(name);
           if (!api) throw new Error(`Apparatus "${name}" not installed`);
           return api as T;
+        },
+
+        tryApparatus<T>(name: string): T | null {
+          try { return this.apparatus<T>(name); } catch { return null; }
         },
         config<T>(pluginId: string): T {
           if (pluginId === 'animator') {
@@ -850,6 +862,10 @@ describe('Animator', () => {
 
       assert.ok(handle.chunks, 'should have chunks');
       assert.ok(handle.result instanceof Promise, 'result should be a Promise');
+      // Drain the deferred work so it cannot run past `afterEach`'s
+      // `clearGuild()` and surface as an unhandled rejection from a
+      // dangling background `guild()` call.
+      await handle.result;
     });
 
     it('composes context via The Loom and launches a session', async () => {
@@ -1600,6 +1616,10 @@ describe('Animator', () => {
           if (!api) throw new Error(`Apparatus "${name}" not installed`);
           return api as T;
         },
+
+        tryApparatus<T>(name: string): T | null {
+          try { return this.apparatus<T>(name); } catch { return null; }
+        },
         config<T>(): T { return {} as T; },
         writeConfig() {},
         guildConfig() {
@@ -1679,6 +1699,10 @@ describe('Animator', () => {
           const api = apparatusMap.get(name);
           if (!api) throw new Error(`Apparatus "${name}" not installed`);
           return api as T;
+        },
+
+        tryApparatus<T>(name: string): T | null {
+          try { return this.apparatus<T>(name); } catch { return null; }
         },
         config<T>(): T { return {} as T; },
         writeConfig() {},
@@ -1799,6 +1823,10 @@ describe('Animator', () => {
           const api = apparatusMap.get(name);
           if (!api) throw new Error(`Apparatus "${name}" not installed`);
           return api as T;
+        },
+
+        tryApparatus<T>(name: string): T | null {
+          try { return this.apparatus<T>(name); } catch { return null; }
         },
         config<T>(): T { return {} as T; },
         writeConfig() {},

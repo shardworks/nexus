@@ -203,6 +203,10 @@ async function buildFixture(opts: FixtureOptions = {}): Promise<RelayFixture> {
       if (!api) throw new Error(`Apparatus "${name}" not installed`);
       return api as T;
     },
+
+    tryApparatus<T>(name: string): T | null {
+      try { return this.apparatus<T>(name); } catch { return null; }
+    },
     config<T>(_pluginId: string): T { return {} as T; },
     writeConfig(): void {},
     guildConfig(): GuildConfig { return guildConfig; },

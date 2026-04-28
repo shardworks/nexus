@@ -306,6 +306,42 @@ export default {
     const g = await createGuild(tmp);
     assert.throws(() => g.apparatus('tools'), /is not available/);
   });
+
+  it('tryApparatus returns provides when the apparatus is installed', async () => {
+    const tmp = makeTmpDir();
+    installFakeApparatus(tmp, '@shardworks/tools-apparatus', {
+      provides: '{ list: () => ["tool-a"] }',
+    });
+    writeGuildJson(tmp, { plugins: ['tools'] });
+    writePackageJson(tmp, { '@shardworks/tools-apparatus': '^2.0.0' });
+
+    const g = await createGuild(tmp);
+    const api = g.tryApparatus<{ list: () => string[] }>('tools');
+    assert.notEqual(api, null);
+    assert.deepEqual(api!.list(), ['tool-a']);
+  });
+
+  it('tryApparatus returns null when the apparatus is not installed', async () => {
+    const tmp = makeTmpDir();
+    writeGuildJson(tmp, { plugins: [] });
+    writePackageJson(tmp, {});
+
+    const g = await createGuild(tmp);
+    assert.equal(g.tryApparatus('does-not-exist'), null);
+    // And confirm the loud counterpart still throws — same name, different
+    // contract.
+    assert.throws(() => g.apparatus('does-not-exist'), /is not available/);
+  });
+
+  it('tryApparatus returns null when the apparatus is installed but has no provides', async () => {
+    const tmp = makeTmpDir();
+    installFakeApparatus(tmp, '@shardworks/tools-apparatus');
+    writeGuildJson(tmp, { plugins: ['tools'] });
+    writePackageJson(tmp, { '@shardworks/tools-apparatus': '^2.0.0' });
+
+    const g = await createGuild(tmp);
+    assert.equal(g.tryApparatus('tools'), null);
+  });
 });
 
 // ── createGuild — plugin config ──────────────────────────────────────

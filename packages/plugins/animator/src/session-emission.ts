@@ -10,10 +10,10 @@
  * `animator.` prefix per the events-kit contribution) — see
  * `docs/reference/event-catalog.md`.
  *
- * `ClockworksApi` is resolved lazily via `guild().apparatus()` inside a
- * try/catch. When the Clockworks is not installed (it is in Animator's
- * `recommends`, not `requires`) the helper silently no-ops — the same
- * idiom `summon()` already uses for `LoomApi`.
+ * `ClockworksApi` is resolved lazily via `guild().tryApparatus()`. When
+ * the Clockworks is not installed (it is in Animator's `recommends`, not
+ * `requires`) the helper silently no-ops — the same idiom `summon()`
+ * already uses for `LoomApi`.
  *
  * Every `emit()` is wrapped in best-effort try/catch with a `console.warn`
  * breadcrumb. A Clockworks emission failure must never roll back the
@@ -63,14 +63,11 @@ export const ANIMATOR_EVENTS: Record<string, EventSpec> = {
  * Resolve the Clockworks at call time. Returns null when it is not
  * installed (animator declares clockworks in `recommends`, not
  * `requires`). Mirrors the lazy resolution `summon()` uses for
- * `LoomApi`.
+ * `LoomApi`. Delegates to the framework's `tryApparatus<T>` primitive
+ * — the optional-dependency counterpart to `apparatus<T>`.
  */
 function tryResolveClockworks(): ClockworksApi | null {
-  try {
-    return guild().apparatus<ClockworksApi>('clockworks');
-  } catch {
-    return null;
-  }
+  return guild().tryApparatus<ClockworksApi>('clockworks');
 }
 
 // ── Best-effort emit ─────────────────────────────────────────────────

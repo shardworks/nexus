@@ -58,7 +58,8 @@ The narrow contract plugin code sees through `guild()` — also returned (via th
 | Method | Returns | Description |
 |---|---|---|
 | `home` | `string` | Absolute path to the guild root |
-| `apparatus<T>(name)` | `T` | Retrieve a started apparatus's `provides` API by plugin id. Throws if the apparatus has no `provides` |
+| `apparatus<T>(name)` | `T` | Retrieve a started apparatus's `provides` API by plugin id. Throws if the apparatus has no `provides` — use for `requires` dependencies |
+| `tryApparatus<T>(name)` | `T \| null` | Same lookup as `apparatus<T>`, but returns `null` instead of throwing when the apparatus is absent. Use for `recommends` dependencies so the caller branches on presence rather than catching a thrown error |
 | `config<T>(pluginId)` | `T` | Read the plugin-specific configuration section from `guild.json` |
 | `writeConfig<T>(pluginId, value)` | `void` | Write a plugin's configuration section to `guild.json` and persist to disk |
 | `guildConfig()` | `GuildConfig` | The full parsed `guild.json` |

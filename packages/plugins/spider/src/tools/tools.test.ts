@@ -54,6 +54,10 @@ function makeGuild(
       if (name === 'spider') return mockSpider as unknown as T;
       throw new Error(`Apparatus "${name}" not found`);
     },
+
+    tryApparatus<T>(name: string): T | null {
+      try { return this.apparatus<T>(name); } catch { return null; }
+    },
     config<T>(_pluginId: string): T { return {} as T; },
     writeConfig() {},
     guildConfig() { return fakeGuildConfig; },
@@ -563,6 +567,10 @@ describe('rig-cancel tool', () => {
         if (name === 'spider') return mockSpider as unknown as T;
         throw new Error(`Apparatus "${name}" not found`);
       },
+
+      tryApparatus<T>(name: string): T | null {
+        try { return this.apparatus<T>(name); } catch { return null; }
+      },
       config<T>(): T { return {} as T; },
       writeConfig() {},
       guildConfig() { return { name: 'test-guild', nexus: '0.0.0', plugins: [] }; },
@@ -605,6 +613,10 @@ describe('rig-cancel tool', () => {
       apparatus<T>(name: string): T {
         if (name === 'spider') return mockSpider as unknown as T;
         throw new Error(`Apparatus "${name}" not found`);
+      },
+
+      tryApparatus<T>(name: string): T | null {
+        try { return this.apparatus<T>(name); } catch { return null; }
       },
       config<T>(): T { return {} as T; },
       writeConfig() {},

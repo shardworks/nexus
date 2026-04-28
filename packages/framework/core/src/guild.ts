@@ -47,6 +47,25 @@ export interface Guild {
   apparatus<T>(name: string): T
 
   /**
+   * Retrieve a started apparatus's provides object by plugin id, or
+   * `null` if the apparatus is not installed (or has no `provides`).
+   *
+   * The optional counterpart to {@link Guild.apparatus} — same arity,
+   * same generic, same caller ergonomics. Reach for this when the
+   * apparatus is in `recommends`, not `requires`, so the caller can
+   * branch on its presence rather than catching a thrown error.
+   *
+   *   const clockworks = guild().tryApparatus<ClockworksApi>('clockworks');
+   *   if (!clockworks) return; // optional dependency, soft no-op
+   *
+   * Use {@link Guild.apparatus} when the apparatus is a hard requirement
+   * (declared in `requires`) — its throw-on-missing behaviour fails
+   * loudly at the call site rather than silently no-op'ing past a
+   * misconfiguration.
+   */
+  tryApparatus<T>(name: string): T | null
+
+  /**
    * Read a plugin's configuration section from guild.json.
    *
    * Returns `guild.json[pluginId]` cast to `T`. Returns `{}` if no

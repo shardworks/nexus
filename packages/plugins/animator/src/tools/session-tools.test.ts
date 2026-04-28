@@ -40,6 +40,10 @@ function setup() {
       if (!api) throw new Error(`Apparatus "${name}" not installed`);
       return api as T;
     },
+
+    tryApparatus<T>(name: string): T | null {
+      try { return this.apparatus<T>(name); } catch { return null; }
+    },
     config<T>(): T {
       return {} as T;
     },

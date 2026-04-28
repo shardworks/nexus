@@ -189,6 +189,10 @@ function buildFixture(
       if (!api) throw new Error(`Apparatus "${name}" not found`);
       return api as T;
     },
+
+    tryApparatus<T>(name: string): T | null {
+      try { return this.apparatus<T>(name); } catch { return null; }
+    },
     config<T>(): T { return {} as T; },
     writeConfig() {},
     guildConfig() { return fakeGuildConfig; },

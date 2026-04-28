@@ -193,6 +193,16 @@ export async function createGuild(root?: string): Promise<StartedGuild> {
       return p as T;
     },
 
+    tryApparatus<T>(name: string): T | null {
+      // Mirror apparatus<T>(name) exactly except: a missing entry is the
+      // expected null path rather than a thrown error. Callers that need
+      // hard-fail semantics use apparatus<T>; tryApparatus<T> is the
+      // optional-dependency primitive (see Guild.tryApparatus docs).
+      const p = provides.get(name);
+      if (p === undefined) return null;
+      return p as T;
+    },
+
     config<T = Record<string, unknown>>(pluginId: string): T {
       // GuildConfig types only the framework-level keys (name, nexus, plugins, etc.).
       // Plugin-specific config sections (e.g. "animator", "stacks") are additional

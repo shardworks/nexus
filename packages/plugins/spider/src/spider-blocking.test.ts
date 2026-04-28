@@ -131,6 +131,10 @@ describe('Spider — engine blocking on external conditions', () => {
         if (!api) throw new Error(`Apparatus "${name}" not found`);
         return api as T;
       },
+
+      tryApparatus<T>(name: string): T | null {
+        try { return this.apparatus<T>(name); } catch { return null; }
+      },
       config<T>(_pluginId: string): T { return {} as T; },
       writeConfig() {},
       guildConfig() { return fakeGuildConfig; },
@@ -495,6 +499,10 @@ describe('Spider — engine blocking on external conditions', () => {
           const api = apparatusMap.get(name);
           if (!api) throw new Error(`Apparatus "${name}" not found`);
           return api as T;
+        },
+
+        tryApparatus<T>(name: string): T | null {
+          try { return this.apparatus<T>(name); } catch { return null; }
         },
         config<T>(_pluginId: string): T { return {} as T; },
         writeConfig() {},

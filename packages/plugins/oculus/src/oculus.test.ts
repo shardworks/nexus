@@ -144,6 +144,10 @@ function wireGuild(opts: {
       if (name === 'tools') return opts.instrumentarium as T;
       throw new Error(`apparatus not found: ${name}`);
     },
+
+    tryApparatus<T>(name: string): T | null {
+      try { return this.apparatus<T>(name); } catch { return null; }
+    },
     config<T>(_pluginId: string): T {
       return {} as T;
     },

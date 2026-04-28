@@ -19,6 +19,7 @@ export function setupGuildAccessor(home: string): void {
   setGuild({
     home,
     apparatus: () => { throw new Error('not available in test'); },
+    tryApparatus: () => null,
     config: () => ({}) as never,
     writeConfig: () => { throw new Error('not available in test'); },
     guildConfig: () => ({}) as never,

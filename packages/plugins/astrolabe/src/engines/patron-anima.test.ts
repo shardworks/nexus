@@ -177,6 +177,10 @@ function setup(config: { patronRole?: string } = {}): void {
       if (!a) throw new Error(`Apparatus "${name}" not installed`);
       return a as T;
     },
+
+    tryApparatus<T>(name: string): T | null {
+      try { return this.apparatus<T>(name); } catch { return null; }
+    },
     config<T>(_pluginId: string): T { return {} as T; },
     writeConfig() {},
     guildConfig() { return fakeGuildConfig; },

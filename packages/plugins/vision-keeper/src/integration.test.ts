@@ -141,6 +141,10 @@ async function buildGuild(opts: {
       if (!a) throw new Error(`Apparatus "${name}" not installed`);
       return a as T;
     },
+
+    tryApparatus<T>(name: string): T | null {
+      try { return this.apparatus<T>(name); } catch { return null; }
+    },
     config<T>() {
       return {} as T;
     },

@@ -137,6 +137,10 @@ async function buildGuild(): Promise<Fixture> {
       if (!api) throw new Error(`Apparatus "${name}" not installed`);
       return api as T;
     },
+
+    tryApparatus<T>(name: string): T | null {
+      try { return this.apparatus<T>(name); } catch { return null; }
+    },
     config<T>(_id: string): T {
       return {} as T;
     },
@@ -371,6 +375,10 @@ describe('Lattice + Reckoner + Discord — end-to-end', () => {
         if (!api) throw new Error(`Apparatus "${name}" not installed`);
         return api as T;
       },
+
+      tryApparatus<T>(name: string): T | null {
+        try { return this.apparatus<T>(name); } catch { return null; }
+      },
       config<T>(_id: string): T {
         return {} as T;
       },
@@ -445,6 +453,10 @@ describe('Lattice + Reckoner + Discord — end-to-end', () => {
           const api = apparatusMap2.get(name);
           if (!api) throw new Error(`Apparatus "${name}" not installed`);
           return api as T;
+        },
+
+        tryApparatus<T>(name: string): T | null {
+          try { return this.apparatus<T>(name); } catch { return null; }
         },
         config<T>(_id: string): T {
           return {} as T;

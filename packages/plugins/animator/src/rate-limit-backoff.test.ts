@@ -122,6 +122,10 @@ describe('BackoffMachine', () => {
         if (!api) throw new Error(`Apparatus "${name}" not installed`);
         return api as T;
       },
+
+      tryApparatus<T>(name: string): T | null {
+        try { return this.apparatus<T>(name); } catch { return null; }
+      },
       config<T>(): T { return {} as T; },
       writeConfig() {},
       guildConfig() { return { name: 't', nexus: '0.0.0', plugins: [] } as GuildConfig; },

@@ -205,6 +205,10 @@ function setupStubGuild(fixture: StubFixture, home = '/tmp/test-guild'): void {
       if (!api) throw new Error(`Apparatus "${name}" not installed`);
       return api as T;
     },
+
+    tryApparatus<T>(name: string): T | null {
+      try { return this.apparatus<T>(name); } catch { return null; }
+    },
     config<T>(): T { return {} as T; },
     writeConfig(): void {},
     guildConfig(): GuildConfig { return guildConfig; },
@@ -754,6 +758,10 @@ describe('runRun', () => {
         const api = apparatusMap.get(name);
         if (!api) throw new Error(`Apparatus "${name}" not installed`);
         return api as T;
+      },
+
+      tryApparatus<T>(name: string): T | null {
+        try { return this.apparatus<T>(name); } catch { return null; }
       },
       config<T>(): T { return {} as T; },
       writeConfig(): void {},

@@ -21,7 +21,8 @@ const config = guild().config<MyConfig>('my-plugin');
 | Member | Returns | Description |
 |---|---|---|
 | `home` | `string` | Absolute path to the guild root |
-| `apparatus<T>(name)` | `T` | Retrieve a started apparatus's `provides` object by plugin id |
+| `apparatus<T>(name)` | `T` | Retrieve a started apparatus's `provides` object by plugin id. Throws if absent — use for `requires` dependencies |
+| `tryApparatus<T>(name)` | `T \| null` | Optional counterpart to `apparatus<T>` — returns `null` when the apparatus is not installed. Use for `recommends` dependencies so the caller can branch on presence rather than catch a thrown error |
 | `config<T>(pluginId)` | `T` | Read a plugin's configuration section from guild.json |
 | `writeConfig<T>(pluginId, value)` | `void` | Write a plugin's configuration section to guild.json (updates in-memory + disk) |
 | `guildConfig()` | `GuildConfig` | Read the full parsed guild.json |

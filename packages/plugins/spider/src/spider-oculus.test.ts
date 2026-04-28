@@ -91,6 +91,10 @@ function makeGuild(opts: {
       if (name === 'stacks') return mockStacks as unknown as T;
       throw new Error(`Apparatus "${name}" not found`);
     },
+
+    tryApparatus<T>(name: string): T | null {
+      try { return this.apparatus<T>(name); } catch { return null; }
+    },
     config<T>(_pluginId: string): T { return {} as T; },
     writeConfig() {},
     guildConfig() { return fakeGuildConfig; },

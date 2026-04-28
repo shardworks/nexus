@@ -1225,6 +1225,10 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
           if (!api) throw new Error(`Apparatus "${name}" not found`);
           return api as T;
         },
+
+        tryApparatus<T>(name: string): T | null {
+          try { return this.apparatus<T>(name); } catch { return null; }
+        },
         config<T>(_pluginId: string): T { return {} as T; },
         writeConfig() {},
         guildConfig() { return fakeGuildConfig; },

@@ -47,13 +47,11 @@ const FRAMEWORK_EMITTER = 'framework';
  * installed (astrolabe declares clockworks in `recommends`, not
  * `requires`). Mirrors the lazy resolution `summon()` and the animator's
  * `tryResolveClockworks` use for `LoomApi` and `ClockworksApi`.
+ * Delegates to the framework's `tryApparatus<T>` primitive — the
+ * optional-dependency counterpart to `apparatus<T>`.
  */
 function tryResolveClockworks(): ClockworksApi | null {
-  try {
-    return guild().apparatus<ClockworksApi>('clockworks');
-  } catch {
-    return null;
-  }
+  return guild().tryApparatus<ClockworksApi>('clockworks');
 }
 
 export function createPlanFinalizeEngine(getPlansBook: () => Book<PlanDoc>): EngineDesign {

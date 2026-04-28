@@ -551,11 +551,11 @@ export function createAnimator(): Plugin {
     summon(request: SummonRequest): AnimateHandle {
       // Resolve The Loom at call time — not a startup dependency.
       // This allows the Animator to start without the Loom installed;
-      // only summon() requires it.
-      let loom: LoomApi;
-      try {
-        loom = guild().apparatus<LoomApi>('loom');
-      } catch {
+      // only summon() requires it. tryApparatus<T> is the framework's
+      // optional-dependency primitive: returns null on absence so the
+      // call site decides whether to throw or no-op.
+      const loom = guild().tryApparatus<LoomApi>('loom');
+      if (!loom) {
         throw new Error(
           'summon() requires The Loom apparatus to be installed. ' +
           'Use animate() directly if you want to provide a pre-composed AnimaWeave.',
