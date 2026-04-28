@@ -628,6 +628,41 @@ export class ScriptoriumCore {
           );
         }
 
+        // Rebase succeeded. If the worktree's HEAD is detached (e.g. an
+        // upstream caller ran `git checkout HEAD~1` mid-flow to inspect
+        // the prior tree), the rebase produced correct commits in the
+        // worktree but the bare clone's refs/heads/<sourceBranch> never
+        // advanced. Without a reattach, the next iteration of this loop
+        // would resolve the stale pre-rebase SHA, the FF check would keep
+        // failing, and the loop would exit with the misleading "Sealing
+        // failed after N retries" message.
+        //
+        // Detect detachment via `git symbolic-ref HEAD` in the worktree:
+        // if it errors, HEAD is detached, and we advance the source-branch
+        // ref in the bare clone to the worktree's HEAD. The worktree's
+        // own HEAD is intentionally left detached — only the bare clone's
+        // branch ref is fixed up so subsequent loop iterations operate
+        // against the rebased commit.
+        let headDetached = false;
+        try {
+          await git(['symbolic-ref', 'HEAD'], draft.path);
+        } catch {
+          headDetached = true;
+        }
+        if (headDetached) {
+          const oldHeadSha = await resolveRef(clonePath, request.sourceBranch);
+          const { stdout: newHeadSha } = await git(['rev-parse', 'HEAD'], draft.path);
+          await git(
+            ['update-ref', `refs/heads/${request.sourceBranch}`, newHeadSha],
+            clonePath,
+          );
+          console.warn(
+            `[scriptorium] Reattached "${request.sourceBranch}": ` +
+            `${oldHeadSha.slice(0, 7)} -> ${newHeadSha.slice(0, 7)} ` +
+            `(worktree HEAD was detached after rebase)`,
+          );
+        }
+
         // Rebase succeeded — re-fetch and retry the ff merge
         retries++;
         await this.performFetch(state.name);
