@@ -55,6 +55,31 @@ export interface BabysitterConfig {
   systemPromptTmpDir?: string;
 }
 
+// ── Source-mode predicate ───────────────────────────────────────────────
+
+/**
+ * Is this URL or filesystem path a TypeScript source path (vs. a compiled `.js`)?
+ *
+ * Three sites in this package branch on "are we running from source or
+ * from compiled output?":
+ *
+ *  1. `resolveBabysitterPath()` picks `babysitter.ts` vs. `babysitter.js`
+ *     to match how `detached.ts` itself was loaded.
+ *  2. `launchDetached()` decides whether to forward the parent's
+ *     `execArgv` (carrying `--experimental-transform-types`) when
+ *     spawning the babysitter — only needed for `.ts` source mode.
+ *  3. The babysitter's own entry-point check uses it to decide which
+ *     basename (`babysitter.ts` vs `babysitter.js`) the argv path is
+ *     expected to share.
+ *
+ * The detection is purely on extension. Accepts a file URL
+ * (`file:///.../foo.ts`) or a filesystem path interchangeably — both
+ * end with `.ts` in source mode and `.js` in compiled mode.
+ */
+export function isSourcePath(urlOrPath: string): boolean {
+  return urlOrPath.endsWith('.ts');
+}
+
 // ── Retry constants ─────────────────────────────────────────────────────
 
 const RETRY_INITIAL_DELAY_MS = 1_000;
@@ -337,14 +362,34 @@ export async function reportRunning(
 }
 
 /**
+ * Status override accepted by `resolveTerminalStatus` and `reportResult`.
+ *
+ *  - `'cancelled'` — SIGTERM path. Short-circuits to status `'cancelled'`.
+ *  - `{ kind: 'orchestrator-error', error }` — an exception escaped the
+ *    orchestrator before it could compute its own terminal status.
+ *    Short-circuits to status `'failed'` carrying the supplied error
+ *    string; the orchestrator funnels through this override instead of
+ *    hand-rolling its own session-record + DLQ cascade. Whatever partial
+ *    transcript / exit metadata the orchestrator already accumulated
+ *    rides through on the `result` argument.
+ */
+export type StatusOverride =
+  | 'cancelled'
+  | { kind: 'orchestrator-error'; error: string };
+
+/**
  * Resolve the terminal status and error text for a terminated session.
  *
  * Cascade order:
  *   1. A `'cancelled'` override (SIGTERM path) — short-circuits.
- *   2. A `terminationTag` already carried on the StreamJsonResult —
+ *   2. An `'orchestrator-error'` override — short-circuits to `'failed'`
+ *      with the supplied error text (no exit-code cascade, no NDJSON
+ *      tag — the orchestrator never reached the point where they could
+ *      be trusted).
+ *   3. A `terminationTag` already carried on the StreamJsonResult —
  *      set by the NDJSON detection cascade inside
  *      `parseStreamJsonMessage` (the only active detector).
- *   3. Generic exit-code mapping (0 → completed, non-zero → failed).
+ *   4. Generic exit-code mapping (0 → completed, non-zero → failed).
  *
  * Generic non-zero exit codes surface as `'failed'`; the Animator's
  * back-off machine only reacts to structured rate-limit terminals, and
@@ -359,10 +404,14 @@ export async function reportRunning(
  */
 export function resolveTerminalStatus(
   result: StreamJsonResult,
-  statusOverride?: 'cancelled',
+  statusOverride?: StatusOverride,
 ): { status: 'completed' | 'failed' | 'cancelled' | 'rate-limited'; error?: string; terminationTag?: SessionTerminationTag } {
   if (statusOverride === 'cancelled') {
     return { status: 'cancelled' };
+  }
+
+  if (typeof statusOverride === 'object' && statusOverride?.kind === 'orchestrator-error') {
+    return { status: 'failed', error: statusOverride.error };
   }
 
   // Second priority: a structural NDJSON tag observed during stream
@@ -406,7 +455,7 @@ export async function reportResult(
   result: StreamJsonResult,
   transcript: Record<string, unknown>[],
   timeoutMs?: number,
-  statusOverride?: 'cancelled',
+  statusOverride?: StatusOverride,
   stderrTail?: string,
 ): Promise<void> {
   const route = toolNameToRoute('session-record');

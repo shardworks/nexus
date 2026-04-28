@@ -26,7 +26,11 @@ import type { StacksApi, ReadOnlyBook, Book } from '@shardworks/stacks-apparatus
 import type { ResolvedTool } from '@shardworks/tools-apparatus';
 import { permissionToMethod } from '@shardworks/tools-apparatus';
 
-import type { BabysitterConfig, SerializedTool } from './babysitter.ts';
+import {
+  isSourcePath,
+  type BabysitterConfig,
+  type SerializedTool,
+} from './runtime.ts';
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -134,15 +138,15 @@ export function resolveLogDir(): string {
  * - In source mode (`src/detached.ts` via --experimental-transform-types) →
  *   returns `src/babysitter.ts`.
  *
- * The detection is by extension of the current module's URL. Without this,
- * source-mode runs (e.g. `nsg start --foreground` in dev) try to spawn a
- * non-existent `babysitter.js` and the babysitter dies with MODULE_NOT_FOUND
- * before it can call session-running.
+ * The detection is by extension of the current module's URL — see
+ * {@link isSourcePath}. Without this, source-mode runs (e.g.
+ * `nsg start --foreground` in dev) try to spawn a non-existent
+ * `babysitter.js` and the babysitter dies with MODULE_NOT_FOUND before
+ * it can call session-running.
  */
 export function resolveBabysitterPath(): string {
   const dir = import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname);
-  const isSource = import.meta.url.endsWith('.ts');
-  return path.join(dir, isSource ? 'babysitter.ts' : 'babysitter.js');
+  return path.join(dir, isSourcePath(import.meta.url) ? 'babysitter.ts' : 'babysitter.js');
 }
 
 // ── BabysitterConfig builder ───────────────────────────────────────────
@@ -387,8 +391,7 @@ export function launchDetached(
     // In source mode (.ts babysitter), forward the parent's execArgv so that
     // --experimental-transform-types (and friends) reach the child. Without
     // this, node would try to load a .ts file as plain CommonJS and crash.
-    const isSource = babysitterPath.endsWith('.ts');
-    const nodeArgs = isSource
+    const nodeArgs = isSourcePath(babysitterPath)
       ? [...process.execArgv, babysitterPath]
       : [babysitterPath];
     const proc = spawnFn(process.execPath, nodeArgs, {
