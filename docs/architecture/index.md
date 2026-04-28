@@ -114,7 +114,7 @@ The versioned files — `guild.json`, `package.json`, and the guild's own conten
 {
   "name": "my-guild",
   "nexus": "0.1.x",
-  "plugins": ["books", "clockworks", "sessions", "..."],
+  "plugins": ["stacks", "clockworks", "sessions", "..."],
   "settings": {
     "model": "claude-opus-4-5"
   },
@@ -178,7 +178,7 @@ A **kit** is a passive package contributing capabilities to the guild. Kits have
 // @shardworks/nexus-git — a kit contributing git-related tools, engines, and relays
 export default {
   kit: {
-    requires:   ["books"],
+    requires:   ["stacks"],
     recommends: ["clockworks", "spider"],
     engines: [createBranchEngine, mergeBranchEngine],
     relays:  [onMergeRelay],
@@ -196,17 +196,17 @@ Type safety for contribution fields is opt-in — each apparatus publishes a kit
 An **apparatus** is a package contributing persistent running infrastructure. It has a `start`/`stop` lifecycle, may declare dependencies on other apparatus, and may expose a runtime API.
 
 ```typescript
-// @shardworks/clockworks — the guild's event-driven nervous system
+// @shardworks/clockworks-apparatus — the guild's event-driven nervous system
 const clockworksApi: ClockworksApi = { ... }
 
 export default {
   apparatus: {
-    requires: ["books"],
+    requires: ["stacks"],
     provides: clockworksApi,
 
     start: (ctx) => {
-      const books = guild().apparatus<BooksApi>("books")
-      clockworksApi.init(books)
+      const stacks = guild().apparatus<StacksApi>("stacks")
+      clockworksApi.init(stacks)
     },
     stop: () => clockworksApi.shutdown(),
 
@@ -230,7 +230,7 @@ Plugin names are never declared in the manifest — they are derived from the np
 2. Retain other scopes as a prefix without `@` (`@acme/foo` → `acme/foo`)
 3. Strip a trailing `-(plugin|apparatus|kit)` suffix
 
-So `@shardworks/clockworks` → `clockworks`, `@shardworks/books-apparatus` → `books`, `@acme/cache-kit` → `acme/cache`. Plugin ids are used in `requires` arrays, `guild().apparatus()` calls, and as the key for plugin-specific configuration in `guild.json`. See [Plugin IDs](plugins.md#plugin-ids) for the full derivation table.
+So `@shardworks/clockworks-apparatus` → `clockworks`, `@shardworks/stacks-apparatus` → `stacks`, `@acme/cache-kit` → `acme/cache`. Plugin ids are used in `requires` arrays, `guild().apparatus()` calls, and as the key for plugin-specific configuration in `guild.json`. See [Plugin IDs](plugins.md#plugin-ids) for the full derivation table.
 
 ### Arbor and Contexts
 
@@ -246,7 +246,7 @@ Plugins are listed in `guild.json` by their plugin id. The framework determines 
 
 ```json
 {
-  "plugins": ["books", "clockworks", "spider", "sessions", "nexus-git"]
+  "plugins": ["stacks", "clockworks", "spider", "sessions", "nexus-git"]
 }
 ```
 
@@ -273,6 +273,7 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 | **[The Stacks](apparatus/stacks.md)** | `stacks` | Persistence substrate — SQLite-backed document store with change-data-capture events |
 | **[The Scriptorium](apparatus/scriptorium.md)** | `codexes` | Codex management — repository registry, bare clones, draft binding lifecycle, sealing and push |
 | **[The Clerk](apparatus/clerk.md)** | `clerk` | Commission intake and writ lifecycle — receives commissions, creates writs, signals when work is ready |
+| **[The Clockworks](apparatus/clockworks.md)** | `clockworks` | Event-driven nervous system — binds events to relays via standing orders; the summon relay dispatches anima sessions. |
 | **[The Ratchet](apparatus/ratchet.md)** | `ratchet` | Decision tracking — manages the click tree of questions and conclusions guiding the guild's reasoning |
 | **[The Fabricator](apparatus/fabricator.md)** | `fabricator` | Engine design registry — answers "what engine chain satisfies this need?" from installed kits |
 | **[The Spider](apparatus/spider.md)** | `spider` | Rig lifecycle — spawns, traverses, extends, and strikes rigs as work progresses |
@@ -282,11 +283,11 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 | **[Claude Code](apparatus/claude-code.md)** | `claude-code` | Session provider — launches Claude Code CLI processes and parses their structured telemetry |
 | **[The Parlour](apparatus/parlour.md)** | `parlour` | Conversation orchestration — drives `nsg consult` and `nsg convene` across multiple turns |
 
-The Clockworks, The Surveyor, and The Executor are described elsewhere in this document as part of the guild's operational fabric, but they are not yet extracted as standalone packages.
+The Surveyor and The Executor are described elsewhere in this document as part of the guild's operational fabric, but they are not yet extracted as standalone packages.
 
 ### Opt-in Apparatus
 
-Some opt-ins form coherent stacks that only make sense when installed together — notably the notifications stack (`lattice` + `reckoner` + `lattice-discord`), which observes guild activity and fans pulses out to external channels.
+Some opt-ins form coherent stacks that only make sense when installed together — notably the notifications stack (`lattice` + `sentinel` + `lattice-discord`), which observes guild activity and fans pulses out to external channels.
 
 | Apparatus | Plugin id | Function |
 |-----------|-----------|----------|
@@ -304,9 +305,9 @@ Today the default apparatus each contribute their own supportKits (tools, engine
 
 ---
 
-## The Books
+## The Stacks
 
-**The Stacks** (plugin id: `books`) is the guild's persistence layer — a document store backed by SQLite at `.nexus/nexus.db`, with change data capture (CDC) as its primary integration mechanism.
+**The Stacks** (plugin id: `stacks`) is the guild's persistence layer — a document store backed by SQLite at `.nexus/nexus.db`, with change data capture (CDC) as its primary integration mechanism.
 
 ### Document Model
 
@@ -541,15 +542,11 @@ A `guild().writeConfig(pluginId, config)` method (or equivalent) would provide:
 
 ### `workshops` → `codexes` migration in nexus-core
 
-The `GuildConfig` interface in `@shardworks/nexus-core` (`guild-config.ts`) still carries a framework-level `workshops` field with an associated `WorkshopEntry` type. This is legacy — codex registration is plugin config owned by The Scriptorium (read via `guild().config<CodexesConfig>('codexes')`), not a framework-level concern.
+The nexus-core cleanup has landed. `GuildConfig` no longer carries a framework-level `workshops` field, the `WorkshopEntry` type is gone, `workshopsPath()` and `workshopBarePath()` have been removed from `nexus-home.ts`, and `createInitialGuildConfig()` no longer seeds `workshops: {}`. Codex registration is now fully owned by The Scriptorium as plugin config (read via `guild().config<CodexesConfig>('codexes')`); nothing in the framework retains workshop/codex awareness.
 
-Cleanup required:
-- Remove `workshops` from `GuildConfig` and `WorkshopEntry` from `guild-config.ts`
-- Remove `workshopsPath()` and `workshopBarePath()` from `nexus-home.ts`
-- Remove corresponding exports from `index.ts`
-- Update `createInitialGuildConfig()` to drop the empty `workshops: {}` default
-- Update test helpers in arbor and CLI that set `workshops: {}`
-- Update `README.md` in core and CLI packages
+Residual drift remains outside the core package and is the work that still needs doing:
+- Plugin test fixtures in arbor and elsewhere still pass `workshops: {}` in their setup helpers and need to drop that key.
+- `docs/reference/core-api.md` and `docs/guides/building-tools.md` still describe the legacy `workshops`-shaped paths and result types and need to be updated to the codex-config vocabulary.
 
-The Scriptorium defines its own config types and path helpers internally. Nothing in the framework needs workshop/codex awareness.
+See [Cross-Package Coupling](cross-package-coupling.md) for the inbound edges that still exercise the legacy types and the audit driving the remaining cleanup.
 
