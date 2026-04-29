@@ -12,9 +12,8 @@ Status: **Draft**
 > the `enforceRegistration` and `disabledSources` config keys, the
 > Reckonings evaluation log, and the trust model. The Reckoner's
 > combination function (how dimensions become scheduling weight),
-> the Reckonings book schema beyond the evaluation-log shape, the
-> patron-emit surface (CLI / MCP), and any non-`vision-keeper`
-> petitioner are explicitly out of scope.
+> the Reckonings book schema beyond the evaluation-log shape, and
+> the patron-emit surface (CLI / MCP) are explicitly out of scope.
 
 > **Design framing.** A petition is not a separate entity from a
 > writ — it is a writ in `new` phase carrying `ext['reckoner']`.
@@ -72,7 +71,7 @@ await clerk.post({
   parentId: 'w-...',
   ext: {
     reckoner: {
-      source:    'vision-keeper.snapshot',
+      source:    'tech-debt.detected',
       priority: {
         visionRelation: 'vision-violator',
         severity:       'serious',
@@ -292,7 +291,7 @@ interface ReckonerExt {
 
   /**
    * Additive non-priority metadata. Multi-instance discrimination
-   * (e.g. `'vision-keeper.io/vision-id': 'nexus'`),
+   * (e.g. `'tech-debt.io/finding-id': 'q3-audit'`),
    * observability hints, diagnostic tags.
    */
   labels?: Record<string, string>;
@@ -522,10 +521,10 @@ export default {
     requires: ['reckoner'],
     petitioners: [
       {
-        source:      'vision-keeper.snapshot',
-        description: 'Periodic vision-vs-reality snapshots ' +
-                     'emitted when the keeper observes drift ' +
-                     'worth surfacing.',
+        source:      'tech-debt.detected',
+        description: 'Worked-example petitioner emitting ' +
+                     'tech-debt findings worth surfacing as ' +
+                     'held writs.',
       },
     ],
   },
@@ -578,9 +577,8 @@ case suffix (lowercase letters, digits, single-hyphen separators;
 no leading or trailing hyphen). Matches Lattice trigger-types and
 Clerk link-kinds. Examples:
 
-- `vision-keeper.snapshot`
-- `patron-bridge.commission`
 - `tech-debt.detected`
+- `patron-bridge.commission`
 
 Malformed source ids hard-fail at startup, never at first emit.
 
@@ -755,9 +753,9 @@ intrinsic attributes).
     "standingOrders": [
       {
         "on": "book.clerk.writs.updated",
-        "run": "vision-keeper-on-decline",
+        "run": "tech-debt-on-decline",
         "with": {
-          "filterExtSource": "vision-keeper.snapshot",
+          "filterExtSource": "tech-debt.detected",
           "filterPhase":     "cancelled"
         }
       }
@@ -773,7 +771,7 @@ know.
 
 (The exact filter shape — `filterExtSource`, etc. — depends on
 Clockworks's filter capabilities, which are out of scope here.
-Flagged in §15.)
+Flagged in §13.g.)
 
 ### Channel 2 — polling
 
@@ -785,7 +783,7 @@ const writs  = stacks.book<WritDoc>('clerk', 'writs');
 const mine   = await writs.list({
   where: [
     ['phase', '=', 'new'],
-    ['ext.reckoner.source', '=', 'vision-keeper.snapshot'],
+    ['ext.reckoner.source', '=', 'tech-debt.detected'],
   ],
 });
 ```
@@ -822,56 +820,7 @@ without breaking v0 callers.
 
 ---
 
-## 11. Built-in example: vision-keeper
-
-The vision-keeper is the canonical worked example. It exercises
-every contract surface in this doc:
-
-- **Declares its source** in its kit:
-  ```typescript
-  petitioners: [{
-    source:      'vision-keeper.snapshot',
-    description: 'Vision-vs-reality snapshots emitted when the ' +
-                 'keeper observes drift worth surfacing.',
-  }]
-  ```
-- **Posts held writs** via `reckoner.petition(...)` (Workflow 2)
-  when it observes drift or proposes elaboration.
-- **Stamps source** on each petition (`source:
-  'vision-keeper.snapshot'`).
-- **Declares dimensions** matching the situation:
-  `{ visionRelation: 'vision-violator', severity: 'serious',
-     scope: 'major-area', time: { decay: true, deadline: null },
-     domain: ['quality'] }`
-  for drift-detected snapshots.
-- **Includes complexity claim** when it has a basis (often
-  `'bounded'` for known-shape drift remediations; omitted for
-  open-ended elaborations).
-- **Attaches payload** in `writ.ext['reckoner'].payload` so the
-  rig that processes the resulting writ has the full snapshot
-  available without joining to overlay books.
-- **Uses labels** to discriminate per-vision instances when
-  multiple visions are tracked:
-  `labels: { 'vision-keeper.io/vision-id': 'nexus' }`.
-- **Withdraws superseded petitions** via `reckoner.withdraw(writId,
-  reason?)` (or `clerk.transition(writId, 'cancelled', ...)`).
-- **Observes outcomes** through a Channel-1 standing order on
-  the writs book filtered to its own source.
-
-There is **no patron special-case** in this contract. The
-patron's emit path (CLI surface, MCP tool, `commission-post`
-interaction) is owned by a separate **patron-bridge** apparatus
-that registers as a normal petitioner under
-`patron-bridge.commission` (or whatever the bridge apparatus
-chooses) and posts writs like any other petitioner. The patron's
-authority emerges from the dimensions its petitions claim —
-typically `severity: 'critical'` and concrete domain values that
-combine into high scheduling weight — not from a privileged
-source name.
-
----
-
-## 12. Existing precedents
+## 11. Existing precedents
 
 This contract composes existing framework primitives rather than
 inventing new ones:
@@ -905,7 +854,7 @@ amalgam).
 
 ---
 
-## 13. Required Clerk-side schema addition
+## 12. Required Clerk-side schema addition
 
 This contract requires one Clerk schema change:
 
@@ -945,7 +894,7 @@ The `ext` slot:
 
 ---
 
-## 14. Open Questions
+## 13. Open Questions
 
 ### a. Reckonings book schema
 
