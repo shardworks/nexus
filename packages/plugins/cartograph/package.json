@@ -24,6 +24,7 @@
     "@shardworks/stacks-apparatus": "workspace:*",
     "@shardworks/clerk-apparatus": "workspace:*",
     "@shardworks/tools-apparatus": "workspace:*",
+    "yaml": "^2.0.0",
     "zod": "4.3.6"
   },
   "devDependencies": {

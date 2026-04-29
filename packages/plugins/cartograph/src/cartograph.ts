@@ -73,6 +73,7 @@ import {
   visionList,
   visionPatch,
   visionTransition,
+  visionApply,
   chargeCreate,
   chargeShow,
   chargeList,
@@ -684,17 +685,19 @@ export function createCartograph(): Plugin {
           pieces: { indexes: ['stage', 'codex', 'createdAt'] },
         },
 
-        // Cartograph contributes 15 patron-facing CLI tools — one per
-        // (type × operation) pair across vision/charge/piece × create/
-        // show/list/patch/transition. The framework `nsg` auto-builder
-        // discovers them via The Instrumentarium and groups them by
-        // hyphen prefix automatically (D2/D3 in the commission spec).
+        // Cartograph contributes 16 patron-facing CLI tools — five per
+        // (vision/charge/piece × create/show/list/patch/transition) plus
+        // the on-disk authoring tool `vision-apply`. The framework
+        // `nsg` auto-builder discovers them via The Instrumentarium and
+        // groups them by hyphen prefix automatically (D2/D3 in the
+        // commission spec).
         tools: [
           visionCreate,
           visionShow,
           visionList,
           visionPatch,
           visionTransition,
+          visionApply,
           chargeCreate,
           chargeShow,
           chargeList,
