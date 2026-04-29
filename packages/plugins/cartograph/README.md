@@ -32,11 +32,12 @@ ships here:
 - A patron-facing CLI surface contributed via `supportKit.tools` —
   three subcommand groups (`nsg vision`, `nsg charge`, `nsg piece`),
   each with five operations (`create`, `show`, `list`, `patch`,
-  `transition`). The framework `nsg` auto-builder discovers the tools
-  at startup and groups them by hyphen prefix; no edits to the framework
-  CLI package are required. Every tool routes through the typed API
-  above, so the parent invariants and lifecycle coupling hold for
-  CLI-driven authoring.
+  `transition`) plus the on-disk authoring tool `nsg vision apply`.
+  The framework `nsg` auto-builder discovers the tools at startup and
+  groups them by hyphen prefix; no edits to the framework CLI package
+  are required. Every tool routes through the typed API above, so the
+  parent invariants and lifecycle coupling hold for CLI-driven
+  authoring.
 
 The Cartograph requires `stacks` and `clerk` and recommends `oculus`. The
 Oculus writs page automatically renders the new types via the
@@ -193,18 +194,121 @@ type — with the same five operations under each:
 | `nsg <type> list [--stage <s>] [--codex <c>] [--limit <n>] [--offset <n>] [--format text\|json]` | Tabular list (STAGE \| ID \| CODEX \| TITLE \| CREATED) ordered by `createdAt desc`. |
 | `nsg <type> patch <id> --codex <c>` | Patch the companion doc's `codex`. Title and body live on the writ row — edit them via `nsg writ edit`. |
 | `nsg <type> transition <id> --phase <writ-phase> --stage <doc-stage> [--resolution <r>]` | Atomically advance both `writ.phase` and the companion doc's `stage` inside one Stacks transaction. Both `--phase` and `--stage` are required because a single phase may map to multiple stages depending on context. |
+| `nsg vision apply <slug> [--severity <s>] [--deadline <d>] [--decay <d>]` | Snapshot the on-disk vision at `<GUILD>/vision/<slug>/` into a vision writ + VisionDoc. Idempotent: first apply creates and binds; later applies sync the file's contents into the bound writ. CLI flags override sidecar values for the surveyor priority-hint payload. |
 
 The CLI tools are read or write according to operation: `show`/`list`
-declare `permission: 'read'`; `create`/`patch`/`transition` declare
-`permission: 'write'`. Every tool declares `callableBy: ['patron']` —
-they are not exposed to anima or library callers in this commission.
-Only `show` and `list` accept the `--format text|json` flag; write
-tools return their result directly and the framework auto-stringifies.
+declare `permission: 'read'`; `create`/`patch`/`transition`/`apply`
+declare `permission: 'write'`. Every tool declares
+`callableBy: ['patron']` — they are not exposed to anima or library
+callers in this commission. Only `show` and `list` accept the
+`--format text|json` flag; write tools return their result directly
+and the framework auto-stringifies.
 
 Short-prefix id resolution (via `clerk.resolveId`) works on every
 id-bearing flag: `nsg vision show w-mo123` and
 `nsg charge create --parent-id w-mo123` both succeed when the prefix
 matches a single writ.
+
+## On-disk vision authoring
+
+Visions are prose-heavy and long-lived; the patron-facing path is to
+author them in a normal editor on disk and snapshot the directory into
+the cartograph with `nsg vision apply <slug>`. The same code path
+handles first-time creation and Nth re-import — the binding is durable
+across applies, so the file tree is the source of truth for vision
+content while the cartograph remains the source of truth for lifecycle
+state and ext metadata.
+
+### File layout
+
+```
+<GUILD>/
+└── vision/
+    └── <slug>/
+        ├── vision.md              # long-form vision text → writ.body
+        └── vision-metadata.yml    # required sidecar
+```
+
+The slug must be a single directory name (lowercase letters, digits,
+hyphens, or underscores; no path separators, no leading dots, no
+`..`). It is fixed at creation time; rename is not supported.
+
+### Sidecar shape
+
+```yaml
+# vision-metadata.yml
+title: Land the agentic decomposition ladder    # required
+stage: draft                                    # required: draft | active
+
+codex: main                                     # optional
+severity: high                                  # optional priority hint
+deadline: 2026-06-30                            # optional priority hint
+decay: slow                                     # optional priority hint
+complexity: medium                              # optional priority hint (sidecar-only)
+resolution: patron retired the vision           # optional, used on terminal transitions
+
+# Managed by `nsg vision apply` — do not edit by hand.
+visionId: w-...                                 # written after first apply
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `title` | yes | Short human-readable title for the vision writ. |
+| `stage` | yes | Lifecycle stage. Allowed initial values are `draft` (writ phase `new`) and `active` (writ phase `open`). `sunset` and `cancelled` are rejected on first apply — a vision cannot be born retired; transition to a terminal stage on a later apply. |
+| `codex` | no | Target codex name for the vision. |
+| `visionId` | no, system-managed | Written by `apply` after first creation. **Do not edit by hand.** Clear the field only to deliberately re-create the vision (the old writ stays in place and becomes orphaned from this directory). |
+| `severity` | no | Priority hint surfaced in `writ.ext['surveyor']`. |
+| `deadline` | no | Priority hint surfaced in `writ.ext['surveyor']`. |
+| `decay` | no | Priority hint surfaced in `writ.ext['surveyor']`. |
+| `complexity` | no | Priority hint surfaced in `writ.ext['surveyor']`. Sidecar-only — there is no CLI flag for this field. |
+| `resolution` | no | Passed through to `transitionVision` on terminal moves. |
+
+Unknown keys are logged as a warning and ignored (preserves
+forward-compatibility while still surfacing typos).
+
+### `visionId` binding
+
+After the first successful `nsg vision apply <slug>`, the tool writes
+the new writ's id back into the sidecar as `visionId`. The yaml is
+round-tripped via `parseDocument`, so comments and key order survive
+the rewrite, and the file is replaced atomically (write-temp,
+rename-over) so a process crash cannot lose the binding.
+
+On every subsequent apply the tool resolves the writ via `visionId`,
+updates `writ.body` from `vision.md`, and syncs stage/codex changes
+through the typed cartograph API. Edits to the writ are **not**
+propagated back to the file — the data flow is one-way (file → writ).
+
+### Stale-binding recovery
+
+If the bound writ has been deleted, cancelled, completed, or failed,
+the next apply errors cleanly with no partial writes. To recover,
+either restore the writ to a non-terminal state, or clear the
+`visionId` field in the sidecar to let the next apply re-create the
+vision (the orphaned writ stays in place; `nsg writ cancel` it
+manually if needed).
+
+### Priority-hint semantics (`ext['surveyor']`)
+
+Each apply writes a payload into `writ.ext['surveyor']` carrying the
+fields enumerated above (`severity`, `deadline`, `decay`,
+`complexity`). CLI flags override sidecar values for the merged
+result:
+
+```sh
+# sidecar severity=low; CLI override wins
+nsg vision apply my-vision --severity high
+```
+
+Fields that neither source provides are omitted from the payload. The
+slot is **always** written — even when the merged payload is `{}` — so
+its presence on the writ marks it as having been processed by the
+apply tool.
+
+The slot's owner — a future surveyor-apparatus plugin that consumes
+these hints — does not yet ship. Until it does, the slot is inert; the
+key (`surveyor`) and the payload shape are load-bearing precedent for
+that future commission.
 
 ## What is *not* in this commission
 
