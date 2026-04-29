@@ -66,7 +66,7 @@ Two additional commands bypass the tool registry: `nsg consult` and `nsg convene
 
 ### The Apparatus
 
-The guild's operational fabric is provided by apparatus — plugins with a start/stop lifecycle that Arbor starts in dependency order. **The Stacks** is the persistence substrate everything else reads from and writes to. **The Scriptorium** manages codexes — bare clones, draft bindings (worktrees), and the seal-and-push lifecycle. **The Clockworks** is the event-driven nervous system: standing orders bind events to relays, and the summon relay dispatches anima sessions in response. **The Surveyor** tracks what work applies to each registered codex. **The Clerk** handles commission intake, converting patron requests into writs and signaling when work is ready to execute. The Fabricator, Spider, Executor, Loom, and Animator then take it from there — covered in the next section.
+The guild's operational fabric is provided by apparatus — plugins with a start/stop lifecycle that Arbor starts in dependency order. **The Stacks** is the persistence substrate everything else reads from and writes to. **The Scriptorium** manages codexes — bare clones, draft bindings (worktrees), and the seal-and-push lifecycle. **The Clockworks** is the event-driven nervous system: standing orders bind events to relays, and the summon relay dispatches anima sessions in response. **The Surveyor** is the cartograph-decomposition substrate: it surveys cartograph nodes (visions, charges, pieces), produces structural decompositions, and routes each node to whichever kit-contributed surveyor claims its node-type — see [Surveying Cascade](surveying-cascade.md) for the contract. **The Clerk** handles commission intake, converting patron requests into writs and signaling when work is ready to execute. The Fabricator, Spider, Executor, Loom, and Animator then take it from there — covered in the next section.
 
 Each of these is a plugin from the default set, not a built-in. The [Standard Guild](#the-standard-guild) section lists them; the sections that follow document each in detail.
 
@@ -283,7 +283,7 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 | **[Claude Code](apparatus/claude-code.md)** | `claude-code` | Session provider — launches Claude Code CLI processes and parses their structured telemetry |
 | **[The Parlour](apparatus/parlour.md)** | `parlour` | Conversation orchestration — drives `nsg consult` and `nsg convene` across multiple turns |
 
-The Surveyor and The Executor are described elsewhere in this document as part of the guild's operational fabric, but they are not yet extracted as standalone packages.
+The Surveyor is anticipated as the planned `surveyor` package — the cartograph-decomposition substrate described in [Surveying Cascade](surveying-cascade.md), landing in a separate commission. The Executor is described elsewhere in this document as part of the guild's operational fabric, but is not yet extracted as a standalone package.
 
 ### Opt-in Apparatus
 

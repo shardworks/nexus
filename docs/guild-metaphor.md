@@ -180,9 +180,11 @@ The rig grows as it runs. The Spider is why.
 
 ### The Surveyor
 
-The apparatus that maintains the guild's knowledge of its codexes. When a codex is registered, the Surveyor inspects it — determining what kinds of work are applicable and how each is fulfilled for that specific codex. When a codex changes, the Surveyor updates its records. The guild's ability to seed rigs from commission text depends on the Surveyor's knowledge: without a current survey, the guild cannot reliably turn a patron's words into a working rig.
+The apparatus that surveys the cartograph — the guild's structural map of visions, charges, and pieces. When a node lands on the cartograph, the Surveyor decomposes it: walking its substance, breaking it into the structural pieces an animator or sage can act on, and recording what was found alongside the node. The Surveyor does not judge what to build; it produces the structural inventory that downstream apparatus and animas reason against.
 
-The Surveyor's records live in the guildhall, not in the codexes themselves — a survey is the guild's understanding of a codex, not part of the codex's own inscriptions.
+The Surveyor is itself a substrate — a kit-contributable surveyor registry. Each kit ships its own surveyor for the cartograph node-types it understands; the substrate routes a node to whichever surveyor claims it and threads the resulting decomposition back into the cartograph. Without a current survey, the guild has structure on the cartograph but no idea what is inside it.
+
+The surveyor's decompositions live alongside the cartograph in the guildhall — the cartograph holds the structure, the surveyor's record holds what was found inside each piece. See [The Surveying Cascade](architecture/surveying-cascade.md) for the substrate's contract.
 
 ### The Guildhall
 
