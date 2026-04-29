@@ -14,6 +14,7 @@ import {
   collectEvents,
   seedDocument,
   spyingBackendFactory,
+  assertBookDeleteEvent,
   assertCreateEvent,
   assertUpdateEvent,
   assertDeleteEvent,
@@ -269,8 +270,15 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
 
       t.stacks.watch(OWNER, bookNameA, async (event) => {
         const booksB = t.stacks.book<BookEntry>(OWNER, bookNameB);
+        // The test never drops bookNameA so `delete-book` is unreachable
+        // here, but the union exhaustiveness still has to be honoured;
+        // fall through with the book name as the source id when the
+        // book-level variant is delivered.
         const sourceId = event.type === 'create' || event.type === 'update'
-          ? event.entry.id : event.id;
+          ? event.entry.id
+          : event.type === 'delete'
+            ? event.id
+            : event.book;
         await booksB.put({ id: 'derived', source: sourceId });
         throw new Error('phase 2 error');
       }, { failOnError: false });
@@ -368,7 +376,9 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       seedDocument(t.backend, REF, { id: 'a', counter: 0 });
 
       t.stacks.watch(OWNER, BOOK, async (event) => {
-        if (event.type !== 'delete') {
+        // Only react to row-level create/update — `delete` and
+        // `delete-book` do not carry an entry payload to bump.
+        if (event.type === 'create' || event.type === 'update') {
           const book = t.stacks.book<BookEntry>(OWNER, BOOK);
           await book.put({ ...event.entry, counter: ((event.entry as any).counter ?? 0) + 1 });
         }
@@ -401,7 +411,9 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
       seedDocument(t.backend, REF, { id: 'a', counter: 0 });
 
       t.stacks.watch(OWNER, BOOK, async (event) => {
-        if (event.type !== 'delete') {
+        // Only react to row-level create/update — `delete` and
+        // `delete-book` do not carry an entry payload to bump.
+        if (event.type === 'create' || event.type === 'update') {
           const book = t.stacks.book<BookEntry>(OWNER, BOOK);
           await book.put({
             ...event.entry,
@@ -592,6 +604,39 @@ export function tier2Cdc(backendFactory: () => StacksBackend): void {
 
       assert.strictEqual(events.length, 1);
       assertDeleteEvent(events[0], { id: 'a', prev: { id: 'a', name: 'Alice' } });
+    });
+
+    // ── Book-level retirement (delete-book) ──────────────────────────
+
+    it('2.book-drop.1 dropBook fires exactly one delete-book event with minimal payload', async () => {
+      // Phase-2 watcher registered on the book under test. The drop
+      // path emits exactly one `delete-book` event whose payload
+      // carries only `{ type, ownerId, book }` — no entry, no prev,
+      // no id, no rowCount, no timestamp (D9).
+      const events = collectEvents(t.stacks, OWNER, BOOK, { failOnError: false });
+
+      await t.stacks.dropBook(OWNER, BOOK);
+
+      assert.strictEqual(events.length, 1, 'exactly one CDC event fires');
+      assertBookDeleteEvent(events[0], { ownerId: OWNER, book: BOOK });
+    });
+
+    it('2.book-drop.2 dropBook on a populated book emits only one book-level event (no per-row deletes)', async () => {
+      // Cardinality decision (D3): per-row delete events on drop would
+      // explode for populated books and conflict with the substrate's
+      // coalescing model. Seed three rows then drop the book — only
+      // the single book-level event should fire, regardless of row
+      // count.
+      seedDocument(t.backend, REF, { id: 'a', name: 'Alice' });
+      seedDocument(t.backend, REF, { id: 'b', name: 'Bob' });
+      seedDocument(t.backend, REF, { id: 'c', name: 'Carol' });
+
+      const events = collectEvents(t.stacks, OWNER, BOOK, { failOnError: false });
+
+      await t.stacks.dropBook(OWNER, BOOK);
+
+      assert.strictEqual(events.length, 1, 'no per-row delete events fire');
+      assertBookDeleteEvent(events[0], { ownerId: OWNER, book: BOOK });
     });
   });
 }

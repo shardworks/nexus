@@ -109,5 +109,40 @@ export function tier1DataIntegrity(backendFactory: () => StacksBackend): void {
       assert.deepStrictEqual(resultA, { id: 'a', name: 'Bob' });
       assert.strictEqual(resultB, null);
     });
+
+    it('1.12 dropBook removes the book\'s documents', async () => {
+      // Populate the book, drop it, then assert the documents are gone
+      // from a backend perspective. Each backend reports the missing
+      // book differently — memory's lazy `getBook` re-creates an empty
+      // store, so reads return null/empty; SQLite drops the table, so
+      // a read against the missing table throws. Either signal proves
+      // the storage is gone.
+      const book = t.stacks.book<BookEntry>(OWNER, BOOK);
+      await book.put({ id: 'a', name: 'Alice' });
+      await book.put({ id: 'b', name: 'Bob' });
+      assert.strictEqual(await book.count(), 2);
+
+      await t.stacks.dropBook(OWNER, BOOK);
+
+      // Re-read via a fresh handle so any internal caching is bypassed.
+      const after = t.stacks.book<BookEntry>(OWNER, BOOK);
+      let observedDrop = false;
+      try {
+        const remaining = await after.count();
+        // Memory backend re-creates the book lazily as an empty Map —
+        // count returns 0 rather than throwing.
+        assert.strictEqual(remaining, 0, 'post-drop book must be empty');
+        observedDrop = true;
+      } catch (err) {
+        // SQLite backend drops the table — subsequent reads throw a
+        // "no such table" error. That signal is also a valid proof
+        // that the storage is gone.
+        const msg = err instanceof Error ? err.message : String(err);
+        assert.match(msg, /no such table|does not exist/i,
+          `expected drop-related error, got: ${msg}`);
+        observedDrop = true;
+      }
+      assert.ok(observedDrop, 'dropBook left the storage in a recognisable state');
+    });
   });
 }

@@ -21,13 +21,14 @@ import type {
   Book,
   BookEntry,
   BookQuery,
+  ChangeEvent,
+  ChangeHandler,
   ListOptions,
   ReadOnlyBook,
   StacksApi,
   TransactionContext,
   WatchOptions,
   WhereClause,
-  ChangeHandler,
 } from './types.ts';
 
 import {
@@ -182,6 +183,10 @@ export class StacksCore {
 
       async transaction<R>(fn: (tx: TransactionContext) => Promise<R>): Promise<R> {
         return self.runTransaction(fn);
+      },
+
+      async dropBook(ownerId: string, name: string): Promise<void> {
+        return self.runDropBook(ownerId, name);
       },
     };
   }
@@ -525,5 +530,58 @@ export class StacksCore {
       throw new Error('[stacks] Write operation outside transaction — this is a bug');
     }
     return this.activeTx;
+  }
+
+  // ── Whole-book retirement (DDL) ───────────────────────────────────
+
+  /**
+   * Drop a book at the substrate level (D1, D6). Top-level only —
+   * refusing to participate in an active transaction enforces a hard
+   * separation between DDL and DML so the substrate doesn't have to
+   * rationalize half-applied schema changes.
+   *
+   * Backend drop is silent on missing books (D2). On success, a single
+   * Phase-2 `delete-book` event is delivered to any watchers registered
+   * for the book — no per-row delete events are fired (D3, D5). The
+   * Phase-2 hop is gated by the same cross-transaction re-entry depth
+   * counter used by `runTransaction` so a `delete-book` handler that
+   * spawns its own transactions is bounded uniformly.
+   *
+   * Watchers for the dropped book are NOT removed from the registry
+   * (D14) — registry immutability post-`phase:started` is preserved;
+   * the dormant watcher is harmless because no further row writes can
+   * fire it.
+   */
+  async runDropBook(ownerId: string, bookName: string): Promise<void> {
+    if (this.activeTx) {
+      throw new Error(
+        `[stacks] dropBook("${ownerId}", "${bookName}") cannot be invoked inside ` +
+          `an active transaction. Whole-book retirement is DDL and is hard-separated ` +
+          `from DML — call dropBook from a top-level context, outside any transaction(...) block.`,
+      );
+    }
+
+    if (this.phase2Depth >= MAX_PHASE2_REENTRY_DEPTH) {
+      throw new Phase2DepthExceededError(MAX_PHASE2_REENTRY_DEPTH);
+    }
+
+    const ref: BookRef = { ownerId, book: bookName };
+    await this.backend.dropBook(ref);
+
+    // Fire the single Phase-2 `delete-book` event. Wrap with depth
+    // tracking so a `delete-book` handler that opens its own
+    // transaction is counted by the same Phase-2 re-entry bound the
+    // row-mutation path uses.
+    const event: ChangeEvent<BookEntry> = {
+      type: 'delete-book',
+      ownerId,
+      book: bookName,
+    };
+    this.phase2Depth++;
+    try {
+      await this.cdc.firePhase2([event]);
+    } finally {
+      this.phase2Depth--;
+    }
   }
 }

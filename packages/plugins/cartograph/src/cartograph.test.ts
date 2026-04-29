@@ -1006,4 +1006,109 @@ describe('Cartograph apparatus', () => {
       );
     });
   });
+
+  // ── Retro-cleanup of retired companion books ────────────────────────
+
+  describe('start-time retro-cleanup', () => {
+    it('drops the three retired companion books on start (visions, charges, pieces)', async () => {
+      // Build a fresh fixture with a memory backend, pre-seed the three
+      // retired companion books with sentinel rows, and then verify
+      // that cartograph.start() retired them. The memory backend's
+      // dropBook() removes the outer-map entry, so a post-drop lookup
+      // returns null even after a fresh handle is obtained.
+      const memBackend = new MemoryBackend();
+      const stacksPlugin = createStacksApparatus(memBackend);
+      const clerkPlugin = createClerk();
+      const cartographPlugin = createCartograph();
+
+      const apparatusMap = new Map<string, unknown>();
+
+      const fakeGuildConfig: GuildConfig = {
+        name: 'cartograph-retro-test',
+        nexus: '0.0.0',
+        plugins: [],
+      };
+
+      const fakeGuild: Guild = {
+        home: '/tmp/cartograph-retro-test',
+        apparatus<T>(name: string): T {
+          const a = apparatusMap.get(name);
+          if (!a) throw new Error(`Apparatus "${name}" not installed`);
+          return a as T;
+        },
+        tryApparatus<T>(name: string): T | null {
+          try { return this.apparatus<T>(name); } catch { return null; }
+        },
+        config<T>(_pluginId: string): T { return {} as T; },
+        writeConfig(): void {},
+        guildConfig(): GuildConfig { return fakeGuildConfig; },
+        kits(): LoadedKit[] { return []; },
+        apparatuses(): LoadedApparatus[] { return []; },
+        failedPlugins() { return []; },
+        startupWarnings(): string[] { return []; },
+      };
+      setGuild(fakeGuild);
+
+      // Start Stacks first so the api is available for seeding.
+      await stacksPlugin.apparatus.start!(buildCtx());
+      const stacks = stacksPlugin.apparatus.provides as StacksApi;
+      apparatusMap.set('stacks', stacks);
+
+      // Pre-create the books the Clerk expects so its start() succeeds.
+      memBackend.ensureBook({ ownerId: 'clerk', book: 'writs' }, {
+        indexes: ['phase', 'type', 'createdAt', 'parentId'],
+      });
+      memBackend.ensureBook({ ownerId: 'clerk', book: 'links' }, {
+        indexes: ['sourceId', 'targetId', 'label'],
+      });
+
+      // Pre-seed the three retired companion books with sentinel rows
+      // — this simulates an existing on-disk database from before the
+      // cartograph kit declarations dropped these tables.
+      memBackend.ensureBook({ ownerId: 'cartograph', book: 'visions' }, {});
+      memBackend.ensureBook({ ownerId: 'cartograph', book: 'charges' }, {});
+      memBackend.ensureBook({ ownerId: 'cartograph', book: 'pieces' }, {});
+      const visionsBook = stacks.book<{ id: string; sentinel: string }>('cartograph', 'visions');
+      const chargesBook = stacks.book<{ id: string; sentinel: string }>('cartograph', 'charges');
+      const piecesBook = stacks.book<{ id: string; sentinel: string }>('cartograph', 'pieces');
+      await visionsBook.put({ id: 'legacy-1', sentinel: 'visions' });
+      await chargesBook.put({ id: 'legacy-2', sentinel: 'charges' });
+      await piecesBook.put({ id: 'legacy-3', sentinel: 'pieces' });
+
+      // Confirm the seeds landed before start() runs.
+      assert.notStrictEqual(await visionsBook.get('legacy-1'), null);
+      assert.notStrictEqual(await chargesBook.get('legacy-2'), null);
+      assert.notStrictEqual(await piecesBook.get('legacy-3'), null);
+
+      // Start Clerk and Cartograph (production wiring order).
+      await clerkPlugin.apparatus.start!(buildCtx());
+      apparatusMap.set('clerk', clerkPlugin.apparatus.provides as ClerkApi);
+
+      await cartographPlugin.apparatus.start!(buildCtx());
+
+      // After cartograph.start() the three retired companion books'
+      // storage is gone — the memory backend's dropBook deletes the
+      // outer-map entry, so a lookup against a fresh handle returns
+      // null (the book is lazily re-created as empty).
+      const visionsAfter = stacks.book<{ id: string; sentinel: string }>('cartograph', 'visions');
+      const chargesAfter = stacks.book<{ id: string; sentinel: string }>('cartograph', 'charges');
+      const piecesAfter = stacks.book<{ id: string; sentinel: string }>('cartograph', 'pieces');
+      assert.strictEqual(await visionsAfter.get('legacy-1'), null,
+        'cartograph/visions was retired');
+      assert.strictEqual(await chargesAfter.get('legacy-2'), null,
+        'cartograph/charges was retired');
+      assert.strictEqual(await piecesAfter.get('legacy-3'), null,
+        'cartograph/pieces was retired');
+    });
+
+    it('retro-cleanup against a clean database is a silent no-op', async () => {
+      // On a fresh boot (the buildFixture default), the three retired
+      // books are not present in the backend. cartograph.start()
+      // still issues the three dropBook calls, and the substrate must
+      // treat them as silent no-ops — the test passes if buildFixture
+      // does not throw.
+      const f = await buildFixture();
+      assert.ok(f.cartograph, 'cartograph.start() succeeds against a clean database');
+    });
+  });
 });

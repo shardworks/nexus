@@ -33,7 +33,7 @@ Documents are stored and retrieved as plain JSON objects. Nested objects are ful
 
 ## 2. Book Declaration (Kit Contribution)
 
-Kits declare the books they own via a `books` contribution field. The Stacks reads this at startup and creates or reconciles the necessary indexes. Schema changes are **additive only** — new books and new indexes are always safe; nothing is ever dropped automatically.
+Kits declare the books they own via a `books` contribution field. The Stacks reads this at startup and creates or reconciles the necessary indexes. Startup-time schema reconciliation is **additive only** — new books and new indexes are always safe; kit contributions cannot remove a book, and nothing is ever dropped implicitly from kit declarations alone. Whole-book retirement is a separate, explicit imperative path: `StacksApi.dropBook(ownerId, bookName)` is the sanctioned way to retire a book at runtime, and it is never invoked implicitly from kit declarations. See §3 for the imperative API and §6 for the matching `delete-book` CDC variant.
 
 ```typescript
 // In a kit export
@@ -133,6 +133,31 @@ interface StacksApi {
    * and interaction with CDC handlers.
    */
   transaction<R>(fn: (tx: TransactionContext) => Promise<R>): Promise<R>
+
+  /**
+   * Imperatively retire a book — drops its underlying storage and fires
+   * a single Phase 2 (post-commit) `delete-book` CDC event so subscribers
+   * that care about whole-book retirement can react.
+   *
+   * - **Idempotent:** silent no-op when the book does not exist (mirrors
+   *   `Book.delete(id)` and SQLite's `DROP TABLE IF EXISTS` semantics).
+   * - **Single book-level event:** no per-row delete events fire when
+   *   dropping a populated book — only the single `delete-book` event.
+   * - **DDL is hard-separated from DML:** calling `dropBook` from inside
+   *   an active `transaction(...)` throws. Whole-book retirement is
+   *   intentionally NOT exposed on `TransactionContext`.
+   * - **Watchers persist in the registry:** registered Phase-1 / Phase-2
+   *   watchers for the dropped book are NOT auto-unregistered (registry
+   *   immutability post-`phase:started`). They lie dormant; no further
+   *   row writes can fire them.
+   *
+   * Startup-time schema reconciliation (§2) is not the path to drop a
+   * book. Kit contributions are additive only — removing a book
+   * declaration does not retire its storage. Operators retire a book by
+   * calling `dropBook` from a plugin's `start()` (typical pattern: a
+   * single retro-cleanup hook before declaring the live shape).
+   */
+  dropBook(ownerId: string, bookName: string): Promise<void>
 }
 
 /**
@@ -295,6 +320,7 @@ type ChangeEvent<T extends BookEntry> =
   | CreateEvent<T>
   | UpdateEvent<T>
   | DeleteEvent<T>
+  | BookDeleteEvent
 
 interface CreateEvent<T> {
   type:    'create'
@@ -318,9 +344,30 @@ interface DeleteEvent<T> {
   id:      string    // the deleted document's id
   prev:    T         // the document before deletion (always provided)
 }
+
+/**
+ * Book-level retirement event — fires once per StacksApi.dropBook(...)
+ * call, even when the dropped book held many rows. The substrate emits
+ * a single book-level event rather than per-row deletes (consistent
+ * with the substrate's coalescing model). Delivered in Phase 2 only
+ * (post-commit notification); a book-drop is irreversible from a
+ * caller's perspective, so a Phase 1 handler that throws would create
+ * a confusing "drop sometimes" contract.
+ *
+ * Payload is intentionally minimal: only the identifiers of the
+ * retired book. No `entry`, no `prev`, no `id`, no `rowCount`, no
+ * `droppedAt`. Add fields only when a real consumer earns them.
+ */
+interface BookDeleteEvent {
+  type:    'delete-book'
+  ownerId: string
+  book:    string
+}
 ```
 
 **`prev` policy:** `prev` is always populated for `update` and `delete` events. This requires one pre-read per write when handlers are registered, but cascade use cases (e.g. "propagate cancellation to child writs") depend on `prev` being available without making handlers awkward. The pre-read cost is acceptable given CDC is infrastructure-level behavior.
+
+**`delete-book` cardinality:** Per-row delete events on drop would explode for populated books and conflict with the substrate's coalescing model. A whole-book retirement therefore emits exactly one `BookDeleteEvent` regardless of row count. Watchers registered for a dropped book remain in the registry and observe this single event; the registry is sealed at `phase:started`, so dropping a book never auto-unregisters the watcher (the dormant watcher is harmless because no further row writes can fire it).
 
 **When no handlers are registered:** The pre-read is skipped. The Stacks tracks registration per `(ownerId, bookName)` — zero handlers = no overhead.
 
@@ -674,6 +721,17 @@ Explicit enumeration of all conceivable use cases. The "status" column is the de
 | Read from another plugin's books | ✅ `stacks.readBook(otherId, 'name')` | Read-only by type |
 | Write to another plugin's books | ❌ Out of scope | Use the owning plugin's tools |
 
+### Schema lifecycle
+
+| Use case | Status | Notes |
+|----------|--------|-------|
+| Declare a new book | ✅ kit `books` contribution | Startup-time schema reconciliation; additive only |
+| Add an index to an existing book | ✅ kit `books` contribution | Additive only — kit declarations never remove an index |
+| Retire (drop) a whole book at runtime | ✅ `stacks.dropBook(ownerId, bookName)` | Imperative DDL — silent no-op when missing; fires one Phase 2 `delete-book` CDC event; refuses to run inside an active `transaction(...)`. Watchers stay registered but lie dormant. |
+| Drop a book implicitly via kit declaration removal | ❌ Out of scope (load-bearing invariant) | Removing a book from a kit does not retire its storage — the substrate is additive only at startup. Use `dropBook` from a plugin's `start()` to retire dead storage. |
+| Drop an individual index without dropping the book | ❌ Out of scope v1 | Indexes cascade with the table on `dropBook`; surgical index removal would be a separate primitive. |
+| Drop a book inside an active transaction | ❌ Permanently out of scope | DDL is hard-separated from DML; calling `dropBook` from inside `transaction(...)` throws. |
+
 ---
 
 ## 8. Backend Interface
@@ -700,9 +758,22 @@ interface StacksBackend {
   // ── Schema ─────────────────────────────────────────────────────────────
   /**
    * Ensure a book's backing store exists with the given indexes.
-   * Additive only — never drops tables or indexes.
+   * Additive at startup — `ensureBook` itself never drops tables or
+   * indexes; `dropBook` is the explicit imperative retirement path.
    */
   ensureBook(ref: BookRef, schema: BookSchema): Promise<void>
+
+  /**
+   * Retire the storage for a book — drops the table and lets the
+   * engine cascade attached indexes. Idempotent: silent no-op when the
+   * book does not exist (matching SQLite's `DROP TABLE IF EXISTS`).
+   *
+   * Backend implementations may rely on the engine to cascade index
+   * storage from the table-level drop; explicit `DROP INDEX` loops are
+   * unearned structure. The apparatus calls this exclusively from
+   * `StacksApi.dropBook` — never from kit declaration handling.
+   */
+  dropBook(ref: BookRef): Promise<void>
 
   // ── Transactions ───────────────────────────────────────────────────────
   /**

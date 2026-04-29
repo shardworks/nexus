@@ -183,6 +183,22 @@ description of the plugin-keyed metadata slot. List queries filter by
 the dot-notation field `ext.cartograph.stage`; row counts are small in
 practice so the unindexed `json_extract` scan is acceptable.
 
+#### Retro-cleanup of retired companion books
+
+An earlier commission contributed three companion books
+(`cartograph/visions`, `cartograph/charges`, `cartograph/pieces`) that
+have since been retired in favour of the `writ.ext['cartograph']`
+slot. Because Stacks' startup-time schema reconciliation is additive
+only, the underlying SQLite tables would otherwise persist on every
+existing on-disk database as dead-but-not-dropped storage. The
+cartograph's `start()` therefore issues three sequential
+`stacks.dropBook` calls — one each for `visions`, `charges`, and
+`pieces` — before any `clerk.registerWritType` calls. The drops are
+idempotent (silent no-op when the storage is already gone), so
+subsequent boots are no-ops. Historical row data is not migrated:
+the originating brief tolerates loss; this hook only retires the
+storage.
+
 ### Writ Types (contributed to Clerk)
 
 | Name | Description |

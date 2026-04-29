@@ -130,10 +130,30 @@ export interface DeleteEvent<T extends BookEntry> {
   prev: T;
 }
 
+/**
+ * Book-level retirement event — fires once when a book is dropped via
+ * `StacksApi.dropBook(ownerId, bookName)`. The payload is intentionally
+ * minimal: only the identifiers of the retired book. Subscribers that
+ * registered via `watch(ownerId, bookName, ...)` receive this event in
+ * Phase 2 (post-commit notification) alongside row-level events.
+ *
+ * No per-row delete events are emitted when dropping a populated book;
+ * the single book-level event is the substrate's coalesced signal that
+ * the storage is gone. Consumers that need to react to whole-book
+ * retirement (e.g. cleaning up derived state) should switch on
+ * `type: 'delete-book'`.
+ */
+export interface BookDeleteEvent {
+  type: 'delete-book';
+  ownerId: string;
+  book: string;
+}
+
 export type ChangeEvent<T extends BookEntry> =
   | CreateEvent<T>
   | UpdateEvent<T>
-  | DeleteEvent<T>;
+  | DeleteEvent<T>
+  | BookDeleteEvent;
 
 export type ChangeHandler<T extends BookEntry = BookEntry> = (
   event: ChangeEvent<T>,
@@ -173,4 +193,22 @@ export interface StacksApi {
   ): void;
 
   transaction<R>(fn: (tx: TransactionContext) => Promise<R>): Promise<R>;
+
+  /**
+   * Imperatively retire a book — drops its underlying storage and fires
+   * a single Phase 2 (post-commit) `delete-book` CDC event so subscribers
+   * that care about whole-book retirement can react.
+   *
+   * - Silent no-op when the book does not exist (mirrors `Book.delete`
+   *   and SQLite's `DROP TABLE IF EXISTS` semantics).
+   * - No per-row delete events are emitted when dropping a populated
+   *   book; only the single book-level event fires.
+   * - DDL is hard-separated from DML — calling `dropBook` from inside an
+   *   active `transaction(...)` throws. Whole-book retirement is not
+   *   exposed on `TransactionContext`.
+   * - CDC watchers registered for the dropped book remain in the
+   *   registry (they cannot be unregistered post-`phase:started`); they
+   *   simply lie dormant since no further row writes can fire them.
+   */
+  dropBook(ownerId: string, bookName: string): Promise<void>;
 }

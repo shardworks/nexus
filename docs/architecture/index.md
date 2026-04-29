@@ -327,11 +327,11 @@ export default {
 } satisfies Plugin
 ```
 
-The Stacks reads these declarations at startup and creates or reconciles the backing tables. Schema changes are additive only — new books and indexes are safe; nothing is dropped automatically.
+The Stacks reads these declarations at startup and creates or reconciles the backing tables. Startup-time schema reconciliation is additive only — new books and indexes are safe; kit contributions cannot remove a book, and nothing is dropped implicitly from kit declarations alone. Whole-book retirement is a separate, explicit imperative path: `StacksApi.dropBook(ownerId, bookName)` is the sanctioned way to retire a book at runtime, and it is never invoked implicitly from kit declarations.
 
 ### API Surface
 
-Plugins access persistence through `guild().apparatus<StacksApi>('stacks')`, which exposes four methods:
+Plugins access persistence through `guild().apparatus<StacksApi>('stacks')`, which exposes five methods:
 
 - **`book<T>(ownerId, name)`** — returns a writable handle for the named book. Supports `put()` (upsert), `patch()` (top-level field merge), `delete()`, and the full read API (`get`, `find`, `list`, `count`). Queries support equality, range, pattern matching (`LIKE`), set membership (`IN`), null checks, multi-field sorting, and offset/limit pagination.
 
@@ -340,6 +340,8 @@ Plugins access persistence through `guild().apparatus<StacksApi>('stacks')`, whi
 - **`watch(ownerId, bookName, handler, options?)`** — registers a CDC handler that fires on every write to the named book. CDC events carry the document's previous state (`prev`) for updates and deletes, enabling diff-based logic.
 
 - **`transaction(fn)`** — executes a function within an atomic transaction. All writes inside `fn` commit or roll back together. Reads inside the transaction see uncommitted writes (read-your-writes).
+
+- **`dropBook(ownerId, bookName)`** — imperatively retires a book at runtime. Drops the underlying storage, fires a single Phase 2 `delete-book` CDC event, and is idempotent (silent no-op when the book is missing). Refuses to run inside an active `transaction(...)` — DDL is hard-separated from DML. Never invoked implicitly from kit declarations.
 
 ### Change Data Capture
 

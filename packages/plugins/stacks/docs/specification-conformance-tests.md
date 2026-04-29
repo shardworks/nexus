@@ -119,6 +119,20 @@ The `id` field in the patch payload must be silently ignored. The document's ide
 
 The spec's type signature (`Partial<Omit<T, 'id'>>`) prevents this at compile time, but runtime callers (JavaScript, `as any`) can bypass the type. Backends must enforce id immutability regardless of the caller's type safety.
 
+### 1.12 `dropBook` removes the book's documents
+
+```
+put({ id: 'a', name: 'Alice' })
+put({ id: 'b', name: 'Bob' })
+count() → 2
+dropBook(owner, book)
+// Re-read via a fresh handle; the book's storage is gone.
+// Memory backend: lazy re-create as empty Map → count() → 0
+// SQLite backend: table is dropped → reads throw "no such table"
+```
+
+Either signal proves the storage is gone. Both backends are valid; the API contract is "the documents are no longer reachable through this `(ownerId, bookName)` pair."
+
 ---
 
 ## Tier 2 — CDC Behavioral Correctness
@@ -649,6 +663,35 @@ All 8 rows of the spec's coalescing table are now covered:
 | update → update | `update` (prev=pre-tx, entry=final) | 2.20 |
 | update → delete | `delete` (prev=pre-tx) | 2.21 |
 | delete | `delete` (prev=pre-tx) | 2.22 |
+
+### 2.book-drop.1 `dropBook` fires exactly one `delete-book` event with the minimal payload
+
+```
+watch('owner', 'book', handler, { failOnError: false })
+dropBook('owner', 'book')
+events.length → 1
+events[0] → { type: 'delete-book', ownerId: 'owner', book: 'book' }
+// Payload carries only the four declared keys — no entry, no prev,
+// no id, no rowCount, no timestamp.
+```
+
+The shape is intentionally minimal (per the spec's D9). Add fields only when a real consumer earns them.
+
+### 2.book-drop.2 `dropBook` on a populated book emits exactly one book-level event (no per-row deletes)
+
+```
+seedDocument({ id: 'a' })
+seedDocument({ id: 'b' })
+seedDocument({ id: 'c' })
+watch('owner', 'book', handler, { failOnError: false })
+
+dropBook('owner', 'book')
+
+events.length → 1
+events[0].type → 'delete-book'
+```
+
+Per-row delete events on drop would explode for populated books and conflict with the substrate's coalescing model (per the spec's D3). Verifies the book-level event is emitted regardless of row count.
 
 ---
 
@@ -1311,6 +1354,55 @@ result1.map(d => d.id) → same as result2.map(d => d.id)
 When no `orderBy` is specified, the result order is backend-defined but must be **stable** — the same query against the same data must return results in the same order. This does not mean the order is *predictable* (insertion order is not guaranteed), only that it is *deterministic*.
 
 Plugin code should not depend on unordered result ordering, but tests that assert on result sets should not be flaky due to nondeterministic ordering.
+
+### 4.12 `dropBook` on a missing book is a silent no-op
+
+```
+dropBook(owner, 'nonexistent-book')   // does not throw
+dropBook(owner, 'nonexistent-book')   // still does not throw — idempotent
+```
+
+Mirrors the silent-on-no-op posture of `Book.delete(id)` and SQLite's `DROP TABLE IF EXISTS` semantics. The absent state is the desired post-state.
+
+### 4.13 `ensureBook` after `dropBook` re-creates a fresh empty book
+
+```
+put({ id: 'a', name: 'Alice' })
+dropBook(owner, book)
+ensureBook(ref, {})                    // re-declare the book
+list() → []                            // book is empty
+put({ id: 'b', name: 'Bob' })
+get('b') → { id: 'b', name: 'Bob' }
+```
+
+After retirement, the book name remains a usable identifier — operators may re-declare it via a kit contribution at the next boot, or via direct `ensureBook` in tests. The re-created book must be empty and accept new writes.
+
+### 4.14 `dropBook` inside an active `transaction(...)` throws
+
+```
+put({ id: 'a' })
+
+await transaction(async () => {
+  await stacks.dropBook(owner, book)   // throws
+})
+
+get('a') → { id: 'a' }                 // trigger row still present
+```
+
+DDL is hard-separated from DML — `dropBook` is intentionally not on `TransactionContext`, and calling it from inside an active outer transaction throws. The error message must mention the violation (e.g. "cannot be invoked inside" / "transaction") so operators can identify the misuse from logs alone.
+
+### 4.15 `dropBook` succeeds when watchers are registered for the book
+
+```
+events = []
+watch(owner, book, e => events.push(e.type), { failOnError: false })
+put({ id: 'a' })
+dropBook(owner, book)                  // does not throw
+
+events → ['create', 'delete-book']
+```
+
+CDC watchers cannot be unregistered post-`phase:started` (registry immutability). Dropping a book must succeed regardless — the dormant watcher is harmless because no further row writes can fire it. The watcher itself observes the book-level retirement event.
 
 ---
 

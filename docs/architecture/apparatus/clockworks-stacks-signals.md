@@ -75,11 +75,22 @@ For every observed mutation:
 
 | Field | Value |
 |---|---|
-| `name`    | `book.<ownerId>.<bookName>.<created\|updated\|deleted>` |
+| `name`    | `book.<ownerId>.<bookName>.<created\|updated\|deleted\|book-dropped>` |
 | `emitter` | the literal string `'framework'` |
 | `payload` | the Stacks `ChangeEvent` object verbatim |
 
 `<owner>` and `<book>` are sourced from the delivered `ChangeEvent` (`event.ownerId`, `event.book`). At runtime they are equivalent to the captured registration values, but composing from the delivered event is more robust to future Stacks changes and matches the architecture-doc reference sketch.
+
+The verb mapping is exhaustive across the four `ChangeEvent` variants:
+
+| CDC variant | Past-tense verb |
+|---|---|
+| `create` | `created` |
+| `update` | `updated` |
+| `delete` | `deleted` |
+| `delete-book` | `book-dropped` |
+
+`book-dropped` (rather than bare `dropped`) disambiguates the book-level retirement verb from the row-level `deleted` verb in log lines. The `book-dropped` event fires once per `StacksApi.dropBook(...)` call, regardless of how many rows the dropped book held — the substrate emits a single book-level CDC event rather than per-row deletes, and the bridge translates it 1:1.
 
 ---
 
@@ -90,6 +101,8 @@ The `clockworks/events` book is the only book excluded from auto-wiring. The car
 The Stacks substrate now enforces a Phase-2 cross-transaction re-entry depth bound (`MAX_PHASE2_REENTRY_DEPTH` in `stacks-core.ts`) that would terminate any runaway loop, so the carve-out is no longer the load-bearing safety net it once was — the substrate is. Future maintainers: do not remove the carve-out on the assumption that the substrate now covers it. The two serve different purposes — the substrate caps depth as a CPU-pin guard; the carve-out keeps the events book free of self-feedback in the first place.
 
 The carve-out predicate is a pair of literal-string comparisons — `entry.pluginId === 'clockworks' && bookName === 'events'`. Importing a constant from `@shardworks/clockworks-apparatus` would entangle the plugins for no behavioural gain.
+
+The carve-out applies uniformly to every verb, including `book-dropped` — the events book never self-emits regardless of operation, so the declared and emitted sets stay in sync across the row-level and book-level verbs.
 
 The events-kit function form mirrors the same carve-out so the declared set equals the emitted set — the bridge does not declare names it does not emit.
 

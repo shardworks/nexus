@@ -789,10 +789,37 @@ export function createCartograph(): Plugin {
 
       provides: api,
 
-      start(_ctx: StartupContext): void {
+      async start(_ctx: StartupContext): Promise<void> {
         const g = guild();
         stacks = g.apparatus<StacksApi>('stacks');
         clerk = g.apparatus<ClerkApi>('clerk');
+
+        // ── Retro-cleanup of retired companion books ───────────────
+        //
+        // Three previously-contributed books (`visions`, `charges`,
+        // `pieces`) were removed from the cartograph kit declarations
+        // when the substrate moved to `writ.ext['cartograph']` as the
+        // single source of truth. On every existing on-disk database
+        // those tables persisted as dead-but-not-dropped storage
+        // because the substrate's startup-time schema reconciliation
+        // is additive only.
+        //
+        // `StacksApi.dropBook` is the sanctioned imperative retirement
+        // path. Issue the three calls sequentially, in lockstep
+        // ordering, before any `clerk.registerWritType` so the dead
+        // storage is gone before the live declarations land. The calls
+        // are idempotent — `DROP TABLE IF EXISTS` semantics on SQLite
+        // and a Map-delete on the in-memory backend — so subsequent
+        // boots are silent no-ops.
+        //
+        // Sequential rather than parallel because:
+        //   - the calls are cheap, so concurrency offers no measurable
+        //     benefit;
+        //   - sequential ordering produces deterministic CDC event
+        //     ordering for any subscriber observing the bridge.
+        await stacks.dropBook(CARTOGRAPH_PLUGIN_ID, 'visions');
+        await stacks.dropBook(CARTOGRAPH_PLUGIN_ID, 'charges');
+        await stacks.dropBook(CARTOGRAPH_PLUGIN_ID, 'pieces');
 
         // Register the three writ types. Cartograph's `requires: ['stacks',
         // 'clerk']` declaration ensures Clerk has already started; the

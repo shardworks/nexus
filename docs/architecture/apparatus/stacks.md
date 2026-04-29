@@ -27,7 +27,7 @@ The Stacks has no apparatus dependencies — it is the foundation layer that eve
 
 ## Kit Interface
 
-When The Stacks is installed, kits gain the ability to declare a `books` field — a record of named book declarations with index schemas. The Stacks reads these at startup and creates or reconciles the backing tables. Schema changes are additive only — new books and new indexes are always safe; nothing is ever dropped automatically.
+When The Stacks is installed, kits gain the ability to declare a `books` field — a record of named book declarations with index schemas. The Stacks reads these at startup and creates or reconciles the backing tables. Startup-time schema reconciliation is additive only — new books and new indexes are always safe; kit contributions cannot remove a book, and nothing is ever dropped implicitly from kit declarations alone. Whole-book retirement is a separate, explicit imperative path: `StacksApi.dropBook(ownerId, bookName)` is the sanctioned way to retire a book at runtime, and it is never invoked implicitly from kit declarations.
 
 ```typescript
 // Example: a kit declaring two books
@@ -100,6 +100,22 @@ interface StacksApi {
    * and fired (coalesced per-document) after commit.
    */
   transaction<R>(fn: (tx: TransactionContext) => Promise<R>): Promise<R>
+
+  /**
+   * Imperatively retire a book — drops its underlying storage and
+   * fires a single Phase 2 (post-commit) `delete-book` CDC event.
+   *
+   * - Idempotent: silent no-op when the book does not exist.
+   * - Single book-level event: never fires per-row deletes.
+   * - Refuses to run inside an active `transaction(...)` (DDL is
+   *   hard-separated from DML).
+   * - CDC watchers stay registered; they lie dormant since no further
+   *   row writes can fire them.
+   *
+   * Kit contributions never invoke `dropBook` implicitly. Operators
+   * retire a book by calling it from a plugin's `start()`.
+   */
+  dropBook(ownerId: string, bookName: string): Promise<void>
 }
 
 interface TransactionContext {
@@ -208,6 +224,7 @@ type ChangeEvent<T extends BookEntry> =
   | CreateEvent<T>
   | UpdateEvent<T>
   | DeleteEvent<T>
+  | BookDeleteEvent
 
 interface CreateEvent<T> {
   type: 'create'; ownerId: string; book: string; entry: T
@@ -218,9 +235,14 @@ interface UpdateEvent<T> {
 interface DeleteEvent<T> {
   type: 'delete'; ownerId: string; book: string; id: string; prev: T
 }
+interface BookDeleteEvent {
+  type: 'delete-book'; ownerId: string; book: string
+}
 ```
 
 `prev` is always populated for `update` and `delete` events. The pre-read cost is only paid when handlers are registered for the book.
+
+The `delete-book` variant fires once per `dropBook(...)` call regardless of how many rows the dropped book held. Per-row delete events on drop would explode for populated books and conflict with the substrate's coalescing model. Payload is intentionally minimal — only `{ type, ownerId, book }`. Delivery is Phase 2 only (post-commit notification): a book-drop is irreversible from the caller's perspective, so a Phase 1 handler that throws would create a confusing "drop sometimes" contract. Watchers registered for a dropped book observe this single event; the registry is sealed at `phase:started`, so dropping a book never auto-unregisters the watcher (the dormant watcher is harmless because no further row writes can fire it).
 
 ### Two-phase execution
 

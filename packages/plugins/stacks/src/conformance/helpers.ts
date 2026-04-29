@@ -10,6 +10,7 @@ import type { StacksBackend, BookRef } from '../backend.ts';
 import type {
   BookEntry,
   StacksApi,
+  BookDeleteEvent,
   ChangeEvent,
   ChangeHandler,
   CreateEvent,
@@ -147,6 +148,24 @@ export function assertDeleteEvent(
   assert.deepStrictEqual(event.prev, expected.prev);
   if (expected.ownerId !== undefined) assert.strictEqual(event.ownerId, expected.ownerId);
   if (expected.book !== undefined) assert.strictEqual(event.book, expected.book);
+}
+
+/** Assert the event is a `delete-book` and check its fields. */
+export function assertBookDeleteEvent(
+  event: ChangeEvent<BookEntry>,
+  expected: { ownerId: string; book: string },
+): asserts event is BookDeleteEvent {
+  assert.strictEqual(event.type, 'delete-book');
+  assert.strictEqual(event.ownerId, expected.ownerId);
+  assert.strictEqual(event.book, expected.book);
+  // Payload is intentionally minimal — no entry/prev/id/timestamp fields.
+  // Lock the shape: only the four declared keys are present.
+  const actualKeys = Object.keys(event).sort();
+  assert.deepStrictEqual(
+    actualKeys,
+    ['book', 'ownerId', 'type'].sort(),
+    `BookDeleteEvent payload must carry only { type, ownerId, book }, got ${JSON.stringify(actualKeys)}`,
+  );
 }
 
 // ── Default book ref ─────────────────────────────────────────────────

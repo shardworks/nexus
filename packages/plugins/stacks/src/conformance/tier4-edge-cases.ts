@@ -259,5 +259,84 @@ export function tier4EdgeCases(backendFactory: () => StacksBackend): void {
         result2.map(d => d.id),
       );
     });
+
+    // ── dropBook edge cases ──────────────────────────────────────────
+
+    it('4.12 dropBook on a missing book is a silent no-op', async () => {
+      // D2: missing-book drop matches Book.delete(id) and SQLite's
+      // DROP TABLE IF EXISTS — the absent state is the desired
+      // post-state, so the call must succeed without throwing.
+      await t.stacks.dropBook(OWNER, 'nonexistent-book');
+      // Calling a second time still succeeds — idempotent.
+      await t.stacks.dropBook(OWNER, 'nonexistent-book');
+    });
+
+    it('4.13 ensureBook after dropBook re-creates a fresh empty book', async () => {
+      // After the explicit retirement primitive runs, the book name
+      // remains a usable identifier — operators may re-declare it via
+      // a kit contribution at the next boot, or via direct ensureBook
+      // in tests. The re-created book must be empty.
+      const book = t.stacks.book<BookEntry>(OWNER, BOOK);
+      await book.put({ id: 'a', name: 'Alice' });
+
+      await t.stacks.dropBook(OWNER, BOOK);
+
+      // Re-create the book.
+      t.backend.ensureBook(REF, {});
+      const after = t.stacks.book<BookEntry>(OWNER, BOOK);
+      const remaining = await after.list();
+      assert.deepStrictEqual(remaining, [], 'fresh empty book after re-ensure');
+
+      // Subsequent writes succeed on the re-created book.
+      await after.put({ id: 'b', name: 'Bob' });
+      const result = await after.get('b');
+      assert.deepStrictEqual(result, { id: 'b', name: 'Bob' });
+    });
+
+    it('4.14 dropBook inside an active transaction throws', async () => {
+      // D6: hard separation between DDL and DML. dropBook is not on
+      // TransactionContext and refuses to run while an outer
+      // transaction is open.
+      const book = t.stacks.book<BookEntry>(OWNER, BOOK);
+      await book.put({ id: 'a', name: 'Alice' });
+
+      await assert.rejects(
+        () =>
+          t.stacks.transaction(async () => {
+            await t.stacks.dropBook(OWNER, BOOK);
+          }),
+        /dropBook.*transaction|cannot be invoked inside/i,
+      );
+
+      // Trigger row still present — the transaction was rejected before
+      // any storage was touched.
+      const result = await book.get('a');
+      assert.deepStrictEqual(result, { id: 'a', name: 'Alice' });
+    });
+
+    it('4.15 dropBook succeeds when watchers are registered for the book', async () => {
+      // D14: registry immutability post-`phase:started` means
+      // dropBook cannot unregister watchers. The drop must succeed
+      // anyway; the watcher remains dormant since no further row
+      // writes can fire it. This test asserts the drop succeeds and
+      // that the watcher (still in the registry) does see the
+      // book-level retirement event.
+      const events: ChangeEventType[] = [];
+      t.stacks.watch<BookEntry>(OWNER, BOOK, (event) => {
+        events.push(event.type);
+      }, { failOnError: false });
+
+      const book = t.stacks.book<BookEntry>(OWNER, BOOK);
+      await book.put({ id: 'a', name: 'Alice' });
+
+      // Drop must succeed — registered watchers are not a blocker.
+      await t.stacks.dropBook(OWNER, BOOK);
+
+      // The watcher saw the create then the book-level retirement.
+      assert.deepStrictEqual(events, ['create', 'delete-book']);
+    });
   });
 }
+
+// Local alias used inside the watcher-registered drop test.
+type ChangeEventType = 'create' | 'update' | 'delete' | 'delete-book';

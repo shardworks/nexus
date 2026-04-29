@@ -79,4 +79,16 @@ export interface StacksBackend {
   close(): void;
   ensureBook(ref: BookRef, schema: BookSchema): void;
   beginTransaction(): BackendTransaction;
+
+  /**
+   * Drop the storage for the referenced book, including any indexes the
+   * backend created for it. Silent no-op when the book does not exist —
+   * the absent state is the desired post-state.
+   *
+   * Implementations must be idempotent and may rely on the engine to
+   * cascade index storage from the table-level drop (e.g. SQLite's
+   * `DROP TABLE` cascades indexes; explicit `DROP INDEX` is unearned
+   * structure).
+   */
+  dropBook(ref: BookRef): Promise<void>;
 }

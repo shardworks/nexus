@@ -339,6 +339,18 @@ export class SqliteBackend implements StacksBackend {
     return new SqliteTransaction(this.requireDb());
   }
 
+  async dropBook(ref: BookRef): Promise<void> {
+    // Validate the book name through tableName() so a malformed ref
+    // raises the same error here as it would on ensureBook/put/etc.,
+    // rather than silently no-op'ing on an invalid identifier.
+    const table = tableName(ref);
+    const db = this.requireDb();
+    // SQLite's DROP TABLE cascades indexes attached to the table, so
+    // an explicit DROP INDEX loop would be unearned structure (D7).
+    // IF EXISTS makes the call idempotent (D2).
+    db.exec(`DROP TABLE IF EXISTS "${table}"`);
+  }
+
   private requireDb(): DB {
     if (!this.db) {
       throw new Error('[stacks/sqlite] Backend not open — call open() first');

@@ -365,7 +365,11 @@ export function createLattice(): Plugin {
           'lattice',
           'pulses',
           async (event) => {
-            if (event.type === 'delete') return;
+            // Only react to row-level create/update — `delete` and
+            // `delete-book` carry no entry to dispatch. The pulses book
+            // is never dropped at runtime, but the union exhaustiveness
+            // still has to be honoured.
+            if (event.type !== 'create' && event.type !== 'update') return;
             const pulse = event.entry;
             if (pulse.deliveryState !== 'pending') return;
             if (event.type === 'update' && event.prev.deliveryState === 'pending') {

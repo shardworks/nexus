@@ -60,7 +60,8 @@ At apparatus `start()`, the bridge:
    each remaining `(pluginId, bookName)` pair. The handler composes
    `book.${event.ownerId}.${event.book}.${verb}` from the delivered
    `ChangeEvent` (where verb maps create/update/delete to created/
-   updated/deleted) and calls `clockworks.emit(name, event,
+   updated/deleted, and the book-level `delete-book` retirement event
+   to `book-dropped`) and calls `clockworks.emit(name, event,
    'framework')`.
 
 The bridge also contributes a function-form `events` kit that declares
@@ -73,9 +74,15 @@ For every observed mutation:
 
 | Field | Value |
 |---|---|
-| `name`    | `book.<ownerId>.<bookName>.<created\|updated\|deleted>` |
+| `name`    | `book.<ownerId>.<bookName>.<created\|updated\|deleted\|book-dropped>` |
 | `emitter` | the literal string `'framework'` |
 | `payload` | the Stacks `ChangeEvent` object verbatim |
+
+The `book-dropped` verb fires once per `StacksApi.dropBook(...)` call,
+even when the book held many rows — the substrate emits a single
+book-level `delete-book` CDC event rather than per-row deletes
+(consistent with the substrate's coalescing model). The payload for
+`book-dropped` carries `{ type: 'delete-book', ownerId, book }` only.
 
 ### The carve-out
 

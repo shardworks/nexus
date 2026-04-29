@@ -6,13 +6,17 @@
  * At apparatus `start()`, the bridge walks every plugin-declared book
  * in `ctx.kits('books')` (other than `clockworks/events` itself) and
  * registers a Phase-2 (post-commit) Stacks CDC watcher on each
- * declared book. Each create / update / delete row mutation produces
- * exactly one row in `clockworks/events` whose:
+ * declared book. Each create / update / delete row mutation — and the
+ * book-level `delete-book` event fired by `StacksApi.dropBook` —
+ * produces exactly one row in `clockworks/events` whose:
  *
  *   - `name`    is `book.<ownerId>.<book>.<verb>` where verb maps
- *               create/update/delete to created/updated/deleted (past
- *               tense matches the convention used elsewhere in the
- *               guild's event namespace).
+ *               create/update/delete to created/updated/deleted and
+ *               the book-level retirement verb `delete-book` to
+ *               `book-dropped` (past tense matches the convention used
+ *               elsewhere in the guild's event namespace; `book-dropped`
+ *               disambiguates the book-level verb from the row-level
+ *               `deleted` in log lines).
  *   - `emitter` is the literal `'framework'` — `book.*` events are
  *               part of the framework's substrate-observation contract;
  *               this bridge is a relocation of where the registration
@@ -98,14 +102,22 @@ import type {
 // ── CDC verb mapping ─────────────────────────────────────────────────
 //
 // Stacks' CDC event tags are present-tense imperatives
-// (`'create' | 'update' | 'delete'`). The auto-wired event names use
-// past tense — `created`, `updated`, `deleted` — to read naturally as
-// a log line and match the past-tense convention used elsewhere in the
-// guild's event namespace.
-const CDC_VERB_PAST_TENSE: Record<'create' | 'update' | 'delete', string> = {
+// (`'create' | 'update' | 'delete' | 'delete-book'`). The auto-wired
+// event names use past tense — `created`, `updated`, `deleted`,
+// `book-dropped` — to read naturally as a log line and match the
+// past-tense convention used elsewhere in the guild's event namespace.
+//
+// `book-dropped` (rather than bare `dropped`) disambiguates the
+// book-level retirement verb from the row-level `deleted` verb in log
+// lines (D10).
+const CDC_VERB_PAST_TENSE: Record<
+  'create' | 'update' | 'delete' | 'delete-book',
+  string
+> = {
   create: 'created',
   update: 'updated',
   delete: 'deleted',
+  'delete-book': 'book-dropped',
 };
 
 // ── Carve-out predicate ──────────────────────────────────────────────
@@ -120,13 +132,18 @@ const CARVE_OUT_BOOK_NAME = 'events';
 /**
  * Function-form `events` kit contribution. Walks `ctx.kits('books')`
  * with the same silent-skip and carve-out the watcher loop applies and
- * enumerates `book.<owner>.<book>.<verb>` for the three verbs.
+ * enumerates `book.<owner>.<book>.<verb>` for every verb in
+ * `CDC_VERB_PAST_TENSE` — the row-level `created/updated/deleted`
+ * triple plus the book-level `book-dropped` retirement verb (D10, D16).
  *
  * Mirrors the watcher's carve-out so the declared set equals the
- * emitted set. Closing the spoofing vector for `book.clockworks.
- * events.*` (which the bridge does not declare and therefore does not
- * mark framework-owned) is captured as a separate follow-up — the
- * carve-out is preserved for parity with the watcher.
+ * emitted set. The carve-out applies uniformly to every verb,
+ * including `book-dropped` (D16) — the events book never self-emits
+ * regardless of operation; uniformity preserves the bridge's
+ * cross-component contract. Closing the spoofing vector for
+ * `book.clockworks.events.*` (which the bridge does not declare and
+ * therefore does not mark framework-owned) is captured as a separate
+ * follow-up — the carve-out is preserved for parity with the watcher.
  */
 function buildEventsContribution(
   ctx: StartupContext,
@@ -143,11 +160,21 @@ function buildEventsContribution(
         continue;
       }
       for (const verb of Object.values(CDC_VERB_PAST_TENSE)) {
+        // The book-level retirement verb describes the whole-book drop
+        // rather than a row-level mutation; phrase the description
+        // accordingly so introspection of the declared set reads
+        // naturally for both row and book events.
+        const description =
+          verb === 'book-dropped'
+            ? `Stacks CDC observation: book "${bookName}" owned by plugin ` +
+              `"${entry.pluginId}" was retired via StacksApi.dropBook. ` +
+              `Emitted once when the book is dropped by the ` +
+              `clockworks-stacks-signals bridge.`
+            : `Stacks CDC observation: a row was ${verb} in ` +
+              `book "${bookName}" owned by plugin "${entry.pluginId}". ` +
+              `Emitted by the clockworks-stacks-signals bridge.`;
         events[`book.${entry.pluginId}.${bookName}.${verb}`] = {
-          description:
-            `Stacks CDC observation: a row was ${verb} in ` +
-            `book "${bookName}" owned by plugin "${entry.pluginId}". ` +
-            `Emitted by the clockworks-stacks-signals bridge.`,
+          description,
         };
       }
     }

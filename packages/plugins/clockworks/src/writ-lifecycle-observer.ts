@@ -110,7 +110,11 @@ export async function handleWritLifecycle(
   deps: WritLifecycleObserverDeps,
   event: ChangeEvent<WritDoc>,
 ): Promise<void> {
-  if (event.type === 'delete') return;
+  // Only row-level create/update carry the writ payload that drives
+  // lifecycle emission. Row-level `delete` and book-level `delete-book`
+  // are intentional no-ops here — the writs book is never dropped at
+  // runtime, but the union exhaustiveness still has to be honoured.
+  if (event.type !== 'create' && event.type !== 'update') return;
 
   const writ = event.entry;
 

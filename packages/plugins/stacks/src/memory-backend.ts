@@ -242,4 +242,12 @@ export class MemoryBackend implements StacksBackend {
   beginTransaction(): BackendTransaction {
     return new MemoryTransaction(this.store);
   }
+
+  async dropBook(ref: BookRef): Promise<void> {
+    // Delete the outer-map entry — matches SQLite's "table is gone"
+    // semantics (D8). The lazy re-create in `getBook` already covers
+    // post-drop access via subsequent ensureBook/put/etc., so callers
+    // see an empty book rather than a stale one.
+    this.store.delete(refKey(ref));
+  }
 }

@@ -385,6 +385,45 @@ describe('clockworks-stacks-signals — CDC auto-wiring (book.* events)', () => 
     assert.equal(await fix.countAfter(), 0);
   });
 
+  it('emits exactly one book.<owner>.<book>.book-dropped on dropBook() of an existing book', async () => {
+    const fix = await buildFixture({
+      syntheticBooks: [
+        { pluginId: 'test-plugin', bookName: 'myBook' },
+      ],
+    });
+
+    const myBook = fix.stacks.book<MyDoc>('test-plugin', 'myBook');
+    await myBook.put({ id: 'r1', value: 'hello' });
+    await fix.stacks.dropBook('test-plugin', 'myBook');
+
+    const rows = await fix.eventsAfter();
+    // Two events: the create, then the book-drop.
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].name, 'book.test-plugin.myBook.created');
+    assert.equal(rows[1].name, 'book.test-plugin.myBook.book-dropped');
+    assert.equal(rows[1].emitter, 'framework');
+
+    const payload = rows[1].payload as { type: string; ownerId: string; book: string };
+    assert.equal(payload.type, 'delete-book');
+    assert.equal(payload.ownerId, 'test-plugin');
+    assert.equal(payload.book, 'myBook');
+  });
+
+  it('dropBook() of a book never written to still emits exactly one book-dropped event', async () => {
+    const fix = await buildFixture({
+      syntheticBooks: [
+        { pluginId: 'test-plugin', bookName: 'myBook' },
+      ],
+    });
+
+    await fix.stacks.dropBook('test-plugin', 'myBook');
+
+    const rows = await fix.eventsAfter();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].name, 'book.test-plugin.myBook.book-dropped');
+    assert.equal(rows[0].emitter, 'framework');
+  });
+
   it('clockworks/event_dispatches IS auto-wired (only events is excluded)', async () => {
     const fix = await buildFixture();
 
