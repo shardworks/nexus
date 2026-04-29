@@ -328,7 +328,11 @@ describe('buildToolCommand', () => {
     assert.ok(!option.mandatory, '--id should not be mandatory when positional convention applies');
   });
 
-  it('generates mandatory option for required string param that does not match positional convention', () => {
+  it('non-mandatory option for sole required string param under the relaxed positional rule', () => {
+    // Under the relaxed detector, a single required string param is
+    // promoted to a positional even if it is not named `id`. The flag
+    // remains registered (so `--name <value>` still works) but is
+    // non-mandatory because the positional can supply the value.
     const tool: ToolDefinition = {
       name: 'test-tool',
       description: 'A test tool',
@@ -339,7 +343,29 @@ describe('buildToolCommand', () => {
     const cmd = buildToolCommand('test', tool);
     const option = cmd.options.find((o) => o.long === '--name');
     assert.ok(option, '--name option should exist');
-    assert.ok(option.mandatory, '--name should be mandatory (not named id or ending in Id)');
+    assert.ok(!option.mandatory, '--name should be non-mandatory under the relaxed positional rule');
+    assert.equal(cmd.registeredArguments.length, 1);
+  });
+
+  it('generates mandatory options for two required strings when no id-like exists (ambiguous)', () => {
+    // With two required string params and none id-like, neither rule
+    // fires, so both flags remain mandatory and no positional is added.
+    const tool: ToolDefinition = {
+      name: 'test-tool',
+      description: 'A test tool',
+      params: z.object({
+        name: z.string().describe('The name'),
+        title: z.string().describe('The title'),
+      }),
+      handler: async () => null,
+    };
+
+    const cmd = buildToolCommand('test', tool);
+    const nameOpt = cmd.options.find((o) => o.long === '--name');
+    const titleOpt = cmd.options.find((o) => o.long === '--title');
+    assert.ok(nameOpt?.mandatory, '--name should be mandatory');
+    assert.ok(titleOpt?.mandatory, '--title should be mandatory');
+    assert.equal(cmd.registeredArguments.length, 0);
   });
 
   it('generates non-mandatory flags for optional string params', () => {
@@ -761,18 +787,151 @@ describe('buildToolCommand', () => {
     assert.equal(captured['goal'], 'Refined');
   });
 
-  it('does not add positional when required string param is not named id/Id', () => {
+  // ── Single-required-string positional rule ────────────────────
+
+  it('promotes sole required string param not named id (vision-apply slug shape)', async () => {
+    let captured: Record<string, unknown> | undefined;
+
     const tool: ToolDefinition = {
-      name: 'test-tool',
-      description: 'Test',
+      name: 'vision-apply',
+      description: 'Apply an on-disk vision',
       params: z.object({
-        name: z.string().describe('Name'),
+        slug: z.string().describe('Vision directory slug'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('apply', tool);
+
+    // The flag exists but is non-mandatory because the positional can supply the value.
+    const slugOption = cmd.options.find((o) => o.long === '--slug');
+    assert.ok(slugOption, '--slug option should exist');
+    assert.ok(!slugOption.mandatory, '--slug should be non-mandatory once positional is registered');
+    assert.equal(cmd.registeredArguments.length, 1);
+
+    cmd.exitOverride();
+    await cmd.parseAsync(['my-vision'], { from: 'user' });
+
+    assert.ok(captured, 'handler should have been called');
+    assert.equal(captured['slug'], 'my-vision');
+  });
+
+  it('flag form continues to work for the relaxed single-required-string shape', async () => {
+    let captured: Record<string, unknown> | undefined;
+
+    const tool: ToolDefinition = {
+      name: 'vision-apply',
+      description: 'Apply an on-disk vision',
+      params: z.object({
+        slug: z.string().describe('Vision directory slug'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('apply', tool);
+    cmd.exitOverride();
+    await cmd.parseAsync(['--slug', 'my-vision'], { from: 'user' });
+
+    assert.ok(captured, 'handler should have been called');
+    assert.equal(captured['slug'], 'my-vision');
+  });
+
+  it('does not promote a single required non-id string when other required strings exist (no id-like)', () => {
+    // Two required strings, neither id-like — ambiguous. The old detector
+    // dropped this case; the relaxed detector also drops it because the
+    // single-required-string rule only fires when the count is exactly one.
+    const tool: ToolDefinition = {
+      name: 'two-required-strings',
+      description: 'Two required strings, neither id-like',
+      params: z.object({
+        name: z.string().describe('A name'),
+        label: z.string().describe('A label'),
       }),
       handler: async () => null,
     };
 
     const cmd = buildToolCommand('test', tool);
     assert.equal(cmd.registeredArguments.length, 0);
+    // Both stay mandatory under flag-only mode.
+    const nameOpt = cmd.options.find((o) => o.long === '--name');
+    const labelOpt = cmd.options.find((o) => o.long === '--label');
+    assert.ok(nameOpt?.mandatory, '--name should remain mandatory');
+    assert.ok(labelOpt?.mandatory, '--label should remain mandatory');
+  });
+
+  it('id-like positional still wins when an id and a non-id required string coexist', async () => {
+    // Tier-1 id-like rule preserves click-amend's behavior (id positional, goal flag).
+    let captured: Record<string, unknown> | undefined;
+
+    const tool: ToolDefinition = {
+      name: 'click-amend',
+      description: 'Amend the goal of a click',
+      params: z.object({
+        id: z.string().describe('Click ID'),
+        goal: z.string().describe('New goal'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('amend', tool);
+    // Positional should be id, not goal.
+    assert.equal(cmd.registeredArguments.length, 1);
+    cmd.exitOverride();
+    await cmd.parseAsync(['c-abc', '--goal', 'New'], { from: 'user' });
+
+    assert.ok(captured);
+    assert.equal(captured['id'], 'c-abc');
+    assert.equal(captured['goal'], 'New');
+  });
+
+  it('promotes a single required string when only optional/non-string params exist (signal --name shape)', async () => {
+    // `clockworks/signal` shape: required `name`, optional `payload`. Now
+    // accepts `nsg signal <name>` positionally.
+    let captured: Record<string, unknown> | undefined;
+
+    const tool: ToolDefinition = {
+      name: 'signal',
+      description: 'Emit a signal',
+      params: z.object({
+        name: z.string().describe('Event name'),
+        payload: z.string().optional().describe('JSON payload'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('signal', tool);
+    assert.equal(cmd.registeredArguments.length, 1);
+
+    cmd.exitOverride();
+    await cmd.parseAsync(['phase:tick'], { from: 'user' });
+
+    assert.ok(captured);
+    assert.equal(captured['name'], 'phase:tick');
+    assert.equal(captured['payload'], undefined);
+  });
+
+  it('does not add positional when required string param is not named id/Id and there are zero other params', async () => {
+    // Even a single non-id required string param is promoted under the relaxed rule.
+    // This used to NOT produce a positional; it now does.
+    let captured: Record<string, unknown> | undefined;
+
+    const tool: ToolDefinition = {
+      name: 'test-tool',
+      description: 'Test',
+      params: z.object({
+        name: z.string().describe('Name'),
+      }),
+      handler: async (params) => { captured = params as Record<string, unknown>; return null; },
+    };
+
+    const cmd = buildToolCommand('test', tool);
+    // Under the relaxed rule, this now registers a positional.
+    assert.equal(cmd.registeredArguments.length, 1);
+    cmd.exitOverride();
+    await cmd.parseAsync(['my-name'], { from: 'user' });
+
+    assert.ok(captured);
+    assert.equal(captured['name'], 'my-name');
   });
 
   it('positional works for tool with id plus optional params', async () => {
