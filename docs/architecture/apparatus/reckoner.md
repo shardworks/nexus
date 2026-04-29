@@ -100,10 +100,10 @@ export default {
     requires: ['reckoner'],
     petitioners: [
       {
-        source: 'vision-keeper.snapshot',
+        source: 'tech-debt.detected',
         description:
-          'Periodic vision-vs-reality snapshots emitted when ' +
-          'the keeper observes drift worth surfacing.',
+          'Worked-example petitioner emitting tech-debt ' +
+          'findings worth surfacing as held writs.',
       },
     ],
   },
@@ -125,9 +125,8 @@ suffix (lowercase letters, digits, and hyphens; not starting or
 ending with a hyphen). Mirrors Lattice trigger-types and Clerk
 link-kinds (D2). Examples:
 
-- `vision-keeper.snapshot`
-- `patron-bridge.commission`
 - `tech-debt.detected`
+- `patron-bridge.commission`
 
 The kebab-case suffix grammar is the same regex Clerk uses for
 link-kinds: `^[a-z0-9]+(?:-[a-z0-9]+)*$`.
@@ -702,7 +701,7 @@ import { guild } from '@shardworks/nexus-core';
 const reckoner = guild().apparatus<ReckonerApi>('reckoner');
 
 const writ = await reckoner.petition({
-  source: 'vision-keeper.snapshot',
+  source: 'tech-debt.detected',
   title:  'Address vision drift detected at 04:00 UTC',
   body:   '...',
   codex:  'nexus',
@@ -716,7 +715,7 @@ const writ = await reckoner.petition({
   },
   complexity: 'bounded',
   payload: { /* opaque petitioner-defined data */ },
-  labels:  { 'vision-keeper.io/vision-id': 'nexus' },
+  labels:  { 'tech-debt.io/finding-id': 'q3-audit' },
 });
 ```
 
@@ -754,7 +753,7 @@ const draft = await clerk.post({
 await stacks.transaction(async () => {
   await clerk.link(draft.id, blockerId, 'depends-on');
   await reckoner.petition(draft.id, {
-    source:   'vision-keeper.snapshot',
+    source:   'tech-debt.detected',
     priority: { visionRelation: 'vision-violator' },
   });
 });

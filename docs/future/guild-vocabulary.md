@@ -26,7 +26,7 @@ A narrow observer that watches the guild's work and announces when things go wro
 
 The Sentinel reads the Clerk's books and listens for three specific conditions: a commission that stalls (stuck), a commission that fails, and the moment the guild's work queue drains entirely. When any of these conditions is met, the Sentinel emits a pulse to the Lattice. It does not judge how the news should be delivered; that is the Lattice's work. It does not modify writs, does not reach into rig internals, and does not participate in dispatch — it only observes and announces.
 
-The Sentinel is the first observer to sit atop the Lattice substrate. Others are anticipated — balance alerts, anima completion, vision-keepers — each with its own narrow remit, each speaking through the same substrate.
+The Sentinel is the first observer to sit atop the Lattice substrate. Others are anticipated — balance alerts, anima completion, tech-debt detectors — each with its own narrow remit, each speaking through the same substrate.
 
 See `docs/architecture/apparatus/sentinel.md`.
 
@@ -34,7 +34,7 @@ See `docs/architecture/apparatus/sentinel.md`.
 
 The petitioner-scheduler — the authority that decides which held petitions become live work.
 
-A petitioner is anything that wants the guild to consider doing something — a vision-keeper noticing drift, a patron-bridge surfacing a request, a tech-debt detector flagging accumulating debt. Each petition arrives as a writ in `new` phase carrying a structured priority claim, and lives there until the Reckoner approves it (transitions it to `open`), defers it (leaves it in `new` for re-evaluation), or declines it (transitions it to `cancelled`). Spider does not dispatch from `new`; the Reckoner is the gate.
+A petitioner is anything that wants the guild to consider doing something — a patron-bridge surfacing a request, a tech-debt detector flagging accumulating debt, an observer noticing drift worth surfacing. Each petition arrives as a writ in `new` phase carrying a structured priority claim, and lives there until the Reckoner approves it (transitions it to `open`), defers it (leaves it in `new` for re-evaluation), or declines it (transitions it to `cancelled`). Spider does not dispatch from `new`; the Reckoner is the gate.
 
 The Reckoner maintains a kit-static registry of recognized petitioner sources, a typed contract for the priority dimensions every petition declares, and the canonical helpers (`petition()`, `withdraw()`) that petitioner authors use. Future commissions add the consideration loop and the Reckonings book.
 

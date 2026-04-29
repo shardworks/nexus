@@ -22,10 +22,10 @@ channel (Discord webhook, CLI inbox, future push surfaces) via a Phase 2 CDC
 watcher on its own book.
 
 The Lattice is designed to outlive this MVP's single consumer (the Reckoner).
-Future emitters — coinmaster balance alerts, anima completion, vision-keeper —
-slot into the same substrate by calling `LatticeApi.emit()`; future push
-surfaces attach as new `latticeChannels` factories. The pulse record is the
-durable event; delivery is best-effort.
+Future emitters — coinmaster balance alerts, anima completion, tech-debt
+detectors — slot into the same substrate by calling `LatticeApi.emit()`;
+future push surfaces attach as new `latticeChannels` factories. The pulse
+record is the durable event; delivery is best-effort.
 
 The Lattice does **not** decide *when* to notify. That is the emitter's
 responsibility. The Lattice also does not decide what "notification" looks

@@ -141,7 +141,7 @@ this doc is self-contained:
 
 ```typescript
 interface ReckonerExt {
-  source:       string;                  // e.g. 'vision-keeper.snapshot'
+  source:       string;                  // e.g. 'tech-debt.detected'
   priority:     Priority;                // multi-dimensional; see below
   complexity?:  ComplexityTier;          // 'mechanical' | 'bounded' | 'exploratory' | 'open-ended'
   rationale?:   string;                  // free-form justification for the priority claim
@@ -304,7 +304,7 @@ The three projected fields are the ones that drive hot filter
 queries:
 
 - "show me everything the Reckoner did with writs from
-  `vision-keeper.snapshot`" — `source` filter.
+  `tech-debt.detected`" — `source` filter.
 - "show me every consideration of a `vision-violator` writ since T" —
   `visionRelation` and `consideredAt` filter.
 - "show me every consideration of `critical` or `serious` writs in
@@ -739,7 +739,7 @@ Tracing each entry back to the queries it supports:
   superseded for ordered timelines by `['writId', 'consideredAt']`.
 - **`consideredAt`** — the unconditional since-T sweep, used by
   recent-history surfaces (Oculus pages, the future Sentinel
-  apparatus's archival selector, vision-keeper's "what changed since
+  apparatus's archival selector, a petitioner's "what changed since
   my last poll" check).
 - **`outcome`** — outcome-only filters and counts; standalone for
   uses that don't need a time bound.
@@ -855,9 +855,9 @@ Subscribers that want to filter to a specific outcome do so in their
 relay handler, against `event.entry.outcome`:
 
 ```typescript
-// Illustrative — vision-keeper's accepted-only relay sketch.
+// Illustrative — a petitioner's accepted-only relay sketch.
 relay({
-  name: 'vision-keeper-on-accept',
+  name: 'tech-debt-on-accept',
   handler: async (event) => {
     const change = event.payload as ChangeEvent<ReckoningDoc>;
     if (change.type !== 'create') return;
