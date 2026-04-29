@@ -287,11 +287,6 @@ const REGISTERED_PETITIONER = {
   value: [{ source: 'tester.kind', description: 'tester' }],
 };
 
-const VK_PETITIONER = {
-  pluginId: 'vision-keeper',
-  value: [{ source: 'vision-keeper.snapshot', description: 'snapshots' }],
-};
-
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe('Reckoner periodic tick', () => {
@@ -301,7 +296,7 @@ describe('Reckoner periodic tick', () => {
 
   describe('empty candidate set', () => {
     it('writes nothing and throws nothing when no held writs are present', async () => {
-      const fix = await buildFixture({ petitionerKits: [VK_PETITIONER] });
+      const fix = await buildFixture({ petitionerKits: [REGISTERED_PETITIONER] });
       // No writs posted yet.
       await fix.hooks.runTick();
       const allRows = await fix.reckoningsBook.find({});
@@ -314,14 +309,14 @@ describe('Reckoner periodic tick', () => {
   describe('first tick after start', () => {
     it('processes held writs that pre-date the apparatus start', async () => {
       const fix = await buildFixture({
-        petitionerKits: [VK_PETITIONER],
+        petitionerKits: [REGISTERED_PETITIONER],
         async preStart({ clerk }) {
           // Seed a held writ before the Reckoner starts. Without a
           // catch-up scan, the writ remains in `new` until the
           // first tick fires.
           const w = await clerk.post({ title: 'pre-start', body: 'b' });
           await clerk.setWritExt(w.id, 'reckoner', {
-            source: 'vision-keeper.snapshot',
+            source: 'tester.kind',
             priority: {
               visionRelation: 'vision-neutral',
               severity: 'minor',
@@ -414,12 +409,12 @@ describe('Reckoner periodic tick', () => {
   describe('disabled-source mid-flight', () => {
     it('produces a declined row with declineReason: source_banned and transitions to cancelled', async () => {
       const fix = await buildFixture({
-        petitionerKits: [VK_PETITIONER],
+        petitionerKits: [REGISTERED_PETITIONER],
       });
 
       // Step 1: petition with the source NOT yet in disabledSources.
       const writ = await fix.reckoner.petition({
-        source: 'vision-keeper.snapshot',
+        source: 'tester.kind',
         title: 'mid-flight ban',
         body: 'b',
       });
@@ -430,7 +425,7 @@ describe('Reckoner periodic tick', () => {
       // decline the writ.
       fix.fakeGuildConfig.reckoner = {
         ...fix.fakeGuildConfig.reckoner,
-        disabledSources: ['vision-keeper.snapshot'],
+        disabledSources: ['tester.kind'],
       };
 
       await fix.hooks.runTick();
@@ -439,7 +434,7 @@ describe('Reckoner periodic tick', () => {
       assert.equal(reread.phase, 'cancelled');
       assert.match(
         String(reread.resolution),
-        /vision-keeper\.snapshot.*disabledSources/,
+        /tester\.kind.*disabledSources/,
       );
 
       const rows = await fix.reckoningsBook.find({
@@ -448,7 +443,7 @@ describe('Reckoner periodic tick', () => {
       assert.equal(rows.length, 1);
       assert.equal(rows[0]!.outcome, 'declined');
       assert.equal(rows[0]!.declineReason, 'source_banned');
-      assert.equal(rows[0]!.remediationHint, 'vision-keeper.snapshot');
+      assert.equal(rows[0]!.remediationHint, 'tester.kind');
     });
   });
 
@@ -457,11 +452,11 @@ describe('Reckoner periodic tick', () => {
   describe('repeated-tick idempotency', () => {
     it('produces exactly one row across multiple ticks at unchanged updatedAt', async () => {
       const fix = await buildFixture({
-        petitionerKits: [VK_PETITIONER],
+        petitionerKits: [REGISTERED_PETITIONER],
       });
 
       const writ = await fix.reckoner.petition({
-        source: 'vision-keeper.snapshot',
+        source: 'tester.kind',
         title: 'idempotent',
         body: 'b',
       });
@@ -489,10 +484,10 @@ describe('Reckoner periodic tick', () => {
   describe('target-phase resolution', () => {
     it('picks `open` for mandate writs', async () => {
       const fix = await buildFixture({
-        petitionerKits: [VK_PETITIONER],
+        petitionerKits: [REGISTERED_PETITIONER],
       });
       const writ = await fix.reckoner.petition({
-        source: 'vision-keeper.snapshot',
+        source: 'tester.kind',
         title: 't',
         body: 'b',
       });
@@ -563,8 +558,8 @@ describe('Reckoner periodic tick', () => {
   describe('withdrawal mid-flight', () => {
     it('produces no Reckonings row when the petitioner withdraws before the next tick', async () => {
       const fix = await buildFixture({
-        petitionerKits: [VK_PETITIONER],
-        config: { disabledSources: ['vision-keeper.snapshot'] },
+        petitionerKits: [REGISTERED_PETITIONER],
+        config: { disabledSources: ['tester.kind'] },
       });
 
       // Disabled source: petition lands in `new`, no row, no
@@ -572,7 +567,7 @@ describe('Reckoner periodic tick', () => {
       // out of `new` before the next tick fires. The tick must
       // observe no candidate (`phase !== 'new'`).
       const writ = await fix.reckoner.petition({
-        source: 'vision-keeper.snapshot',
+        source: 'tester.kind',
         title: 't',
         body: 'b',
       });
@@ -699,10 +694,10 @@ describe('Reckoner periodic tick', () => {
 
   describe('tickEventId stamping', () => {
     it('stamps tickEventId from the triggering event id when present', async () => {
-      const fix = await buildFixture({ petitionerKits: [VK_PETITIONER] });
+      const fix = await buildFixture({ petitionerKits: [REGISTERED_PETITIONER] });
 
       const writ = await fix.reckoner.petition({
-        source: 'vision-keeper.snapshot',
+        source: 'tester.kind',
         title: 't',
         body: 'b',
       });
@@ -724,10 +719,10 @@ describe('Reckoner periodic tick', () => {
     });
 
     it('omits tickEventId when no event is supplied', async () => {
-      const fix = await buildFixture({ petitionerKits: [VK_PETITIONER] });
+      const fix = await buildFixture({ petitionerKits: [REGISTERED_PETITIONER] });
 
       const writ = await fix.reckoner.petition({
-        source: 'vision-keeper.snapshot',
+        source: 'tester.kind',
         title: 't',
         body: 'b',
       });

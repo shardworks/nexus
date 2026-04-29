@@ -149,7 +149,7 @@ import { guild } from '@shardworks/nexus-core';
 const reckoner = guild().apparatus<ReckonerApi>('reckoner');
 
 const writ = await reckoner.petition({
-  source: 'vision-keeper.snapshot',
+  source: 'tech-debt.detected',
   title: 'Address vision drift detected at 04:00 UTC',
   body: '...',
   codex: 'nexus',
@@ -200,7 +200,7 @@ const draft = await clerk.post({
 await stacks.transaction(async () => {
   await clerk.link(draft.id, blockerId, 'depends-on');
   await reckoner.petition(draft.id, {
-    source: 'vision-keeper.snapshot',
+    source: 'tech-debt.detected',
     priority: { visionRelation: 'vision-violator' },
   });
 });
@@ -223,9 +223,9 @@ export default {
     requires: ['reckoner'],
     petitioners: [
       {
-        source: 'vision-keeper.snapshot',
+        source: 'tech-debt.detected',
         description:
-          'Periodic vision-vs-reality snapshots emitted when the keeper observes drift worth surfacing.',
+          'Worked-example petitioner emitting tech-debt findings worth surfacing as held writs.',
       },
     ],
   },

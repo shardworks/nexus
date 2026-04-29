@@ -1,8 +1,6 @@
 /**
  * Reckoner end-to-end integration test.
  *
- * Apparatus-isolated counterpart to the vision-keeper integration
- * test (`packages/plugins/vision-keeper/src/integration.test.ts`).
  * Spins up Stacks + Clerk + Reckoner against the in-memory backend
  * and exercises the public `petition()` helper through the full
  * lifecycle:

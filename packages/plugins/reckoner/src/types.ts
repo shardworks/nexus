@@ -5,8 +5,8 @@
  * kit-static petitioner registry, exposes the canonical
  * `petition()` / `withdraw()` helpers (Workflow 2 in the contract
  * document), and surfaces inspection helpers for downstream
- * consumers (the periodic tick handler, the vision-keeper kit, the
- * patron-bridge apparatus).
+ * consumers (the periodic tick handler, registered petitioner kits,
+ * the patron-bridge apparatus).
  *
  * This file is the single source of public-symbol truth — every
  * type a downstream import touches lives here, including

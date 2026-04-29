@@ -71,8 +71,7 @@
  *      absent (e.g. test paths driving the handler with `null`).
  *
  * Source-file layout follows the established stdlib-relay pattern
- * (`packages/plugins/clockworks/src/summon-relay.ts`,
- * `packages/plugins/vision-keeper/src/decline-relay.ts`). The relay
+ * (`packages/plugins/clockworks/src/summon-relay.ts`). The relay
  * factory and the pure handler-body helper are co-located here so
  * unit tests can drive the helper without booting Clockworks.
  *
