@@ -7,10 +7,11 @@
  * production code paths through `tool.handler({...})` directly.
  *
  * Coverage:
- *   - First-apply happy path (writ + doc created, sidecar gains
- *     visionId, exactly one CDC event on the cartograph visions book).
+ *   - First-apply happy path (writ created, ext['cartograph'] stamped,
+ *     sidecar gains visionId, exactly one CDC create event on the writs
+ *     book carrying both writ fields and the cartograph ext slot).
  *   - Nth-apply happy path (writ resolved via visionId, body and
- *     stage/codex synced, single CDC event).
+ *     stage/codex synced, single CDC update event).
  *   - CLI flag overrides sidecar for severity/deadline/decay.
  *   - Stale-binding errors: missing, cancelled, completed, failed.
  *   - Missing vision.md or sidecar errors.
@@ -58,7 +59,10 @@ interface Fixture {
   cartograph: CartographApi;
   memBackend: MemoryBackend;
   home: string;
-  // Live counter of CDC events on the cartograph visions book.
+  // Live counter of CDC events on the writs book filtered to the
+  // vision writ type. The handler reads `event.entry.type` so it only
+  // counts cartograph-relevant rows even though the watched book is
+  // owned by the Clerk.
   cdc: { create: number; update: number; delete: number };
 }
 
@@ -136,15 +140,6 @@ async function buildFixture(): Promise<Fixture> {
       ['sourceId', 'label'], ['targetId', 'label'],
     ],
   });
-  memBackend.ensureBook({ ownerId: 'cartograph', book: 'visions' }, {
-    indexes: ['stage', 'codex', 'createdAt'],
-  });
-  memBackend.ensureBook({ ownerId: 'cartograph', book: 'charges' }, {
-    indexes: ['stage', 'codex', 'createdAt'],
-  });
-  memBackend.ensureBook({ ownerId: 'cartograph', book: 'pieces' }, {
-    indexes: ['stage', 'codex', 'createdAt'],
-  });
 
   // Clerk
   await clerkPlugin.apparatus.start!(buildCtx());
@@ -156,14 +151,20 @@ async function buildFixture(): Promise<Fixture> {
   const cartograph = cartographPlugin.apparatus.provides as CartographApi;
   apparatusMap.set('cartograph', cartograph);
 
-  // CDC counter — register before any writes so we observe the very
-  // first create event from the first apply.
+  // CDC counter — watch the writs book at Phase 2 (post-commit, after
+  // coalesceEvents) and filter by writ type in the handler so we count
+  // only cartograph-relevant events. Phase 2 is the level at which the
+  // brief's "one event per logical change" guarantee applies: the
+  // setWritExt + put writes targeting the same writ row in one outer
+  // tx collapse into a single coalesced event with the final state.
+  // Phase 1 (the default) fires per write and would surface each
+  // intermediate patch as its own event.
   const cdc = { create: 0, update: 0, delete: 0 };
-  stacks.watch<VisionDoc>('cartograph', 'visions', (event) => {
-    if (event.type === 'create') cdc.create += 1;
-    if (event.type === 'update') cdc.update += 1;
-    if (event.type === 'delete') cdc.delete += 1;
-  });
+  stacks.watch<WritDoc>('clerk', 'writs', (event) => {
+    if (event.type === 'create' && event.entry.type === 'vision') cdc.create += 1;
+    if (event.type === 'update' && event.entry.type === 'vision') cdc.update += 1;
+    if (event.type === 'delete' && event.prev.type === 'vision') cdc.delete += 1;
+  }, { failOnError: false });
 
   return { stacks, clerk, cartograph, memBackend, home, cdc };
 }
@@ -236,8 +237,11 @@ describe('vision-apply tool', () => {
       // Surveyor ext slot was written with severity from sidecar.
       assert.deepEqual(writ.ext?.[SURVEYOR_PLUGIN_ID], { severity: 'high' });
 
-      // Exactly one CDC event on the cartograph visions book — the
-      // single-event-per-apply contract.
+      // Exactly one CDC create event on the writs book — the
+      // single-event-per-apply contract. The setWritExt that stamps
+      // ext['cartograph'] AND the surveyor-slot setWritExt both
+      // coalesce into the original create with the writ.put, since
+      // they all touch the same writs row in one outer tx.
       assert.equal(fix.cdc.create, 1);
       assert.equal(fix.cdc.update, 0);
 
@@ -518,7 +522,7 @@ describe('vision-apply tool', () => {
       assert.equal(fix.cdc.update, 1, 'exactly one update event from the transition');
     });
 
-    it('produces no update event on the visions book when only the body changed', async () => {
+    it('produces exactly one coalesced CDC update event when only the body changed', async () => {
       await writeVisionDir(fix.home, 'body-only', {
         visionMd: 'original body',
         sidecar: 'title: Body-only\nstage: draft\n',
@@ -532,9 +536,11 @@ describe('vision-apply tool', () => {
       await writeFile(visionMdPath, 'rewritten body', 'utf8');
 
       await visionApply.handler({ slug: 'body-only' });
-      // No transition + no codex change + no stage change → no
-      // visions-book mutation. The body lives on writs, not visions.
-      assert.equal(fix.cdc.update, 0, 'body-only edit does not mutate the cartograph visions book');
+      // The body edit and the surveyor-slot refresh both target the
+      // same writ row in the same outer tx; coalesceEvents collapses
+      // them into a single update event. Per Stacks' Phase 2 contract,
+      // exactly one event lands per logical apply on the writs book.
+      assert.equal(fix.cdc.update, 1, 'body-only apply emits one coalesced update event');
       assert.equal(fix.cdc.create, 1);
     });
 

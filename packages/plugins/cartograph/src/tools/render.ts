@@ -4,9 +4,9 @@
  * Each cartograph type (vision, charge, piece) has its own create/show/list/
  * patch/transition tools, but the show and list rendering behavior is
  * byte-shape identical across the three. These helpers centralize the
- * composition (companion doc + writ row + links + descendants summary +
- * children list + parent ref) and the table/block rendering so the per-
- * type tools stay thin.
+ * composition (cartograph projection + writ row + links + descendants
+ * summary + children list + parent ref) and the table/block rendering
+ * so the per-type tools stay thin.
  *
  * Decision references (from the commission spec):
  *   - D7 / D8  — show composes the doc with the writ row; JSON shape is
@@ -53,11 +53,12 @@ export interface WritReference {
 }
 
 /**
- * Composed result returned by `composeShow(...)`. The cartograph doc's
- * fields land at the top level (so the response is recognizably the
- * companion doc); the underlying writ row sits nested under `writ` to
- * avoid id/timestamp field collisions (D8). The supplementary fields
- * (`parent`, `children`, `links`) drive the text-mode renderer.
+ * Composed result returned by `composeShow(...)`. The cartograph
+ * projection fields land at the top level (so the response is
+ * recognizably the per-type doc); the underlying writ row sits nested
+ * under `writ` to avoid id/timestamp field collisions (D8). The
+ * supplementary fields (`parent`, `children`, `links`) drive the
+ * text-mode renderer.
  */
 export interface CartographShowResult<TDoc extends Record<string, unknown>> {
   doc: TDoc;
@@ -133,9 +134,9 @@ function projectPresentation(
 
 /**
  * Compose the show response for a cartograph type. The caller supplies
- * the typed-API show result (the companion doc) and the clerk apparatus
- * handle; this helper fetches the writ row, parent ref, children list,
- * descendants summary, and links in parallel.
+ * the typed-API show result (the cartograph projection) and the clerk
+ * apparatus handle; this helper fetches the writ row, parent ref,
+ * children list, descendants summary, and links in parallel.
  */
 export async function composeShow<TDoc extends Record<string, unknown>>(
   doc: TDoc,
@@ -181,7 +182,7 @@ export async function composeShow<TDoc extends Record<string, unknown>>(
  * (classification + attrs), allowed transitions, codex, parent ref,
  * timestamps, body, descendants summary, children list, links. Adds a
  * cartograph-specific `Stage:` row above `State:` so the patron sees both
- * the writ phase and the companion-doc stage at a glance.
+ * the writ phase and the `ext['cartograph'].stage` value at a glance.
  */
 export function renderShowText<TDoc extends { stage: string }>(
   typeLabel: string,
@@ -328,9 +329,10 @@ export function renderListTable(rows: ListRow[]): string {
 
 /**
  * Compose the list rows for cartograph's tabular text mode. The list of
- * companion docs comes from the typed API; the title is fetched per-row
- * from the writ row (D9 — N+1). Returns rows in the same order as the
- * input docs (the typed API has already applied the orderBy).
+ * cartograph projections comes from the typed API; the title is
+ * fetched per-row from the writ row (D9 — N+1). Returns rows in the
+ * same order as the input projections (the typed API has already
+ * applied the orderBy).
  */
 export async function composeListRows<TDoc extends { id: string; stage: string; codex?: string; createdAt: string }>(
   docs: TDoc[],

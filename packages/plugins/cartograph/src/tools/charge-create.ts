@@ -8,17 +8,17 @@ import type { ClerkApi } from '@shardworks/clerk-apparatus';
  * Create a charge under a vision. The typed API rejects when the parent
  * is not a vision; the tool resolves a short-prefix `--parent-id` via
  * `clerk.resolveId` (D21) before calling the API. Lands the writ at
- * `phase: new` and the companion doc at `stage: draft` (D14 — no
- * auto-transition).
+ * `phase: new` and stamps `ext['cartograph'] = { stage: 'draft' }`
+ * (D14 — no auto-transition).
  */
 export default tool({
   name: 'charge-create',
   description: 'Create a new charge under a vision',
   instructions:
     'Creates a charge under an existing vision. The parent must be a vision in a ' +
-    'non-terminal state. The writ lands in `phase: new` and the companion doc in ' +
-    '`stage: draft`. Use `charge-transition` to advance the lifecycle. Title and body ' +
-    'live on the writ row; edit them via `nsg writ edit`.',
+    "non-terminal state. The writ lands in `phase: new` with " +
+    "`ext['cartograph'] = { stage: 'draft' }`. Use `charge-transition` to advance the " +
+    'lifecycle. Title and body live on the writ row; edit them via `nsg writ edit`.',
   params: {
     parentId: z.string().describe('Parent vision id (or short prefix)'),
     title: z.string().describe('Short human-readable title describing the charge'),

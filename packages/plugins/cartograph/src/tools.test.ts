@@ -144,15 +144,6 @@ async function buildFixture(): Promise<Fixture> {
       ['sourceId', 'label'], ['targetId', 'label'],
     ],
   });
-  memBackend.ensureBook({ ownerId: 'cartograph', book: 'visions' }, {
-    indexes: ['stage', 'codex', 'createdAt'],
-  });
-  memBackend.ensureBook({ ownerId: 'cartograph', book: 'charges' }, {
-    indexes: ['stage', 'codex', 'createdAt'],
-  });
-  memBackend.ensureBook({ ownerId: 'cartograph', book: 'pieces' }, {
-    indexes: ['stage', 'codex', 'createdAt'],
-  });
 
   // Clerk
   await clerkPlugin.apparatus.start!(buildCtx());
@@ -619,7 +610,7 @@ describe('Cartograph CLI tools', () => {
       // 3. Create a piece under the charge (also via short prefix).
       const piece = await run(pieceCreate, {
         parentId: charge.id.slice(0, -1),
-        title: 'Pick a companion-doc shape',
+        title: 'Pick an ext-slot shape',
         body: 'Internal organization',
       }) as { id: string };
 

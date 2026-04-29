@@ -17,9 +17,14 @@ ships here:
   `childrenBehavior` cascade — patron-walkthrough semantics will be
   coordinated by the typed API and downstream consumers, not by
   registry-side cascade rules).
-- Three companion books (`visions`, `charges`, `pieces`) keyed by the
-  writ id, each holding a typed companion document with the per-type
-  stage and audit fields.
+- A typed `ext['cartograph']` sub-slot stamped on each cartograph-typed
+  writ, carrying the per-type lifecycle stage. Written exclusively
+  through `clerk.setWritExt` so sibling sub-slots (e.g.
+  `ext['surveyor']`) are preserved under concurrent writers. The
+  cartograph contributes no companion books — `writ.codex`,
+  `writ.createdAt`, and `writ.updatedAt` are the canonical sources for
+  those fields, and `ext['cartograph'].stage` is the only field the
+  cartograph carries beyond what Clerk already records.
 - A `CartographApi` exposed via `provides` that is the **only** layer
   enforcing the ladder's parent invariants:
   - vision has no parent;
@@ -83,7 +88,7 @@ const charge = await cartograph.createCharge({
 // Create a piece under the charge
 const piece = await cartograph.createPiece({
   parentId: charge.id,
-  title: 'Pick a companion-doc shape',
+  title: 'Pick an ext-slot shape',
   body: 'Internal organization ...',
 });
 
@@ -95,11 +100,15 @@ const subPiece = await cartograph.createPiece({
 });
 ```
 
-Each `createX` opens a single `stacks.transaction(...)` and writes the
-writ row and the companion doc inside one atomic boundary. Parent
-existence, parent-not-terminal, codex inheritance, and id generation
-match Clerk's `post()` validation byte-for-byte (the duplication is the
-cost of being a typed atomic surface).
+Each `createX` opens a single `stacks.transaction(...)`, replicates
+Clerk's `post()` validation byte-for-byte (parent existence,
+parent-not-terminal, codex inheritance, id generation), writes the
+writ row, and stamps `ext['cartograph']` via `clerk.setWritExt`. The
+setWritExt's inner tx flattens via Stacks' nested-tx semantics, so
+both writes commit atomically and CDC sees one coalesced `create`
+event on the writs book. Each `transitionX` wraps `clerk.transition`
++ `clerk.setWritExt('cartograph', ...)` in one outer transaction —
+both inner txs flatten and CDC sees one coalesced `update` event.
 
 ### `CartographApi`
 
@@ -128,14 +137,14 @@ interface CartographApi {
 }
 ```
 
-The lifecycle-coupled `transitionX` methods update both `writ.phase` and
-the companion doc's `stage` field atomically, inside a single Stacks
+The lifecycle-coupled `transitionX` methods update both `writ.phase`
+and `writ.ext['cartograph'].stage` atomically, inside a single Stacks
 transaction. The caller specifies both the target phase and the target
 stage explicitly because a single phase may map to multiple stages
 depending on context (e.g. a charge moving to `failed` could mean
 stage `dropped` or stage `validated` depending on outcome).
 
-### Companion documents
+### Projections
 
 ```typescript
 interface VisionDoc { id: string; stage: VisionStage; codex?: string; createdAt: string; updatedAt: string; }
@@ -145,12 +154,17 @@ interface PieceDoc  { id: string; stage: PieceStage;  codex?: string; createdAt:
 type VisionStage = 'draft' | 'active' | 'sunset' | 'cancelled';
 type ChargeStage = 'draft' | 'active' | 'validated' | 'dropped';
 type PieceStage  = 'draft' | 'active' | 'done' | 'dropped';
+
+// Shape stored at writ.ext['cartograph'] (exported as CartographExt).
+interface CartographExt { stage: VisionStage | ChargeStage | PieceStage; }
 ```
 
-The minimal field set is deliberate — the patch surface plus the
-`[key: string]: unknown` index signature lets consumers grow the field
-set non-breakingly later. Vision text lives on `writ.body`; the
-companion doc carries typed metadata only.
+The minimal field set is deliberate — `id`, `codex`, `createdAt`, and
+`updatedAt` come straight from the writ row; `stage` comes from
+`writ.ext['cartograph']`. The `[key: string]: unknown` index signature
+on the projection types lets consumers grow the field set
+non-breakingly later. Vision text lives on `writ.body` and is not part
+of the projection.
 
 ### Filters
 
@@ -162,11 +176,12 @@ Lists are ordered by `createdAt desc` (newest first).
 
 ### Books
 
-| Book | Owner | Indexes |
-|---|---|---|
-| `visions` | `cartograph` | `stage`, `codex`, `createdAt` |
-| `charges` | `cartograph` | `stage`, `codex`, `createdAt` |
-| `pieces`  | `cartograph` | `stage`, `codex`, `createdAt` |
+The cartograph contributes no books — the per-writ stage lives in the
+Clerk-owned `writ.ext['cartograph']` sub-slot, written through
+`clerk.setWritExt`. See `ClerkApi.setWritExt`'s JSDoc for the canonical
+description of the plugin-keyed metadata slot. List queries filter by
+the dot-notation field `ext.cartograph.stage`; row counts are small in
+practice so the unindexed `json_extract` scan is acceptable.
 
 ### Writ Types (contributed to Clerk)
 
@@ -190,11 +205,11 @@ type — with the same five operations under each:
 | `nsg vision create --title <t> --body <b> [--codex <c>]` | Create a top-level vision (writ at `phase: new`, doc at `stage: draft`). |
 | `nsg charge create --parent-id <vision> --title <t> --body <b> [--codex <c>]` | Create a charge under a vision. |
 | `nsg piece create --parent-id <charge\|piece> --title <t> --body <b> [--codex <c>]` | Create a piece under a charge or piece (self-nests). |
-| `nsg <type> show <id> [--format text\|json]` | Show the companion doc joined with the writ row. Text mode mirrors `nsg writ show`'s lifecycle-aware block; JSON returns `{ ...doc, writ: { ... } }`. |
+| `nsg <type> show <id> [--format text\|json]` | Show the cartograph projection joined with the writ row. Text mode mirrors `nsg writ show`'s lifecycle-aware block; JSON returns `{ ...doc, writ: { ... } }`. |
 | `nsg <type> list [--stage <s>] [--codex <c>] [--limit <n>] [--offset <n>] [--format text\|json]` | Tabular list (STAGE \| ID \| CODEX \| TITLE \| CREATED) ordered by `createdAt desc`. |
-| `nsg <type> patch <id> --codex <c>` | Patch the companion doc's `codex`. Title and body live on the writ row — edit them via `nsg writ edit`. |
-| `nsg <type> transition <id> --phase <writ-phase> --stage <doc-stage> [--resolution <r>]` | Atomically advance both `writ.phase` and the companion doc's `stage` inside one Stacks transaction. Both `--phase` and `--stage` are required because a single phase may map to multiple stages depending on context. |
-| `nsg vision apply <slug> [--severity <s>] [--deadline <d>] [--decay <d>]` | Snapshot the on-disk vision at `<GUILD>/vision/<slug>/` into a vision writ + VisionDoc. Idempotent: first apply creates and binds; later applies sync the file's contents into the bound writ. CLI flags override sidecar values for the surveyor priority-hint payload. |
+| `nsg <type> patch <id> --codex <c>` | Patch the writ's `codex` (routed through `clerk.edit` so the writ row stays the single source of truth). Title and body live on the writ row — edit them via `nsg writ edit`. |
+| `nsg <type> transition <id> --phase <writ-phase> --stage <doc-stage> [--resolution <r>]` | Atomically advance both `writ.phase` and `writ.ext['cartograph'].stage` inside one Stacks transaction. Both `--phase` and `--stage` are required because a single phase may map to multiple stages depending on context. |
+| `nsg vision apply <slug> [--severity <s>] [--deadline <d>] [--decay <d>]` | Snapshot the on-disk vision at `<GUILD>/vision/<slug>/` into a vision writ stamped with `ext['cartograph']`. Idempotent: first apply creates and binds; later applies sync the file's contents into the bound writ. CLI flags override sidecar values for the surveyor priority-hint payload. |
 
 The CLI tools are read or write according to operation: `show`/`list`
 declare `permission: 'read'`; `create`/`patch`/`transition`/`apply`

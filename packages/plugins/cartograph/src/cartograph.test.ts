@@ -3,8 +3,8 @@
  *
  * The fixture wires real stacks + real clerk + the cartograph apparatus
  * (production-mirror path) so the writ-type registration-side assertions,
- * the typed-API parent validation, the companion-book CRUD round-trip,
- * and the lifecycle coupling all run against the production code paths.
+ * the typed-API parent validation, the typed-API CRUD round-trip, and
+ * the lifecycle coupling all run against the production code paths.
  *
  * Coverage matrix:
  *
@@ -13,10 +13,10 @@
  *      shape.
  *   2. Typed-API parent validation — each createX accepts its valid
  *      parents and rejects the invalid ones with descriptive errors.
- *   3. Companion-book CRUD round-trip — writ id matches doc id, patches
- *      preserve unaffected fields, list filters work.
+ *   3. Typed-API CRUD round-trip — show/list/patch route through the
+ *      writ row and `ext['cartograph']` slot; list filters work.
  *   4. Lifecycle coupling — `transitionX` updates writ.phase and
- *      doc.stage atomically.
+ *      `ext['cartograph'].stage` atomically.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -41,8 +41,6 @@ import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import { createCartograph } from './cartograph.ts';
 import type {
   CartographApi,
-  ChargeDoc,
-  PieceDoc,
   VisionDoc,
 } from './types.ts';
 
@@ -129,15 +127,6 @@ async function buildFixture(): Promise<Fixture> {
       'sourceId', 'targetId', 'label',
       ['sourceId', 'label'], ['targetId', 'label'],
     ],
-  });
-  memBackend.ensureBook({ ownerId: 'cartograph', book: 'visions' }, {
-    indexes: ['stage', 'codex', 'createdAt'],
-  });
-  memBackend.ensureBook({ ownerId: 'cartograph', book: 'charges' }, {
-    indexes: ['stage', 'codex', 'createdAt'],
-  });
-  memBackend.ensureBook({ ownerId: 'cartograph', book: 'pieces' }, {
-    indexes: ['stage', 'codex', 'createdAt'],
   });
 
   // ── Clerk ─────────────────────────────────────────────────────────
@@ -239,7 +228,7 @@ describe('Cartograph apparatus', () => {
       assert.ok(vision.createdAt);
       assert.ok(vision.updatedAt);
 
-      // The companion writ row is also present and well-formed.
+      // The underlying writ row is present and well-formed.
       const writ = await fix.clerk.show(vision.id);
       assert.equal(writ.type, 'vision');
       assert.equal(writ.phase, 'new');
@@ -339,13 +328,29 @@ describe('Cartograph apparatus', () => {
       );
     });
 
-    it('produces exactly one CDC event on the cartograph visions book per creation', async () => {
+    it('produces exactly one CDC event on the writs book per createVision (coalesced create)', async () => {
       let createCount = 0;
       let updateCount = 0;
-      fix.stacks.watch<VisionDoc>('cartograph', 'visions', (event) => {
-        if (event.type === 'create') createCount += 1;
-        if (event.type === 'update') updateCount += 1;
-      });
+      // Watch the canonical writs book at Phase 2 (post-commit, after
+      // coalesceEvents) and filter by writ type in the handler. Per
+      // Stacks' coalesceEvents, multiple writes to the same row in one
+      // tx (here: the put + the setWritExt patch) collapse into a
+      // single CDC event carrying the final state, which includes both
+      // writ fields and the stamped `ext['cartograph']` slot. Phase 1
+      // (the default) fires per write and would surface each
+      // intermediate patch as its own event.
+      fix.stacks.watch<WritDoc>('clerk', 'writs', (event) => {
+        if (event.type === 'create' && event.entry.type === 'vision') {
+          createCount += 1;
+          // The coalesced event must carry the ext['cartograph'] stamp.
+          const ext = event.entry.ext?.['cartograph'] as { stage: string } | undefined;
+          assert.ok(ext, 'coalesced create event must carry ext[cartograph]');
+          assert.ok(ext!.stage, 'coalesced create event must carry stage');
+        }
+        if (event.type === 'update' && event.entry.type === 'vision') {
+          updateCount += 1;
+        }
+      }, { failOnError: false });
 
       // Default-state creation.
       await fix.cartograph.createVision({ title: 'V1', body: 'B' });
@@ -461,7 +466,7 @@ describe('Cartograph apparatus', () => {
         body: 'B',
       });
       // Drive the vision into a terminal state via the typed API
-      // (couples the writ phase + companion stage in one tx).
+      // (couples the writ phase + ext['cartograph'].stage in one tx).
       await fix.cartograph.transitionVision(vision.id, {
         phase: 'cancelled',
         stage: 'cancelled',
@@ -566,10 +571,10 @@ describe('Cartograph apparatus', () => {
     });
   });
 
-  // ── Companion-book CRUD round-trip ────────────────────────────────
+  // ── Typed-API CRUD round-trip ─────────────────────────────────────
 
-  describe('companion-book CRUD round-trip', () => {
-    it('vision: writ id matches doc id and supports show/list/patch', async () => {
+  describe('typed-API CRUD round-trip', () => {
+    it('vision: projection id matches writ id and supports show/list/patch', async () => {
       const vision = await fix.cartograph.createVision({
         title: 'V1',
         body: 'B',
@@ -602,7 +607,7 @@ describe('Cartograph apparatus', () => {
       assert.equal(onlyDraft.length, 2);
     });
 
-    it('charge: writ id matches doc id and supports show/list/patch', async () => {
+    it('charge: projection id matches writ id and supports show/list/patch', async () => {
       const vision = await fix.cartograph.createVision({ title: 'V', body: 'B' });
       const charge = await fix.cartograph.createCharge({
         parentId: vision.id,
@@ -623,7 +628,7 @@ describe('Cartograph apparatus', () => {
       assert.equal(onlyDraft.length, 1);
     });
 
-    it('piece: writ id matches doc id and supports show/list/patch', async () => {
+    it('piece: projection id matches writ id and supports show/list/patch', async () => {
       const vision = await fix.cartograph.createVision({ title: 'V', body: 'B' });
       const charge = await fix.cartograph.createCharge({
         parentId: vision.id,
@@ -663,6 +668,44 @@ describe('Cartograph apparatus', () => {
         () => fix.cartograph.showPiece('w-missing'),
         /not found/,
       );
+    });
+
+    it('show throws a descriptive error when a typed writ exists without an ext[cartograph] slot', async () => {
+      // Bypass the typed API and post a vision-typed writ directly via
+      // clerk.post — no ext stamp. The typed-API contract is that every
+      // cartograph-typed writ stamped through createX carries the slot,
+      // so the missing slot indicates the contract was bypassed and
+      // showX must fail loud (D7).
+      const raw = await fix.clerk.post({
+        type: 'vision',
+        title: 'Bypassed',
+        body: 'Posted without an ext stamp',
+      });
+      await assert.rejects(
+        () => fix.cartograph.showVision(raw.id),
+        (err: Error) => {
+          assert.match(err.message, /missing its ext\['cartograph'\]/);
+          assert.match(err.message, new RegExp(raw.id));
+          return true;
+        },
+      );
+    });
+
+    it('list tolerates a typed writ without an ext[cartograph] slot — projects stage as undefined (D18)', async () => {
+      // A vision-typed writ posted via raw clerk.post (no ext stamp)
+      // still appears in listVisions with `stage: undefined` rather
+      // than crashing the whole list — listing is the tolerant read
+      // path (D18); fail-loud belongs to showX (D7).
+      const raw = await fix.clerk.post({
+        type: 'vision',
+        title: 'Bypassed',
+        body: 'Posted without an ext stamp',
+      });
+
+      const list = await fix.cartograph.listVisions();
+      assert.equal(list.length, 1);
+      assert.equal(list[0].id, raw.id);
+      assert.equal(list[0].stage, undefined, 'tolerant projection surfaces missing slot as undefined');
     });
   });
 
@@ -742,12 +785,12 @@ describe('Cartograph apparatus', () => {
       assert.equal(pieceWrit.phase, 'completed');
     });
 
-    it('rejects an illegal phase transition without touching the companion doc', async () => {
+    it('rejects an illegal phase transition without touching the ext slot', async () => {
       const vision = await fix.cartograph.createVision({ title: 'V', body: 'B' });
 
       // new → completed is not a legal direct edge for the mandate-clone
-      // machine; the typed API must reject and the doc's stage must
-      // remain at draft.
+      // machine; the typed API must reject and the ext['cartograph']
+      // stage must remain at draft.
       await assert.rejects(
         () =>
           fix.cartograph.transitionVision(vision.id, {
@@ -776,10 +819,10 @@ describe('Cartograph apparatus', () => {
         stage: 'active',
       });
 
-      // Drive the writ to completed via Clerk directly (no doc patch).
+      // Drive the writ to completed via Clerk directly (no ext stamp).
       // Then attempt a typed-API transition that the writ rejects
-      // (terminal → anything). Both writ.phase and doc.stage must end
-      // unchanged.
+      // (terminal → anything). Both writ.phase and ext['cartograph'].stage
+      // must end unchanged.
       await fix.clerk.transition(vision.id, 'completed');
 
       await assert.rejects(
@@ -792,13 +835,45 @@ describe('Cartograph apparatus', () => {
       );
 
       const docAfter = await fix.cartograph.showVision(vision.id);
-      // The companion doc stage was last set to 'active'; it must NOT
-      // have been touched by the failed transition.
+      // The ext['cartograph'].stage was last set to 'active'; it must
+      // NOT have been touched by the failed transition.
       assert.equal(
         docAfter.stage,
         'active',
-        'failed transition rolls back the companion doc patch',
+        'failed transition rolls back the ext[cartograph] stamp',
       );
+    });
+
+    it('emits exactly one CDC update event on the writs book per transitionX (coalesced update)', async () => {
+      let updateCount = 0;
+      let lastUpdateEntry: WritDoc | null = null;
+      // Watch at Phase 2 (post-commit) so we observe coalesced events
+      // rather than per-write Phase 1 firings. The writ-row patch from
+      // clerk.transition() and the ext stamp from clerk.setWritExt()
+      // target the same writ row in the same outer tx, so
+      // coalesceEvents collapses them to one update event carrying the
+      // final state (phase + ext['cartograph'].stage).
+      fix.stacks.watch<WritDoc>('clerk', 'writs', (event) => {
+        if (event.type === 'update' && event.entry.type === 'vision') {
+          updateCount += 1;
+          lastUpdateEntry = event.entry;
+        }
+      }, { failOnError: false });
+
+      const vision = await fix.cartograph.createVision({ title: 'V', body: 'B' });
+      // Reset baseline: the create event was filtered out above (we
+      // only count updates), and any subsequent updates start at zero.
+      assert.equal(updateCount, 0);
+
+      await fix.cartograph.transitionVision(vision.id, {
+        phase: 'open',
+        stage: 'active',
+      });
+      assert.equal(updateCount, 1, 'transitionVision emits one coalesced update event');
+      assert.ok(lastUpdateEntry, 'update event must carry the final entry');
+      assert.equal(lastUpdateEntry!.phase, 'open');
+      const ext = lastUpdateEntry!.ext?.['cartograph'] as { stage: string } | undefined;
+      assert.equal(ext?.stage, 'active', 'coalesced update event must carry the new stage');
     });
   });
 
@@ -862,10 +937,10 @@ describe('Cartograph apparatus', () => {
     });
   });
 
-  // ── Companion-book separation ─────────────────────────────────────
+  // ── Type-scoped projection separation ─────────────────────────────
 
-  describe('companion-book separation', () => {
-    it('keeps each book scoped to its own type — no cross-pollination', async () => {
+  describe('type-scoped projection separation', () => {
+    it('keeps each list filtered to its own writ type — no cross-pollination', async () => {
       const vision = await fix.cartograph.createVision({ title: 'V', body: 'B' });
       const charge = await fix.cartograph.createCharge({
         parentId: vision.id,
@@ -892,9 +967,10 @@ describe('Cartograph apparatus', () => {
       assert.equal(pieces[0].id, piece.id);
     });
 
-    it('typed show methods do not retrieve docs from the wrong book', async () => {
+    it('typed show methods reject when the writ type does not match', async () => {
       const vision = await fix.cartograph.createVision({ title: 'V', body: 'B' });
-      // showCharge on a vision id finds nothing — book separation.
+      // showCharge on a vision id rejects — the show method gates on
+      // writ.type, so cross-type lookups fail loudly.
       await assert.rejects(
         () => fix.cartograph.showCharge(vision.id),
         /not found/,
@@ -917,20 +993,17 @@ describe('Cartograph apparatus', () => {
       assert.deepEqual(apparatus.recommends, ['oculus']);
     });
 
-    it('declares the three companion books with the expected indexes', () => {
+    it('declares no companion books — per-writ stage lives in writ.ext[cartograph]', () => {
       const plugin = createCartograph();
       const apparatus = (plugin as {
         apparatus: { supportKit?: { books?: Record<string, { indexes?: unknown }> } };
       }).apparatus;
       const books = apparatus.supportKit?.books ?? {};
-      assert.deepEqual(Object.keys(books).sort(), ['charges', 'pieces', 'visions']);
-      for (const name of ['visions', 'charges', 'pieces']) {
-        assert.deepEqual(
-          books[name].indexes,
-          ['stage', 'codex', 'createdAt'],
-          `${name} book indexes`,
-        );
-      }
+      assert.deepEqual(
+        Object.keys(books),
+        [],
+        'cartograph contributes no books — per-writ stage lives in the Clerk-owned ext slot',
+      );
     });
   });
 });

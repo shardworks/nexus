@@ -2,14 +2,20 @@
  * Cartograph — public types.
  *
  * The Cartograph contributes three writ types to the Clerk —
- * `vision`, `charge`, and `piece` — and shadows each one with a
- * typed companion document stored in its own book.
+ * `vision`, `charge`, and `piece` — and stamps each writ with a typed
+ * sub-slot under `writ.ext['cartograph']` carrying the per-type
+ * lifecycle stage. Vision/charge/piece text lives on `writ.body`; the
+ * stage is the only field the cartograph needs to carry as an attribute
+ * of writ identity beyond what Clerk already records.
  *
- * Companion-doc convention follows astrolabe's `PlanDoc`: the doc id
- * matches the writ id one-for-one; both rows are written under one
- * `stacks.transaction(...)` boundary by `createX`. Vision text lives on
- * `writ.body`; the companion doc carries typed metadata only — the
- * minimal field set is deliberate (D14 in the commission spec).
+ * The typed-API surface (`createX` / `showX` / `listX` / `patchX` /
+ * `transitionX`) is the only sanctioned writer to the slot — every
+ * mutation is composed inside one `stacks.transaction(...)` so the writ
+ * row and its `ext['cartograph']` stamp commit atomically and CDC sees
+ * one coalesced event per logical change. The projection types
+ * (`VisionDoc` / `ChargeDoc` / `PieceDoc`) are derived views joined
+ * from `writ.id`, `writ.codex`, `writ.createdAt`, `writ.updatedAt`,
+ * and `writ.ext['cartograph'].stage`.
  *
  * Stage enums are per-type so each carries the domain-level vocabulary
  * relevant to its level of the decomposition ladder (see D10 in the
@@ -30,8 +36,9 @@ import type { WritPhase } from '@shardworks/clerk-apparatus';
  *  - `cancelled` — the vision was cancelled before reaching `sunset`.
  *
  * The typed-API `transitionVision` helper is the only sanctioned path
- * that updates this field; it writes both `writ.phase` and `stage`
- * inside one transaction so the two never drift.
+ * that updates this field; it writes both `writ.phase` and the
+ * `ext['cartograph'].stage` slot inside one transaction so the two
+ * never drift.
  */
 export type VisionStage = 'draft' | 'active' | 'sunset' | 'cancelled';
 
@@ -59,15 +66,40 @@ export type ChargeStage = 'draft' | 'active' | 'validated' | 'dropped';
  */
 export type PieceStage = 'draft' | 'active' | 'done' | 'dropped';
 
-// ── Companion documents ──────────────────────────────────────────────
+// ── Cartograph ext sub-slot ──────────────────────────────────────────
 
 /**
- * Companion document for a `vision` writ. Keyed by the writ id one-for-
- * one. Carries typed metadata only — vision text lives on `writ.body`.
+ * Shape of `writ.ext['cartograph']` — the cartograph's plugin-keyed
+ * sub-slot under the Clerk's sanctioned `ext` metadata map. Carries the
+ * per-type lifecycle stage and nothing else: codex is canonically
+ * `writ.codex` (single source of truth) and timestamps are canonically
+ * `writ.createdAt` / `writ.updatedAt`.
  *
- * The `[key: string]: unknown` index signature satisfies Stacks'
- * `BookEntry` constraint and lets future commissions grow the field set
- * non-breakingly. The patch surface mirrors astrolabe's `PlanDoc.patch`.
+ * Written exclusively by the cartograph's typed-API write paths
+ * (`createX`, `transitionX`, `patchX`) through `clerk.setWritExt`,
+ * preserving sibling sub-slots (e.g. `ext['surveyor']`) under
+ * concurrent writers per the `setWritExt` contract.
+ *
+ * The stage union spans every per-type stage enum so a reader can
+ * inspect the slot without first knowing the writ's type. The typed
+ * projection helpers narrow it back to the per-type enum.
+ */
+export interface CartographExt {
+  /** Lifecycle stage on the writ. Per-type enum union. */
+  stage: VisionStage | ChargeStage | PieceStage;
+}
+
+// ── Companion projections ────────────────────────────────────────────
+
+/**
+ * Typed projection for a `vision` writ. Joins `writ.id`, `writ.codex`,
+ * `writ.createdAt`, and `writ.updatedAt` with `stage` from
+ * `writ.ext['cartograph']`. Vision text lives on `writ.body` and is not
+ * part of this projection — the typed-API surface stays focused on
+ * lifecycle metadata.
+ *
+ * The `[key: string]: unknown` index signature is retained verbatim so
+ * future commissions can extend the projection non-breakingly.
  */
 export interface VisionDoc {
   /** Index signature required to satisfy BookEntry. */
@@ -85,9 +117,9 @@ export interface VisionDoc {
 }
 
 /**
- * Companion document for a `charge` writ. Same shape rules as
- * `VisionDoc` — keyed by writ id, minimal fields, index signature for
- * forward compatibility.
+ * Typed projection for a `charge` writ. Same shape rules as `VisionDoc`
+ * — keyed by writ id, minimal fields, index signature retained verbatim
+ * for forward compatibility.
  */
 export interface ChargeDoc {
   /** Index signature required to satisfy BookEntry. */
@@ -105,9 +137,9 @@ export interface ChargeDoc {
 }
 
 /**
- * Companion document for a `piece` writ. Same shape rules as
+ * Typed projection for a `piece` writ. Same shape rules as
  * `VisionDoc`/`ChargeDoc` — keyed by writ id, minimal fields, index
- * signature for forward compatibility.
+ * signature retained verbatim for forward compatibility.
  */
 export interface PieceDoc {
   /** Index signature required to satisfy BookEntry. */
@@ -173,9 +205,9 @@ export interface PieceFilters {
  *
  * The optional `phase` and `stage` fields let a caller (e.g.
  * `nsg vision apply`) bootstrap a vision directly into an active state
- * inside the same atomic transaction that creates the writ row and the
- * companion VisionDoc. The phase/stage pair must match the fixed mapping
- * the typed API maintains for initial creation:
+ * inside the same atomic transaction that creates the writ row and
+ * stamps `ext['cartograph']`. The phase/stage pair must match the fixed
+ * mapping the typed API maintains for initial creation:
  *
  *   - phase `'new'`  paired with stage `'draft'`  (default)
  *   - phase `'open'` paired with stage `'active'`
@@ -197,8 +229,8 @@ export interface CreateVisionRequest {
    */
   phase?: WritPhase;
   /**
-   * Optional initial stage on the companion VisionDoc. Defaults to
-   * `'draft'`. Must pair with `phase` per the initial-state mapping.
+   * Optional initial stage on `writ.ext['cartograph'].stage`. Defaults
+   * to `'draft'`. Must pair with `phase` per the initial-state mapping.
    * Terminal stages (`sunset`, `cancelled`) are rejected.
    */
   stage?: VisionStage;
@@ -247,7 +279,7 @@ export interface CreatePieceRequest {
 export interface TransitionVisionRequest {
   /** Target phase on the underlying writ. */
   phase: WritPhase;
-  /** Target stage on the companion VisionDoc. */
+  /** Target stage on `writ.ext['cartograph'].stage`. */
   stage: VisionStage;
   /** Optional resolution string. Set on terminal transitions. */
   resolution?: string;
@@ -261,7 +293,7 @@ export interface TransitionVisionRequest {
 export interface TransitionChargeRequest {
   /** Target phase on the underlying writ. */
   phase: WritPhase;
-  /** Target stage on the companion ChargeDoc. */
+  /** Target stage on `writ.ext['cartograph'].stage`. */
   stage: ChargeStage;
   /** Optional resolution string. Set on terminal transitions. */
   resolution?: string;
@@ -275,7 +307,7 @@ export interface TransitionChargeRequest {
 export interface TransitionPieceRequest {
   /** Target phase on the underlying writ. */
   phase: WritPhase;
-  /** Target stage on the companion PieceDoc. */
+  /** Target stage on `writ.ext['cartograph'].stage`. */
   stage: PieceStage;
   /** Optional resolution string. Set on terminal transitions. */
   resolution?: string;
@@ -297,54 +329,58 @@ export interface TransitionPieceRequest {
  * parent-type checks — the typed API is the validator. WritTypeConfig
  * deliberately carries no parentTypes/allowedChildren restrictions.
  *
- * Each `createX` opens a single Stacks transaction and writes both the
- * writ row and the companion document inside one boundary. Parent
- * existence, parent-not-terminal, codex inheritance, and id generation
- * mirror Clerk's `post()` validation byte-for-byte (the duplication is
- * the cost of being a typed atomic surface).
+ * Each `createX` opens a single `stacks.transaction(...)` and replicates
+ * Clerk's `post()` validation (parent existence, parent-not-terminal,
+ * codex inheritance, id generation) before writing the writ row plus the
+ * `ext['cartograph']` stamp via `clerk.setWritExt`. The ext-slot stamp
+ * flattens into the outer transaction so both writes commit atomically
+ * and CDC sees one coalesced `create` event on the writs book.
  *
- * Each `transitionX` writes both `writ.phase` and the companion doc's
- * `stage` field atomically. The caller specifies both targets
- * explicitly because a single phase may map to multiple stages
- * depending on context.
+ * Each `transitionX` wraps `clerk.transition` plus a
+ * `clerk.setWritExt('cartograph', { stage })` call inside one
+ * `stacks.transaction`. Both inner transactions flatten via the Stacks
+ * nested-tx semantics, so the writ-phase patch and the ext-slot stamp
+ * commit atomically and CDC sees one coalesced `update` event. The
+ * caller specifies both targets explicitly because a single phase may
+ * map to multiple stages depending on context.
  */
 export interface CartographApi {
   // ── Vision ──────────────────────────────────────────────────────
 
   /** Create a top-level vision. Rejects when `parentId` is set. */
   createVision(request: CreateVisionRequest): Promise<VisionDoc>;
-  /** Show a vision by writ id. Throws if the doc is not found. */
+  /** Show a vision by writ id. Throws if the writ is missing or carries no `ext['cartograph']` slot. */
   showVision(id: string): Promise<VisionDoc>;
   /** List visions, ordered by createdAt descending. */
   listVisions(filters?: VisionFilters): Promise<VisionDoc[]>;
-  /** Patch a vision's companion doc. Returns the updated document. */
+  /** Patch a vision's mutable fields (codex via `clerk.edit`, stage via `setWritExt`). Returns the updated projection. */
   patchVision(id: string, fields: Partial<Omit<VisionDoc, 'id'>>): Promise<VisionDoc>;
-  /** Atomically transition both the writ phase and the companion stage. */
+  /** Atomically transition both the writ phase and the `ext['cartograph'].stage` slot. */
   transitionVision(id: string, request: TransitionVisionRequest): Promise<VisionDoc>;
 
   // ── Charge ──────────────────────────────────────────────────────
 
   /** Create a charge under a vision. Rejects when the parent is not a vision. */
   createCharge(request: CreateChargeRequest): Promise<ChargeDoc>;
-  /** Show a charge by writ id. Throws if the doc is not found. */
+  /** Show a charge by writ id. Throws if the writ is missing or carries no `ext['cartograph']` slot. */
   showCharge(id: string): Promise<ChargeDoc>;
   /** List charges, ordered by createdAt descending. */
   listCharges(filters?: ChargeFilters): Promise<ChargeDoc[]>;
-  /** Patch a charge's companion doc. Returns the updated document. */
+  /** Patch a charge's mutable fields (codex via `clerk.edit`, stage via `setWritExt`). Returns the updated projection. */
   patchCharge(id: string, fields: Partial<Omit<ChargeDoc, 'id'>>): Promise<ChargeDoc>;
-  /** Atomically transition both the writ phase and the companion stage. */
+  /** Atomically transition both the writ phase and the `ext['cartograph'].stage` slot. */
   transitionCharge(id: string, request: TransitionChargeRequest): Promise<ChargeDoc>;
 
   // ── Piece ───────────────────────────────────────────────────────
 
   /** Create a piece under a charge or piece. Rejects on any other parent type. */
   createPiece(request: CreatePieceRequest): Promise<PieceDoc>;
-  /** Show a piece by writ id. Throws if the doc is not found. */
+  /** Show a piece by writ id. Throws if the writ is missing or carries no `ext['cartograph']` slot. */
   showPiece(id: string): Promise<PieceDoc>;
   /** List pieces, ordered by createdAt descending. */
   listPieces(filters?: PieceFilters): Promise<PieceDoc[]>;
-  /** Patch a piece's companion doc. Returns the updated document. */
+  /** Patch a piece's mutable fields (codex via `clerk.edit`, stage via `setWritExt`). Returns the updated projection. */
   patchPiece(id: string, fields: Partial<Omit<PieceDoc, 'id'>>): Promise<PieceDoc>;
-  /** Atomically transition both the writ phase and the companion stage. */
+  /** Atomically transition both the writ phase and the `ext['cartograph'].stage` slot. */
   transitionPiece(id: string, request: TransitionPieceRequest): Promise<PieceDoc>;
 }

@@ -6,15 +6,15 @@ import type { ClerkApi } from '@shardworks/clerk-apparatus';
 import { composeShow, renderShowJson, renderShowText } from './render.ts';
 
 /**
- * Show a piece by writ id. Composes the companion doc with the writ
- * row (D7) and returns either the lifecycle-aware text block (D18) or
- * the structured `{ ...doc, writ: { ... } }` JSON (D8).
+ * Show a piece by writ id. Composes the cartograph projection with the
+ * writ row (D7) and returns either the lifecycle-aware text block (D18)
+ * or the structured `{ ...doc, writ: { ... } }` JSON (D8).
  */
 export default tool({
   name: 'piece-show',
   description: 'Show full detail for a piece',
   instructions:
-    'Returns the piece companion doc joined with its underlying writ row, including ' +
+    'Returns the piece projection joined with its underlying writ row, including ' +
     'parent reference, descendants summary, direct children, and links. The default ' +
     '`--format text` renders a lifecycle-aware block (state classification + attrs, ' +
     'allowed transitions, descendants summary, links). Pass `--format json` for the ' +

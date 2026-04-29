@@ -15,29 +15,33 @@
  * patron-walkthrough semantics are coordinated by the typed API and
  * downstream consumers, not by registry-side cascade rules.
  *
- * Three companion books (`visions`, `charges`, `pieces`) under owner id
- * `cartograph` shadow each writ with a typed companion document. The
- * doc's primary key is the writ id one-for-one. Vision text lives on
- * `writ.body`; the companion docs carry typed metadata only.
+ * Per-writ lifecycle stage lives on the Clerk's sanctioned plugin-keyed
+ * metadata slot at `writ.ext['cartograph']`, written exclusively through
+ * `clerk.setWritExt` so sibling sub-slots (e.g. `ext['surveyor']`) are
+ * preserved under concurrent writers. The Cartograph contributes no
+ * companion books — the writ row is the single source of truth for both
+ * the framework-level lifecycle (writ.phase) and the cartograph-level
+ * lifecycle (`ext['cartograph'].stage`).
  *
  * The typed API is the **only** layer that enforces the ladder's parent
  * invariants — vision has no parent, `charge.parentId` must be a vision,
  * `piece.parentId` must be a charge or piece. Raw `clerk.post({ type:
  * 'vision' })` continues to succeed without parent-type checks.
  *
- * Each `createX` method opens a single `stacks.transaction(...)` and
- * writes the writ row and the companion doc inside one boundary. Parent
- * existence, parent-not-terminal, codex inheritance, and id generation
- * mirror Clerk's `post()` validation byte-for-byte. `transitionX`
- * methods update both `writ.phase` and the companion doc's `stage`
- * field atomically inside one transaction.
+ * Each `createX` opens a single `stacks.transaction(...)`, replicates
+ * Clerk's `post()` validation byte-for-byte (parent existence,
+ * parent-not-terminal, codex inheritance, id generation), writes the
+ * writ row, and stamps `ext['cartograph']` via `clerk.setWritExt`. The
+ * setWritExt's inner tx flattens via Stacks' nested-tx semantics, so
+ * both writes commit atomically and CDC sees one coalesced `create`
+ * event on the writs book. Each `transitionX` wraps `clerk.transition`
+ * + `clerk.setWritExt('cartograph', ...)` in one outer transaction;
+ * both inner txs flatten and CDC sees one coalesced `update` event.
  */
 
 import type { Plugin, StartupContext } from '@shardworks/nexus-core';
 import { guild, generateId } from '@shardworks/nexus-core';
 import type {
-  Book,
-  BookQuery,
   StacksApi,
   WhereClause,
 } from '@shardworks/stacks-apparatus';
@@ -50,6 +54,7 @@ import type {
 
 import type {
   CartographApi,
+  CartographExt,
   ChargeDoc,
   ChargeFilters,
   ChargeStage,
@@ -85,6 +90,16 @@ import {
   piecePatch,
   pieceTransition,
 } from './tools/index.ts';
+
+// ── Plugin identity ──────────────────────────────────────────────────
+
+/**
+ * Plugin id used as the key into `writ.ext` for the cartograph's
+ * sub-slot. By convention each plugin writes under its own pluginId;
+ * the cartograph's id is `'cartograph'`. Centralised here so the
+ * read paths and the write paths stay in lockstep.
+ */
+const CARTOGRAPH_PLUGIN_ID = 'cartograph';
 
 // ── Writ-type configs ────────────────────────────────────────────────
 //
@@ -131,8 +146,8 @@ const PIECE_CONFIG: WritTypeConfig = {
 
 /**
  * Initial stage that pairs with a writ's `new` initial phase. The
- * typed-API `createX` methods set this on the companion doc at creation
- * time so the doc's stage starts in lockstep with the writ's phase.
+ * typed-API `createX` methods set this in `ext['cartograph']` at
+ * creation time so the slot starts in lockstep with the writ's phase.
  */
 const INITIAL_STAGE = 'draft' as const;
 
@@ -180,33 +195,116 @@ function isTerminalPhase(
 export function createCartograph(): Plugin {
   let stacks: StacksApi;
   let clerk: ClerkApi;
-  let visionsBook: Book<VisionDoc>;
-  let chargesBook: Book<ChargeDoc>;
-  let piecesBook: Book<PieceDoc>;
 
   // ── Generic helpers ────────────────────────────────────────────────
 
   /**
-   * Build a list-style query for one of the three companion books.
-   * Mirrors astrolabe's `list` body; only the field name differs (`stage`
-   * vs `status`).
+   * Read the cartograph sub-slot off a writ. Returns `undefined` when
+   * the slot is absent — the show paths interpret that as fail-loud,
+   * and the list paths interpret it as a tolerant `stage: undefined`
+   * projection (D7 + D18 in the commission spec).
    */
-  function buildListQuery(filters?: {
-    stage?: string;
-    codex?: string;
-    limit?: number;
-    offset?: number;
-  }): BookQuery {
-    const conditions: WhereClause = [];
-    if (filters?.stage !== undefined) conditions.push(['stage', '=', filters.stage]);
-    if (filters?.codex !== undefined) conditions.push(['codex', '=', filters.codex]);
-    const limit = filters?.limit ?? 20;
-    const offset = filters?.offset;
+  function readCartographExt(writ: WritDoc): CartographExt | undefined {
+    const slot = writ.ext?.[CARTOGRAPH_PLUGIN_ID];
+    if (slot === undefined || slot === null) return undefined;
+    if (typeof slot !== 'object') return undefined;
+    return slot as CartographExt;
+  }
+
+  /**
+   * Build the typed projection for a writ. Throws when the
+   * `ext['cartograph']` slot is missing — the typed-API contract is
+   * that every cartograph-typed writ stamped through `createX` carries
+   * the slot, so a missing slot indicates the contract was bypassed.
+   */
+  function projectVision(writ: WritDoc): VisionDoc {
+    const ext = readCartographExt(writ);
+    if (ext === undefined) {
+      throw new Error(
+        `Vision "${writ.id}" not found: writ exists but is missing its ext['${CARTOGRAPH_PLUGIN_ID}'] sub-slot. ` +
+          `The cartograph typed API is the only sanctioned path that stamps this slot — was the writ posted via raw clerk.post?`,
+      );
+    }
     return {
-      ...(conditions.length > 0 ? { where: conditions } : {}),
-      orderBy: ['createdAt', 'desc'],
-      limit,
-      ...(offset !== undefined ? { offset } : {}),
+      id: writ.id,
+      stage: ext.stage as VisionStage,
+      ...(writ.codex !== undefined ? { codex: writ.codex } : {}),
+      createdAt: writ.createdAt,
+      updatedAt: writ.updatedAt,
+    };
+  }
+
+  function projectCharge(writ: WritDoc): ChargeDoc {
+    const ext = readCartographExt(writ);
+    if (ext === undefined) {
+      throw new Error(
+        `Charge "${writ.id}" not found: writ exists but is missing its ext['${CARTOGRAPH_PLUGIN_ID}'] sub-slot. ` +
+          `The cartograph typed API is the only sanctioned path that stamps this slot — was the writ posted via raw clerk.post?`,
+      );
+    }
+    return {
+      id: writ.id,
+      stage: ext.stage as ChargeStage,
+      ...(writ.codex !== undefined ? { codex: writ.codex } : {}),
+      createdAt: writ.createdAt,
+      updatedAt: writ.updatedAt,
+    };
+  }
+
+  function projectPiece(writ: WritDoc): PieceDoc {
+    const ext = readCartographExt(writ);
+    if (ext === undefined) {
+      throw new Error(
+        `Piece "${writ.id}" not found: writ exists but is missing its ext['${CARTOGRAPH_PLUGIN_ID}'] sub-slot. ` +
+          `The cartograph typed API is the only sanctioned path that stamps this slot — was the writ posted via raw clerk.post?`,
+      );
+    }
+    return {
+      id: writ.id,
+      stage: ext.stage as PieceStage,
+      ...(writ.codex !== undefined ? { codex: writ.codex } : {}),
+      createdAt: writ.createdAt,
+      updatedAt: writ.updatedAt,
+    };
+  }
+
+  /**
+   * Tolerant projection used by listX endpoints (per D18). When the
+   * `ext['cartograph']` slot is absent — a writ posted via raw
+   * `clerk.post` rather than the typed API — the row still appears in
+   * results with `stage: undefined`. Listing is a tolerant read; the
+   * fail-loud behavior lives at showX (per D7).
+   */
+  function tolerantProjectVision(writ: WritDoc): VisionDoc {
+    const ext = readCartographExt(writ);
+    return {
+      id: writ.id,
+      stage: ext?.stage as VisionStage,
+      ...(writ.codex !== undefined ? { codex: writ.codex } : {}),
+      createdAt: writ.createdAt,
+      updatedAt: writ.updatedAt,
+    };
+  }
+
+  function tolerantProjectCharge(writ: WritDoc): ChargeDoc {
+    const ext = readCartographExt(writ);
+    return {
+      id: writ.id,
+      stage: ext?.stage as ChargeStage,
+      ...(writ.codex !== undefined ? { codex: writ.codex } : {}),
+      createdAt: writ.createdAt,
+      updatedAt: writ.updatedAt,
+    };
+  }
+
+  function tolerantProjectPiece(writ: WritDoc): PieceDoc {
+    const ext = readCartographExt(writ);
+    return {
+      id: writ.id,
+      stage: ext?.stage as PieceStage,
+      ...(writ.codex !== undefined ? { codex: writ.codex } : {}),
+      createdAt: writ.createdAt,
+      updatedAt: writ.updatedAt,
     };
   }
 
@@ -217,7 +315,7 @@ export function createCartograph(): Plugin {
    * commit under a single boundary.
    */
   async function validateParent(
-    txWritsBook: Book<WritDoc>,
+    txWritsBook: { get(id: string): Promise<WritDoc | null> },
     parentId: string,
     childId: string,
     options: { allowedParentTypes?: string[]; childTypeName: string },
@@ -243,6 +341,25 @@ export function createCartograph(): Plugin {
       }
     }
     return parent;
+  }
+
+  /**
+   * Build the where-clause used by listX endpoints. The `stage` filter
+   * uses the dot-notation field `ext.cartograph.stage` — Stacks'
+   * SQLite backend translates dotted field names into `json_extract`
+   * calls (see the tier3 conformance suite). Per D5, the writs book
+   * carries no index on this field; cartograph row counts are small,
+   * so the unindexed scan is acceptable.
+   */
+  function buildListWhere(filters: { stage?: string; codex?: string } | undefined, type: string): WhereClause {
+    const conditions: WhereClause = [['type', '=', type]];
+    if (filters?.stage !== undefined) {
+      conditions.push([`ext.${CARTOGRAPH_PLUGIN_ID}.stage`, '=', filters.stage]);
+    }
+    if (filters?.codex !== undefined) {
+      conditions.push(['codex', '=', filters.codex]);
+    }
+    return conditions;
   }
 
   // ── API ────────────────────────────────────────────────────────────
@@ -302,12 +419,11 @@ export function createCartograph(): Plugin {
 
       // The createX methods cannot delegate to clerk.post because Clerk's
       // `post` does not accept an external transaction context, and the
-      // writ row + companion doc must commit under one boundary.
+      // writ row + ext['cartograph'] stamp must commit under one boundary.
       // Replicating Clerk's validation logic here is the cost of being a
       // typed atomic surface.
       return stacks.transaction(async (tx) => {
         const txWritsBook = tx.book<WritDoc>('clerk', 'writs');
-        const txVisionsBook = tx.book<VisionDoc>('cartograph', 'visions');
 
         const childId = generateId('w', 6);
         const now = new Date().toISOString();
@@ -325,94 +441,94 @@ export function createCartograph(): Plugin {
 
         await txWritsBook.put(writ);
 
-        const doc: VisionDoc = {
-          id: childId,
-          stage: requestedStage,
-          ...(request.codex !== undefined ? { codex: request.codex } : {}),
-          createdAt: now,
-          updatedAt: now,
-        };
-
-        await txVisionsBook.put(doc);
-        return doc;
+        // setWritExt opens its own inner tx; nested-tx semantics flatten
+        // it into the outer tx so both writes coalesce to one CDC create
+        // event with the final state (writ fields + ext['cartograph']).
+        const stamped = await clerk.setWritExt(
+          childId,
+          CARTOGRAPH_PLUGIN_ID,
+          { stage: requestedStage } satisfies CartographExt,
+        );
+        return projectVision(stamped);
       });
     },
 
     async showVision(id: string): Promise<VisionDoc> {
-      const doc = await visionsBook.get(id);
-      if (!doc) {
-        throw new Error(`Vision "${id}" not found.`);
+      const writ = await clerk.show(id);
+      if (writ.type !== 'vision') {
+        throw new Error(`Vision "${id}" not found (writ exists but type is "${writ.type}").`);
       }
-      return doc;
+      return projectVision(writ);
     },
 
     async listVisions(filters?: VisionFilters): Promise<VisionDoc[]> {
-      return visionsBook.find(buildListQuery(filters));
+      const writsBook = stacks.readBook<WritDoc>('clerk', 'writs');
+      const rows = await writsBook.find({
+        where: buildListWhere(filters, 'vision'),
+        orderBy: ['createdAt', 'desc'],
+        limit: filters?.limit ?? 20,
+        ...(filters?.offset !== undefined ? { offset: filters.offset } : {}),
+      });
+      return rows.map(tolerantProjectVision);
     },
 
     async patchVision(
       id: string,
       fields: Partial<Omit<VisionDoc, 'id'>>,
     ): Promise<VisionDoc> {
-      return visionsBook.patch(id, fields);
+      // Codex flows through `clerk.edit` so the writ row stays the
+      // single source of truth (D2). Stage flows through `setWritExt`
+      // so sibling sub-slots are preserved (per the setWritExt
+      // contract). Both writes target the same writ row; if both are
+      // requested they coalesce to one CDC update event.
+      return stacks.transaction(async () => {
+        // The projection type carries `[key: string]: unknown` (D6) so
+        // property access on `fields` widens to `unknown`. Cast at the
+        // boundary; the typed-API contract is that callers supply
+        // string codex / stage values matching the projection.
+        const codex = fields.codex as string | undefined;
+        const stage = fields.stage as VisionStage | undefined;
+        if (codex !== undefined) {
+          await clerk.edit({ id, codex });
+        }
+        if (stage !== undefined) {
+          await clerk.setWritExt(
+            id,
+            CARTOGRAPH_PLUGIN_ID,
+            { stage } satisfies CartographExt,
+          );
+        }
+        // Re-read so the returned projection reflects every write
+        // performed in this tx (including the fall-through case where
+        // neither codex nor stage was supplied — the projection still
+        // returns the current state).
+        const writ = await clerk.show(id);
+        return projectVision(writ);
+      });
     },
 
     async transitionVision(
       id: string,
       request: TransitionVisionRequest,
     ): Promise<VisionDoc> {
-      // Lifecycle coupling lives on the typed API. The caller specifies
-      // both target phase and target stage explicitly because a single
-      // phase may map to multiple stages (e.g. failed → cancelled vs
-      // failed → sunset).
-      return stacks.transaction(async (tx) => {
-        const txWritsBook = tx.book<WritDoc>('clerk', 'writs');
-        const txVisionsBook = tx.book<VisionDoc>('cartograph', 'visions');
+      // Lifecycle coupling: the writ phase patch and the
+      // `ext['cartograph'].stage` stamp must commit atomically. Both
+      // `clerk.transition` and `clerk.setWritExt` open their own inner
+      // transactions; under Stacks' nested-tx semantics they flatten
+      // into this outer tx, so CDC sees one coalesced update event.
+      return stacks.transaction(async () => {
+        const transitionFields: Partial<WritDoc> = {};
+        if (request.resolution !== undefined) {
+          transitionFields.resolution = request.resolution;
+        }
+        await clerk.transition(id, request.phase, transitionFields);
 
-        const writ = await txWritsBook.get(id);
-        if (!writ) {
-          throw new Error(`Writ "${id}" not found.`);
-        }
-
-        const config = clerk.getWritTypeConfig(writ.type);
-        if (!config) {
-          throw new Error(
-            `[cartograph] writ "${id}" carries unregistered type "${writ.type}".`,
-          );
-        }
-        const currentState = config.states.find((s) => s.name === writ.phase);
-        if (!currentState) {
-          throw new Error(
-            `[cartograph] writ "${id}" carries phase "${writ.phase}" not declared in type "${writ.type}".`,
-          );
-        }
-        if (!currentState.allowedTransitions.includes(request.phase)) {
-          const legal =
-            currentState.allowedTransitions.length === 0
-              ? 'none (terminal state)'
-              : currentState.allowedTransitions.map((s) => `"${s}"`).join(', ');
-          throw new Error(
-            `Cannot transition writ "${id}" from "${writ.phase}" to "${request.phase}": legal transitions from "${writ.phase}" are ${legal}.`,
-          );
-        }
-        const targetState = config.states.find((s) => s.name === request.phase);
-        if (!targetState) {
-          throw new Error(
-            `[cartograph] writ type "${writ.type}" has no state "${request.phase}".`,
-          );
-        }
-        const isTerminal = targetState.classification === 'terminal';
-
-        const now = new Date().toISOString();
-        const writPatch: Partial<Omit<WritDoc, 'id'>> = {
-          phase: request.phase,
-          updatedAt: now,
-          ...(isTerminal ? { resolvedAt: now } : {}),
-          ...(request.resolution !== undefined ? { resolution: request.resolution } : {}),
-        };
-        await txWritsBook.patch(id, writPatch);
-
-        return txVisionsBook.patch(id, { stage: request.stage, updatedAt: now });
+        const stamped = await clerk.setWritExt(
+          id,
+          CARTOGRAPH_PLUGIN_ID,
+          { stage: request.stage } satisfies CartographExt,
+        );
+        return projectVision(stamped);
       });
     },
 
@@ -421,7 +537,6 @@ export function createCartograph(): Plugin {
     async createCharge(request: CreateChargeRequest): Promise<ChargeDoc> {
       return stacks.transaction(async (tx) => {
         const txWritsBook = tx.book<WritDoc>('clerk', 'writs');
-        const txChargesBook = tx.book<ChargeDoc>('cartograph', 'charges');
 
         const childId = generateId('w', 6);
         const now = new Date().toISOString();
@@ -454,90 +569,73 @@ export function createCartograph(): Plugin {
 
         await txWritsBook.put(writ);
 
-        const doc: ChargeDoc = {
-          id: childId,
-          stage: INITIAL_STAGE,
-          ...(codex !== undefined ? { codex } : {}),
-          createdAt: now,
-          updatedAt: now,
-        };
-
-        await txChargesBook.put(doc);
-        return doc;
+        const stamped = await clerk.setWritExt(
+          childId,
+          CARTOGRAPH_PLUGIN_ID,
+          { stage: INITIAL_STAGE } satisfies CartographExt,
+        );
+        return projectCharge(stamped);
       });
     },
 
     async showCharge(id: string): Promise<ChargeDoc> {
-      const doc = await chargesBook.get(id);
-      if (!doc) {
-        throw new Error(`Charge "${id}" not found.`);
+      const writ = await clerk.show(id);
+      if (writ.type !== 'charge') {
+        throw new Error(`Charge "${id}" not found (writ exists but type is "${writ.type}").`);
       }
-      return doc;
+      return projectCharge(writ);
     },
 
     async listCharges(filters?: ChargeFilters): Promise<ChargeDoc[]> {
-      return chargesBook.find(buildListQuery(filters));
+      const writsBook = stacks.readBook<WritDoc>('clerk', 'writs');
+      const rows = await writsBook.find({
+        where: buildListWhere(filters, 'charge'),
+        orderBy: ['createdAt', 'desc'],
+        limit: filters?.limit ?? 20,
+        ...(filters?.offset !== undefined ? { offset: filters.offset } : {}),
+      });
+      return rows.map(tolerantProjectCharge);
     },
 
     async patchCharge(
       id: string,
       fields: Partial<Omit<ChargeDoc, 'id'>>,
     ): Promise<ChargeDoc> {
-      return chargesBook.patch(id, fields);
+      return stacks.transaction(async () => {
+        const codex = fields.codex as string | undefined;
+        const stage = fields.stage as ChargeStage | undefined;
+        if (codex !== undefined) {
+          await clerk.edit({ id, codex });
+        }
+        if (stage !== undefined) {
+          await clerk.setWritExt(
+            id,
+            CARTOGRAPH_PLUGIN_ID,
+            { stage } satisfies CartographExt,
+          );
+        }
+        const writ = await clerk.show(id);
+        return projectCharge(writ);
+      });
     },
 
     async transitionCharge(
       id: string,
       request: TransitionChargeRequest,
     ): Promise<ChargeDoc> {
-      return stacks.transaction(async (tx) => {
-        const txWritsBook = tx.book<WritDoc>('clerk', 'writs');
-        const txChargesBook = tx.book<ChargeDoc>('cartograph', 'charges');
+      return stacks.transaction(async () => {
+        const transitionFields: Partial<WritDoc> = {};
+        if (request.resolution !== undefined) {
+          transitionFields.resolution = request.resolution;
+        }
+        await clerk.transition(id, request.phase, transitionFields);
 
-        const writ = await txWritsBook.get(id);
-        if (!writ) {
-          throw new Error(`Writ "${id}" not found.`);
-        }
-
-        const config = clerk.getWritTypeConfig(writ.type);
-        if (!config) {
-          throw new Error(
-            `[cartograph] writ "${id}" carries unregistered type "${writ.type}".`,
-          );
-        }
-        const currentState = config.states.find((s) => s.name === writ.phase);
-        if (!currentState) {
-          throw new Error(
-            `[cartograph] writ "${id}" carries phase "${writ.phase}" not declared in type "${writ.type}".`,
-          );
-        }
-        if (!currentState.allowedTransitions.includes(request.phase)) {
-          const legal =
-            currentState.allowedTransitions.length === 0
-              ? 'none (terminal state)'
-              : currentState.allowedTransitions.map((s) => `"${s}"`).join(', ');
-          throw new Error(
-            `Cannot transition writ "${id}" from "${writ.phase}" to "${request.phase}": legal transitions from "${writ.phase}" are ${legal}.`,
-          );
-        }
-        const targetState = config.states.find((s) => s.name === request.phase);
-        if (!targetState) {
-          throw new Error(
-            `[cartograph] writ type "${writ.type}" has no state "${request.phase}".`,
-          );
-        }
-        const isTerminal = targetState.classification === 'terminal';
-
-        const now = new Date().toISOString();
-        const writPatch: Partial<Omit<WritDoc, 'id'>> = {
-          phase: request.phase,
-          updatedAt: now,
-          ...(isTerminal ? { resolvedAt: now } : {}),
-          ...(request.resolution !== undefined ? { resolution: request.resolution } : {}),
-        };
-        await txWritsBook.patch(id, writPatch);
-
-        return txChargesBook.patch(id, { stage: request.stage, updatedAt: now });
+        const stamped = await clerk.setWritExt(
+          id,
+          CARTOGRAPH_PLUGIN_ID,
+          { stage: request.stage } satisfies CartographExt,
+        );
+        return projectCharge(stamped);
       });
     },
 
@@ -546,7 +644,6 @@ export function createCartograph(): Plugin {
     async createPiece(request: CreatePieceRequest): Promise<PieceDoc> {
       return stacks.transaction(async (tx) => {
         const txWritsBook = tx.book<WritDoc>('clerk', 'writs');
-        const txPiecesBook = tx.book<PieceDoc>('cartograph', 'pieces');
 
         const childId = generateId('w', 6);
         const now = new Date().toISOString();
@@ -579,90 +676,73 @@ export function createCartograph(): Plugin {
 
         await txWritsBook.put(writ);
 
-        const doc: PieceDoc = {
-          id: childId,
-          stage: INITIAL_STAGE,
-          ...(codex !== undefined ? { codex } : {}),
-          createdAt: now,
-          updatedAt: now,
-        };
-
-        await txPiecesBook.put(doc);
-        return doc;
+        const stamped = await clerk.setWritExt(
+          childId,
+          CARTOGRAPH_PLUGIN_ID,
+          { stage: INITIAL_STAGE } satisfies CartographExt,
+        );
+        return projectPiece(stamped);
       });
     },
 
     async showPiece(id: string): Promise<PieceDoc> {
-      const doc = await piecesBook.get(id);
-      if (!doc) {
-        throw new Error(`Piece "${id}" not found.`);
+      const writ = await clerk.show(id);
+      if (writ.type !== 'piece') {
+        throw new Error(`Piece "${id}" not found (writ exists but type is "${writ.type}").`);
       }
-      return doc;
+      return projectPiece(writ);
     },
 
     async listPieces(filters?: PieceFilters): Promise<PieceDoc[]> {
-      return piecesBook.find(buildListQuery(filters));
+      const writsBook = stacks.readBook<WritDoc>('clerk', 'writs');
+      const rows = await writsBook.find({
+        where: buildListWhere(filters, 'piece'),
+        orderBy: ['createdAt', 'desc'],
+        limit: filters?.limit ?? 20,
+        ...(filters?.offset !== undefined ? { offset: filters.offset } : {}),
+      });
+      return rows.map(tolerantProjectPiece);
     },
 
     async patchPiece(
       id: string,
       fields: Partial<Omit<PieceDoc, 'id'>>,
     ): Promise<PieceDoc> {
-      return piecesBook.patch(id, fields);
+      return stacks.transaction(async () => {
+        const codex = fields.codex as string | undefined;
+        const stage = fields.stage as PieceStage | undefined;
+        if (codex !== undefined) {
+          await clerk.edit({ id, codex });
+        }
+        if (stage !== undefined) {
+          await clerk.setWritExt(
+            id,
+            CARTOGRAPH_PLUGIN_ID,
+            { stage } satisfies CartographExt,
+          );
+        }
+        const writ = await clerk.show(id);
+        return projectPiece(writ);
+      });
     },
 
     async transitionPiece(
       id: string,
       request: TransitionPieceRequest,
     ): Promise<PieceDoc> {
-      return stacks.transaction(async (tx) => {
-        const txWritsBook = tx.book<WritDoc>('clerk', 'writs');
-        const txPiecesBook = tx.book<PieceDoc>('cartograph', 'pieces');
+      return stacks.transaction(async () => {
+        const transitionFields: Partial<WritDoc> = {};
+        if (request.resolution !== undefined) {
+          transitionFields.resolution = request.resolution;
+        }
+        await clerk.transition(id, request.phase, transitionFields);
 
-        const writ = await txWritsBook.get(id);
-        if (!writ) {
-          throw new Error(`Writ "${id}" not found.`);
-        }
-
-        const config = clerk.getWritTypeConfig(writ.type);
-        if (!config) {
-          throw new Error(
-            `[cartograph] writ "${id}" carries unregistered type "${writ.type}".`,
-          );
-        }
-        const currentState = config.states.find((s) => s.name === writ.phase);
-        if (!currentState) {
-          throw new Error(
-            `[cartograph] writ "${id}" carries phase "${writ.phase}" not declared in type "${writ.type}".`,
-          );
-        }
-        if (!currentState.allowedTransitions.includes(request.phase)) {
-          const legal =
-            currentState.allowedTransitions.length === 0
-              ? 'none (terminal state)'
-              : currentState.allowedTransitions.map((s) => `"${s}"`).join(', ');
-          throw new Error(
-            `Cannot transition writ "${id}" from "${writ.phase}" to "${request.phase}": legal transitions from "${writ.phase}" are ${legal}.`,
-          );
-        }
-        const targetState = config.states.find((s) => s.name === request.phase);
-        if (!targetState) {
-          throw new Error(
-            `[cartograph] writ type "${writ.type}" has no state "${request.phase}".`,
-          );
-        }
-        const isTerminal = targetState.classification === 'terminal';
-
-        const now = new Date().toISOString();
-        const writPatch: Partial<Omit<WritDoc, 'id'>> = {
-          phase: request.phase,
-          updatedAt: now,
-          ...(isTerminal ? { resolvedAt: now } : {}),
-          ...(request.resolution !== undefined ? { resolution: request.resolution } : {}),
-        };
-        await txWritsBook.patch(id, writPatch);
-
-        return txPiecesBook.patch(id, { stage: request.stage, updatedAt: now });
+        const stamped = await clerk.setWritExt(
+          id,
+          CARTOGRAPH_PLUGIN_ID,
+          { stage: request.stage } satisfies CartographExt,
+        );
+        return projectPiece(stamped);
       });
     },
   };
@@ -679,18 +759,14 @@ export function createCartograph(): Plugin {
       recommends: ['oculus'],
 
       supportKit: {
-        books: {
-          visions: { indexes: ['stage', 'codex', 'createdAt'] },
-          charges: { indexes: ['stage', 'codex', 'createdAt'] },
-          pieces: { indexes: ['stage', 'codex', 'createdAt'] },
-        },
-
         // Cartograph contributes 16 patron-facing CLI tools — five per
         // (vision/charge/piece × create/show/list/patch/transition) plus
         // the on-disk authoring tool `vision-apply`. The framework
         // `nsg` auto-builder discovers them via The Instrumentarium and
         // groups them by hyphen prefix automatically (D2/D3 in the
-        // commission spec).
+        // commission spec). No companion books are contributed —
+        // per-writ stage lives in the Clerk's `writ.ext['cartograph']`
+        // sub-slot, written through `clerk.setWritExt`.
         tools: [
           visionCreate,
           visionShow,
@@ -718,10 +794,6 @@ export function createCartograph(): Plugin {
         stacks = g.apparatus<StacksApi>('stacks');
         clerk = g.apparatus<ClerkApi>('clerk');
 
-        visionsBook = stacks.book<VisionDoc>('cartograph', 'visions');
-        chargesBook = stacks.book<ChargeDoc>('cartograph', 'charges');
-        piecesBook = stacks.book<PieceDoc>('cartograph', 'pieces');
-
         // Register the three writ types. Cartograph's `requires: ['stacks',
         // 'clerk']` declaration ensures Clerk has already started; the
         // registration window stays open until the framework's
@@ -736,7 +808,7 @@ export function createCartograph(): Plugin {
 
 // Re-export the type-config constants so tests can assert them without
 // reaching back into the apparatus module.
-export { VISION_CONFIG, CHARGE_CONFIG, PIECE_CONFIG };
+export { VISION_CONFIG, CHARGE_CONFIG, PIECE_CONFIG, CARTOGRAPH_PLUGIN_ID };
 
 // Local type re-exports kept narrow — see ./index.ts for the full surface.
 export type {

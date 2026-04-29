@@ -11,23 +11,24 @@ const WRIT_PHASES = ['new', 'open', 'stuck', 'completed', 'failed', 'cancelled']
 const PIECE_STAGES = ['draft', 'active', 'done', 'dropped'] as const;
 
 /**
- * Transition a piece: writes both `writ.phase` and the companion doc's
- * `stage` atomically inside one Stacks transaction. Both `--phase` and
- * `--stage` are required (D15) and Zod-enum-validated (D16). Optional
- * `--resolution` lands in the same transaction (D17).
+ * Transition a piece: writes both `writ.phase` and the
+ * `ext['cartograph'].stage` slot atomically inside one Stacks
+ * transaction. Both `--phase` and `--stage` are required (D15) and
+ * Zod-enum-validated (D16). Optional `--resolution` lands in the same
+ * transaction (D17).
  */
 export default tool({
   name: 'piece-transition',
   description: 'Transition a piece lifecycle (writes phase + stage atomically)',
   instructions:
-    "Atomically updates the piece writ's phase and the companion doc's stage. " +
+    "Atomically updates the piece writ's phase and `ext['cartograph'].stage`. " +
     'Both --phase and --stage are required: a single phase may map to multiple ' +
     'stages depending on context (e.g. completed → done vs failed → dropped). ' +
     'The typed API rejects illegal phase edges per the writ-type config.',
   params: {
     id: z.string().describe('Piece id (or short prefix)'),
     phase: z.enum(WRIT_PHASES).describe('Target phase on the underlying writ'),
-    stage: z.enum(PIECE_STAGES).describe('Target stage on the companion piece doc'),
+    stage: z.enum(PIECE_STAGES).describe("Target stage on writ.ext['cartograph'].stage"),
     resolution: z
       .string()
       .optional()

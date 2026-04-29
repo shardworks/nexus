@@ -20,23 +20,24 @@ const WRIT_PHASES = ['new', 'open', 'stuck', 'completed', 'failed', 'cancelled']
 const VISION_STAGES = ['draft', 'active', 'sunset', 'cancelled'] as const;
 
 /**
- * Transition a vision: writes both `writ.phase` and the companion doc's
- * `stage` atomically inside one Stacks transaction. Both `--phase` and
- * `--stage` are required (D15) and Zod-enum-validated (D16). Optional
- * `--resolution` lands in the same transaction (D17).
+ * Transition a vision: writes both `writ.phase` and the
+ * `ext['cartograph'].stage` slot atomically inside one Stacks
+ * transaction. Both `--phase` and `--stage` are required (D15) and
+ * Zod-enum-validated (D16). Optional `--resolution` lands in the same
+ * transaction (D17).
  */
 export default tool({
   name: 'vision-transition',
   description: 'Transition a vision lifecycle (writes phase + stage atomically)',
   instructions:
-    'Atomically updates the vision writ\'s phase and the companion doc\'s stage. ' +
+    "Atomically updates the vision writ's phase and `ext['cartograph'].stage`. " +
     'Both --phase and --stage are required: a single phase may map to multiple ' +
     'stages depending on context (e.g. failed → cancelled vs failed → sunset). ' +
     'The typed API rejects illegal phase edges per the writ-type config.',
   params: {
     id: z.string().describe('Vision id (or short prefix)'),
     phase: z.enum(WRIT_PHASES).describe('Target phase on the underlying writ'),
-    stage: z.enum(VISION_STAGES).describe('Target stage on the companion vision doc'),
+    stage: z.enum(VISION_STAGES).describe("Target stage on writ.ext['cartograph'].stage"),
     resolution: z
       .string()
       .optional()

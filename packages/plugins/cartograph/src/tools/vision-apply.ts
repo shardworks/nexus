@@ -3,11 +3,11 @@
  *
  * Reads a vision authored on disk at
  * `<guildHome>/vision/<slug>/{vision.md, vision-metadata.yml}` and
- * snapshots it into the cartograph as a vision writ + companion
- * VisionDoc using a single code path for both first-time bootstrap and
- * Nth re-import. After first apply the sidecar gains a system-managed
- * `visionId` field that binds the on-disk directory to its cartograph
- * writ.
+ * snapshots it into the cartograph as a vision writ stamped with
+ * `ext['cartograph']` and `ext['surveyor']` using a single code path
+ * for both first-time bootstrap and Nth re-import. After first apply
+ * the sidecar gains a system-managed `visionId` field that binds the
+ * on-disk directory to its cartograph writ.
  *
  * The data flow is one-way: file → writ. Edits to the writ are not
  * propagated back to the file.
@@ -26,6 +26,7 @@ import { parseDocument, isMap, type Document } from 'yaml';
 import { guild } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
 import type { ClerkApi } from '@shardworks/clerk-apparatus';
+import type { StacksApi } from '@shardworks/stacks-apparatus';
 import type { CartographApi, VisionDoc, VisionStage } from '../types.ts';
 
 /**
@@ -244,8 +245,8 @@ export default tool({
   description: 'Apply an on-disk vision (snapshot a directory into a vision writ + VisionDoc)',
   instructions:
     'Reads <guildHome>/vision/<slug>/{vision.md, vision-metadata.yml}, snapshots the ' +
-    'vision into the cartograph as a vision writ + companion VisionDoc, and writes a ' +
-    'priority-hint payload into writ.ext[surveyor]. On first apply, the sidecar gains a ' +
+    'vision into the cartograph as a vision writ stamped with ext[cartograph], and ' +
+    'writes a priority-hint payload into writ.ext[surveyor]. On first apply, the sidecar gains a ' +
     'visionId field binding the directory to its writ. On subsequent applies, the bound ' +
     'writ is updated in place; missing/cancelled/completed/failed bindings error cleanly. ' +
     'CLI flags --severity, --deadline, and --decay override sidecar values for the ' +
@@ -314,6 +315,7 @@ export default tool({
 
     const cartograph = guild().apparatus<CartographApi>('cartograph');
     const clerk = guild().apparatus<ClerkApi>('clerk');
+    const stacks = guild().apparatus<StacksApi>('stacks');
 
     const surveyorPayload = buildSurveyorPayload(sidecar, {
       ...(params.severity !== undefined ? { severity: params.severity } : {}),
@@ -334,20 +336,34 @@ export default tool({
         );
       }
 
-      const doc = await cartograph.createVision({
-        title: sidecar.title,
-        body: bodyText,
-        ...(sidecar.codex !== undefined ? { codex: sidecar.codex } : {}),
-        phase: targetPhase,
-        stage: sidecar.stage,
+      // Wrap createVision + the surveyor stamp in one outer Stacks
+      // transaction so every per-apply write to the writs row coalesces
+      // into a single CDC event. createVision opens its own
+      // `stacks.transaction(...)` internally; under nested-tx semantics
+      // it flattens into the outer tx, and the trailing setWritExt
+      // (sibling sub-slot) flattens too — so the create event carries
+      // the writ fields, `ext['cartograph']`, and `ext['surveyor']` all
+      // in one coalesced payload.
+      const doc = await stacks.transaction(async () => {
+        const created = await cartograph.createVision({
+          title: sidecar.title,
+          body: bodyText,
+          ...(sidecar.codex !== undefined ? { codex: sidecar.codex } : {}),
+          phase: targetPhase,
+          stage: sidecar.stage,
+        });
+        // Surveyor slot is always written, even when payload is `{}` —
+        // its presence marks the writ as processed by apply (D11).
+        await clerk.setWritExt(created.id, SURVEYOR_PLUGIN_ID, surveyorPayload);
+        return created;
       });
-
-      // Surveyor slot is always written, even when payload is `{}` —
-      // its presence marks the writ as processed by apply (D11).
-      await clerk.setWritExt(doc.id, SURVEYOR_PLUGIN_ID, surveyorPayload);
 
       // Persist the visionId binding. Round-trips the yaml document so
       // comments and key order survive (D14); writes atomically (D15).
+      // The sidecar write is filesystem-side and outside the Stacks tx
+      // boundary; on a crash between commit and rename the writ exists
+      // un-bound and the next apply re-creates per the sunset/cancelled
+      // recovery flow.
       await persistVisionId(sidecar, sidecarPath, doc.id);
 
       return doc;
@@ -381,43 +397,53 @@ export default tool({
 
     const existingDoc = await cartograph.showVision(boundId);
 
-    // Always re-write the body — D12 (no diff-and-skip).
-    await clerk.edit({ id: boundId, title: sidecar.title, body: bodyText });
+    // Wrap every per-apply write to the writs row in a single outer
+    // transaction. clerk.edit, cartograph.patchVision,
+    // cartograph.transitionVision, and clerk.setWritExt(SURVEYOR) all
+    // open their own inner transactions — under Stacks' nested-tx
+    // semantics they flatten into this outer tx, and CDC sees one
+    // coalesced update event per apply with the final state.
+    const updatedDoc = await stacks.transaction(async () => {
+      // Always re-write the body — D12 (no diff-and-skip).
+      await clerk.edit({ id: boundId, title: sidecar.title, body: bodyText });
 
-    // Codex sync: patch the companion doc when the sidecar codex
-    // differs. This bypasses transitionVision's no-self-transition
-    // rule (D20).
-    if ((sidecar.codex ?? undefined) !== (existingDoc.codex ?? undefined)) {
-      await cartograph.patchVision(boundId, {
-        ...(sidecar.codex !== undefined ? { codex: sidecar.codex } : { codex: undefined }),
-      });
-    }
+      // Codex sync: route through clerk.edit so the writ row stays the
+      // single source of truth. This bypasses transitionVision's
+      // no-self-transition rule (D20).
+      if ((sidecar.codex ?? undefined) !== (existingDoc.codex ?? undefined)) {
+        await cartograph.patchVision(boundId, {
+          ...(sidecar.codex !== undefined ? { codex: sidecar.codex } : { codex: undefined }),
+        });
+      }
 
-    // Stage/phase sync: only call transitionVision when the target
-    // phase actually differs from the writ's current phase. Calling it
-    // when the phase is unchanged would trigger transitionVision's
-    // self-transition rejection — D20 keeps the no-op at the call
-    // site and preserves the VISION_CONFIG invariant.
-    let updatedDoc = existingDoc;
-    if (writ.phase !== targetPhase) {
-      updatedDoc = await cartograph.transitionVision(boundId, {
-        phase: targetPhase,
-        stage: sidecar.stage,
-        ...(sidecar.resolution !== undefined ? { resolution: sidecar.resolution } : {}),
-      });
-    } else if (existingDoc.stage !== sidecar.stage) {
-      // Phase unchanged but stage drifted (rare — phase/stage are
-      // normally locked). Patch the companion doc directly.
-      updatedDoc = await cartograph.patchVision(boundId, { stage: sidecar.stage });
-    } else if ((sidecar.codex ?? undefined) !== (existingDoc.codex ?? undefined)) {
-      // Re-fetch after the codex patch above so the returned doc
-      // reflects the new codex.
-      updatedDoc = await cartograph.showVision(boundId);
-    }
+      // Stage/phase sync: only call transitionVision when the target
+      // phase actually differs from the writ's current phase. Calling
+      // it when the phase is unchanged would trigger
+      // transitionVision's self-transition rejection — D20 keeps the
+      // no-op at the call site and preserves the VISION_CONFIG
+      // invariant.
+      let result: VisionDoc;
+      if (writ.phase !== targetPhase) {
+        result = await cartograph.transitionVision(boundId, {
+          phase: targetPhase,
+          stage: sidecar.stage,
+          ...(sidecar.resolution !== undefined ? { resolution: sidecar.resolution } : {}),
+        });
+      } else if (existingDoc.stage !== sidecar.stage) {
+        // Phase unchanged but stage drifted (rare — phase/stage are
+        // normally locked). Stamp the ext slot directly.
+        result = await cartograph.patchVision(boundId, { stage: sidecar.stage });
+      } else {
+        // Re-read so the returned doc reflects every write performed
+        // in this tx (including the body edit and any codex patch).
+        result = await cartograph.showVision(boundId);
+      }
 
-    // Refresh the surveyor slot. Always written, even when payload
-    // is `{}` (D11).
-    await clerk.setWritExt(boundId, SURVEYOR_PLUGIN_ID, surveyorPayload);
+      // Refresh the surveyor slot. Always written, even when payload
+      // is `{}` (D11).
+      await clerk.setWritExt(boundId, SURVEYOR_PLUGIN_ID, surveyorPayload);
+      return result;
+    });
 
     return updatedDoc satisfies VisionDoc;
   },

@@ -11,7 +11,7 @@
 // ── Cartograph public types ────────────────────────────────────────────
 
 export type {
-  // Companion documents
+  // Companion projections
   VisionDoc,
   ChargeDoc,
   PieceDoc,
@@ -20,6 +20,9 @@ export type {
   VisionStage,
   ChargeStage,
   PieceStage,
+
+  // ext sub-slot
+  CartographExt,
 
   // Filters
   VisionFilters,
