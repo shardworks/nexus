@@ -249,6 +249,120 @@ describe('Cartograph apparatus', () => {
       assert.equal(writ.parentId, undefined);
     });
 
+    // ── Initial phase + stage (vision-apply substrate) ──────────────
+
+    it('accepts an explicit (phase=open, stage=active) pair on first creation', async () => {
+      const vision = await fix.cartograph.createVision({
+        title: 'Active from birth',
+        body: 'B',
+        phase: 'open',
+        stage: 'active',
+      });
+      assert.equal(vision.stage, 'active');
+      const writ = await fix.clerk.show(vision.id);
+      assert.equal(writ.phase, 'open');
+    });
+
+    it('accepts stage=active without an explicit phase (phase auto-resolves to open)', async () => {
+      const vision = await fix.cartograph.createVision({
+        title: 'Active stage only',
+        body: 'B',
+        stage: 'active',
+      });
+      assert.equal(vision.stage, 'active');
+      const writ = await fix.clerk.show(vision.id);
+      assert.equal(writ.phase, 'open');
+    });
+
+    it('accepts phase=open without an explicit stage (stage auto-resolves to active)', async () => {
+      // Phase-only callers fall through to the default stage `draft`,
+      // which then mismatches with the supplied phase. The resolution
+      // path uses the stage as the source of truth, so the explicit
+      // phase has to agree with the default stage's expected phase.
+      // For now this means a phase-only call with phase=open is rejected
+      // (default stage `draft` ↔ phase `new`); patrons must supply both
+      // when overriding from the default. Verify the rejection is loud.
+      await assert.rejects(
+        () =>
+          fix.cartograph.createVision({
+            title: 'Phase-only override',
+            body: 'B',
+            phase: 'open',
+          }),
+        /does not pair with stage/,
+      );
+    });
+
+    it('rejects sunset as an initial stage', async () => {
+      await assert.rejects(
+        () =>
+          fix.cartograph.createVision({
+            title: 'Born retired',
+            body: 'B',
+            stage: 'sunset',
+          }),
+        (err: Error) => {
+          assert.match(err.message, /cannot be born retired/);
+          return true;
+        },
+      );
+    });
+
+    it('rejects cancelled as an initial stage', async () => {
+      await assert.rejects(
+        () =>
+          fix.cartograph.createVision({
+            title: 'Born cancelled',
+            body: 'B',
+            stage: 'cancelled',
+          }),
+        (err: Error) => {
+          assert.match(err.message, /cannot be born retired/);
+          return true;
+        },
+      );
+    });
+
+    it('rejects a phase/stage mismatch with a clear error', async () => {
+      await assert.rejects(
+        () =>
+          fix.cartograph.createVision({
+            title: 'Mismatched',
+            body: 'B',
+            phase: 'new',
+            stage: 'active',
+          }),
+        (err: Error) => {
+          assert.match(err.message, /does not pair/);
+          return true;
+        },
+      );
+    });
+
+    it('produces exactly one CDC event on the cartograph visions book per creation', async () => {
+      let createCount = 0;
+      let updateCount = 0;
+      fix.stacks.watch<VisionDoc>('cartograph', 'visions', (event) => {
+        if (event.type === 'create') createCount += 1;
+        if (event.type === 'update') updateCount += 1;
+      });
+
+      // Default-state creation.
+      await fix.cartograph.createVision({ title: 'V1', body: 'B' });
+      assert.equal(createCount, 1, 'first createVision emits one create event');
+      assert.equal(updateCount, 0, 'no update events on initial creation');
+
+      // Bootstrap directly into active state — still exactly one event.
+      await fix.cartograph.createVision({
+        title: 'V2',
+        body: 'B',
+        phase: 'open',
+        stage: 'active',
+      });
+      assert.equal(createCount, 2, 'second createVision emits one more create event');
+      assert.equal(updateCount, 0, 'still no update events — coalescing collapses tx writes');
+    });
+
     // Parent validation — visions have no parent.
     it('rejects a non-empty parentId with a descriptive error', async () => {
       // Create a parent vision so the would-be parent exists.

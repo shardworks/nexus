@@ -136,6 +136,20 @@ const PIECE_CONFIG: WritTypeConfig = {
 const INITIAL_STAGE = 'draft' as const;
 
 /**
+ * Allowed initial (phase, stage) pairs for `createVision`. A vision
+ * cannot be born retired, so terminal stages (`sunset`, `cancelled`)
+ * are deliberately absent — to drive a vision to a terminal state,
+ * create it then call `transitionVision`.
+ *
+ * The mapping mirrors the call-site logic the on-disk vision-apply tool
+ * uses when deriving the writ phase from the patron's sidecar `stage`.
+ */
+const VISION_INITIAL_STAGE_TO_PHASE: Record<string, WritPhase> = {
+  draft: 'new',
+  active: 'open',
+};
+
+/**
  * Return true when the given writ is in a terminal state per its
  * registered type config. Replicates `clerk.isTerminal()` against the
  * locally-resolved config so the call site doesn't need to round-trip
@@ -247,6 +261,44 @@ export function createCartograph(): Plugin {
           '[cartograph] createVision: a vision is a top-level writ and cannot have a parent — refusing to create a vision with parentId.',
         );
       }
+
+      // Initial-state resolution. Defaults to (phase=new, stage=draft) so
+      // existing callers are unaffected. A caller may supply either or
+      // both; whatever they supply must agree with the fixed mapping in
+      // VISION_INITIAL_STAGE_TO_PHASE. Terminal initial states
+      // (sunset/cancelled) are rejected — a vision cannot be born retired.
+      const requestedStage: VisionStage = request.stage ?? INITIAL_STAGE;
+      const expectedPhase = VISION_INITIAL_STAGE_TO_PHASE[requestedStage];
+      if (expectedPhase === undefined) {
+        throw new Error(
+          `[cartograph] createVision: stage "${requestedStage}" is not a valid initial stage. ` +
+            `A vision cannot be born retired — allowed initial stages are "draft" and "active". ` +
+            `To drive a vision to a terminal state, create it then call transitionVision.`,
+        );
+      }
+      const requestedPhase: WritPhase = request.phase ?? expectedPhase;
+      if (requestedPhase !== expectedPhase) {
+        throw new Error(
+          `[cartograph] createVision: phase "${requestedPhase}" does not pair with stage "${requestedStage}". ` +
+            `Allowed initial pairs are (phase=new, stage=draft) and (phase=open, stage=active).`,
+        );
+      }
+      // Validate phase against the registered VISION_CONFIG, mirroring
+      // transitionVision's defensive check. Catches an unregistered or
+      // typo'd phase value before we write the writ row.
+      const visionConfig = clerk.getWritTypeConfig('vision');
+      if (!visionConfig) {
+        throw new Error(
+          '[cartograph] createVision: writ type "vision" is not registered with the Clerk.',
+        );
+      }
+      const requestedState = visionConfig.states.find((s) => s.name === requestedPhase);
+      if (!requestedState) {
+        throw new Error(
+          `[cartograph] createVision: phase "${requestedPhase}" is not declared in writ type "vision".`,
+        );
+      }
+
       // The createX methods cannot delegate to clerk.post because Clerk's
       // `post` does not accept an external transaction context, and the
       // writ row + companion doc must commit under one boundary.
@@ -258,12 +310,11 @@ export function createCartograph(): Plugin {
 
         const childId = generateId('w', 6);
         const now = new Date().toISOString();
-        const initialPhase = 'new';
 
         const writ: WritDoc = {
           id: childId,
           type: 'vision',
-          phase: initialPhase,
+          phase: requestedPhase,
           title: request.title,
           body: request.body,
           ...(request.codex !== undefined ? { codex: request.codex } : {}),
@@ -275,7 +326,7 @@ export function createCartograph(): Plugin {
 
         const doc: VisionDoc = {
           id: childId,
-          stage: INITIAL_STAGE,
+          stage: requestedStage,
           ...(request.codex !== undefined ? { codex: request.codex } : {}),
           createdAt: now,
           updatedAt: now,

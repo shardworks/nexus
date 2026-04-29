@@ -170,6 +170,19 @@ export interface PieceFilters {
 /**
  * Request to create a top-level vision. Visions have no parent — passing
  * a non-empty `parentId` is rejected by the typed API.
+ *
+ * The optional `phase` and `stage` fields let a caller (e.g.
+ * `nsg vision apply`) bootstrap a vision directly into an active state
+ * inside the same atomic transaction that creates the writ row and the
+ * companion VisionDoc. The phase/stage pair must match the fixed mapping
+ * the typed API maintains for initial creation:
+ *
+ *   - phase `'new'`  paired with stage `'draft'`  (default)
+ *   - phase `'open'` paired with stage `'active'`
+ *
+ * Terminal initial states (`sunset` / `cancelled`) are rejected — a vision
+ * cannot be born retired. To retire a vision, create it then call
+ * `transitionVision`.
  */
 export interface CreateVisionRequest {
   /** Short human-readable title describing the vision. */
@@ -178,6 +191,17 @@ export interface CreateVisionRequest {
   body: string;
   /** Optional target codex. */
   codex?: string;
+  /**
+   * Optional initial phase on the underlying writ. Defaults to `'new'`.
+   * Must be paired with a matching `stage` per the initial-state mapping.
+   */
+  phase?: WritPhase;
+  /**
+   * Optional initial stage on the companion VisionDoc. Defaults to
+   * `'draft'`. Must pair with `phase` per the initial-state mapping.
+   * Terminal stages (`sunset`, `cancelled`) are rejected.
+   */
+  stage?: VisionStage;
 }
 
 /**
