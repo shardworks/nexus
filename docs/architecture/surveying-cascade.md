@@ -36,14 +36,15 @@ substantial design problem but designed elsewhere.
 
 | Concept | Definition |
 |---|---|
-| **Vision** | Long-lived patron intent. Authored on disk; snapshotted into a writ + VisionDoc by the cartograph. |
+| **Vision** | Long-lived patron intent. Authored on disk; snapshotted into a writ (with stage and codex carried in `writ.ext['cartograph']`) by the cartograph. |
 | **Charge** | First decomposition under a vision. Patron-contract boundary; the unit of patron walkthrough. Does NOT self-nest. |
 | **Piece** | Recursive internal organization under a charge. Self-nests. No patron contract. |
 | **Mandate** | Existing leaf writ; dispatched by Spider via the existing implementer pipeline. |
-| **Survey writ** (`survey-vision`/`survey-charge`/`survey-piece`) | Typed writ that captures one act of surveying one cartograph node. `writ.body` holds the rig's notes (set on rig completion). One survey writ per surveying event. |
-| **SurveyDoc** | Companion doc for a survey writ, keyed by writ id. Holds envelope metadata only — the rig's notes live in `writ.body`. |
+| **Survey writ** (`survey-vision`/`survey-charge`/`survey-piece`) | Typed writ that captures one act of surveying one cartograph node. `writ.body` holds the rig's notes (set on rig completion). One survey writ per surveying event. Envelope metadata lives on `writ.ext['surveyor']` (registration-time provenance) and `writ.status['surveyor']` (post-hoc observations) — see §3.4. |
+| **`ext['cartograph']`** | Plugin-keyed `writ.ext` slot owned by the cartograph-apparatus. Carries `{ stage, codex }` for vision/charge/piece writs. Replaces the earlier per-type companion books (`cartograph/visions`, `cartograph/charges`, `cartograph/pieces`). |
 | **Surveyor** | The role / agent / apparatus that performs surveying. The substrate provides the cascade machinery; concrete surveyor implementations register their rig templates as kit contributions. |
-| **`ext['surveyor']`** | Plugin-keyed `writ.ext` slot owned by the surveyor-apparatus. Carries priority hints (severity, deadline, decay, complexity) on cartograph nodes — set by the patron via apply CLI for visions, set by the upstream surveyor rig for charges and pieces. The substrate translates these into Reckoner dimensions when emitting the survey petition. |
+| **`ext['surveyor']`** | Plugin-keyed `writ.ext` slot owned by the surveyor-apparatus. On cartograph nodes, carries priority hints (severity, deadline, decay, complexity) — set by the patron via apply CLI for visions, set by the upstream surveyor rig for charges and pieces. On survey writs, carries registration-time provenance (`rigVersion`, `surveyorId`). The substrate translates the priority hints into Reckoner dimensions when emitting the survey petition. |
+| **`status['surveyor']`** | Plugin-keyed `writ.status` slot owned by the surveyor-apparatus. Stamped on survey-writ completion via `ClerkApi.setWritStatus`. Carries the survey outcome and per-completion observations. |
 
 > **Naming note.** "The Surveyor" was previously reserved in the
 > framework architecture for a codex-awareness apparatus. That use is
@@ -61,9 +62,10 @@ PATRON
   │ runs `nsg vision apply <slug> [--severity ...] [--deadline ...]`
   ▼
 CARTOGRAPH (data layer)
-  │ creates or updates the vision writ + VisionDoc (one transaction)
+  │ creates or updates the vision writ; stamps writ.ext['cartograph']
+  │ ({ stage, codex }) inside one stacks.transaction with the post/transition
   │ writes ext['surveyor'] priority hints from CLI flags + sidecar
-  │ emits Stacks CDC: book.cartograph.visions.{created,updated}
+  │ emits Stacks CDC on book.clerk.writs (filtered by writ.type = 'vision')
   ▼
 SURVEYOR-APPARATUS (substrate)
   │ CDC observer fires
@@ -172,22 +174,45 @@ surveyor's notes — the reasoning trace, the considered alternatives,
 the rationale for the structural decisions made. Body is empty
 pre-completion; the rig fills it on completion.
 
-### 3.4 Companion `SurveyDoc` holds envelope metadata only
+### 3.4 Survey-writ envelope lives on plugin-keyed slots
 
-```typescript
-interface SurveyDoc {
-  id: string;             // primary key — the survey writ id
-  targetNodeId: string;   // the cartograph node being surveyed
-  rigName: string;        // 'survey-vision' | 'survey-charge' | 'survey-piece'
-  rigVersion: string;     // for replay / diffing across rig versions
-  surveyorId: string;     // which surveyor implementation ran
-  completedAt: string;    // ISO timestamp
-  // notes are NOT here — they live in writ.body
-}
-```
+The survey writ carries the substrate's published metadata through two
+sanctioned plugin-keyed slots on the writ row, both written
+exclusively through the Clerk's `setWritExt` / `setWritStatus` APIs so
+sibling sub-slots are preserved under concurrent writers:
 
-Owned by the surveyor-apparatus substrate; shared across all surveyor
-implementations.
+- **`writ.status['surveyor']`** — observation slot. The substrate
+  stamps this slot when the survey terminates: it carries the survey
+  outcome, the writ-completion observations the surveyor recorded, and
+  any per-rig observation summary. Outcomes are surveyor-private; the
+  consumer reads them post-hoc.
+- **`writ.ext['surveyor']`** — metadata slot. On survey writs, carries
+  registration-time provenance the substrate needs the writ to *bear*
+  rather than have *observed about it*: `rigVersion` (the rig's semver
+  pin at the moment the survey was queued) and `surveyorId` (the
+  substrate-instance id for traceability across multi-substrate
+  deployments). On cartograph writs, the same slot carries patron- /
+  rig-supplied priority hints (severity, deadline, decay, complexity)
+  per §3.10.
+
+Three earlier-spec fields are dropped because they duplicate fields
+the Clerk already carries:
+
+- `targetNodeId` — replaced by `writ.parentId`. The survey writ's
+  parent edge already names the writ being surveyed; a parallel
+  metadata field is a coordination liability.
+- `rigName` — replaced by `writ.type`. The substrate registers one
+  writ type per rig, so the type *is* the rig name; carrying both lets
+  them drift.
+- `completedAt` — replaced by `writ.resolvedAt`. The Clerk stamps
+  `resolvedAt` automatically on every terminal phase transition, and
+  the surveyor's terminal transition is the only path that produces a
+  completed survey.
+
+The substrate is the only writer to either sub-slot. Other plugins
+that need to read survey provenance or outcome traverse the slot
+contract documented on `ClerkApi.setWritStatus` /
+`ClerkApi.setWritExt` respectively.
 
 ### 3.5 Immutability and supersedes
 
@@ -207,55 +232,94 @@ content intact, marked superseded.
 
 Pieces follow the same mechanism. Mandates stay where they are.
 
-### 3.6 Substrate watches cartograph CDC — single-event-per-apply guarantee
+### 3.6 Substrate watches the writs book — single-event-per-apply guarantee
 
-The substrate's observer subscribes to:
+The substrate maintains a single CDC subscription against the
+Clerk-owned writs book and filters in the handler by writ type:
 
-- `book.cartograph.visions.created` / `.updated`
-- `book.cartograph.charges.created` / `.updated`
-- `book.cartograph.pieces.created`  / `.updated`
+```ts
+stacks.watch<WritDoc>('clerk', 'writs', (event) => {
+  if (!isSurveyableType(event.entry.type)) return;
+  // ...substrate handler...
+}, { failOnError: false });
+```
 
-On any event, it reads `ext['surveyor']` hints from the affected
-node, creates the appropriate survey writ with `parentId` pointing
-to the node, derives `ext['reckoner']` priority dimensions from the
-hints + substrate defaults, and stamps to enter the petition queue.
+Where `isSurveyableType` returns true for `vision`, `charge`, `piece`
+(every cartograph-owned writ type) plus any other rig-registered type
+the substrate is configured to survey. The handler runs at Phase 2
+(post-commit, after `coalesceEvents`) so the CDC stream the substrate
+observes carries one event per logical change rather than one event
+per intermediate write.
 
-**Single-event-per-apply guarantee.** Apply CLI and surveyor rigs
-MUST produce a single CDC event per logical operation, not separate
-create+transition events. Concretely:
+This replaces the three per-book subscriptions an earlier draft
+specified — `book.cartograph.visions.{created,updated}`,
+`book.cartograph.charges.{created,updated}`, and
+`book.cartograph.pieces.{created,updated}` — none of which exist
+post-cleanup because the cartograph contributes no books. The single
+writs-book subscription is functionally equivalent and trivially
+extensible to additional writ types as more rigs come online.
 
-- `cartograph.createVision` (and `createCharge`, `createPiece`) must
-  accept the initial stage as a parameter and write writ + companion
-  doc + final stage in one Stacks transaction, OR the apply CLI must
-  wrap create + transition in one transaction at its layer.
-- The substrate observer dedupes by writ id within a short window
-  (defensive — should never matter if upstream is transactional, but
-  catches integration bugs cheaply).
+On a matching event the handler reads `ext['surveyor']` hints from
+the affected node, creates the appropriate survey writ with
+`parentId` pointing to the node, derives `ext['reckoner']` priority
+dimensions from the hints + substrate defaults, and stamps to enter
+the petition queue.
 
-Without this, a single `nsg vision apply` produces two CDC fires
-(create + transition-to-active) and the substrate creates two
-identical survey writs — wasted Reckoner cycles and duplicate rig
-dispatches. This is a correctness requirement, not an optimization.
+**Single-event-per-apply guarantee.** The cartograph's `createX` /
+`transitionX` primitives are already transactional. `createX` opens
+one `stacks.transaction(...)` that wraps the writ-row put and the
+`setWritExt('cartograph')` stamp, so the substrate sees one coalesced
+`create` event with the final state. `transitionX` wraps
+`clerk.transition` + `setWritExt('cartograph')` and yields one
+coalesced `update` event. Patron-driven flows (e.g. `vision-apply`)
+that compose multiple typed-API calls under one outer
+`stacks.transaction` produce one coalesced event per apply for the
+same reason.
+
+Without this discipline, a single `nsg vision apply` would produce
+two CDC fires (create + transition-to-active) and the substrate
+would create two identical survey writs — wasted Reckoner cycles and
+duplicate rig dispatches. The cartograph's transactional primitives
+are the load-bearing mechanism that prevents this.
 
 ### 3.7 Substrate + extension + default plugin shape
 
 Three plugins, mirroring the Reckoner pattern:
 
 1. **`@shardworks/cartograph-apparatus`** *(shipped)* — pure data layer.
-   Vision/charge/piece writ types + companion docs + ladder-invariant
-   API. Does not own surveying.
+   Vision/charge/piece writ types + `ext['cartograph']` slot
+   (`{ stage, codex }`) + ladder-invariant API. Contributes no books;
+   per-writ stage and codex live on the writ row via the Clerk's
+   `setWritExt`. Does not own surveying.
 
 2. **`@shardworks/surveyor-apparatus`** *(substrate)*
-   - Owns survey writ types and `books.surveys`
-   - Owns the surveyor registry (kit-contribution surface)
-   - Owns the CDC observer
-   - Owns the `ext['surveyor']` slot
-   - Owns the rig-name convention (`survey-vision/charge/piece`)
+   - Owns survey writ types (`survey-vision`/`survey-charge`/
+     `survey-piece`) and the surveyor scheduler / tick loop / per-rig
+     surveyor registry.
+   - Owns the `status['surveyor']` slot on every survey writ. Stamped
+     on completion via `ClerkApi.setWritStatus(writId, 'surveyor', ...)`;
+     carries the survey outcome and per-completion observations.
+   - Owns the `ext['surveyor']` slot. On survey writs, stamped at
+     registration via `ClerkApi.setWritExt(writId, 'surveyor', ...)`
+     and carries the registration-time provenance fields described in
+     §3.4. On cartograph writs, the same slot carries patron- /
+     rig-supplied priority hints per §3.10.
+   - Owns the CDC observer (single subscription on `('clerk', 'writs')`
+     filtered by writ type — see §3.6).
+   - Owns the rig-name convention (`survey-vision`/`survey-charge`/
+     `survey-piece`).
    - Routes accepted survey petitions to the registered surveyor's
-     rig templates
-   - Stamps SurveyDoc on completion (rig fills `writ.body`; substrate
-     wraps the writ)
-   - Provides the surveyor anima tool surface (see §3.9)
+     rig templates.
+   - Stamps `status['surveyor']` on completion (rig fills `writ.body`;
+     substrate wraps the writ via `setWritStatus`).
+   - Provides the surveyor anima tool surface (see §3.9).
+   - Owns the substrate-internal records book if any (e.g. surveyor
+     backoff, per-rig health metrics) — implementation detail, not
+     part of the cross-plugin contract.
+   - Does NOT contribute a `books.surveys` book — survey metadata that
+     would otherwise live on a `SurveyDoc` row lives on the two
+     ext/status sub-slots described above, both of which are carried
+     by the writ row itself.
    - Does NOT ship a concrete surveyor.
 
 3. **`@shardworks/scaffold-surveyor`** *(default)*
@@ -727,7 +791,7 @@ the upstream rig to supersede the charge.
   scheduler kit-contribution surface.
 - [Reckonings Book](reckonings-book.md) — Reckoner's evaluation log.
 - [Cartograph plugin README](../../packages/plugins/cartograph/README.md)
-  — vision/charge/piece writ types, companion docs, the
+  — vision/charge/piece writ types, the `ext['cartograph']` slot, the
   CartographApi.
 - [Guild Metaphor](../guild-metaphor.md) — vocabulary including the
   Surveyor's role.
