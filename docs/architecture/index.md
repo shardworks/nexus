@@ -361,6 +361,37 @@ See [The Stacks — API Contract](apparatus/stacks.md) for the full specificatio
 
 ---
 
+## Patterns
+
+Cross-cutting conventions used across multiple apparatus. These are not features of any one apparatus but shared idioms consumers should recognize.
+
+### Plugin-keyed slots on writs: `ext` vs `status`
+
+Writs carry two plugin-keyed metadata slots. The Clerk owns the slots themselves; individual plugins own a sub-key under each, identified by their plugin id. Both slots are sub-key-namespaced — multiple plugins may co-stamp on the same writ without colliding, and the read-modify-write APIs (`setWritExt` / `setWritStatus`) preserve sibling sub-keys under concurrent writers.
+
+- **`writ.ext[plugin]`** — data the writ *carries*. Declared at write time; may evolve via `clerk.setWritExt(writId, plugin, value)`. Conceptually part of the writ's identity.
+- **`writ.status[plugin]`** — the substrate's *observations about* the writ. Stamped post-hoc via `clerk.setWritStatus(writId, plugin, value)`. A sibling annotation, not part of the writ's identity.
+
+**Choosing which slot:**
+
+- If the data is something the writ *is* — its current configuration, its provenance, its ladder-layer state — use **`ext`**.
+- If the data is something the substrate *learned about* the writ — its outcome, its observed behavior, its measured state — use **`status`**.
+
+**Examples:**
+
+| Slot | Use |
+|---|---|
+| `ext['cartograph']` on vision/charge/piece writs | `{ stage }` — the writ's current ladder phase |
+| `ext['surveyor']` on cartograph writs | Patron- / rig-supplied priority hints (`severity`, `deadline`, `decay`, `complexity`) |
+| `ext['surveyor']` on survey writs | Registration-time provenance (`rigVersion`, `surveyorId`) |
+| `status['surveyor']` on survey writs | Survey outcome and per-completion observations stamped at termination |
+
+**When to use neither.** The Clerk's canonical fields — `type`, `parentId`, `body`, `phase`, `resolvedAt`, `createdAt`, `updatedAt`, `codex` — are the source of truth for those concerns. Don't duplicate them in `ext`/`status`; letting them drift creates a coordination liability. The cartograph slot-cleanup dropped `targetNodeId`, `rigName`, and `completedAt` from the survey-writ envelope for exactly this reason — each was a parallel name for a Clerk-canonical field.
+
+The pattern is not limited to writs in principle, but writs are where it has been formalized. Other plugin-owned domain objects (sessions, codexes, etc.) carry their own typed shapes and don't currently expose plugin-keyed extension slots.
+
+---
+
 ## Animas
 
 <!-- TODO: Identity and composition. An anima = name + curriculum + temperament + role assignments. Composition model: curriculum (what you know), temperament (who you are) — both versioned, immutable per version. The Loom weaves them at session time. Anima states: active / retired. MVP: no identity layer; The Loom returns a fixed composition per role. Link to forthcoming anima-composition.md. -->
