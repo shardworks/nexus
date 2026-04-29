@@ -257,12 +257,13 @@ interface ReckoningDoc {
     | 'dependency_pending'
     | 'dependency_failed'
     | 'other';
-  deferUntil?: string;            // ISO timestamp, optional
-  deferSignal?: string;           // event-pattern reservation, optional
-  deferCount?: number;            // running count of times deferred
-  firstDeferredAt?: string;       // ISO timestamp
-  lastDeferredAt?: string;        // ISO timestamp
+  deferUntil?: string;            // ISO timestamp, optional (forward-compat)
+  deferSignal?: string;           // event-pattern reservation, optional (forward-compat)
   deferNote?: string;             // freeform short note
+  // Running counters (`deferCount`, `firstDeferredAt`,
+  // `lastDeferredAt`) live on the `ReckonerStatus` snapshot at
+  // `writ.status['reckoner']`, NOT on the row. See
+  // apparatus/reckoner.md §"Staleness diagnostic".
 
   // outcome === 'accepted' carries no extra metadata; the fact of
   // acceptance is captured by `outcome: 'accepted'` and `consideredAt`.
@@ -393,7 +394,7 @@ a discriminated union:
 | Outcome     | Top-level fields populated                                                                                  |
 |-------------|-------------------------------------------------------------------------------------------------------------|
 | `accepted`  | (none — only the projection and the tick stamp; the phase transition itself is recorded by Clerk on the writ) |
-| `deferred`  | `deferReason`, `deferUntil?`, `deferSignal?`, `deferCount?`, `firstDeferredAt?`, `lastDeferredAt?`, `deferNote?`. The dependency-aware-consideration commission ships `dependency_pending` / `dependency_failed` rows that populate `deferReason` + `deferNote` only — the wake-up companions and running counters are absent on those rows pending the staleness-diagnostic commission. |
+| `deferred`  | `deferReason`, `deferUntil?`, `deferSignal?`, `deferNote?`. The dependency-aware-consideration commission ships `dependency_pending` / `dependency_failed` rows that populate `deferReason` + `deferNote` only; the wake-up companions (`deferUntil`, `deferSignal`) are reserved as forward-compat for a future event-driven wake-up mechanism. The running counters live on the `ReckonerStatus` snapshot at `writ.status['reckoner']` (see apparatus/reckoner.md §"Staleness diagnostic"), not on the row. |
 | `declined`  | `declineReason`, `remediationHint?`                                                                          |
 | `no-op`     | (none — only the projection and the tick stamp)                                                              |
 
@@ -490,30 +491,30 @@ the deferred petition — is owned by the Reckoner-core commission.
 This doc names the schema fields the mechanism stamps; the mechanism
 itself is settled there.
 
-`deferCount`, `firstDeferredAt`, and `lastDeferredAt` are running
-counters: each new deferral on the same writ increments `deferCount`
-and refreshes `lastDeferredAt`, while `firstDeferredAt` is preserved
-across deferrals as the writ's first-seen-as-deferred timestamp. The
-Reckoner reads the prior Reckonings row for the writ to compute the
-running counter; the journal is its own source of truth for the
-deferral history. The dependency-aware commission deliberately
-leaves the running counters unwired on its rows; wiring them is
-owned by the deferred-petition staleness diagnostic. Until that
-commission ships, the count of dependency-defer rows is derivable
-from `count(*) WHERE writId = X AND outcome = 'deferred' AND
-deferReason IN ('dependency_pending', 'dependency_failed')`.
+**Running counters live on the snapshot, not the row.** The
+`deferCount`, `firstDeferredAt`, and `lastDeferredAt` running
+counters are maintained on the `ReckonerStatus` snapshot at
+`writ.status['reckoner']` rather than on individual rows. Each
+deferred row on the same writ increments `deferCount` and refreshes
+`lastDeferredAt` on the snapshot, while `firstDeferredAt` is
+preserved across deferrals as the writ's first-seen-as-deferred
+timestamp. The Reckoner's CDC handler reads the prior snapshot to
+compute the next one; the journal remains the single durable record
+of every consideration, and the snapshot is best-effort derived
+state. See apparatus/reckoner.md §"Staleness diagnostic" for the
+full surface.
 
 **The counter advances only on `outcome: 'deferred'` rows.** A
 `no-op` row produced when the Reckoner re-weighed a held writ and
 chose to keep holding does **not** increment `deferCount`. The
-counter records distinct deferrals, not re-evaluations of an existing
-hold; "how many times has the Reckoner deferred this writ?" is
-answered by `count(*) WHERE writId = X AND outcome = 'deferred'`, and
-the running counter on the most recent deferred row matches that
+counter records distinct deferrals, not re-evaluations of an
+existing hold; "how many times has the Reckoner deferred this
+writ?" is answered by `count(*) WHERE writId = X AND outcome =
+'deferred'`, and the running counter on the snapshot matches that
 count. The dependency-aware-consideration commission's no-op-row
 suppression rule preserves this invariant: the Reckoner only emits
 a fresh deferred row on dependency-state-shape changes, so the row
-count and the (eventual) running counter stay aligned.
+count and the snapshot's running counter stay aligned.
 
 ### Acceptance metadata
 
@@ -770,8 +771,10 @@ Tracing each entry back to the queries it supports:
   the Reckoner been weighing recently?").
 - **`['writId', 'consideredAt']`** — per-writ timeline ordering
   without a re-sort. Critical for the petitioner-side "show me my
-  writ's full history" view, and for the `deferCount` lookup the
-  Reckoner runs against the prior deferred row when re-deferring.
+  writ's full history" view. The Reckoner's running counters live
+  on the `ReckonerStatus` snapshot at `writ.status['reckoner']`, so
+  the counter rollover does not depend on this index — but the
+  per-writ history view does.
 
 `scope`, `time.decay`, `time.deadline`, `domain`, and `complexity`
 are **not** projected and therefore not indexed. They are filterable
@@ -812,9 +815,12 @@ mutate a record in place:
   later updated (via `clerk.setWritExt`), subsequent considerations
   will project the new values onto new rows; the old rows preserve
   the dimensions as they stood when the Reckoner weighed them.
-- Defer-counter updates (`deferCount`, `lastDeferredAt`) accumulate
-  by writing a new deferred row, not by mutating the prior one — the
-  per-deferral history is the journal's load-bearing output.
+- Defer-counter updates accumulate on the `ReckonerStatus` snapshot
+  at `writ.status['reckoner']` (a `WritDoc.status` sub-slot, not a
+  Reckonings row), driven by the Reckoner's CDC handler reacting to
+  each new deferred row. The journal records *which* deferrals
+  happened; the snapshot rolls them up into running counters. No
+  Reckonings row is ever patched.
 
 Adding `updatedAt` with no producer would be structure with no
 consumer.

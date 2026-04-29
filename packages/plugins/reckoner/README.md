@@ -87,10 +87,24 @@ What ships here:
   wake-up mechanism); the row write is suppressed when the outcome
   shape is identical to the writ's most recent deferred row, so a
   long-deferred dependent does not produce a heartbeat duplicate per
-  tick. The deferred-petition staleness diagnostic (cycle visibility,
-  dangling-target escalation, running counters, `dependency_failed`
-  petitioner notification) belongs to a sibling commission; the
-  Reckoner stops at "petition stays deferred."
+  tick.
+- A **`ReckonerStatus` snapshot** at `writ.status['reckoner']`, kept
+  in sync by a Phase-2 CDC watcher on the Reckoner's own
+  `reckonings` book. Every `create` event runs through the snapshot
+  handler, which derives the writ's current decision shape, running
+  deferral counters (`deferCount`, `firstDeferredAt`,
+  `lastDeferredAt`), and a stalled flag (set in v0 only on
+  `dependency_failed` defer rows at `defer_count >= 1`) and writes
+  it back via `clerk.setWritStatus(writId, 'reckoner', next)`.
+  Counters are preserved verbatim across deferred → accepted /
+  declined transitions; `'no-op'` rows bump `lastEvaluatedAt` only.
+  Consumers reading the snapshot should cross-check `writ.phase` to
+  detect the petitioner-withdrawal lag case (a withdrawn writ still
+  reads as deferred on the snapshot until a future Reckonings row
+  refreshes it). See `docs/architecture/apparatus/reckoner.md`
+  §"Staleness diagnostic" for the full surface, the v0 threshold
+  table, and the `lastEvaluatedAt`-during-stable-stalled cadence
+  note.
 - The **`reckoner/reckonings` book** — the Reckoner's evaluation
   journal. One row per substantive consideration, immutable after
   write. The auto-wired

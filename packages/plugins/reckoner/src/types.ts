@@ -351,12 +351,6 @@ export interface ReckoningDoc {
   deferUntil?: string;
   /** Optional defer wake-up event pattern. */
   deferSignal?: string;
-  /** Running deferral counter for this writ. */
-  deferCount?: number;
-  /** First-seen-as-deferred ISO timestamp. */
-  firstDeferredAt?: string;
-  /** Most-recent deferral ISO timestamp. */
-  lastDeferredAt?: string;
   /** Optional freeform short note on a deferral. */
   deferNote?: string;
   /**
@@ -367,6 +361,109 @@ export interface ReckoningDoc {
    * value through verbatim — no normalization, no defaulting.
    */
   weight?: number;
+}
+
+// ── Reckoner status sub-slot ─────────────────────────────────────────
+
+/**
+ * Plugin id stamped on the Reckoner's own observation sub-slot
+ * (`status['reckoner']`). The constant *is* the slot key — every
+ * consumer reads it through this literal.
+ */
+export const RECKONER_STATUS_SLOT = 'reckoner';
+
+/**
+ * v0 stalled-reason enum — singleton literal `'dependency_failed'`
+ * (D12 of the deferred-petition staleness diagnostic commission).
+ *
+ * Pre-declaring future enum members would force consumer-side switch
+ * exhaustiveness against branches the v0 code can never produce; the
+ * surface stays minimal until a second producer earns its keep.
+ */
+export type ReckonerStalledReason = 'dependency_failed';
+
+/**
+ * The Reckoner-owned sub-slot of `WritDoc.status` — a derived
+ * snapshot maintained by the Reckoner's CDC handler on every
+ * Reckonings-row write.
+ *
+ * The snapshot exposes the writ's current Reckoner-decision shape,
+ * running deferral counters, and a stalled flag that v0 sets only on
+ * `dependency_failed` defer rows. Operators (and downstream
+ * consumers — operator pages, future Sentinel surfaces) read this
+ * slot to distinguish a writ waiting for an upstream from one stuck
+ * behind a permanently failed prerequisite, without re-deriving the
+ * shape from the Reckonings journal.
+ *
+ * Ownership: Reckoner writes; downstream consumers read. Plugin
+ * convention is the same as for any `status[<pluginId>]` sub-slot —
+ * see `setWritStatus()` and the spec/status convention notes on
+ * `ClerkApi`.
+ *
+ * The snapshot is forward-only — there is no migration or backfill
+ * for writs that already terminal'd before the snapshot existed.
+ * Pre-existing terminal writs do not produce fresh Reckonings rows,
+ * so the absence of a slot on a historical writ is harmless.
+ *
+ * **Petitioner-withdrawal cross-check.** A petitioner-initiated
+ * withdrawal (`clerk.transition(writId, 'cancelled', …)` or the
+ * `reckoner.withdraw(writId)` helper) bypasses the Reckoner entirely
+ * and produces no Reckonings row, so the snapshot's `decision` may
+ * lag the writ's actual phase. Consumers reading the snapshot should
+ * cross-check `writ.phase` to detect this lag — a writ whose phase
+ * is `cancelled` while the snapshot still reads `deferred` was
+ * withdrawn out of band.
+ *
+ * **`lastEvaluatedAt` cadence.** The dependency-aware-consideration
+ * commission's no-op-row suppression rule means the Reckoner only
+ * emits a fresh deferred row when the outcome shape changes. During
+ * stable-stalled stretches the Reckoner re-runs the dep gate every
+ * tick but writes no row, so `lastEvaluatedAt` does not advance —
+ * only outcome-shape changes produce a fresh row, and only fresh
+ * rows update the snapshot.
+ *
+ * See: docs/architecture/apparatus/reckoner.md §"Staleness diagnostic".
+ */
+export interface ReckonerStatus {
+  /** The most-recent decision shape recorded by the Reckoner. */
+  decision: ReckoningOutcome;
+  /** Optional defer-reason from the most-recent deferred row. */
+  deferReason?: ReckoningDeferReason;
+  /** Running count of distinct deferrals (advances only on `outcome === 'deferred'` rows). */
+  deferCount?: number;
+  /** First-seen-as-deferred ISO timestamp. */
+  firstDeferredAt?: string;
+  /** Most-recent deferral ISO timestamp. */
+  lastDeferredAt?: string;
+  /**
+   * `true` when the writ is currently flagged as stalled. v0 sets
+   * this only when the most-recent deferred row carries
+   * `deferReason: 'dependency_failed'`; any other decision (or
+   * `dependency_pending`) clears the flag.
+   */
+  stalled?: boolean;
+  /**
+   * Stall classification. Singleton literal in v0 — only
+   * `'dependency_failed'` produces a stalled flag. Future
+   * commissions may extend the enum; consumers should narrow
+   * defensively rather than switching exhaustively.
+   */
+  stalledReason?: ReckonerStalledReason;
+  /**
+   * First-seen-as-stalled ISO timestamp. Captured from the
+   * triggering Reckonings row's `consideredAt` when the stalled
+   * flag transitions false → true; preserved verbatim across
+   * subsequent rows that keep the writ stalled; cleared when the
+   * stalled flag clears.
+   */
+  stalledSince?: string;
+  /**
+   * ISO timestamp of the most-recent Reckonings row this snapshot
+   * was derived from. Required on every snapshot — `lastEvaluatedAt`
+   * answers "when did the Reckoner last consider this writ?" without
+   * a journal scan.
+   */
+  lastEvaluatedAt: string;
 }
 
 // ── Scheduler ─────────────────────────────────────────────────────────

@@ -18,6 +18,8 @@ export type {
   PetitionerDescriptor,
   ReckonerConfig,
   ReckonerApi,
+  ReckonerStatus,
+  ReckonerStalledReason,
   ReckoningDoc,
   ReckoningOutcome,
   ReckoningDeclineReason,
@@ -37,6 +39,7 @@ export {
   SEVERITY_VALUES,
   SCOPE_VALUES,
   DOMAIN_VALUES,
+  RECKONER_STATUS_SLOT,
 } from './types.ts';
 
 // ── Factory ───────────────────────────────────────────────────────────

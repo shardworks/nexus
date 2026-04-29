@@ -558,12 +558,15 @@ stored phase is not declared in its config throws fail-loud with the
 `[reckoner]` diagnostic prefix; defer-as-gating or treat-as-failed
 would silently absorb registration drift.
 
-**v0 row-shape carve-out.** Dependency-defer rows omit `deferUntil`,
-`deferSignal`, and the running counters (`deferCount`,
-`firstDeferredAt`, `lastDeferredAt`); their audit trail is the
-`deferNote` field, which lists the gating or failed dep writ ids.
-Wiring those companion fields is owned by the deferred-petition
-staleness diagnostic, a separately-scoped sibling commission.
+**Row-shape note.** Dependency-defer rows do not carry `deferUntil`
+or `deferSignal` — those companion fields remain reserved on the row
+schema as forward-compat for a future event-driven wake-up
+mechanism. The running counters (`deferCount`, `firstDeferredAt`,
+`lastDeferredAt`) live on the `ReckonerStatus` snapshot at
+`writ.status['reckoner']` rather than on the row; see
+[Staleness diagnostic](#staleness-diagnostic) below. The row's
+audit trail is the `deferNote` field, which lists the gating or
+failed dep writ ids.
 
 **Rule ordering.** Disabled-source decline and source-registration
 enforcement run *before* the dependency check. A disabled-source writ
@@ -582,6 +585,90 @@ when the outcome shape changes (a dep cleared, a new dep failed, the
 dep set's classification mix changed). The wake-up mechanism in v0
 is the polling tick — deferred dependents do not subscribe to
 wake-up events on dependency-target updates.
+
+### Staleness diagnostic
+
+The Reckoner maintains a derived snapshot at `writ.status['reckoner']`
+on every held writ, kept in sync by a Phase-2 CDC watcher on the
+Reckoner's own `reckonings` book. Each `create` event on a Reckonings
+row runs through the staleness handler, which derives the next
+`ReckonerStatus` from the row plus the writ's prior snapshot and
+writes it back through `clerk.setWritStatus(writId, 'reckoner', next)`.
+The watcher is registered in `start()` ahead of `phase:started`, so
+it closes before the first event flows.
+
+```typescript
+interface ReckonerStatus {
+  decision:         'accepted' | 'deferred' | 'declined' | 'no-op';
+  deferReason?:     ReckoningDeferReason;       // mirrored from the row
+  deferCount?:      number;                     // running count of deferrals
+  firstDeferredAt?: string;                     // ISO timestamp
+  lastDeferredAt?:  string;                     // ISO timestamp
+  stalled?:         boolean;
+  stalledReason?:   'dependency_failed';        // singleton literal in v0
+  stalledSince?:    string;                     // first-seen-as-stalled ISO
+  lastEvaluatedAt:  string;                     // most-recent considered-at
+}
+```
+
+**v0 threshold table.** The stalled flag is set per a hardcoded
+per-defer-reason table. Only `dependency_failed` flags at
+`defer_count >= 1` (immediate); every other reason leaves the flag
+unset.
+
+| Defer reason          | Threshold        | Stalled |
+|-----------------------|------------------|---------|
+| `dependency_failed`   | `defer_count ≥ 1` | yes — `stalledReason: 'dependency_failed'` |
+| `dependency_pending`  | n/a              | no |
+| every other reason    | n/a              | no |
+
+The threshold table is hardcoded — there is no operator knob, and
+configurability earns its existence from a second consumer.
+
+**Petitioner-withdrawal cross-check.** A petitioner-initiated
+withdrawal (`clerk.transition(writId, 'cancelled', …)` or
+`reckoner.withdraw(writId)`) bypasses the Reckoner entirely and
+produces no Reckonings row, so the snapshot's `decision` may lag the
+writ's actual phase. Consumers reading the snapshot should
+cross-check `writ.phase` to detect this lag — a writ whose phase is
+`cancelled` while the snapshot still reads `deferred` was withdrawn
+out of band.
+
+**`lastEvaluatedAt` cadence.** The dependency-aware-consideration
+commission's no-op-row suppression rule means the Reckoner only
+emits a fresh deferred row when the outcome shape changes. During
+stable-stalled stretches the Reckoner re-runs the dep gate every
+tick but writes no row, so `lastEvaluatedAt` does not advance —
+only outcome-shape changes produce a fresh row, and only fresh rows
+update the snapshot.
+
+**Counter semantics.**
+
+- `deferCount` advances only on rows with `outcome === 'deferred'`
+  (D9). No-op rows and terminal rows do not advance it.
+- Running counters are preserved verbatim across `deferred →
+  accepted` and `deferred → declined` transitions (D10) — the
+  counters record historical deferrals; clearing them on a terminal
+  decision would lose the "deferred N times before being accepted"
+  signal.
+- `stalled` / `stalledSince` transitions follow the brief: a
+  false → true transition takes the row's `consideredAt` as
+  `stalledSince`; a true → true transition preserves the prior
+  `stalledSince` verbatim; any → false transition clears both
+  fields (D11).
+- A `'no-op'` row bumps `lastEvaluatedAt` only and preserves every
+  other field (D19). The decision, deferReason, counters, and
+  stalled state are all carried forward verbatim because a no-op
+  row records "I re-considered and held without changing state."
+
+**Failure handling.** The watcher runs Phase-2
+(`failOnError: false`) — a snapshot-write failure must never roll
+back the journal entry that drove it. The `setWritStatus` call is
+wrapped in a `try/catch` that logs with a `[reckoner]` prefix and
+the offending writ id (covering both the writ-not-found case and
+any other write failure). Shape-mismatch errors thrown by the
+snapshot derivation are NOT caught — they propagate to the Stacks
+Phase-2 error path so migration drift surfaces loudly.
 
 ### Per-tick failure modes
 
@@ -717,13 +804,13 @@ present, or when the writ id does not exist. See the
   implemented as a tick step — see "Dependency-aware defer" above
   — and the scheduler-emitted `defer` outcome now writes a
   deferred row with `deferReason: 'other'`.)
-- **No deferred-petition staleness diagnostic.** Cycle visibility,
-  dangling-target escalation, `dependency_failed` petitioner
-  notification, and the running-counter fields (`deferCount`,
-  `firstDeferredAt`, `lastDeferredAt`) belong to a sibling
-  commission. The Reckoner stops at "petition stays deferred";
-  surfacing long-deferred writs is the staleness diagnostic's
-  concern.
+- **No `dependency_failed` petitioner notification.** Cycle
+  visibility through Lattice channels, dangling-target escalation,
+  and explicit petitioner-side wake-ups on dependency failures
+  remain parked. The staleness diagnostic surfaces the stalled
+  state on the writ's snapshot (see [Staleness diagnostic](#staleness-diagnostic));
+  pushing that signal into a notification path is a separate
+  follow-up.
 - **No event-driven wake-up via `defer_signal`.** `deferSignal`
   remains reserved on the Reckonings record. Dependency-deferred
   petitions wake up on the next polling tick only — the Reckoner

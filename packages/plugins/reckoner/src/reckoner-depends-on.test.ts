@@ -385,12 +385,12 @@ describe('Reckoner dependency-aware consideration gate', () => {
     assert.equal(row.outcome, 'deferred');
     assert.equal(row.deferReason, 'dependency_pending');
     assert.equal(row.deferNote, `gating: ${dep.id}`);
-    // v0 carve-out: deferUntil/deferSignal/counters absent.
+    // The wake-up companions remain reserved on the row schema as
+    // forward-compat for a future event-driven wake-up mechanism;
+    // the running counters now live on the `ReckonerStatus` snapshot
+    // at `writ.status['reckoner']` rather than on the row.
     assert.equal(row.deferUntil, undefined);
     assert.equal(row.deferSignal, undefined);
-    assert.equal(row.deferCount, undefined);
-    assert.equal(row.firstDeferredAt, undefined);
-    assert.equal(row.lastDeferredAt, undefined);
   });
 
   // ── Case 3: one dep failed → defer with dependency_failed ──────────

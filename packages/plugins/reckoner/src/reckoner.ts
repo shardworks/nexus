@@ -65,12 +65,12 @@
  *     is implemented as a tick step; scheduler-emitted `defer`
  *     decisions are written as `'other'` deferred rows by the tick
  *     handler.)
- *   - implement the deferred-petition staleness diagnostic,
- *     dangling-target escalation, or `dependency_failed`
- *     petitioner notification — those belong to a sibling
- *     commission. Stop at "petition stays deferred"; the v0 row
- *     emits a `deferNote` audit trail and that is all the surface
- *     this commission ships.
+ *   - implement dangling-target escalation or `dependency_failed`
+ *     petitioner notification (Lattice-channel push) — those remain
+ *     parked. The deferred-petition staleness diagnostic IS now
+ *     implemented as a Phase-2 CDC watcher on the `reckonings`
+ *     book that maintains a `ReckonerStatus` snapshot at
+ *     `writ.status['reckoner']`; see `./staleness-snapshot.ts`.
  *
  * See: docs/architecture/petitioner-registration.md (the
  * load-bearing contract document),
@@ -117,6 +117,7 @@ import {
 } from './types.ts';
 
 import { alwaysApproveScheduler } from './schedulers/always-approve.ts';
+import { createStalenessHandler } from './staleness-snapshot.ts';
 import {
   createTickRelay,
   RECKONER_TICK_RELAY_NAME,
@@ -973,10 +974,13 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
    * with a comma-separated list of gating/failed dep writ ids in
    * `deferNote`; the scheduler-emitted defer writes `'other'` with
    * the decision's reason in `deferNote`. The running counters
-   * (`deferCount`, `firstDeferredAt`, `lastDeferredAt`) and the
-   * wake-up companions (`deferUntil`, `deferSignal`) are
-   * intentionally absent — the v0 carve-out hands those to a future
-   * staleness-diagnostic commission (D4).
+   * (`deferCount`, `firstDeferredAt`, `lastDeferredAt`) live on the
+   * `ReckonerStatus` snapshot at `writ.status['reckoner']`, not on
+   * the row — the staleness-diagnostic commission moved them off the
+   * row schema once a single source of truth was earned. The wake-up
+   * companions (`deferUntil`, `deferSignal`) remain reserved on the
+   * row as forward-compat for a future event-driven wake-up
+   * mechanism.
    */
   function buildReckoningRow(params: BuildReckoningRowParams): ReckoningDoc {
     const consideredAt = params.now.toISOString();
@@ -1419,6 +1423,33 @@ function buildReckoner(): { plugin: Plugin; hooks: ReckonerTestHooks } {
         // minimal while letting the tick handler read `clerk/writs`.
         stacks = guild().apparatus<StacksApi>('stacks');
         reckoningsBook = stacks.book<ReckoningDoc>('reckoner', 'reckonings');
+
+        // ── Staleness-snapshot CDC watcher ───────────────────────
+        //
+        // Phase-2 (post-commit) watcher on the Reckoner's own
+        // `reckonings` book. Every `create` event runs the snapshot
+        // handler, which derives the writ's current ReckonerStatus
+        // from the new row plus the prior snapshot and persists it
+        // back through `clerk.setWritStatus(writId, 'reckoner', next)`.
+        //
+        // Phase-2 is deliberate: a snapshot-write failure must never
+        // roll back the journal entry that drove it. The Reckonings
+        // row is the durable record; the snapshot is best-effort
+        // derived state. (Pure-observation guarantee — see the
+        // staleness-snapshot module's top-of-file commentary and
+        // D5 of the originating brief.)
+        //
+        // Registration timing matches the Clerk children-behavior
+        // cascade and the Lattice pulse dispatcher: registered in
+        // `start()` ahead of `phase:started`, so the watcher closes
+        // before the first event flows.
+        const stalenessHandler = createStalenessHandler({ clerk });
+        stacks.watch<ReckoningDoc>(
+          'reckoner',
+          'reckonings',
+          stalenessHandler,
+          { failOnError: false },
+        );
 
         // Build the registry from `petitioners` kit contributions.
         // Hard-fail at any malformed entry (D4): a registry that
