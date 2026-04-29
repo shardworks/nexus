@@ -364,5 +364,5 @@ This commission is itself a spec-writing commission. There's no build command to
 - Review engine declares `need: 'revision'` on failure
 - Fabricator resolves revision chain dynamically
 - Arbitrary retry depth (or patron-configured per-commission)
-- Review loop data feeds Surveyor codex profiles (this codex has a 60% first-try rate → seed richer review graph by default)
+- Review loop data feeds per-codex review profiles (this codex has a 60% first-try rate → seed richer review graph by default)
 
