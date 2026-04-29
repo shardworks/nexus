@@ -1532,7 +1532,7 @@ describe('Animator', () => {
       await animator.getStatus();
     }
 
-    it('pre-check rejection: synthesizes a rate-limited SessionResult when paused (D12)', async () => {
+    it('pre-check rejection: synthesizes a rate-limited SessionResult and persists a terminal SessionDoc when paused (c-mojcxzsq)', async () => {
       await setPaused(60_000);
       const handle = animator.animate({
         context: { systemPrompt: 'Test' },
@@ -1542,10 +1542,14 @@ describe('Animator', () => {
       assert.equal(result.status, 'rate-limited');
       assert.ok(result.terminationTag);
       assert.equal(result.terminationTag!.kind, 'rate-limit');
-      // No SessionDoc must be written for the rejected call.
+      // A terminal SessionDoc must be written for the rejected call so
+      // the Spider's tryCollect can observe it (otherwise the engine
+      // wedges on a ghost session id — see click c-mojcxzsq).
       const sessions = stacks.readBook<SessionDoc>('animator', 'sessions');
       const doc = await sessions.get(result.id);
-      assert.ok(doc == null, `Expected no SessionDoc for rejected call; got ${JSON.stringify(doc)}`);
+      assert.ok(doc != null, `Expected a SessionDoc for rejected call; got null`);
+      assert.equal(doc!.status, 'rate-limited');
+      assert.equal(doc!.id, result.id);
     });
 
     it('canonical dispatchability predicate: allows dispatch when the pause window has elapsed (D24)', async () => {
@@ -1590,6 +1594,10 @@ describe('Animator', () => {
       const collected: SessionChunk[] = [];
       for await (const c of handle.chunks) collected.push(c);
       assert.equal(collected.length, 0);
+      // Await the result so the background SessionDoc write (c-mojcxzsq)
+      // settles before teardown — otherwise its emitSessionEnded call
+      // races the guild teardown and trips an unhandledRejection.
+      await handle.result;
     });
   });
 

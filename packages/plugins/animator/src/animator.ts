@@ -630,8 +630,11 @@ export function createAnimator(): Plugin {
       // happy-path sync contract (no await before activeSessions is
       // populated, so immediate subscribeToSession() calls resolve).
       // When paused AND the current window has not yet elapsed, we
-      // synthesize a rate-limited SessionResult and resolve without
-      // dispatching; no SessionDoc is written for the rejected call.
+      // synthesize a rate-limited SessionResult and persist it as a
+      // terminal SessionDoc so the Spider's tryCollect can observe the
+      // rate-limited terminal and run its hold-and-retry path. (Earlier
+      // contract D12 wrote no doc here; that left engines wedged on
+      // ghost session ids — see click c-mojcxzsq.)
       if (backoff) {
         const statusDoc = backoff.peek();
         if (!isDispatchable(statusDoc)) {
@@ -655,10 +658,20 @@ export function createAnimator(): Plugin {
               };
             },
           };
+          // Fire the SessionDoc write in a background promise so the
+          // sync return contract is preserved. The result promise awaits
+          // the write so any caller awaiting handle.result is guaranteed
+          // the doc is visible by the time their await resolves —
+          // including the Spider's collect step on the next crawl tick.
+          const recordPromise = recordSession(sessions, transcripts, rejection, undefined);
+          const result = (async () => {
+            await recordPromise;
+            return rejection;
+          })();
           return {
             sessionId: rejectionId,
             chunks: emptyChunks,
-            result: Promise.resolve(rejection),
+            result,
           };
         }
         // Gate open — record the dispatch attempt. Coalesce-vs-increment

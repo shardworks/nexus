@@ -302,11 +302,13 @@ describe('Animator emission — end-to-end terminal sites', () => {
   });
 
   describe('rate-limit pre-check rejection path', () => {
-    it('does NOT emit animator.session.started or animator.session.ended (no SessionDoc was authoritatively written)', async () => {
+    it('emits animator.session.ended (terminal SessionDoc is now authoritatively written — c-mojcxzsq)', async () => {
       // Pause far enough into the future that `isDispatchable` returns
-      // false. The pre-check rejection path returns a synthesized
-      // rejection result without ever writing a session doc — and
-      // therefore must not emit any framework events.
+      // false. The pre-check rejection path now writes a terminal
+      // rate-limited SessionDoc so the Spider's tryCollect can observe
+      // it; this also makes the path emit `animator.session.ended` like
+      // any other terminal write. `animator.session.started` is still
+      // not emitted because no `running` doc is ever written.
       const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
       fix = await setupFixture({
         pauseRateLimit: { until: future, reason: 'rate-limit' },
@@ -321,9 +323,14 @@ describe('Animator emission — end-to-end terminal sites', () => {
       // The result indicates rate-limited:
       assert.equal(result.status, 'rate-limited');
 
-      // No animator.session.* emissions.
+      // No `started` event (the session never reached `running`).
       assert.equal((await fix.byName('animator.session.started')).length, 0);
-      assert.equal((await fix.byName('animator.session.ended')).length, 0);
+
+      // Exactly one `ended` event for the rate-limited terminal write.
+      const ended = await fix.byName('animator.session.ended');
+      assert.equal(ended.length, 1);
+      const payload = ended[0].payload as Record<string, unknown>;
+      assert.equal(payload.sessionId, result.id);
     });
   });
 
