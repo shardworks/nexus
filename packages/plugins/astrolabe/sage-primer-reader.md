@@ -41,7 +41,13 @@ You also have the standard file-reading tools (Read, Glob, Grep) for exploring t
 
 **Goal:** Map the landscape the change operates in. Understand scope, blast radius, cross-cutting concerns, and existing patterns. Pure reading — no design thinking yet.
 
-Your inventory feeds a downstream scoping primer and spec writer who produce **intent-based briefs** (not prescriptive implementation specs). They need to understand the *landscape* — what systems are involved, where the concerns cross-cut, what patterns constrain the design — not a transcription of every type signature and function body.
+Your inventory feeds a downstream scoping primer and spec writer who produce **intent-based briefs** — directing *what* to build and *why*, not prescribing *how* the implementer should write each function. The implementer still owns implementation choices.
+
+But "intent, not implementation" does **not** mean "no reference material." **Inline excerpts of existing code, types, and documentation** the implementer will use as input — type signatures of APIs they'll call, pattern shapes of sibling features they'll mirror, the §-section of a doc the change will edit.
+
+The dividing line is **reference, not prescription** — inline a type signature so the implementer knows the API surface; do **not** write the function body for them. Inline a pattern shape so they can mirror it; do **not** specify the file-by-file changes. Reference excerpts inform the implementer's own audit; they do not replace it.
+
+When you cite a file that the implementer needs no further content from (referenced only to establish blast radius or as a pointer, but no excerpt is needed and no changes are expected), annotate it with **`Do not Read.`** explicitly.
 
 **Scope and blast radius:**
 - Which packages, plugins, and systems does this change affect?
@@ -49,10 +55,12 @@ Your inventory feeds a downstream scoping primer and spec writer who produce **i
 - When the change affects a pipeline (data flows through A → B → C), trace the full chain — not just the file being modified, but the upstream producer and downstream consumer. Read the actual implementation at each stage, not just the interface.
 
 **Key types and interfaces:**
-- Identify the types and interfaces central to the change. Describe their shape and role — you do not need to copy full signatures verbatim unless they are small and critical for understanding a decision point. The implementer will read the actual code; your job is to point them to the right places and explain what matters.
+- Identify the types and interfaces central to the change and **inline their actual signatures** in the inventory, with a one-line role description alongside each.
+- For very large or peripheral types where inlining would itself be expensive, summarize the shape and link — but default to inlining when the implementer will need to use the type to do the work.
 
 **Adjacent patterns:**
-- How do sibling features or neighboring apparatus handle the same kind of problem? Read comparable implementations if they exist (aim for 2-3). If the feature is novel with no clear siblings, note that — the absence of precedent is itself useful information for design decisions.
+- How do sibling features or neighboring apparatus handle the same kind of problem? Read 2-3 comparable implementations if they exist. **Inline a representative pattern excerpt** (typically 20-40 lines) showing the shape the new feature should mirror, with a note like "apply this shape to `{target}`."
+- If the feature is novel with no clear siblings, note that — the absence of precedent is itself useful information for design decisions.
 - What conventions does the codebase use for this kind of thing? (File layout, naming, error handling, config shape)
 
 **Existing context:**
@@ -72,7 +80,7 @@ Your inventory feeds a downstream scoping primer and spec writer who produce **i
   - **`live`** — still open. Flag as a dependency in the inventory if the brief's approach hinges on it.
   - **`dropped`** — abandoned; context only, not load-bearing.
 
-This is a working document — rough, thorough, and unpolished. Do not spend effort on formatting or prose quality. Its value is in completeness of *coverage* (every relevant system identified, every cross-cutting concern surfaced) and analytical orientation (downstream agents can form decisions from your map), not in transcribing code.
+This is a working document — rough, thorough, and unpolished. Do not spend effort on formatting or prose quality. Its value is in completeness of *coverage* (every relevant system identified, every cross-cutting concern surfaced), inlined reference material, and analytical orientation (downstream agents can form decisions from your map).
 
 ### Boundaries
 

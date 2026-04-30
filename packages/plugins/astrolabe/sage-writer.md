@@ -81,9 +81,17 @@ Produce the implementation brief. The audience is the anima that will build this
 
 The brief is directive and intent-focused. The implementer sees what to build, why it matters, where the blast radius is, and how to verify the work is done — not how to write the code.
 
-**Critical principle: describe intent, not implementation.** The planner does not have better information about the codebase than the implementer. Both read the same code. Do not enumerate files to change, do not write type definitions, do not provide function signatures, do not write code blocks showing what the implementation should look like. These create false confidence — the implementer follows the planner's enumeration faithfully instead of doing their own audit, and any omission in the planner's list becomes a silent bug.
+**Critical principle: describe intent, not implementation — but DO inline reference material the implementer will use.**
 
-Instead: name concerns, name verification methods, name patterns to follow, and let the implementer's own codebase reading drive the implementation.
+Do not enumerate files for the implementer to change, do not write function bodies, do not provide type definitions or signatures *for new code you want them to write*, do not write pseudocode for the implementation. The implementer reads the codebase and makes those choices.
+
+Do inline reference material — *existing* types, patterns, and doc sections the new code will call into, mirror, or edit. The dividing line:
+
+- **Inline** a type signature so the implementer knows the API surface — do **not** write the function body.
+- **Inline** a pattern excerpt so the implementer can mirror it — do **not** specify the file-by-file changes.
+- **Inline** a §-section of a doc the change edits — do **not** prescribe the new wording for the section.
+
+Reference excerpts inform the implementer's own audit; they do not replace it.
 
 #### Brief format
 
@@ -149,16 +157,32 @@ Do not decompose into fine-grained per-requirement validation
 checks — that level of granularity is implementation detail.
 Aim for 3-7 signals that cover the whole brief.
 
-## Existing Patterns
+## Reference Material
 
-Point the implementer to comparable implementations in the
-codebase — sibling features, neighboring apparatus, or
-established conventions that this change should follow. Name
-the specific files or modules, not abstract principles.
+Inline reference material the implementer will use as input —
+type signatures of APIs they'll call, pattern excerpts from
+sibling features they'll mirror, §-section quotes from
+documents the change will edit. Each excerpt should be the
+smallest useful chunk (e.g., a 200-char type def, a 30-line
+pattern excerpt).
 
-This section exists because the implementer reads the codebase
-to figure out HOW to build — these pointers accelerate that
-reading.
+For each excerpt, name the **source file** so the implementer
+can re-derive if needed, and explain its **role** (API to call,
+pattern to mirror, doc section to edit).
+
+If a file is cited only as a pointer (referenced for blast
+radius or context, but the implementer needs no further
+content from it and is making no changes to it), annotate
+with `Do not Read.`
+
+If the brief directs the implementer to edit a specific
+section of a document — e.g., "rewrite §11 of
+`petitioner-registration.md`" — inline the contents of §11
+here.
+
+Inlined material is **reference, not prescription** — it
+describes what already exists, never what the implementer
+should write.
 
 ## What NOT To Do
 
@@ -183,7 +207,7 @@ The task manifest is appended to the brief, separated by a blank line. Use this 
   <task id="t1">
     <name>Short descriptive name</name>
     <files>predicted file footprint — packages, modules, or paths this task likely touches</files>
-    <action>Intent-level instructions — what to do, not how. Same rules as the brief: no code blocks, no type definitions, no function signatures.</action>
+    <action>Intent-level instructions — what to do, not how. No code blocks or new type definitions; reference material (existing types, patterns, doc excerpts) lives in the brief's Reference Material section, not in task actions.</action>
     <verify>Executable verification command the implementer can run (e.g., pnpm -w typecheck, pnpm -w test, grep -r "oldName" packages/)</verify>
     <done>Observable outcome — what is true when this task is complete</done>
   </task>
@@ -201,7 +225,7 @@ The task manifest is appended to the brief, separated by a blank line. Use this 
 #### Manifest rules
 
 - **`files` is the planner's predicted blast radius, not an exhaustive list.** The implementer must verify scope independently — the planner's prediction is useful for scheduling and orientation but must not suppress the implementer's own audit. Do not caveat this per-task; it is a standing property of the manifest.
-- **`action` follows the same intent-not-implementation rules as the brief.** No code blocks, no type definitions, no file-by-file instructions. Name the intent and constraints.
+- **`action` is pure intent.** No code blocks, no new type definitions, no file-by-file instructions — name the intent and constraints. Reference material (existing types, patterns, doc excerpts) lives in the brief's Reference Material section, not in task actions; task actions point to the brief's references rather than duplicating them.
 - **`verify` is executable.** A command the implementer can actually run — `pnpm -w test`, `pnpm -w typecheck`, a grep command, etc. Not a description of what to check.
 - **`done` is outcome-level.** An observable result, not an implementation detail. "Tests pass and the new engine appears in the rig template" — not "line 42 of spider.ts has the new entry."
 - **No `type` attribute on tasks.** Tasks are just tasks.
@@ -211,8 +235,8 @@ The task manifest is appended to the brief, separated by a blank line. Use this 
 
 #### Brief style rules
 
-- **No code blocks showing implementation.** You may reference existing code by file path and describe what it does, but do not write new code, type definitions, function signatures, or pseudocode for the implementer to follow.
-- **No exhaustive file lists.** Name the systems and concerns, not every file. The one exception: the Existing Patterns section may name specific files as examples to follow.
+- **Inline reference, never prescription.** Inline existing types, patterns, and doc sections the implementer will use as input. Do not write function bodies, new type definitions, or pseudocode for the implementer to copy.
+- **No exhaustive file lists.** Name the systems and concerns, not every file. The one exception: the Reference Material section names specific files as the source of inlined excerpts.
 - **Name concerns, not solutions.** "Every consumer of X must be updated" is better than "update file A, B, C, D."
 - **Acceptance signals are outcomes.** "The build passes and no residual references to the old name exist" — not "V1: check file A has the new name, V2: check file B has the new name."
 - Don't hedge ("might," "could," "perhaps") — commit to choices.
@@ -257,7 +281,7 @@ Validate the brief's completeness by cross-referencing against the inventory and
 - Every included scope item is covered by at least one task in the manifest.
 - Task ordering respects dependencies — no task references artifacts created by a later task.
 - Every task has an executable `verify` command and an outcome-level `done` criterion.
-- Task `action` content follows the intent-not-implementation rule — no code blocks, no type definitions.
+- Task `action` content is pure intent — no code blocks, no new type definitions, no inline reference excerpts (those live in the brief's Reference Material section).
 - The manifest has 3–8 tasks. If you need more, the commission may be too large; if fewer, the tasks may not be atomic enough.
 
 **Implementer perspective:**
