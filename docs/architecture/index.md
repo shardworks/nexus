@@ -295,6 +295,7 @@ Some opt-ins form coherent stacks that only make sense when installed together �
 | **[The Copilot](apparatus/copilot.md)** | `copilot` | Alternate session provider — launches sessions via the GitHub Models API |
 | **[The Lattice](apparatus/lattice.md)** | `lattice` | Notification substrate — part of the opt-in notifications stack |
 | **The Lattice-Discord** | `lattice-discord` | Discord channel for Lattice pulses — part of the opt-in notifications stack |
+| **[The Laboratory](apparatus/laboratory.md)** | `laboratory` | Trial apparatus — runs trial-shaped experiments on guild configurations and archives the captured data |
 | **The Oculus** | `oculus` | Web dashboard — serves an HTTP dashboard with kit-contributed pages and routes |
 | **[The Sentinel](apparatus/sentinel.md)** | `sentinel` | Stall, failure, and drain observer — part of the opt-in notifications stack |
 | **[The Reckoner](apparatus/reckoner.md)** | `reckoner` | Petitioner-scheduler contract surface — kit-static petitioner registry and `petition()` / `withdraw()` helpers |
