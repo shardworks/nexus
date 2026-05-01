@@ -157,6 +157,40 @@ authors. The `lab-trial-post` tool validates the manifest, posts the
 writ, stamps the config, and (unless `--draft`) transitions
 `new → open` so the rig fires.
 
+### Test-guild bootstrap
+
+Trials are reproducibility artifacts: the manifest is archived and
+must re-resolve to the same artifacts months later. The Laboratory
+enforces this in two ways:
+
+**Stable plugin pins.** The manifest CLI rejects unstable pin forms
+at load time — `file:`/`link:`/`workspace:`/version ranges/dist-tags
+all fail with specific reasons. Whitelist: exact semver,
+`git+<url>#<sha>` (any scheme including `git+file://`), GitHub
+shorthand `foo/bar#<sha>`, registry tarball URLs.
+
+**Version-true bootstrap.** `lab.guild-setup` runs:
+
+```sh
+npx -p @shardworks/nexus@<frameworkVersion> nsg init <testGuild>
+```
+
+— the trial-pinned framework's `init` against the trial-pinned
+`VERSION` constant. After this, the test guild has the framework in
+its own `node_modules`; the binstub at `<testGuild>/node_modules/.bin/nsg`
+is the version-true CLI, used for every subsequent shellout (plugin
+install, codex add, commission-post, writ-show). The lab-host needs
+only Node + npx — no global `nsg`, no lab-host-side framework
+install, no version coordination between lab-host and test guild.
+
+`frameworkVersion` resolution: manifest field if set, otherwise
+fall back to the lab-host's installed `@shardworks/nexus-core`
+VERSION. Refuses to fall back to `'0.0.0'` (dev source) — manifest
+authors must pin explicitly when running on a dev lab-host. The
+resolved value is written back into the trial writ's
+`ext.laboratory.config` before publish so the archive snapshot
+captures the actual pin used.
+
 ### 2. Execution — five-phase rig template
 
 `post-and-collect-default` is the canonical template. Its engine
