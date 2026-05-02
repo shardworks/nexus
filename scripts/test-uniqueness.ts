@@ -283,10 +283,10 @@ function globToRegex(glob: string): RegExp {
 interface TestCoverage {
   test: TestRecord;
   /**
-   * Set of "coverage units" this test exercised. Each unit is one of:
-   *   "fn:<file>:<funcName>"            — function call (FNDA hit > 0)
-   *   "br:<file>:<line>:<block>:<idx>"  — branch taken (BRDA hit > 0)
-   * See parseLcovHits for why we use FNDA/BRDA rather than DA (line) records.
+   * Set of "<file>:<line>" tokens for source lines this test caused to
+   * execute (DA records with hit > 0). Kept under the generic name
+   * `coverageUnits` so the matrix code stays signal-agnostic if we ever
+   * switch to BRDA (branches) or FNDA (functions) tokens.
    */
   coverageUnits: Set<string>;
   passed: boolean;
@@ -441,24 +441,25 @@ function execNode(args: string[], cwd: string): Promise<{ code: number; stderr: 
 }
 
 /**
- * Parse an lcov text blob into a Set of test-attribution tokens.
+ * Parse an lcov text blob into a Set of "<file>:<line>" tokens for lines
+ * the test actually caused to execute (DA records with hit > 0).
  *
- * NOTE on signal choice — line coverage (DA records) is NOT reliable for
- * per-test attribution in node:test's lcov output: V8 instrumentation marks
- * every reachable line in a loaded module as hit=1 regardless of whether a
- * given test exercised it. This produces wildly inflated "coverage" for
- * tests that merely import a module. Function (FNDA) and branch (BRDA)
- * records DO correctly reflect actual execution, so we use those.
+ * Note on the no-match-baseline puzzle: when the runner is invoked with a
+ * pattern that matches no tests, you'll see roughly half the lines of any
+ * imported source file as hit=1 in the lcov. Those are *real* hits — they
+ * come from top-level statements (imports, function declarations, top-level
+ * constants) that execute when the module is loaded. The other half (function
+ * bodies for un-called functions) correctly show hit=0. So DA records are
+ * accurate per-test attribution; the import-time baseline is a true cost of
+ * per-file granularity, not a bug. Pure-redundant tests within the same file
+ * naturally share that baseline, but the *unique* contribution of each test
+ * (uniqueness in the redundancy matrix) is dominated by branches actually
+ * taken inside function bodies, so the analysis still produces good signal.
  *
- * The returned set mixes two token types:
- *   "fn:<file>:<funcName>"            — function called (FNDA hit > 0)
- *   "br:<file>:<line>:<block>:<idx>"  — branch taken    (BRDA hit > 0)
- *
- * Functions with no branches still appear via the fn: tokens; functions
- * with branches additionally contribute br: tokens for the paths actually
- * taken. This combined matrix gives a sound redundancy signal: a test is
- * redundant only if every function it called and every branch it took is
- * also exercised by some other test.
+ * Branch coverage (BRDA) and function coverage (FNDA) are also accurate and
+ * available — see git history for the FNDA+BRDA variant. Lines are used here
+ * because they're the same signal as the aggregate threshold gate, and they
+ * map directly to source ranges humans can inspect when reviewing candidates.
  */
 function parseLcovHits(text: string): Set<string> {
   const out = new Set<string>();
@@ -468,22 +469,10 @@ function parseLcovHits(text: string): Set<string> {
       curFile = line.slice(3).trim();
     } else if (!curFile) {
       continue;
-    } else if (line.startsWith('FNDA:')) {
-      // FNDA:hitCount,functionName
-      const rest = line.slice(5);
-      const comma = rest.indexOf(',');
-      if (comma < 0) continue;
-      const hit = Number(rest.slice(0, comma));
-      const name = rest.slice(comma + 1);
-      if (hit > 0) out.add(`fn:${curFile}:${name}`);
-    } else if (line.startsWith('BRDA:')) {
-      // BRDA:line,block,branch,hit  (hit can be '-' if branch never reached)
-      const parts = line.slice(5).split(',');
-      if (parts.length < 4) continue;
-      const [ln, block, branch, hit] = parts;
-      if (hit !== '-' && Number(hit) > 0) {
-        out.add(`br:${curFile}:${ln}:${block}:${branch}`);
-      }
+    } else if (line.startsWith('DA:')) {
+      // DA:lineNumber,hitCount
+      const [num, hit] = line.slice(3).split(',');
+      if (Number(hit) > 0) out.add(`${curFile}:${num}`);
     } else if (line === 'end_of_record') {
       curFile = null;
     }
@@ -736,21 +725,21 @@ function renderMarkdown(report: Report): string {
   lines.push('## Summary');
   lines.push('');
   lines.push(`- Total tests analyzed: **${report.totals.tests}**`);
-  lines.push(`- Pure-redundant (deletable without losing function/branch coverage): **${report.totals.redundant}** (${pct(report.totals.redundant, report.totals.tests)})`);
+  lines.push(`- Pure-redundant (deletable without losing line coverage): **${report.totals.redundant}** (${pct(report.totals.redundant, report.totals.tests)})`);
   lines.push(`- Required (after greedy reduction): **${report.totals.required}**`);
-  lines.push(`- Coverage units (functions called + branches taken, union across all tests): **${report.totals.coverageUnits}**`);
-  lines.push(`- Units the redundant tests touched (all also covered by required): **${report.totals.redundantCoverageUnits}**`);
+  lines.push(`- Source lines covered (union across all tests): **${report.totals.coverageUnits}**`);
+  lines.push(`- Lines the redundant tests touched (all also covered by required): **${report.totals.redundantCoverageUnits}**`);
   lines.push('');
-  lines.push('> "Coverage units" combines two signals from the lcov: functions called (FNDA) and branches taken (BRDA). Line coverage (DA) is NOT used because node:test\'s lcov reporter marks every reachable line in a loaded module as hit=1 regardless of whether a test exercised it — that signal is unreliable for per-test attribution.');
+  lines.push('> Per-test attribution uses line coverage (DA records, hit > 0). Same signal as the aggregate threshold gate, so deleting pure-redundant tests is line-coverage-safe by definition. **Caveat:** branch coverage is finer-grained than line coverage; two tests covering the same line but taking different branches will both appear redundant under this signal but are not behaviorally equivalent. The aggregate gate also checks branch coverage (80% floor), so over-trimming will surface there if it occurs.');
   lines.push('');
   lines.push('## Pure-redundant tests');
   lines.push('');
-  lines.push('Each row is a test whose called functions and taken branches are entirely covered by other tests. Coverage is preserved if deleted. **Spot-check the assertion peek before deleting** — coverage equivalence does not imply behavioral equivalence.');
+  lines.push('Each row is a test whose covered lines are entirely covered by other tests. Line coverage is preserved if deleted. **Spot-check the assertion peek before deleting** — coverage equivalence does not imply behavioral equivalence; many redundancy candidates are parameter sweeps that share line coverage but assert distinct input→output mappings.');
   lines.push('');
   if (report.redundantList.length === 0) {
     lines.push('_None._');
   } else {
-    lines.push('| Units | Test | Assertion peek |');
+    lines.push('| Lines | Test | Assertion peek |');
     lines.push('|------:|------|----------------|');
     for (const r of report.redundantList) {
       lines.push(`| ${r.coverageUnits} | \`${r.fullPath}\` | ${r.peek ? `\`${r.peek}\`` : ''} |`);
@@ -759,7 +748,7 @@ function renderMarkdown(report: Report): string {
   lines.push('');
   lines.push('## Low-uniqueness required tests');
   lines.push('');
-  lines.push('Tests that survived reduction but contribute ≤5 unique units. Candidates if you want to trade small coverage drops for further reduction.');
+  lines.push('Tests that survived reduction but contribute ≤5 unique lines. Candidates if you want to trade small coverage drops for further reduction.');
   lines.push('');
   if (report.lowUniquenessList.length === 0) {
     lines.push('_None._');
@@ -773,7 +762,7 @@ function renderMarkdown(report: Report): string {
   lines.push('');
   lines.push('## High-leverage required tests');
   lines.push('');
-  lines.push('Top 10 tests by uniquely-covered units — the load-bearing tests for this package. Do not delete.');
+  lines.push('Top 10 tests by uniquely-covered lines — the load-bearing tests for this package. Do not delete.');
   lines.push('');
   lines.push('| Unique | Total | Test |');
   lines.push('|-------:|------:|------|');
@@ -868,7 +857,7 @@ async function main(): Promise<void> {
   const report = buildReport(pkg, coverages, reduction);
   console.log('');
   console.log(`✓ ${report.totals.tests} tests, ${report.totals.redundant} pure-redundant (${pct(report.totals.redundant, report.totals.tests)})`);
-  console.log(`  Coverage units (functions+branches): ${report.totals.coverageUnits}`);
+  console.log(`  Source lines covered (union): ${report.totals.coverageUnits}`);
   console.log(`  Top-redundant files:`);
   for (const f of report.perFileStats.slice(0, 5)) {
     console.log(`    ${f.file}: ${f.redundantTests}/${f.tests} redundant (${pct(f.redundantTests, f.tests)})`);

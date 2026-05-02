@@ -28,38 +28,56 @@ aggregate coverage below floor fails CI and the spider review loop.
 2. **Per-test coverage**: spawning one node process per test with
    `--test-name-pattern=<exact match>` and `--experimental-test-coverage`,
    capturing the per-test lcov.
-3. **Building a coverage matrix**: each test → a set of "coverage units"
-   it exercised. Units are functions called (FNDA records) and branches
-   taken (BRDA records).
-4. **Greedy reduction**: iteratively identify tests whose units are all
+3. **Building a coverage matrix**: each test → a set of `<file>:<line>`
+   tokens for source lines it caused to execute (DA records with hit > 0).
+4. **Greedy reduction**: iteratively identify tests whose lines are all
    covered by *other* still-active tests; mark deletable; repeat until
    no zero-unique tests remain.
 
-### Why not line coverage?
+### Note on the lcov import baseline
 
-Line coverage (`DA:` records) **cannot** be used for per-test attribution
-in node:test's lcov output. V8 instrumentation marks every reachable line
-in a loaded module as `hit=1` regardless of whether a given test actually
-exercised it — so any test that imports a module appears to "cover" every
-reachable line of it. Function coverage (FNDA hit count) and branch
-coverage (BRDA hit count) correctly reflect actual execution, so the
-analyzer uses those.
+When you run a single test in isolation with `--experimental-test-coverage`,
+the lcov shows **roughly half the lines of any imported source file as
+hit=1**, even before the test body runs. Those are *real* hits — top-level
+imports, top-level constants, function declarations, and the module's
+initialization code all execute when the module is loaded. The other half
+(function bodies for un-called functions) correctly show hit=0.
 
-This is mirrored in the report's terminology: "coverage units" (functions
-+ branches), not "lines." The per-package and aggregate line-coverage
-numbers from `pnpm coverage` are still meaningful at the *whole-suite*
-level — they only break down at the *per-test* level.
+This is sometimes mistaken for "line coverage is bogus" — it's not. The
+import-time baseline is shared across every test in the same file, so it
+cancels out of per-test *uniqueness* (which is what redundancy detection
+cares about). What distinguishes one test from another is the lines inside
+the function bodies that test specifically exercised.
+
+### Caveat: line vs branch granularity
+
+Line coverage is the same signal as the aggregate threshold gate (`pnpm
+coverage`'s `THRESHOLDS.lines`), so any test the analyzer flags as
+pure-redundant is by definition safe to delete from the *line-coverage*
+gate's perspective. However:
+
+- The aggregate gate also checks **branch coverage** (80% floor).
+- Two tests covering the same line but taking different branches at
+  that line will both appear redundant under line-attribution but are
+  *not* behaviorally equivalent.
+- In practice, over-trimming via this analyzer will show up as a
+  branch-coverage drop in `pnpm coverage` — the gate catches it.
+
+If you want a finer signal, the analyzer was previously written against
+FNDA (functions called) + BRDA (branches taken) tokens — the variant
+lives in git history. Lines were chosen for the current implementation
+because they're the standard signal, easy to inspect ("this test covers
+these line ranges in foo.ts"), and aligned with the primary gate metric.
 
 ### What "redundant" means here
 
-A test is **pure-redundant** if every function it called and every branch
-it took is also called/taken by some other test in the package. Deleting
-a pure-redundant test does not lose coverage at the function or branch
-level.
+A test is **pure-redundant** if every source line it caused to execute is
+also covered by some other test in the package. Deleting a pure-redundant
+test does not lose line coverage.
 
 **Pure redundancy means we _can_ delete the test without losing coverage.
-It does NOT mean we _should_.** Two tests that exercise the same branches
-with different inputs are coverage-equivalent but assert different
+It does NOT mean we _should_.** Two tests that exercise the same lines
+with different inputs are line-coverage-equivalent but assert different
 behavior — the redundant one might be the only test verifying that input
 X produces output Y. Spot-check before deleting (the report includes a
 peek at each test's first assertion).
