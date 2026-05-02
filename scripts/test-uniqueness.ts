@@ -8,10 +8,27 @@
  * covered by other tests. Such tests can be deleted without losing line
  * coverage.
  *
- * The report lists candidates; human review is essential. Coverage
- * uniqueness identifies tests we *can* delete without losing line coverage,
- * NOT tests we *should* delete (a redundant test may assert different
- * behavior on the same lines as another).
+ * The report classifies redundant tests into two kinds:
+ *
+ *   1. Coverage-equivalent groups — tests with IDENTICAL line-set
+ *      signatures. The greedy reducer's choice of which to keep within a
+ *      group is arbitrary; the user picks based on assertion strength.
+ *
+ *   2. Coverage-subsumed tests — tests whose lines are covered by the
+ *      union of required tests but have a unique signature (no equivalent
+ *      peer). The asymmetry is genuine; cutting them is the obvious move
+ *      modulo a behavior-pinning spot-check.
+ *
+ * This split exists because the original "pure-redundant list" framing
+ * implied a false hierarchy within equivalence classes (X is "redundant",
+ * Y is "required") when in fact the reducer's pick was arbitrary. The
+ * report now surfaces equivalence-class structure so users compare
+ * assertion strength rather than rubber-stamp the reducer.
+ *
+ * Human review is essential. Coverage uniqueness identifies tests we
+ * *can* delete without losing line coverage, NOT tests we *should* delete
+ * (a redundant test may assert different behavior on the same lines as
+ * another).
  *
  * Usage:
  *   pnpm test:uniqueness <pkg> [options]
@@ -289,10 +306,25 @@ interface TestCoverage {
    * switch to BRDA (branches) or FNDA (functions) tokens.
    */
   coverageUnits: Set<string>;
+  /**
+   * Stable hash of the sorted line-set. Two tests share a signature iff
+   * they cover the exact same source lines — they are coverage-equivalent
+   * and a greedy reducer's choice between them is arbitrary. Used to
+   * surface equivalence classes in the report so the user can compare
+   * assertion strength rather than rubber-stamp the reducer's pick.
+   */
+  signature: string;
   passed: boolean;
   durationMs: number;
   /** True if loaded from mtime-valid cache rather than freshly run */
   fromCache: boolean;
+}
+
+/** Compute a stable hash of a test's covered line-set. */
+function lineSignature(units: Set<string>): string {
+  if (units.size === 0) return 'empty';
+  const sorted = [...units].sort();
+  return crypto.createHash('sha1').update(sorted.join('\n')).digest('hex').slice(0, 16);
 }
 
 interface CacheManifest {
@@ -379,9 +411,11 @@ async function runOneTest(
   if (!noCache && manifest.entries[t.fullPath]) {
     const cached = manifest.entries[t.fullPath];
     if (cached.mtime === fileMtime && fs.existsSync(lcovPath)) {
+      const cachedUnits = parseLcovHits(fs.readFileSync(lcovPath, 'utf8'));
       return {
         test: t,
-        coverageUnits: parseLcovHits(fs.readFileSync(lcovPath, 'utf8')),
+        coverageUnits: cachedUnits,
+        signature: lineSignature(cachedUnits),
         passed: true,
         durationMs: 0,
         fromCache: true,
@@ -410,9 +444,11 @@ async function runOneTest(
     console.error(
       `  ⚠ no coverage captured for ${t.fullPath} (exit ${result.code}); pattern=${patternFor(t)}`,
     );
+    const emptyUnits = new Set<string>();
     return {
       test: t,
-      coverageUnits: new Set(),
+      coverageUnits: emptyUnits,
+      signature: lineSignature(emptyUnits),
       passed: result.code === 0,
       durationMs,
       fromCache: false,
@@ -425,6 +461,7 @@ async function runOneTest(
   return {
     test: t,
     coverageUnits,
+    signature: lineSignature(coverageUnits),
     passed: result.code === 0,
     durationMs,
     fromCache: false,
@@ -607,8 +644,36 @@ interface Report {
     required: number;
     coverageUnits: number;
     redundantCoverageUnits: number;
+    /** Number of equivalence groups (≥2 members, ≥1 required). */
+    equivalenceGroups: number;
+    /** Total tests across all equivalence groups (= sum of group sizes). */
+    equivalenceGroupMembers: number;
+    /** Tests that are subsumed (redundant + no equivalent peer in required). */
+    subsumed: number;
   };
-  redundantList: Array<{
+  /**
+   * Groups of tests with identical line coverage. Within each group the
+   * greedy reducer's required-vs-redundant labeling is arbitrary — any one
+   * member is sufficient to preserve line coverage. Members are listed
+   * neutrally; the user picks which to keep based on assertion strength,
+   * not on which the reducer happened to pick.
+   */
+  equivalenceGroups: Array<{
+    groupId: string;
+    coverageUnits: number;
+    members: Array<{
+      fullPath: string;
+      file: string;
+      reducerPick: 'required' | 'redundant';
+      peek: string;
+    }>;
+  }>;
+  /**
+   * Tests whose lines are fully covered by the union of required tests
+   * but have a unique line-set signature (no equivalent peer). Cutting
+   * preserves line coverage; the asymmetry is genuine.
+   */
+  subsumedList: Array<{
     fullPath: string;
     file: string;
     coverageUnits: number;
@@ -645,9 +710,80 @@ function buildReport(
   const redundantUnits = new Set<string>();
   for (const c of reduction.redundant) for (const u of c.coverageUnits) redundantUnits.add(u);
 
-  // Sort redundant by coverage size desc — biggest wins first
-  const redundantSorted = [...reduction.redundant]
-    .sort((a, b) => b.coverageUnits.size - a.coverageUnits.size);
+  // ── Equivalence-class analysis ─────────────────────────────────────
+  //
+  // Group tests by line-set signature. A signature group with ≥2 members
+  // means those tests have IDENTICAL line coverage — the greedy reducer
+  // picks one as required and the rest as redundant arbitrarily (whichever
+  // it iterated to first under the coverage-size tiebreaker).
+  //
+  // The misframing this fixes: without surfacing equivalence classes, the
+  // reducer's pick looks definitive — "X is redundant, Y is required" —
+  // when in fact X and Y are interchangeable on coverage grounds and the
+  // user should compare assertion strength to choose. By splitting the
+  // redundant list into equivalence-groups vs strict-subsumption, the
+  // report tells the user which kind of redundancy each test exhibits.
+
+  const requiredSet = new Set(reduction.required);
+  const groupsBySignature = new Map<string, TestCoverage[]>();
+  for (const c of coverages) {
+    let arr = groupsBySignature.get(c.signature);
+    if (!arr) { arr = []; groupsBySignature.set(c.signature, arr); }
+    arr.push(c);
+  }
+
+  const equivalenceGroups: Report['equivalenceGroups'] = [];
+  const subsumed: TestCoverage[] = [];
+  let groupCounter = 0;
+
+  for (const c of reduction.redundant) {
+    const groupMembers = groupsBySignature.get(c.signature)!;
+    const groupHasRequired = groupMembers.some((m) => requiredSet.has(m));
+    if (groupMembers.length >= 2 && groupHasRequired) {
+      // Equivalence-class redundancy. Surface the whole group once (when
+      // we encounter the first redundant member) and skip the rest.
+      // We tag the group with a stable id so members can reference it.
+      // De-dupe: only emit each group once.
+      // (Multiple redundant members of the same group → still one entry.)
+      const alreadyEmitted = equivalenceGroups.some(
+        (g) => g.members.some((m) => m.fullPath === groupMembers[0].test.fullPath),
+      );
+      if (!alreadyEmitted) {
+        const groupId = String.fromCharCode(65 + (groupCounter % 26))
+          + (groupCounter >= 26 ? String(Math.floor(groupCounter / 26)) : '');
+        groupCounter++;
+        // Sort members alphabetically for stable presentation; reducer-pick
+        // is shown as a column but presentation order doesn't bias the user.
+        const sortedMembers = [...groupMembers].sort((a, b) =>
+          a.test.fullPath.localeCompare(b.test.fullPath),
+        );
+        equivalenceGroups.push({
+          groupId,
+          coverageUnits: groupMembers[0].coverageUnits.size,
+          members: sortedMembers.map((m) => ({
+            fullPath: m.test.fullPath,
+            file: m.test.file,
+            reducerPick: requiredSet.has(m) ? 'required' : 'redundant',
+            peek: readTestAssertionPeek(pkg, m.test),
+          })),
+        });
+      }
+    } else {
+      // Either a unique-signature test (no equivalence peer at all) or a
+      // signature group with all members redundant (subsumed by external
+      // tests). Both classify as strict subsumption — line-coverage-safe
+      // to delete, no swap candidate to choose from.
+      subsumed.push(c);
+    }
+  }
+
+  // Sort equivalence groups by coverage size desc (biggest equivalence first).
+  equivalenceGroups.sort((a, b) => b.coverageUnits - a.coverageUnits);
+
+  // Sort subsumed by coverage size desc — biggest wins first.
+  const subsumedSorted = [...subsumed].sort(
+    (a, b) => b.coverageUnits.size - a.coverageUnits.size,
+  );
 
   // Low-uniqueness: among required, sort by initial unique count asc (those
   // that survived but only barely — small unique contribution → next-tier
@@ -684,6 +820,11 @@ function buildReport(
     }))
     .sort((a, b) => b.redundantTests - a.redundantTests || b.tests - a.tests);
 
+  const equivalenceGroupMembers = equivalenceGroups.reduce(
+    (sum, g) => sum + g.members.length,
+    0,
+  );
+
   return {
     pkg: pkg.name,
     totals: {
@@ -692,8 +833,12 @@ function buildReport(
       required: reduction.required.length,
       coverageUnits: allUnits.size,
       redundantCoverageUnits: redundantUnits.size,
+      equivalenceGroups: equivalenceGroups.length,
+      equivalenceGroupMembers,
+      subsumed: subsumed.length,
     },
-    redundantList: redundantSorted.map((c) => ({
+    equivalenceGroups,
+    subsumedList: subsumedSorted.map((c) => ({
       fullPath: c.test.fullPath,
       file: c.test.file,
       coverageUnits: c.coverageUnits.size,
@@ -725,23 +870,44 @@ function renderMarkdown(report: Report): string {
   lines.push('## Summary');
   lines.push('');
   lines.push(`- Total tests analyzed: **${report.totals.tests}**`);
-  lines.push(`- Pure-redundant (deletable without losing line coverage): **${report.totals.redundant}** (${pct(report.totals.redundant, report.totals.tests)})`);
   lines.push(`- Required (after greedy reduction): **${report.totals.required}**`);
+  lines.push(`- Redundant (deletable without losing line coverage): **${report.totals.redundant}** (${pct(report.totals.redundant, report.totals.tests)})`);
+  lines.push(`  - Coverage-equivalent groups: **${report.totals.equivalenceGroups}** (${report.totals.equivalenceGroupMembers} tests across all groups)`);
+  lines.push(`  - Coverage-subsumed: **${report.totals.subsumed}**`);
   lines.push(`- Source lines covered (union across all tests): **${report.totals.coverageUnits}**`);
   lines.push(`- Lines the redundant tests touched (all also covered by required): **${report.totals.redundantCoverageUnits}**`);
   lines.push('');
-  lines.push('> Per-test attribution uses line coverage (DA records, hit > 0). Same signal as the aggregate threshold gate, so deleting pure-redundant tests is line-coverage-safe by definition. **Caveat:** branch coverage is finer-grained than line coverage; two tests covering the same line but taking different branches will both appear redundant under this signal but are not behaviorally equivalent. The aggregate gate also checks branch coverage (80% floor), so over-trimming will surface there if it occurs.');
+  lines.push('> Per-test attribution uses line coverage (DA records, hit > 0). Same signal as the aggregate threshold gate, so deleting redundant tests is line-coverage-safe by definition. **Caveat:** branch coverage is finer-grained than line coverage; two tests covering the same line but taking different branches will both appear redundant under this signal but are not behaviorally equivalent. The aggregate gate also checks branch coverage (80% floor), so over-trimming will surface there if it occurs.');
   lines.push('');
-  lines.push('## Pure-redundant tests');
+  lines.push('## Coverage-equivalent groups');
   lines.push('');
-  lines.push('Each row is a test whose covered lines are entirely covered by other tests. Line coverage is preserved if deleted. **Spot-check the assertion peek before deleting** — coverage equivalence does not imply behavioral equivalence; many redundancy candidates are parameter sweeps that share line coverage but assert distinct input→output mappings.');
+  lines.push('Tests in each group have **identical line coverage** — any one is sufficient to preserve line coverage; the others are deletable. The greedy reducer arbitrarily picked one as "required" and the rest as "redundant" (whichever it iterated to first under the coverage-size tiebreaker), but the choice within a group is arbitrary on coverage grounds. **Compare the assertion peeks and pick the strongest** — do not assume the reducer\'s pick is the right keep.');
   lines.push('');
-  if (report.redundantList.length === 0) {
+  if (report.equivalenceGroups.length === 0) {
+    lines.push('_No equivalence classes — every test has a unique line-set signature._');
+  } else {
+    for (const g of report.equivalenceGroups) {
+      lines.push(`### Group ${g.groupId} — ${g.coverageUnits} lines, ${g.members.length} members`);
+      lines.push('');
+      lines.push('| Reducer pick | Test | Assertion peek |');
+      lines.push('|--------------|------|----------------|');
+      for (const m of g.members) {
+        const pick = m.reducerPick === 'required' ? 'required' : 'redundant';
+        lines.push(`| ${pick} | \`${m.fullPath}\` | ${m.peek ? `\`${m.peek}\`` : ''} |`);
+      }
+      lines.push('');
+    }
+  }
+  lines.push('## Coverage-subsumed tests');
+  lines.push('');
+  lines.push('Each row is a test whose covered lines are fully covered by the **union** of required tests, but not equivalent to any single required test (no swap candidate). Line coverage is preserved if deleted. **Spot-check the assertion peek before deleting** — coverage subsumption does not imply behavioral equivalence; the test may assert a unique input→output contract that still belongs in the suite.');
+  lines.push('');
+  if (report.subsumedList.length === 0) {
     lines.push('_None._');
   } else {
     lines.push('| Lines | Test | Assertion peek |');
     lines.push('|------:|------|----------------|');
-    for (const r of report.redundantList) {
+    for (const r of report.subsumedList) {
       lines.push(`| ${r.coverageUnits} | \`${r.fullPath}\` | ${r.peek ? `\`${r.peek}\`` : ''} |`);
     }
   }
@@ -856,7 +1022,11 @@ async function main(): Promise<void> {
   // Phase 5: report
   const report = buildReport(pkg, coverages, reduction);
   console.log('');
-  console.log(`✓ ${report.totals.tests} tests, ${report.totals.redundant} pure-redundant (${pct(report.totals.redundant, report.totals.tests)})`);
+  console.log(`✓ ${report.totals.tests} tests, ${report.totals.redundant} redundant (${pct(report.totals.redundant, report.totals.tests)})`);
+  console.log(
+    `    ${report.totals.equivalenceGroups} equivalence-class groups (${report.totals.equivalenceGroupMembers} tests),`
+    + ` ${report.totals.subsumed} subsumed`,
+  );
   console.log(`  Source lines covered (union): ${report.totals.coverageUnits}`);
   console.log(`  Top-redundant files:`);
   for (const f of report.perFileStats.slice(0, 5)) {

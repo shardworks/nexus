@@ -33,6 +33,14 @@ aggregate coverage below floor fails CI and the spider review loop.
 4. **Greedy reduction**: iteratively identify tests whose lines are all
    covered by *other* still-active tests; mark deletable; repeat until
    no zero-unique tests remain.
+5. **Equivalence-class classification**: hash each test's line-set
+   signature; group tests by signature. Within the redundant set,
+   distinguish equivalence-class redundancy (≥1 group member is
+   required — the choice of which to keep is arbitrary on coverage
+   grounds) from strict subsumption (unique signature, lines covered
+   only by the *union* of other tests). Surface them in separate report
+   sections so the user knows whether to compare assertion strength
+   (equivalence) or just check for unique contracts (subsumption).
 
 ### Note on the lcov import baseline
 
@@ -53,8 +61,8 @@ the function bodies that test specifically exercised.
 
 Line coverage is the same signal as the aggregate threshold gate (`pnpm
 coverage`'s `THRESHOLDS.lines`), so any test the analyzer flags as
-pure-redundant is by definition safe to delete from the *line-coverage*
-gate's perspective. However:
+redundant (whether equivalence-class or subsumed) is by definition safe
+to delete from the *line-coverage* gate's perspective. However:
 
 - The aggregate gate also checks **branch coverage** (80% floor).
 - Two tests covering the same line but taking different branches at
@@ -71,11 +79,23 @@ these line ranges in foo.ts"), and aligned with the primary gate metric.
 
 ### What "redundant" means here
 
-A test is **pure-redundant** if every source line it caused to execute is
-also covered by some other test in the package. Deleting a pure-redundant
-test does not lose line coverage.
+A test is **redundant** if every source line it caused to execute is
+also covered by some other test in the package (either by a single
+test, or by the union). Deleting a redundant test does not lose line
+coverage.
 
-**Pure redundancy means we _can_ delete the test without losing coverage.
+The analyzer further classifies redundancy:
+
+- **Coverage-equivalent**: the test shares a line-set signature with at
+  least one other test. The greedy reducer arbitrarily keeps one and
+  flags the rest; on coverage grounds, *any one* member of the group is
+  sufficient. Pick on assertion strength.
+- **Coverage-subsumed**: the test has a unique line-set signature, but
+  its lines are covered by the union of required tests. There is no
+  swap candidate; either it asserts a unique contract (keep) or it does
+  not (cut).
+
+**Redundancy means we _can_ delete the test without losing coverage.
 It does NOT mean we _should_.** Two tests that exercise the same lines
 with different inputs are line-coverage-equivalent but assert different
 behavior — the redundant one might be the only test verifying that input
@@ -111,34 +131,58 @@ test files changed.
 
 ### 2. Read the report
 
-The report has four lists:
+The report has five sections:
 
-- **Pure-redundant tests** — sorted by total covered units descending. The
-  ones with the highest count are the safest to delete (most overlap with
-  the rest of the suite).
+- **Coverage-equivalent groups** — sets of tests with **identical line
+  coverage**. The greedy reducer arbitrarily picks one as "required" and
+  the rest as "redundant" within each group, but the choice is arbitrary
+  on coverage grounds. Compare assertion peeks and pick the strongest.
+  *Do not assume the reducer's pick is the right keep.*
+- **Coverage-subsumed tests** — redundant tests with a unique line-set
+  signature (no equivalent peer). Their lines are covered by the *union*
+  of required tests, but not by any single one. Sorted by total covered
+  lines descending. The asymmetry is genuine; cutting them is the
+  obvious move modulo a behavior-pinning spot-check.
 - **Low-uniqueness required tests** — survived reduction but contribute ≤5
-  unique units. Candidates if you want to push further at the cost of
+  unique lines. Candidates if you want to push further at the cost of
   small coverage drops.
-- **High-leverage required tests** — top 10 by unique units. The
+- **High-leverage required tests** — top 10 by unique lines. The
   load-bearing tests for this package; never delete.
 - **Per-file rollup** — files sorted by redundant-test count. Use this to
   prioritize which monolith to dig into first.
 
+The split between equivalence groups and subsumption is the key framing
+fix. Older versions of this report listed everything as "pure-redundant,"
+which implied a false hierarchy ("the reducer says X is redundant, so
+delete X") inside equivalence classes where the choice was arbitrary.
+Today the report tells you *which kind* of redundancy each test
+exhibits, so you can compare assertion strength on equivalence groups
+and rubber-stamp deletions on subsumed tests (after the spot-check).
+
 ### 3. Spot-check candidates
 
-For each pure-redundant test you're considering deleting, look at the
-**assertion peek** in the report — the first `assert.*` call extracted
-from the test body. Ask:
+**For each coverage-equivalent group**, compare the assertion peeks of
+all members. Pick the strongest assertion to keep; the others are
+deletable. Heuristics for "strongest":
+
+- Asserts more properties (status code AND body, vs status code only).
+- Pins a contract no other group member pins (e.g., one of three
+  same-coverage tests is the only one verifying `outcome.ok === true`).
+- Asserts deeper structure (deepEqual on a complex value vs `assert.ok`).
+
+If after comparing peeks all members pin distinct contracts (e.g.,
+three success-path tests where one verifies the URL, one verifies the
+body, one verifies the result), keep them all — coverage equivalence
+does not imply behavioral equivalence.
+
+**For each coverage-subsumed test**, look at the assertion peek and ask:
 
 - Is this asserting a **distinct behavior** (different input → different
   output) that no required test verifies? Keep it.
-- Is this asserting **the same thing** as another test (e.g., both
-  `assert.equal(foo('x'), 'X')` and `assert.equal(foo('y'), 'Y')` exercising
-  identical branches)? It might be a parameter sweep — consider whether
-  the table-driven coverage is worth keeping or whether one representative
-  is enough.
-- Is this the **only test** for an edge case (empty string, malformed input,
-  error path)? Keep it — coverage equivalence often misses edge-case value.
+- Is this the **only test** for an edge case (empty string, malformed
+  input, error path)? Keep it — coverage subsumption often misses
+  edge-case value.
+- Otherwise it's a candidate for deletion.
 
 ### 4. Delete
 
@@ -171,8 +215,9 @@ pnpm test:uniqueness <pkg>
 ```
 
 Cached results are reused for tests in unchanged files; only the touched
-file's tests re-run. Confirm the redundant list shrank and the high-leverage
-list stayed intact.
+file's tests re-run. Confirm the redundant total shrank (equivalence
+groups dissolved or subsumed list reduced) and the high-leverage list
+stayed intact.
 
 ### 7. Commit
 
