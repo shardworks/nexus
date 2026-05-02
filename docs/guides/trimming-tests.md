@@ -297,7 +297,7 @@ xargs wc -l` on 2026-05-02; refresh as packages are processed.
 |  2 | `framework/core` | trimmed | 311 → 275 | 2026-05-02 | Cut 6 of 29 flagged candidates (21%). |
 |  3 | `plugins/fabricator` | trimmed | 399 → 387 | 2026-05-02 | Cut 1 of 13 flagged candidates (7.7%); kit+apparatus integration test was belt-and-suspenders. |
 |  4 | `plugins/lattice-discord` | trimmed | 413 → 394 | 2026-05-02 | Cut 1 of 8 flagged candidates (12.5%); 5xx test was a strictly-weaker parameter sweep of the kept 4xx test on the same `!response.ok` branch. |
-|  5 | `plugins/clockworks-stacks-signals` | pending | 567 | — | |
+|  5 | `plugins/clockworks-stacks-signals` | skipped | 567 | 2026-05-02 | 12 of 13 flagged (92.3%) but the only deletable candidate (patch() update test, strict subset of put-over-existing) was load-bearing for the aggregate function-coverage floor — cutting it drops 53.08% → 52.99% (5 transitive Stacks patch-chain functions). New X017 finding: line-redundant ≠ function-redundant. |
 |  6 | `plugins/copilot` | pending | 897 | — | |
 |  7 | `plugins/lattice` | pending | 1,066 | — | |
 |  8 | `plugins/codexes` | pending | 1,387 | — | |
