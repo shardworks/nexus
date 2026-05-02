@@ -1,0 +1,44 @@
+{
+  "name": "@shardworks/code-lookup-apparatus",
+  "version": "0.0.0",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shardworks/nexus",
+    "directory": "packages/plugins/code-lookup"
+  },
+  "description": "Code-lookup — MCP tool exposing a precomputed reverse usage index for symbol/usages/package queries",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test 'src/**/*.test.ts'",
+    "test:coverage": "mkdir -p coverage && node --disable-warning=ExperimentalWarning --experimental-transform-types --experimental-test-coverage --test-coverage-exclude='**/*.test.ts' --test-coverage-exclude='**/*.test.js' --test-coverage-exclude='**/*.d.ts' --test-coverage-exclude='**/test-helpers.ts' --test-coverage-exclude='**/*-test-fixture.ts' --test-coverage-exclude='**/conformance/**' --test-coverage-exclude='coverage/**' --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info --test 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@shardworks/nexus-core": "0.x"
+  },
+  "dependencies": {
+    "@shardworks/tools-apparatus": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@shardworks/nexus-core": "workspace:*",
+    "@types/node": "25.5.0"
+  },
+  "files": [
+    "dist",
+    "src/sage-tool-preference.md"
+  ],
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  }
+}

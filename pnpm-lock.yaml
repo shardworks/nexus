@@ -237,6 +237,22 @@ importers:
         specifier: 25.5.0
         version: 25.5.0
 
+  packages/plugins/code-lookup:
+    dependencies:
+      '@shardworks/tools-apparatus':
+        specifier: workspace:*
+        version: link:../tools
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
   packages/plugins/codexes:
     dependencies:
       '@shardworks/tools-apparatus':
