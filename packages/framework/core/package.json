@@ -15,6 +15,7 @@
   "scripts": {
     "build": "tsc",
     "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test 'src/**/*.test.ts'",
+    "test:coverage": "mkdir -p coverage && node --disable-warning=ExperimentalWarning --experimental-transform-types --experimental-test-coverage --test-coverage-exclude='**/*.test.ts' --test-coverage-exclude='**/*.test.js' --test-coverage-exclude='**/*.d.ts' --test-coverage-exclude='**/test-helpers.ts' --test-coverage-exclude='**/*-test-fixture.ts' --test-coverage-exclude='**/conformance/**' --test-coverage-exclude='coverage/**' --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info --test 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {},

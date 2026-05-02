@@ -14,6 +14,9 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "test:coverage": "pnpm -r test:coverage",
+    "coverage:report": "node --disable-warning=ExperimentalWarning --experimental-transform-types scripts/coverage-report.ts",
+    "coverage": "pnpm test:coverage && pnpm coverage:report",
     "typecheck": "pnpm -r typecheck",
     "nsg": "node --disable-warning=ExperimentalWarning --experimental-transform-types packages/framework/cli/src/cli.ts",
     "coupling-audit": "node --disable-warning=ExperimentalWarning --experimental-transform-types scripts/cross-package-coupling.ts"
