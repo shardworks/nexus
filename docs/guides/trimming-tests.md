@@ -233,9 +233,9 @@ xargs wc -l` on 2026-05-02; refresh as packages are processed.
 
 | # | Package | Status | Test lines | Date | Notes |
 |--:|---|---|---|---|---|
-|  1 | `plugins/stacks` | pending | 13 | — | High coverage already (97.7% line); expect few wins. |
+|  1 | `plugins/stacks` | skipped | 13 | 2026-05-02 | Test surface is a 13-line delegation to a shared cross-backend conformance suite; trimming would alter contract, not redundancy. |
 |  2 | `framework/core` | trimmed | 311 → 275 | 2026-05-02 | Cut 6 of 29 flagged candidates (21%). |
-|  3 | `plugins/fabricator` | pending | 399 | — | |
+|  3 | `plugins/fabricator` | trimmed | 399 → 387 | 2026-05-02 | Cut 1 of 13 flagged candidates (7.7%); kit+apparatus integration test was belt-and-suspenders. |
 |  4 | `plugins/lattice-discord` | pending | 413 | — | |
 |  5 | `plugins/clockworks-stacks-signals` | pending | 567 | — | |
 |  6 | `plugins/copilot` | pending | 897 | — | |

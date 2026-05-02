@@ -301,18 +301,6 @@ describe('Fabricator', () => {
       assert.equal(api.getEngineDesign('anything'), undefined);
     });
 
-    it('handles engines from both kits and apparatus supportKits together', () => {
-      const kitEngine = mockEngine('kit-engine');
-      const apparatusEngine = mockEngine('apparatus-engine');
-
-      const { api } = startFabricator({
-        kits: [mockKit('my-kit', { kitEngine })],
-        apparatuses: [mockApparatus('my-apparatus', { apparatusEngine })],
-      });
-
-      assert.equal(api.getEngineDesign('kit-engine'), kitEngine);
-      assert.equal(api.getEngineDesign('apparatus-engine'), apparatusEngine);
-    });
   });
 
   describe('listEngineDesigns()', () => {
