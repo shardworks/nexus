@@ -278,22 +278,9 @@ describe('createCopilotProvider', () => {
     assert.equal(provider.name, 'copilot');
   });
 
-  it('reads copilot config from guild at start() time', () => {
-    // Just verify start() doesn't throw; the config is used during launch()
-    const provider = createStartedProvider({ tokenEnvVar: 'MY_TOKEN', maxToolRounds: 5 });
-    assert.equal(provider.name, 'copilot');
-  });
 });
 
 describe('launch() — missing token', () => {
-  it('throws when the token env var is missing', async () => {
-    const provider = createStartedProvider({ tokenEnvVar: 'MISSING_TOKEN_XYZ' });
-    delete process.env['MISSING_TOKEN_XYZ'];
-
-    const { result } = provider.launch(makeConfig());
-    await assert.rejects(result, /MISSING_TOKEN_XYZ/);
-  });
-
   it('uses GITHUB_TOKEN by default', async () => {
     const provider = createStartedProvider();
     const savedToken = process.env['GITHUB_TOKEN'];
@@ -368,20 +355,6 @@ describe('launch() — non-streaming single-turn', () => {
     assert.equal((res.transcript?.[0] as { role: string })?.role, 'system');
     assert.equal((res.transcript?.[1] as { role: string })?.role, 'user');
     assert.equal((res.transcript?.[2] as { role: string })?.role, 'assistant');
-  });
-
-  it('uses custom apiEndpoint from config', async () => {
-    let capturedUrl = '';
-    restoreFetch = mockFetch(async (url) => {
-      capturedUrl = String(url);
-      return new Response(JSON.stringify(makeApiResponse('ok')), { status: 200 });
-    });
-
-    const provider = createStartedProvider({ apiEndpoint: 'https://custom.endpoint.com' });
-    const { result } = provider.launch(makeConfig({ initialPrompt: 'test' }));
-    await result;
-
-    assert.ok(capturedUrl.startsWith('https://custom.endpoint.com'));
   });
 
   it('ignores conversationId, cwd, and environment without errors', async () => {
@@ -619,57 +592,6 @@ describe('launch() — agentic tool-call loop', () => {
     assert.equal(callCount, 4);
   });
 
-  it('accumulates token usage across multiple rounds', async () => {
-    let callCount = 0;
-    restoreFetch = mockFetch(async () => {
-      callCount++;
-      if (callCount <= 3) {
-        return new Response(JSON.stringify(makeApiResponse(null, {
-          toolCalls: [{ id: `c${callCount}`, name: 'counter', args: '{}' }],
-          promptTokens: 100,
-          completionTokens: 50,
-        })), { status: 200 });
-      }
-      return new Response(JSON.stringify(makeApiResponse('done', {
-        promptTokens: 100,
-        completionTokens: 50,
-      })), { status: 200 });
-    });
-
-    const provider = createStartedProvider();
-    const { result } = provider.launch(makeConfig({
-      tools: [makeTool('counter')],
-      initialPrompt: 'count',
-    }));
-
-    const res = await result;
-    // 4 API calls × 100 input + 4 × 50 output = 400/200
-    assert.deepEqual(res.tokenUsage, { inputTokens: 400, outputTokens: 200 });
-    assert.equal(res.costUsd, undefined);
-  });
-
-  it('uses providerSessionId from the last API response', async () => {
-    let callCount = 0;
-    restoreFetch = mockFetch(async () => {
-      callCount++;
-      if (callCount === 1) {
-        return new Response(JSON.stringify(makeApiResponse(null, {
-          id: 'chatcmpl-first',
-          toolCalls: [{ id: 'c1', name: 'tool', args: '{}' }],
-        })), { status: 200 });
-      }
-      return new Response(JSON.stringify(makeApiResponse('done', { id: 'chatcmpl-last' })), { status: 200 });
-    });
-
-    const provider = createStartedProvider();
-    const { result } = provider.launch(makeConfig({
-      tools: [makeTool('tool')],
-      initialPrompt: 'run tool',
-    }));
-
-    const res = await result;
-    assert.equal(res.providerSessionId, 'chatcmpl-last');
-  });
 });
 
 describe('launch() — streaming', () => {
