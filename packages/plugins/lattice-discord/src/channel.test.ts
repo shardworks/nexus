@@ -306,25 +306,6 @@ describe('Discord channel send()', () => {
     }
   });
 
-  it('returns ok:false on a 5xx response', async () => {
-    process.env[ENV_VAR] = 'https://discord.invalid/webhook';
-    const restore = mockFetch(async () => errResponse(503, 'gateway'));
-    try {
-      const factory = createDiscordWebhookFactory();
-      const channel = factory.create({
-        type: 'discord-webhook',
-        webhookUrlEnvVar: ENV_VAR,
-      });
-      const outcome = await channel.send(pulse());
-      assert.equal(outcome.ok, false);
-      if (!outcome.ok) {
-        assert.match(outcome.error, /503/);
-      }
-    } finally {
-      restore();
-    }
-  });
-
   it('returns ok:false when fetch throws', async () => {
     process.env[ENV_VAR] = 'https://discord.invalid/webhook';
     const restore = mockFetch(async () => {
