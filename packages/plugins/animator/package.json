@@ -22,7 +22,6 @@
     "@shardworks/nexus-core": "0.x"
   },
   "dependencies": {
-    "@shardworks/clerk-apparatus": "workspace:*",
     "@shardworks/clockworks-apparatus": "workspace:*",
     "@shardworks/loom-apparatus": "workspace:*",
     "@shardworks/tools-apparatus": "workspace:*",
