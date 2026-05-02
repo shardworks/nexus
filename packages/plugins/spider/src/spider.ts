@@ -3084,7 +3084,12 @@ export function createSpider(): Plugin {
 
   return {
     apparatus: {
-      requires: ['stacks', 'clerk', 'fabricator'],
+      // 'animator' is required because spider's start() resolves it
+      // synchronously via g.apparatus('animator'). Without it in requires,
+      // topo-sort can place spider before animator (any guild whose
+      // plugin order does not happen to put animator first hits this) and
+      // start() throws 'apparatus("animator") is not available'.
+      requires: ['stacks', 'clerk', 'fabricator', 'animator'],
       // 'loom' is recommended (not required) so Spider still boots in guilds
       // that do not install the Loom. When Loom is absent the mender role
       // registration is simply inert — the manual-merge engine will fail at
