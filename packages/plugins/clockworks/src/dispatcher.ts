@@ -116,7 +116,7 @@ export interface DispatchSummary {
  * Inputs to `runDispatchSweep`. All dependencies are passed in so the
  * function is fully unit-testable against in-memory fakes.
  */
-export interface DispatchSweepInputs {
+interface DispatchSweepInputs {
   /** Writable handle on `clockworks/events`. */
   events: Book<EventDoc>;
   /** Writable handle on `clockworks/event_dispatches`. */
@@ -557,10 +557,10 @@ async function signalFailure(
  * is consulted (D15: immediate-parent only); arbitrary payload shapes
  * (null, primitives, arrays, foreign objects) safely return false.
  *
- * Exported for unit-test introspection — the production caller is the
- * per-event probe in `runDispatchSweep`.
+ * Module-internal helper — the production caller is the per-event probe
+ * in `runDispatchSweep`.
  */
-export function isStandingOrderFailedTrigger(payload: unknown): boolean {
+function isStandingOrderFailedTrigger(payload: unknown): boolean {
   if (typeof payload !== 'object' || payload === null) return false;
   const triggering = (payload as { triggeringEvent?: unknown }).triggeringEvent;
   if (typeof triggering !== 'object' || triggering === null) return false;

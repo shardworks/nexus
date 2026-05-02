@@ -85,7 +85,7 @@ export const TERMINAL_STATUSES: ReadonlySet<SessionDoc['status']> = new Set([
  * arrives. Seeds `lastActivityAt` so the reconciler has a fair starting
  * point for the staleness calculation.
  */
-export interface PendingPreWriteTransition {
+interface PendingPreWriteTransition {
   kind: 'pending-pre-write';
   id: string;
   startedAt: string;
@@ -102,7 +102,7 @@ export interface PendingPreWriteTransition {
  * write of a `running` SessionDoc when animate() launches a session
  * directly (no detached babysitter).
  */
-export interface AttachRunningTransition {
+interface AttachRunningTransition {
   kind: 'attach-running';
   id: string;
   startedAt: string;
@@ -122,7 +122,7 @@ export interface AttachRunningTransition {
  * The reducer detects the running → running refresh internally; callers
  * do not need a separate variant for it.
  */
-export interface DetachedReadyTransition {
+interface DetachedReadyTransition {
   kind: 'detached-ready';
   id: string;
   startedAt: string;
@@ -141,7 +141,7 @@ export interface DetachedReadyTransition {
  * the reducer throws on a missing `existing` because the operation is
  * meaningless without a row to refresh.
  */
-export interface HeartbeatTouchTransition {
+interface HeartbeatTouchTransition {
   kind: 'heartbeat-touch';
   id: string;
   /** ISO timestamp to write. */
@@ -154,7 +154,7 @@ export interface HeartbeatTouchTransition {
  * is carried as a sub-discriminator across the four terminal statuses
  * because the merge logic is uniform across them.
  */
-export interface TerminalTransition {
+interface TerminalTransition {
   kind: 'terminal';
   id: string;
   status: 'completed' | 'failed' | 'timeout' | 'rate-limited';
@@ -185,7 +185,7 @@ export interface TerminalTransition {
  * violation (the AnimatorApi.cancel() call site already throws "Session
  * not found" if it can't find the row).
  */
-export interface CancelTransition {
+interface CancelTransition {
   kind: 'cancel';
   id: string;
   endedAt: string;
@@ -200,7 +200,7 @@ export interface CancelTransition {
  * tells the truth that the session has been silent. Caller must
  * guarantee an existing doc.
  */
-export interface OrphanFailedTransition {
+interface OrphanFailedTransition {
   kind: 'orphan-failed';
   id: string;
   endedAt: string;

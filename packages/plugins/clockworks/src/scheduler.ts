@@ -110,7 +110,7 @@ export interface ScheduleSweepSummary {
 }
 
 /** Inputs to {@link runScheduleSweep}. */
-export interface ScheduleSweepInputs {
+interface ScheduleSweepInputs {
   /** The schedule table, mutated in place to advance `nextFireTime`. */
   schedule: ScheduleEntry[];
   /** Writable handle on `clockworks/events`. */

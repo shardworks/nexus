@@ -35,7 +35,7 @@ function normalizeOwnerId(ownerId: string): string {
   return ownerId.replace(/\//g, '__').replace(/[^a-z0-9_]/g, '_');
 }
 
-export function tableName(ref: BookRef): string {
+function tableName(ref: BookRef): string {
   if (!SAFE_BOOK_NAME_RE.test(ref.book)) {
     throw new Error(`[stacks/sqlite] Unsafe book name rejected: "${ref.book}"`);
   }

@@ -29,7 +29,7 @@ import type { CancelHandle, SessionTerminationTag } from '@shardworks/animator-a
  * when forwarding the call to the guild's Tool HTTP API (read tools are
  * GET-only on the tool server; POSTing to them 404s).
  */
-export const SerializedToolSchema = z.object({
+const SerializedToolSchema = z.object({
   /** Tool name (e.g. 'writ-list'). */
   name: z.string(),
   /** Tool description. */
@@ -52,7 +52,7 @@ export type SerializedTool = z.infer<typeof SerializedToolSchema>;
  * input contract: the {@link BabysitterConfig} type is derived from it
  * via `z.infer`, and `readConfigFromStdin` calls `.parse()` to validate.
  */
-export const BabysitterConfigSchema = z.object({
+const BabysitterConfigSchema = z.object({
   sessionId: z.string(),
   guildToolUrl: z.string(),
   dbPath: z.string(),
@@ -379,7 +379,7 @@ export async function reportRunning(
  *    transcript / exit metadata the orchestrator already accumulated
  *    rides through on the `result` argument.
  */
-export type StatusOverride =
+type StatusOverride =
   | 'cancelled'
   | { kind: 'orchestrator-error'; error: string };
 

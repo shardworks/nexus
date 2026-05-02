@@ -435,6 +435,6 @@ export function createAstrolabe(): Plugin {
   };
 }
 
-// Export resolveAstrolabeConfig / resolvePatronRole / resolvePredictedFilesThreshold
-// for external use (lazy config access).
-export { resolveAstrolabeConfig, resolvePatronRole, resolvePredictedFilesThreshold };
+// Export resolvePatronRole / resolvePredictedFilesThreshold for external
+// use (lazy config access). resolveAstrolabeConfig stays module-internal.
+export { resolvePatronRole, resolvePredictedFilesThreshold };

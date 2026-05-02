@@ -507,7 +507,7 @@ export interface WritLinks {
  * presentation layer needs to derive vocabulary, badges, and action
  * affordances without consulting the type-config registry per row.
  */
-export interface WritTypeStateInfo {
+interface WritTypeStateInfo {
   /** State name. */
   name: string;
   /** State's role in the lifecycle. */

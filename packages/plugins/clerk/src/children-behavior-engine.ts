@@ -156,7 +156,7 @@ import type {
  * to publish `status['clerk']` immediately before the parent's terminal
  * transition.
  */
-export interface ChildrenBehaviorEngineDeps {
+interface ChildrenBehaviorEngineDeps {
   writs: Book<WritDoc>;
   getWritTypeConfig(name: string): WritTypeConfig | undefined;
   isTerminal(writ: WritDoc): boolean;

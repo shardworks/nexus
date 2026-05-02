@@ -454,7 +454,7 @@ export interface DispatchObservation {
  * empty-options call) preserves the legacy drain-everything contract
  * for callers who omit the options.
  */
-export interface ProcessEventsOptions {
+interface ProcessEventsOptions {
   /** Process only the matching unprocessed event. */
   eventId?: string;
   /** Cap on the number of events processed this sweep. */
@@ -470,7 +470,7 @@ export interface ProcessEventsOptions {
  * fields — a scheduler tick has no equivalent of "drain a specific
  * event" and the in-tick fire ordering is deterministic.
  */
-export interface ProcessSchedulesOptions {
+interface ProcessSchedulesOptions {
   /** Per-dispatch observer; throwing observers are isolated. */
   onDispatch?: (observation: DispatchObservation) => void;
 }

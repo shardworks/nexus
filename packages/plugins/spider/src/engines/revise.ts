@@ -7,7 +7,7 @@
  * in the findings and commit the result.
  *
  * Returns `{ status: 'launched', sessionId }` so the Spider's collect step
- * can store ReviseYields on completion.
+ * can store the session id + terminal status on completion.
  */
 
 import { execFile } from 'node:child_process';

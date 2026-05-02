@@ -705,17 +705,6 @@ export interface ManualMergeYields {
 }
 
 /**
- * Yields from the `implement` quick engine.
- * Set by the Spider's collect step when the Animator session completes.
- */
-export interface ImplementYields {
-  /** The Animator session id. */
-  sessionId: string;
-  /** Terminal status of the session. */
-  sessionStatus: 'completed' | 'failed';
-}
-
-/**
  * A single mechanical check (build or test) run by the review engine
  * before launching the reviewer session.
  */
@@ -743,17 +732,6 @@ export interface ReviewYields {
   findings: string;
   /** Mechanical check results run before the reviewer session. */
   mechanicalChecks: MechanicalCheck[];
-}
-
-/**
- * Yields from the `revise` quick engine.
- * Set by the Spider's collect step when the Animator session completes.
- */
-export interface ReviseYields {
-  /** The Animator session id. */
-  sessionId: string;
-  /** Terminal status of the session. */
-  sessionStatus: 'completed' | 'failed';
 }
 
 // ── Input request types ──────────────────────────────────────────────

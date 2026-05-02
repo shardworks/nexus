@@ -140,12 +140,12 @@ const NON_RATE_LIMIT_TERMINAL_STATUSES: ReadonlySet<string> = new Set(
   Array.from(TERMINAL_STATUSES).filter((status) => status !== 'rate-limited'),
 );
 
-export interface BackoffReadConfig {
+interface BackoffReadConfig {
   /** Read the current back-off config — called at each transition. */
   get(): Required<AnimatorRateLimitBackoffConfig>;
 }
 
-export interface NowFn {
+interface NowFn {
   (): number;
 }
 
@@ -156,7 +156,7 @@ export interface NowFn {
  * attempt dispatches increments." On a single-process daemon this is
  * sufficient; multi-process deployments are out of scope here.
  */
-export interface ResumeProbeTracker {
+interface ResumeProbeTracker {
   /**
    * Record that `animate()` successfully dispatched a session (i.e.
    * passed its pre-check). The next rate-limit terminal will now

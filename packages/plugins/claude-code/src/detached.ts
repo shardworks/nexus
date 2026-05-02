@@ -110,7 +110,7 @@ export function serializeTools(tools: ResolvedTool[]): SerializedTool[] {
 // ── Guild config resolution ────────────────────────────────────────────
 
 /** Resolve the guild's Tool HTTP API URL. */
-export function resolveGuildToolUrl(): string {
+function resolveGuildToolUrl(): string {
   const g = guild();
   // Match the Instrumentarium's port resolution logic:
   // guild.json["tools"]["serverPort"] → default 7471
@@ -120,7 +120,7 @@ export function resolveGuildToolUrl(): string {
 }
 
 /** Resolve the path to the guild's SQLite database. */
-export function resolveDbPath(): string {
+function resolveDbPath(): string {
   const g = guild();
   return path.join(g.home, '.nexus', 'nexus.db');
 }
@@ -145,14 +145,14 @@ export function resolveLogDir(): string {
  * `babysitter.js` and the babysitter dies with MODULE_NOT_FOUND before
  * it can call session-running.
  */
-export function resolveBabysitterPath(): string {
+function resolveBabysitterPath(): string {
   const dir = import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname);
   return path.join(dir, isSourcePath(import.meta.url) ? 'babysitter.ts' : 'babysitter.js');
 }
 
 // ── BabysitterConfig builder ───────────────────────────────────────────
 
-export interface DetachedLaunchOptions {
+interface DetachedLaunchOptions {
   /** Override babysitter script path (for testing). */
   babysitterPath?: string;
   /** Override guild tool URL (for testing). */

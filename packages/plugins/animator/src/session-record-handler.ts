@@ -31,7 +31,7 @@ import { TERMINAL_STATUSES, reduceSessionTransition } from './session-reducer.ts
  * exercise handleSessionRecord in isolation); the handler silently
  * skips the observation in that case.
  */
-export interface BackoffObserver {
+interface BackoffObserver {
   observeTerminal(params: {
     sessionId: string;
     status: 'completed' | 'failed' | 'timeout' | 'cancelled' | 'rate-limited';
@@ -66,7 +66,7 @@ export function setBackoffMachine(observer: BackoffObserver | null): void {
  * `null` means the apparatus has not started yet (or this is a unit
  * test); the handler silently skips emission in that case.
  */
-export interface SessionLifecycleEmitter {
+interface SessionLifecycleEmitter {
   emitSessionEnded(doc: SessionDoc): Promise<void>;
   emitSessionRecordFailed(
     sessionId: string,

@@ -13,14 +13,14 @@ import { tool } from '../tool.ts';
 import type { InstrumentariumApi } from '../instrumentarium.ts';
 
 /** Parameter info derived from the Zod schema. */
-export interface ParamInfo {
+interface ParamInfo {
   type: string;
   description: string | null;
   optional: boolean;
 }
 
 /** Full detail returned for a single tool. */
-export interface ToolDetail {
+interface ToolDetail {
   name: string;
   description: string;
   pluginId: string;

@@ -173,7 +173,7 @@ export async function emitSessionEnded(
  *   - `'write-record'` — transcript JSON write failed.
  *   - `'update-row'`  — final / terminal SessionDoc overwrite failed.
  */
-export type SessionRecordFailurePhase = 'insert' | 'write-record' | 'update-row';
+type SessionRecordFailurePhase = 'insert' | 'write-record' | 'update-row';
 
 /**
  * Emit `animator.session.record-failed` from the catch path of a

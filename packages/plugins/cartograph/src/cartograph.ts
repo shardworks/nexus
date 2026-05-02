@@ -833,14 +833,7 @@ export function createCartograph(): Plugin {
   };
 }
 
-// Re-export the type-config constants so tests can assert them without
-// reaching back into the apparatus module.
-export { VISION_CONFIG, CHARGE_CONFIG, PIECE_CONFIG, CARTOGRAPH_PLUGIN_ID };
-
-// Local type re-exports kept narrow — see ./index.ts for the full surface.
-export type {
-  ChargeStage,
-  PieceStage,
-  VisionStage,
-  WritPhase,
-};
+// VISION_CONFIG / CHARGE_CONFIG / PIECE_CONFIG / CARTOGRAPH_PLUGIN_ID are
+// module-internal — the apparatus consumes them at start() and tests use
+// `createCartograph()` rather than asserting against the configs directly.
+// Stage-type re-exports were dropped: ./index.ts is the public surface.

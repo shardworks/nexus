@@ -74,7 +74,7 @@ async function deriveCommissionId(
 
 // ── Observer ─────────────────────────────────────────────────────────
 
-export interface WritLifecycleObserverDeps {
+interface WritLifecycleObserverDeps {
   readonly clockworks: ClockworksApi;
   readonly writsBook: ReadOnlyBook<WritDoc>;
 }
@@ -161,5 +161,3 @@ export async function handleWritLifecycle(
     ...(writ.parentId !== undefined ? { parentId: writ.parentId } : {}),
   });
 }
-
-export { deriveCommissionId };

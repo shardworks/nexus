@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCb);
 
-export interface GitResult {
+interface GitResult {
   stdout: string
   stderr: string
 }

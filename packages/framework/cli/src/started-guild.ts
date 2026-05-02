@@ -41,12 +41,3 @@ export function setStartedGuild(g: StartedGuild): void {
 export function getStartedGuild(): StartedGuild | undefined {
   return _started;
 }
-
-/**
- * Clear the stored reference. Provided for test isolation; production
- * code never calls this directly — `StartedGuild.shutdown()` is what
- * tears the guild down, and the process exits shortly after.
- */
-export function clearStartedGuild(): void {
-  _started = undefined;
-}

@@ -76,7 +76,7 @@ export function collectEvents<T extends BookEntry = BookEntry>(
 
 // ── Backend spy (for 2.6 — verifying withPrev behavior) ─────────────
 
-export interface PutCall {
+interface PutCall {
   ref: BookRef;
   entry: BookEntry;
   withPrev: boolean;

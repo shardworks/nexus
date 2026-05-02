@@ -313,7 +313,7 @@ export function computeNextStatus(
  * Reckoner runtime. The same `clerk` handle the apparatus uses for
  * `transition()` and `setWritStatus()` is threaded in here.
  */
-export interface StalenessHandlerDeps {
+interface StalenessHandlerDeps {
   clerk: ClerkApi;
 }
 

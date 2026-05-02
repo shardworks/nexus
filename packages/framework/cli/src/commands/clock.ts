@@ -224,14 +224,14 @@ export function formatDispatchLine(obs: DispatchObservationLike): string {
 
 // ── list ─────────────────────────────────────────────────────────────
 
-export interface ListInput {
+interface ListInput {
   /** Include processed events in addition to pending ones. */
   includeProcessed?: boolean;
   /** Cap output at this many entries; no default — undefined prints all. */
   limit?: number;
 }
 
-export interface ListOutput {
+interface ListOutput {
   /** Lines to print (already formatted). */
   lines: string[];
   /** Number of events rendered (after the limit cap, after the filter). */
@@ -285,12 +285,12 @@ export async function runList(input: ListInput): Promise<ListOutput> {
 
 // ── tick ─────────────────────────────────────────────────────────────
 
-export interface TickInput {
+interface TickInput {
   /** Optional event id to process. When omitted, the next pending event. */
   eventId?: string;
 }
 
-export interface TickOutput {
+interface TickOutput {
   /** Lines to print (in order). */
   lines: string[];
   /** Whether at least one dispatch row recorded `status: error`. */
@@ -440,7 +440,7 @@ export async function runTick(input: TickInput): Promise<TickOutput> {
 
 // ── run ──────────────────────────────────────────────────────────────
 
-export interface RunOutput {
+interface RunOutput {
   /** Lines to print (in dispatch order, plus the final count). */
   lines: string[];
   /** Whether at least one dispatch row across every iteration was an error. */
@@ -549,7 +549,7 @@ export async function runRun(): Promise<RunOutput> {
 
 // ── start / stop / status ────────────────────────────────────────────
 
-export interface StartInput {
+interface StartInput {
   /** Polling interval in milliseconds. Forwarded to `clockStart`. */
   interval?: number;
   /**
@@ -560,7 +560,7 @@ export interface StartInput {
   foreground?: boolean;
 }
 
-export interface StartOutput {
+interface StartOutput {
   /** Lines to print. */
   lines: string[];
 }
@@ -573,7 +573,7 @@ export interface StartOutput {
  * detached spawn re-execs into. The function returns only when the
  * daemon shuts down (under SIGTERM or SIGINT).
  */
-export async function runStart(input: StartInput): Promise<StartOutput> {
+async function runStart(input: StartInput): Promise<StartOutput> {
   const g = requireGuild();
 
   if (input.foreground) {
@@ -607,7 +607,7 @@ export async function runStart(input: StartInput): Promise<StartOutput> {
   };
 }
 
-export interface StopOutput {
+interface StopOutput {
   /** Lines to print. */
   lines: string[];
 }
@@ -621,18 +621,18 @@ export interface StopOutput {
  * `'no-pidfile'`, `'stale'`) stay aligned across CLI / programmatic
  * consumers.
  */
-export async function runStop(): Promise<StopOutput> {
+async function runStop(): Promise<StopOutput> {
   const g = requireGuild();
   const result = await clockStop(g.home);
   return { lines: [result.message] };
 }
 
-export interface StatusInput {
+interface StatusInput {
   /** Emit JSON instead of multi-line plain text. */
   json?: boolean;
 }
 
-export interface StatusOutput {
+interface StatusOutput {
   /** Lines to print. */
   lines: string[];
   /** The structured status, included unconditionally so tests can assert it. */

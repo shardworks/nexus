@@ -58,7 +58,7 @@ export type ParsedSchedule =
  * per-order errors and report them together (matches the existing
  * validator aggregation contract).
  */
-export type ParseResult =
+type ParseResult =
   | { readonly ok: true; readonly parsed: ParsedSchedule }
   | { readonly ok: false; readonly error: string };
 

@@ -14,7 +14,7 @@ import { tool } from '../tool.ts';
 import type { InstrumentariumApi } from '../instrumentarium.ts';
 
 /** Summary returned for each tool in the list. */
-export interface ToolSummary {
+interface ToolSummary {
   name: string;
   description: string;
   pluginId: string;

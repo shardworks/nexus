@@ -42,7 +42,7 @@ interface ClockworksApiLike {
 // Exported separately from the Commander Command so it can be exercised
 // directly in unit tests without spinning up Commander.
 
-export interface SignalHandlerInput {
+interface SignalHandlerInput {
   name: string;
   /** Raw JSON string from `--payload`, or undefined if the flag was omitted. */
   payloadJson?: string;

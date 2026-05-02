@@ -10,7 +10,7 @@ import type { StacksBackend } from '../backend.ts';
 import type { StacksApi } from '../types.ts';
 import { StacksCore } from '../stacks-core.ts';
 
-export interface TestableStacks {
+interface TestableStacks {
   api: StacksApi;
   /** Seal the CDC registry (mirrors arbor's `phase:started` seal). */
   sealCdc(): void;

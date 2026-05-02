@@ -30,7 +30,7 @@ import type {
 // ── Types ────────────────────────────────────────────────────────────
 
 /** Subset of `WritDoc` fields nested under `writ` in the show JSON shape (D8). */
-export interface WritProjection {
+interface WritProjection {
   id: string;
   title: string;
   body: string;
@@ -45,7 +45,7 @@ export interface WritProjection {
 }
 
 /** Reference shape for parent + children entries in a show response. */
-export interface WritReference {
+interface WritReference {
   id: string;
   title: string;
   type: string;
@@ -60,7 +60,7 @@ export interface WritReference {
  * supplementary fields (`parent`, `children`, `links`) drive the
  * text-mode renderer.
  */
-export interface CartographShowResult<TDoc extends Record<string, unknown>> {
+interface CartographShowResult<TDoc extends Record<string, unknown>> {
   doc: TDoc;
   writ: WritProjection;
   links: WritLinks;
@@ -81,7 +81,7 @@ export interface CartographShowResult<TDoc extends Record<string, unknown>> {
  * `resolution`) ride alongside so a reader does not need a second
  * round-trip to clerk.show.
  */
-export function projectWrit(writ: WritDoc): WritProjection {
+function projectWrit(writ: WritDoc): WritProjection {
   const projection: WritProjection = {
     id: writ.id,
     title: writ.title,
@@ -276,7 +276,7 @@ export function renderShowJson<TDoc extends Record<string, unknown>>(
  * `[stage, id, codex, title, created]` per D9; the per-row title is
  * fetched from the writ row by the caller (N+1 cost is acceptable for v0).
  */
-export interface ListRow {
+interface ListRow {
   stage: string;
   id: string;
   codex?: string;

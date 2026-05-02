@@ -55,24 +55,11 @@ export function resolveDotPath(root: unknown, path: string): unknown {
  * - `number`, `boolean`, `bigint`, `symbol` → `String(value)`
  * - `object` or `array` (including `null`) → `JSON.stringify(value)`
  */
-export function stringifyForInline(value: unknown): string {
+function stringifyForInline(value: unknown): string {
   if (value === undefined) return '';
   if (value === null || typeof value === 'object') return JSON.stringify(value);
   if (typeof value === 'string') return value;
   return String(value);
-}
-
-/**
- * Test whether a string contains any `${...}` template expressions,
- * ignoring escaped `\${` sequences.
- */
-export function containsTemplate(value: string): boolean {
-  // Quick check before regex
-  if (!value.includes('${')) return false;
-  const cleaned = value.replace(ESCAPED_TEMPLATE_RE, '');
-  // Reset lastIndex before testing since TEMPLATE_EXPR_RE is global
-  const re = new RegExp(TEMPLATE_EXPR_RE.source);
-  return re.test(cleaned);
 }
 
 /**

@@ -126,7 +126,7 @@ export interface RelayDefinition {
 }
 
 /** Input to `relay()` — the author's authoring shape. */
-export interface RelayInput {
+interface RelayInput {
   name: string;
   description?: string;
   handler: RelayHandler;

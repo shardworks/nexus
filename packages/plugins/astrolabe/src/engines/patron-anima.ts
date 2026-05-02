@@ -197,7 +197,7 @@ export function extractJsonBlock(output: string): string | null {
   return null;
 }
 
-export interface RawVerdict {
+interface RawVerdict {
   id?: unknown;
   verdict?: unknown;
   selection?: unknown;

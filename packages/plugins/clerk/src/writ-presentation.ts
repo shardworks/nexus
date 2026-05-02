@@ -36,7 +36,7 @@ import type {
  * classes, glyphs, and action affordances without a second registry
  * lookup.
  */
-export interface WritPresentation {
+interface WritPresentation {
   /**
    * Classification of the writ's current state in its type config, or
    * `'unknown'` when the writ's type is unregistered or its phase is
@@ -100,7 +100,7 @@ export function derivePresentation(
  * using the four well-known attrs (`success`, `failure`, `cancelled`,
  * `stuck`) inherit the same vocabulary for free.
  */
-export interface StateIndicator {
+interface StateIndicator {
   /** Box-drawing glyph for tree renderers. */
   glyph: string;
   /**
