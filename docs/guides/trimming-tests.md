@@ -175,6 +175,21 @@ three success-path tests where one verifies the URL, one verifies the
 body, one verifies the result), keep them all — coverage equivalence
 does not imply behavioral equivalence.
 
+**Beware the transitive-coverage trap.** When the strongest member of an
+equivalence class pins a contract that is *transitively* covered by
+tests in another file (typically a helper's own test suite), the
+strongest-keep heuristic can mislead. Example: an integration test that
+exercises a helper end-to-end has stronger assertions than a sibling
+test that doesn't go through the helper, but if the helper has its own
+exhaustive unit tests, the integration test's added strength is itself
+redundant — and either consolidation (keep the integration test, or
+keep the simpler sibling and rely on the helper's unit tests) is
+defensible. Surface the call explicitly when you see this pattern; the
+analyzer can't tell which other-file tests transitively cover the
+extra assertion. Lean toward keeping the simpler test only when the
+helper's coverage is itself robust (≥1 representative + edge cases for
+each branch the integration test exercises).
+
 **For each coverage-subsumed test**, look at the assertion peek and ask:
 
 - Is this asserting a **distinct behavior** (different input → different
