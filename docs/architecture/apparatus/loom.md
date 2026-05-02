@@ -167,6 +167,7 @@ Each role definition contains:
 
 - **`permissions`** — an array of `plugin:level` grant strings. The Instrumentarium uses these to resolve which tools are available. See [The Instrumentarium § Permission Model](./instrumentarium.md#permission-model) for grant format and matching rules.
 - **`strict`** (optional, default `false`) — when true, permissionless tools are excluded unless the role has `plugin:*` or `*:*` for that tool's plugin. Useful for locked-down roles that should only see explicitly granted tools.
+- **`model`** (optional) — model identifier (e.g. `"sonnet"`, `"opus"`, `"claude-sonnet-4-6"`). When present, surfaces on the `AnimaWeave` and takes precedence over `guildConfig.settings.model` for sessions launched in this role. Lets a single guild run different anima on different models — e.g. a Sonnet implementer with an Opus reviewer for cost-aware big-brain review. When omitted, the Animator falls back to `guildConfig.settings.model`, then to the framework default `"sonnet"`.
 
 The Loom resolves an anima's assigned roles into a flat permissions array (union across all roles), then passes it to `instrumentarium.resolve()` with `caller: 'anima'` — since the Loom only weaves anima sessions, this is a constant, not a parameter. The Instrumentarium is role-agnostic — it never sees role names, only permissions.
 

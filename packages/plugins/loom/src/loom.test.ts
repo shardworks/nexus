@@ -810,6 +810,173 @@ describe('The Loom', () => {
     });
   });
 
+  // ── Per-role model override ───────────────────────────────────────────
+
+  describe('weave() — model resolution', () => {
+    afterEach(() => clearGuild());
+
+    it('returns weave.model from a guild role definition', async () => {
+      const { api: instrumentarium } = mockInstrumentarium([]);
+      setupGuild({
+        loomConfig: {
+          roles: {
+            artificer: { permissions: ['*:*'], model: 'sonnet' },
+          },
+        },
+        apparatuses: { tools: instrumentarium },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'artificer' });
+      assert.strictEqual(weave.model, 'sonnet');
+    });
+
+    it('returns weave.model from a kit-contributed role definition', async () => {
+      const loomKits = [makeLoadedKit('animator', '@test/animator', {
+        roles: {
+          scribe: { permissions: ['animator:read'], model: 'opus' },
+        },
+      })];
+      const { api: instrumentarium } = mockInstrumentarium([]);
+      setupGuild({
+        kits: loomKits,
+        apparatuses: { tools: instrumentarium },
+      });
+      const api = startLoom(buildKitEntries(loomKits));
+      const weave = await api.weave({ role: 'animator.scribe' });
+      assert.strictEqual(weave.model, 'opus');
+    });
+
+    it('omits weave.model when the role declares no model', async () => {
+      const { api: instrumentarium } = mockInstrumentarium([]);
+      setupGuild({
+        loomConfig: {
+          roles: {
+            artificer: { permissions: ['*:*'] },
+          },
+        },
+        apparatuses: { tools: instrumentarium },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'artificer' });
+      assert.strictEqual(weave.model, undefined);
+    });
+
+    it('omits weave.model for an unknown role', async () => {
+      const { api: instrumentarium } = mockInstrumentarium([]);
+      setupGuild({
+        loomConfig: {
+          roles: {
+            artificer: { permissions: ['*:*'], model: 'opus' },
+          },
+        },
+        apparatuses: { tools: instrumentarium },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'someone-else' });
+      assert.strictEqual(weave.model, undefined);
+    });
+
+    it('treats an empty-string model on a guild role as no override', async () => {
+      const { api: instrumentarium } = mockInstrumentarium([]);
+      setupGuild({
+        loomConfig: {
+          roles: {
+            artificer: { permissions: ['*:*'], model: '' },
+          },
+        },
+        apparatuses: { tools: instrumentarium },
+      });
+      const api = startLoom();
+      const weave = await api.weave({ role: 'artificer' });
+      assert.strictEqual(weave.model, undefined);
+    });
+
+    it('guild role.model overrides a kit role.model with the same name (R8)', async () => {
+      const loomKits = [makeLoadedKit('spider', '@test/spider', {
+        roles: {
+          crawler: { permissions: ['spider:read'], model: 'opus' },
+        },
+      })];
+      const { api: instrumentarium } = mockInstrumentarium([]);
+      setupGuild({
+        loomConfig: {
+          roles: {
+            'spider.crawler': { permissions: ['*:*'], model: 'sonnet' },
+          },
+        },
+        kits: loomKits,
+        apparatuses: { tools: instrumentarium },
+      });
+      const api = startLoom(buildKitEntries(loomKits));
+      const weave = await api.weave({ role: 'spider.crawler' });
+      assert.strictEqual(weave.model, 'sonnet');
+    });
+  });
+
+  describe('listRoles() — model surface', () => {
+    afterEach(() => clearGuild());
+
+    it('includes model on guild roles when declared', () => {
+      setupGuild({
+        loomConfig: {
+          roles: {
+            artificer: { permissions: ['*:*'], model: 'sonnet' },
+            reviewer: { permissions: ['*:*'] },
+          },
+        },
+      });
+      const api = startLoom();
+      const roles = api.listRoles();
+      const artificer = roles.find(r => r.name === 'artificer')!;
+      const reviewer = roles.find(r => r.name === 'reviewer')!;
+      assert.strictEqual(artificer.model, 'sonnet');
+      assert.strictEqual(reviewer.model, undefined);
+    });
+
+    it('includes model on kit-contributed roles when declared', () => {
+      const loomKits = [makeLoadedKit('animator', '@test/animator', {
+        roles: {
+          scribe: { permissions: ['animator:read'], model: 'opus' },
+          quill: { permissions: ['animator:read'] },
+        },
+      })];
+      setupGuild({ kits: loomKits });
+      const api = startLoom(buildKitEntries(loomKits));
+      const roles = api.listRoles();
+      const scribe = roles.find(r => r.name === 'animator.scribe')!;
+      const quill = roles.find(r => r.name === 'animator.quill')!;
+      assert.strictEqual(scribe.model, 'opus');
+      assert.strictEqual(quill.model, undefined);
+    });
+  });
+
+  describe('loom-weave tool — model in preview output', () => {
+    afterEach(() => clearGuild());
+
+    it('exposes weave.model on the tool handler result', async () => {
+      const { api: instrumentarium } = mockInstrumentarium([]);
+      setupGuild({
+        loomConfig: {
+          roles: {
+            artificer: { permissions: ['*:*'], model: 'opus' },
+          },
+        },
+        apparatuses: { tools: instrumentarium },
+      });
+      const plugin = createLoom();
+      const apparatus = (plugin as { apparatus: Record<string, unknown> & { start: (ctx: unknown) => void } }).apparatus;
+      apparatus.start({ on: () => {}, kits: () => [] });
+
+      const supportKit = apparatus.supportKit as Record<string, unknown>;
+      const tools = supportKit.tools as Array<{ name: string; handler: (p: Record<string, unknown>) => unknown }>;
+      const loomWeave = tools.find(t => t.name === 'loom-weave');
+      assert.ok(loomWeave);
+
+      const result = await loomWeave!.handler({ role: 'artificer' }) as Record<string, unknown>;
+      assert.strictEqual(result.model, 'opus');
+    });
+  });
+
   // ── Kit role contributions ────────────────────────────────────────────
 
   describe('apparatus declaration', () => {

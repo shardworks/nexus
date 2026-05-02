@@ -162,9 +162,19 @@ function resolveProvider(config: AnimatorConfig): AnimatorSessionProvider {
 }
 
 /**
- * Resolve the model from guild settings.
+ * Resolve the model for a session.
+ *
+ * Precedence:
+ *   1. The role's model override, surfaced on the AnimaWeave by The Loom
+ *      (`request.context.model`). Highest priority — lets a single guild
+ *      run different anima on different models.
+ *   2. The guild-level default in `guildConfig.settings.model`.
+ *   3. The framework default `'sonnet'`.
  */
-function resolveModel(): string {
+function resolveModel(weaveModel?: string): string {
+  if (typeof weaveModel === 'string' && weaveModel.length > 0) {
+    return weaveModel;
+  }
   const g = guild();
   const guildConfig = g.guildConfig();
   return guildConfig.settings?.model ?? 'sonnet';
@@ -694,7 +704,7 @@ export function createAnimator(): Plugin {
    */
   function dispatchAnimate(request: AnimateRequest, id: string): AnimateHandle {
     const provider = resolveProvider(config);
-    const model = resolveModel();
+    const model = resolveModel(request.context.model);
     const startedAt = new Date().toISOString();
     const providerConfig = buildProviderConfig(request, model, id);
 

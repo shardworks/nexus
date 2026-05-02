@@ -145,7 +145,14 @@ const result = await animator.summon({
 
 The Loom reads role definitions from `guild.json["loom"]["roles"]`. See the [architecture spec](../../docs/architecture/apparatus/loom.md) for role configuration format.
 
-Role configuration is used for tool resolution (permissions), environment variables (git identity), and role instruction file lookup (`roles/{role}.md`). Future: curricula and temperament composition.
+Role configuration is used for:
+
+- **Tool resolution** — `permissions` (and the optional `strict` flag) feed the Instrumentarium's permission-gated tool lookup.
+- **Environment variables** — git identity (`GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`) is derived from the role name.
+- **Role instructions** — `roles/{role}.md` is loaded into the system prompt.
+- **Per-role model selection** — an optional `model` field (e.g. `"sonnet"`, `"opus"`, `"claude-sonnet-4-6"`) surfaces on the `AnimaWeave` and takes precedence over `guildConfig.settings.model`. Lets one guild run different anima on different models — e.g. a Sonnet implementer with an Opus reviewer.
+
+Future: curricula and temperament composition.
 
 ---
 

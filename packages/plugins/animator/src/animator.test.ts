@@ -372,6 +372,50 @@ describe('Animator', () => {
       assert.equal(captured!.cwd, '/tmp/workdir');
     });
 
+    it('uses context.model from the AnimaWeave when provided (per-role override)', async () => {
+      const { provider, getCapturedConfig } = createSpyProvider();
+      await setup(provider);
+
+      await animator.animate({
+        context: { systemPrompt: 'Test', model: 'opus' },
+        cwd: '/tmp/workdir',
+      }).result;
+
+      const captured = getCapturedConfig();
+      assert.ok(captured);
+      // Per-role model override (from the AnimaWeave) wins over the
+      // guild-level setting ('sonnet' in this test fixture).
+      assert.equal(captured!.model, 'opus');
+    });
+
+    it('falls back to guild settings.model when context.model is omitted', async () => {
+      const { provider, getCapturedConfig } = createSpyProvider();
+      await setup(provider);
+
+      await animator.animate({
+        context: { systemPrompt: 'Test' },
+        cwd: '/tmp/workdir',
+      }).result;
+
+      const captured = getCapturedConfig();
+      assert.ok(captured);
+      assert.equal(captured!.model, 'sonnet');
+    });
+
+    it('treats empty-string context.model as no override (falls through)', async () => {
+      const { provider, getCapturedConfig } = createSpyProvider();
+      await setup(provider);
+
+      await animator.animate({
+        context: { systemPrompt: 'Test', model: '' },
+        cwd: '/tmp/workdir',
+      }).result;
+
+      const captured = getCapturedConfig();
+      assert.ok(captured);
+      assert.equal(captured!.model, 'sonnet');
+    });
+
     it('passes context environment through to provider', async () => {
       const { provider, getCapturedConfig } = createSpyProvider();
       await setup(provider);

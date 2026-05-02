@@ -379,7 +379,13 @@ interface SessionProviderConfig {
   systemPrompt?: string
   /** Work prompt from AnimateRequest.prompt — what the anima should do. */
   initialPrompt?: string
-  /** Model to use (from guild settings). */
+  /**
+   * Model to use. Resolved by the Animator with this precedence:
+   *   1. `request.context.model` — the AnimaWeave's per-role model override
+   *      (set by The Loom from the role's `model` field in guild.json).
+   *   2. `guildConfig.settings.model` — the guild-level default.
+   *   3. `'sonnet'` — the framework default.
+   */
   model: string
   /** Optional conversation id for resume. */
   conversationId?: string

@@ -56,6 +56,17 @@ export interface AnimaWeave {
   tools?: ResolvedTool[];
   /** Environment variables derived from role identity (e.g. git author/committer). */
   environment?: Record<string, string>;
+  /**
+   * Model identifier for this role (e.g. 'sonnet', 'opus',
+   * 'claude-sonnet-4-6'). Undefined when the role declares no model
+   * override; the Animator falls back to `guildConfig.settings.model`
+   * (and ultimately the framework default 'sonnet') in that case.
+   *
+   * Per-role model selection lets a guild run different anima on
+   * different models — e.g. a Sonnet implementer with an Opus reviewer
+   * for cost-aware big-brain review.
+   */
+  model?: string;
 }
 
 /** Metadata for a registered role, returned by listRoles(). */
@@ -68,6 +79,8 @@ export interface RoleInfo {
   strict?: boolean;
   /** Source of the role definition: 'guild' for guild.json roles, or the plugin ID for kit-contributed roles. */
   source: string;
+  /** Model override declared on the role. Undefined when the role uses guild-level default. */
+  model?: string;
 }
 
 /** The Loom's public API, exposed via `provides`. */
@@ -99,6 +112,13 @@ export interface RoleDefinition {
    * `plugin:*` or `*:*` for the tool's plugin. Default: false.
    */
   strict?: boolean;
+  /**
+   * Model identifier for this role (e.g. 'sonnet', 'opus',
+   * 'claude-sonnet-4-6'). When omitted, the Animator falls back to
+   * `guildConfig.settings.model`. Lets a single guild run different
+   * anima on different models.
+   */
+  model?: string;
 }
 
 /** Loom configuration from guild.json. */
@@ -124,6 +144,14 @@ export interface KitRoleDefinition {
    * (if both are present, `instructions` wins).
    */
   instructionsFile?: string;
+  /**
+   * Model identifier for this role (e.g. 'sonnet', 'opus',
+   * 'claude-sonnet-4-6'). When omitted, the Animator falls back to
+   * `guildConfig.settings.model`. A guild-level role of the same name
+   * (in `guild.json`) overrides this kit contribution wholesale, per
+   * the existing override rule.
+   */
+  model?: string;
 }
 
 /** Kit contribution interface for role definitions. */
@@ -230,6 +258,9 @@ export function createLoom(): Plugin {
       kitRoles.set(qualifiedName, {
         permissions: validPermissions,
         ...(def.strict === true ? { strict: true } : {}),
+        ...(typeof def.model === 'string' && def.model.length > 0
+          ? { model: def.model }
+          : {}),
       });
 
       // Resolve instructions — inline takes precedence over file
@@ -262,6 +293,9 @@ export function createLoom(): Plugin {
             name,
             permissions: def.permissions,
             ...(def.strict === true ? { strict: true } : {}),
+            ...(typeof def.model === 'string' && def.model.length > 0
+              ? { model: def.model }
+              : {}),
             source: 'guild',
           });
         }
@@ -275,6 +309,9 @@ export function createLoom(): Plugin {
           name,
           permissions: def.permissions,
           ...(def.strict === true ? { strict: true } : {}),
+          ...(typeof def.model === 'string' && def.model.length > 0
+            ? { model: def.model }
+            : {}),
           source,
         });
       }
@@ -301,6 +338,12 @@ export function createLoom(): Plugin {
             // Instrumentarium not installed — no tools.
             // This shouldn't happen since we require 'tools', but
             // fail gracefully rather than crash the session.
+          }
+
+          // Surface the role's model override (if any) on the weave so
+          // the Animator can apply it ahead of the guild-level fallback.
+          if (typeof roleDef.model === 'string' && roleDef.model.length > 0) {
+            weave.model = roleDef.model;
           }
         }
       }
@@ -368,6 +411,7 @@ export function createLoom(): Plugin {
           pluginId: t.pluginId,
         })),
         environment: weave.environment,
+        model: weave.model,
       };
     },
   });
