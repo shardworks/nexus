@@ -17,7 +17,6 @@
  * starts with 'show-'.
  */
 
-import path from 'node:path';
 import { Command } from 'commander';
 import { z } from 'zod';
 import { findGuildRoot, guild } from '@shardworks/nexus-core';

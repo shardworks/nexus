@@ -38,7 +38,6 @@ import { sessionList, sessionShow, summon as summonTool, sessionCancel, sessionR
 import { animatorRoutes } from './oculus-routes.ts';
 import { drainDlq, recoverOrphans } from './startup.ts';
 import {
-  DISPATCH_STATUS_DOC_ID,
   buildPrecheckRejectionResult,
   createBackoffMachine,
   createResumeProbeTracker,
@@ -632,7 +631,6 @@ export function createAnimator(): Plugin {
 
     animate(request: AnimateRequest): AnimateHandle {
       const provider = resolveProvider(config);
-      const model = resolveModel();
 
       // Step 0: rate-limit pre-check (D13 — top of animate(), before id
       // generation or SessionDoc write). Uses the back-off machine's

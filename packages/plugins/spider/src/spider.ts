@@ -26,7 +26,7 @@
  * See: docs/architecture/apparatus/spider.md
  */
 
-import type { Plugin, StartupContext, KitEntry, LoadedKit, LoadedApparatus } from '@shardworks/nexus-core';
+import type { Plugin, StartupContext, KitEntry } from '@shardworks/nexus-core';
 import { guild, generateId, shortId } from '@shardworks/nexus-core';
 import type { StacksApi, Book, ReadOnlyBook, WhereClause } from '@shardworks/stacks-apparatus';
 import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';

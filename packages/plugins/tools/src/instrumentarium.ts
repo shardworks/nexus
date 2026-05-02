@@ -16,8 +16,6 @@ import path from 'node:path';
 import type {
   StartupContext,
   LoadedPlugin,
-  LoadedKit,
-  LoadedApparatus,
   Plugin,
 } from '@shardworks/nexus-core';
 import {

@@ -15,7 +15,7 @@ import { tier3Queries } from './tier3-queries.ts';
 import { tier4EdgeCases } from './tier4-edge-cases.ts';
 
 export function runConformanceSuite(
-  suiteName: string,
+  _suiteName: string,
   backendFactory: () => StacksBackend,
 ): void {
   // Node test runner uses the describe/it calls inside each tier function

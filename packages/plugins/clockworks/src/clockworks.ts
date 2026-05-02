@@ -58,7 +58,6 @@ import type {
   EventDispatchDoc,
   EventDoc,
   EventSpec,
-  EventsKitContribution,
   MergedEventEntry,
   StandingOrder,
 } from './types.ts';

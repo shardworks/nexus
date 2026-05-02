@@ -4,7 +4,6 @@
 
 import { tool } from '@shardworks/tools-apparatus';
 import { guild } from '@shardworks/nexus-core';
-import { z } from 'zod';
 import type { ScriptoriumApi } from '../types.ts';
 
 export default tool({

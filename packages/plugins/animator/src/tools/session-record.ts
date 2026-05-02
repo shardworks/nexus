@@ -13,7 +13,6 @@
 
 import { tool } from '@shardworks/tools-apparatus';
 import { z } from 'zod';
-import type { SessionDoc, TranscriptDoc, TranscriptMessage } from '../types.ts';
 import { handleSessionRecord } from '../session-record-handler.ts';
 
 export default tool({

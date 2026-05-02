@@ -25,7 +25,6 @@ import {
 import type {
   OculusApi,
   OculusConfig,
-  OculusKit,
   PageContribution,
   RouteContribution,
 } from "./types.ts";

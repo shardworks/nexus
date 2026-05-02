@@ -23,7 +23,7 @@ import type { Server } from 'node:http';
 import { z } from 'zod';
 
 import type { ToolDefinition } from './tool.ts';
-import type { InstrumentariumApi, ResolvedTool } from './instrumentarium.ts';
+import type { InstrumentariumApi } from './instrumentarium.ts';
 
 // ── Public types ─────────────────────────────────────────────────────
 

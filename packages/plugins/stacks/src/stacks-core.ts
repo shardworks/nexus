@@ -13,7 +13,6 @@
 import type {
   BackendTransaction,
   BookRef,
-  InternalQuery,
   StacksBackend,
 } from './backend.ts';
 
