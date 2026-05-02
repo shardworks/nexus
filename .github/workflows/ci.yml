@@ -31,4 +31,9 @@ jobs:
 
       - run: pnpm typecheck
 
-      - run: pnpm test
+      # Runs all tests with V8 coverage enabled, then aggregates per-package
+      # lcov files and enforces the monorepo-wide threshold floor (see
+      # scripts/coverage-report.ts → THRESHOLDS). Replaces the previous
+      # `pnpm test` step — coverage instrumentation also runs the full suite,
+      # so this is one pass rather than two.
+      - run: pnpm coverage

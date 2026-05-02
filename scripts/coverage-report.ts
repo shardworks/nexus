@@ -140,6 +140,58 @@ function aggregatePackage(pkg: string, lcovPath: string): PackageCoverage {
   };
 }
 
+// ── Thresholds ─────────────────────────────────────────────────────────────
+
+/**
+ * Aggregate-coverage floor. Failing any of these by even one count sends the
+ * script to exit(1) — see `checkThresholds`. Round-number floors (rather than
+ * pinning to the precise baseline 67.96/80.05/53.05) leave ~1pp of headroom
+ * for normal node:test instrumentation noise while still catching real drift.
+ *
+ * To raise the floor, edit these constants and run `pnpm coverage` to confirm.
+ * The `--no-check` flag skips enforcement (still prints the table).
+ */
+const THRESHOLDS = {
+  lines: 67,
+  branches: 80,
+  functions: 53,
+} as const;
+
+// ── Totals ─────────────────────────────────────────────────────────────────
+
+interface Totals {
+  linesFound: number;
+  linesHit: number;
+  funcsFound: number;
+  funcsHit: number;
+  branchesFound: number;
+  branchesHit: number;
+  files: number;
+}
+
+function computeTotals(pkgs: PackageCoverage[]): Totals {
+  return pkgs.reduce<Totals>(
+    (acc, p) => ({
+      linesFound: acc.linesFound + p.linesFound,
+      linesHit: acc.linesHit + p.linesHit,
+      funcsFound: acc.funcsFound + p.funcsFound,
+      funcsHit: acc.funcsHit + p.funcsHit,
+      branchesFound: acc.branchesFound + p.branchesFound,
+      branchesHit: acc.branchesHit + p.branchesHit,
+      files: acc.files + p.files.length,
+    }),
+    {
+      linesFound: 0,
+      linesHit: 0,
+      funcsFound: 0,
+      funcsHit: 0,
+      branchesFound: 0,
+      branchesHit: 0,
+      files: 0,
+    },
+  );
+}
+
 // ── Reporting ──────────────────────────────────────────────────────────────
 
 function pct(hit: number, found: number): string {
@@ -147,7 +199,12 @@ function pct(hit: number, found: number): string {
   return `${((hit / found) * 100).toFixed(2).padStart(6)}`;
 }
 
-function printSummary(pkgs: PackageCoverage[]): void {
+function rawPct(hit: number, found: number): number {
+  if (found === 0) return 100;
+  return (hit / found) * 100;
+}
+
+function printSummary(pkgs: PackageCoverage[], tot: Totals): void {
   // Sort ascending by line coverage so lowest-covered packages appear first —
   // those are the most interesting for the trim discussion.
   const sorted = [...pkgs].sort((a, b) => {
@@ -174,27 +231,6 @@ function printSummary(pkgs: PackageCoverage[]): void {
   }
   console.log(rule);
 
-  // Aggregate row
-  const tot = pkgs.reduce(
-    (acc, p) => ({
-      linesFound: acc.linesFound + p.linesFound,
-      linesHit: acc.linesHit + p.linesHit,
-      funcsFound: acc.funcsFound + p.funcsFound,
-      funcsHit: acc.funcsHit + p.funcsHit,
-      branchesFound: acc.branchesFound + p.branchesFound,
-      branchesHit: acc.branchesHit + p.branchesHit,
-      files: acc.files + p.files.length,
-    }),
-    {
-      linesFound: 0,
-      linesHit: 0,
-      funcsFound: 0,
-      funcsHit: 0,
-      branchesFound: 0,
-      branchesHit: 0,
-      files: 0,
-    },
-  );
   console.log(
     ` ${'TOTAL'.padEnd(40)} ${pct(tot.linesHit, tot.linesFound)}%  ${pct(
       tot.branchesHit,
@@ -210,9 +246,42 @@ function printSummary(pkgs: PackageCoverage[]): void {
   );
 }
 
+/**
+ * Compare aggregate percentages to the configured thresholds. Returns an
+ * array of human-readable failure strings (one per metric below floor); empty
+ * means all green. Caller decides what to do (print + exit, or skip).
+ */
+function checkThresholds(tot: Totals): string[] {
+  const linesPct = rawPct(tot.linesHit, tot.linesFound);
+  const branchesPct = rawPct(tot.branchesHit, tot.branchesFound);
+  const funcsPct = rawPct(tot.funcsHit, tot.funcsFound);
+
+  const failures: string[] = [];
+  if (linesPct < THRESHOLDS.lines) {
+    failures.push(
+      `lines     ${linesPct.toFixed(2)}% < ${THRESHOLDS.lines}% floor`,
+    );
+  }
+  if (branchesPct < THRESHOLDS.branches) {
+    failures.push(
+      `branches  ${branchesPct.toFixed(2)}% < ${THRESHOLDS.branches}% floor`,
+    );
+  }
+  if (funcsPct < THRESHOLDS.functions) {
+    failures.push(
+      `functions ${funcsPct.toFixed(2)}% < ${THRESHOLDS.functions}% floor`,
+    );
+  }
+  return failures;
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────
 
 function main(): void {
+  // Tiny CLI: --no-check skips the threshold gate (still prints the table).
+  const args = process.argv.slice(2);
+  const checkEnabled = !args.includes('--no-check');
+
   const discovered = discoverPackages();
   if (discovered.length === 0) {
     console.error(
@@ -233,7 +302,30 @@ function main(): void {
   fs.writeFileSync(outPath, merged);
   console.log(`Merged lcov written to ${path.relative(REPO_ROOT, outPath)}`);
 
-  printSummary(pkgs);
+  const tot = computeTotals(pkgs);
+  printSummary(pkgs, tot);
+
+  // Threshold gate — print loudly at the END so a tail-truncated 4KB log
+  // captured by the spider review engine still shows the failure verdict.
+  if (!checkEnabled) {
+    console.log('\n(threshold check skipped: --no-check)');
+    return;
+  }
+
+  const failures = checkThresholds(tot);
+  if (failures.length > 0) {
+    console.error('');
+    console.error('✗ Coverage threshold check FAILED:');
+    for (const f of failures) console.error(`    ${f}`);
+    console.error('');
+    console.error(
+      `Floors: ${THRESHOLDS.lines}% lines / ${THRESHOLDS.branches}% branches / ${THRESHOLDS.functions}% functions.`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `\n✓ Coverage threshold check passed (≥ ${THRESHOLDS.lines}/${THRESHOLDS.branches}/${THRESHOLDS.functions} L/B/F).`,
+  );
 }
 
 main();
