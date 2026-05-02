@@ -212,36 +212,58 @@ Update the **status table** at the bottom of this doc with what changed.
   per package (one process per test, fanned out across workers). Use
   `--filter` if you want to scope down. Subsequent runs use the cache.
 
-## Per-package trim status
+## Package checklist
 
-Update this table when you trim a package. Keep entries terse — full data
-is in the JSON dump at the time of commit.
+Unified checklist of all framework packages, ordered by test-line count
+(smallest first). The order is the recommended trim sequence: validate
+the workflow on small packages before tackling monoliths. Pick the
+first `pending` row when starting a trim session.
 
-| Package | Status | Tests before → after | Coverage before → after | Date | Notes |
-|---|---|---|---|---|---|
-| `framework/core` | trimmed | 39 → 33 | 67.96/80.05/53.05 → 67.97/80.04/53.05 (aggregate) | 2026-05-02 | Cut 6 parameter-sweep tests (2 in `id`, 4 in `resolve-package`). Per-package coverage on touched files unchanged. Conservative pass — analyzer flagged 29 pure-redundant; kept 23 because they assert distinct input→output pairs. |
+When a package is processed:
+- Set Status to `trimmed` (or `skipped` with a reason).
+- Update Test lines to `before → after`.
+- Fill in Date.
+- Add a one-line note. Full data lives in the X017 artifact at
+  `/workspace/nexus-mk2/experiments/X017-test-redundancy/artifacts/<YYYY-MM-DD>-<pkg-flat>.yaml`.
 
-## Suggested order of attack
+Status values: `pending`, `trimmed`, `skipped`.
 
-Roughly smallest to largest, validating the workflow on small packages
-before tackling monoliths:
+Test-line counts are from `find packages/<pkg>/src -name '*.test.ts' |
+xargs wc -l` on 2026-05-02; refresh as packages are processed.
 
-1. **`framework/core`** (39 tests, 311 test lines) — proof of workflow.
-2. **`framework/arbor`** (113 tests, 1,833 test lines) — small monolith.
-3. **`plugins/stacks`** (99 tests, 13 test lines visible — most is the
-   conformance suite) — high coverage already, low priority.
-4. Mid-size plugins: `tools`, `codexes`, `copilot`, `lattice`, `lattice-discord`,
-   `fabricator`, `loom`.
-5. Larger plugins: `oculus`, `parlour`, `cartograph`, `claude-code`,
-   `sentinel`, `astrolabe`, `clockworks`, `reckoner`.
-6. Top three by test volume: `clerk` (7,148 lines), `clockworks` again if
-   needed, **`spider`** (18,714 lines, the headline target).
+| # | Package | Status | Test lines | Date | Notes |
+|--:|---|---|---|---|---|
+|  1 | `plugins/stacks` | pending | 13 | — | High coverage already (97.7% line); expect few wins. |
+|  2 | `framework/core` | trimmed | 311 → 275 | 2026-05-02 | Cut 6 of 29 flagged candidates (21%). |
+|  3 | `plugins/fabricator` | pending | 399 | — | |
+|  4 | `plugins/lattice-discord` | pending | 413 | — | |
+|  5 | `plugins/clockworks-stacks-signals` | pending | 567 | — | |
+|  6 | `plugins/copilot` | pending | 897 | — | |
+|  7 | `plugins/lattice` | pending | 1,066 | — | |
+|  8 | `plugins/codexes` | pending | 1,387 | — | |
+|  9 | `plugins/parlour` | pending | 1,733 | — | |
+| 10 | `framework/arbor` | pending | 1,833 | — | Probed: 80% pure-redundant under DA-based analysis. Small monolith, two files. |
+| 11 | `plugins/loom` | pending | 1,919 | — | |
+| 12 | `plugins/ratchet` | pending | 2,069 | — | |
+| 13 | `plugins/oculus` | pending | 2,238 | — | |
+| 14 | `plugins/tools` | pending | 2,371 | — | |
+| 15 | `plugins/cartograph` | pending | 2,450 | — | |
+| 16 | `plugins/sentinel` | pending | 2,877 | — | |
+| 17 | `plugins/claude-code` | pending | 3,457 | — | |
+| 18 | `framework/cli` | pending | 3,838 | — | |
+| 19 | `plugins/reckoner` | pending | 4,822 | — | |
+| 20 | `plugins/astrolabe` | pending | 5,749 | — | |
+| 21 | `plugins/animator` | pending | 6,273 | — | |
+| 22 | `plugins/clerk` | pending | 7,148 | — | Top-3 by volume. |
+| 23 | `plugins/clockworks` | pending | 7,945 | — | Top-3 by volume. |
+| 24 | `plugins/spider` | pending | 18,714 | — | **Headline target.** Largest test volume + lowest coverage-to-volume ratio (70.7% line / 18.7k test lines) = largest expected win. |
 
 For the bigger packages, expect first-pass redundancy in the **30–60%**
-range based on the early `framework/core` (74%) and `framework/arbor`
-(52%) results. Spider in particular has the highest test volume in the
-monorepo and the lowest coverage-to-volume ratio (70.7% line coverage
-from 18.7k test lines), making it the largest expected win.
+range based on early probes (`framework/core` 74%, `framework/arbor`
+80%). Note: the framework/core post-review *deletion* rate was 21%, far
+below the 74% pure-redundant flag rate — the analyzer flags parameter
+sweeps that humans value. See X017 spec H2 and the framework/core
+artifact for the calibration story.
 
 ## Related
 
