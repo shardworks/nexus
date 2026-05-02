@@ -74,34 +74,10 @@ describe('resolvePackageNameForPluginId', () => {
     assert.equal(resolvePackageNameForPluginId(tmp, 'nexus-stdlib'), '@shardworks/nexus-stdlib');
   });
 
-  it('resolves @shardworks-scoped package with -apparatus suffix', () => {
-    const tmp = makeTmpDir();
-    writePackageJson(tmp, { '@shardworks/tools-apparatus': '^2.0.0' });
-    assert.equal(resolvePackageNameForPluginId(tmp, 'tools'), '@shardworks/tools-apparatus');
-  });
-
-  it('resolves @shardworks-scoped package with -kit suffix', () => {
-    const tmp = makeTmpDir();
-    writePackageJson(tmp, { '@shardworks/nexus-relay-kit': '^1.0.0' });
-    assert.equal(resolvePackageNameForPluginId(tmp, 'nexus-relay'), '@shardworks/nexus-relay-kit');
-  });
-
-  it('resolves @shardworks-scoped package with -plugin suffix', () => {
-    const tmp = makeTmpDir();
-    writePackageJson(tmp, { '@shardworks/nexus-thing-plugin': '^1.0.0' });
-    assert.equal(resolvePackageNameForPluginId(tmp, 'nexus-thing'), '@shardworks/nexus-thing-plugin');
-  });
-
   it('resolves unscoped package name', () => {
     const tmp = makeTmpDir();
     writePackageJson(tmp, { 'my-tool': '^1.0.0' });
     assert.equal(resolvePackageNameForPluginId(tmp, 'my-tool'), 'my-tool');
-  });
-
-  it('resolves unscoped package with -kit suffix', () => {
-    const tmp = makeTmpDir();
-    writePackageJson(tmp, { 'my-relay-kit': '^1.0.0' });
-    assert.equal(resolvePackageNameForPluginId(tmp, 'my-relay'), 'my-relay-kit');
   });
 
   it('resolves third-party scoped package', () => {

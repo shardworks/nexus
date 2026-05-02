@@ -8,11 +8,6 @@ describe('generateId', () => {
     assert.match(id, /^foo-[a-z0-9]+-[a-f0-9]+$/);
   });
 
-  it('includes prefix verbatim', () => {
-    assert.ok(generateId('ses').startsWith('ses-'));
-    assert.ok(generateId('w').startsWith('w-'));
-  });
-
   it('default random suffix is 12 hex characters (6 bytes)', () => {
     const id = generateId('x');
     const parts = id.split('-');
@@ -57,12 +52,5 @@ describe('shortId', () => {
 
   it('returns the empty-then-empty pair for a lone hyphen', () => {
     assert.equal(shortId('-'), '-');
-  });
-
-  it('round-trips as the shape resolveId() accepts as a unique prefix', () => {
-    const full = generateId('w');
-    const short = shortId(full);
-    assert.ok(full.startsWith(short + '-'), `expected "${full}" to start with "${short}-"`);
-    assert.equal(short.split('-').length, 2);
   });
 });

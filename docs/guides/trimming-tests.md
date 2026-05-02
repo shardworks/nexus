@@ -219,7 +219,7 @@ is in the JSON dump at the time of commit.
 
 | Package | Status | Tests before → after | Coverage before → after | Date | Notes |
 |---|---|---|---|---|---|
-| _none yet_ | | | | | |
+| `framework/core` | trimmed | 39 → 33 | 67.96/80.05/53.05 → 67.97/80.04/53.05 (aggregate) | 2026-05-02 | Cut 6 parameter-sweep tests (2 in `id`, 4 in `resolve-package`). Per-package coverage on touched files unchanged. Conservative pass — analyzer flagged 29 pure-redundant; kept 23 because they assert distinct input→output pairs. |
 
 ## Suggested order of attack
 
