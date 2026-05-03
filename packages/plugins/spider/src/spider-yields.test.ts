@@ -69,6 +69,37 @@ describe('${yields.*} reference support', () => {
     return { warnings, restore: () => { console.warn = original; } };
   }
 
+  // Build a fixture with a single-template config and assert it throws
+  // with a specific message fragment. Reused for the V3-V14 startup-error
+  // validation tests below.
+  function expectStartupError(template: RigTemplate, fragments: readonly string[]): void {
+    assert.throws(
+      () => buildFixture({ spider: { rigTemplates: { default: template } } }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        for (const fragment of fragments) {
+          assert.ok(err.message.includes(fragment), `expected "${fragment}" in: ${err.message}`);
+        }
+        return true;
+      },
+    );
+  }
+
+  function expectStartupOk(template: RigTemplate): void {
+    assert.doesNotThrow(() => buildFixture({ spider: { rigTemplates: { default: template } } }));
+  }
+
+  // Run a kit-template build and return the captured warnings.
+  function buildWithKit(kit: LoadedKit): { warnings: string[]; fix: ReturnType<typeof buildFixture> } {
+    const { warnings, restore } = captureWarnings();
+    try {
+      const fix = buildFixture({}, { status: 'completed' }, { kits: [kit] });
+      return { warnings, fix };
+    } finally {
+      restore();
+    }
+  }
+
   afterEach(() => {
     clearGuild();
   });
@@ -77,168 +108,78 @@ describe('${yields.*} reference support', () => {
 
   describe('Validation — config templates', () => {
     it('V3/R3/R5 — unknown engine_id throws with "[spider]" prefix and "not an engine in this template"', () => {
-      assert.throws(
-        () => buildFixture({
-          spider: {
-            rigTemplates: {
-              default: {
-                engines: [
-                  { id: 'step1', designId: 'seal', givens: { x: '${yields.nonexistent.foo}' } },
-                ],
-              },
-            },
-          },
-        }),
-        (err: unknown) => {
-          assert.ok(err instanceof Error);
-          assert.ok(err.message.startsWith('[spider]'), err.message);
-          assert.ok(err.message.includes('nonexistent'), err.message);
-          assert.ok(err.message.includes('not an engine in this template'), err.message);
-          return true;
-        },
+      expectStartupError(
+        { engines: [{ id: 'step1', designId: 'seal', givens: { x: '${yields.nonexistent.foo}' } }] },
+        ['[spider]', 'nonexistent', 'not an engine in this template'],
       );
     });
 
     it('V4/R4/R6 — non-upstream engine_id throws "not upstream of"', () => {
       // engine a references yields from b, but b is downstream of a (a → b, not b → a)
-      assert.throws(
-        () => buildFixture({
-          spider: {
-            rigTemplates: {
-              default: {
-                engines: [
-                  { id: 'a', designId: 'seal', givens: { x: '${yields.b.foo}' } },
-                  { id: 'b', designId: 'draft', upstream: ['a'], givens: { writ: '${writ}' } },
-                ],
-              },
-            },
-          },
-        }),
-        (err: unknown) => {
-          assert.ok(err instanceof Error);
-          assert.ok(err.message.startsWith('[spider]'), err.message);
-          assert.ok(err.message.includes('"b" is not upstream of "a"'), err.message);
-          return true;
+      expectStartupError(
+        {
+          engines: [
+            { id: 'a', designId: 'seal', givens: { x: '${yields.b.foo}' } },
+            { id: 'b', designId: 'draft', upstream: ['a'], givens: { writ: '${writ}' } },
+          ],
         },
+        ['[spider]', '"b" is not upstream of "a"'],
       );
     });
 
     it('V5/R4 — transitive upstream reference is valid (does not throw)', () => {
       // a → b → c; c references ${yields.a.foo} (a is transitively upstream of c)
-      assert.doesNotThrow(() =>
-        buildFixture({
-          spider: {
-            rigTemplates: {
-              default: {
-                engines: [
-                  { id: 'a', designId: 'seal', givens: {} },
-                  { id: 'b', designId: 'seal', upstream: ['a'], givens: {} },
-                  { id: 'c', designId: 'seal', upstream: ['b'], givens: { x: '${yields.a.foo}' } },
-                ],
-              },
-            },
-          },
-        })
-      );
+      expectStartupOk({
+        engines: [
+          { id: 'a', designId: 'seal', givens: {} },
+          { id: 'b', designId: 'seal', upstream: ['a'], givens: {} },
+          { id: 'c', designId: 'seal', upstream: ['b'], givens: { x: '${yields.a.foo}' } },
+        ],
+      });
     });
 
     it('self-reference fails upstream reachability check', () => {
-      assert.throws(
-        () => buildFixture({
-          spider: {
-            rigTemplates: {
-              default: {
-                engines: [
-                  { id: 'solo', designId: 'seal', givens: { x: '${yields.solo.foo}' } },
-                ],
-              },
-            },
-          },
-        }),
-        (err: unknown) => {
-          assert.ok(err instanceof Error);
-          assert.ok(err.message.includes('"solo" is not upstream of "solo"'), err.message);
-          return true;
-        },
+      expectStartupError(
+        { engines: [{ id: 'solo', designId: 'seal', givens: { x: '${yields.solo.foo}' } }] },
+        ['"solo" is not upstream of "solo"'],
       );
     });
 
     it('curly-brace form ${yields.ghost.foo} also fails with unknown engine error', () => {
-      assert.throws(
-        () => buildFixture({
-          spider: {
-            rigTemplates: {
-              default: {
-                engines: [
-                  { id: 'only', designId: 'seal', givens: { x: '${yields.ghost.foo}' } },
-                ],
-              },
-            },
-          },
-        }),
-        (err: unknown) => {
-          assert.ok(err instanceof Error);
-          assert.ok(err.message.startsWith('[spider]'), err.message);
-          assert.ok(err.message.includes('not an engine in this template'), err.message);
-          return true;
-        },
+      expectStartupError(
+        { engines: [{ id: 'only', designId: 'seal', givens: { x: '${yields.ghost.foo}' } }] },
+        ['[spider]', 'not an engine in this template'],
       );
     });
 
     it('invalid syntax ${yields.a} (missing property segment) is rejected as invalid expression', () => {
-      assert.throws(
-        () => buildFixture({
-          spider: {
-            rigTemplates: {
-              default: {
-                engines: [
-                  { id: 'a', designId: 'seal', givens: {} },
-                  { id: 'b', designId: 'seal', upstream: ['a'], givens: { x: '${yields.a}' } },
-                ],
-              },
-            },
-          },
-        }),
-        (err: unknown) => {
-          assert.ok(err instanceof Error);
-          assert.ok(err.message.includes('invalid expression'), err.message);
-          return true;
+      expectStartupError(
+        {
+          engines: [
+            { id: 'a', designId: 'seal', givens: {} },
+            { id: 'b', designId: 'seal', upstream: ['a'], givens: { x: '${yields.a}' } },
+          ],
         },
+        ['invalid expression'],
       );
     });
 
     it('valid ${yields.*} reference passes validation without throwing', () => {
-      assert.doesNotThrow(() =>
-        buildFixture({
-          spider: {
-            rigTemplates: {
-              default: {
-                engines: [
-                  { id: 'first', designId: 'seal', givens: {} },
-                  { id: 'second', designId: 'seal', upstream: ['first'], givens: { p: '${yields.first.path}' } },
-                ],
-              },
-            },
-          },
-        })
-      );
+      expectStartupOk({
+        engines: [
+          { id: 'first', designId: 'seal', givens: {} },
+          { id: 'second', designId: 'seal', upstream: ['first'], givens: { p: '${yields.first.path}' } },
+        ],
+      });
     });
 
     it('curly-brace ${yields.*.*} form passes validation when engine is upstream', () => {
-      assert.doesNotThrow(() =>
-        buildFixture({
-          spider: {
-            rigTemplates: {
-              default: {
-                engines: [
-                  { id: 'first', designId: 'seal', givens: {} },
-                  { id: 'second', designId: 'seal', upstream: ['first'], givens: { p: '${yields.first.path}' } },
-                ],
-              },
-            },
-          },
-        })
-      );
+      expectStartupOk({
+        engines: [
+          { id: 'first', designId: 'seal', givens: {} },
+          { id: 'second', designId: 'seal', upstream: ['first'], givens: { p: '${yields.first.path}' } },
+        ],
+      });
     });
   });
 
@@ -246,85 +187,70 @@ describe('${yields.*} reference support', () => {
 
   describe('Validation — kit templates (warn and skip)', () => {
     it('V6/R7 — kit template with unknown engine_id warns and skips template', () => {
-      const { warnings, restore } = captureWarnings();
-      try {
-        const kit = makeKit('my-kit', {
-          rigTemplates: {
-            pipeline: {
-              engines: [
-                { id: 'step1', designId: 'draft', givens: { writ: '${writ}' } },
-                // References ${yields.nonexistent.foo} where 'nonexistent' is not an engine
-                { id: 'step2', designId: 'seal', upstream: ['step1'], givens: { x: '${yields.nonexistent.foo}' } },
-              ],
-            },
+      const kit = makeKit('my-kit', {
+        rigTemplates: {
+          pipeline: {
+            engines: [
+              { id: 'step1', designId: 'draft', givens: { writ: '${writ}' } },
+              // References ${yields.nonexistent.foo} where 'nonexistent' is not an engine
+              { id: 'step2', designId: 'seal', upstream: ['step1'], givens: { x: '${yields.nonexistent.foo}' } },
+            ],
           },
-        });
-        buildFixture({}, { status: 'completed' }, { kits: [kit] });
-        // Template should be skipped: a warning is emitted
-        assert.ok(
-          warnings.some(w => w.includes('my-kit') && w.includes('not an engine in this template')),
-          `Expected warning about unknown engine, got: ${JSON.stringify(warnings)}`
-        );
-      } finally {
-        restore();
-      }
+        },
+      });
+      const { warnings } = buildWithKit(kit);
+      assert.ok(
+        warnings.some(w => w.includes('my-kit') && w.includes('not an engine in this template')),
+        `Expected warning about unknown engine, got: ${JSON.stringify(warnings)}`,
+      );
     });
 
     it('kit template with non-upstream engine_id warns "not upstream of" and skips', () => {
-      const { warnings, restore } = captureWarnings();
-      try {
-        const kit = makeKit('my-kit', {
-          rigTemplates: {
-            pipeline: {
-              engines: [
-                // 'a' references 'b' but 'b' is downstream of 'a'
-                { id: 'a', designId: 'draft', givens: { writ: '${writ}', x: '${yields.b.foo}' } },
-                { id: 'b', designId: 'seal', upstream: ['a'], givens: {} },
-              ],
-            },
+      const kit = makeKit('my-kit', {
+        rigTemplates: {
+          pipeline: {
+            engines: [
+              // 'a' references 'b' but 'b' is downstream of 'a'
+              { id: 'a', designId: 'draft', givens: { writ: '${writ}', x: '${yields.b.foo}' } },
+              { id: 'b', designId: 'seal', upstream: ['a'], givens: {} },
+            ],
           },
-        });
-        buildFixture({}, { status: 'completed' }, { kits: [kit] });
-        assert.ok(
-          warnings.some(w => w.includes('my-kit') && w.includes('not upstream of')),
-          `Expected "not upstream of" warning, got: ${JSON.stringify(warnings)}`
-        );
-      } finally {
-        restore();
-      }
+        },
+      });
+      const { warnings } = buildWithKit(kit);
+      assert.ok(
+        warnings.some(w => w.includes('my-kit') && w.includes('not upstream of')),
+        `Expected "not upstream of" warning, got: ${JSON.stringify(warnings)}`,
+      );
     });
 
     it('kit template with valid yield reference is registered without warnings', () => {
-      const { warnings, restore } = captureWarnings();
-      try {
-        const kit = makeKit('my-kit', {
-          rigTemplates: {
-            pipeline: {
-              engines: [
-                { id: 'step1', designId: 'draft', givens: { writ: '${writ}' } },
-                { id: 'step2', designId: 'seal', upstream: ['step1'], givens: { p: '${yields.step1.path}' } },
-              ],
-            },
+      const kit = makeKit('my-kit', {
+        rigTemplates: {
+          pipeline: {
+            engines: [
+              { id: 'step1', designId: 'draft', givens: { writ: '${writ}' } },
+              { id: 'step2', designId: 'seal', upstream: ['step1'], givens: { p: '${yields.step1.path}' } },
+            ],
           },
-          rigTemplateMappings: { task: 'my-kit.pipeline' },
-        });
-        const fix = buildFixture({}, { status: 'completed' }, { kits: [kit] });
-        // No warnings from yield validation
-        const yieldWarnings = warnings.filter(w => w.includes('not an engine') || w.includes('not upstream'));
-        assert.equal(yieldWarnings.length, 0, `Unexpected yield warnings: ${JSON.stringify(yieldWarnings)}`);
-        // Template should be registered — listTemplates includes it
-        const templates = fix.spider.listTemplates();
-        assert.ok(templates.some(t => t.name === 'my-kit.pipeline'), 'Template should be registered');
-      } finally {
-        restore();
-      }
+        },
+        rigTemplateMappings: { task: 'my-kit.pipeline' },
+      });
+      const { warnings, fix } = buildWithKit(kit);
+      const yieldWarnings = warnings.filter(w => w.includes('not an engine') || w.includes('not upstream'));
+      assert.equal(yieldWarnings.length, 0, `Unexpected yield warnings: ${JSON.stringify(yieldWarnings)}`);
+      const templates = fix.spider.listTemplates();
+      assert.ok(templates.some(t => t.name === 'my-kit.pipeline'), 'Template should be registered');
     });
   });
 
   // ── Spawn-time pass-through (R8) ──────────────────────────────────
 
   describe('Spawn-time pass-through (R8)', () => {
-    it('V7/R8 — yield reference strings survive spawn time in givensSpec', async () => {
+    // Both tests below verify the same property — yield-ref strings are
+    // preserved as-is in givensSpec at spawn time. Different test
+    // descriptors document the two equivalent syntactic forms.
+    async function expectGivensSpecPreserved(): Promise<void> {
       const fix = buildFixture({
         spider: {
           rigTemplates: {
@@ -346,42 +272,15 @@ describe('${yields.*} reference support', () => {
       assert.ok(rig, 'rig should exist');
       const secondEngine = rig!.engines.find(e => e.id === 'second');
       assert.ok(secondEngine, 'second engine should exist');
-      // The yield ref string must be preserved as-is in givensSpec
       assert.equal(
         secondEngine!.givensSpec.p,
         '${yields.first.path}',
         'yield ref should be stored as literal ${...} string in givensSpec',
       );
-    });
+    }
 
-    it('curly-brace form ${yields.*.*} is also preserved as-is in givensSpec', async () => {
-      const fix = buildFixture({
-        spider: {
-          rigTemplates: {
-            default: {
-              engines: [
-                { id: 'first', designId: 'seal', givens: {} },
-                { id: 'second', designId: 'seal', upstream: ['first'], givens: { p: '${yields.first.path}' } },
-              ],
-            },
-          },
-          variables: {},
-        },
-      });
-
-      const writ = await fix.clerk.post({ title: 'Test', body: 'Body' });
-      await fix.spider.crawl(); // spawn
-
-      const rig = await fix.spider.forWrit(writ.id);
-      const secondEngine = rig!.engines.find(e => e.id === 'second');
-      assert.ok(secondEngine, 'second engine should exist');
-      // Curly-brace form is preserved literally too
-      assert.equal(
-        secondEngine!.givensSpec.p,
-        '${yields.first.path}',
-        'curly-brace yield ref should be preserved as-is in givensSpec',
-      );
-    });
+    it('V7/R8 — yield reference strings survive spawn time in givensSpec', expectGivensSpecPreserved);
+    it('curly-brace form ${yields.*.*} is also preserved as-is in givensSpec', expectGivensSpecPreserved);
   });
 
   // ── Run-time resolution (R1, R2) ──────────────────────────────────
@@ -436,7 +335,6 @@ describe('${yields.*} reference support', () => {
           if (!api) throw new Error(`Apparatus "${name}" not found`);
           return api as T;
         },
-
         tryApparatus<T>(name: string): T | null {
           try { return this.apparatus<T>(name); } catch { return null; }
         },
@@ -459,10 +357,7 @@ describe('${yields.*} reference support', () => {
         apparatus: mergeCustomEnginesIntoSpider(spiderApparatus, customEngines),
       };
 
-      const fabricatorKitEntries = buildKitEntries(
-        [],
-        [spiderAsLoaded],
-      );
+      const fabricatorKitEntries = buildKitEntries([], [spiderAsLoaded]);
       const spiderKitEntries = buildKitEntries([], [spiderAsLoaded]);
 
       const noopCtx = { on: () => {}, kits: () => [] as KitEntry[] };
@@ -482,12 +377,8 @@ describe('${yields.*} reference support', () => {
 
       // Minimal mock animator — just enough to satisfy the Spider's session lookup
       const mockAnimatorApi: AnimatorApi = {
-        summon(): AnimateHandle {
-          throw new Error('summon() not expected in yield-ref tests');
-        },
-        animate(): AnimateHandle {
-          throw new Error('animate() not expected in yield-ref tests');
-        },
+        summon(): AnimateHandle { throw new Error('summon() not expected in yield-ref tests'); },
+        animate(): AnimateHandle { throw new Error('animate() not expected in yield-ref tests'); },
       };
       apparatusMap.set('animator', mockAnimatorApi);
 
@@ -525,158 +416,79 @@ describe('${yields.*} reference support', () => {
       return { stacks, clerk, spider };
   }
 
+  /**
+   * Two-engine fixture builder: one yields-emitting engine ('first'),
+   * one givens-capturing engine ('second'). Returns the captured givens
+   * after running both engines. Collapses the dominant pattern across
+   * the run-time resolution + template interpolation tests.
+   */
+  async function runYieldRefTest(opts: {
+    firstYields: Record<string, unknown>;
+    secondGivens: Record<string, unknown>;
+  }): Promise<Record<string, unknown>> {
+    let captured: Record<string, unknown> | null = null;
+    const firstDesign: EngineDesign = {
+      id: 'fs-first',
+      run: async () => ({ status: 'completed' as const, yields: opts.firstYields }),
+    };
+    const secondDesign: EngineDesign = {
+      id: 'fs-second',
+      run: async (givens: Record<string, unknown>) => {
+        captured = { ...givens };
+        return { status: 'completed' as const, yields: {} };
+      },
+    };
+    const { clerk, spider } = buildYieldFixture(
+      { 'fs-first': firstDesign, 'fs-second': secondDesign },
+      {
+        engines: [
+          { id: 'first', designId: 'fs-first', givens: {} },
+          { id: 'second', designId: 'fs-second', upstream: ['first'], givens: opts.secondGivens },
+        ],
+      },
+    );
+    await clerk.post({ title: 'Test', body: 'Body' });
+    await spider.crawl(); // spawn
+    await spider.crawl(); // run first
+    await spider.crawl(); // run second
+    assert.ok(captured !== null, 'second engine run() should have been called');
+    return captured!;
+  }
+
   describe('Run-time resolution (R1, R2)', () => {
     it('V1/R1 — second engine receives resolved yield value in run()', async () => {
-      let capturedGivens: Record<string, unknown> | null = null;
-
-      const firstDesign: EngineDesign = {
-        id: 'yr-first',
-        label: 'YR First',
-        run: async () => ({ status: 'completed' as const, yields: { path: '/tmp/workdir' } }),
-      };
-      const secondDesign: EngineDesign = {
-        id: 'yr-second',
-        label: 'YR Second',
-        run: async (givens: Record<string, unknown>) => {
-          capturedGivens = { ...givens };
-          return { status: 'completed' as const, yields: {} };
-        },
-      };
-
-      const { clerk, spider } = buildYieldFixture(
-        { 'yr-first': firstDesign, 'yr-second': secondDesign },
-        {
-          engines: [
-            { id: 'first', designId: 'yr-first', givens: {} },
-            { id: 'second', designId: 'yr-second', upstream: ['first'], givens: { dir: '${yields.first.path}' } },
-          ],
-        },
-      );
-
-      await clerk.post({ title: 'Test', body: 'Body' });
-      await spider.crawl(); // spawn
-      await spider.crawl(); // run first (clockwork → completed)
-      await spider.crawl(); // run second
-
-      assert.ok(capturedGivens !== null, 'second engine run() should have been called');
-      assert.equal(capturedGivens!.dir, '/tmp/workdir', 'yield ref should resolve to first engine path');
+      const givens = await runYieldRefTest({
+        firstYields: { path: '/tmp/workdir' },
+        secondGivens: { dir: '${yields.first.path}' },
+      });
+      assert.equal(givens.dir, '/tmp/workdir', 'yield ref should resolve to first engine path');
     });
 
     it('V2/R1 — curly-brace form ${yields.*.*} resolves identically', async () => {
-      let capturedGivens: Record<string, unknown> | null = null;
-
-      const firstDesign: EngineDesign = {
-        id: 'cb-first',
-        label: 'CB First',
-        run: async () => ({ status: 'completed' as const, yields: { path: '/curly/path' } }),
-      };
-      const secondDesign: EngineDesign = {
-        id: 'cb-second',
-        label: 'CB Second',
-        run: async (givens: Record<string, unknown>) => {
-          capturedGivens = { ...givens };
-          return { status: 'completed' as const, yields: {} };
-        },
-      };
-
-      const { clerk, spider } = buildYieldFixture(
-        { 'cb-first': firstDesign, 'cb-second': secondDesign },
-        {
-          engines: [
-            { id: 'first', designId: 'cb-first', givens: {} },
-            { id: 'second', designId: 'cb-second', upstream: ['first'], givens: { dir: '${yields.first.path}' } },
-          ],
-        },
-      );
-
-      await clerk.post({ title: 'Test', body: 'Body' });
-      await spider.crawl(); // spawn
-      await spider.crawl(); // run first
-      await spider.crawl(); // run second
-
-      assert.ok(capturedGivens !== null, 'second engine run() should have been called');
-      assert.equal((capturedGivens as Record<string, unknown>).dir, '/curly/path');
+      const givens = await runYieldRefTest({
+        firstYields: { path: '/curly/path' },
+        secondGivens: { dir: '${yields.first.path}' },
+      });
+      assert.equal(givens.dir, '/curly/path');
     });
 
     it('V1 (multiple refs) — multiple yield refs in one engine all resolve', async () => {
-      let capturedGivens: Record<string, unknown> | null = null;
-
-      const firstDesign: EngineDesign = {
-        id: 'mr-first',
-        label: 'MR First',
-        run: async () => ({ status: 'completed' as const, yields: { foo: 'hello', bar: 42 } }),
-      };
-      const secondDesign: EngineDesign = {
-        id: 'mr-second',
-        label: 'MR Second',
-        run: async (givens: Record<string, unknown>) => {
-          capturedGivens = { ...givens };
-          return { status: 'completed' as const, yields: {} };
-        },
-      };
-
-      const { clerk, spider } = buildYieldFixture(
-        { 'mr-first': firstDesign, 'mr-second': secondDesign },
-        {
-          engines: [
-            { id: 'first', designId: 'mr-first', givens: {} },
-            {
-              id: 'second',
-              designId: 'mr-second',
-              upstream: ['first'],
-              givens: { x: '${yields.first.foo}', y: '${yields.first.bar}', z: 'literal' },
-            },
-          ],
-        },
-      );
-
-      await clerk.post({ title: 'Test', body: 'Body' });
-      await spider.crawl(); // spawn
-      await spider.crawl(); // run first
-      await spider.crawl(); // run second
-
-      assert.ok(capturedGivens !== null, 'second engine should have been called');
-      const g = capturedGivens as Record<string, unknown>;
-      assert.equal(g.x, 'hello', 'x should resolve to first.foo');
-      assert.equal(g.y, 42, 'y should resolve to first.bar');
-      assert.equal(g.z, 'literal', 'z literal should pass through');
+      const givens = await runYieldRefTest({
+        firstYields: { foo: 'hello', bar: 42 },
+        secondGivens: { x: '${yields.first.foo}', y: '${yields.first.bar}', z: 'literal' },
+      });
+      assert.equal(givens.x, 'hello', 'x should resolve to first.foo');
+      assert.equal(givens.y, 42, 'y should resolve to first.bar');
+      assert.equal(givens.z, 'literal', 'z literal should pass through');
     });
 
     it('R2 — yield property missing from upstream yields causes key omission', async () => {
-      let capturedGivens: Record<string, unknown> | null = null;
-
-      const firstDesign: EngineDesign = {
-        id: 'mp-first',
-        label: 'MP First',
-        // yields does NOT contain 'nonExistentProp'
-        run: async () => ({ status: 'completed' as const, yields: { someProp: 'value' } }),
-      };
-      const secondDesign: EngineDesign = {
-        id: 'mp-second',
-        label: 'MP Second',
-        run: async (givens: Record<string, unknown>) => {
-          capturedGivens = { ...givens };
-          return { status: 'completed' as const, yields: {} };
-        },
-      };
-
-      const { clerk, spider } = buildYieldFixture(
-        { 'mp-first': firstDesign, 'mp-second': secondDesign },
-        {
-          engines: [
-            { id: 'first', designId: 'mp-first', givens: {} },
-            { id: 'second', designId: 'mp-second', upstream: ['first'], givens: { p: '${yields.first.nonExistentProp}' } },
-          ],
-        },
-      );
-
-      await clerk.post({ title: 'Test', body: 'Body' });
-      await spider.crawl(); // spawn
-      await spider.crawl(); // run first
-      await spider.crawl(); // run second
-
-      assert.ok(capturedGivens !== null, 'second engine should have been called');
-      assert.ok(!('p' in (capturedGivens as Record<string, unknown>)), 'missing prop should cause key omission');
+      // first.yields does NOT contain 'nonExistentProp'
+      const givens = await runYieldRefTest({
+        firstYields: { someProp: 'value' },
+        secondGivens: { p: '${yields.first.nonExistentProp}' },
+      });
+      assert.ok(!('p' in givens), 'missing prop should cause key omission');
     });
 
     it('R9 — collect() also receives resolved yield values, not raw strings', async () => {
@@ -684,20 +496,15 @@ describe('${yields.*} reference support', () => {
 
       const firstDesign: EngineDesign = {
         id: 'col-first',
-        label: 'Col First',
         run: async () => ({ status: 'completed' as const, yields: { result: 'done' } }),
       };
 
-      // Second engine is a quick engine (returns 'launched') with a collect() method.
-      // It returns a fixed sessionId so we can pre-write the completed session doc.
+      // Quick engine: returns 'launched' with a fixed sessionId so we can
+      // pre-write the completed session doc and then drive collect().
       const secondDesign: EngineDesign = {
         id: 'col-second',
-        label: 'Col Second',
         run: async () => ({ status: 'launched' as const, sessionId: 'col-mock-session' }),
-        collect: async (
-          sessionId: string,
-          givens: Record<string, unknown>,
-        ) => {
+        collect: async (sessionId: string, givens: Record<string, unknown>) => {
           capturedCollectGivens = { ...givens };
           return { sessionId, sessionStatus: 'completed' as const };
         },
@@ -713,13 +520,11 @@ describe('${yields.*} reference support', () => {
         },
       );
 
-      const sessionsBook = stacks.book<SessionDoc>('animator', 'sessions');
-
       await clerk.post({ title: 'Test', body: 'Body' });
       await spider.crawl(); // spawn
       await spider.crawl(); // run first (clockwork → completed)
-      // Pre-write the completed session doc so collect can find it
-      await sessionsBook.put({
+      // Pre-write completed session doc so collect can find it
+      await stacks.book<SessionDoc>('animator', 'sessions').put({
         id: 'col-mock-session',
         status: 'completed',
         startedAt: new Date().toISOString(),
@@ -740,23 +545,22 @@ describe('${yields.*} reference support', () => {
     });
 
     it('transitive upstream resolution — third engine resolves from first (a → b → c)', async () => {
-      let capturedGivens: Record<string, unknown> | null = null;
+      // Three-engine chain — runYieldRefTest is two-engine only, so build
+      // this one inline.
+      let captured: Record<string, unknown> | null = null;
 
       const designA: EngineDesign = {
         id: 'tr-a',
-        label: 'TR A',
         run: async () => ({ status: 'completed' as const, yields: { someProp: 'from-a' } }),
       };
       const designB: EngineDesign = {
         id: 'tr-b',
-        label: 'TR B',
         run: async () => ({ status: 'completed' as const, yields: {} }),
       };
       const designC: EngineDesign = {
         id: 'tr-c',
-        label: 'TR C',
         run: async (givens: Record<string, unknown>) => {
-          capturedGivens = { ...givens };
+          captured = { ...givens };
           return { status: 'completed' as const, yields: {} };
         },
       };
@@ -778,8 +582,8 @@ describe('${yields.*} reference support', () => {
       await spider.crawl(); // run b
       await spider.crawl(); // run c
 
-      assert.ok(capturedGivens !== null, 'c engine should have been called');
-      assert.equal((capturedGivens as Record<string, unknown>).val, 'from-a');
+      assert.ok(captured !== null, 'c engine should have been called');
+      assert.equal((captured as Record<string, unknown>).val, 'from-a');
     });
   });
 
@@ -789,47 +593,23 @@ describe('${yields.*} reference support', () => {
     afterEach(() => { clearGuild(); });
 
     it('V8/R5 — inline interpolation: "Path is ${yields.first.path}" resolves to string', async () => {
-      let captured: Record<string, unknown> | null = null;
-      const design1: EngineDesign = {
-        id: 'inl-first',
-        label: 'Inl First',
-        run: async () => ({ status: 'completed' as const, yields: { path: '/tmp/workdir' } }),
-      };
-      const design2: EngineDesign = {
-        id: 'inl-second',
-        label: 'Inl Second',
-        run: async (givens: Record<string, unknown>) => {
-          captured = { ...givens };
-          return { status: 'completed' as const, yields: {} };
-        },
-      };
-      const { clerk, spider } = buildYieldFixture(
-        { 'inl-first': design1, 'inl-second': design2 },
-        {
-          engines: [
-            { id: 'first', designId: 'inl-first', givens: {} },
-            { id: 'second', designId: 'inl-second', upstream: ['first'], givens: { msg: 'Path is ${yields.first.path}' } },
-          ],
-        },
-      );
-      await clerk.post({ title: 'Test', body: 'Body' });
-      await spider.crawl(); // spawn
-      await spider.crawl(); // run first
-      await spider.crawl(); // run second
-      assert.ok(captured !== null);
-      assert.equal((captured as Record<string, unknown>).msg, 'Path is /tmp/workdir');
+      const givens = await runYieldRefTest({
+        firstYields: { path: '/tmp/workdir' },
+        secondGivens: { msg: 'Path is ${yields.first.path}' },
+      });
+      assert.equal(givens.msg, 'Path is /tmp/workdir');
     });
 
     it('V9/R8 — mixed spawn+run-time: partially resolved at spawn, rest at run-time', async () => {
+      // Inline: needs to inspect rig state at spawn time, so cannot use the
+      // shared two-engine helper.
       let captured: Record<string, unknown> | null = null;
       const design1: EngineDesign = {
         id: 'mix-first',
-        label: 'Mix First',
         run: async () => ({ status: 'completed' as const, yields: { result: 'done' } }),
       };
       const design2: EngineDesign = {
         id: 'mix-second',
-        label: 'Mix Second',
         run: async (givens: Record<string, unknown>) => {
           captured = { ...givens };
           return { status: 'completed' as const, yields: {} };
@@ -845,12 +625,11 @@ describe('${yields.*} reference support', () => {
           ],
         },
       );
-      const writ = await clerk.post({ title: 'My Writ', body: 'Body' });
+      await clerk.post({ title: 'My Writ', body: 'Body' });
       await spider.crawl(); // spawn — ${writ.title} resolved, ${yields.first.result} preserved
 
-      // Check givensSpec after spawn: writ.title resolved, yields expression still present
-      const book = stacks.book<RigDoc>('spider', 'rigs');
-      const [rig] = await book.list();
+      // After spawn: writ.title resolved, yields expression still present
+      const [rig] = await stacks.book<RigDoc>('spider', 'rigs').list();
       const secondEngine = rig.engines.find(e => e.id === 'second');
       assert.ok(secondEngine, 'second engine should exist');
       assert.equal(
@@ -868,55 +647,22 @@ describe('${yields.*} reference support', () => {
     });
 
     it('V11/R7 — number inline-coerced to string, object to JSON', async () => {
-      let captured: Record<string, unknown> | null = null;
-      const design1: EngineDesign = {
-        id: 'coerce-first',
-        label: 'Coerce First',
-        run: async () => ({
-          status: 'completed' as const,
-          yields: { count: 42, flag: true, obj: { a: 1 } },
-        }),
-      };
-      const design2: EngineDesign = {
-        id: 'coerce-second',
-        label: 'Coerce Second',
-        run: async (givens: Record<string, unknown>) => {
-          captured = { ...givens };
-          return { status: 'completed' as const, yields: {} };
+      const givens = await runYieldRefTest({
+        firstYields: { count: 42, flag: true, obj: { a: 1 } },
+        secondGivens: {
+          numStr: 'Count: ${yields.first.count}',
+          boolStr: 'Ok: ${yields.first.flag}',
+          objStr: 'Data: ${yields.first.obj}',
+          // Whole-value — preserves type
+          rawNum: '${yields.first.count}',
+          rawObj: '${yields.first.obj}',
         },
-      };
-      const { clerk, spider } = buildYieldFixture(
-        { 'coerce-first': design1, 'coerce-second': design2 },
-        {
-          engines: [
-            { id: 'first', designId: 'coerce-first', givens: {} },
-            {
-              id: 'second', designId: 'coerce-second', upstream: ['first'],
-              givens: {
-                numStr: 'Count: ${yields.first.count}',
-                boolStr: 'Ok: ${yields.first.flag}',
-                objStr: 'Data: ${yields.first.obj}',
-                // Whole-value — preserves type
-                rawNum: '${yields.first.count}',
-                rawObj: '${yields.first.obj}',
-              },
-            },
-          ],
-        },
-      );
-      await clerk.post({ title: 'Test', body: 'Body' });
-      await spider.crawl(); // spawn
-      await spider.crawl(); // run first
-      await spider.crawl(); // run second
-
-      assert.ok(captured !== null);
-      const g = captured as Record<string, unknown>;
-      assert.equal(g.numStr, 'Count: 42', 'number stringified inline');
-      assert.equal(g.boolStr, 'Ok: true', 'boolean stringified inline');
-      assert.equal(g.objStr, 'Data: {"a":1}', 'object JSON.stringified inline');
-      // Whole-value: raw type preserved
-      assert.equal(g.rawNum, 42, 'whole-value number preserved');
-      assert.deepEqual(g.rawObj, { a: 1 }, 'whole-value object preserved');
+      });
+      assert.equal(givens.numStr, 'Count: 42', 'number stringified inline');
+      assert.equal(givens.boolStr, 'Ok: true', 'boolean stringified inline');
+      assert.equal(givens.objStr, 'Data: {"a":1}', 'object JSON.stringified inline');
+      assert.equal(givens.rawNum, 42, 'whole-value number preserved');
+      assert.deepEqual(givens.rawObj, { a: 1 }, 'whole-value object preserved');
     });
 
     it('V10/R6 — undefined inline expression replaced with empty string', async () => {
@@ -963,59 +709,18 @@ describe('${yields.*} reference support', () => {
     });
 
     it('V14/R10 — unrecognized expression ${unknown.foo} causes startup error', () => {
-      assert.throws(
-        () => buildFixture({
-          spider: {
-            rigTemplates: {
-              default: {
-                engines: [{ id: 'x', designId: 'seal', givens: { x: '${unknown.foo}' } }],
-              },
-            },
-          },
-        }),
-        (err: unknown) => {
-          assert.ok(err instanceof Error);
-          assert.ok(err.message.includes('unrecognized expression'), err.message);
-          return true;
-        },
+      expectStartupError(
+        { engines: [{ id: 'x', designId: 'seal', givens: { x: '${unknown.foo}' } }] },
+        ['unrecognized expression'],
       );
     });
 
     it('V22/R4 — deep dot-path traversal for yields works at run time', async () => {
-      let captured: Record<string, unknown> | null = null;
-      const design1: EngineDesign = {
-        id: 'dp-first',
-        label: 'DP First',
-        run: async () => ({
-          status: 'completed' as const,
-          yields: { nested: { deep: { prop: 'found' } } },
-        }),
-      };
-      const design2: EngineDesign = {
-        id: 'dp-second',
-        label: 'DP Second',
-        run: async (givens: Record<string, unknown>) => {
-          captured = { ...givens };
-          return { status: 'completed' as const, yields: {} };
-        },
-      };
-      const { clerk, spider } = buildYieldFixture(
-        { 'dp-first': design1, 'dp-second': design2 },
-        {
-          engines: [
-            { id: 'first', designId: 'dp-first', givens: {} },
-            { id: 'second', designId: 'dp-second', upstream: ['first'],
-              givens: { val: '${yields.first.nested.deep.prop}' } },
-          ],
-        },
-      );
-      await clerk.post({ title: 'Test', body: 'Body' });
-      await spider.crawl(); // spawn
-      await spider.crawl(); // run first
-      await spider.crawl(); // run second
-
-      assert.ok(captured !== null);
-      assert.equal((captured as Record<string, unknown>).val, 'found', 'deep dot-path traversal works');
+      const givens = await runYieldRefTest({
+        firstYields: { nested: { deep: { prop: 'found' } } },
+        secondGivens: { val: '${yields.first.nested.deep.prop}' },
+      });
+      assert.equal(givens.val, 'found', 'deep dot-path traversal works');
     });
 
     it('R3 — ${vars.a.b} dot-path traversal for nested config vars', async () => {
@@ -1038,38 +743,11 @@ describe('${yields.*} reference support', () => {
     });
 
     it('V21/R5 — whole-value ${yields.first.obj} preserves raw object type', async () => {
-      let captured: Record<string, unknown> | null = null;
-      const design1: EngineDesign = {
-        id: 'rv-first',
-        label: 'RV First',
-        run: async () => ({ status: 'completed' as const, yields: { obj: { x: 99 } } }),
-      };
-      const design2: EngineDesign = {
-        id: 'rv-second',
-        label: 'RV Second',
-        run: async (givens: Record<string, unknown>) => {
-          captured = { ...givens };
-          return { status: 'completed' as const, yields: {} };
-        },
-      };
-      const { clerk, spider } = buildYieldFixture(
-        { 'rv-first': design1, 'rv-second': design2 },
-        {
-          engines: [
-            { id: 'first', designId: 'rv-first', givens: {} },
-            { id: 'second', designId: 'rv-second', upstream: ['first'],
-              givens: { data: '${yields.first.obj}' } },
-          ],
-        },
-      );
-      await clerk.post({ title: 'Test', body: 'Body' });
-      await spider.crawl(); // spawn
-      await spider.crawl(); // run first
-      await spider.crawl(); // run second
-
-      assert.ok(captured !== null);
-      assert.deepEqual((captured as Record<string, unknown>).data, { x: 99 },
-        'whole-value object type is preserved (not stringified)');
+      const givens = await runYieldRefTest({
+        firstYields: { obj: { x: 99 } },
+        secondGivens: { data: '${yields.first.obj}' },
+      });
+      assert.deepEqual(givens.data, { x: 99 }, 'whole-value object type is preserved (not stringified)');
     });
 
     it('bare $writ (no ${...}) is passed through as literal string at spawn time', async () => {
@@ -1090,37 +768,11 @@ describe('${yields.*} reference support', () => {
 
     it('bare $yields.draft.path (no ${...}) is not resolved at run time', async () => {
       // Bare $ without ${...} wrapper is not a template expression → literal throughout
-      let captured: Record<string, unknown> | null = null;
-      const design1: EngineDesign = {
-        id: 'bare-first',
-        label: 'Bare First',
-        run: async () => ({ status: 'completed' as const, yields: { path: '/real/path' } }),
-      };
-      const design2: EngineDesign = {
-        id: 'bare-second',
-        label: 'Bare Second',
-        run: async (givens: Record<string, unknown>) => {
-          captured = { ...givens };
-          return { status: 'completed' as const, yields: {} };
-        },
-      };
-      const { clerk, spider } = buildYieldFixture(
-        { 'bare-first': design1, 'bare-second': design2 },
-        {
-          engines: [
-            { id: 'first', designId: 'bare-first', givens: {} },
-            { id: 'second', designId: 'bare-second', upstream: ['first'],
-              givens: { p: '$yields.first.path' } },
-          ],
-        },
-      );
-      await clerk.post({ title: 'Test', body: 'Body' });
-      await spider.crawl(); // spawn
-      await spider.crawl(); // run first
-      await spider.crawl(); // run second
-
-      assert.ok(captured !== null);
-      assert.equal((captured as Record<string, unknown>).p, '$yields.first.path',
+      const givens = await runYieldRefTest({
+        firstYields: { path: '/real/path' },
+        secondGivens: { p: '$yields.first.path' },
+      });
+      assert.equal(givens.p, '$yields.first.path',
         'bare $yields.first.path is not resolved — passed through as literal string');
     });
   });
@@ -1142,6 +794,73 @@ describe('${yields.*} reference support', () => {
       };
     }
 
+    // Common shape for the givens-validation tests below.
+    async function expectGivensError(
+      givens: Record<string, unknown>,
+      field: string,
+      contextOverrides: Partial<EngineRunContext> = {},
+    ): Promise<void> {
+      await assert.rejects(
+        () => animaSessionEngine.run(givens, makeContext(contextOverrides)),
+        (err: Error) => {
+          assert.ok(err.message.includes(field), `expected "${field}" in error: ${err.message}`);
+          return true;
+        },
+      );
+    }
+
+    // Common shape for collect tests: spawn rig, mark draft completed,
+    // mark implement running with sessionId, insert session doc, run
+    // collect tick, return implement engine yields.
+    async function runCollectScenario(sessionFields: Partial<SessionDoc>): Promise<Record<string, unknown>> {
+      const { clerk, spider, stacks } = fix;
+      await postWrit(clerk, 'collect scenario');
+      await spider.crawl(); // spawn
+
+      const book = rigsBook(stacks);
+      const [rig] = await book.list();
+      const fakeSessionId = generateId('ses', 4);
+      const startedAt = new Date().toISOString();
+
+      const enginesWithSession = rig.engines.map((e: EngineInstance) => {
+        if (e.id === 'draft') {
+          return {
+            ...e,
+            status: 'completed' as const,
+            attempts: [{ startedAt, endedAt: startedAt, status: 'completed' as const, yields: { draftId: 'x', codexName: 'c', branch: 'b', path: '/p' } }],
+          };
+        }
+        if (e.id === 'implement') {
+          return {
+            ...e,
+            status: 'running' as const,
+            attempts: [{ startedAt, sessionId: fakeSessionId }],
+          };
+        }
+        return e;
+      });
+      await book.patch(rig.id, { engines: enginesWithSession });
+
+      await stacks.book<SessionDoc>('animator', 'sessions').put({
+        id: fakeSessionId,
+        status: 'completed',
+        startedAt,
+        endedAt: startedAt,
+        durationMs: 0,
+        provider: 'test',
+        exitCode: 0,
+        ...sessionFields,
+      } as SessionDoc);
+
+      await spider.crawl(); // collect
+
+      const [updated] = await book.list();
+      const impl = updated.engines.find((e: EngineInstance) => e.id === 'implement');
+      const yields = (impl ? latestAttempt(impl)?.yields : undefined) as Record<string, unknown>;
+      assert.ok(yields, 'yields should exist after collect');
+      return yields;
+    }
+
     // ── Registration ────────────────────────────────────────────────
 
     describe('registration', () => {
@@ -1155,8 +874,6 @@ describe('${yields.*} reference support', () => {
       });
 
       it('config rig template referencing designId anima-session passes validateTemplates', () => {
-        // Build a fixture with anima-session as a template designId.
-        // If spider.start() does not throw, validation passed.
         const animaTemplate: RigTemplate = {
           engines: [
             { id: 'anima', designId: 'anima-session', givens: { role: 'scribe', prompt: 'Do work', cwd: '/tmp' } },
@@ -1165,10 +882,7 @@ describe('${yields.*} reference support', () => {
         };
         assert.doesNotThrow(() => {
           buildFixture({
-            spider: {
-              rigTemplates: { default: animaTemplate },
-              variables: {},
-            },
+            spider: { rigTemplates: { default: animaTemplate }, variables: {} },
           });
         });
       });
@@ -1177,77 +891,19 @@ describe('${yields.*} reference support', () => {
     // ── Givens validation ────────────────────────────────────────────
 
     describe('givens validation', () => {
-      it('throws when role is missing', async () => {
-        await assert.rejects(
-          () => animaSessionEngine.run({ prompt: 'x', cwd: '/tmp' }, makeContext()),
-          (err: Error) => {
-            assert.ok(err.message.includes('role'), `expected "role" in error: ${err.message}`);
-            return true;
-          },
-        );
-      });
+      it('throws when role is missing', () => expectGivensError({ prompt: 'x', cwd: '/tmp' }, 'role'));
+      it('throws when role is an empty string', () => expectGivensError({ role: '', prompt: 'x', cwd: '/tmp' }, 'role'));
+      it('throws when role is a non-string value', () => expectGivensError({ role: 123, prompt: 'x', cwd: '/tmp' }, 'role'));
+      it('throws when prompt is missing', () => expectGivensError({ role: 'scribe', cwd: '/tmp' }, 'prompt'));
+      it('throws when prompt is an empty string', () => expectGivensError({ role: 'scribe', prompt: '', cwd: '/tmp' }, 'prompt'));
+      it('throws when cwd is missing', () => expectGivensError({ role: 'scribe', prompt: 'x' }, 'cwd'));
 
-      it('throws when role is an empty string', async () => {
-        await assert.rejects(
-          () => animaSessionEngine.run({ role: '', prompt: 'x', cwd: '/tmp' }, makeContext()),
-          (err: Error) => {
-            assert.ok(err.message.includes('role'), `expected "role" in error: ${err.message}`);
-            return true;
-          },
-        );
-      });
-
-      it('throws when role is a non-string value', async () => {
-        await assert.rejects(
-          () => animaSessionEngine.run({ role: 123, prompt: 'x', cwd: '/tmp' }, makeContext()),
-          (err: Error) => {
-            assert.ok(err.message.includes('role'), `expected "role" in error: ${err.message}`);
-            return true;
-          },
-        );
-      });
-
-      it('throws when prompt is missing', async () => {
-        await assert.rejects(
-          () => animaSessionEngine.run({ role: 'scribe', cwd: '/tmp' }, makeContext()),
-          (err: Error) => {
-            assert.ok(err.message.includes('prompt'), `expected "prompt" in error: ${err.message}`);
-            return true;
-          },
-        );
-      });
-
-      it('throws when prompt is an empty string', async () => {
-        await assert.rejects(
-          () => animaSessionEngine.run({ role: 'scribe', prompt: '', cwd: '/tmp' }, makeContext()),
-          (err: Error) => {
-            assert.ok(err.message.includes('prompt'), `expected "prompt" in error: ${err.message}`);
-            return true;
-          },
-        );
-      });
-
-      it('throws when cwd is missing', async () => {
-        await assert.rejects(
-          () => animaSessionEngine.run({ role: 'scribe', prompt: 'x' }, makeContext()),
-          (err: Error) => {
-            assert.ok(err.message.includes('cwd'), `expected "cwd" in error: ${err.message}`);
-            return true;
-          },
-        );
-      });
-
-      it('throws when cwd is missing even when context.upstream has draft path', async () => {
+      it('throws when cwd is missing even when context.upstream has draft path', () => {
         // Patron directive: no fallback to draft path — cwd must come from givens
-        await assert.rejects(
-          () => animaSessionEngine.run(
-            { role: 'scribe', prompt: 'x' },
-            makeContext({ upstream: { draft: { path: '/tmp/draft' } } }),
-          ),
-          (err: Error) => {
-            assert.ok(err.message.includes('cwd'), `expected "cwd" in error: ${err.message}`);
-            return true;
-          },
+        return expectGivensError(
+          { role: 'scribe', prompt: 'x' },
+          'cwd',
+          { upstream: { draft: { path: '/tmp/draft' } } },
         );
       });
     });
@@ -1297,36 +953,29 @@ describe('${yields.*} reference support', () => {
 
       it('passes conversationId to summon when provided', async () => {
         const { summonCalls } = fix;
-
         await animaSessionEngine.run(
           { role: 'scribe', prompt: 'Continue', cwd: '/tmp', conversationId: 'conv-123' },
           makeContext(),
         );
-
-        const req = summonCalls[summonCalls.length - 1];
-        assert.equal(req.conversationId, 'conv-123');
+        assert.equal(summonCalls[summonCalls.length - 1].conversationId, 'conv-123');
       });
 
       it('omits conversationId from summon when not provided', async () => {
         const { summonCalls } = fix;
-
         await animaSessionEngine.run(
           { role: 'scribe', prompt: 'Fresh start', cwd: '/tmp' },
           makeContext(),
         );
-
         const req = summonCalls[summonCalls.length - 1];
         assert.ok(!Object.prototype.hasOwnProperty.call(req, 'conversationId'), 'conversationId should be absent');
       });
 
       it('omits conversationId from summon when falsy (empty string)', async () => {
         const { summonCalls } = fix;
-
         await animaSessionEngine.run(
           { role: 'scribe', prompt: 'Fresh start', cwd: '/tmp', conversationId: '' },
           makeContext(),
         );
-
         const req = summonCalls[summonCalls.length - 1];
         assert.ok(!Object.prototype.hasOwnProperty.call(req, 'conversationId'), 'empty conversationId should be omitted');
       });
@@ -1336,104 +985,12 @@ describe('${yields.*} reference support', () => {
 
     describe('generic default collect — conversationId in yields', () => {
       it('includes conversationId in yields when session document has it', async () => {
-        const { clerk, spider, stacks } = fix;
-        await postWrit(clerk, 'ConvId test');
-        await spider.crawl(); // spawn
-
-        const book = rigsBook(stacks);
-        const [rig] = await book.list();
-        const fakeSessionId = generateId('ses', 4);
-        const startedAt = new Date().toISOString();
-
-        // Simulate: draft completed, implement launched a session
-        const enginesWithSession = rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') {
-            return {
-              ...e,
-              status: 'completed' as const,
-              attempts: [{ startedAt, endedAt: startedAt, status: 'completed' as const, yields: { draftId: 'x', codexName: 'c', branch: 'b', path: '/p' } }],
-            };
-          }
-          if (e.id === 'implement') {
-            return {
-              ...e,
-              status: 'running' as const,
-              attempts: [{ startedAt, sessionId: fakeSessionId }],
-            };
-          }
-          return e;
-        });
-        await book.patch(rig.id, { engines: enginesWithSession });
-
-        // Insert terminal session record with conversationId
-        const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
-        await sessBook.put({
-          id: fakeSessionId,
-          status: 'completed',
-          startedAt: new Date().toISOString(),
-          endedAt: new Date().toISOString(),
-          durationMs: 0,
-          provider: 'test',
-          exitCode: 0,
-          conversationId: 'conv-abc',
-        });
-
-        const result = await spider.crawl(); // collect
-        assert.equal(result?.action, 'engine-completed');
-
-        const [updated] = await book.list();
-        const impl = updated.engines.find((e: EngineInstance) => e.id === 'implement');
-        const yields = (impl ? latestAttempt(impl)?.yields : undefined) as Record<string, unknown>;
+        const yields = await runCollectScenario({ conversationId: 'conv-abc' });
         assert.equal(yields.conversationId, 'conv-abc', 'yields should include conversationId from session');
       });
 
       it('excludes conversationId from yields when session document does not have it', async () => {
-        const { clerk, spider, stacks } = fix;
-        await postWrit(clerk, 'No ConvId test');
-        await spider.crawl(); // spawn
-
-        const book = rigsBook(stacks);
-        const [rig] = await book.list();
-        const fakeSessionId = generateId('ses', 4);
-        const startedAt = new Date().toISOString();
-
-        const enginesWithSession = rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') {
-            return {
-              ...e,
-              status: 'completed' as const,
-              attempts: [{ startedAt, endedAt: startedAt, status: 'completed' as const, yields: { draftId: 'x', codexName: 'c', branch: 'b', path: '/p' } }],
-            };
-          }
-          if (e.id === 'implement') {
-            return {
-              ...e,
-              status: 'running' as const,
-              attempts: [{ startedAt, sessionId: fakeSessionId }],
-            };
-          }
-          return e;
-        });
-        await book.patch(rig.id, { engines: enginesWithSession });
-
-        // Insert terminal session record WITHOUT conversationId
-        const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
-        await sessBook.put({
-          id: fakeSessionId,
-          status: 'completed',
-          startedAt: new Date().toISOString(),
-          endedAt: new Date().toISOString(),
-          durationMs: 0,
-          provider: 'test',
-          exitCode: 0,
-        });
-
-        await spider.crawl(); // collect
-
-        const [updated] = await book.list();
-        const impl = updated.engines.find((e: EngineInstance) => e.id === 'implement');
-        const yields = (impl ? latestAttempt(impl)?.yields : undefined) as Record<string, unknown>;
-        assert.ok(yields, 'yields should exist after collect');
+        const yields = await runCollectScenario({});
         assert.ok(
           !Object.prototype.hasOwnProperty.call(yields, 'conversationId'),
           'yields should NOT contain conversationId key when session has none',
