@@ -59,8 +59,60 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
     clearGuild();
   });
 
-  // ── Helper to drive crawl until rig reaches terminal state ─────────────
+  // ── In-file helpers ─────────────────────────────────────────────────
 
+  // Stub-engine factory: most tests want a clockwork engine that returns
+  // `{ status: 'completed', yields }`. This collapses dozens of inline
+  // `{ id, async run() { return { status: 'completed' as const, yields }; } }`
+  // literals to one line each.
+  const clockworkStub = (id: string, yields: Record<string, unknown> = {}): EngineDesign => ({
+    id, async run() { return { status: 'completed' as const, yields }; },
+  });
+
+  const failingStub = (id: string, message: string): EngineDesign => ({
+    id, async run() { throw new Error(message); },
+  });
+
+  const graftingStub = (
+    id: string,
+    opts: { yields?: Record<string, unknown>; graft: NonNullable<SpiderEngineRunResult['graft']> },
+  ): EngineDesign => ({
+    id,
+    async run() {
+      return {
+        status: 'completed' as const,
+        yields: opts.yields ?? {},
+        graft: opts.graft,
+      };
+    },
+  });
+
+  // Collect a list of [id, yields?] pairs into a customEngines map.
+  const stubMap = (...defs: Array<[string, Record<string, unknown>?]>): Record<string, EngineDesign> =>
+    Object.fromEntries(defs.map(([id, yields]) => [id, clockworkStub(id, yields)]));
+
+  function buildWhenFixture(
+    template: RigTemplate,
+    customEngines: Record<string, EngineDesign>,
+    spiderExtras: Partial<NonNullable<GuildConfig['spider']>> = {},
+  ): ReturnType<typeof buildFixture> {
+    return buildFixture(
+      { spider: { rigTemplates: { default: template }, ...spiderExtras } },
+      { status: 'completed' },
+      { customEngines },
+    );
+  }
+
+  const engStatus = (rig: RigDoc, id: string): string | undefined =>
+    rig.engines.find((e: EngineInstance) => e.id === id)?.status;
+
+  function assertStatuses(rig: RigDoc, expected: Record<string, EngineInstance['status']>): void {
+    for (const [id, status] of Object.entries(expected)) {
+      assert.equal(engStatus(rig, id), status, `engine "${id}" should be ${status}`);
+    }
+  }
+
+  // Drive crawl until rig reaches terminal state.
   async function drainToTerminal(
     spider: SpiderApi,
     maxCrawls = 50,
@@ -103,16 +155,10 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
           { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.A.flag}', givens: {} },
         ],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-a': { id: 'stub-a', async run() { return { status: 'completed' as const, yields: { flag: false } }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: { ran: true } }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, stubMap(
+        ['stub-a', { flag: false }],
+        ['stub-b', { ran: true }],
+      ));
       const { clerk, spider, stacks } = fix;
       const writ = await clerk.post({ title: 'skip test', body: 'body' });
       await spider.crawl(); // spawn
@@ -120,14 +166,11 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const r = await spider.crawl(); // skip B (or rig-completed)
 
       const [rig] = await rigsBook(stacks).list();
-      const engineB = rig.engines.find((e: EngineInstance) => e.id === 'B');
-      assert.equal(engineB?.status, 'skipped', 'B should be skipped when A.flag is false');
-      // rig is done (A completed, B skipped)
+      assertStatuses(rig, { B: 'skipped' });
       assert.ok(
         r?.action === 'engine-skipped' || r?.action === 'rig-completed',
         `Expected engine-skipped or rig-completed, got ${r?.action}`,
       );
-      // writ should be completed (one completed engine)
       const finalWrit = await clerk.show(writ.id);
       assert.equal(finalWrit.phase, 'completed');
     });
@@ -136,32 +179,26 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
   // ── V3: Branching (when true runs, when false skips) ─────────────────
 
   describe('Branching — when condition (V3)', () => {
+    const branchTemplate: RigTemplate = {
+      engines: [
+        { id: 'review',  designId: 'stub-review',  givens: {} },
+        { id: 'seal',    designId: 'stub-seal',    upstream: ['review'], when: '${yields.review.passed}' },
+        { id: 'revise',  designId: 'stub-revise',  upstream: ['review'], when: '!${yields.review.passed}' },
+      ],
+    };
+
     it('runs the truthy branch and skips the falsy branch when review passes', async () => {
-      const template: RigTemplate = {
-        engines: [
-          { id: 'review',  designId: 'stub-review',  givens: {} },
-          { id: 'seal',    designId: 'stub-seal',    upstream: ['review'], when: '${yields.review.passed}' },
-          { id: 'revise',  designId: 'stub-revise',  upstream: ['review'], when: '!${yields.review.passed}' },
-        ],
-      };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-review': { id: 'stub-review', async run() { return { status: 'completed' as const, yields: { passed: true } }; } },
-            'stub-seal':   { id: 'stub-seal',   async run() { return { status: 'completed' as const, yields: { sealed: true } }; } },
-            'stub-revise': { id: 'stub-revise', async run() { return { status: 'completed' as const, yields: { revised: true } }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(branchTemplate, stubMap(
+        ['stub-review', { passed: true }],
+        ['stub-seal',   { sealed: true }],
+        ['stub-revise', { revised: true }],
+      ));
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'branching test', body: 'body' });
       const { results } = await drainToTerminal(spider);
 
       const [rig] = await rigsBook(stacks).list();
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'seal')?.status, 'completed', 'seal should run when passed=true');
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'revise')?.status, 'skipped', 'revise should be skipped when passed=true');
+      assertStatuses(rig, { seal: 'completed', revise: 'skipped' });
       // engine-skipped may be absorbed into rig-completed when skipping causes rig completion
       assert.ok(
         results.some((r) => r?.action === 'engine-skipped') || results.some((r) => r?.action === 'rig-completed'),
@@ -172,31 +209,17 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
     });
 
     it('runs the falsy branch and skips the truthy branch when review fails', async () => {
-      const template: RigTemplate = {
-        engines: [
-          { id: 'review',  designId: 'stub-review',  givens: {} },
-          { id: 'seal',    designId: 'stub-seal',    upstream: ['review'], when: '${yields.review.passed}' },
-          { id: 'revise',  designId: 'stub-revise',  upstream: ['review'], when: '!${yields.review.passed}' },
-        ],
-      };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-review': { id: 'stub-review', async run() { return { status: 'completed' as const, yields: { passed: false } }; } },
-            'stub-seal':   { id: 'stub-seal',   async run() { return { status: 'completed' as const, yields: { sealed: true } }; } },
-            'stub-revise': { id: 'stub-revise', async run() { return { status: 'completed' as const, yields: { revised: true } }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(branchTemplate, stubMap(
+        ['stub-review', { passed: false }],
+        ['stub-seal',   { sealed: true }],
+        ['stub-revise', { revised: true }],
+      ));
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'branch-fail test', body: 'body' });
       await drainToTerminal(spider);
 
       const [rig] = await rigsBook(stacks).list();
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'seal')?.status, 'skipped', 'seal should be skipped when passed=false');
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'revise')?.status, 'completed', 'revise should run when passed=false');
+      assertStatuses(rig, { seal: 'skipped', revise: 'completed' });
       assert.equal(rig.status, 'completed');
       assertTerminalAt(rig);
     });
@@ -208,22 +231,16 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
           { id: 'seal',   designId: 'stub-seal',   upstream: ['review'], when: '${yields.review.passed}' },
         ],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-review': { id: 'stub-review', async run() { return { status: 'completed' as const, yields: { passed: true } }; } },
-            'stub-seal':   { id: 'stub-seal',   async run() { return { status: 'completed' as const, yields: { sealed: true } }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, stubMap(
+        ['stub-review', { passed: true }],
+        ['stub-seal',   { sealed: true }],
+      ));
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'curly brace when', body: 'body' });
       await drainToTerminal(spider);
 
       const [rig] = await rigsBook(stacks).list();
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'seal')?.status, 'completed');
+      assertStatuses(rig, { seal: 'completed' });
     });
 
     it('supports negated curly-brace when syntax: !${yields.review.passed}', async () => {
@@ -233,22 +250,16 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
           { id: 'revise', designId: 'stub-revise', upstream: ['review'], when: '!${yields.review.passed}' },
         ],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-review': { id: 'stub-review', async run() { return { status: 'completed' as const, yields: { passed: false } }; } },
-            'stub-revise': { id: 'stub-revise', async run() { return { status: 'completed' as const, yields: { revised: true } }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, stubMap(
+        ['stub-review', { passed: false }],
+        ['stub-revise', { revised: true }],
+      ));
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'negated curly brace when', body: 'body' });
       await drainToTerminal(spider);
 
       const [rig] = await rigsBook(stacks).list();
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'revise')?.status, 'completed');
+      assertStatuses(rig, { revise: 'completed' });
     });
   });
 
@@ -264,25 +275,17 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
           { id: 'C', designId: 'stub-c', upstream: ['B'], givens: {} },
         ],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-a': { id: 'stub-a', async run() { return { status: 'completed' as const, yields: { flag: false } }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: { ranB: true } }; } },
-            'stub-c': { id: 'stub-c', async run() { return { status: 'completed' as const, yields: { ranC: true } }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, stubMap(
+        ['stub-a', { flag: false }],
+        ['stub-b', { ranB: true }],
+        ['stub-c', { ranC: true }],
+      ));
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'skip satisfies upstream', body: 'body' });
       await drainToTerminal(spider);
 
       const [rig] = await rigsBook(stacks).list();
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'A')?.status, 'completed');
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'B')?.status, 'skipped');
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'C')?.status, 'completed');
+      assertStatuses(rig, { A: 'completed', B: 'skipped', C: 'completed' });
       assert.equal(rig.status, 'completed');
       assertTerminalAt(rig);
     });
@@ -299,17 +302,11 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
           { id: 'C', designId: 'stub-c', upstream: ['A'], when: '!${yields.A.go}', givens: {} },
         ],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-a': { id: 'stub-a', async run() { return { status: 'completed' as const, yields: { go: true } }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: { ranB: true } }; } },
-            'stub-c': { id: 'stub-c', async run() { return { status: 'completed' as const, yields: { ranC: true } }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, stubMap(
+        ['stub-a', { go: true }],
+        ['stub-b', { ranB: true }],
+        ['stub-c', { ranC: true }],
+      ));
       const { clerk, spider, stacks } = fix;
       const writ = await clerk.post({ title: 'rig completion test', body: 'body' });
       const { results } = await drainToTerminal(spider);
@@ -323,58 +320,20 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
     });
 
     it('does NOT complete the rig when all engines are skipped (no completed engine)', async () => {
-      // All engines have when conditions that evaluate false
-      // A: unconditional but immediately followed by B which is conditional
-      // We need: A completes, then B is conditional and B.upstream.all done
-      // Actually to get ALL skipped we need to think differently
-      // Let's make A conditional on something external — we'll inject the rig directly
-      // Start: A is conditional but its upstream is [] (so it becomes runnable)
-      // BUT: engines with upstream=[] are always runnable, and `when` is evaluated when they become runnable
-      // So A with when=$yields.X.v and upstream=[] would be runnable immediately, but X doesn't exist in upstream
-      // That means upstream['X'] = undefined, value = undefined, truthy = false => skip
-
-      // Actually wait — upstream=[] and when=$yields.X.v:
-      // evaluateWhen: upstream['X'] is undefined => value is undefined => truthy=false => skip
-      // But wait — upstream['X'] would be undefined, but engineYields is undefined so we don't enter the if block
-      // value remains undefined => truthy = !!undefined = false => skip
-
-      // But this won't pass template validation since 'X' is not in the template.
-      // So we need to craft this differently.
-
-      // Approach: manually patch the rig to have all skipped engines and verify
-      // the CDC handler does NOT trigger (no rig-completed), and the rig stays in running state.
-      // We can do this by crafting a template where A is a conditional dependency on B
-      // which itself is conditional on A — but that would be a cycle (invalid).
-
-      // Alternative: A unconditional, B,C conditional on A (one true, one false)
-      // After B runs, C is skipped. Rig has: A completed, B completed, C skipped => rig completes.
-
-      // For all-skipped: we need to directly test isRigComplete([])
-      // isRigComplete returns false if no engines, or if none are completed.
-      // Let's test via actual scenario: inject the rig doc directly, then verify
-      // the rig's completion check via the Spider's CDC handler not firing.
-
-      // The cleanest test for this edge case is to:
-      // 1. Build a rig with all engines having skipped status
-      // 2. Verify isRigComplete returns false
-      // We can verify this by patching the rig directly and checking the rig stays in 'running' state.
-
+      // The cleanest way to verify the all-skipped edge case: run a normal
+      // skip-completing rig first, then directly inject a separate rig with
+      // all engines status='skipped' and verify it stays in 'running'
+      // (isRigComplete returns false when there are no completed engines).
       const template: RigTemplate = {
         engines: [
           { id: 'A', designId: 'stub-a', givens: {} },
           { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.A.pass}' },
         ],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-a': { id: 'stub-a', async run() { return { status: 'completed' as const, yields: { pass: false } }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: { ran: true } }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, stubMap(
+        ['stub-a', { pass: false }],
+        ['stub-b', { ran: true }],
+      ));
       const { clerk, spider, stacks } = fix;
       const writ = await clerk.post({ title: 'partial complete test', body: 'body' });
       await drainToTerminal(spider);
@@ -384,9 +343,8 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       assert.equal(rig.status, 'completed', 'rig should complete because A completed');
       assertTerminalAt(rig);
 
-      // Verify the all-skipped case: manually patch a rig with all skipped
-      // Create a rig where engines are all skipped - the CDC handler (status change to
-      // completed) should NOT be triggered
+      // Now seed an all-skipped rig and verify the CDC handler does NOT
+      // mark it completed (no running/pending and no completed engine).
       const book = rigsBook(stacks);
       const allSkippedRig: RigDoc = {
         id: generateId('rig', 4),
@@ -399,60 +357,36 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
         createdAt: new Date().toISOString(),
       };
       await book.put(allSkippedRig);
-      // Now patch to try to trigger completion check — Spider should NOT mark as completed
-      // Since we have no running/pending engines but all are skipped (not completed),
-      // isRigComplete returns false. The rig stays in running state until next crawl.
-      // A subsequent crawl with no runnable engines and no blocked engines would leave it.
-      const result = await spider.crawl();
-      // The rig has no runnable engines (all skipped/no pending), so tryRun returns null
-      // tryCollect finds no running engines, tryProcessGrafts nothing, tryCheckBlocked nothing
-      // Spider returns null (or rig-spawned for the other writ if any)
-      // The all-skipped rig should remain 'running' (not completed)
-      const allSkippedRigRefetched = await book.find({ where: [['id', '=', allSkippedRig.id]], limit: 1 });
-      assert.equal(allSkippedRigRefetched[0]?.status, 'running', 'all-skipped rig should NOT be marked completed');
+      // tryRun finds no runnable engines; tryCollect/tryProcessGrafts/tryCheckBlocked
+      // also have nothing to do; the all-skipped rig stays 'running'.
+      await spider.crawl();
+      const refetched = await book.find({ where: [['id', '=', allSkippedRig.id]], limit: 1 });
+      assert.equal(refetched[0]?.status, 'running', 'all-skipped rig should NOT be marked completed');
     });
   });
 
   // ── V6: Template validation for `when` ───────────────────────────────
 
   describe('Template validation for when (V6)', () => {
+    const ab = (whenExpr: string): RigTemplate => ({
+      engines: [
+        { id: 'A', designId: 'stub-a', givens: {} },
+        { id: 'B', designId: 'stub-b', upstream: ['A'], when: whenExpr },
+      ],
+    });
+    const abEngines = stubMap(['stub-a'], ['stub-b']);
+
     it('throws at startup when when expression is not a $yields reference', () => {
-      const template: RigTemplate = {
-        engines: [
-          { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: 'not-a-valid-ref' },
-        ],
-      };
       assert.throws(
-        () => buildFixture(
-          { spider: { rigTemplates: { default: template } } },
-          { status: 'completed' },
-          { customEngines: {
-            'stub-a': { id: 'stub-a', async run() { return { status: 'completed' as const, yields: {} }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: {} }; } },
-          } },
-        ),
+        () => buildWhenFixture(ab('not-a-valid-ref'), abEngines),
         /invalid when expression/i,
         'should throw on invalid when expression',
       );
     });
 
     it('throws at startup when when references a non-existent engine', () => {
-      const template: RigTemplate = {
-        engines: [
-          { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.nonexistent.passed}' },
-        ],
-      };
       assert.throws(
-        () => buildFixture(
-          { spider: { rigTemplates: { default: template } } },
-          { status: 'completed' },
-          { customEngines: {
-            'stub-a': { id: 'stub-a', async run() { return { status: 'completed' as const, yields: {} }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: {} }; } },
-          } },
-        ),
+        () => buildWhenFixture(ab('${yields.nonexistent.passed}'), abEngines),
         /not an engine in this template/,
         'should throw when referenced engine does not exist',
       );
@@ -468,36 +402,15 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
         ],
       };
       assert.throws(
-        () => buildFixture(
-          { spider: { rigTemplates: { default: template } } },
-          { status: 'completed' },
-          { customEngines: {
-            'stub-a': { id: 'stub-a', async run() { return { status: 'completed' as const, yields: {} }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: {} }; } },
-            'stub-c': { id: 'stub-c', async run() { return { status: 'completed' as const, yields: {} }; } },
-          } },
-        ),
+        () => buildWhenFixture(template, stubMap(['stub-a'], ['stub-b'], ['stub-c'])),
         /not upstream of/,
         'should throw when when references a non-upstream engine',
       );
     });
 
     it('does not throw for a valid negated when expression', () => {
-      const template: RigTemplate = {
-        engines: [
-          { id: 'A', designId: 'stub-a', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['A'], when: '!${yields.A.passed}' },
-        ],
-      };
       assert.doesNotThrow(
-        () => buildFixture(
-          { spider: { rigTemplates: { default: template } } },
-          { status: 'completed' },
-          { customEngines: {
-            'stub-a': { id: 'stub-a', async run() { return { status: 'completed' as const, yields: {} }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: {} }; } },
-          } },
-        ),
+        () => buildWhenFixture(ab('!${yields.A.passed}'), abEngines),
         'valid negated when expression should not throw',
       );
     });
@@ -513,16 +426,10 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
           { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.A.run}' },
         ],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-a': { id: 'stub-a', async run() { return { status: 'completed' as const, yields: { run: false } }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: {} }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, stubMap(
+        ['stub-a', { run: false }],
+        ['stub-b'],
+      ));
       const { clerk, spider } = fix;
       await clerk.post({ title: 'skip result test', body: 'body' });
       await spider.crawl(); // spawn
@@ -545,17 +452,11 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
           { id: 'C', designId: 'stub-c', upstream: ['B'] }, // unconditional, becomes runnable after B skips
         ],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-a': { id: 'stub-a', async run() { return { status: 'completed' as const, yields: { run: false } }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: {} }; } },
-            'stub-c': { id: 'stub-c', async run() { return { status: 'completed' as const, yields: {} }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, stubMap(
+        ['stub-a', { run: false }],
+        ['stub-b'],
+        ['stub-c'],
+      ));
       const { clerk, spider } = fix;
       await clerk.post({ title: 'skip engineId test', body: 'body' });
       await spider.crawl(); // spawn
@@ -579,26 +480,18 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
         ],
       };
       let bRan = false;
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-a': { id: 'stub-a', async run() { return { status: 'completed' as const, yields: { pass: false } }; } },
-            // B is skipped (pass=false), C runs and throws
-            'stub-b': { id: 'stub-b', async run() { bRan = true; return { status: 'completed' as const, yields: {} }; } },
-            'stub-c': { id: 'stub-c', async run() { throw new Error('C failed intentionally'); } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, {
+        'stub-a': clockworkStub('stub-a', { pass: false }),
+        // B is skipped (pass=false), C runs and throws
+        'stub-b': { id: 'stub-b', async run() { bRan = true; return { status: 'completed' as const, yields: {} }; } },
+        'stub-c': failingStub('stub-c', 'C failed intentionally'),
+      });
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'failEngine skipped test', body: 'body' });
       await drainToTerminal(spider);
 
       const [rig] = await rigsBook(stacks).list();
-      // B should remain skipped (not cancelled), C should be failed
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'B')?.status, 'skipped', 'B should remain skipped');
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'C')?.status, 'failed', 'C should be failed');
+      assertStatuses(rig, { B: 'skipped', C: 'failed' });
       assert.equal(rig.status, 'failed');
       assertTerminalAt(rig);
       assert.equal(bRan, false, 'B should not have run');
@@ -619,49 +512,29 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
           { id: 'E', designId: 'stub-e', upstream: ['D'] },
         ],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-a': { id: 'stub-a', async run() { return { status: 'completed' as const, yields: { x: false } }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: { y: true } }; } },
-            'stub-c': { id: 'stub-c', async run() { return { status: 'completed' as const, yields: { z: true } }; } },
-            'stub-d': { id: 'stub-d', async run() { return { status: 'completed' as const, yields: {} }; } },
-            'stub-e': { id: 'stub-e', async run() { return { status: 'completed' as const, yields: { ranE: true } }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, stubMap(
+        ['stub-a', { x: false }],
+        ['stub-b', { y: true }],
+        ['stub-c', { z: true }],
+        ['stub-d'],
+        ['stub-e', { ranE: true }],
+      ));
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'cascade skip test', body: 'body' });
       await spider.crawl(); // spawn
       await spider.crawl(); // run A (completes with x=false)
       const skipResult = await spider.crawl(); // should skip B and cascade-skip C, D
 
-      // Check the engine-skipped result
       assert.equal(skipResult?.action, 'engine-skipped', 'should get engine-skipped');
       const skippedResult = skipResult as { action: 'engine-skipped'; engineId: string; cascadeSkipped?: string[] };
       assert.equal(skippedResult.engineId, 'B', 'primary skipped engine should be B');
-      assert.ok(
-        skippedResult.cascadeSkipped?.includes('C') ?? false,
-        'C should be in cascadeSkipped',
-      );
-      assert.ok(
-        skippedResult.cascadeSkipped?.includes('D') ?? false,
-        'D should be in cascadeSkipped',
-      );
+      assert.ok(skippedResult.cascadeSkipped?.includes('C') ?? false, 'C should be in cascadeSkipped');
+      assert.ok(skippedResult.cascadeSkipped?.includes('D') ?? false, 'D should be in cascadeSkipped');
       // E is unconditional and should NOT be cascade-skipped
-      assert.ok(
-        !(skippedResult.cascadeSkipped?.includes('E') ?? false),
-        'E (unconditional) should NOT be in cascadeSkipped',
-      );
+      assert.ok(!(skippedResult.cascadeSkipped?.includes('E') ?? false), 'E (unconditional) should NOT be in cascadeSkipped');
 
       const [rig] = await rigsBook(stacks).list();
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'B')?.status, 'skipped');
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'C')?.status, 'skipped');
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'D')?.status, 'skipped');
-      // E should still be pending (not cascade-skipped) — it will run next
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'E')?.status, 'pending');
+      assertStatuses(rig, { B: 'skipped', C: 'skipped', D: 'skipped', E: 'pending' });
     });
 
     it('unconditional engines are NOT cascade-skipped', async () => {
@@ -672,17 +545,11 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
           { id: 'C', designId: 'stub-c', upstream: ['B'] }, // unconditional
         ],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-a': { id: 'stub-a', async run() { return { status: 'completed' as const, yields: { flag: false } }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: {} }; } },
-            'stub-c': { id: 'stub-c', async run() { return { status: 'completed' as const, yields: { ranC: true } }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, stubMap(
+        ['stub-a', { flag: false }],
+        ['stub-b'],
+        ['stub-c', { ranC: true }],
+      ));
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'unconditional no-cascade test', body: 'body' });
       await spider.crawl(); // spawn
@@ -691,81 +558,53 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
 
       assert.equal(skipResult?.action, 'engine-skipped');
       const skippedResult = skipResult as { cascadeSkipped?: string[] };
-      // C is unconditional — it should NOT appear in cascadeSkipped
-      assert.ok(
-        !(skippedResult.cascadeSkipped?.includes('C') ?? false),
-        'unconditional C should not be cascade-skipped',
-      );
+      assert.ok(!(skippedResult.cascadeSkipped?.includes('C') ?? false), 'unconditional C should not be cascade-skipped');
 
-      // C should be pending (will run on next crawl)
       const [rig] = await rigsBook(stacks).list();
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'C')?.status, 'pending');
+      assertStatuses(rig, { C: 'pending' });
     });
   });
 
   // ── When references skipped engine (edge case) ───────────────────────
 
   describe('when references a skipped engine (edge case)', () => {
+    // Both tests use the same template shape: X completes, B is skipped
+    // (when=$yields.X.flag is false), then C's behaviour depends on whether
+    // it references B.result with or without negation. Skipped engines have
+    // no yields, so upstream[B] is undefined → value undefined → falsy.
+    const template = (cWhen: string): RigTemplate => ({
+      engines: [
+        { id: 'X', designId: 'stub-x', givens: {} },
+        { id: 'B', designId: 'stub-b', upstream: ['X'], when: '${yields.X.flag}' },
+        { id: 'C', designId: 'stub-c', upstream: ['B'], when: cWhen },
+      ],
+    });
+    const engines = stubMap(
+      ['stub-x', { flag: false }],
+      ['stub-b', { result: 'something' }],
+      ['stub-c', { ranC: true }],
+    );
+
     it('skips engine when its when references a skipped upstream engine (undefined is falsy)', async () => {
-      // X skips B (B.when is falsy), C has when=$yields.B.result which is undefined (B was skipped)
-      // => C should also be skipped (undefined is falsy)
-      const template: RigTemplate = {
-        engines: [
-          { id: 'X', designId: 'stub-x', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['X'], when: '${yields.X.flag}' },
-          { id: 'C', designId: 'stub-c', upstream: ['B'], when: '${yields.B.result}' },
-        ],
-      };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-x': { id: 'stub-x', async run() { return { status: 'completed' as const, yields: { flag: false } }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: { result: 'something' } }; } },
-            'stub-c': { id: 'stub-c', async run() { return { status: 'completed' as const, yields: {} }; } },
-          },
-        },
-      );
+      // C: when=$yields.B.result. B was skipped → B.result is undefined → falsy → skip
+      const fix = buildWhenFixture(template('${yields.B.result}'), engines);
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'skipped upstream when test', body: 'body' });
       await drainToTerminal(spider);
 
       const [rig] = await rigsBook(stacks).list();
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'B')?.status, 'skipped');
-      // C references B which is skipped (no yields) => upstream['B'] is undefined => value=undefined => falsy => skip
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'C')?.status, 'skipped');
+      assertStatuses(rig, { B: 'skipped', C: 'skipped' });
     });
 
     it('runs engine when its negated when references a skipped upstream engine (negated undefined is truthy)', async () => {
-      // X completes with flag=false, B is skipped (when=$yields.X.flag=false)
-      // C has when=!$yields.B.result — B is skipped so B.result is undefined => !undefined = true => C runs
-      const template: RigTemplate = {
-        engines: [
-          { id: 'X', designId: 'stub-x', givens: {} },
-          { id: 'B', designId: 'stub-b', upstream: ['X'], when: '${yields.X.flag}' },
-          { id: 'C', designId: 'stub-c', upstream: ['B'], when: '!${yields.B.result}' },
-        ],
-      };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-x': { id: 'stub-x', async run() { return { status: 'completed' as const, yields: { flag: false } }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: { result: 'something' } }; } },
-            'stub-c': { id: 'stub-c', async run() { return { status: 'completed' as const, yields: { ranC: true } }; } },
-          },
-        },
-      );
+      // C: when=!$yields.B.result. B skipped → B.result undefined → !undefined=true → C runs
+      const fix = buildWhenFixture(template('!${yields.B.result}'), engines);
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'negated skipped upstream when test', body: 'body' });
       await drainToTerminal(spider);
 
       const [rig] = await rigsBook(stacks).list();
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'B')?.status, 'skipped');
-      // C's when=!$yields.B.result: B is skipped (no yields) => upstream['B']=undefined => value=undefined => truthy=false => !false=true => C runs
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'C')?.status, 'completed');
+      assertStatuses(rig, { B: 'skipped', C: 'completed' });
     });
   });
 
@@ -774,33 +613,15 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
   describe('Engine-initiated grafting — clockwork (V9, V10, V11)', () => {
     it('clockwork engine can graft new engines to the rig', async () => {
       const template: RigTemplate = {
-        engines: [
-          { id: 'decision', designId: 'stub-decision', givens: {} },
-        ],
+        engines: [{ id: 'decision', designId: 'stub-decision', givens: {} }],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-decision': {
-              id: 'stub-decision',
-              async run() {
-                const result: SpiderEngineRunResult = {
-                  status: 'completed',
-                  yields: { decided: true },
-                  graft: [{ id: 'extra', designId: 'stub-extra', upstream: ['decision'] }],
-                };
-                return result;
-              },
-            },
-            'stub-extra': {
-              id: 'stub-extra',
-              async run() { return { status: 'completed' as const, yields: { ran: true } }; },
-            },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, {
+        'stub-decision': graftingStub('stub-decision', {
+          yields: { decided: true },
+          graft: [{ id: 'extra', designId: 'stub-extra', upstream: ['decision'] }],
+        }),
+        'stub-extra': clockworkStub('stub-extra', { ran: true }),
+      });
       const { clerk, spider, stacks } = fix;
       const writ = await clerk.post({ title: 'graft test', body: 'body' });
 
@@ -814,14 +635,12 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       assert.equal(graftResult.engineId, 'decision', 'engineId should be the originating engine');
       assert.deepEqual(graftResult.graftedEngineIds, ['extra'], 'graftedEngineIds should contain extra');
 
-      // Rig should now have 2 engines
       const [rig] = await rigsBook(stacks).list();
       assert.equal(rig.engines.length, 2, 'rig should have 2 engines after graft');
       assert.ok(rig.engines.find((e: EngineInstance) => e.id === 'extra'), 'extra engine should exist');
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'extra')?.status, 'pending');
+      assertStatuses(rig, { extra: 'pending' });
 
       const r3 = await spider.crawl(); // run extra → rig-completed (extra is the last engine)
-      // When the last engine completes, tryRun returns rig-completed directly
       assert.equal(r3?.action, 'rig-completed');
       assert.equal((r3 as { outcome: string }).outcome, 'completed');
 
@@ -831,32 +650,15 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
 
     it('graft is processed in a separate crawl step after engine-completed', async () => {
       const template: RigTemplate = {
-        engines: [
-          { id: 'graftingEngine', designId: 'stub-grafter', givens: {} },
-        ],
+        engines: [{ id: 'graftingEngine', designId: 'stub-grafter', givens: {} }],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-grafter': {
-              id: 'stub-grafter',
-              async run() {
-                return {
-                  status: 'completed' as const,
-                  yields: { x: 1 },
-                  graft: [{ id: 'added', designId: 'stub-added', upstream: ['graftingEngine'] }],
-                };
-              },
-            },
-            'stub-added': {
-              id: 'stub-added',
-              async run() { return { status: 'completed' as const, yields: {} }; },
-            },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, {
+        'stub-grafter': graftingStub('stub-grafter', {
+          yields: { x: 1 },
+          graft: [{ id: 'added', designId: 'stub-added', upstream: ['graftingEngine'] }],
+        }),
+        'stub-added': clockworkStub('stub-added'),
+      });
       const { clerk, spider } = fix;
       await clerk.post({ title: 'graft step test', body: 'body' });
 
@@ -874,29 +676,15 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
   describe('Graft validation failures (V10)', () => {
     it('fails originating engine when graft has a duplicate engine ID', async () => {
       const template: RigTemplate = {
-        engines: [
-          { id: 'bad-grafter', designId: 'stub-bad-grafter', givens: {} },
-        ],
+        engines: [{ id: 'bad-grafter', designId: 'stub-bad-grafter', givens: {} }],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-bad-grafter': {
-              id: 'stub-bad-grafter',
-              async run() {
-                return {
-                  status: 'completed' as const,
-                  yields: { ok: true },
-                  // 'bad-grafter' already exists in the rig — duplicate
-                  graft: [{ id: 'bad-grafter', designId: 'stub-bad-grafter', upstream: [] }],
-                };
-              },
-            },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, {
+        // 'bad-grafter' already exists in the rig — duplicate
+        'stub-bad-grafter': graftingStub('stub-bad-grafter', {
+          yields: { ok: true },
+          graft: [{ id: 'bad-grafter', designId: 'stub-bad-grafter', upstream: [] }],
+        }),
+      });
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'dup id graft test', body: 'body' });
       await spider.crawl(); // spawn
@@ -915,28 +703,14 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
 
     it('fails originating engine when graft references unknown designId', async () => {
       const template: RigTemplate = {
-        engines: [
-          { id: 'grafter', designId: 'stub-grafter-unknown', givens: {} },
-        ],
+        engines: [{ id: 'grafter', designId: 'stub-grafter-unknown', givens: {} }],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-grafter-unknown': {
-              id: 'stub-grafter-unknown',
-              async run() {
-                return {
-                  status: 'completed' as const,
-                  yields: { ok: true },
-                  graft: [{ id: 'new-engine', designId: 'totally-unknown-design', upstream: ['grafter'] }],
-                };
-              },
-            },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, {
+        'stub-grafter-unknown': graftingStub('stub-grafter-unknown', {
+          yields: { ok: true },
+          graft: [{ id: 'new-engine', designId: 'totally-unknown-design', upstream: ['grafter'] }],
+        }),
+      });
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'unknown designId graft test', body: 'body' });
       await spider.crawl(); // spawn
@@ -952,36 +726,20 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
 
     it('fails originating engine when graft creates a cycle', async () => {
       const template: RigTemplate = {
-        engines: [
-          { id: 'cycle-grafter', designId: 'stub-cycle-grafter', givens: {} },
-        ],
+        engines: [{ id: 'cycle-grafter', designId: 'stub-cycle-grafter', givens: {} }],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-cycle-grafter': {
-              id: 'stub-cycle-grafter',
-              async run() {
-                return {
-                  status: 'completed' as const,
-                  yields: { ok: true },
-                  // Creates cycle: cycle-grafter → new1 → cycle-grafter (cycle-grafter already exists)
-                  // Actually cycle-grafter is already in the rig — but new1 referencing cycle-grafter is fine
-                  // We need to make a cycle among the grafted engines themselves
-                  graft: [
-                    { id: 'new1', designId: 'stub-new1', upstream: ['new2'] },
-                    { id: 'new2', designId: 'stub-new2', upstream: ['new1'] },
-                  ],
-                };
-              },
-            },
-            'stub-new1': { id: 'stub-new1', async run() { return { status: 'completed' as const, yields: {} }; } },
-            'stub-new2': { id: 'stub-new2', async run() { return { status: 'completed' as const, yields: {} }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, {
+        // Make a cycle among the grafted engines themselves: new1 ↔ new2
+        'stub-cycle-grafter': graftingStub('stub-cycle-grafter', {
+          yields: { ok: true },
+          graft: [
+            { id: 'new1', designId: 'stub-new1', upstream: ['new2'] },
+            { id: 'new2', designId: 'stub-new2', upstream: ['new1'] },
+          ],
+        }),
+        'stub-new1': clockworkStub('stub-new1'),
+        'stub-new2': clockworkStub('stub-new2'),
+      });
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'cycle graft test', body: 'body' });
       await spider.crawl(); // spawn
@@ -998,34 +756,20 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
 
     it('fails originating engine when graft references a non-existent when engine', async () => {
       const template: RigTemplate = {
-        engines: [
-          { id: 'grafter2', designId: 'stub-grafter2', givens: {} },
-        ],
+        engines: [{ id: 'grafter2', designId: 'stub-grafter2', givens: {} }],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-grafter2': {
-              id: 'stub-grafter2',
-              async run() {
-                return {
-                  status: 'completed' as const,
-                  yields: { ok: true },
-                  graft: [{
-                    id: 'new-engine',
-                    designId: 'stub-new-engine',
-                    upstream: ['grafter2'],
-                    when: '${yields.nonexistent.val}',
-                  }],
-                };
-              },
-            },
-            'stub-new-engine': { id: 'stub-new-engine', async run() { return { status: 'completed' as const, yields: {} }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, {
+        'stub-grafter2': graftingStub('stub-grafter2', {
+          yields: { ok: true },
+          graft: [{
+            id: 'new-engine',
+            designId: 'stub-new-engine',
+            upstream: ['grafter2'],
+            when: '${yields.nonexistent.val}',
+          }],
+        }),
+        'stub-new-engine': clockworkStub('stub-new-engine'),
+      });
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'invalid when graft test', body: 'body' });
       await spider.crawl(); // spawn
@@ -1044,34 +788,20 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
 
   describe('maxEnginesPerRig limit (V11)', () => {
     it('fails originating engine when graft would exceed maxEnginesPerRig', async () => {
-      // Set maxEnginesPerRig to 2, rig already has 1 engine, graft adds 2 → total 3 > 2
+      // maxEnginesPerRig=2; rig has 1 engine; graft adds 2 → total 3 > 2
       const template: RigTemplate = {
-        engines: [
-          { id: 'grafter-max', designId: 'stub-grafter-max', givens: {} },
-        ],
+        engines: [{ id: 'grafter-max', designId: 'stub-grafter-max', givens: {} }],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template }, maxEnginesPerRig: 2 } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-grafter-max': {
-              id: 'stub-grafter-max',
-              async run() {
-                return {
-                  status: 'completed' as const,
-                  yields: { ok: true },
-                  graft: [
-                    { id: 'extra1', designId: 'stub-extra-max', upstream: ['grafter-max'] },
-                    { id: 'extra2', designId: 'stub-extra-max', upstream: ['grafter-max'] },
-                  ],
-                };
-              },
-            },
-            'stub-extra-max': { id: 'stub-extra-max', async run() { return { status: 'completed' as const, yields: {} }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, {
+        'stub-grafter-max': graftingStub('stub-grafter-max', {
+          yields: { ok: true },
+          graft: [
+            { id: 'extra1', designId: 'stub-extra-max', upstream: ['grafter-max'] },
+            { id: 'extra2', designId: 'stub-extra-max', upstream: ['grafter-max'] },
+          ],
+        }),
+        'stub-extra-max': clockworkStub('stub-extra-max'),
+      }, { maxEnginesPerRig: 2 });
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'maxEnginesPerRig test', body: 'body' });
       await spider.crawl(); // spawn (rig has 1 engine)
@@ -1090,34 +820,21 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
     });
 
     it('uses default maxEnginesPerRig of 50 when not configured', async () => {
-      // Graft 49 new engines to a rig with 1 engine = 50 total (OK)
-      // Then try 50 more (51 total — should fail)
-      // This test is complex; just verify the default is 50 by checking error message
+      // Graft 50 new engines to a rig with 1 engine = 51 total (would exceed default 50)
       const template: RigTemplate = {
-        engines: [
-          { id: 'big-grafter', designId: 'stub-big-grafter', givens: {} },
-        ],
+        engines: [{ id: 'big-grafter', designId: 'stub-big-grafter', givens: {} }],
       };
-      // Build graft of 50 engines (would bring total to 1+50=51, exceeding default 50)
       const graft = Array.from({ length: 50 }, (_, i) => ({
         id: `extra-${i}`,
         designId: 'stub-extra-big',
         upstream: ['big-grafter'],
       }));
 
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } }, // no maxEnginesPerRig → default 50
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-big-grafter': {
-              id: 'stub-big-grafter',
-              async run() { return { status: 'completed' as const, yields: {}, graft } as SpiderEngineRunResult; },
-            },
-            'stub-extra-big': { id: 'stub-extra-big', async run() { return { status: 'completed' as const, yields: {} }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, {
+        // no maxEnginesPerRig spider config → default 50
+        'stub-big-grafter': graftingStub('stub-big-grafter', { yields: {}, graft }),
+        'stub-extra-big': clockworkStub('stub-extra-big'),
+      });
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'default max test', body: 'body' });
       await spider.crawl(); // spawn (1 engine)
@@ -1180,7 +897,6 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       const quickGraftingEngine: EngineDesign = {
         id: 'stub-quick-grafting',
         async run(_givens, context) {
-          // Simulate launching a session
           const fakeId = `fake-ses-${context.engineId}`;
           sessionId = fakeId;
           return { status: 'launched' as const, sessionId: fakeId };
@@ -1225,7 +941,6 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
           if (!api) throw new Error(`Apparatus "${name}" not found`);
           return api as T;
         },
-
         tryApparatus<T>(name: string): T | null {
           try { return this.apparatus<T>(name); } catch { return null; }
         },
@@ -1256,14 +971,9 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
         indexes: ['startedAt', 'status'],
       });
 
-      // Fake animator that writes a session doc for the session our quick engine launched
       const mockAnimator: AnimatorApi = {
-        summon(): AnimateHandle {
-          throw new Error('summon not used');
-        },
-        animate(): AnimateHandle {
-          throw new Error('animate not used');
-        },
+        summon(): AnimateHandle { throw new Error('summon not used'); },
+        animate(): AnimateHandle { throw new Error('animate not used'); },
       };
       apparatusMap.set('animator', mockAnimator);
 
@@ -1326,7 +1036,7 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
       assert.equal(r4?.action, 'engine-grafted', 'should process graft from collect');
       assert.deepEqual((r4 as { graftedEngineIds: string[] }).graftedEngineIds, ['follow-up']);
 
-      // Check yields were extracted correctly (not the whole { yields, graft } object)
+      // Yields were extracted correctly (not the whole { yields, graft } object)
       const book = rigsBook(stacks);
       const rigs = await book.list();
       const rig = rigs[0];
@@ -1346,74 +1056,48 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
   // ── Bounded retry pattern (pre-seeded) ───────────────────────────────
 
   describe('Bounded retry pattern (V3)', () => {
-    it('review-1 passes → review-2 and revise-1 skipped → seal runs', async () => {
-      const template: RigTemplate = {
-        engines: [
-          { id: 'implement',  designId: 'stub-impl',    givens: {} },
-          { id: 'review-1',   designId: 'stub-review1', upstream: ['implement'] },
-          { id: 'revise-1',   designId: 'stub-revise1', upstream: ['review-1'],  when: '!${yields.review-1.passed}' },
-          { id: 'review-2',   designId: 'stub-review2', upstream: ['revise-1'],  when: '!${yields.review-1.passed}' },
-          { id: 'seal',       designId: 'stub-seal',    upstream: ['review-1', 'review-2'] },
-        ],
-      };
+    const retryTemplate: RigTemplate = {
+      engines: [
+        { id: 'implement',  designId: 'stub-impl',    givens: {} },
+        { id: 'review-1',   designId: 'stub-review1', upstream: ['implement'] },
+        { id: 'revise-1',   designId: 'stub-revise1', upstream: ['review-1'],  when: '!${yields.review-1.passed}' },
+        { id: 'review-2',   designId: 'stub-review2', upstream: ['revise-1'],  when: '!${yields.review-1.passed}' },
+        { id: 'seal',       designId: 'stub-seal',    upstream: ['review-1', 'review-2'] },
+      ],
+    };
 
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-impl':    { id: 'stub-impl',    async run() { return { status: 'completed' as const, yields: {} }; } },
-            'stub-review1': { id: 'stub-review1', async run() { return { status: 'completed' as const, yields: { passed: true } }; } },
-            'stub-revise1': { id: 'stub-revise1', async run() { return { status: 'completed' as const, yields: {} }; } },
-            'stub-review2': { id: 'stub-review2', async run() { return { status: 'completed' as const, yields: { passed: true } }; } },
-            'stub-seal':    { id: 'stub-seal',    async run() { return { status: 'completed' as const, yields: { sealed: true } }; } },
-          },
-        },
-      );
+    it('review-1 passes → review-2 and revise-1 skipped → seal runs', async () => {
+      const fix = buildWhenFixture(retryTemplate, stubMap(
+        ['stub-impl'],
+        ['stub-review1', { passed: true }],
+        ['stub-revise1'],
+        ['stub-review2', { passed: true }],
+        ['stub-seal',    { sealed: true }],
+      ));
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'retry review-1 passes', body: 'body' });
       await drainToTerminal(spider);
 
       const [rig] = await rigsBook(stacks).list();
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'revise-1')?.status, 'skipped');
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'review-2')?.status, 'skipped');
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'seal')?.status, 'completed');
+      assertStatuses(rig, { 'revise-1': 'skipped', 'review-2': 'skipped', seal: 'completed' });
       assert.equal(rig.status, 'completed');
       assertTerminalAt(rig);
     });
 
     it('review-1 fails, review-2 passes → revise-1 and review-2 run → seal runs', async () => {
-      const template: RigTemplate = {
-        engines: [
-          { id: 'implement',  designId: 'stub-impl',    givens: {} },
-          { id: 'review-1',   designId: 'stub-review1', upstream: ['implement'] },
-          { id: 'revise-1',   designId: 'stub-revise1', upstream: ['review-1'],  when: '!${yields.review-1.passed}' },
-          { id: 'review-2',   designId: 'stub-review2', upstream: ['revise-1'],  when: '!${yields.review-1.passed}' },
-          { id: 'seal',       designId: 'stub-seal',    upstream: ['review-1', 'review-2'] },
-        ],
-      };
-
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-impl':    { id: 'stub-impl',    async run() { return { status: 'completed' as const, yields: {} }; } },
-            'stub-review1': { id: 'stub-review1', async run() { return { status: 'completed' as const, yields: { passed: false } }; } },
-            'stub-revise1': { id: 'stub-revise1', async run() { return { status: 'completed' as const, yields: {} }; } },
-            'stub-review2': { id: 'stub-review2', async run() { return { status: 'completed' as const, yields: { passed: true } }; } },
-            'stub-seal':    { id: 'stub-seal',    async run() { return { status: 'completed' as const, yields: { sealed: true } }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(retryTemplate, stubMap(
+        ['stub-impl'],
+        ['stub-review1', { passed: false }],
+        ['stub-revise1'],
+        ['stub-review2', { passed: true }],
+        ['stub-seal',    { sealed: true }],
+      ));
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'retry review-1 fails', body: 'body' });
       await drainToTerminal(spider);
 
       const [rig] = await rigsBook(stacks).list();
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'revise-1')?.status, 'completed');
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'review-2')?.status, 'completed');
-      assert.equal(rig.engines.find((e: EngineInstance) => e.id === 'seal')?.status, 'completed');
+      assertStatuses(rig, { 'revise-1': 'completed', 'review-2': 'completed', seal: 'completed' });
       assert.equal(rig.status, 'completed');
       assertTerminalAt(rig);
     });
@@ -1429,16 +1113,10 @@ describe('Spider — when conditions, cascade skipping, and grafting', () => {
           { id: 'B', designId: 'stub-b', upstream: ['A'], when: '${yields.A.go}' },
         ],
       };
-      const fix = buildFixture(
-        { spider: { rigTemplates: { default: template } } },
-        { status: 'completed' },
-        {
-          customEngines: {
-            'stub-a': { id: 'stub-a', async run() { return { status: 'completed' as const, yields: { go: true } }; } },
-            'stub-b': { id: 'stub-b', async run() { return { status: 'completed' as const, yields: {} }; } },
-          },
-        },
-      );
+      const fix = buildWhenFixture(template, stubMap(
+        ['stub-a', { go: true }],
+        ['stub-b'],
+      ));
       const { clerk, spider, stacks } = fix;
       await clerk.post({ title: 'when field test', body: 'body' });
       await spider.crawl(); // spawn
