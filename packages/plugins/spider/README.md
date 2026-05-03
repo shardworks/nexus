@@ -176,7 +176,7 @@ Return the merged effective writ-type → template-name mapping. Config mappings
 
 ## Configuration
 
-The Spider reads its config from `guild.json["spider"]`. Zero-config works out of the box for mandate dispatch — Spider's apparatus contributes a plugin-default rig template (`default`: draft → implement → review → revise → seal) and a default mapping (`mandate → default`) via its own supportKit. A minimal guild only needs to declare `spider.variables` so the default template can interpolate role / build command / test command:
+The Spider reads its config from `guild.json["spider"]`. Zero-config works out of the box for mandate dispatch — Spider's apparatus contributes a plugin-default rig template (`default`: draft → implement → review → revise → verify → seal) and a default mapping (`mandate → default`) via its own supportKit. A minimal guild only needs to declare `spider.variables` so the default template can interpolate role / build command / test command:
 
 ```json
 {
@@ -422,6 +422,7 @@ Built-in block types contributed via the Spider's support kit:
 | `implement` | quick | Run the implementation session |
 | `review` | quick | Run the review session |
 | `revise` | quick | Revise based on review findings |
+| `verify` | clockwork | Re-run the mechanical `buildCommand` / `testCommand` checks after revise to catch regressions before seal merges |
 | `seal` | clockwork | Seal the draft (or grafts a recovery tail on rebase conflict — see below) |
 | `anima-session` | quick | General-purpose anima session engine |
 | `manual-merge` | quick | Grafted by the `seal` engine — summons the `spider.mender` anima to reconcile rebase conflicts |

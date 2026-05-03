@@ -734,6 +734,27 @@ export interface ReviewYields {
   mechanicalChecks: MechanicalCheck[];
 }
 
+/**
+ * Yields from the `verify` clockwork engine.
+ *
+ * Verify re-runs the same mechanical build/test checks `review` performs,
+ * but after `revise` and before `seal` — its job is to surface any
+ * regression introduced during revise loud and clear, before merge. On
+ * any failed check the engine throws (with all check outputs embedded in
+ * the error message); the success-path yields carry the per-check
+ * results for the historical record.
+ */
+export interface VerifyYields {
+  /**
+   * Mechanical check results. Contains one entry per check that ran
+   * (skipped checks — those whose given is missing — produce no entry).
+   * Always non-empty when verify completes successfully: a totally-vacuous
+   * configuration (both `buildCommand` and `testCommand` absent) is a
+   * configuration error and throws.
+   */
+  checks: MechanicalCheck[];
+}
+
 // ── Input request types ──────────────────────────────────────────────
 
 export type InputRequestStatus = 'pending' | 'completed' | 'rejected';

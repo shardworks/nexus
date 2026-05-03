@@ -4,7 +4,7 @@ Status: **Ready — MVP**
 
 Package: `@shardworks/spider-apparatus` · Plugin id: `spider`
 
-> **⚠️ MVP scope.** This spec covers a static rig graph: every commission gets the same five-engine pipeline (`draft → implement → review → revise → seal`). No origination, no dynamic extension, no capability resolution. The Spider runs engines directly — the Executor earns its independence later. See [What This Spec Does NOT Cover](#what-this-spec-does-not-cover) for the full list.
+> **⚠️ MVP scope.** This spec covers a static rig graph: every commission gets the same six-engine pipeline (`draft → implement → review → revise → verify → seal`). No origination, no dynamic extension, no capability resolution. The Spider runs engines directly — the Executor earns its independence later. See [What This Spec Does NOT Cover](#what-this-spec-does-not-cover) for the full list.
 
 ---
 
@@ -68,7 +68,7 @@ supportKit: {
 },
 ```
 
-The `manual-merge` engine is grafted onto the rig by `seal` when Scriptorium reports a rebase-conflict failure; it is not part of the static five-engine template. The `mender` role is registered through Loom's role-kit contribution path so the Spider can summon the mender anima without the guild operator adding anything to `guild.json`. See the [`seal` engine section](#seal-clockwork) for the recovery tail contract.
+The `manual-merge` engine is grafted onto the rig by `seal` when Scriptorium reports a rebase-conflict failure; it is not part of the static six-engine template. The `mender` role is registered through Loom's role-kit contribution path so the Spider can summon the mender anima without the guild operator adding anything to `guild.json`. See the [`seal` engine section](#seal-clockwork) for the recovery tail contract.
 
 The Fabricator scans kit `engines` contributions at startup (same pattern as the Instrumentarium scanning tools). The Spider contributes its engines like any other kit — no special registration path.
 
@@ -135,7 +135,7 @@ Stored in the Stacks `rigs` book. One rig per writ. The Spider reads and updates
 
 ```typescript
 interface EngineInstance {
-  id: string               // unique within the rig, e.g. 'draft', 'implement', 'review', 'revise', 'seal'
+  id: string               // unique within the rig, e.g. 'draft', 'implement', 'review', 'revise', 'verify', 'seal'
   designId: string         // engine design id — resolved from the Fabricator
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   upstream: string[]       // ids of engines that must complete first (empty = first engine)
@@ -603,7 +603,58 @@ async run(givens: Record<string, unknown>, context: EngineRunContext): Promise<E
 
 **Collect step:** No custom `collect` — uses the Spider's generic default.
 
-This engine is contributed by the Spider's support kit alongside the five existing engines. Kit-contributed rig templates and guild-configured templates can both reference `anima-session` as a `designId`.
+This engine is contributed by the Spider's support kit alongside the six existing engines. Kit-contributed rig templates and guild-configured templates can both reference `anima-session` as a `designId`.
+
+### `verify` (clockwork)
+
+Mechanical post-revise gate. Re-runs the same `buildCommand` / `testCommand` checks the `review` engine performs, but inserted between `revise` and `seal` in the plugin-default rig template. Its purpose is to surface any regression introduced during revise (build break, test failure, undone fix) loud and clear, before the seal engine fast-forward-merges the draft branch into the codex.
+
+No anima session, no model cost, no `collect()`: verify is fully synchronous and deterministic. Both checks always run regardless of the build's outcome (no short-circuit), so an operator inspecting a failure sees the full state, not just the first thing that broke. Verify shares its `runCheck` / truncation helpers with the `review` engine — the 4 KB output cap, head-bias on success, and tail-bias on failure are the same contract on both gates.
+
+**Givens:**
+- `buildCommand` *(optional, string)* — the build command, supplied from `${vars.buildCommand}` by the plugin-default template.
+- `testCommand` *(optional, string)* — the test command, supplied from `${vars.testCommand}` by the plugin-default template.
+
+If both givens are absent the engine throws a configuration error — a totally-vacuous verify silently passing seal would defeat the whole gate. If only one is absent, verify runs the present check and completes normally (matches review's silent-skip behaviour for partial config). The worktree path is read from `context.upstream['draft'].path`, which the Spider provides by passing every completed engine's yields through `context.upstream` regardless of the engine's declared upstream.
+
+**Yields (success path):** `VerifyYields = { checks: MechanicalCheck[] }` — one entry per check that ran. Skipped checks (their given was absent) produce no entry.
+
+**Failure semantics.** On any failed check the engine throws an `Error` whose message starts with a one-line summary (e.g. `Verify failed: build FAILED, test PASSED.`) followed by per-check sections embedding each check's truncated output. `attempts[-1].error` is the only post-throw channel the substrate preserves, so the entire diagnostic surface — summary + per-check outputs — has to live in the message. Oculus and `rig-show` render `attempts[-1].error` directly.
+
+The standard engine-failure path then takes over:
+
+1. `tryRun` finalizes `attempts[-1]` with `status='failed'` and `error=<message>`.
+2. `engine.status='failed'`.
+3. The Spider cascade-cancels every non-terminal engine in the rig (so `seal` is cancelled and never runs).
+4. `patchRigWithRollup` projects `rig.status='failed'`.
+5. The rig→writs CDC handler translates this directly to `writ.phase='failed'`.
+
+There is no retry, no graft, and no recovery tail: a deterministic regression is the human-intervention signal verify exists to surface. An operator inspecting a failed rig reads the embedded check outputs, fixes the regression on the draft branch, and either re-spawns or rescues from there.
+
+```typescript
+async run(givens, ctx) {
+  const draft = ctx.upstream['draft'] as DraftYields
+  const buildCommand = givens.buildCommand as string | undefined
+  const testCommand  = givens.testCommand  as string | undefined
+
+  if (!buildCommand && !testCommand) {
+    throw new Error(
+      'Verify engine requires at least one of `spider.variables.buildCommand` ' +
+      'or `spider.variables.testCommand` to be configured.'
+    )
+  }
+
+  const checks: MechanicalCheck[] = []
+  if (buildCommand) checks.push(await runCheck('build', buildCommand, draft.path))
+  if (testCommand)  checks.push(await runCheck('test',  testCommand,  draft.path))
+
+  if (checks.some(c => !c.passed)) {
+    throw new Error(formatFailureMessage(checks))   // summary + per-check outputs
+  }
+
+  return { status: 'completed', yields: { checks } satisfies VerifyYields }
+}
+```
 
 ### `seal` (clockwork)
 
@@ -611,7 +662,7 @@ Closes a draft binding — either sealing (merging inscriptions) or abandoning (
 
 **Givens:**
 - `abandon` *(optional, boolean)* — when truthy, abandons the draft instead of sealing. Used by rigs that need codebase access but don't produce inscriptions (e.g. planning rigs).
-- `recover` *(optional, boolean, default `true`)* — when set to `false`, disables the rebase-conflict recovery tail. Used by the grafted retry seal to prevent infinite recovery layering (one attempt only). The default `true` path is what the five-engine template spawns.
+- `recover` *(optional, boolean, default `true`)* — when set to `false`, disables the rebase-conflict recovery tail. Used by the grafted retry seal to prevent infinite recovery layering (one attempt only). The default `true` path is what the six-engine template spawns.
 
 **Happy path.** On successful `scriptorium.seal()`, the engine returns `SealYields` and the rig completes.
 
@@ -879,7 +930,7 @@ After this is in place, a transient failure of the `implement` engine permits up
 
 The Spider's apparatus contributes a plugin-level rig template and mapping via its own supportKit:
 
-- `rigTemplates: { default: <draft → implement → review → revise → seal> }`
+- `rigTemplates: { default: <draft → implement → review → revise → verify → seal> }`
 - `rigTemplateMappings: { mandate: 'default' }`
 
 Guilds do **not** need to declare these in `guild.json` — they are always present. `spider.rigTemplates` and `spider.rigTemplateMappings` in config are overlays: a config-level template of the same name wins over the plugin default, and a config-level mapping for the same writ type wins over the kit mapping. Kit mapping lookup resolves an unqualified templateName against the bare name first (so config overrides work) and falls back to the contributing kit's qualified `${pluginId}.${templateName}` when no config entry claims the bare name.

@@ -71,6 +71,7 @@ import {
   reviewEngine,
   reviseEngine,
   sealEngine,
+  verifyEngine,
 } from './engines/index.ts';
 
 import {
@@ -501,6 +502,7 @@ function validateTemplates(
     reviewEngine.id,
     reviseEngine.id,
     sealEngine.id,
+    verifyEngine.id,
   ]);
 
   for (const [templateKey, template] of Object.entries(rigTemplates)) {
@@ -947,6 +949,7 @@ class RigTemplateRegistry {
       reviewEngine.id,
       reviseEngine.id,
       sealEngine.id,
+      verifyEngine.id,
     ];
     for (const id of builtinIds) {
       this.designSourceMap.set(id, 'spider');
@@ -3114,6 +3117,7 @@ export function createSpider(): Plugin {
           'step-session': stepSessionEngine,
           review:    reviewEngine,
           revise:    reviseEngine,
+          verify:    verifyEngine,
           seal:      sealEngine,
         },
         roles: {

@@ -1088,7 +1088,7 @@ describe('Kit contributions — rig templates and mappings', () => {
       const rig = await fix.spider.forWrit(writ.id);
       assert.ok(rig);
       const engineIds = rig!.engines.map(e => e.id);
-      assert.deepEqual(engineIds, ['draft', 'implement', 'review', 'revise', 'seal']);
+      assert.deepEqual(engineIds, ['draft', 'implement', 'review', 'revise', 'verify', 'seal']);
 
       // Confirm the plugin default is listed in the registry under its
       // qualified kit name with spider provenance (i.e. it was not

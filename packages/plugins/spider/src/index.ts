@@ -32,6 +32,7 @@ export type {
   CheckResult,
   DraftYields,
   SealYields,
+  VerifyYields,
   RigTemplate,
   RigTemplateEngine,
   RigTemplateInfo,

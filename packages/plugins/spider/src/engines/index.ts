@@ -7,3 +7,4 @@ export { default as stepSessionEngine } from './step-session.ts';
 export { default as reviewEngine } from './review.ts';
 export { default as reviseEngine } from './revise.ts';
 export { default as sealEngine } from './seal.ts';
+export { default as verifyEngine } from './verify.ts';
