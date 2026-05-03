@@ -27,7 +27,7 @@ import type { FabricatorApi } from '@shardworks/fabricator-apparatus';
 import type { AnimatorApi, SummonRequest, AnimateHandle, SessionChunk, SessionResult, SessionDoc } from '@shardworks/animator-apparatus';
 
 import { createSpider } from './spider.ts';
-import type { SpiderApi, RigDoc, RigTemplate, DraftYields } from './types.ts';
+import type { SpiderApi, RigDoc, RigTemplate, DraftYields, EngineInstance } from './types.ts';
 
 import { STEP_EXECUTION_EPILOGUE } from './engines/step-session.ts';
 import { EXECUTION_EPILOGUE } from './engines/implement.ts';
@@ -263,6 +263,8 @@ function buildFixture(
   };
 }
 
+type Fix = ReturnType<typeof buildFixture>;
+
 function rigsBook(stacks: StacksApi) {
   return stacks.book<RigDoc>('spider', 'rigs');
 }
@@ -306,10 +308,72 @@ async function preCompleteDraft(stacks: StacksApi, writId: string): Promise<stri
   return rig.id;
 }
 
+// ── Local helpers ────────────────────────────────────────────────────
+
+const taskBody = (id: string): string =>
+  `<task id="${id}"><name>${id.toUpperCase()}</name></task>`;
+
+async function postMandate(clerk: ClerkApi, opts: { title?: string; body?: string } = {}): Promise<WritDoc> {
+  return clerk.post({
+    title: opts.title ?? 'Test mandate',
+    body: opts.body ?? 'Spec',
+    codex: 'test',
+  });
+}
+
+async function postStep(
+  clerk: ClerkApi,
+  mandateId: string,
+  taskId: string,
+  opts: { title?: string; body?: string } = {},
+): Promise<WritDoc> {
+  return clerk.post({
+    type: 'step',
+    title: opts.title ?? `Task ${taskId}`,
+    body: opts.body ?? taskBody(taskId),
+    parentId: mandateId,
+  });
+}
+
+async function getRigByWrit(fix: Fix, writId: string): Promise<RigDoc> {
+  const rigs = await rigsBook(fix.stacks).find({ where: [['writId', '=', writId]] });
+  return rigs[0];
+}
+
+const findEngine = (rig: RigDoc, id: string): EngineInstance | undefined =>
+  rig.engines.find((e) => e.id === id);
+
+const lastPrompt = (fix: Fix): string =>
+  fix.summonCalls[fix.summonCalls.length - 1]!.prompt;
+
+/** Drive the rig: spawn → pre-complete draft → implement-loop → graft → step-0 started. */
+async function advanceToStepStarted(fix: Fix, mandateId: string): Promise<void> {
+  await fix.spider.crawl();                 // rig-spawned
+  await preCompleteDraft(fix.stacks, mandateId);
+  await fix.spider.crawl();                 // implement-loop completed
+  await fix.spider.crawl();                 // graft
+  await fix.spider.crawl();                 // step-0 started
+}
+
+/** Patch the most recently-written animator session to `failed`. */
+async function failLastSession(fix: Fix, error: string): Promise<void> {
+  const sessBook = fix.stacks.book<SessionDoc>('animator', 'sessions');
+  const sessions = await sessBook.find({});
+  const lastSession = sessions[sessions.length - 1];
+  await sessBook.patch(lastSession.id, { status: 'failed', error });
+}
+
+function captureWarnings(): { warnings: string[]; restore: () => void } {
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+  return { warnings, restore: () => { console.warn = original; } };
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────
 
 describe('implement-loop engine', () => {
-  let fix: ReturnType<typeof buildFixture>;
+  let fix: Fix;
 
   beforeEach(() => {
     fix = buildFixture();
@@ -327,54 +391,50 @@ describe('implement-loop engine', () => {
   });
 
   it('falls through to legacy single-session when no child steps exist', async () => {
-    const { clerk, spider, stacks: s, summonCalls } = fix;
-
     // Post a mandate without children
-    await clerk.post({ title: 'No-step mandate', body: 'Do something', codex: 'test' });
+    await postMandate(fix.clerk, { title: 'No-step mandate', body: 'Do something' });
 
     // Spawn rig
-    const r1 = await spider.crawl();
+    const r1 = await fix.spider.crawl();
     assert.equal(r1?.action, 'rig-spawned');
     const writId = (r1 as { writId: string }).writId;
 
     // Draft engine will fail (no codexes). Pre-complete it.
-    await preCompleteDraft(s, writId);
+    await preCompleteDraft(fix.stacks, writId);
 
     // implement-loop runs — should launch a single session (legacy path)
-    const r2 = await spider.crawl();
+    const r2 = await fix.spider.crawl();
     assert.equal(r2?.action, 'engine-started');
 
     // Verify the summon call used the legacy EXECUTION_EPILOGUE
-    const lastSummon = summonCalls[summonCalls.length - 1];
-    assert.ok(lastSummon.prompt.includes('task-manifest'), 'Legacy prompt should contain task-manifest instructions');
-    assert.ok(!lastSummon.prompt.includes('Current Task'), 'Legacy prompt should not contain step-specific phrasing');
+    const prompt = lastPrompt(fix);
+    assert.ok(prompt.includes('task-manifest'), 'Legacy prompt should contain task-manifest instructions');
+    assert.ok(!prompt.includes('Current Task'), 'Legacy prompt should not contain step-specific phrasing');
   });
 
   it('grafts step-session engines when child steps exist', async () => {
-    const { clerk, spider, stacks: s, summonCalls } = fix;
-
     // Post a mandate in draft state
-    const mandate = await clerk.post({ title: 'Step mandate', body: 'Main spec', codex: 'test' });
+    const mandate = await postMandate(fix.clerk, { title: 'Step mandate', body: 'Main spec' });
 
     // Create child steps
-    await clerk.post({ type: 'step', title: 'Task 1', body: '<task id="t1"><name>Task 1</name></task>', parentId: mandate.id });
-    await clerk.post({ type: 'step', title: 'Task 2', body: '<task id="t2"><name>Task 2</name></task>', parentId: mandate.id });
+    await postStep(fix.clerk, mandate.id, 't1', { title: 'Task 1' });
+    await postStep(fix.clerk, mandate.id, 't2', { title: 'Task 2' });
 
     // Mandate is already in `open` thanks to the fixture's auto-publish wrapper.
 
     // Spawn rig
-    const r1 = await spider.crawl();
+    const r1 = await fix.spider.crawl();
     assert.equal(r1?.action, 'rig-spawned');
 
     // Pre-complete draft
-    await preCompleteDraft(s, mandate.id);
+    await preCompleteDraft(fix.stacks, mandate.id);
 
     // implement-loop runs — clockwork, completes immediately + queues graft
-    const r2 = await spider.crawl();
+    const r2 = await fix.spider.crawl();
     assert.equal(r2?.action, 'engine-completed');
 
     // Process graft
-    const r3 = await spider.crawl();
+    const r3 = await fix.spider.crawl();
     assert.equal(r3?.action, 'engine-grafted');
     if (r3?.action === 'engine-grafted') {
       assert.equal(r3.graftedEngineIds.length, 2);
@@ -383,92 +443,67 @@ describe('implement-loop engine', () => {
     }
 
     // First step-session starts
-    const r4 = await spider.crawl();
+    const r4 = await fix.spider.crawl();
     assert.equal(r4?.action, 'engine-started');
 
     // Verify the first step session prompt
-    const stepSummon = summonCalls[summonCalls.length - 1];
-    assert.ok(stepSummon.prompt.includes('Main spec'), 'Step prompt should include mandate body');
-    assert.ok(stepSummon.prompt.includes('<task id="t1">'), 'Step prompt should include step body');
-    assert.ok(stepSummon.prompt.includes('Current Task'), 'Step prompt should have step-specific header');
-    assert.ok(stepSummon.prompt.includes('Mandate ID:'), 'Step prompt should include mandate ID');
+    const prompt = lastPrompt(fix);
+    assert.ok(prompt.includes('Main spec'), 'Step prompt should include mandate body');
+    assert.ok(prompt.includes('<task id="t1">'), 'Step prompt should include step body');
+    assert.ok(prompt.includes('Current Task'), 'Step prompt should have step-specific header');
+    assert.ok(prompt.includes('Mandate ID:'), 'Step prompt should include mandate ID');
   });
 
   it('processes steps sequentially — second step waits for first', async () => {
-    const { clerk, spider, stacks: s, summonCalls } = fix;
+    const mandate = await postMandate(fix.clerk, { title: 'Sequential' });
+    await postStep(fix.clerk, mandate.id, 'ta', { title: 'Task A' });
+    await postStep(fix.clerk, mandate.id, 'tb', { title: 'Task B' });
 
-    const mandate = await clerk.post({ title: 'Sequential', body: 'Spec', codex: 'test' });
-    await clerk.post({ type: 'step', title: 'Task A', body: '<task id="ta"><name>A</name></task>', parentId: mandate.id });
-    await clerk.post({ type: 'step', title: 'Task B', body: '<task id="tb"><name>B</name></task>', parentId: mandate.id });
-
-    // Spawn → pre-complete draft → implement-loop → graft → step-0 started
-    await spider.crawl(); // rig-spawned
-    await preCompleteDraft(s, mandate.id);
-    await spider.crawl(); // implement-loop completed
-    await spider.crawl(); // graft
-    await spider.crawl(); // step-0 started
+    await advanceToStepStarted(fix, mandate.id);
 
     // Collect step-0 (session completes)
-    const r5 = await spider.crawl();
+    const r5 = await fix.spider.crawl();
     assert.equal(r5?.action, 'engine-completed');
 
     // step-1 should now start
-    const r6 = await spider.crawl();
+    const r6 = await fix.spider.crawl();
     assert.equal(r6?.action, 'engine-started');
 
     // Verify step-1 prompt has step B's body
-    const lastSummon = summonCalls[summonCalls.length - 1];
-    assert.ok(lastSummon.prompt.includes('<task id="tb">'), 'Second step should use task B body');
+    assert.ok(lastPrompt(fix).includes('<task id="tb">'),
+      'Second step should use task B body');
   });
 
   it('halts rig when a step session fails', async () => {
-    const { clerk, spider, stacks: s } = fix;
+    const mandate = await postMandate(fix.clerk, { title: 'Fail test' });
+    await postStep(fix.clerk, mandate.id, 't1');
+    await postStep(fix.clerk, mandate.id, 't2');
 
-    const mandate = await clerk.post({ title: 'Fail test', body: 'Spec', codex: 'test' });
-    await clerk.post({ type: 'step', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
-    await clerk.post({ type: 'step', title: 'Task 2', body: '<task id="t2"><name>T2</name></task>', parentId: mandate.id });
+    await advanceToStepStarted(fix, mandate.id);
 
-    // Spawn → pre-complete draft → implement-loop → graft → step-0 starts
-    await spider.crawl(); // rig-spawned
-    await preCompleteDraft(s, mandate.id);
-    await spider.crawl(); // implement-loop completed
-    await spider.crawl(); // graft
-    await spider.crawl(); // step-0 started
-
-    // Patch the session to failed
-    const sessBook = s.book<SessionDoc>('animator', 'sessions');
-    const sessions = await sessBook.find({});
-    const lastSession = sessions[sessions.length - 1];
-    await sessBook.patch(lastSession.id, { status: 'failed', error: 'Task failed' });
+    await failLastSession(fix, 'Task failed');
 
     // Collect → rig should fail
-    const r = await spider.crawl();
+    const r = await fix.spider.crawl();
     assert.equal(r?.action, 'rig-completed');
     if (r?.action === 'rig-completed') {
       assert.equal(r.outcome, 'failed', 'Rig should be failed after step failure');
     }
 
     // Verify the rig status
-    const rigs = await rigsBook(s).find({ where: [['writId', '=', mandate.id]] });
-    assert.equal(rigs[0].status, 'failed');
+    const rig = await getRigByWrit(fix, mandate.id);
+    assert.equal(rig.status, 'failed');
   });
 
   it('step-session transitions step writs on completion', async () => {
-    const { clerk, spider, stacks: s } = fix;
+    const mandate = await postMandate(fix.clerk, { title: 'Transition test' });
+    const step = await postStep(fix.clerk, mandate.id, 't1');
 
-    const mandate = await clerk.post({ title: 'Transition test', body: 'Spec', codex: 'test' });
-    const step = await clerk.post({ type: 'step', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
-
-    // Run through to step completion
-    await spider.crawl(); // rig-spawned
-    await preCompleteDraft(s, mandate.id);
-    await spider.crawl(); // implement-loop completed
-    await spider.crawl(); // graft
-    await spider.crawl(); // step-0 started
-    await spider.crawl(); // step-0 collected (completed)
+    await advanceToStepStarted(fix, mandate.id);
+    await fix.spider.crawl(); // step-0 collected (completed)
 
     // Check the step writ was transitioned to completed
-    const updatedStep = await clerk.show(step.id);
+    const updatedStep = await fix.clerk.show(step.id);
     assert.equal(updatedStep.phase, 'completed');
   });
 
@@ -482,29 +517,18 @@ describe('implement-loop engine', () => {
     // cascades downward to cancel every non-terminal descendant — the step
     // writ here transitions to `cancelled` with the canonical resolution
     // string `Automatically cancelled due to parent termination`.
-    const { clerk, spider, stacks: s } = fix;
+    const mandate = await postMandate(fix.clerk, { title: 'Fail transition' });
+    const step = await postStep(fix.clerk, mandate.id, 't1');
 
-    const mandate = await clerk.post({ title: 'Fail transition', body: 'Spec', codex: 'test' });
-    const step = await clerk.post({ type: 'step', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
+    await advanceToStepStarted(fix, mandate.id);
+    await failLastSession(fix, 'Build failed');
 
-    await spider.crawl(); // rig-spawned
-    await preCompleteDraft(s, mandate.id);
-    await spider.crawl(); // implement-loop completed
-    await spider.crawl(); // graft
-    await spider.crawl(); // step-0 started
+    await fix.spider.crawl(); // failEngine → rig failed → mandate failed → cascade cancels step
 
-    // Patch session to failed
-    const sessBook = s.book<SessionDoc>('animator', 'sessions');
-    const sessions = await sessBook.find({});
-    const lastSession = sessions[sessions.length - 1];
-    await sessBook.patch(lastSession.id, { status: 'failed', error: 'Build failed' });
-
-    await spider.crawl(); // failEngine → rig failed → mandate failed → cascade cancels step
-
-    const updatedMandate = await clerk.show(mandate.id);
+    const updatedMandate = await fix.clerk.show(mandate.id);
     assert.equal(updatedMandate.phase, 'failed', 'Mandate transitions to failed via engine-failure path');
 
-    const updatedStep = await clerk.show(step.id);
+    const updatedStep = await fix.clerk.show(step.id);
     assert.equal(updatedStep.phase, 'cancelled',
       'Step writ is cancelled by mandate\'s parentTerminal cascade');
     assert.equal(updatedStep.resolution, 'Automatically cancelled due to parent termination',
@@ -512,32 +536,20 @@ describe('implement-loop engine', () => {
   });
 
   it('dynamically added steps are picked up after the current step completes', async () => {
-    const { clerk, spider, stacks: s } = fix;
+    const mandate = await postMandate(fix.clerk, { title: 'Dynamic steps' });
+    await postStep(fix.clerk, mandate.id, 't1');
 
-    const mandate = await clerk.post({ title: 'Dynamic steps', body: 'Spec', codex: 'test' });
-    await clerk.post({ type: 'step', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
-
-    // Spawn → draft → implement-loop → graft → step-0 starts
-    await spider.crawl(); // rig-spawned
-    await preCompleteDraft(s, mandate.id);
-    await spider.crawl(); // implement-loop completed
-    await spider.crawl(); // graft (step-0)
-    await spider.crawl(); // step-0 started
+    await advanceToStepStarted(fix, mandate.id);
 
     // While step-0 is running, dynamically add a new step via clerk
-    const dynStep = await clerk.post({
-      type: 'step',
-      title: 'Dynamic Task',
-      body: '<task id="dyn1"><name>Dynamic</name></task>',
-      parentId: mandate.id,
-    });
+    const dynStep = await postStep(fix.clerk, mandate.id, 'dyn1', { title: 'Dynamic Task' });
 
     // step-0 collects — its collect() discovers the new open step and grafts it
-    const r1 = await spider.crawl();
+    const r1 = await fix.spider.crawl();
     assert.equal(r1?.action, 'engine-completed', 'step-0 should complete');
 
     // Process the graft from step-0's collect
-    const r2 = await spider.crawl();
+    const r2 = await fix.spider.crawl();
     assert.equal(r2?.action, 'engine-grafted', 'Dynamic step should be grafted');
     if (r2?.action === 'engine-grafted') {
       assert.equal(r2.graftedEngineIds.length, 1);
@@ -546,69 +558,54 @@ describe('implement-loop engine', () => {
     }
 
     // The dynamic step-session should now start
-    const r3 = await spider.crawl();
+    const r3 = await fix.spider.crawl();
     assert.equal(r3?.action, 'engine-started', 'Dynamic step session should start');
 
     // It completes and transitions the step writ
-    const r4 = await spider.crawl();
+    const r4 = await fix.spider.crawl();
     assert.equal(r4?.action, 'engine-completed', 'Dynamic step session should complete');
 
-    const updatedDynStep = await clerk.show(dynStep.id);
+    const updatedDynStep = await fix.clerk.show(dynStep.id);
     assert.equal(updatedDynStep.phase, 'completed', 'Dynamic step should be marked completed');
   });
 
   it('dynamically added steps delay seal via graftTail', async () => {
-    const { clerk, spider, stacks: s } = fix;
+    const mandate = await postMandate(fix.clerk, { title: 'Dynamic graftTail' });
+    await postStep(fix.clerk, mandate.id, 't1');
 
-    const mandate = await clerk.post({ title: 'Dynamic graftTail', body: 'Spec', codex: 'test' });
-    await clerk.post({ type: 'step', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
-
-    await spider.crawl(); // rig-spawned
-    await preCompleteDraft(s, mandate.id);
-    await spider.crawl(); // implement-loop completed
-    await spider.crawl(); // graft
-    await spider.crawl(); // step-0 started
+    await advanceToStepStarted(fix, mandate.id);
 
     // Add a dynamic step while step-0 is running
-    await clerk.post({
-      type: 'step',
-      title: 'Dynamic Task',
-      body: '<task id="dyn1"><name>Dynamic</name></task>',
-      parentId: mandate.id,
-    });
+    await postStep(fix.clerk, mandate.id, 'dyn1', { title: 'Dynamic Task' });
 
-    await spider.crawl(); // step-0 collected
-    await spider.crawl(); // dynamic step grafted
+    await fix.spider.crawl(); // step-0 collected
+    await fix.spider.crawl(); // dynamic step grafted
 
     // After graft, verify seal now has the dynamic step in its upstream
-    const rigs = await rigsBook(s).find({ where: [['writId', '=', mandate.id]] });
-    const rig = rigs[0];
-    const sealEngine = rig.engines.find(e => e.id === 'seal');
+    const rig = await getRigByWrit(fix, mandate.id);
+    const sealEngine = findEngine(rig, 'seal');
     assert.ok(sealEngine, 'Seal engine should exist');
 
     // Seal should have both implement-loop and the original step-0 in upstream
     // (from the original graftTail), AND the dynamic step (from the dynamic graftTail)
     const dynStepEngine = rig.engines.find(e => e.designId === 'step-session' && e.id.startsWith('step-') && e.id !== 'step-0');
     assert.ok(dynStepEngine, 'Dynamic step engine should exist in rig');
-    assert.ok(sealEngine.upstream.includes(dynStepEngine!.id),
-      `Seal upstream should include dynamic step engine (${dynStepEngine!.id}), got: ${JSON.stringify(sealEngine.upstream)}`);
+    assert.ok(sealEngine!.upstream.includes(dynStepEngine!.id),
+      `Seal upstream should include dynamic step engine (${dynStepEngine!.id}), got: ${JSON.stringify(sealEngine!.upstream)}`);
   });
 
   it('literal WritDoc givens survive yield resolution in step-session engines', async () => {
-    const { clerk, spider, stacks: s, summonCalls } = fix;
+    const mandate = await postMandate(fix.clerk, { title: 'Givens test', body: 'Spec body' });
+    const step = await postStep(fix.clerk, mandate.id, 't1');
 
-    const mandate = await clerk.post({ title: 'Givens test', body: 'Spec body', codex: 'test' });
-    const step = await clerk.post({ type: 'step', title: 'Task 1', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
-
-    await spider.crawl(); // rig-spawned
-    await preCompleteDraft(s, mandate.id);
-    await spider.crawl(); // implement-loop completed
-    await spider.crawl(); // graft
+    await fix.spider.crawl(); // rig-spawned
+    await preCompleteDraft(fix.stacks, mandate.id);
+    await fix.spider.crawl(); // implement-loop completed
+    await fix.spider.crawl(); // graft
 
     // Verify the grafted engine's givensSpec has the step as a literal object
-    const rigs = await rigsBook(s).find({ where: [['writId', '=', mandate.id]] });
-    const rig = rigs[0];
-    const stepEngine = rig.engines.find(e => e.id === 'step-0');
+    const rig = await getRigByWrit(fix, mandate.id);
+    const stepEngine = findEngine(rig, 'step-0');
     assert.ok(stepEngine, 'step-0 engine should exist');
 
     // The step given should be a literal object (not stringified)
@@ -618,26 +615,20 @@ describe('implement-loop engine', () => {
     assert.equal(stepGiven.type, 'step', 'step given should have the correct type');
 
     // Now run the step-session and verify the summon call used the step body
-    await spider.crawl(); // step-0 started
-    const lastSummon = summonCalls[summonCalls.length - 1];
-    assert.ok(lastSummon.prompt.includes('<task id="t1">'),
+    await fix.spider.crawl(); // step-0 started
+    const prompt = lastPrompt(fix);
+    assert.ok(prompt.includes('<task id="t1">'),
       'Step prompt should include the step body from the literal WritDoc given');
-    assert.ok(lastSummon.prompt.includes(mandate.id),
+    assert.ok(prompt.includes(mandate.id),
       'Step prompt should include mandate ID from the resolved writ given');
   });
 
   it('full pipeline: steps complete → seal runs → rig completes', async () => {
-    const { clerk, spider, stacks: s } = fix;
+    const mandate = await postMandate(fix.clerk, { title: 'Full pipeline' });
+    await postStep(fix.clerk, mandate.id, 't1', { title: 'Only task' });
 
-    const mandate = await clerk.post({ title: 'Full pipeline', body: 'Spec', codex: 'test' });
-    await clerk.post({ type: 'step', title: 'Only task', body: '<task id="t1"><name>T1</name></task>', parentId: mandate.id });
-
-    await spider.crawl(); // rig-spawned
-    await preCompleteDraft(s, mandate.id);
-    await spider.crawl(); // implement-loop completed
-    await spider.crawl(); // graft
-    await spider.crawl(); // step-0 started
-    await spider.crawl(); // step-0 collected
+    await advanceToStepStarted(fix, mandate.id);
+    await fix.spider.crawl(); // step-0 collected
 
     // At this point all grafted engines are done. The seal engine should be next.
     // But seal needs the implement-loop to be upstream, not step-0.
@@ -649,7 +640,7 @@ describe('implement-loop engine', () => {
     // But seal needs codexes too (to finalize the draft). Let's check what happens.
     // The seal engine will fail since there's no codexes apparatus.
     // That's OK — we've verified the step pipeline works. The seal failure is expected.
-    const r = await spider.crawl();
+    const r = await fix.spider.crawl();
     // It's either seal starting/failing, or rig completing. Whatever the seal outcome is.
     assert.ok(r !== null, 'There should be more work to do');
   });
@@ -675,7 +666,7 @@ describe('implement-loop engine', () => {
 // observed `stepStatus` would be missing from yields).
 
 describe('step-session collect() — transition error classification', () => {
-  let fix: ReturnType<typeof buildFixture>;
+  let fix: Fix;
 
   beforeEach(() => { fix = buildFixture(); });
   afterEach(() => { clearGuild(); });
@@ -686,45 +677,39 @@ describe('step-session collect() — transition error classification', () => {
    * Returns the step writ so callers can manipulate its state before the
    * next crawl invokes `collect()`.
    */
-  async function advanceToStepStarted(): Promise<{ mandate: WritDoc; step: WritDoc }> {
-    const { clerk, spider, stacks: s } = fix;
-    const mandate = await clerk.post({ title: 'Race', body: 'Spec', codex: 'test' });
-    const step = await clerk.post({
-      type: 'step',
-      title: 'Task 1',
-      body: '<task id="t1"><name>T1</name></task>',
-      parentId: mandate.id,
-    });
-
-    await spider.crawl();                      // rig-spawned
-    await preCompleteDraft(s, mandate.id);
-    await spider.crawl();                      // implement-loop completed
-    await spider.crawl();                      // graft (step-0)
-    const started = await spider.crawl();      // step-0 started
-    assert.equal(started?.action, 'engine-started');
+  async function setupRaceFixture(): Promise<{ mandate: WritDoc; step: WritDoc }> {
+    const mandate = await postMandate(fix.clerk, { title: 'Race' });
+    const step = await postStep(fix.clerk, mandate.id, 't1');
+    await advanceToStepStarted(fix, mandate.id);
     return { mandate, step };
   }
 
-  function captureWarnings(): { warnings: string[]; restore: () => void } {
-    const warnings: string[] = [];
-    const original = console.warn;
-    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
-    return { warnings, restore: () => { console.warn = original; } };
+  /** Read step-0's last attempt yields after collect() has run. */
+  async function readStepYields(mandateId: string): Promise<{
+    engine: EngineInstance;
+    yields: Record<string, unknown>;
+  }> {
+    const rig = await getRigByWrit(fix, mandateId);
+    const engine = findEngine(rig, 'step-0');
+    assert.ok(engine, 'step-0 engine must exist in the rig');
+    const tail = engine!.attempts?.[engine!.attempts.length - 1];
+    const yields = tail?.yields as Record<string, unknown> | undefined;
+    assert.ok(yields, 'step-0 engine should have yields recorded');
+    return { engine: engine!, yields: yields! };
   }
 
   it('pre-cancelled step writ: collect() swallows already-terminal silently and yields observed status', async () => {
-    const { clerk, spider, stacks: s } = fix;
-    const { mandate, step } = await advanceToStepStarted();
+    const { mandate, step } = await setupRaceFixture();
 
     // Simulate the race: the parent mandate's downward cascade has
     // already cancelled the step writ (or some other path beat us to it)
     // before Spider's tryCollect invokes step-session's collect().
-    await clerk.transition(step.id, 'cancelled', { resolution: 'Pre-race cancel' });
+    await fix.clerk.transition(step.id, 'cancelled', { resolution: 'Pre-race cancel' });
 
     const { warnings, restore } = captureWarnings();
     let result;
     try {
-      result = await spider.crawl();           // step-0 collect()
+      result = await fix.spider.crawl();           // step-0 collect()
     } finally {
       restore();
     }
@@ -740,37 +725,31 @@ describe('step-session collect() — transition error classification', () => {
     );
 
     // The step writ phase is unchanged — collect() did not flip cancelled → completed.
-    const observedStep = await clerk.show(step.id);
+    const observedStep = await fix.clerk.show(step.id);
     assert.equal(observedStep.phase, 'cancelled',
       'step writ should remain cancelled after collect()');
 
     // (c) yields include the observed step writ status.
-    const rigs = await rigsBook(s).find({ where: [['writId', '=', mandate.id]] });
-    const stepEngine = rigs[0]!.engines.find((e) => e.id === 'step-0');
-    assert.ok(stepEngine, 'step-0 engine must exist in the rig');
-    const stepTail = stepEngine!.attempts?.[stepEngine!.attempts.length - 1];
-    const stepYields = stepTail?.yields as Record<string, unknown> | undefined;
-    assert.ok(stepYields, 'step-0 engine should have yields recorded');
-    assert.equal(stepYields!.stepStatus, 'cancelled',
+    const { engine, yields } = await readStepYields(mandate.id);
+    assert.equal(yields.stepStatus, 'cancelled',
       'yields should include the observed step writ status');
-    assert.equal(stepYields!.stepId, step.id,
+    assert.equal(yields.stepId, step.id,
       'yields should reference the step writ id');
 
     // (d) the engine is completed from Spider's perspective.
-    assert.equal(stepEngine!.status, 'completed',
+    assert.equal(engine.status, 'completed',
       'step-0 engine should be marked completed even though the writ was pre-cancelled');
   });
 
   it('unexpected transition error: collect() logs a [step-session] warning and still yields observed status', async () => {
-    const { clerk, spider, stacks: s } = fix;
-    const { mandate, step } = await advanceToStepStarted();
+    const { mandate, step } = await setupRaceFixture();
 
     // Stub clerk.transition so the step → completed call throws an error
     // whose message does NOT look like an already-terminal classification.
     // Any other transition (including cascades the CDC watcher may trigger)
     // delegates to the original implementation.
-    const api = clerk as unknown as { transition: ClerkApi['transition'] };
-    const originalTransition = api.transition.bind(clerk);
+    const api = fix.clerk as unknown as { transition: ClerkApi['transition'] };
+    const originalTransition = api.transition.bind(fix.clerk);
     const UNEXPECTED_ERROR_MESSAGE = 'simulated storage I/O failure';
     api.transition = async (id, to, fields) => {
       if (id === step.id && to === 'completed') {
@@ -782,7 +761,7 @@ describe('step-session collect() — transition error classification', () => {
     const { warnings, restore } = captureWarnings();
     let result;
     try {
-      result = await spider.crawl();           // step-0 collect()
+      result = await fix.spider.crawl();           // step-0 collect()
     } finally {
       restore();
       api.transition = originalTransition;
@@ -805,25 +784,20 @@ describe('step-session collect() — transition error classification', () => {
       `warning should include the underlying error message (got: ${warning})`);
 
     // The step writ stays open — the transition call never succeeded.
-    const observedStep = await clerk.show(step.id);
+    const observedStep = await fix.clerk.show(step.id);
     assert.equal(observedStep.phase, 'open',
       'step writ should remain open because transition never succeeded');
 
     // (c) yields still include the observed step writ status.
-    const rigs = await rigsBook(s).find({ where: [['writId', '=', mandate.id]] });
-    const stepEngine = rigs[0]!.engines.find((e) => e.id === 'step-0');
-    assert.ok(stepEngine, 'step-0 engine must exist in the rig');
-    const stepTail = stepEngine!.attempts?.[stepEngine!.attempts.length - 1];
-    const stepYields = stepTail?.yields as Record<string, unknown> | undefined;
-    assert.ok(stepYields, 'step-0 engine should have yields recorded');
-    assert.equal(stepYields!.stepStatus, 'open',
+    const { engine, yields } = await readStepYields(mandate.id);
+    assert.equal(yields.stepStatus, 'open',
       'yields should reflect the observed (unchanged) step writ status');
-    assert.equal(stepYields!.stepId, step.id,
+    assert.equal(yields.stepId, step.id,
       'yields should reference the step writ id');
 
     // (d) the engine is completed from Spider's perspective — the bookkeeping
     // warning is surfaced in logs, but does not block rig progress.
-    assert.equal(stepEngine!.status, 'completed',
+    assert.equal(engine.status, 'completed',
       'step-0 engine should be marked completed even when the transition log-warned');
   });
 });
