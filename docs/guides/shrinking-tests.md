@@ -99,7 +99,7 @@ LOC counts from `find packages/<pkg> -name '*.test.*' | xargs wc -l` on
 
 | # | Package | Status | Test lines | Date | Notes |
 |--:|---|---|---|---|---|
-|  1 | `plugins/spider` | pending | 18,203 | — | **Headline target.** 20 files, heavy fixture-setup boilerplate, tabular tests across rig × writ × engine state matrix. |
+|  1 | `plugins/spider` | in-progress | 17,103 | 2026-05-03 | `static/spider-ui.test.ts` shrunk 2,101→1,001 LOC (-52%) via 3 helpers (`has`/`lacks`/`fnBody`) + dropped redundant assertion messages. 19 files left. |
 |  2 | `plugins/clerk` | pending | 9,343 | — | 8 files; large monolith `clerk.test.ts` (311 tests). |
 |  3 | `plugins/clockworks` | pending | 7,945 | — | 14 files, more spread out. Less per-file fixture concentration. |
 |  4 | `plugins/astrolabe` | pending | 6,614 | — | 10 files. |
