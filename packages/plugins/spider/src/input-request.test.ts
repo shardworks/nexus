@@ -112,15 +112,63 @@ async function createRequest(
   return doc;
 }
 
+// Common request shapes — factory helpers that pre-fill all answers so
+// transitions to `completed` succeed.
+const ALL_ANSWERS = { choice1: { selected: 'a' }, bool1: true, text1: 'hi' } as const;
+const completedReq = (extra: Partial<InputRequestDoc> = {}) =>
+  ({ status: 'completed' as const, answers: ALL_ANSWERS, ...extra });
+const rejectedReq = (extra: Partial<InputRequestDoc> = {}) =>
+  ({ status: 'rejected' as const, ...extra });
+
+/**
+ * Install per-test stacks fixture. Returns a getter object so that test
+ * bodies can read `ctx.stacks` after `beforeEach` has populated it.
+ *
+ * Must be called from inside a `describe` callback so that the
+ * `beforeEach` / `afterEach` hooks are bound to that describe's scope.
+ */
+function setupStacksCtx(): { stacks: StacksApi } {
+  const ctx = {} as { stacks: StacksApi };
+  beforeEach(() => { ctx.stacks = buildFixture().stacks; });
+  afterEach(() => clearGuild());
+  return ctx;
+}
+
+/**
+ * Emit the standard `has name "X"` + `does not have callableBy set`
+ * tests for an input-request CLI tool. Generates two `it` blocks per
+ * call so test counts are preserved exactly when this replaces the
+ * inline metadata tests in each tool's describe.
+ */
+function declareToolMetadataTests(
+  tool: { name: string },
+  expectedName: string,
+): void {
+  it(`has name "${expectedName}"`, () => {
+    assert.equal(tool.name, expectedName);
+  });
+  it('does not have callableBy set', () => {
+    assert.ok(
+      !('callableBy' in tool) || (tool as Record<string, unknown>).callableBy === undefined,
+    );
+  });
+}
+
+/** assert.rejects shorthand for the recurring "throws if request not found" pattern. */
+async function expectNotFound(
+  tool: { handler: (args: { id: string; [k: string]: unknown }) => Promise<unknown> },
+  extra: Record<string, unknown> = {},
+): Promise<void> {
+  await assert.rejects(
+    () => tool.handler({ id: 'ir-nonexistent', ...extra }),
+    /not found/i,
+  );
+}
+
 // ── patron-input block type ────────────────────────────────────────────
 
 describe('patron-input block type', () => {
-  let stacks: StacksApi;
-
-  beforeEach(() => {
-    ({ stacks } = buildFixture());
-  });
-  afterEach(() => clearGuild());
+  const ctx = setupStacksCtx();
 
   it('has id "patron-input"', () => {
     assert.equal(patronInputBlockType.id, 'patron-input');
@@ -131,28 +179,25 @@ describe('patron-input block type', () => {
   });
 
   it('pending request → { status: "pending" }', async () => {
-    const req = await createRequest(stacks);
+    const req = await createRequest(ctx.stacks);
     const result = await patronInputBlockType.check({ requestId: req.id });
     assert.deepEqual(result, { status: 'pending' });
   });
 
   it('completed request → { status: "cleared" }', async () => {
-    const req = await createRequest(stacks, { status: 'completed', answers: {} });
+    const req = await createRequest(ctx.stacks, { status: 'completed', answers: {} });
     const result = await patronInputBlockType.check({ requestId: req.id });
     assert.deepEqual(result, { status: 'cleared' });
   });
 
   it('rejected request with reason → { status: "failed", reason: "<the reason>" }', async () => {
-    const req = await createRequest(stacks, {
-      status: 'rejected',
-      rejectionReason: 'not applicable',
-    });
+    const req = await createRequest(ctx.stacks, rejectedReq({ rejectionReason: 'not applicable' }));
     const result = await patronInputBlockType.check({ requestId: req.id });
     assert.deepEqual(result, { status: 'failed', reason: 'not applicable' });
   });
 
   it('rejected request without reason → { status: "failed", reason: "Request rejected by patron" }', async () => {
-    const req = await createRequest(stacks, { status: 'rejected' });
+    const req = await createRequest(ctx.stacks, rejectedReq());
     const result = await patronInputBlockType.check({ requestId: req.id });
     assert.deepEqual(result, { status: 'failed', reason: 'Request rejected by patron' });
   });
@@ -172,33 +217,21 @@ describe('patron-input block type', () => {
 // ── input-request-list tool ────────────────────────────────────────────
 
 describe('input-request-list tool', () => {
-  let stacks: StacksApi;
-
-  beforeEach(() => {
-    ({ stacks } = buildFixture());
-  });
-  afterEach(() => clearGuild());
-
-  it('has name "input-request-list"', () => {
-    assert.equal(inputRequestListTool.name, 'input-request-list');
-  });
-
-  it('does not have callableBy set', () => {
-    assert.ok(!('callableBy' in inputRequestListTool) || (inputRequestListTool as Record<string,unknown>).callableBy === undefined);
-  });
+  const ctx = setupStacksCtx();
+  declareToolMetadataTests(inputRequestListTool, 'input-request-list');
 
   it('default (no params) returns only pending requests', async () => {
-    await createRequest(stacks, { status: 'pending' });
-    await createRequest(stacks, { status: 'completed', answers: {} });
-    await createRequest(stacks, { status: 'rejected' });
+    await createRequest(ctx.stacks, { status: 'pending' });
+    await createRequest(ctx.stacks, { status: 'completed', answers: {} });
+    await createRequest(ctx.stacks, rejectedReq());
 
     const results = await inputRequestListTool.handler({}) as InputRequestDoc[];
     assert.ok(results.every((r) => r.status === 'pending'));
   });
 
   it('--status completed returns only completed requests', async () => {
-    await createRequest(stacks, { status: 'pending' });
-    await createRequest(stacks, { status: 'completed', answers: {} });
+    await createRequest(ctx.stacks, { status: 'pending' });
+    await createRequest(ctx.stacks, { status: 'completed', answers: {} });
 
     const results = await inputRequestListTool.handler({ status: 'completed' }) as InputRequestDoc[];
     assert.ok(results.every((r) => r.status === 'completed'));
@@ -214,85 +247,66 @@ describe('input-request-list tool', () => {
 // ── input-request-show tool ────────────────────────────────────────────
 
 describe('input-request-show tool', () => {
-  let stacks: StacksApi;
-
-  beforeEach(() => {
-    ({ stacks } = buildFixture());
-  });
-  afterEach(() => clearGuild());
-
-  it('has name "input-request-show"', () => {
-    assert.equal(inputRequestShowTool.name, 'input-request-show');
-  });
-
-  it('does not have callableBy set', () => {
-    assert.ok(!('callableBy' in inputRequestShowTool) || (inputRequestShowTool as Record<string,unknown>).callableBy === undefined);
-  });
+  const ctx = setupStacksCtx();
+  declareToolMetadataTests(inputRequestShowTool, 'input-request-show');
 
   it('returns the document for a known id', async () => {
-    const req = await createRequest(stacks);
+    const req = await createRequest(ctx.stacks);
     const result = await inputRequestShowTool.handler({ id: req.id }) as InputRequestDoc;
     assert.equal(result.id, req.id);
     assert.equal(result.status, 'pending');
   });
 
   it('throws for unknown id', async () => {
-    await assert.rejects(
-      () => inputRequestShowTool.handler({ id: 'ir-nonexistent' }),
-      /not found/i,
-    );
+    await expectNotFound(inputRequestShowTool);
   });
 });
 
 // ── input-request-answer tool ──────────────────────────────────────────
 
 describe('input-request-answer tool', () => {
-  let stacks: StacksApi;
+  const ctx = setupStacksCtx();
+  declareToolMetadataTests(inputRequestAnswerTool, 'input-request-answer');
 
-  beforeEach(() => {
-    ({ stacks } = buildFixture());
-  });
-  afterEach(() => clearGuild());
-
-  it('has name "input-request-answer"', () => {
-    assert.equal(inputRequestAnswerTool.name, 'input-request-answer');
-  });
-
-  it('does not have callableBy set', () => {
-    assert.ok(!('callableBy' in inputRequestAnswerTool) || (inputRequestAnswerTool as Record<string,unknown>).callableBy === undefined);
-  });
+  /** Shorthand: post a default request and assert that the given answer args reject with `pattern`. */
+  async function expectAnswerRejects(
+    args: Record<string, unknown>,
+    pattern: RegExp,
+    overrides: Partial<InputRequestDoc> = {},
+  ): Promise<void> {
+    const req = await createRequest(ctx.stacks, overrides);
+    await assert.rejects(
+      () => inputRequestAnswerTool.handler({ id: req.id, ...args }),
+      pattern,
+    );
+  }
 
   it('answers a choice question with --select validKey', async () => {
-    const req = await createRequest(stacks);
+    const req = await createRequest(ctx.stacks);
     const result = await inputRequestAnswerTool.handler({
-      id: req.id,
-      question: 'choice1',
-      select: 'a',
+      id: req.id, question: 'choice1', select: 'a',
     }) as InputRequestDoc;
     assert.deepEqual(result.answers['choice1'], { selected: 'a' });
   });
 
   it('overwrites a previous answer while pending', async () => {
-    const req = await createRequest(stacks);
+    const req = await createRequest(ctx.stacks);
     await inputRequestAnswerTool.handler({ id: req.id, question: 'choice1', select: 'a' });
     const result = await inputRequestAnswerTool.handler({
-      id: req.id,
-      question: 'choice1',
-      select: 'b',
+      id: req.id, question: 'choice1', select: 'b',
     }) as InputRequestDoc;
     assert.deepEqual(result.answers['choice1'], { selected: 'b' });
   });
 
   it('--select invalidKey throws', async () => {
-    const req = await createRequest(stacks);
-    await assert.rejects(
-      () => inputRequestAnswerTool.handler({ id: req.id, question: 'choice1', select: 'zzz' }),
+    await expectAnswerRejects(
+      { question: 'choice1', select: 'zzz' },
       /not a valid option/i,
     );
   });
 
   it('answers a choice question with --custom when allowCustom: true', async () => {
-    const req = await createRequest(stacks, {
+    const req = await createRequest(ctx.stacks, {
       questions: {
         customChoice: {
           type: 'choice',
@@ -303,125 +317,98 @@ describe('input-request-answer tool', () => {
       },
     });
     const result = await inputRequestAnswerTool.handler({
-      id: req.id,
-      question: 'customChoice',
-      custom: 'my custom text',
+      id: req.id, question: 'customChoice', custom: 'my custom text',
     }) as InputRequestDoc;
     assert.deepEqual(result.answers['customChoice'], { custom: 'my custom text' });
   });
 
   it('--custom when allowCustom: false throws', async () => {
-    const req = await createRequest(stacks);
-    await assert.rejects(
-      () => inputRequestAnswerTool.handler({ id: req.id, question: 'choice1', custom: 'foo' }),
+    await expectAnswerRejects(
+      { question: 'choice1', custom: 'foo' },
       /Custom answers not allowed/i,
     );
   });
 
   it('both --select and --custom throws', async () => {
-    const req = await createRequest(stacks);
-    await assert.rejects(
-      () => inputRequestAnswerTool.handler({ id: req.id, question: 'choice1', select: 'a', custom: 'b' }),
+    await expectAnswerRejects(
+      { question: 'choice1', select: 'a', custom: 'b' },
       /exactly one of/i,
     );
   });
 
   it('neither --select, --custom, nor --value for choice throws', async () => {
-    const req = await createRequest(stacks);
-    await assert.rejects(
-      () => inputRequestAnswerTool.handler({ id: req.id, question: 'choice1' }),
+    await expectAnswerRejects(
+      { question: 'choice1' },
       /exactly one of/i,
     );
   });
 
   it('--select for a boolean question throws', async () => {
-    const req = await createRequest(stacks);
-    await assert.rejects(
-      () => inputRequestAnswerTool.handler({ id: req.id, question: 'bool1', select: 'a' }),
+    await expectAnswerRejects(
+      { question: 'bool1', select: 'a' },
       /Use --value for boolean questions/i,
     );
   });
 
   it('--value true for a boolean question → answer is true', async () => {
-    const req = await createRequest(stacks);
+    const req = await createRequest(ctx.stacks);
     const result = await inputRequestAnswerTool.handler({
-      id: req.id,
-      question: 'bool1',
-      value: 'true',
+      id: req.id, question: 'bool1', value: 'true',
     }) as InputRequestDoc;
     assert.equal(result.answers['bool1'], true);
   });
 
   it('--value text for a text question → answer is the text', async () => {
-    const req = await createRequest(stacks);
+    const req = await createRequest(ctx.stacks);
     const result = await inputRequestAnswerTool.handler({
-      id: req.id,
-      question: 'text1',
-      value: 'hello world',
+      id: req.id, question: 'text1', value: 'hello world',
     }) as InputRequestDoc;
     assert.equal(result.answers['text1'], 'hello world');
   });
 
   it('missing --value for boolean question throws', async () => {
-    const req = await createRequest(stacks);
-    await assert.rejects(
-      () => inputRequestAnswerTool.handler({ id: req.id, question: 'bool1' }),
+    await expectAnswerRejects(
+      { question: 'bool1' },
       /Provide --value for boolean questions/i,
     );
   });
 
   it('answering a non-existent question key throws', async () => {
-    const req = await createRequest(stacks);
-    await assert.rejects(
-      () => inputRequestAnswerTool.handler({ id: req.id, question: 'nonExistent', value: 'x' }),
+    await expectAnswerRejects(
+      { question: 'nonExistent', value: 'x' },
       /not found in request/i,
     );
   });
 
   it('answering on a completed request throws', async () => {
-    const req = await createRequest(stacks, { status: 'completed', answers: {} });
-    await assert.rejects(
-      () => inputRequestAnswerTool.handler({ id: req.id, question: 'text1', value: 'x' }),
+    await expectAnswerRejects(
+      { question: 'text1', value: 'x' },
       /request status is "completed"/i,
+      { status: 'completed', answers: {} },
     );
   });
 
   it('answering on a rejected request throws', async () => {
-    const req = await createRequest(stacks, { status: 'rejected' });
-    await assert.rejects(
-      () => inputRequestAnswerTool.handler({ id: req.id, question: 'text1', value: 'x' }),
+    await expectAnswerRejects(
+      { question: 'text1', value: 'x' },
       /request status is "rejected"/i,
+      rejectedReq(),
     );
   });
 
   it('throws if request not found', async () => {
-    await assert.rejects(
-      () => inputRequestAnswerTool.handler({ id: 'ir-nonexistent', question: 'text1', value: 'x' }),
-      /not found/i,
-    );
+    await expectNotFound(inputRequestAnswerTool, { question: 'text1', value: 'x' });
   });
 });
 
 // ── input-request-complete tool ────────────────────────────────────────
 
 describe('input-request-complete tool', () => {
-  let stacks: StacksApi;
-
-  beforeEach(() => {
-    ({ stacks } = buildFixture());
-  });
-  afterEach(() => clearGuild());
-
-  it('has name "input-request-complete"', () => {
-    assert.equal(inputRequestCompleteTool.name, 'input-request-complete');
-  });
-
-  it('does not have callableBy set', () => {
-    assert.ok(!('callableBy' in inputRequestCompleteTool) || (inputRequestCompleteTool as Record<string,unknown>).callableBy === undefined);
-  });
+  const ctx = setupStacksCtx();
+  declareToolMetadataTests(inputRequestCompleteTool, 'input-request-complete');
 
   it('all questions answered → status becomes completed', async () => {
-    const req = await createRequest(stacks, {
+    const req = await createRequest(ctx.stacks, {
       answers: { choice1: { selected: 'a' }, bool1: true, text1: 'hello' },
     });
     const result = await inputRequestCompleteTool.handler({ id: req.id }) as InputRequestDoc;
@@ -429,7 +416,7 @@ describe('input-request-complete tool', () => {
   });
 
   it('one question unanswered → throws listing the key', async () => {
-    const req = await createRequest(stacks, {
+    const req = await createRequest(ctx.stacks, {
       answers: { choice1: { selected: 'a' }, bool1: true },
     });
     await assert.rejects(
@@ -439,7 +426,7 @@ describe('input-request-complete tool', () => {
   });
 
   it('multiple questions unanswered → throws listing all keys', async () => {
-    const req = await createRequest(stacks, { answers: {} });
+    const req = await createRequest(ctx.stacks, { answers: {} });
     await assert.rejects(
       () => inputRequestCompleteTool.handler({ id: req.id }),
       /unanswered questions:/i,
@@ -447,10 +434,7 @@ describe('input-request-complete tool', () => {
   });
 
   it('completing an already-completed request throws', async () => {
-    const req = await createRequest(stacks, {
-      status: 'completed',
-      answers: { choice1: { selected: 'a' }, bool1: true, text1: 'hi' },
-    });
+    const req = await createRequest(ctx.stacks, completedReq());
     await assert.rejects(
       () => inputRequestCompleteTool.handler({ id: req.id }),
       /request status is "completed"/i,
@@ -458,7 +442,7 @@ describe('input-request-complete tool', () => {
   });
 
   it('completing a rejected request throws', async () => {
-    const req = await createRequest(stacks, { status: 'rejected' });
+    const req = await createRequest(ctx.stacks, rejectedReq());
     await assert.rejects(
       () => inputRequestCompleteTool.handler({ id: req.id }),
       /request status is "rejected"/i,
@@ -466,59 +450,40 @@ describe('input-request-complete tool', () => {
   });
 
   it('throws if request not found', async () => {
-    await assert.rejects(
-      () => inputRequestCompleteTool.handler({ id: 'ir-nonexistent' }),
-      /not found/i,
-    );
+    await expectNotFound(inputRequestCompleteTool);
   });
 });
 
 // ── input-request-reject tool ──────────────────────────────────────────
 
 describe('input-request-reject tool', () => {
-  let stacks: StacksApi;
-
-  beforeEach(() => {
-    ({ stacks } = buildFixture());
-  });
-  afterEach(() => clearGuild());
-
-  it('has name "input-request-reject"', () => {
-    assert.equal(inputRequestRejectTool.name, 'input-request-reject');
-  });
-
-  it('does not have callableBy set', () => {
-    assert.ok(!('callableBy' in inputRequestRejectTool) || (inputRequestRejectTool as Record<string,unknown>).callableBy === undefined);
-  });
+  const ctx = setupStacksCtx();
+  declareToolMetadataTests(inputRequestRejectTool, 'input-request-reject');
 
   it('reject with reason → status rejected, rejectionReason set', async () => {
-    const req = await createRequest(stacks);
+    const req = await createRequest(ctx.stacks);
     const result = await inputRequestRejectTool.handler({
-      id: req.id,
-      reason: 'not applicable',
+      id: req.id, reason: 'not applicable',
     }) as InputRequestDoc;
     assert.equal(result.status, 'rejected');
     assert.equal(result.rejectionReason, 'not applicable');
   });
 
   it('reject without reason → status rejected, no rejectionReason', async () => {
-    const req = await createRequest(stacks);
+    const req = await createRequest(ctx.stacks);
     const result = await inputRequestRejectTool.handler({ id: req.id }) as InputRequestDoc;
     assert.equal(result.status, 'rejected');
     assert.ok(!result.rejectionReason);
   });
 
   it('reject with partial answers succeeds', async () => {
-    const req = await createRequest(stacks, { answers: { text1: 'partial' } });
+    const req = await createRequest(ctx.stacks, { answers: { text1: 'partial' } });
     const result = await inputRequestRejectTool.handler({ id: req.id }) as InputRequestDoc;
     assert.equal(result.status, 'rejected');
   });
 
   it('reject a completed request throws', async () => {
-    const req = await createRequest(stacks, {
-      status: 'completed',
-      answers: { choice1: { selected: 'a' }, bool1: true, text1: 'hi' },
-    });
+    const req = await createRequest(ctx.stacks, completedReq());
     await assert.rejects(
       () => inputRequestRejectTool.handler({ id: req.id }),
       /request status is "completed"/i,
@@ -526,33 +491,18 @@ describe('input-request-reject tool', () => {
   });
 
   it('throws if request not found', async () => {
-    await assert.rejects(
-      () => inputRequestRejectTool.handler({ id: 'ir-nonexistent' }),
-      /not found/i,
-    );
+    await expectNotFound(inputRequestRejectTool);
   });
 });
 
 // ── input-request-export tool ──────────────────────────────────────────
 
 describe('input-request-export tool', () => {
-  let stacks: StacksApi;
-
-  beforeEach(() => {
-    ({ stacks } = buildFixture());
-  });
-  afterEach(() => clearGuild());
-
-  it('has name "input-request-export"', () => {
-    assert.equal(inputRequestExportTool.name, 'input-request-export');
-  });
-
-  it('does not have callableBy set', () => {
-    assert.ok(!('callableBy' in inputRequestExportTool) || (inputRequestExportTool as Record<string,unknown>).callableBy === undefined);
-  });
+  const ctx = setupStacksCtx();
+  declareToolMetadataTests(inputRequestExportTool, 'input-request-export');
 
   it('exports YAML containing id, questions, answers, message', async () => {
-    const req = await createRequest(stacks, {
+    const req = await createRequest(ctx.stacks, {
       message: 'Please answer these questions',
       answers: { text1: 'hello' },
     });
@@ -565,46 +515,33 @@ describe('input-request-export tool', () => {
   });
 
   it('throws if request not found', async () => {
-    await assert.rejects(
-      () => inputRequestExportTool.handler({ id: 'ir-nonexistent' }),
-      /not found/i,
-    );
+    await expectNotFound(inputRequestExportTool);
   });
 });
 
 // ── input-request-import tool ──────────────────────────────────────────
 
 describe('input-request-import tool', () => {
-  let stacks: StacksApi;
+  const ctx = setupStacksCtx();
+  declareToolMetadataTests(inputRequestImportTool, 'input-request-import');
+
   let tmpDir: string;
+  beforeEach(async () => { tmpDir = await mkdtemp(join(tmpdir(), 'ir-test-')); });
+  afterEach(async () => { await rm(tmpDir, { recursive: true, force: true }); });
 
-  beforeEach(async () => {
-    ({ stacks } = buildFixture());
-    tmpDir = await mkdtemp(join(tmpdir(), 'ir-test-'));
-  });
-  afterEach(async () => {
-    clearGuild();
-    await rm(tmpDir, { recursive: true, force: true });
-  });
-
-  it('has name "input-request-import"', () => {
-    assert.equal(inputRequestImportTool.name, 'input-request-import');
-  });
-
-  it('does not have callableBy set', () => {
-    assert.ok(!('callableBy' in inputRequestImportTool) || (inputRequestImportTool as Record<string,unknown>).callableBy === undefined);
-  });
+  /** Write a YAML payload to a fresh file in tmpDir, returning its path. */
+  async function writeYaml(name: string, payload: unknown): Promise<string> {
+    const path = join(tmpDir, name);
+    await writeFile(path, stringify(payload));
+    return path;
+  }
 
   it('imports answers from a YAML file', async () => {
-    const req = await createRequest(stacks);
-    const filePath = join(tmpDir, 'answers.yaml');
-    await writeFile(filePath, stringify({
+    const req = await createRequest(ctx.stacks);
+    const filePath = await writeYaml('answers.yaml', {
       id: req.id,
-      answers: {
-        text1: 'imported answer',
-        bool1: true,
-      },
-    }));
+      answers: { text1: 'imported answer', bool1: true },
+    });
 
     const result = await inputRequestImportTool.handler({ file: filePath }) as InputRequestDoc;
     assert.equal(result.answers['text1'], 'imported answer');
@@ -612,19 +549,16 @@ describe('input-request-import tool', () => {
   });
 
   it('export → edit answers → import → answers updated', async () => {
-    const req = await createRequest(stacks, { answers: { text1: 'original' } });
+    const req = await createRequest(ctx.stacks, { answers: { text1: 'original' } });
 
-    // Export
+    // Export captures the original
     const exportResult = await inputRequestExportTool.handler({ id: req.id }) as { yaml: string };
 
-    // Modify answers in the export object
-    const exported = {
+    // Modify answers in the export object and re-import
+    const filePath = await writeYaml('modified.yaml', {
       id: req.id,
       answers: { text1: 'updated answer', bool1: 'false' },
-    };
-    const filePath = join(tmpDir, 'modified.yaml');
-    await writeFile(filePath, stringify(exported));
-
+    });
     const result = await inputRequestImportTool.handler({ file: filePath }) as InputRequestDoc;
     assert.equal(result.answers['text1'], 'updated answer');
     assert.equal(result.answers['bool1'], false);
@@ -634,12 +568,11 @@ describe('input-request-import tool', () => {
   });
 
   it('import with invalid choice key throws', async () => {
-    const req = await createRequest(stacks);
-    const filePath = join(tmpDir, 'bad.yaml');
-    await writeFile(filePath, stringify({
+    const req = await createRequest(ctx.stacks);
+    const filePath = await writeYaml('bad.yaml', {
       id: req.id,
       answers: { choice1: { selected: 'invalid-key' } },
-    }));
+    });
 
     await assert.rejects(
       () => inputRequestImportTool.handler({ file: filePath }),
@@ -648,9 +581,8 @@ describe('input-request-import tool', () => {
   });
 
   it('import targeting a completed request throws', async () => {
-    const req = await createRequest(stacks, { status: 'completed', answers: {} });
-    const filePath = join(tmpDir, 'completed.yaml');
-    await writeFile(filePath, stringify({ id: req.id, answers: { text1: 'hi' } }));
+    const req = await createRequest(ctx.stacks, { status: 'completed', answers: {} });
+    const filePath = await writeYaml('completed.yaml', { id: req.id, answers: { text1: 'hi' } });
 
     await assert.rejects(
       () => inputRequestImportTool.handler({ file: filePath }),
@@ -659,8 +591,7 @@ describe('input-request-import tool', () => {
   });
 
   it('import with missing id in YAML throws', async () => {
-    const filePath = join(tmpDir, 'noid.yaml');
-    await writeFile(filePath, stringify({ answers: { text1: 'hi' } }));
+    const filePath = await writeYaml('noid.yaml', { answers: { text1: 'hi' } });
 
     await assert.rejects(
       () => inputRequestImportTool.handler({ file: filePath }),
@@ -669,12 +600,11 @@ describe('input-request-import tool', () => {
   });
 
   it('import with unknown question key throws', async () => {
-    const req = await createRequest(stacks);
-    const filePath = join(tmpDir, 'unknownq.yaml');
-    await writeFile(filePath, stringify({
+    const req = await createRequest(ctx.stacks);
+    const filePath = await writeYaml('unknownq.yaml', {
       id: req.id,
       answers: { unknownQuestion: 'value' },
-    }));
+    });
 
     await assert.rejects(
       () => inputRequestImportTool.handler({ file: filePath }),
