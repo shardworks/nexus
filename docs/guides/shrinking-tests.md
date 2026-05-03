@@ -100,7 +100,7 @@ LOC counts from `find packages/<pkg> -name '*.test.*' | xargs wc -l` on
 | # | Package | Status | Test lines | Date | Notes |
 |--:|---|---|---|---|---|
 |  1 | `plugins/spider` | in-progress | 14,590 | 2026-05-03 | 10 of 20 files shrunk: `static/spider-ui.test.ts` 2,101→1,001 (-52%); `spider-blocking.test.ts` 1,908→1,429 (-25%); `spider-core.test.ts` 1,756→1,341 (-24%); `spider-template-config.test.ts` 1,546→1,102 (-29%); `spider-cancellation.test.ts` 1,514→1,267 (-16%); `spider-when-graft.test.ts` 1,451→1,129 (-22%); `spider-yields.test.ts` 1,444→1,001 (-31%); `engine-retry.test.ts` 942→875 (-7%, fixture-bound); `step-pipeline.test.ts` 851→825 (-3%, fixture-bound); `input-request.test.ts` 707→637 (-10%). Combined: -3,613 LOC. 10 files left. |
-|  2 | `plugins/clerk` | pending | 9,343 | — | 8 files; large monolith `clerk.test.ts` (311 tests). |
+|  2 | `plugins/clerk` | in-progress | 8,865 | 2026-05-03 | 1 of 8 files shrunk: `clerk.test.ts` 4,787→4,309 (-10%). 7 files left. `pages/writs/*.test.js` (~30-44% non-test mirror logic) deferred — needs production-side script extraction first. |
 |  3 | `plugins/clockworks` | pending | 7,945 | — | 14 files, more spread out. Less per-file fixture concentration. |
 |  4 | `plugins/astrolabe` | pending | 6,614 | — | 10 files. |
 |  5 | `plugins/animator` | pending | 6,273 | — | 10 files. |

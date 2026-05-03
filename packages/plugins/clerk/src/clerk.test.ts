@@ -258,6 +258,78 @@ async function setup(options: SetupOptions = {}) {
   await setupCore(options);
 }
 
+// ── Concise test helpers ─────────────────────────────────────────────
+
+/** Setup with one mandate-like extra writ type registered through a dedicated apparatus. */
+async function setupWithType(typeName: string, options: SetupOptions = {}): Promise<void> {
+  await setup({
+    ...options,
+    extraApparatuses: [
+      makeWritTypeApparatus([mandateLikeWritType(typeName)], { id: `${typeName}-plugin` }),
+      ...(options.extraApparatuses ?? []),
+    ],
+  });
+}
+
+/** Resolve the clerk writs book through stacks (untyped row shape for migration tests). */
+function rawWritsBook(): ReturnType<StacksApi['book']> {
+  return guild().apparatus<StacksApi>('stacks')
+    .book<Record<string, unknown> & { id: string }>('clerk', 'writs');
+}
+
+/** Resolve the clerk links book through stacks. */
+function linksBookOf(): ReturnType<StacksApi['book']> {
+  return guild().apparatus<StacksApi>('stacks').book<WritLinkDoc>('clerk', 'links');
+}
+
+/** Capture console.warn output during fn() and return the lines. Restores in finally. */
+async function captureWarnings(fn: () => Promise<void>): Promise<string[]> {
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+  try { await fn(); } finally { console.warn = original; }
+  return warnings;
+}
+
+/** Start a fresh Clerk plugin against the same backend — used by migration idempotency tests. */
+async function restartClerk(): Promise<void> {
+  const clerk2 = createClerk();
+  const { ctx } = buildClerkCtx([]);
+  const apparatus = (clerk2 as { apparatus: { start: (ctx: unknown) => void } }).apparatus;
+  await apparatus.start(ctx);
+}
+
+/** Read the writs page HTML. Path resolved from this file's location. */
+function readWritsHtml(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return readFileSync(join(here, '..', 'pages', 'writs', 'index.html'), 'utf-8');
+}
+
+/** Build a `LoadedKit` carrying linkKinds — collapses a recurring 7-line literal. */
+type KindEntry = { id: string; description?: string };
+function kindKit(opts: { pluginId: string; kinds: readonly unknown[]; pkg?: string }): LoadedKit {
+  return {
+    packageName: opts.pkg ?? `@test/${opts.pluginId}`,
+    id: opts.pluginId,
+    version: '0.0.0',
+    kit: { linkKinds: opts.kinds as KindEntry[] },
+  };
+}
+
+/** Build a `LoadedApparatus` carrying supportKit.linkKinds — collapses a recurring 11-line literal. */
+function kindApparatus(opts: { pluginId: string; kinds: readonly KindEntry[]; pkg?: string }): LoadedApparatus {
+  return {
+    packageName: opts.pkg ?? `@test/${opts.pluginId}`,
+    id: opts.pluginId,
+    version: '0.0.0',
+    apparatus: {
+      requires: [],
+      start: () => {},
+      supportKit: { linkKinds: opts.kinds as KindEntry[] },
+    },
+  };
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe('Clerk', () => {
@@ -319,32 +391,18 @@ describe('Clerk', () => {
     });
 
     it('rejects an unknown writ type', async () => {
-      await assert.rejects(
-        () => postMandate({ title: 'Test', body: 'Body', type: 'unknown-type' }),
-        /Unknown writ type/,
-      );
+      await assert.rejects(() => postMandate({ title: 'Test', body: 'Body', type: 'unknown-type' }), /Unknown writ type/);
     });
 
     it('accepts a type contributed via registerWritType', async () => {
-      await setup({
-        extraApparatuses: [
-          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
-        ],
-      });
+      await setupWithType('errand');
       const writ = await postMandate({ title: 'Run errand', body: 'Do it', type: 'errand' });
       assert.equal(writ.type, 'errand');
     });
 
     it('rejects a type that has not been registered', async () => {
-      await setup({
-        extraApparatuses: [
-          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
-        ],
-      });
-      await assert.rejects(
-        () => postMandate({ title: 'Test', body: 'Body', type: 'epic' }),
-        /Unknown writ type/,
-      );
+      await setupWithType('errand');
+      await assert.rejects(() => postMandate({ title: 'Test', body: 'Body', type: 'epic' }), /Unknown writ type/);
     });
 
     it('generates unique ids for each writ', async () => {
@@ -384,10 +442,7 @@ describe('Clerk', () => {
     beforeEach(async () => { await setup(); });
 
     it('throws for a non-existent writ id', async () => {
-      await assert.rejects(
-        () => clerk.show('w-doesnotexist'),
-        /not found/,
-      );
+      await assert.rejects(() => clerk.show('w-doesnotexist'), /not found/);
     });
 
     it('retrieves a writ that was just posted', async () => {
@@ -421,10 +476,7 @@ describe('Clerk', () => {
     });
 
     it('throws when no writ matches the prefix', async () => {
-      await assert.rejects(
-        () => clerk.resolveId('w-nonexistent'),
-        /No writ found matching prefix/,
-      );
+      await assert.rejects(() => clerk.resolveId('w-nonexistent'), /No writ found matching prefix/);
     });
 
     it('throws when the prefix matches multiple writs', async () => {
@@ -451,10 +503,7 @@ describe('Clerk', () => {
         createdAt: now,
         updatedAt: now,
       });
-      await assert.rejects(
-        () => clerk.resolveId('w-ambigxx'),
-        /Ambiguous prefix.*matches 2 writs/,
-      );
+      await assert.rejects(() => clerk.resolveId('w-ambigxx'), /Ambiguous prefix.*matches 2 writs/);
     });
   });
 
@@ -462,11 +511,7 @@ describe('Clerk', () => {
 
   describe('list()', () => {
     beforeEach(async () => {
-      await setup({
-        extraApparatuses: [
-          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
-        ],
-      });
+      await setupWithType('errand');
     });
 
     it('returns all writs when no filters given', async () => {
@@ -621,11 +666,7 @@ describe('Clerk', () => {
     });
 
     it('filters by type', async () => {
-      await setup({
-        extraApparatuses: [
-          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
-        ],
-      });
+      await setupWithType('errand');
       await postMandate({ title: 'Mandate', body: 'Body', type: 'mandate' });
       await postMandate({ title: 'Errand', body: 'Body', type: 'errand' });
 
@@ -928,11 +969,7 @@ describe('Clerk', () => {
 
   describe('edit()', () => {
     beforeEach(async () => {
-      await setup({
-        extraApparatuses: [
-          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
-        ],
-      });
+      await setupWithType('errand');
     });
 
     it('updates the title of a draft writ', async () => {
@@ -1019,33 +1056,21 @@ describe('Clerk', () => {
 
     it('rejects changing type on a non-draft writ', async () => {
       const writ = await postMandate({ title: 'Title', body: 'Body' }); // open
-      await assert.rejects(
-        () => clerk.edit({ id: writ.id, type: 'errand' }),
-        /Cannot change type.*phase is "open"/,
-      );
+      await assert.rejects(() => clerk.edit({ id: writ.id, type: 'errand' }), /Cannot change type.*phase is "open"/);
     });
 
     it('rejects changing codex on a non-draft writ', async () => {
       const writ = await postMandate({ title: 'Title', body: 'Body' }); // open
-      await assert.rejects(
-        () => clerk.edit({ id: writ.id, codex: 'gamma' }),
-        /Cannot change codex.*phase is "open"/,
-      );
+      await assert.rejects(() => clerk.edit({ id: writ.id, codex: 'gamma' }), /Cannot change codex.*phase is "open"/);
     });
 
     it('rejects editing a non-existent writ', async () => {
-      await assert.rejects(
-        () => clerk.edit({ id: 'w-doesnotexist', title: 'Nope' }),
-        /not found/,
-      );
+      await assert.rejects(() => clerk.edit({ id: 'w-doesnotexist', title: 'Nope' }), /not found/);
     });
 
     it('rejects an invalid writ type', async () => {
       const writ = await postMandate({ title: 'Title', body: 'Body', draft: true });
-      await assert.rejects(
-        () => clerk.edit({ id: writ.id, type: 'nonexistent' }),
-        /Unknown writ type/,
-      );
+      await assert.rejects(() => clerk.edit({ id: writ.id, type: 'nonexistent' }), /Unknown writ type/);
     });
 
     it('persists edits so show() returns updated values', async () => {
@@ -1080,19 +1105,13 @@ describe('Clerk', () => {
 
     it('throws when publishing a writ that is already open', async () => {
       const writ = await postMandate({ title: 'Already open', body: 'Body' });
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'open'),
-        /Cannot transition/,
-      );
+      await assert.rejects(() => clerk.transition(writ.id, 'open'), /Cannot transition/);
     });
 
     it('throws when publishing a cancelled writ', async () => {
       const writ = await postMandate({ title: 'Cancelled', body: 'Body', draft: true });
       await clerk.transition(writ.id, 'cancelled');
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'open'),
-        /Cannot transition/,
-      );
+      await assert.rejects(() => clerk.transition(writ.id, 'open'), /Cannot transition/);
     });
   });
 
@@ -1120,10 +1139,7 @@ describe('Clerk', () => {
       const writ = await postMandate({ title: 'Cancelled', body: 'Body' });
       await clerk.transition(writ.id, 'cancelled');
 
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'completed'),
-        /Cannot transition/,
-      );
+      await assert.rejects(() => clerk.transition(writ.id, 'completed'), /Cannot transition/);
     });
   });
 
@@ -1150,20 +1166,14 @@ describe('Clerk', () => {
     it('throws when failing a new writ', async () => {
       const writ = await postMandate({ title: 'Not open', body: 'Body', draft: true });
 
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'failed'),
-        /Cannot transition/,
-      );
+      await assert.rejects(() => clerk.transition(writ.id, 'failed'), /Cannot transition/);
     });
 
     it('throws when failing a completed writ', async () => {
       const writ = await postMandate({ title: 'Already done', body: 'Body' });
       await clerk.transition(writ.id, 'completed', { resolution: 'Done' });
 
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'failed'),
-        /Cannot transition/,
-      );
+      await assert.rejects(() => clerk.transition(writ.id, 'failed'), /Cannot transition/);
     });
   });
 
@@ -1198,30 +1208,21 @@ describe('Clerk', () => {
       const writ = await postMandate({ title: 'Done', body: 'Body' });
       await clerk.transition(writ.id, 'completed', { resolution: 'Done' });
 
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'cancelled'),
-        /Cannot transition/,
-      );
+      await assert.rejects(() => clerk.transition(writ.id, 'cancelled'), /Cannot transition/);
     });
 
     it('throws when cancelling a failed writ', async () => {
       const writ = await postMandate({ title: 'Failed', body: 'Body' });
       await clerk.transition(writ.id, 'failed', { resolution: 'Broke' });
 
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'cancelled'),
-        /Cannot transition/,
-      );
+      await assert.rejects(() => clerk.transition(writ.id, 'cancelled'), /Cannot transition/);
     });
 
     it('throws when cancelling an already-cancelled writ', async () => {
       const writ = await postMandate({ title: 'Cancelled twice', body: 'Body' });
       await clerk.transition(writ.id, 'cancelled');
 
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'cancelled'),
-        /Cannot transition/,
-      );
+      await assert.rejects(() => clerk.transition(writ.id, 'cancelled'), /Cannot transition/);
     });
   });
 
@@ -1248,37 +1249,25 @@ describe('Clerk', () => {
 
     it('throws when transitioning new → stuck', async () => {
       const writ = await postMandate({ title: 'Draft', body: 'Body', draft: true });
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'stuck'),
-        /Cannot transition/,
-      );
+      await assert.rejects(() => clerk.transition(writ.id, 'stuck'), /Cannot transition/);
     });
 
     it('throws when transitioning completed → stuck', async () => {
       const writ = await postMandate({ title: 'Done', body: 'Body' });
       await clerk.transition(writ.id, 'completed', { resolution: 'Done' });
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'stuck'),
-        /Cannot transition/,
-      );
+      await assert.rejects(() => clerk.transition(writ.id, 'stuck'), /Cannot transition/);
     });
 
     it('throws when transitioning failed → stuck', async () => {
       const writ = await postMandate({ title: 'Failed', body: 'Body' });
       await clerk.transition(writ.id, 'failed', { resolution: 'Broke' });
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'stuck'),
-        /Cannot transition/,
-      );
+      await assert.rejects(() => clerk.transition(writ.id, 'stuck'), /Cannot transition/);
     });
 
     it('throws when transitioning cancelled → stuck', async () => {
       const writ = await postMandate({ title: 'Cancelled', body: 'Body' });
       await clerk.transition(writ.id, 'cancelled');
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'stuck'),
-        /Cannot transition/,
-      );
+      await assert.rejects(() => clerk.transition(writ.id, 'stuck'), /Cannot transition/);
     });
   });
 
@@ -1315,19 +1304,13 @@ describe('Clerk', () => {
     it('throws when transitioning stuck → completed', async () => {
       const writ = await postMandate({ title: 'Cannot complete from stuck', body: 'Body' });
       await clerk.transition(writ.id, 'stuck');
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'completed'),
-        /Cannot transition/,
-      );
+      await assert.rejects(() => clerk.transition(writ.id, 'completed'), /Cannot transition/);
     });
 
     it('throws when transitioning stuck → stuck (no self-transition)', async () => {
       const writ = await postMandate({ title: 'Already stuck', body: 'Body' });
       await clerk.transition(writ.id, 'stuck');
-      await assert.rejects(
-        () => clerk.transition(writ.id, 'stuck'),
-        /Cannot transition/,
-      );
+      await assert.rejects(() => clerk.transition(writ.id, 'stuck'), /Cannot transition/);
     });
   });
 
@@ -1511,25 +1494,16 @@ describe('Clerk', () => {
     });
 
     it('throws when writId is missing', async () => {
-      await assert.rejects(
-        () => clerk.setWritStatus('', 'spider', {}),
-        /writId is required/,
-      );
+      await assert.rejects(() => clerk.setWritStatus('', 'spider', {}), /writId is required/);
     });
 
     it('throws when pluginId is missing', async () => {
       const writ = await postMandate({ title: 'No plugin', body: 'Body' });
-      await assert.rejects(
-        () => clerk.setWritStatus(writ.id, '', {}),
-        /pluginId is required/,
-      );
+      await assert.rejects(() => clerk.setWritStatus(writ.id, '', {}), /pluginId is required/);
     });
 
     it('throws when the writ does not exist', async () => {
-      await assert.rejects(
-        () => clerk.setWritStatus('w-missing-xxxx', 'spider', {}),
-        /not found/,
-      );
+      await assert.rejects(() => clerk.setWritStatus('w-missing-xxxx', 'spider', {}), /not found/);
     });
 
     it('emits a CDC update event carrying the new status sub-slot', async () => {
@@ -1645,25 +1619,16 @@ describe('Clerk', () => {
     });
 
     it('throws when writId is missing', async () => {
-      await assert.rejects(
-        () => clerk.setWritExt('', 'reckoner', {}),
-        /writId is required/,
-      );
+      await assert.rejects(() => clerk.setWritExt('', 'reckoner', {}), /writId is required/);
     });
 
     it('throws when pluginId is missing', async () => {
       const writ = await postMandate({ title: 'No plugin', body: 'Body' });
-      await assert.rejects(
-        () => clerk.setWritExt(writ.id, '', {}),
-        /pluginId is required/,
-      );
+      await assert.rejects(() => clerk.setWritExt(writ.id, '', {}), /pluginId is required/);
     });
 
     it('throws when the writ does not exist', async () => {
-      await assert.rejects(
-        () => clerk.setWritExt('w-missing-xxxx', 'reckoner', {}),
-        /not found/,
-      );
+      await assert.rejects(() => clerk.setWritExt('w-missing-xxxx', 'reckoner', {}), /not found/);
     });
 
     it('emits a CDC update event carrying the new ext sub-slot', async () => {
@@ -1738,44 +1703,29 @@ describe('Clerk', () => {
 
     it('throws for self-link', async () => {
       const w = await postMandate({ title: 'Solo', body: 'Body' });
-      await assert.rejects(
-        () => clerk.link(w.id, w.id, 'fixes'),
-        /Cannot link a writ to itself/,
-      );
+      await assert.rejects(() => clerk.link(w.id, w.id, 'fixes'), /Cannot link a writ to itself/);
     });
 
     it('throws when source writ does not exist', async () => {
       const w2 = await postMandate({ title: 'Target', body: 'Body' });
-      await assert.rejects(
-        () => clerk.link('w-ghost', w2.id, 'fixes'),
-        /not found/,
-      );
+      await assert.rejects(() => clerk.link('w-ghost', w2.id, 'fixes'), /not found/);
     });
 
     it('throws when target writ does not exist', async () => {
       const w1 = await postMandate({ title: 'Source', body: 'Body' });
-      await assert.rejects(
-        () => clerk.link(w1.id, 'w-ghost', 'fixes'),
-        /not found/,
-      );
+      await assert.rejects(() => clerk.link(w1.id, 'w-ghost', 'fixes'), /not found/);
     });
 
     it('throws for empty label string', async () => {
       const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
       const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
-      await assert.rejects(
-        () => clerk.link(w1.id, w2.id, ''),
-        /non-empty/,
-      );
+      await assert.rejects(() => clerk.link(w1.id, w2.id, ''), /non-empty/);
     });
 
     it('throws for whitespace-only label string', async () => {
       const w1 = await postMandate({ title: 'Writ 1', body: 'Body' });
       const w2 = await postMandate({ title: 'Writ 2', body: 'Body' });
-      await assert.rejects(
-        () => clerk.link(w1.id, w2.id, '   '),
-        /non-empty/,
-      );
+      await assert.rejects(() => clerk.link(w1.id, w2.id, '   '), /non-empty/);
     });
 
     it('accepts various non-empty label strings', async () => {
@@ -1991,10 +1941,7 @@ describe('Clerk', () => {
     it('rejects a whitespace-only label (canonicalizes to empty)', async () => {
       const w1 = await postMandate({ title: 'W1', body: 'B' });
       const w2 = await postMandate({ title: 'W2', body: 'B' });
-      await assert.rejects(
-        () => clerk.link(w1.id, w2.id, '   \t\n  '),
-        /non-empty/,
-      );
+      await assert.rejects(() => clerk.link(w1.id, w2.id, '   \t\n  '), /non-empty/);
     });
 
     it('keeps the existing builtin `fixes` composite-id shape stable', async () => {
@@ -2066,10 +2013,7 @@ describe('Clerk', () => {
     it('rejects an unknown kind id', async () => {
       const w1 = await postMandate({ title: 'W1', body: 'B' });
       const w2 = await postMandate({ title: 'W2', body: 'B' });
-      await assert.rejects(
-        () => clerk.link(w1.id, w2.id, 'fixes', 'nonexistent.meaning'),
-        /Unknown link kind/,
-      );
+      await assert.rejects(() => clerk.link(w1.id, w2.id, 'fixes', 'nonexistent.meaning'), /Unknown link kind/);
     });
 
     it('writ-show surfaces kind on each link row', async () => {
@@ -2089,18 +2033,10 @@ describe('Clerk', () => {
     afterEach(() => { clearGuild(); });
 
     it('registers kit-contributed kinds', async () => {
-      const kit: LoadedKit = {
-        packageName: '@test/alpha',
-        id: 'alpha',
-        version: '0.0.0',
-        kit: {
-          linkKinds: [
-            { id: 'alpha.refines', description: 'Refines relationship' },
-            { id: 'alpha.blocks', description: 'Blocks relationship' },
-          ],
-        },
-      };
-      await setup({ extraKits: [kit] });
+      await setup({ extraKits: [kindKit({ pluginId: 'alpha', kinds: [
+        { id: 'alpha.refines', description: 'Refines relationship' },
+        { id: 'alpha.blocks', description: 'Blocks relationship' },
+      ] })] });
       const kinds = await clerk.listKinds();
       // Two kit-contributed kinds + Clerk's own self-contributed `depends-on`.
       assert.equal(kinds.length, 3);
@@ -2123,21 +2059,9 @@ describe('Clerk', () => {
     });
 
     it('registers kinds contributed by apparatus supportKit', async () => {
-      const apparatus: LoadedApparatus = {
-        packageName: '@test/support-app',
-        id: 'support-app',
-        version: '0.0.0',
-        apparatus: {
-          requires: [],
-          start: () => {},
-          supportKit: {
-            linkKinds: [
-              { id: 'support-app.refines', description: 'Support refines' },
-            ],
-          },
-        },
-      };
-      await setup({ extraApparatuses: [apparatus] });
+      await setup({ extraApparatuses: [kindApparatus({ pluginId: 'support-app', kinds: [
+        { id: 'support-app.refines', description: 'Support refines' },
+      ] })] });
       const kinds = await clerk.listKinds();
       const k = kinds.find((x) => x.id === 'support-app.refines');
       assert.ok(k, 'support-app.refines should be registered');
@@ -2152,103 +2076,44 @@ describe('Clerk', () => {
       assert.equal(kinds[0]!.ownerPlugin, 'clerk');
     });
 
-    it('hard-fails when an entry is not an object', async () => {
-      const kit: LoadedKit = {
-        packageName: '@test/bad',
-        id: 'bad',
-        version: '0.0.0',
-        kit: { linkKinds: ['not-an-object'] as unknown as Array<{ id: string; description: string }> },
-      };
-      await assert.rejects(() => setup({ extraKits: [kit] }), /linkKinds.*not an object/);
-    });
-
-    it('hard-fails when an entry is missing the id field', async () => {
-      const kit: LoadedKit = {
-        packageName: '@test/bad',
-        id: 'bad',
-        version: '0.0.0',
-        kit: { linkKinds: [{ description: 'missing id' }] as unknown as Array<{ id: string; description: string }> },
-      };
-      await assert.rejects(() => setup({ extraKits: [kit] }), /missing a non-empty string "id"/);
-    });
-
-    it('hard-fails when an entry is missing the description field', async () => {
-      const kit: LoadedKit = {
-        packageName: '@test/bad',
-        id: 'bad',
-        version: '0.0.0',
-        kit: { linkKinds: [{ id: 'bad.refines' }] as unknown as Array<{ id: string; description: string }> },
-      };
-      await assert.rejects(
-        () => setup({ extraKits: [kit] }),
-        /missing a non-empty string "description"/,
-      );
-    });
-
-    it('hard-fails when a kind id has no dot separator', async () => {
-      const kit: LoadedKit = {
-        packageName: '@test/bad',
-        id: 'bad',
-        version: '0.0.0',
-        kit: { linkKinds: [{ id: 'refines', description: 'no prefix' }] },
-      };
-      await assert.rejects(
-        () => setup({ extraKits: [kit] }),
-        /must be of the form "\{pluginId\}\.\{kebab-suffix\}"/,
-      );
-    });
-
-    it('hard-fails when the id prefix does not match the contributing plugin', async () => {
-      const kit: LoadedKit = {
-        packageName: '@test/alpha',
-        id: 'alpha',
-        version: '0.0.0',
-        kit: { linkKinds: [{ id: 'beta.refines', description: 'wrong owner' }] },
-      };
-      await assert.rejects(
-        () => setup({ extraKits: [kit] }),
-        /must match the contributing plugin id "alpha"/,
-      );
-    });
-
-    it('hard-fails when the suffix is not kebab-case', async () => {
-      const kit: LoadedKit = {
-        packageName: '@test/alpha',
-        id: 'alpha',
-        version: '0.0.0',
-        kit: { linkKinds: [{ id: 'alpha.Refines_Not_Kebab', description: 'bad suffix' }] },
-      };
-      await assert.rejects(() => setup({ extraKits: [kit] }), /must be kebab-case/);
-    });
+    // Negative kit-validation cases — same shape: build a malformed kit,
+    // assert setup rejects with the expected message. Tabularized to keep
+    // the asymmetric cases readable without 8-line LoadedKit literals.
+    const invalidKits: ReadonlyArray<{
+      name: string;
+      pluginId: string;
+      kinds: readonly unknown[];
+      rejectsWith: RegExp;
+    }> = [
+      { name: 'an entry is not an object', pluginId: 'bad', kinds: ['not-an-object'], rejectsWith: /linkKinds.*not an object/ },
+      { name: 'an entry is missing the id field', pluginId: 'bad', kinds: [{ description: 'missing id' }], rejectsWith: /missing a non-empty string "id"/ },
+      { name: 'an entry is missing the description field', pluginId: 'bad', kinds: [{ id: 'bad.refines' }], rejectsWith: /missing a non-empty string "description"/ },
+      { name: 'a kind id has no dot separator', pluginId: 'bad', kinds: [{ id: 'refines', description: 'no prefix' }], rejectsWith: /must be of the form "\{pluginId\}\.\{kebab-suffix\}"/ },
+      { name: 'the id prefix does not match the contributing plugin', pluginId: 'alpha', kinds: [{ id: 'beta.refines', description: 'wrong owner' }], rejectsWith: /must match the contributing plugin id "alpha"/ },
+      { name: 'the suffix is not kebab-case', pluginId: 'alpha', kinds: [{ id: 'alpha.Refines_Not_Kebab', description: 'bad suffix' }], rejectsWith: /must be kebab-case/ },
+      { name: 'a non-Clerk plugin contributes an unprefixed kind (still rejected with prefix error)', pluginId: 'alpha', kinds: [{ id: 'depends-on', description: 'should not register' }], rejectsWith: /must be of the form "\{pluginId\}\.\{kebab-suffix\}"/ },
+    ];
+    for (const c of invalidKits) {
+      it(`hard-fails when ${c.name}`, async () => {
+        await assert.rejects(
+          () => setup({ extraKits: [kindKit({ pluginId: c.pluginId, kinds: c.kinds })] }),
+          c.rejectsWith,
+        );
+      });
+    }
 
     it('hard-fails when two kits contribute the same kind id', async () => {
-      const kitA: LoadedKit = {
-        packageName: '@test/alpha',
-        id: 'alpha',
-        version: '0.0.0',
-        kit: { linkKinds: [{ id: 'alpha.refines', description: 'first' }] },
-      };
-      const kitB: LoadedKit = {
-        packageName: '@test/alpha-again',
-        // Same pluginId so the prefix rule doesn't fire first.
-        id: 'alpha',
-        version: '0.0.0',
-        kit: { linkKinds: [{ id: 'alpha.refines', description: 'duplicate' }] },
-      };
-      await assert.rejects(
-        () => setup({ extraKits: [kitA, kitB] }),
-        /duplicate kind id "alpha\.refines"/,
-      );
+      // Same pluginId so the prefix rule doesn't fire first.
+      const kitA = kindKit({ pluginId: 'alpha', kinds: [{ id: 'alpha.refines', description: 'first' }] });
+      const kitB = kindKit({ pluginId: 'alpha', pkg: '@test/alpha-again', kinds: [{ id: 'alpha.refines', description: 'duplicate' }] });
+      await assert.rejects(() => setup({ extraKits: [kitA, kitB] }), /duplicate kind id "alpha\.refines"/);
     });
 
     it('link() rejects a kind not present in the registry', async () => {
       await setup();
       const w1 = await postMandate({ title: 'W1', body: 'B' });
       const w2 = await postMandate({ title: 'W2', body: 'B' });
-      await assert.rejects(
-        () => clerk.link(w1.id, w2.id, 'fixes', 'ghost.meaning'),
-        /Unknown link kind/,
-      );
+      await assert.rejects(() => clerk.link(w1.id, w2.id, 'fixes', 'ghost.meaning'), /Unknown link kind/);
     });
 
     // ── Clerk-only carve-out for unprefixed kind ids ──
@@ -2259,24 +2124,15 @@ describe('Clerk', () => {
     // other plugin must continue to use the prefixed form. The cases below
     // exercise both arms.
 
+    const CLERK_PKG = '@shardworks/clerk-apparatus';
+
     it('Clerk plugin id contributing an unprefixed kebab id succeeds', async () => {
       // Use a kind id distinct from Clerk's own self-contributed
       // `depends-on` so the duplicate-id check does not fire first.
-      const apparatus: LoadedApparatus = {
-        packageName: '@shardworks/clerk-apparatus',
-        id: 'clerk',
-        version: '0.0.0',
-        apparatus: {
-          requires: [],
-          start: () => {},
-          supportKit: {
-            linkKinds: [
-              { id: 'fake-depends-on', description: 'Test unprefixed kind (carve-out)' },
-            ],
-          },
-        },
-      };
-      await setup({ extraApparatuses: [apparatus] });
+      await setup({ extraApparatuses: [kindApparatus({
+        pluginId: 'clerk', pkg: CLERK_PKG,
+        kinds: [{ id: 'fake-depends-on', description: 'Test unprefixed kind (carve-out)' }],
+      })] });
       const kinds = await clerk.listKinds();
       const entry = kinds.find((k) => k.id === 'fake-depends-on');
       assert.ok(entry, 'Clerk-contributed unprefixed id should register');
@@ -2285,21 +2141,10 @@ describe('Clerk', () => {
     });
 
     it('Clerk plugin id contributing a prefixed `clerk.X` id still succeeds', async () => {
-      const apparatus: LoadedApparatus = {
-        packageName: '@shardworks/clerk-apparatus',
-        id: 'clerk',
-        version: '0.0.0',
-        apparatus: {
-          requires: [],
-          start: () => {},
-          supportKit: {
-            linkKinds: [
-              { id: 'clerk.example', description: 'Prefixed Clerk-contributed kind' },
-            ],
-          },
-        },
-      };
-      await setup({ extraApparatuses: [apparatus] });
+      await setup({ extraApparatuses: [kindApparatus({
+        pluginId: 'clerk', pkg: CLERK_PKG,
+        kinds: [{ id: 'clerk.example', description: 'Prefixed Clerk-contributed kind' }],
+      })] });
       const kinds = await clerk.listKinds();
       const entry = kinds.find((k) => k.id === 'clerk.example');
       assert.ok(entry, 'Clerk-contributed prefixed id should register');
@@ -2307,74 +2152,27 @@ describe('Clerk', () => {
     });
 
     it('rejects a Clerk contribution containing a `.` whose left side is not "clerk"', async () => {
-      const apparatus: LoadedApparatus = {
-        packageName: '@shardworks/clerk-apparatus',
-        id: 'clerk',
-        version: '0.0.0',
-        apparatus: {
-          requires: [],
-          start: () => {},
-          supportKit: {
-            linkKinds: [
-              { id: 'foo.bar', description: 'Malformed third form from Clerk' },
-            ],
-          },
-        },
-      };
       await assert.rejects(
-        () => setup({ extraApparatuses: [apparatus] }),
+        () => setup({ extraApparatuses: [kindApparatus({
+          pluginId: 'clerk', pkg: CLERK_PKG,
+          kinds: [{ id: 'foo.bar', description: 'Malformed third form from Clerk' }],
+        })] }),
         /must match the contributing plugin id "clerk"/,
       );
     });
 
-    it('non-Clerk plugin contributing an unprefixed kind is still rejected with the existing prefix error', async () => {
-      const kit: LoadedKit = {
-        packageName: '@test/alpha',
-        id: 'alpha',
-        version: '0.0.0',
-        kit: { linkKinds: [{ id: 'depends-on', description: 'should not register' }] },
-      };
-      await assert.rejects(
-        () => setup({ extraKits: [kit] }),
-        /must be of the form "\{pluginId\}\.\{kebab-suffix\}"/,
-      );
-    });
-
     it('rejects a duplicate-id collision between an unprefixed Clerk kind and another contributor', async () => {
-      const clerkApparatus: LoadedApparatus = {
-        packageName: '@shardworks/clerk-apparatus',
-        id: 'clerk',
-        version: '0.0.0',
-        apparatus: {
-          requires: [],
-          start: () => {},
-          supportKit: {
-            linkKinds: [
-              { id: 'depends-on', description: 'first' },
-            ],
-          },
-        },
-      };
-      const dupeApparatus: LoadedApparatus = {
-        packageName: '@dupe/clerk-clone',
-        // Same plugin id forces the contribution through the carve-out
-        // path so the duplicate-id check fires.
-        id: 'clerk',
-        version: '0.0.0',
-        apparatus: {
-          requires: [],
-          start: () => {},
-          supportKit: {
-            linkKinds: [
-              { id: 'depends-on', description: 'duplicate' },
-            ],
-          },
-        },
-      };
-      await assert.rejects(
-        () => setup({ extraApparatuses: [clerkApparatus, dupeApparatus] }),
-        /duplicate kind id "depends-on"/,
-      );
+      // Same plugin id forces the contribution through the carve-out
+      // path so the duplicate-id check fires.
+      const clerkApparatus = kindApparatus({
+        pluginId: 'clerk', pkg: CLERK_PKG,
+        kinds: [{ id: 'depends-on', description: 'first' }],
+      });
+      const dupeApparatus = kindApparatus({
+        pluginId: 'clerk', pkg: '@dupe/clerk-clone',
+        kinds: [{ id: 'depends-on', description: 'duplicate' }],
+      });
+      await assert.rejects(() => setup({ extraApparatuses: [clerkApparatus, dupeApparatus] }), /duplicate kind id "depends-on"/);
     });
   });
 
@@ -2396,13 +2194,7 @@ describe('Clerk', () => {
 
     it('rewrites id and label to canonical form and sets kind = null', async () => {
       const seedLinks = [
-        {
-          id: 'w-src:w-tgt:DependsOn',
-          sourceId: 'w-src',
-          targetId: 'w-tgt',
-          label: 'DependsOn',
-          createdAt: '2024-01-01T00:00:00.000Z',
-        },
+        { id: 'w-src:w-tgt:DependsOn', sourceId: 'w-src', targetId: 'w-tgt', label: 'DependsOn', createdAt: '2024-01-01T00:00:00.000Z' },
       ];
       await setup({ seedLinks });
 
@@ -2416,34 +2208,13 @@ describe('Clerk', () => {
     });
 
     it('two-pass collision: keeps the oldest row and warns about younger siblings', async () => {
-      const warnings: string[] = [];
-      const original = console.warn;
-      console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+      const seedLinks = [
+        { id: 'w-src:w-tgt:depends-on', sourceId: 'w-src', targetId: 'w-tgt', label: 'depends-on', createdAt: '2024-01-01T00:00:00.000Z' },
+        { id: 'w-src:w-tgt:dependsOn', sourceId: 'w-src', targetId: 'w-tgt', label: 'dependsOn', createdAt: '2024-02-01T00:00:00.000Z' },
+        { id: 'w-src:w-tgt:DEPENDS_ON', sourceId: 'w-src', targetId: 'w-tgt', label: 'DEPENDS_ON', createdAt: '2024-03-01T00:00:00.000Z' },
+      ];
 
-      try {
-        const seedLinks = [
-          {
-            id: 'w-src:w-tgt:depends-on',
-            sourceId: 'w-src',
-            targetId: 'w-tgt',
-            label: 'depends-on',
-            createdAt: '2024-01-01T00:00:00.000Z',
-          },
-          {
-            id: 'w-src:w-tgt:dependsOn',
-            sourceId: 'w-src',
-            targetId: 'w-tgt',
-            label: 'dependsOn',
-            createdAt: '2024-02-01T00:00:00.000Z',
-          },
-          {
-            id: 'w-src:w-tgt:DEPENDS_ON',
-            sourceId: 'w-src',
-            targetId: 'w-tgt',
-            label: 'DEPENDS_ON',
-            createdAt: '2024-03-01T00:00:00.000Z',
-          },
-        ];
+      const warnings = await captureWarnings(async () => {
         await setup({ seedLinks });
 
         const result = await clerk.links('w-src');
@@ -2454,40 +2225,23 @@ describe('Clerk', () => {
         // Oldest row wins.
         assert.equal(survivor.createdAt, '2024-01-01T00:00:00.000Z');
         assert.equal(survivor.kind, null);
+      });
 
-        // Two collisions → two warnings, each mentioning w-src and w-tgt.
-        const collisionWarns = warnings.filter((w) =>
-          w.includes('collapsing duplicate link') && w.includes('w-src') && w.includes('w-tgt'),
-        );
-        assert.equal(collisionWarns.length, 2);
-      } finally {
-        console.warn = original;
-      }
+      // Two collisions → two warnings, each mentioning w-src and w-tgt.
+      const collisionWarns = warnings.filter((w) =>
+        w.includes('collapsing duplicate link') && w.includes('w-src') && w.includes('w-tgt'),
+      );
+      assert.equal(collisionWarns.length, 2);
     });
 
     it('rewrites legacy `spider.follows` link rows to `depends-on` and preserves other fields', async () => {
       const seedLinks = [
-        {
-          id: 'w-src:w-tgt:depends on',
-          sourceId: 'w-src',
-          targetId: 'w-tgt',
-          label: 'depends on',
-          kind: 'spider.follows',
-          createdAt: '2024-01-01T00:00:00.000Z',
-        },
-        {
-          id: 'w-src2:w-tgt2:depends on',
-          sourceId: 'w-src2',
-          targetId: 'w-tgt2',
-          label: 'depends on',
-          kind: 'spider.follows',
-          createdAt: '2024-01-02T00:00:00.000Z',
-        },
+        { id: 'w-src:w-tgt:depends on', sourceId: 'w-src', targetId: 'w-tgt', label: 'depends on', kind: 'spider.follows', createdAt: '2024-01-01T00:00:00.000Z' },
+        { id: 'w-src2:w-tgt2:depends on', sourceId: 'w-src2', targetId: 'w-tgt2', label: 'depends on', kind: 'spider.follows', createdAt: '2024-01-02T00:00:00.000Z' },
       ];
       await setup({ seedLinks });
 
-      const stacks = guild().apparatus<StacksApi>('stacks');
-      const linksBook = stacks.book<WritLinkDoc>('clerk', 'links');
+      const linksBook = linksBookOf();
 
       const a = await linksBook.get('w-src:w-tgt:depends on');
       assert.equal(a?.kind, 'depends-on');
@@ -2503,20 +2257,11 @@ describe('Clerk', () => {
 
     it('is idempotent — restarting against already-migrated kind rows produces no further changes', async () => {
       const seedLinks = [
-        {
-          id: 'w-src:w-tgt:depends on',
-          sourceId: 'w-src',
-          targetId: 'w-tgt',
-          label: 'depends on',
-          kind: 'spider.follows',
-          createdAt: '2024-01-01T00:00:00.000Z',
-        },
+        { id: 'w-src:w-tgt:depends on', sourceId: 'w-src', targetId: 'w-tgt', label: 'depends on', kind: 'spider.follows', createdAt: '2024-01-01T00:00:00.000Z' },
       ];
       await setup({ seedLinks });
 
-      const stacks = guild().apparatus<StacksApi>('stacks');
-      const linksBook = stacks.book<WritLinkDoc>('clerk', 'links');
-
+      const linksBook = linksBookOf();
       const before = await linksBook.get('w-src:w-tgt:depends on');
       assert.equal(before?.kind, 'depends-on');
 
@@ -2524,43 +2269,28 @@ describe('Clerk', () => {
       // backend. The migration's row-by-row guard short-circuits when no
       // legacy `spider.follows` rows remain — the row should be byte-
       // identical afterwards.
-      const clerk2 = createClerk();
-      const { ctx: ctx2 } = buildClerkCtx([]);
-      const clerk2Apparatus = (clerk2 as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-      await clerk2Apparatus.start(ctx2);
+      await restartClerk();
 
       const after = await linksBook.get('w-src:w-tgt:depends on');
       assert.deepEqual(after, before, 'already-migrated kind row must not be rewritten');
     });
 
     it('is a no-op on already-canonical rows (no rewrite, no warnings)', async () => {
-      const warnings: string[] = [];
-      const original = console.warn;
-      console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+      const seedLinks = [
+        { id: 'w-src:w-tgt:fixes', sourceId: 'w-src', targetId: 'w-tgt', label: 'fixes', kind: null, createdAt: '2024-01-01T00:00:00.000Z' },
+      ];
 
-      try {
-        const seedLinks = [
-          {
-            id: 'w-src:w-tgt:fixes',
-            sourceId: 'w-src',
-            targetId: 'w-tgt',
-            label: 'fixes',
-            kind: null,
-            createdAt: '2024-01-01T00:00:00.000Z',
-          },
-        ];
+      const warnings = await captureWarnings(async () => {
         await setup({ seedLinks });
-
         const result = await clerk.links('w-src');
         assert.equal(result.outbound.length, 1);
         assert.equal(result.outbound[0]!.id, 'w-src:w-tgt:fixes');
-        assert.equal(
-          warnings.filter((w) => w.includes('collapsing duplicate link')).length,
-          0,
-        );
-      } finally {
-        console.warn = original;
-      }
+      });
+
+      assert.equal(
+        warnings.filter((w) => w.includes('collapsing duplicate link')).length,
+        0,
+      );
     });
   });
 
@@ -2571,38 +2301,13 @@ describe('Clerk', () => {
 
     it('rewrites pre-rename rows: moves `status` to `phase` and deletes the old key', async () => {
       const seedWrits = [
-        {
-          id: 'w-open1',
-          type: 'mandate',
-          status: 'open',
-          title: 'Open writ',
-          body: 'Body',
-          createdAt: '2024-01-01T00:00:00.000Z',
-          updatedAt: '2024-01-01T00:00:00.000Z',
-        },
-        {
-          id: 'w-new1',
-          type: 'mandate',
-          status: 'new',
-          title: 'Draft writ',
-          body: 'Body',
-          createdAt: '2024-01-02T00:00:00.000Z',
-          updatedAt: '2024-01-02T00:00:00.000Z',
-        },
-        {
-          id: 'w-stuck1',
-          type: 'mandate',
-          status: 'stuck',
-          title: 'Stuck writ',
-          body: 'Body',
-          createdAt: '2024-01-03T00:00:00.000Z',
-          updatedAt: '2024-01-03T00:00:00.000Z',
-        },
+        { id: 'w-open1',  type: 'mandate', status: 'open',  title: 'Open writ',  body: 'Body', createdAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z' },
+        { id: 'w-new1',   type: 'mandate', status: 'new',   title: 'Draft writ', body: 'Body', createdAt: '2024-01-02T00:00:00.000Z', updatedAt: '2024-01-02T00:00:00.000Z' },
+        { id: 'w-stuck1', type: 'mandate', status: 'stuck', title: 'Stuck writ', body: 'Body', createdAt: '2024-01-03T00:00:00.000Z', updatedAt: '2024-01-03T00:00:00.000Z' },
       ];
       await setup({ seedWrits });
 
-      const stacks = guild().apparatus<StacksApi>('stacks');
-      const writsBook = stacks.book<Record<string, unknown> & { id: string }>('clerk', 'writs');
+      const writsBook = rawWritsBook();
 
       const open = await writsBook.get('w-open1');
       assert.equal(open?.phase, 'open', 'status → phase');
@@ -2621,38 +2326,13 @@ describe('Clerk', () => {
 
     it('collapses legacy values `ready` | `active` | `waiting` → `open`', async () => {
       const seedWrits = [
-        {
-          id: 'w-ready',
-          type: 'mandate',
-          status: 'ready',
-          title: 'Ready writ',
-          body: 'Body',
-          createdAt: '2024-01-01T00:00:00.000Z',
-          updatedAt: '2024-01-01T00:00:00.000Z',
-        },
-        {
-          id: 'w-active',
-          type: 'mandate',
-          status: 'active',
-          title: 'Active writ',
-          body: 'Body',
-          createdAt: '2024-01-02T00:00:00.000Z',
-          updatedAt: '2024-01-02T00:00:00.000Z',
-        },
-        {
-          id: 'w-waiting',
-          type: 'mandate',
-          status: 'waiting',
-          title: 'Waiting writ',
-          body: 'Body',
-          createdAt: '2024-01-03T00:00:00.000Z',
-          updatedAt: '2024-01-03T00:00:00.000Z',
-        },
+        { id: 'w-ready',   type: 'mandate', status: 'ready',   title: 'Ready writ',   body: 'Body', createdAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z' },
+        { id: 'w-active',  type: 'mandate', status: 'active',  title: 'Active writ',  body: 'Body', createdAt: '2024-01-02T00:00:00.000Z', updatedAt: '2024-01-02T00:00:00.000Z' },
+        { id: 'w-waiting', type: 'mandate', status: 'waiting', title: 'Waiting writ', body: 'Body', createdAt: '2024-01-03T00:00:00.000Z', updatedAt: '2024-01-03T00:00:00.000Z' },
       ];
       await setup({ seedWrits });
 
-      const stacks = guild().apparatus<StacksApi>('stacks');
-      const writsBook = stacks.book<Record<string, unknown> & { id: string }>('clerk', 'writs');
+      const writsBook = rawWritsBook();
 
       for (const id of ['w-ready', 'w-active', 'w-waiting']) {
         const row = await writsBook.get(id);
@@ -2663,43 +2343,13 @@ describe('Clerk', () => {
 
     it('preserves terminal-phase rows (completed, failed, cancelled)', async () => {
       const seedWrits = [
-        {
-          id: 'w-done',
-          type: 'mandate',
-          status: 'completed',
-          title: 'Done writ',
-          body: 'Body',
-          resolution: 'ok',
-          createdAt: '2024-01-01T00:00:00.000Z',
-          updatedAt: '2024-01-01T00:00:00.000Z',
-          resolvedAt: '2024-01-01T01:00:00.000Z',
-        },
-        {
-          id: 'w-fail',
-          type: 'mandate',
-          status: 'failed',
-          title: 'Failed writ',
-          body: 'Body',
-          resolution: 'broken',
-          createdAt: '2024-01-02T00:00:00.000Z',
-          updatedAt: '2024-01-02T00:00:00.000Z',
-          resolvedAt: '2024-01-02T01:00:00.000Z',
-        },
-        {
-          id: 'w-cancel',
-          type: 'mandate',
-          status: 'cancelled',
-          title: 'Cancelled writ',
-          body: 'Body',
-          createdAt: '2024-01-03T00:00:00.000Z',
-          updatedAt: '2024-01-03T00:00:00.000Z',
-          resolvedAt: '2024-01-03T01:00:00.000Z',
-        },
+        { id: 'w-done',   type: 'mandate', status: 'completed', title: 'Done writ',      body: 'Body', resolution: 'ok',     createdAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z', resolvedAt: '2024-01-01T01:00:00.000Z' },
+        { id: 'w-fail',   type: 'mandate', status: 'failed',    title: 'Failed writ',    body: 'Body', resolution: 'broken', createdAt: '2024-01-02T00:00:00.000Z', updatedAt: '2024-01-02T00:00:00.000Z', resolvedAt: '2024-01-02T01:00:00.000Z' },
+        { id: 'w-cancel', type: 'mandate', status: 'cancelled', title: 'Cancelled writ', body: 'Body',                       createdAt: '2024-01-03T00:00:00.000Z', updatedAt: '2024-01-03T00:00:00.000Z', resolvedAt: '2024-01-03T01:00:00.000Z' },
       ];
       await setup({ seedWrits });
 
-      const stacks = guild().apparatus<StacksApi>('stacks');
-      const writsBook = stacks.book<Record<string, unknown> & { id: string }>('clerk', 'writs');
+      const writsBook = rawWritsBook();
 
       const done = await writsBook.get('w-done');
       assert.equal(done?.phase, 'completed');
@@ -2717,49 +2367,20 @@ describe('Clerk', () => {
 
     it('aborts startup with a clear error on an unknown `status` value', async () => {
       const seedWrits = [
-        {
-          id: 'w-bogus',
-          type: 'mandate',
-          status: 'bogus-value',
-          title: 'Bogus writ',
-          body: 'Body',
-          createdAt: '2024-01-01T00:00:00.000Z',
-          updatedAt: '2024-01-01T00:00:00.000Z',
-        },
+        { id: 'w-bogus', type: 'mandate', status: 'bogus-value', title: 'Bogus writ', body: 'Body', createdAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z' },
       ];
-      await assert.rejects(
-        () => setup({ seedWrits }),
-        /unrecognized status value "bogus-value"/,
-      );
+      await assert.rejects(() => setup({ seedWrits }), /unrecognized status value "bogus-value"/);
     });
 
     it('is idempotent — restarting against already-migrated rows is a no-op', async () => {
       // First pass: seed pre-rename rows and run the migration.
       const seedWrits = [
-        {
-          id: 'w-idem1',
-          type: 'mandate',
-          status: 'open',
-          title: 'Idempotent writ',
-          body: 'Body',
-          createdAt: '2024-01-01T00:00:00.000Z',
-          updatedAt: '2024-01-01T00:00:00.000Z',
-        },
-        {
-          id: 'w-idem2',
-          type: 'mandate',
-          status: 'ready', // legacy
-          title: 'Legacy writ',
-          body: 'Body',
-          createdAt: '2024-01-02T00:00:00.000Z',
-          updatedAt: '2024-01-02T00:00:00.000Z',
-        },
+        { id: 'w-idem1', type: 'mandate', status: 'open',          title: 'Idempotent writ', body: 'Body', createdAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z' },
+        { id: 'w-idem2', type: 'mandate', status: 'ready' /* legacy */, title: 'Legacy writ',     body: 'Body', createdAt: '2024-01-02T00:00:00.000Z', updatedAt: '2024-01-02T00:00:00.000Z' },
       ];
       await setup({ seedWrits });
 
-      const stacks = guild().apparatus<StacksApi>('stacks');
-      const writsBook = stacks.book<Record<string, unknown> & { id: string }>('clerk', 'writs');
-
+      const writsBook = rawWritsBook();
       const before1 = await writsBook.get('w-idem1');
       const before2 = await writsBook.get('w-idem2');
       assert.equal(before1?.phase, 'open');
@@ -2769,10 +2390,7 @@ describe('Clerk', () => {
       // the same guild (and therefore the same backend). The migration guard
       // (`typeof phase === 'string'`) should cause it to skip every already-
       // migrated row — no writes, no errors.
-      const clerk2 = createClerk();
-      const { ctx: ctx2 } = buildClerkCtx([]);
-      const clerk2Apparatus = (clerk2 as { apparatus: { start: (ctx: unknown) => void; provides: unknown } }).apparatus;
-      await clerk2Apparatus.start(ctx2);
+      await restartClerk();
 
       const after1 = await writsBook.get('w-idem1');
       const after2 = await writsBook.get('w-idem2');
@@ -2911,10 +2529,7 @@ describe('Clerk', () => {
 
     it('throws a clear not-found error for an unknown id', async () => {
       await setup();
-      await assert.rejects(
-        () => writLinkKindsShow.handler({ id: 'ghost.meaning' }),
-        /Unknown link kind "ghost\.meaning"/,
-      );
+      await assert.rejects(() => writLinkKindsShow.handler({ id: 'ghost.meaning' }), /Unknown link kind "ghost\.meaning"/);
     });
   });
 
@@ -2990,10 +2605,7 @@ describe('Clerk', () => {
     });
 
     it('throws when the writ does not exist', async () => {
-      await assert.rejects(
-        () => writShow.handler({ id: 'w-ghost', format: 'json' }),
-        /No writ found/,
-      );
+      await assert.rejects(() => writShow.handler({ id: 'w-ghost', format: 'json' }), /No writ found/);
     });
 
     it('returns inbound links when the writ is a target', async () => {
@@ -3058,11 +2670,7 @@ describe('Clerk', () => {
     });
 
     it('honors --depth and --type filters', async () => {
-      await setup({
-        extraApparatuses: [
-          makeWritTypeApparatus([mandateLikeWritType('task')], { id: 'task-plugin' }),
-        ],
-      });
+      await setupWithType('task');
       const root = await postMandate({ title: 'Root', body: 'Body', type: 'mandate' });
       const child = await postMandate({ title: 'Child', body: 'Body', parentId: root.id, type: 'task' });
       await postMandate({ title: 'Grand', body: 'Body', parentId: child.id, type: 'task' });
@@ -3110,11 +2718,7 @@ describe('Clerk', () => {
     });
 
     it('renders non-mandate writ glyphs through attrs-driven derivation', async () => {
-      await setup({
-        extraApparatuses: [
-          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
-        ],
-      });
+      await setupWithType('errand');
       const errand = await clerk.post({ title: 'Errand', body: 'Body', type: 'errand' });
       assert.equal(errand.phase, 'new');
       const text = await writTree.handler({ format: 'text' }) as string;
@@ -3150,11 +2754,7 @@ describe('Clerk', () => {
     it('embeds classification + allowedTransitions on every node in the tree', async () => {
       // Mixed-type tree exercises both mandate and a plugin-registered
       // type so the assertion can prove non-mandate transitions surface.
-      await setup({
-        extraApparatuses: [
-          makeWritTypeApparatus([mandateLikeWritType('task')], { id: 'task-plugin' }),
-        ],
-      });
+      await setupWithType('task');
       const root = await postMandate({ title: 'Root', body: 'Body', type: 'mandate' });
       const child = await postMandate({ title: 'Child', body: 'Body', parentId: root.id, type: 'task' });
 
@@ -3216,11 +2816,7 @@ describe('Clerk', () => {
     });
 
     it('text mode renders a non-mandate writ with its declared state name', async () => {
-      await setup({
-        extraApparatuses: [
-          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
-        ],
-      });
+      await setupWithType('errand');
       await clerk.post({ title: 'An errand', body: 'Body', type: 'errand' });
       const writList = (await import('./tools/writ-list.ts')).default;
       const text = await writList.handler({ format: 'text' }) as string;
@@ -3236,11 +2832,7 @@ describe('Clerk', () => {
     });
 
     it('--classification active filters across every registered type', async () => {
-      await setup({
-        extraApparatuses: [
-          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
-        ],
-      });
+      await setupWithType('errand');
       // Drafts (initial classification) — should not match.
       await clerk.post({ title: 'Draft m', body: 'B' });
       await clerk.post({ title: 'Draft e', body: 'B', type: 'errand' });
@@ -3270,11 +2862,7 @@ describe('Clerk', () => {
     });
 
     it('--phase open without --type implicitly scopes to mandate (D7)', async () => {
-      await setup({
-        extraApparatuses: [
-          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
-        ],
-      });
+      await setupWithType('errand');
       // Mandate writ in `open` and an errand in its same-named `open` state.
       const m = await postMandate({ title: 'Mandate open', body: 'B' });
       const e = await clerk.post({ title: 'Errand open', body: 'B', type: 'errand' });
@@ -3376,11 +2964,7 @@ describe('Clerk', () => {
     });
 
     it('text mode renders lifecycle for non-mandate writs using their declared vocabulary', async () => {
-      await setup({
-        extraApparatuses: [
-          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
-        ],
-      });
+      await setupWithType('errand');
       const e = await clerk.post({ title: 'My errand', body: 'B', type: 'errand' });
       const text = await writShow.handler({ id: e.id }) as string;
       assert.ok(text.includes('errand'));
@@ -3437,18 +3021,12 @@ describe('Clerk', () => {
 
     it('propagates self-link error from clerk.link()', async () => {
       const w = await postMandate({ title: 'Solo', body: 'Body' });
-      await assert.rejects(
-        () => writLink.handler({ sourceId: w.id, targetId: w.id, label: 'fixes' }),
-        /Cannot link a writ to itself/,
-      );
+      await assert.rejects(() => writLink.handler({ sourceId: w.id, targetId: w.id, label: 'fixes' }), /Cannot link a writ to itself/);
     });
 
     it('propagates missing source error from clerk.link()', async () => {
       const w2 = await postMandate({ title: 'Target', body: 'Body' });
-      await assert.rejects(
-        () => writLink.handler({ sourceId: 'w-ghost', targetId: w2.id, label: 'fixes' }),
-        /No writ found/,
-      );
+      await assert.rejects(() => writLink.handler({ sourceId: 'w-ghost', targetId: w2.id, label: 'fixes' }), /No writ found/);
     });
   });
 
@@ -3497,11 +3075,7 @@ describe('Clerk', () => {
 
   describe('writ-edit tool handler (via guild apparatus)', () => {
     beforeEach(async () => {
-      await setup({
-        extraApparatuses: [
-          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
-        ],
-      });
+      await setupWithType('errand');
     });
 
     it('edits title of a draft writ via the tool handler', async () => {
@@ -3528,10 +3102,7 @@ describe('Clerk', () => {
 
     it('rejects when no editable fields are provided', async () => {
       const writ = await postMandate({ title: 'Title', body: 'Body', draft: true });
-      await assert.rejects(
-        () => writEdit.handler({ id: writ.id }),
-        /At least one field/,
-      );
+      await assert.rejects(() => writEdit.handler({ id: writ.id }), /At least one field/);
     });
 
     it('allows editing title/body of a non-draft writ via the tool handler', async () => {
@@ -3543,18 +3114,12 @@ describe('Clerk', () => {
 
     it('rejects changing type on a non-draft writ via the tool handler', async () => {
       const writ = await postMandate({ title: 'Title', body: 'Body' }); // open
-      await assert.rejects(
-        () => writEdit.handler({ id: writ.id, type: 'errand' }),
-        /Cannot change type/,
-      );
+      await assert.rejects(() => writEdit.handler({ id: writ.id, type: 'errand' }), /Cannot change type/);
     });
 
     it('rejects changing codex on a non-draft writ via the tool handler', async () => {
       const writ = await postMandate({ title: 'Title', body: 'Body' }); // open
-      await assert.rejects(
-        () => writEdit.handler({ id: writ.id, codex: 'gamma' }),
-        /Cannot change codex/,
-      );
+      await assert.rejects(() => writEdit.handler({ id: writ.id, codex: 'gamma' }), /Cannot change codex/);
     });
   });
 
@@ -3690,18 +3255,11 @@ describe('Clerk', () => {
 
     it('rejects an unregistered writ type at post time', async () => {
       await setup();
-      await assert.rejects(
-        () => postMandate({ title: 'Summon', body: 'Body', type: 'summon' }),
-        /Unknown writ type/,
-      );
+      await assert.rejects(() => postMandate({ title: 'Summon', body: 'Body', type: 'summon' }), /Unknown writ type/);
     });
 
     it('plugin-registered custom types are accepted', async () => {
-      await setup({
-        extraApparatuses: [
-          makeWritTypeApparatus([mandateLikeWritType('errand')], { id: 'errand-plugin' }),
-        ],
-      });
+      await setupWithType('errand');
       const w = await postMandate({ title: 'Start an errand', body: 'Body', type: 'errand' });
       assert.equal(w.type, 'errand');
     });
@@ -3769,10 +3327,7 @@ describe('Clerk', () => {
 
     it('post() of an unregistered type fails with the registry error', async () => {
       await setup();
-      await assert.rejects(
-        () => clerk.post({ title: 'X', body: 'Y', type: 'never-registered' }),
-        /Unknown writ type "never-registered"/,
-      );
+      await assert.rejects(() => clerk.post({ title: 'X', body: 'Y', type: 'never-registered' }), /Unknown writ type "never-registered"/);
     });
 
     it('rejects child creation on a parent in a terminal state', async () => {
@@ -4616,10 +4171,7 @@ describe('Parent/child relationships', () => {
     });
 
     it('ClerkApi.countDescendantsByPhase throws on unknown id', async () => {
-      await assert.rejects(
-        () => clerk.countDescendantsByPhase('w-does-not-exist'),
-        /not found/,
-      );
+      await assert.rejects(() => clerk.countDescendantsByPhase('w-does-not-exist'), /not found/);
     });
   });
 
@@ -4643,14 +4195,11 @@ describe('Parent/child relationships', () => {
 
 describe('Page file structure', () => {
   it('index.html exists and contains required HTML structural tags', () => {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const htmlPath = join(__dirname, '..', 'pages', 'writs', 'index.html');
     let content: string;
     try {
-      content = readFileSync(htmlPath, 'utf-8');
+      content = readWritsHtml();
     } catch {
-      assert.fail(`Expected pages/writs/index.html to exist at: ${htmlPath}`);
+      assert.fail('Expected pages/writs/index.html to exist');
     }
     assert.ok(content.includes('<html'), 'index.html must contain <html tag');
     assert.ok(content.includes('<head'), 'index.html must contain <head tag');
@@ -4658,39 +4207,24 @@ describe('Page file structure', () => {
   });
 
   it('wraps page content in a <main> element with 24px padding', () => {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const htmlPath = join(__dirname, '..', 'pages', 'writs', 'index.html');
-    const content = readFileSync(htmlPath, 'utf-8');
+    const content = readWritsHtml();
     assert.ok(content.includes('<main'), 'index.html must contain a <main> element');
     assert.ok(content.includes('padding: 24px'), 'main element must have 24px padding');
     assert.ok(content.includes('</main>'), 'main element must be closed');
   });
 
   it('has a page heading', () => {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const htmlPath = join(__dirname, '..', 'pages', 'writs', 'index.html');
-    const content = readFileSync(htmlPath, 'utf-8');
-    assert.ok(content.includes('<h1>Writs</h1>'), 'page must have an h1 heading');
+    assert.ok(readWritsHtml().includes('<h1>Writs</h1>'), 'page must have an h1 heading');
   });
 
   it('uses card class for toolbar and data table sections', () => {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const htmlPath = join(__dirname, '..', 'pages', 'writs', 'index.html');
-    const content = readFileSync(htmlPath, 'utf-8');
     // The toolbar and data table should each be inside a .card container
-    const cardCount = (content.match(/class="card"/g) || []).length;
+    const cardCount = (readWritsHtml().match(/class="card"/g) || []).length;
     assert.ok(cardCount >= 2, `expected at least 2 card containers, found ${cardCount}`);
   });
 
   it('post-section form uses card class', () => {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const htmlPath = join(__dirname, '..', 'pages', 'writs', 'index.html');
-    const content = readFileSync(htmlPath, 'utf-8');
-    assert.ok(content.includes('id="post-section" class="card"'), 'post-section must use card class');
+    assert.ok(readWritsHtml().includes('id="post-section" class="card"'), 'post-section must use card class');
   });
 });
 
@@ -4700,11 +4234,7 @@ describe('step-add tool', () => {
   afterEach(() => { clearGuild(); });
 
   it('creates a step writ as child of a mandate with structured XML body', async () => {
-    await setup({
-      extraApparatuses: [
-        makeWritTypeApparatus([mandateLikeWritType('step')], { id: 'step-plugin' }),
-      ],
-    });
+    await setupWithType('step');
 
     // Create a mandate first
     const mandate = await postMandate({ title: 'Parent mandate', body: 'Do all things', type: 'mandate' });
@@ -4734,11 +4264,7 @@ describe('step-add tool', () => {
   });
 
   it('creates a step with only required fields', async () => {
-    await setup({
-      extraApparatuses: [
-        makeWritTypeApparatus([mandateLikeWritType('step')], { id: 'step-plugin' }),
-      ],
-    });
+    await setupWithType('step');
 
     const mandate = await postMandate({ title: 'Parent mandate', body: 'Do things', type: 'mandate' });
 
@@ -4758,11 +4284,7 @@ describe('step-add tool', () => {
   });
 
   it('rejects when parent mandate does not exist', async () => {
-    await setup({
-      extraApparatuses: [
-        makeWritTypeApparatus([mandateLikeWritType('step')], { id: 'step-plugin' }),
-      ],
-    });
+    await setupWithType('step');
 
     const stepAddTool = (await import('./tools/step-add.ts')).default;
     const handler = stepAddTool.handler as (params: Record<string, unknown>) => Promise<unknown>;
