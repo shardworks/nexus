@@ -1,8 +1,7 @@
 /**
  * Spider — core engine pipeline tests.
  *
- * Covers the original `describe('Spider', ...)` wrapper that exercises the
- * end-to-end Spider behaviour: walk/dispatch ordering, engine readiness,
+ * End-to-end Spider behaviour: walk/dispatch ordering, engine readiness,
  * implement / quick / draft / review / revise engine execution, failure
  * propagation, the givens-and-context assembly path, the full pipeline
  * happy path, query helpers (`show` / `list` / `forWrit` / `createdAt`),
@@ -14,68 +13,131 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { setGuild, clearGuild, generateId, shortId } from '@shardworks/nexus-core';
-import type { Guild, GuildConfig, LoadedKit, LoadedApparatus, StartupContext, KitEntry } from '@shardworks/nexus-core';
+import { clearGuild, generateId } from '@shardworks/nexus-core';
 
-import { createStacksApparatus } from '@shardworks/stacks-apparatus';
-import { MemoryBackend } from '@shardworks/stacks-apparatus/testing';
-import type { StacksApi } from '@shardworks/stacks-apparatus';
+import type { WritDoc } from '@shardworks/clerk-apparatus';
+import type { EngineDesign } from '@shardworks/fabricator-apparatus';
+import type { SessionDoc } from '@shardworks/animator-apparatus';
 
-import { createClerk } from '@shardworks/clerk-apparatus';
-import type { ClerkApi, WritDoc, WritTypeConfig } from '@shardworks/clerk-apparatus';
-
-import { createFabricator } from '@shardworks/fabricator-apparatus';
-import type { FabricatorApi, EngineDesign, EngineRunContext } from '@shardworks/fabricator-apparatus';
-
-import type { AnimatorApi, SummonRequest, AnimateHandle, SessionChunk, SessionResult, SessionDoc } from '@shardworks/animator-apparatus';
-
-import { z } from 'zod';
-
-import { createSpider, countRunningEngines, countRunningEnginesInRig } from './spider.ts';
-import type { SpiderApi, RigDoc, RigView, EngineInstance, EngineAttempt, ReviewYields, MechanicalCheck, RigTemplate, BlockType, CheckResult, SpiderEngineRunResult, SpiderCollectResult, InputRequestDoc } from './types.ts';
-
-import animaSessionEngine from './engines/anima-session.ts';
-
-import rigShowTool from './tools/rig-show.ts';
-import rigListTool from './tools/rig-list.ts';
-import rigForWritTool from './tools/rig-for-writ.ts';
-import rigResumeTool from './tools/rig-resume.ts';
+import type { RigDoc, EngineInstance, EngineAttempt, ReviewYields, MechanicalCheck } from './types.ts';
 
 import {
   latestAttempt,
-  STANDARD_TEMPLATE,
-  FRAMEWORK_KIT_FIELDS,
-  buildKitEntries,
-  buildCtx,
-  mergeCustomEnginesIntoSpider,
   buildFixture,
   rigsBook,
-  mandateLikeWritType,
   postWrit,
   assertTerminalAt,
 } from './spider-test-fixture.ts';
 
+// ── In-file helpers ────────────────────────────────────────────────────
+
+const COMPLETED_AT_START = '2024-01-01T00:00:00Z';
+const COMPLETED_AT_END = '2024-01-01T00:00:01Z';
+
+const completedAttempt = (yields: Record<string, unknown>): EngineAttempt => ({
+  startedAt: COMPLETED_AT_START,
+  endedAt: COMPLETED_AT_END,
+  status: 'completed',
+  yields,
+});
+
+const runningAttempt = (sessionId: string): EngineAttempt => ({
+  startedAt: COMPLETED_AT_START,
+  sessionId,
+});
+
+const draftYields = (path = '/p') => ({ draftId: 'd1', codexName: 'c', branch: 'b', path, baseSha: 'sha1' });
+const implYields = { sessionId: 's1', sessionStatus: 'completed' };
+
+/** Replace one engine in a rig's engines[] (returns the new array). */
+function withEngine(
+  engines: EngineInstance[],
+  id: string,
+  patch: Partial<EngineInstance>,
+): EngineInstance[] {
+  return engines.map(e => e.id === id ? { ...e, ...patch } as EngineInstance : e);
+}
+
+/** Mark `engineId` completed with the supplied yields. */
+function completeEngine(
+  engines: EngineInstance[],
+  engineId: string,
+  yields: Record<string, unknown>,
+): EngineInstance[] {
+  return withEngine(engines, engineId, { status: 'completed', attempts: [completedAttempt(yields)] });
+}
+
+/**
+ * Pre-complete the canonical pipeline up to `upTo` (exclusive). Order:
+ * 'draft' → 'implement' → 'review' → 'revise' → 'seal'. Returns the new
+ * engines[] array.
+ */
+function completePipelineUpTo(
+  engines: EngineInstance[],
+  upTo: 'implement' | 'review' | 'revise' | 'seal' | 'after-revise',
+  reviewYields?: ReviewYields,
+): EngineInstance[] {
+  let next = completeEngine(engines, 'draft', draftYields());
+  if (upTo === 'implement') return next;
+  next = completeEngine(next, 'implement', implYields);
+  if (upTo === 'review') return next;
+  if (reviewYields) next = completeEngine(next, 'review', reviewYields as unknown as Record<string, unknown>);
+  return next;
+}
+
+/** Assert the named engines are cancelled with no endedAt / error. */
+function assertCancelled(rig: RigDoc, ids: readonly string[]) {
+  for (const id of ids) {
+    const eng = rig.engines.find((e: EngineInstance) => e.id === id);
+    assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
+    assert.equal(eng && latestAttempt(eng)?.endedAt, undefined, `${id} should not have endedAt`);
+    assert.equal(eng && latestAttempt(eng)?.error, undefined, `${id} should not have error`);
+  }
+}
+
+/**
+ * Drive the retry budget to exhaustion: clear any retry-backoff hold on
+ * `engineId` between crawls so the next dispatch happens immediately.
+ * Loops until the rig is no longer running, or `maxIterations` is hit.
+ * Returns the final crawl result.
+ */
+async function exhaustRetryBudget(
+  fix: ReturnType<typeof buildFixture>,
+  engineId: string,
+  maxIterations = 10,
+) {
+  const book = rigsBook(fix.stacks);
+  let result: Awaited<ReturnType<typeof fix.spider.crawl>> | null = null;
+  for (let i = 0; i < maxIterations; i++) {
+    const [cur] = await book.list();
+    if (cur.status !== 'running') break;
+    const cleared = cur.engines.map((e: EngineInstance) =>
+      e.id === engineId && e.status === 'pending' && e.holdReason === 'retry-backoff'
+        ? { ...e, holdUntil: undefined }
+        : e,
+    );
+    await book.patch(cur.id, { engines: cleared });
+    result = await fix.spider.crawl();
+  }
+  return result;
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────
+
 describe('Spider', () => {
   let fix: ReturnType<typeof buildFixture>;
 
-  beforeEach(() => {
-    fix = buildFixture();
-  });
-
-  afterEach(() => {
-    clearGuild();
-  });
-
-  // ── Fabricator integration ─────────────────────────────────────────
+  beforeEach(() => { fix = buildFixture(); });
+  afterEach(() => { clearGuild(); });
 
   describe('Fabricator — Spider engine registration', () => {
     it('registers all five engine designs in the Fabricator', () => {
       const { fabricator } = fix;
-      assert.ok(fabricator.getEngineDesign('draft'), 'draft engine registered');
-      assert.ok(fabricator.getEngineDesign('implement'), 'implement engine registered');
-      assert.ok(fabricator.getEngineDesign('review'), 'review engine registered');
-      assert.ok(fabricator.getEngineDesign('revise'), 'revise engine registered');
-      assert.ok(fabricator.getEngineDesign('seal'), 'seal engine registered');
+      assert.ok(fabricator.getEngineDesign('draft'));
+      assert.ok(fabricator.getEngineDesign('implement'));
+      assert.ok(fabricator.getEngineDesign('review'));
+      assert.ok(fabricator.getEngineDesign('revise'));
+      assert.ok(fabricator.getEngineDesign('seal'));
     });
 
     it('returns undefined for an unknown engine ID', () => {
@@ -83,130 +145,101 @@ describe('Spider', () => {
     });
   });
 
-  // ── walk() idle ────────────────────────────────────────────────────
-
   describe('walk() — idle', () => {
     it('returns null when there is no work', async () => {
-      const result = await fix.spider.crawl();
-      assert.equal(result, null);
+      assert.equal(await fix.spider.crawl(), null);
     });
   });
 
-  // ── Spawn ──────────────────────────────────────────────────────────
-
   describe('walk() — spawn', () => {
     it('spawns a rig for an open writ', async () => {
-      const { clerk, spider, stacks } = fix;
-      const writ = await postWrit(clerk);
+      const writ = await postWrit(fix.clerk);
       assert.equal(writ.phase, 'open');
 
-      const result = await spider.crawl();
-      assert.ok(result !== null, 'expected a walk result');
+      const result = await fix.spider.crawl();
+      assert.ok(result !== null);
       assert.equal(result.action, 'rig-spawned');
       assert.equal((result as { writId: string }).writId, writ.id);
 
-      const rigs = await rigsBook(stacks).list();
+      const rigs = await rigsBook(fix.stacks).list();
       assert.equal(rigs.length, 1);
       assert.equal(rigs[0].writId, writ.id);
       assert.equal(rigs[0].status, 'running');
       assert.equal(rigs[0].engines.length, 5);
 
-      // Writ should still be open
-      const updatedWrit = await clerk.show(writ.id);
-      assert.equal(updatedWrit.phase, 'open');
+      const updated = await fix.clerk.show(writ.id);
+      assert.equal(updated.phase, 'open');
     });
 
     it('does not spawn a second rig for a writ that already has one', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-
-      await spider.crawl(); // spawns rig
-
-      const rigs = await rigsBook(stacks).list();
-      assert.equal(rigs.length, 1, 'only one rig should exist');
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
+      const rigs = await rigsBook(fix.stacks).list();
+      assert.equal(rigs.length, 1);
     });
 
     it('spawns rigs for the oldest open writ first (FIFO)', async () => {
-      const { clerk, spider } = fix;
-
-      // Small delay to ensure different createdAt timestamps
-      const w1 = await postWrit(clerk, 'First writ');
+      const w1 = await postWrit(fix.clerk, 'First writ');
       await new Promise((r) => setTimeout(r, 2));
-      const w2 = await postWrit(clerk, 'Second writ');
+      const w2 = await postWrit(fix.clerk, 'Second writ');
 
-      const r1 = await spider.crawl();
+      const r1 = await fix.spider.crawl();
       assert.equal(r1?.action, 'rig-spawned');
       assert.equal((r1 as { writId: string }).writId, w1.id);
 
-      // Mark rig1 as failed so w2 can spawn
       const rigs = await rigsBook(fix.stacks).list();
       await rigsBook(fix.stacks).patch(rigs[0].id, { status: 'failed' });
 
-      const r2 = await spider.crawl();
+      const r2 = await fix.spider.crawl();
       assert.equal(r2?.action, 'rig-spawned');
       assert.equal((r2 as { writId: string }).writId, w2.id);
     });
   });
 
-  // ── Priority ordering ──────────────────────────────────────────────
-
   describe('walk() — priority ordering: collect > run > spawn', () => {
     it('runs before spawning when a rig already exists', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-
-      // Spawn the rig
-      const r1 = await spider.crawl();
+      await postWrit(fix.clerk);
+      const r1 = await fix.spider.crawl();
       assert.equal(r1?.action, 'rig-spawned');
 
-      // Second walk should run (not spawn another rig)
-      // The draft engine will fail (no codexes), resulting in 'rig-completed'
-      const r2 = await spider.crawl();
+      // Second walk runs (not spawn). The draft engine fails (no codexes),
+      // resulting in 'rig-completed'.
+      const r2 = await fix.spider.crawl();
       assert.notEqual(r2?.action, 'rig-spawned');
-      // Only one rig created
-      const rigs = await rigsBook(stacks).list();
+      const rigs = await rigsBook(fix.stacks).list();
       assert.equal(rigs.length, 1);
     });
 
     it('collects before running when a running engine has a terminal session', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
       const fakeSessionId = generateId('ses', 4);
 
-      // Set draft to running with a session
-      const enginesWithSession = rig.engines.map((e: EngineInstance) =>
-        e.id === 'draft'
-          ? { ...e, status: 'running' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', sessionId: fakeSessionId }] }
-          : e,
-      );
-      await book.patch(rig.id, { engines: enginesWithSession });
+      await book.patch(rig.id, {
+        engines: withEngine(rig.engines, 'draft', {
+          status: 'running',
+          attempts: [runningAttempt(fakeSessionId)],
+        }),
+      });
 
-      // Insert terminal session
-      const sessBook = stacks.book<{ id: string; status: string; startedAt: string; provider: string; [key: string]: unknown }>('animator', 'sessions');
-      await sessBook.put({ id: fakeSessionId, status: 'completed', startedAt: new Date().toISOString(), provider: 'test' });
+      const sessBook = fix.stacks.book<SessionDoc>('animator', 'sessions');
+      await sessBook.put({ id: fakeSessionId, status: 'completed', startedAt: new Date().toISOString(), provider: 'test' } as SessionDoc);
 
-      // Walk should collect (not run implement which has no completed upstream)
-      const r = await spider.crawl();
+      const r = await fix.spider.crawl();
       assert.equal(r?.action, 'engine-completed');
       assert.equal((r as { engineId: string }).engineId, 'draft');
     });
   });
 
-  // ── Engine readiness ───────────────────────────────────────────────
-
   describe('engine readiness — upstream must complete first', () => {
     it('only the first engine (no upstream) is runnable initially', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const [rig] = await rigsBook(stacks).list();
-
-      // All engines except draft should have upstream
+      const [rig] = await rigsBook(fix.stacks).list();
       const draft = rig.engines.find((e: EngineInstance) => e.id === 'draft');
       const implement = rig.engines.find((e: EngineInstance) => e.id === 'implement');
       assert.deepEqual(draft?.upstream, []);
@@ -214,59 +247,38 @@ describe('Spider', () => {
     });
 
     it('implement only launches after draft is completed', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
+      await book.patch(rig.id, { engines: completePipelineUpTo(rig.engines, 'implement') });
 
-      // Mark draft as completed
-      const updatedEngines = rig.engines.map((e: EngineInstance) =>
-        e.id === 'draft'
-          ? { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p' } }] }
-          : e,
-      );
-      await book.patch(rig.id, { engines: updatedEngines });
-
-      // Now walk should launch implement (quick engine → 'engine-started', not 'engine-completed')
-      const result = await spider.crawl();
+      const result = await fix.spider.crawl();
       assert.equal(result?.action, 'engine-started');
       assert.equal((result as { engineId: string }).engineId, 'implement');
     });
   });
 
-  // ── Quick engine execution (implement) ────────────────────────────
-
   describe('implement engine execution', () => {
     it('launches session on first walk, then collects yields on second walk', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig0] = await book.list();
+      await book.patch(rig0.id, { engines: completePipelineUpTo(rig0.engines, 'implement') });
 
-      // Pre-complete draft so implement can run
-      const updatedEngines = rig0.engines.map((e: EngineInstance) =>
-        e.id === 'draft'
-          ? { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p' } }] }
-          : e,
-      );
-      await book.patch(rig0.id, { engines: updatedEngines });
-
-      // Walk: implement launches an Animator session (quick engine → 'engine-started')
-      const result = await spider.crawl();
+      const result = await fix.spider.crawl();
       assert.equal(result?.action, 'engine-started');
       assert.equal((result as { engineId: string }).engineId, 'implement');
 
       const [rig1] = await book.list();
       const impl1 = rig1.engines.find((e: EngineInstance) => e.id === 'implement');
-      assert.equal(impl1?.status, 'running', 'engine should be running after launch');
-      assert.ok(impl1 && latestAttempt(impl1)?.sessionId !== undefined, 'sessionId should be stored');
+      assert.equal(impl1?.status, 'running');
+      assert.ok(impl1 && latestAttempt(impl1)?.sessionId !== undefined);
 
-      // Walk: collect step finds the terminal session and stores yields
-      const result2 = await spider.crawl();
+      const result2 = await fix.spider.crawl();
       assert.equal(result2?.action, 'engine-completed');
       assert.equal((result2 as { engineId: string }).engineId, 'implement');
 
@@ -274,25 +286,21 @@ describe('Spider', () => {
       const impl2 = rig2.engines.find((e: EngineInstance) => e.id === 'implement');
       assert.equal(impl2?.status, 'completed');
       const impl2Yields = impl2 ? latestAttempt(impl2)?.yields : undefined;
-      assert.ok(impl2Yields !== undefined, 'yields should be stored');
+      assert.ok(impl2Yields !== undefined);
       assert.doesNotThrow(() => JSON.stringify(impl2Yields));
     });
 
     it('marks engine failed and rig failed when engine design is not found', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
+      await book.patch(rig.id, {
+        engines: withEngine(rig.engines, 'draft', { designId: 'nonexistent-engine' }),
+      });
 
-      // Inject a bad designId for draft
-      const brokenEngines = rig.engines.map((e: EngineInstance) =>
-        e.id === 'draft' ? { ...e, designId: 'nonexistent-engine' } : e,
-      );
-      await book.patch(rig.id, { engines: brokenEngines });
-
-      const result = await spider.crawl();
+      const result = await fix.spider.crawl();
       assert.equal(result?.action, 'rig-completed');
       assert.equal((result as { outcome: string }).outcome, 'failed');
 
@@ -302,49 +310,32 @@ describe('Spider', () => {
       const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
       assert.equal(draft?.status, 'failed');
 
-      // All downstream engines should be cancelled
-      for (const id of ['implement', 'review', 'revise', 'seal']) {
-        const eng = updated.engines.find((e: EngineInstance) => e.id === id);
-        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
-        assert.equal(eng && latestAttempt(eng)?.endedAt, undefined, `${id} should not have endedAt`);
-        assert.equal(eng && latestAttempt(eng)?.error, undefined, `${id} should not have error`);
-      }
+      assertCancelled(updated, ['implement', 'review', 'revise', 'seal']);
     });
   });
 
-  // ── Yield serialization failure ────────────────────────────────────
-
   describe('yield serialization failure', () => {
     it('non-serializable engine yields cause engine and rig failure', async () => {
-      // Register an engine design that returns non-JSON-serializable yields.
       // BigInt causes JSON.stringify to throw, which trips the Spider's
       // `isJsonSerializable` guard and routes the engine through the
       // terminal-failure path.
       const badEngine: EngineDesign = {
         id: 'bad-engine',
-        async run() {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          return { status: 'completed' as const, yields: { big: 1n as any } };
-        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        async run() { return { status: 'completed', yields: { big: 1n as any } }; },
       };
-      const { clerk, spider, stacks } = buildFixture({}, { status: 'completed' }, {
-        customEngines: { 'bad-engine': badEngine },
-      });
+      const fix2 = buildFixture({}, { status: 'completed' }, { customEngines: { 'bad-engine': badEngine } });
 
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix2.clerk);
+      await fix2.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix2.stacks);
       const [rig] = await book.list();
-
-      // Patch draft to use the bad engine design
       await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) =>
-          e.id === 'draft' ? { ...e, designId: 'bad-engine' } : e,
-        ),
+        engines: withEngine(rig.engines, 'draft', { designId: 'bad-engine' }),
       });
 
-      const result = await spider.crawl();
+      const result = await fix2.spider.crawl();
       assert.ok(result !== null);
       assert.equal(result.action, 'rig-completed');
       assert.equal((result as { outcome: string }).outcome, 'failed');
@@ -355,220 +346,142 @@ describe('Spider', () => {
       const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
       assert.equal(draft?.status, 'failed');
       const draftErr = draft ? latestAttempt(draft)?.error : undefined;
-      assert.ok(draftErr !== undefined && draftErr.length > 0, `expected engine to have an error, got: ${draftErr}`);
+      assert.ok(draftErr !== undefined && draftErr.length > 0, `expected engine error, got: ${draftErr}`);
 
-      // All downstream engines should be cancelled
-      for (const id of ['implement', 'review', 'revise', 'seal']) {
-        const eng = updated.engines.find((e: EngineInstance) => e.id === id);
-        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
-        assert.equal(eng && latestAttempt(eng)?.endedAt, undefined, `${id} should not have endedAt`);
-        assert.equal(eng && latestAttempt(eng)?.error, undefined, `${id} should not have error`);
-      }
+      assertCancelled(updated, ['implement', 'review', 'revise', 'seal']);
     });
   });
 
-  // ── Implement engine — summon args and prompt wrapping ────────────
-
   describe('implement engine — Animator integration', () => {
     it('calls animator.summon() with role, prompt, cwd, environment, and metadata', async () => {
-      const { clerk, spider, stacks, summonCalls } = fix;
-      const writ = await postWrit(clerk, 'My commission', 'my-codex');
-      await spider.crawl(); // spawn
+      const writ = await postWrit(fix.clerk, 'My commission', 'my-codex');
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
       await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) =>
-          e.id === 'draft'
-            ? { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/the/worktree' } }] }
-            : e,
-        ),
+        engines: completeEngine(rig.engines, 'draft', draftYields('/the/worktree')),
       });
 
-      const launchResult = await spider.crawl(); // launch implement
+      const launchResult = await fix.spider.crawl();
       assert.equal(launchResult?.action, 'engine-started');
 
-      assert.equal(summonCalls.length, 1, 'summon should be called once');
-      const call = summonCalls[0];
-      assert.equal(call.role, 'artificer', 'role defaults to artificer');
-      assert.equal(call.cwd, '/the/worktree', 'cwd is draft worktree path');
+      assert.equal(fix.summonCalls.length, 1);
+      const call = fix.summonCalls[0];
+      assert.equal(call.role, 'artificer');
+      assert.equal(call.cwd, '/the/worktree');
       assert.deepEqual(call.environment, { GIT_AUTHOR_EMAIL: `${writ.id}@nexus.local` });
       assert.deepEqual(call.metadata, { engineId: 'implement', writId: writ.id });
     });
 
     it('wraps the writ body with a commit instruction', async () => {
-      const { clerk, spider, stacks, summonCalls } = fix;
-      await clerk.post({ title: 'My writ', body: 'Build the feature.' });
-      await spider.crawl(); // spawn
+      await fix.clerk.post({ title: 'My writ', body: 'Build the feature.' });
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) =>
-          e.id === 'draft'
-            ? { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/wt' } }] }
-            : e,
-        ),
-      });
+      await book.patch(rig.id, { engines: completePipelineUpTo(rig.engines, 'implement') });
 
-      const launchResult2 = await spider.crawl(); // launch implement
-      assert.equal(launchResult2?.action, 'engine-started');
+      const launchResult = await fix.spider.crawl();
+      assert.equal(launchResult?.action, 'engine-started');
 
-      assert.equal(summonCalls.length, 1);
-      const prompt = summonCalls[0].prompt as string;
-      assert.ok(prompt.startsWith('Build the feature.\n'), 'prompt starts with writ body');
-      assert.ok(prompt.includes('Commit all changes before ending your session.'), 'prompt includes commit instruction');
-      assert.ok(prompt.includes('<task-manifest>'), 'prompt includes task manifest execution instructions');
+      assert.equal(fix.summonCalls.length, 1);
+      const prompt = fix.summonCalls[0].prompt as string;
+      assert.ok(prompt.startsWith('Build the feature.\n'));
+      assert.ok(prompt.includes('Commit all changes before ending your session.'));
+      assert.ok(prompt.includes('<task-manifest>'));
     });
 
     it('execution epilogue includes task manifest processing rules', async () => {
-      const { clerk, spider, stacks, summonCalls } = fix;
-      await clerk.post({ title: 'My writ', body: 'Spec body here.' });
-      await spider.crawl(); // spawn
+      await fix.clerk.post({ title: 'My writ', body: 'Spec body here.' });
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) =>
-          e.id === 'draft'
-            ? { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/wt' } }] }
-            : e,
-        ),
-      });
+      await book.patch(rig.id, { engines: completePipelineUpTo(rig.engines, 'implement') });
 
-      await spider.crawl(); // launch implement
-      const prompt = summonCalls[0].prompt as string;
+      await fix.spider.crawl();
+      const prompt = fix.summonCalls[0].prompt as string;
 
-      // Verify key task manifest execution rules are present
-      assert.ok(prompt.includes('Work through tasks in the order listed'), 'includes ordering rule');
-      assert.ok(prompt.includes('<verify>'), 'includes verify checkpoint rule');
-      assert.ok(prompt.includes('<done>'), 'includes done criterion rule');
-      assert.ok(prompt.includes('<files>'), 'includes files blast-radius rule');
-      assert.ok(prompt.includes('Commit after each task'), 'includes commit-per-task rule');
-      assert.ok(prompt.includes('verify scope independently'), 'includes scope independence rule');
+      assert.ok(prompt.includes('Work through tasks in the order listed'));
+      assert.ok(prompt.includes('<verify>'));
+      assert.ok(prompt.includes('<done>'));
+      assert.ok(prompt.includes('<files>'));
+      assert.ok(prompt.includes('Commit after each task'));
+      assert.ok(prompt.includes('verify scope independently'));
     });
 
     it('session failure propagates: engine fails → rig failed → writ transitions to failed', async () => {
-      const { clerk, spider, stacks, setSessionOutcome } = fix;
-      setSessionOutcome({ status: 'failed', error: 'Process exited with code 1' });
+      fix.setSessionOutcome({ status: 'failed', error: 'Process exited with code 1' });
+      const writ = await postWrit(fix.clerk, 'Failing writ');
+      await fix.spider.crawl();
 
-      const writ = await postWrit(clerk, 'Failing writ');
-      await spider.crawl(); // spawn
-
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) =>
-          e.id === 'draft'
-            ? { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/wt' } }] }
-            : e,
-        ),
-      });
+      await book.patch(rig.id, { engines: completePipelineUpTo(rig.engines, 'implement') });
 
-      // Implement engine has maxAttempts:2 (up to 3 total attempts). Each
-      // failed attempt schedules a retry back-off hold. Loop until the budget
-      // is exhausted, clearing holdUntil each cycle to force immediate retry.
-      for (let i = 0; i < 10; i++) {
-        const [cur] = await book.list();
-        if (cur.status !== 'running') break;
-        // Clear any retry hold on implement so the next crawl dispatches.
-        const clearedEngines = cur.engines.map((e: EngineInstance) =>
-          e.id === 'implement' && e.status === 'pending' && e.holdReason === 'retry-backoff'
-            ? { ...e, holdUntil: undefined }
-            : e,
-        );
-        await book.patch(cur.id, { engines: clearedEngines });
-        await spider.crawl();
-      }
+      // Implement engine has maxAttempts:2 (3 total); each failed attempt
+      // schedules a retry back-off. Drive the budget to exhaustion.
+      await exhaustRetryBudget(fix, 'implement');
 
       const [updatedRig] = await book.list();
-      assert.equal(updatedRig.status, 'failed', 'rig should be failed');
+      assert.equal(updatedRig.status, 'failed');
       assertTerminalAt(updatedRig);
       const impl = updatedRig.engines.find((e: EngineInstance) => e.id === 'implement');
-      assert.equal(impl?.status, 'failed', 'implement engine should be failed');
+      assert.equal(impl?.status, 'failed');
 
-      // Completed upstream engine (draft) is preserved
       const draftEng = updatedRig.engines.find((e: EngineInstance) => e.id === 'draft');
-      assert.equal(draftEng?.status, 'completed', 'draft should remain completed');
+      assert.equal(draftEng?.status, 'completed');
 
-      // Pending downstream engines should be cancelled
-      for (const id of ['review', 'revise', 'seal']) {
-        const eng = updatedRig.engines.find((e: EngineInstance) => e.id === id);
-        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
-        assert.equal(eng && latestAttempt(eng)?.endedAt, undefined, `${id} should not have endedAt`);
-        assert.equal(eng && latestAttempt(eng)?.error, undefined, `${id} should not have error`);
-      }
+      assertCancelled(updatedRig, ['review', 'revise', 'seal']);
 
-      const failedWrit = await clerk.show(writ.id);
-      assert.equal(failedWrit.phase, 'failed', 'writ should transition to failed via CDC');
+      const failedWrit = await fix.clerk.show(writ.id);
+      assert.equal(failedWrit.phase, 'failed');
     });
 
     it('ImplementYields contain sessionId and sessionStatus from the session record', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk, 'Yields test');
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk, 'Yields test');
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) =>
-          e.id === 'draft'
-            ? { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/wt' } }] }
-            : e,
-        ),
-      });
+      await book.patch(rig.id, { engines: completePipelineUpTo(rig.engines, 'implement') });
 
-      await spider.crawl(); // launch
-      await spider.crawl(); // collect
+      await fix.spider.crawl(); // launch
+      await fix.spider.crawl(); // collect
 
       const [updated] = await book.list();
       const impl = updated.engines.find((e: EngineInstance) => e.id === 'implement');
       assert.equal(impl?.status, 'completed');
       const yields = (impl ? latestAttempt(impl)?.yields : undefined) as Record<string, unknown>;
-      assert.ok(typeof yields.sessionId === 'string', 'sessionId should be a string');
+      assert.ok(typeof yields.sessionId === 'string');
       assert.equal(yields.sessionStatus, 'completed');
     });
   });
 
-  // ── Quick engine collect ───────────────────────────────────────────
-
   describe('quick engine — collect', () => {
     it('collects yields from a terminal session in the sessions book', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
       const fakeSessionId = generateId('ses', 4);
 
-      // Simulate: draft completed, implement launched a session
-      const enginesWithSession = rig.engines.map((e: EngineInstance) => {
-        if (e.id === 'draft') {
-          return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'x', codexName: 'c', branch: 'b', path: '/p' } }] };
-        }
-        if (e.id === 'implement') {
-          return { ...e, status: 'running' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', sessionId: fakeSessionId }] };
-        }
-        return e;
-      });
-      await book.patch(rig.id, { engines: enginesWithSession });
+      const engines = withEngine(
+        completeEngine(rig.engines, 'draft', { draftId: 'x', codexName: 'c', branch: 'b', path: '/p' }),
+        'implement',
+        { status: 'running', attempts: [runningAttempt(fakeSessionId)] },
+      );
+      await book.patch(rig.id, { engines });
 
-      // Insert terminal session record
-      const sessBook = stacks.book<{
-        id: string; status: string; startedAt: string; provider: string;
-        output?: string; [key: string]: unknown;
-      }>('animator', 'sessions');
+      const sessBook = fix.stacks.book<SessionDoc>('animator', 'sessions');
       await sessBook.put({
-        id: fakeSessionId,
-        status: 'completed',
-        startedAt: new Date().toISOString(),
-        provider: 'test',
+        id: fakeSessionId, status: 'completed', startedAt: new Date().toISOString(), provider: 'test',
         output: 'Session completed successfully',
-      });
+      } as SessionDoc);
 
-      // Walk: collect step should find the terminal session
-      const result = await spider.crawl();
+      const result = await fix.spider.crawl();
       assert.equal(result?.action, 'engine-completed');
       assert.equal((result as { engineId: string }).engineId, 'implement');
 
@@ -583,57 +496,28 @@ describe('Spider', () => {
     });
 
     it('marks engine failed and rig failed when session failed', async () => {
-      const { clerk, spider, stacks, setSessionOutcome } = fix;
-      // Ensure any retried launches also fail, so the retry budget exhausts.
-      setSessionOutcome({ status: 'failed', error: 'Process exited with code 1' });
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      // Ensure retried launches also fail so the retry budget exhausts.
+      fix.setSessionOutcome({ status: 'failed', error: 'Process exited with code 1' });
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
       const fakeSessionId = generateId('ses', 4);
+      const engines = withEngine(
+        completeEngine(rig.engines, 'draft', { draftId: 'x' }),
+        'implement',
+        { status: 'running', attempts: [runningAttempt(fakeSessionId)] },
+      );
+      await book.patch(rig.id, { engines });
 
-      const enginesWithSession = rig.engines.map((e: EngineInstance) => {
-        if (e.id === 'draft') {
-          return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'x' } }] };
-        }
-        if (e.id === 'implement') {
-          return { ...e, status: 'running' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', sessionId: fakeSessionId }] };
-        }
-        return e;
-      });
-      await book.patch(rig.id, { engines: enginesWithSession });
-
-      const sessBook = stacks.book<{
-        id: string; status: string; startedAt: string; provider: string;
-        error?: string; [key: string]: unknown;
-      }>('animator', 'sessions');
+      const sessBook = fix.stacks.book<SessionDoc>('animator', 'sessions');
       await sessBook.put({
-        id: fakeSessionId,
-        status: 'failed',
-        startedAt: new Date().toISOString(),
-        provider: 'test',
+        id: fakeSessionId, status: 'failed', startedAt: new Date().toISOString(), provider: 'test',
         error: 'Process exited with code 1',
-      });
+      } as SessionDoc);
 
-      // Drive the retry budget to exhaustion: implement has maxAttempts:2
-      // so up to 3 attempts will each observe the failed session. Clear
-      // the retry-backoff hold between crawls so the next dispatch happens
-      // immediately; the dispatcher appends a fresh attempts[] row and the
-      // new run launches a new session. The mock animator writes a failed
-      // session record for each launch, so each retry ends the same way.
-      let result: Awaited<ReturnType<typeof spider.crawl>> | null = null;
-      for (let i = 0; i < 10; i++) {
-        const [cur] = await book.list();
-        if (cur.status !== 'running') break;
-        const clearedEngines = cur.engines.map((e: EngineInstance) =>
-          e.id === 'implement' && e.status === 'pending' && e.holdReason === 'retry-backoff'
-            ? { ...e, holdUntil: undefined }
-            : e,
-        );
-        await book.patch(cur.id, { engines: clearedEngines });
-        result = await spider.crawl();
-      }
+      const result = await exhaustRetryBudget(fix, 'implement');
       assert.equal(result?.action, 'rig-completed');
       assert.equal((result as { outcome: string }).outcome, 'failed');
 
@@ -643,94 +527,54 @@ describe('Spider', () => {
       const impl = updated.engines.find((e: EngineInstance) => e.id === 'implement');
       assert.equal(impl?.status, 'failed');
 
-      // Pending downstream engines should be cancelled
-      for (const id of ['review', 'revise', 'seal']) {
-        const eng = updated.engines.find((e: EngineInstance) => e.id === id);
-        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
-        assert.equal(eng && latestAttempt(eng)?.endedAt, undefined, `${id} should not have endedAt`);
-        assert.equal(eng && latestAttempt(eng)?.error, undefined, `${id} should not have error`);
-      }
+      assertCancelled(updated, ['review', 'revise', 'seal']);
     });
 
     it('does not collect a still-running session', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
       const fakeSessionId = generateId('ses', 4);
+      const engines = withEngine(
+        completeEngine(rig.engines, 'draft', { draftId: 'x' }),
+        'implement',
+        { status: 'running', attempts: [runningAttempt(fakeSessionId)] },
+      );
+      await book.patch(rig.id, { engines });
 
-      const enginesWithSession = rig.engines.map((e: EngineInstance) => {
-        if (e.id === 'draft') {
-          return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'x' } }] };
-        }
-        if (e.id === 'implement') {
-          return { ...e, status: 'running' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', sessionId: fakeSessionId }] };
-        }
-        return e;
-      });
-      await book.patch(rig.id, { engines: enginesWithSession });
+      const sessBook = fix.stacks.book<SessionDoc>('animator', 'sessions');
+      await sessBook.put({ id: fakeSessionId, status: 'running', startedAt: new Date().toISOString(), provider: 'test' } as SessionDoc);
 
-      // Session is still running
-      const sessBook = stacks.book<{
-        id: string; status: string; startedAt: string; provider: string; [key: string]: unknown;
-      }>('animator', 'sessions');
-      await sessBook.put({
-        id: fakeSessionId,
-        status: 'running',
-        startedAt: new Date().toISOString(),
-        provider: 'test',
-      });
-
-      // Nothing to collect, implement is running (no pending with completed upstream),
-      // spawn skips (rig exists) → null
-      const result = await spider.crawl();
+      const result = await fix.spider.crawl();
       assert.equal(result, null);
     });
 
     it('does not collect a still-pending session (regression: pre-write SessionDoc)', async () => {
-      // Regression for the bug where launchDetached pre-wrote a 'pending'
-      // SessionDoc before spawning the babysitter, and tryCollect treated
-      // 'pending' as a terminal status. The result was that engines marked
-      // themselves complete with sessionStatus: 'pending' as their yields,
-      // and rigs finished with no actual work performed.
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      // Regression: launchDetached pre-wrote a 'pending' SessionDoc before
+      // spawning the babysitter, and tryCollect treated 'pending' as
+      // terminal. Engines marked themselves complete with sessionStatus:
+      // 'pending' as their yields and rigs finished with no actual work.
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
       const fakeSessionId = generateId('ses', 4);
+      const engines = withEngine(
+        completeEngine(rig.engines, 'draft', { draftId: 'x' }),
+        'implement',
+        { status: 'running', attempts: [runningAttempt(fakeSessionId)] },
+      );
+      await book.patch(rig.id, { engines });
 
-      const enginesWithSession = rig.engines.map((e: EngineInstance) => {
-        if (e.id === 'draft') {
-          return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'x' } }] };
-        }
-        if (e.id === 'implement') {
-          return { ...e, status: 'running' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', sessionId: fakeSessionId }] };
-        }
-        return e;
-      });
-      await book.patch(rig.id, { engines: enginesWithSession });
+      const sessBook = fix.stacks.book<SessionDoc>('animator', 'sessions');
+      await sessBook.put({ id: fakeSessionId, status: 'pending', startedAt: new Date().toISOString(), provider: 'test' } as SessionDoc);
 
-      // Session is freshly pre-written but the babysitter hasn't yet
-      // transitioned it to 'running' or anything else.
-      const sessBook = stacks.book<{
-        id: string; status: string; startedAt: string; provider: string; [key: string]: unknown;
-      }>('animator', 'sessions');
-      await sessBook.put({
-        id: fakeSessionId,
-        status: 'pending',
-        startedAt: new Date().toISOString(),
-        provider: 'test',
-      });
-
-      // tryCollect must skip pending → no action this crawl.
-      const result = await spider.crawl();
+      const result = await fix.spider.crawl();
       assert.equal(result, null);
 
-      // Engine must still be running, not completed with bogus yields.
       const [updated] = await book.list();
       const impl = updated.engines.find((e: EngineInstance) => e.id === 'implement');
       assert.equal(impl?.status, 'running');
@@ -740,212 +584,149 @@ describe('Spider', () => {
     });
   });
 
-  // ── Failure propagation ────────────────────────────────────────────
-
   describe('failure propagation', () => {
     it('engine failure → rig failed → writ transitions to failed via CDC', async () => {
-      const { clerk, spider, stacks } = fix;
-      const writ = await postWrit(clerk);
-
-      await spider.crawl(); // spawn
-      const activeWrit = await clerk.show(writ.id);
+      const writ = await postWrit(fix.clerk);
+      await fix.spider.crawl();
+      const activeWrit = await fix.clerk.show(writ.id);
       assert.equal(activeWrit.phase, 'open');
 
-      // Inject bad design to trigger failure
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
-      const brokenEngines = rig.engines.map((e: EngineInstance) =>
-        e.id === 'draft' ? { ...e, designId: 'broken' } : e,
-      );
-      await book.patch(rig.id, { engines: brokenEngines });
+      await book.patch(rig.id, { engines: withEngine(rig.engines, 'draft', { designId: 'broken' }) });
 
-      // Walk: engine fails → rig failed → CDC → writ failed
-      await spider.crawl();
+      await fix.spider.crawl();
 
       const [updatedRig] = await book.list();
       assert.equal(updatedRig.status, 'failed');
       assertTerminalAt(updatedRig);
 
       const failedDraft = updatedRig.engines.find((e: EngineInstance) => e.id === 'draft');
-      assert.equal(failedDraft?.status, 'failed', 'draft engine should be failed');
+      assert.equal(failedDraft?.status, 'failed');
 
-      // All downstream engines should be cancelled
-      for (const id of ['implement', 'review', 'revise', 'seal']) {
-        const eng = updatedRig.engines.find((e: EngineInstance) => e.id === id);
-        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
-        assert.equal(eng && latestAttempt(eng)?.endedAt, undefined, `${id} should not have endedAt`);
-        assert.equal(eng && latestAttempt(eng)?.error, undefined, `${id} should not have error`);
-      }
+      assertCancelled(updatedRig, ['implement', 'review', 'revise', 'seal']);
 
-      const failedWrit = await clerk.show(writ.id);
+      const failedWrit = await fix.clerk.show(writ.id);
       assert.equal(failedWrit.phase, 'failed');
     });
   });
 
-  // ── Givens/context assembly ────────────────────────────────────────
-
   describe('givens and context assembly', () => {
     it('each engine receives only the givens it needs', async () => {
-      const { clerk, spider, stacks } = fix;
-      const writ = await postWrit(clerk, 'My writ');
-      await spider.crawl(); // spawn
+      const writ = await postWrit(fix.clerk, 'My writ');
+      await fix.spider.crawl();
 
-      const [rig] = await rigsBook(stacks).list();
+      const [rig] = await rigsBook(fix.stacks).list();
       const eng = (id: string) => rig.engines.find((e: EngineInstance) => e.id === id)!;
 
-      // draft: { writ } — no role
-      assert.ok('writ' in eng('draft').givensSpec, 'draft should have writ');
-      assert.ok(!('role' in eng('draft').givensSpec), 'draft should not have role');
+      assert.ok('writ' in eng('draft').givensSpec);
+      assert.ok(!('role' in eng('draft').givensSpec));
       assert.equal((eng('draft').givensSpec.writ as WritDoc).id, writ.id);
 
-      // implement: { writ, role }
-      assert.ok('writ' in eng('implement').givensSpec, 'implement should have writ');
-      assert.ok('role' in eng('implement').givensSpec, 'implement should have role');
+      assert.ok('writ' in eng('implement').givensSpec);
+      assert.ok('role' in eng('implement').givensSpec);
       assert.equal((eng('implement').givensSpec.writ as WritDoc).id, writ.id);
 
-      // review: { writ, role: 'reviewer' }
-      assert.ok('writ' in eng('review').givensSpec, 'review should have writ');
-      assert.equal(eng('review').givensSpec.role, 'reviewer', 'review role should be hardcoded reviewer');
+      assert.ok('writ' in eng('review').givensSpec);
+      assert.equal(eng('review').givensSpec.role, 'reviewer');
 
-      // revise: { writ, role }
-      assert.ok('writ' in eng('revise').givensSpec, 'revise should have writ');
-      assert.ok('role' in eng('revise').givensSpec, 'revise should have role');
+      assert.ok('writ' in eng('revise').givensSpec);
+      assert.ok('role' in eng('revise').givensSpec);
 
-      // seal: {}
-      assert.deepEqual(eng('seal').givensSpec, {}, 'seal should get empty givensSpec');
+      assert.deepEqual(eng('seal').givensSpec, {});
     });
 
     it('role defaults to "artificer" when not configured', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const [rig] = await rigsBook(stacks).list();
+      const [rig] = await rigsBook(fix.stacks).list();
       const implementEngine = rig.engines.find((e: EngineInstance) => e.id === 'implement');
       assert.equal(implementEngine?.givensSpec.role, 'artificer');
     });
 
     it('upstream map is built from completed engine yields', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
 
-      // Mark draft + implement as completed
-      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' };
-      const implYields = { sessionId: 'stub', sessionStatus: 'completed' };
-      const updatedEngines = rig.engines.map((e: EngineInstance) => {
-        if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: draftYields }] };
-        if (e.id === 'implement') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: implYields }] };
-        return e;
-      });
-      await book.patch(rig.id, { engines: updatedEngines });
+      await book.patch(rig.id, { engines: completePipelineUpTo(rig.engines, 'review') });
 
-      // Walk: review launches a session (quick engine → 'engine-started')
-      const result = await spider.crawl();
+      const result = await fix.spider.crawl();
       assert.equal(result?.action, 'engine-started');
       assert.equal((result as { engineId: string }).engineId, 'review');
 
-      // Walk: collect step picks up the completed review session
-      const result2 = await spider.crawl();
+      const result2 = await fix.spider.crawl();
       assert.equal(result2?.action, 'engine-completed');
       assert.equal((result2 as { engineId: string }).engineId, 'review');
     });
   });
 
-  // ── Draft engine — baseSha population ──────────────────────────────
-
   describe('draft engine — baseSha', () => {
     it('includes baseSha in DraftYields when draft is completed', async () => {
-      // The draft engine calls execSync('git rev-parse HEAD') which we can't
-      // run in test (no real Scriptorium). Verify that baseSha flows through
-      // the rig correctly when pre-completed with yields.
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      // The draft engine calls execSync('git rev-parse HEAD'); we can't
+      // run that in test (no real Scriptorium). Verify baseSha flows
+      // through when pre-completed with yields.
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
-      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'abc123def' };
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) =>
-          e.id === 'draft' ? { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: draftYields }] } : e,
-        ),
-      });
+      const yields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'abc123def' };
+      await book.patch(rig.id, { engines: completeEngine(rig.engines, 'draft', yields) });
 
-      // Verify baseSha is present in the stored yields
       const [updated] = await book.list();
       const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
       assert.equal(draft?.status, 'completed');
-      const yields = (draft ? latestAttempt(draft)?.yields : undefined) as Record<string, unknown>;
-      assert.equal(yields.baseSha, 'abc123def', 'baseSha should be populated in DraftYields');
+      const stored = (draft ? latestAttempt(draft)?.yields : undefined) as Record<string, unknown>;
+      assert.equal(stored.baseSha, 'abc123def');
     });
   });
 
-  // ── Full pipeline ─────────────────────────────────────────────────
-
   describe('full pipeline', () => {
     it('walks through implement → review → revise → rig completion → writ completed', async () => {
-      const { clerk, spider, stacks } = fix;
-      const writ = await postWrit(clerk, 'Full pipeline test');
+      const writ = await postWrit(fix.clerk, 'Full pipeline test');
+      await fix.spider.crawl();
 
-      await spider.crawl(); // spawn
-
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig0] = await book.list();
+      await book.patch(rig0.id, { engines: completePipelineUpTo(rig0.engines, 'implement') });
 
-      // Pre-complete draft (real impl would need codexes)
-      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' };
-      await book.patch(rig0.id, {
-        engines: rig0.engines.map((e: EngineInstance) =>
-          e.id === 'draft' ? { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: draftYields }] } : e,
-        ),
-      });
-
-      // Walk: implement launches an Animator session (quick engine)
-      const r1 = await spider.crawl();
+      const r1 = await fix.spider.crawl();
       assert.equal(r1?.action, 'engine-started');
       assert.equal((r1 as { engineId: string }).engineId, 'implement');
 
-      // Walk: collect step picks up the completed implement session
-      const r1c = await spider.crawl();
+      const r1c = await fix.spider.crawl();
       assert.equal(r1c?.action, 'engine-completed');
       assert.equal((r1c as { engineId: string }).engineId, 'implement');
 
-      // Walk: review launches a session (quick engine)
-      const r2 = await spider.crawl();
+      const r2 = await fix.spider.crawl();
       assert.equal(r2?.action, 'engine-started');
       assert.equal((r2 as { engineId: string }).engineId, 'review');
 
-      // Walk: collect review session
-      const r2c = await spider.crawl();
+      const r2c = await fix.spider.crawl();
       assert.equal(r2c?.action, 'engine-completed');
       assert.equal((r2c as { engineId: string }).engineId, 'review');
 
-      // Walk: revise launches a session (quick engine)
-      const r3 = await spider.crawl();
+      const r3 = await fix.spider.crawl();
       assert.equal(r3?.action, 'engine-started');
       assert.equal((r3 as { engineId: string }).engineId, 'revise');
 
-      // Walk: collect revise session
-      const r3c = await spider.crawl();
+      const r3c = await fix.spider.crawl();
       assert.equal(r3c?.action, 'engine-completed');
       assert.equal((r3c as { engineId: string }).engineId, 'revise');
 
-      // Pre-complete seal (real impl would need codexes)
+      // Pre-complete seal (real impl would need codexes).
       const [rig3] = await book.list();
       const sealYields = { sealedCommit: 'abc123', strategy: 'fast-forward', retries: 0, inscriptionsSealed: 5 };
       await book.patch(rig3.id, {
-        engines: rig3.engines.map((e: EngineInstance) =>
-          e.id === 'seal' ? { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: sealYields }] } : e,
-        ),
+        engines: completeEngine(rig3.engines, 'seal', sealYields),
         status: 'completed',
       });
 
-      // CDC should have fired — writ should now be completed
-      const finalWrit = await clerk.show(writ.id);
+      const finalWrit = await fix.clerk.show(writ.id);
       assert.equal(finalWrit.phase, 'completed');
 
       const [finalRig] = await book.list();
@@ -953,72 +734,54 @@ describe('Spider', () => {
     });
 
     it('walks all 5 engines to rig completion without manual seal patching', async () => {
-      // Register a stub seal engine that doesn't require Scriptorium
       const stubSealEngine: EngineDesign = {
         id: 'seal',
         async run() {
           return {
-            status: 'completed' as const,
+            status: 'completed',
             yields: { sealedCommit: 'abc', strategy: 'fast-forward' as const, retries: 0, inscriptionsSealed: 1 },
           };
         },
       };
-      const { clerk, spider, stacks, setSessionOutcome } = buildFixture({}, { status: 'completed' }, {
-        customEngines: { seal: stubSealEngine },
-      });
+      const fix2 = buildFixture({}, { status: 'completed' }, { customEngines: { seal: stubSealEngine } });
 
-      const writ = await postWrit(clerk, 'Full pipeline stub seal');
-      await spider.crawl(); // spawn
+      const writ = await postWrit(fix2.clerk, 'Full pipeline stub seal');
+      await fix2.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix2.stacks);
       const [rig0] = await book.list();
+      await book.patch(rig0.id, { engines: completePipelineUpTo(rig0.engines, 'implement') });
 
-      // Pre-complete draft (requires Scriptorium — not available in tests)
-      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' };
-      await book.patch(rig0.id, {
-        engines: rig0.engines.map((e: EngineInstance) =>
-          e.id === 'draft' ? { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: draftYields }] } : e,
-        ),
-      });
-
-      // implement launches
-      const r1 = await spider.crawl();
+      const r1 = await fix2.spider.crawl();
       assert.equal(r1?.action, 'engine-started');
       assert.equal((r1 as { engineId: string }).engineId, 'implement');
 
-      // collect implement
-      const r1c = await spider.crawl();
+      const r1c = await fix2.spider.crawl();
       assert.equal(r1c?.action, 'engine-completed');
       assert.equal((r1c as { engineId: string }).engineId, 'implement');
 
-      // review launches (quick engine)
-      const r2 = await spider.crawl();
+      const r2 = await fix2.spider.crawl();
       assert.equal(r2?.action, 'engine-started');
       assert.equal((r2 as { engineId: string }).engineId, 'review');
 
-      // collect review
-      const r2c = await spider.crawl();
+      const r2c = await fix2.spider.crawl();
       assert.equal(r2c?.action, 'engine-completed');
       assert.equal((r2c as { engineId: string }).engineId, 'review');
 
-      // revise launches (quick engine)
-      const r3 = await spider.crawl();
+      const r3 = await fix2.spider.crawl();
       assert.equal(r3?.action, 'engine-started');
       assert.equal((r3 as { engineId: string }).engineId, 'revise');
 
-      // collect revise
-      const r3c = await spider.crawl();
+      const r3c = await fix2.spider.crawl();
       assert.equal(r3c?.action, 'engine-completed');
       assert.equal((r3c as { engineId: string }).engineId, 'revise');
 
-      // seal runs (stub) — last engine → rig completes
-      const r4 = await spider.crawl();
+      const r4 = await fix2.spider.crawl();
       assert.equal(r4?.action, 'rig-completed');
       assert.equal((r4 as { outcome: string }).outcome, 'completed');
 
-      // CDC should have fired — writ should now be completed
-      const finalWrit = await clerk.show(writ.id);
-      assert.equal(finalWrit.phase, 'completed', 'writ should transition to completed via CDC');
+      const finalWrit = await fix2.clerk.show(writ.id);
+      assert.equal(finalWrit.phase, 'completed');
 
       const [finalRig] = await book.list();
       assert.equal(finalRig.status, 'completed');
@@ -1026,69 +789,52 @@ describe('Spider', () => {
     });
   });
 
-  // ── Review engine — Animator integration ─────────────────────────
-
   describe('review engine — Animator integration', () => {
     it('calls animator.summon() with reviewer role, draft cwd, and prompt containing spec', async () => {
-      const { clerk, spider, stacks, summonCalls } = fix;
-      const writ = await postWrit(clerk, 'Review integration test');
-      await spider.crawl(); // spawn
+      const writ = await postWrit(fix.clerk, 'Review integration test');
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
-      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' };
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: draftYields }] };
-          if (e.id === 'implement') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } }] };
-          return e;
-        }),
-      });
+      await book.patch(rig.id, { engines: completePipelineUpTo(rig.engines, 'review') });
 
-      const result = await spider.crawl(); // launch review
+      const result = await fix.spider.crawl();
       assert.equal(result?.action, 'engine-started');
       assert.equal((result as { engineId: string }).engineId, 'review');
 
-      assert.equal(summonCalls.length, 1, 'summon should be called once for review');
-      const call = summonCalls[0];
-      assert.equal(call.role, 'reviewer', 'review engine uses reviewer role');
-      assert.equal(call.cwd, '/p', 'cwd is the draft worktree path');
-      assert.ok(call.prompt.includes('# Code Review'), 'prompt includes review header');
-      assert.ok(call.prompt.includes(writ.body), 'prompt includes writ body (spec)');
-      assert.ok(call.prompt.includes('## Instructions'), 'prompt includes instructions section');
-      assert.ok(call.prompt.includes('### Overall: PASS or FAIL'), 'prompt includes findings format');
-      assert.deepEqual(call.metadata?.mechanicalChecks, [], 'no mechanical checks when not configured');
+      assert.equal(fix.summonCalls.length, 1);
+      const call = fix.summonCalls[0];
+      assert.equal(call.role, 'reviewer');
+      assert.equal(call.cwd, '/p');
+      assert.ok(call.prompt.includes('# Code Review'));
+      assert.ok(call.prompt.includes(writ.body));
+      assert.ok(call.prompt.includes('## Instructions'));
+      assert.ok(call.prompt.includes('### Overall: PASS or FAIL'));
+      assert.deepEqual(call.metadata?.mechanicalChecks, []);
     });
 
     it('collects ReviewYields: parses PASS from session.output', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
       const fakeSessionId = generateId('ses', 4);
       const findings = '### Overall: PASS\n\n### Completeness\nAll requirements met.';
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } }] };
-          if (e.id === 'implement') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } }] };
-          if (e.id === 'review') return { ...e, status: 'running' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', sessionId: fakeSessionId }] };
-          return e;
-        }),
-      });
+      const engines = withEngine(
+        completePipelineUpTo(rig.engines, 'review'),
+        'review',
+        { status: 'running', attempts: [runningAttempt(fakeSessionId)] },
+      );
+      await book.patch(rig.id, { engines });
 
-      const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+      const sessBook = fix.stacks.book<SessionDoc>('animator', 'sessions');
       await sessBook.put({
-        id: fakeSessionId,
-        status: 'completed',
-        startedAt: new Date().toISOString(),
-        provider: 'test',
-        output: findings,
-        metadata: { mechanicalChecks: [] },
-      });
+        id: fakeSessionId, status: 'completed', startedAt: new Date().toISOString(), provider: 'test',
+        output: findings, metadata: { mechanicalChecks: [] },
+      } as SessionDoc);
 
-      const result = await spider.crawl(); // collect review
+      const result = await fix.spider.crawl();
       assert.equal(result?.action, 'engine-completed');
       assert.equal((result as { engineId: string }).engineId, 'review');
 
@@ -1096,77 +842,63 @@ describe('Spider', () => {
       const reviewEngine = updated.engines.find((e: EngineInstance) => e.id === 'review');
       const yields = (reviewEngine ? latestAttempt(reviewEngine)?.yields : undefined) as ReviewYields;
       assert.equal(yields.sessionId, fakeSessionId);
-      assert.equal(yields.passed, true, 'passed should be true when output contains PASS');
+      assert.equal(yields.passed, true);
       assert.equal(yields.findings, findings);
       assert.deepEqual(yields.mechanicalChecks, []);
     });
 
     it('collects ReviewYields: passed is false when output contains FAIL', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
       const fakeSessionId = generateId('ses', 4);
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } }] };
-          if (e.id === 'implement') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } }] };
-          if (e.id === 'review') return { ...e, status: 'running' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', sessionId: fakeSessionId }] };
-          return e;
-        }),
-      });
+      const engines = withEngine(
+        completePipelineUpTo(rig.engines, 'review'),
+        'review',
+        { status: 'running', attempts: [runningAttempt(fakeSessionId)] },
+      );
+      await book.patch(rig.id, { engines });
 
-      const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+      const sessBook = fix.stacks.book<SessionDoc>('animator', 'sessions');
       await sessBook.put({
-        id: fakeSessionId,
-        status: 'completed',
-        startedAt: new Date().toISOString(),
-        provider: 'test',
-        output: '### Overall: FAIL\n\n### Required Changes\n1. Fix the bug.',
-        metadata: { mechanicalChecks: [] },
-      });
+        id: fakeSessionId, status: 'completed', startedAt: new Date().toISOString(), provider: 'test',
+        output: '### Overall: FAIL\n\n### Required Changes\n1. Fix the bug.', metadata: { mechanicalChecks: [] },
+      } as SessionDoc);
 
-      await spider.crawl(); // collect review
+      await fix.spider.crawl();
       const [updated] = await book.list();
       const reviewEngine = updated.engines.find((e: EngineInstance) => e.id === 'review');
       const yields = (reviewEngine ? latestAttempt(reviewEngine)?.yields : undefined) as ReviewYields;
-      assert.equal(yields.passed, false, 'passed should be false when output contains FAIL');
+      assert.equal(yields.passed, false);
     });
 
     it('collects ReviewYields: mechanicalChecks retrieved from session.metadata', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
       const fakeSessionId = generateId('ses', 4);
       const checks: MechanicalCheck[] = [
         { name: 'build', passed: true, output: 'Build succeeded', durationMs: 1200 },
         { name: 'test', passed: false, output: '3 tests failed', durationMs: 4500 },
       ];
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } }] };
-          if (e.id === 'implement') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } }] };
-          if (e.id === 'review') return { ...e, status: 'running' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', sessionId: fakeSessionId }] };
-          return e;
-        }),
-      });
+      const engines = withEngine(
+        completePipelineUpTo(rig.engines, 'review'),
+        'review',
+        { status: 'running', attempts: [runningAttempt(fakeSessionId)] },
+      );
+      await book.patch(rig.id, { engines });
 
-      const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
+      const sessBook = fix.stacks.book<SessionDoc>('animator', 'sessions');
       await sessBook.put({
-        id: fakeSessionId,
-        status: 'completed',
-        startedAt: new Date().toISOString(),
-        provider: 'test',
-        output: '### Overall: FAIL',
-        metadata: { mechanicalChecks: checks },
-      });
+        id: fakeSessionId, status: 'completed', startedAt: new Date().toISOString(), provider: 'test',
+        output: '### Overall: FAIL', metadata: { mechanicalChecks: checks },
+      } as SessionDoc);
 
-      await spider.crawl(); // collect review
+      await fix.spider.crawl();
       const [updated] = await book.list();
       const reviewEngine = updated.engines.find((e: EngineInstance) => e.id === 'review');
       const yields = (reviewEngine ? latestAttempt(reviewEngine)?.yields : undefined) as ReviewYields;
@@ -1178,222 +910,162 @@ describe('Spider', () => {
     });
   });
 
-  // ── Review engine — mechanical checks ────────────────────────────
-
   describe('review engine — mechanical checks', () => {
     let mechFix: ReturnType<typeof buildFixture>;
 
     beforeEach(() => {
       mechFix = buildFixture({
-        spider: {
-          variables: { buildCommand: 'echo "build output"', testCommand: 'exit 1' },
-        },
+        spider: { variables: { buildCommand: 'echo "build output"', testCommand: 'exit 1' } },
       });
     });
 
-    afterEach(() => {
-      clearGuild();
-    });
+    afterEach(() => { clearGuild(); });
 
     it('executes build and test commands; captures pass/fail from exit code', async () => {
-      const { clerk, spider, stacks, summonCalls } = mechFix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(mechFix.clerk);
+      await mechFix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(mechFix.stacks);
       const [rig] = await book.list();
       await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/tmp', baseSha: 'sha1' } }] };
-          if (e.id === 'implement') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } }] };
-          return e;
-        }),
+        engines: completeEngine(
+          completeEngine(rig.engines, 'draft', draftYields('/tmp')),
+          'implement',
+          implYields,
+        ),
       });
 
-      const result = await spider.crawl(); // launch review (runs checks first)
+      const result = await mechFix.spider.crawl();
       assert.equal(result?.action, 'engine-started');
 
-      assert.equal(summonCalls.length, 1);
-      const checks = summonCalls[0].metadata?.mechanicalChecks as MechanicalCheck[];
-      assert.equal(checks.length, 2, 'both build and test checks should run');
+      assert.equal(mechFix.summonCalls.length, 1);
+      const checks = mechFix.summonCalls[0].metadata?.mechanicalChecks as MechanicalCheck[];
+      assert.equal(checks.length, 2);
 
       const buildCheck = checks.find((c) => c.name === 'build');
-      assert.ok(buildCheck, 'build check should be present');
-      assert.equal(buildCheck!.passed, true, 'echo exits 0 → passed');
-      assert.ok(buildCheck!.output.includes('build output'), 'output captured from stdout');
-      assert.ok(typeof buildCheck!.durationMs === 'number', 'durationMs recorded');
+      assert.ok(buildCheck);
+      assert.equal(buildCheck!.passed, true);
+      assert.ok(buildCheck!.output.includes('build output'));
+      assert.ok(typeof buildCheck!.durationMs === 'number');
 
       const testCheck = checks.find((c) => c.name === 'test');
-      assert.ok(testCheck, 'test check should be present');
-      assert.equal(testCheck!.passed, false, 'exit 1 → failed');
+      assert.ok(testCheck);
+      assert.equal(testCheck!.passed, false);
     });
 
     it('skips checks gracefully when no buildCommand or testCommand configured', async () => {
-      const noCmdFix = buildFixture({ spider: {} }); // no buildCommand/testCommand
-      const { clerk, spider: w, stacks: s, summonCalls: sc } = noCmdFix;
-      await postWrit(clerk);
-      await w.crawl(); // spawn
+      const noCmdFix = buildFixture({ spider: {} });
+      await postWrit(noCmdFix.clerk);
+      await noCmdFix.spider.crawl();
 
-      const book = rigsBook(s);
+      const book = rigsBook(noCmdFix.stacks);
       const [rig] = await book.list();
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } }] };
-          if (e.id === 'implement') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } }] };
-          return e;
-        }),
-      });
+      await book.patch(rig.id, { engines: completePipelineUpTo(rig.engines, 'review') });
 
-      await w.crawl(); // launch review
-      assert.deepEqual(sc[0].metadata?.mechanicalChecks, [], 'no checks when commands not configured');
+      await noCmdFix.spider.crawl();
+      assert.deepEqual(noCmdFix.summonCalls[0].metadata?.mechanicalChecks, []);
       clearGuild();
     });
 
     it('truncates check output to 4KB', async () => {
-      const bigFix = buildFixture({
-        spider: { variables: { buildCommand: 'python3 -c "print(\'x\' * 8192)"' } },
-      });
-      const { clerk, spider: w, stacks: s, summonCalls: sc } = bigFix;
-      await postWrit(clerk);
-      await w.crawl(); // spawn
+      const bigFix = buildFixture({ spider: { variables: { buildCommand: 'python3 -c "print(\'x\' * 8192)"' } } });
+      await postWrit(bigFix.clerk);
+      await bigFix.spider.crawl();
 
-      const book = rigsBook(s);
+      const book = rigsBook(bigFix.stacks);
       const [rig] = await book.list();
       await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/tmp', baseSha: 'sha1' } }] };
-          if (e.id === 'implement') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } }] };
-          return e;
-        }),
+        engines: completeEngine(
+          completeEngine(rig.engines, 'draft', draftYields('/tmp')),
+          'implement',
+          implYields,
+        ),
       });
 
-      await w.crawl(); // launch review (runs check with big output)
-      const checks = sc[0].metadata?.mechanicalChecks as MechanicalCheck[];
-      assert.ok(checks[0].output.length <= 4096, `output should be truncated to 4KB, got ${checks[0].output.length} chars`);
+      await bigFix.spider.crawl();
+      const checks = bigFix.summonCalls[0].metadata?.mechanicalChecks as MechanicalCheck[];
+      assert.ok(checks[0].output.length <= 4096, `output should be ≤ 4KB, got ${checks[0].output.length}`);
       clearGuild();
     });
   });
 
-  // ── Revise engine — Animator integration ─────────────────────────
-
   describe('revise engine — Animator integration', () => {
+    const passingReview: ReviewYields = {
+      sessionId: 'rev-1', passed: true, findings: '### Overall: PASS\nAll good.', mechanicalChecks: [],
+    };
+    const failingReview: ReviewYields = {
+      sessionId: 'rev-1', passed: false, findings: '### Overall: FAIL\n\n### Required Changes\n1. Fix the bug.', mechanicalChecks: [],
+    };
+
     it('calls animator.summon() with role from givens, draft cwd, and writ env', async () => {
-      const { clerk, spider, stacks, summonCalls } = fix;
-      const writ = await postWrit(clerk, 'Revise integration test');
-      await spider.crawl(); // spawn
+      const writ = await postWrit(fix.clerk, 'Revise integration test');
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
-      const reviewYields: ReviewYields = { sessionId: 'rev-1', passed: true, findings: '### Overall: PASS\nAll good.', mechanicalChecks: [] };
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } }] };
-          if (e.id === 'implement') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } }] };
-          if (e.id === 'review') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: reviewYields }] };
-          return e;
-        }),
-      });
+      await book.patch(rig.id, { engines: completePipelineUpTo(rig.engines, 'revise', passingReview) });
 
-      const result = await spider.crawl(); // launch revise
+      const result = await fix.spider.crawl();
       assert.equal(result?.action, 'engine-started');
       assert.equal((result as { engineId: string }).engineId, 'revise');
 
-      assert.equal(summonCalls.length, 1, 'summon called once for revise');
-      const call = summonCalls[0];
-      assert.equal(call.role, 'artificer', 'revise uses role from givens (default artificer)');
-      assert.equal(call.cwd, '/p', 'cwd is draft worktree path');
+      assert.equal(fix.summonCalls.length, 1);
+      const call = fix.summonCalls[0];
+      assert.equal(call.role, 'artificer');
+      assert.equal(call.cwd, '/p');
       assert.deepEqual(call.environment, { GIT_AUTHOR_EMAIL: `${writ.id}@nexus.local` });
     });
 
     it('revision prompt includes pass branch when review passed', async () => {
-      const { clerk, spider, stacks, summonCalls } = fix;
-      await postWrit(clerk, 'Pass branch test');
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk, 'Pass branch test');
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
-      const reviewYields: ReviewYields = {
-        sessionId: 'rev-1',
-        passed: true,
-        findings: '### Overall: PASS\nAll requirements met.',
-        mechanicalChecks: [],
-      };
       await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } }] };
-          if (e.id === 'implement') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } }] };
-          if (e.id === 'review') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: reviewYields }] };
-          return e;
-        }),
+        engines: completePipelineUpTo(rig.engines, 'revise', { ...passingReview, findings: '### Overall: PASS\nAll requirements met.' }),
       });
 
-      await spider.crawl(); // launch revise
-      const prompt = summonCalls[0].prompt;
-      assert.ok(prompt.includes('## Review Result: PASS'), 'prompt includes PASS result');
-      assert.ok(prompt.includes('The review passed'), 'prompt includes pass branch instruction');
-      assert.ok(prompt.includes(reviewYields.findings), 'prompt includes review findings');
+      await fix.spider.crawl();
+      const prompt = fix.summonCalls[0].prompt;
+      assert.ok(prompt.includes('## Review Result: PASS'));
+      assert.ok(prompt.includes('The review passed'));
+      assert.ok(prompt.includes('### Overall: PASS\nAll requirements met.'));
     });
 
     it('revision prompt includes fail branch when review failed', async () => {
-      const { clerk, spider, stacks, summonCalls } = fix;
-      await postWrit(clerk, 'Fail branch test');
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk, 'Fail branch test');
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
-      const reviewYields: ReviewYields = {
-        sessionId: 'rev-1',
-        passed: false,
-        findings: '### Overall: FAIL\n\n### Required Changes\n1. Fix the bug.',
-        mechanicalChecks: [],
-      };
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } }] };
-          if (e.id === 'implement') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } }] };
-          if (e.id === 'review') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: reviewYields }] };
-          return e;
-        }),
-      });
+      await book.patch(rig.id, { engines: completePipelineUpTo(rig.engines, 'revise', failingReview) });
 
-      await spider.crawl(); // launch revise
-      const prompt = summonCalls[0].prompt;
-      assert.ok(prompt.includes('## Review Result: FAIL'), 'prompt includes FAIL result');
-      assert.ok(
-        prompt.includes('The review identified issues that need to be addressed'),
-        'prompt includes fail branch instruction',
-      );
-      assert.ok(prompt.includes(reviewYields.findings), 'prompt includes review findings');
+      await fix.spider.crawl();
+      const prompt = fix.summonCalls[0].prompt;
+      assert.ok(prompt.includes('## Review Result: FAIL'));
+      assert.ok(prompt.includes('The review identified issues that need to be addressed'));
+      assert.ok(prompt.includes(failingReview.findings));
     });
 
     it('ReviseYields: sessionId and sessionStatus collected from session record', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
       const fakeSessionId = generateId('ses', 4);
-      const reviewYields: ReviewYields = { sessionId: 'rev-1', passed: true, findings: '### Overall: PASS', mechanicalChecks: [] };
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' } }] };
-          if (e.id === 'implement') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: { sessionId: 's1', sessionStatus: 'completed' } }] };
-          if (e.id === 'review') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: reviewYields }] };
-          if (e.id === 'revise') return { ...e, status: 'running' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', sessionId: fakeSessionId }] };
-          return e;
-        }),
-      });
+      const engines = withEngine(
+        completePipelineUpTo(rig.engines, 'revise', passingReview),
+        'revise',
+        { status: 'running', attempts: [runningAttempt(fakeSessionId)] },
+      );
+      await book.patch(rig.id, { engines });
 
-      const sessBook = stacks.book<SessionDoc>('animator', 'sessions');
-      await sessBook.put({
-        id: fakeSessionId,
-        status: 'completed',
-        startedAt: new Date().toISOString(),
-        provider: 'test',
-      });
+      const sessBook = fix.stacks.book<SessionDoc>('animator', 'sessions');
+      await sessBook.put({ id: fakeSessionId, status: 'completed', startedAt: new Date().toISOString(), provider: 'test' } as SessionDoc);
 
-      const result = await spider.crawl(); // collect revise
+      const result = await fix.spider.crawl();
       assert.equal(result?.action, 'engine-completed');
       assert.equal((result as { engineId: string }).engineId, 'revise');
 
@@ -1405,19 +1077,16 @@ describe('Spider', () => {
     });
   });
 
-  // ── show / list / forWrit ─────────────────────────────────────────
-
   describe('show()', () => {
     it('returns the full RigDoc for a valid rig id', async () => {
-      const { clerk, spider } = fix;
-      const writ = await postWrit(clerk);
-      await spider.crawl(); // spawn
+      const writ = await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const rigs = await spider.list();
+      const rigs = await fix.spider.list();
       assert.equal(rigs.length, 1);
       const rigId = rigs[0].id;
 
-      const rig = await spider.show(rigId);
+      const rig = await fix.spider.show(rigId);
       assert.equal(rig.id, rigId);
       assert.equal(rig.writId, writ.id);
       assert.equal(rig.status, 'running');
@@ -1426,9 +1095,8 @@ describe('Spider', () => {
     });
 
     it('throws with "not found" message for an unknown rig id', async () => {
-      const { spider } = fix;
       await assert.rejects(
-        () => spider.show('rig-nonexistent'),
+        () => fix.spider.show('rig-nonexistent'),
         (err: unknown) => {
           assert.ok(err instanceof Error);
           assert.equal(err.message, 'Rig "rig-nonexistent" not found.');
@@ -1440,226 +1108,170 @@ describe('Spider', () => {
 
   describe('list()', () => {
     it('returns empty array when no rigs exist', async () => {
-      const { spider } = fix;
-      const rigs = await spider.list();
-      assert.deepEqual(rigs, []);
+      assert.deepEqual(await fix.spider.list(), []);
     });
 
     it('returns rigs ordered by createdAt descending', async () => {
-      const { stacks, spider } = fix;
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const older = new Date(Date.now() - 100).toISOString();
       const newer = new Date().toISOString();
-      await book.put({ id: 'rig-old', writId: 'w-1', status: 'running', engines: [], createdAt: older });
-      await book.put({ id: 'rig-new', writId: 'w-2', status: 'running', engines: [], createdAt: newer });
+      await book.put({ id: 'rig-old', writId: 'w-1', status: 'running', engines: [], createdAt: older } as RigDoc);
+      await book.put({ id: 'rig-new', writId: 'w-2', status: 'running', engines: [], createdAt: newer } as RigDoc);
 
-      const rigs = await spider.list();
+      const rigs = await fix.spider.list();
       assert.equal(rigs.length, 2);
-      // Newest first
       assert.ok(rigs[0].createdAt >= rigs[1].createdAt);
     });
 
     it('filters by status', async () => {
-      const { clerk, spider } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn (status: running)
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const running = await spider.list({ status: 'running' });
+      const running = await fix.spider.list({ status: 'running' });
       assert.equal(running.length, 1);
       assert.equal(running[0].status, 'running');
 
-      const completed = await spider.list({ status: 'completed' });
+      const completed = await fix.spider.list({ status: 'completed' });
       assert.equal(completed.length, 0);
     });
 
     it('respects limit', async () => {
-      const { stacks, spider } = fix;
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       for (let i = 0; i < 3; i++) {
-        await book.put({ id: `rig-limit-${i}`, writId: `w-${i}`, status: 'running', engines: [], createdAt: new Date().toISOString() });
+        await book.put({ id: `rig-limit-${i}`, writId: `w-${i}`, status: 'running', engines: [], createdAt: new Date().toISOString() } as RigDoc);
       }
-
-      const limited = await spider.list({ limit: 2 });
+      const limited = await fix.spider.list({ limit: 2 });
       assert.equal(limited.length, 2);
     });
 
     it('respects offset', async () => {
-      const { stacks, spider } = fix;
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       for (let i = 0; i < 3; i++) {
-        await book.put({ id: `rig-offset-${i}`, writId: `w-${i}`, status: 'running', engines: [], createdAt: new Date().toISOString() });
+        await book.put({ id: `rig-offset-${i}`, writId: `w-${i}`, status: 'running', engines: [], createdAt: new Date().toISOString() } as RigDoc);
       }
-
-      const all = await spider.list();
+      const all = await fix.spider.list();
       assert.equal(all.length, 3);
 
-      const page = await spider.list({ limit: 2, offset: 2 });
+      const page = await fix.spider.list({ limit: 2, offset: 2 });
       assert.equal(page.length, 1);
     });
   });
 
   describe('forWrit()', () => {
     it('returns the rig for a writ that has been spawned', async () => {
-      const { clerk, spider } = fix;
-      const writ = await postWrit(clerk);
-      await spider.crawl(); // spawn
+      const writ = await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const rig = await spider.forWrit(writ.id);
+      const rig = await fix.spider.forWrit(writ.id);
       assert.ok(rig !== null);
       assert.equal(rig.writId, writ.id);
     });
 
     it('returns null when no rig exists for a writ', async () => {
-      const { clerk, spider } = fix;
-      const writ = await postWrit(clerk);
-      // Do not crawl — no rig spawned yet
-
-      const rig = await spider.forWrit(writ.id);
-      assert.equal(rig, null);
+      const writ = await postWrit(fix.clerk);
+      assert.equal(await fix.spider.forWrit(writ.id), null);
     });
 
     it('returns null for a non-existent writ id', async () => {
-      const { spider } = fix;
-      const rig = await spider.forWrit('w-nonexistent');
-      assert.equal(rig, null);
+      assert.equal(await fix.spider.forWrit('w-nonexistent'), null);
     });
   });
 
   describe('createdAt', () => {
     it('is set to a valid ISO timestamp when a rig is spawned', async () => {
-      const { clerk, spider } = fix;
       const before = new Date().toISOString();
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
       const after = new Date().toISOString();
 
-      const rigs = await spider.list();
+      const rigs = await fix.spider.list();
       assert.equal(rigs.length, 1);
       const { createdAt } = rigs[0];
       assert.equal(typeof createdAt, 'string');
-      assert.ok(!isNaN(new Date(createdAt).getTime()), 'createdAt must be a valid date');
-      assert.ok(createdAt >= before, 'createdAt must not be before spawn');
-      assert.ok(createdAt <= after, 'createdAt must not be after spawn');
+      assert.ok(!isNaN(new Date(createdAt).getTime()));
+      assert.ok(createdAt >= before);
+      assert.ok(createdAt <= after);
     });
   });
 
-  // ── Downstream engine cancellation ───────────────────────────────
-
   describe('downstream engine cancellation', () => {
     it('(a) first-engine failure cancels all downstream engines', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
+      await book.patch(rig.id, { engines: withEngine(rig.engines, 'draft', { designId: 'nonexistent-engine' }) });
 
-      // Inject bad designId for draft (first engine) to trigger failure
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) =>
-          e.id === 'draft' ? { ...e, designId: 'nonexistent-engine' } : e,
-        ),
-      });
-
-      const result = await spider.crawl();
+      const result = await fix.spider.crawl();
       assert.equal(result?.action, 'rig-completed');
       assert.equal((result as { outcome: string }).outcome, 'failed');
 
       const [updated] = await book.list();
       const draft = updated.engines.find((e: EngineInstance) => e.id === 'draft');
-      assert.equal(draft?.status, 'failed', 'draft should be failed');
+      assert.equal(draft?.status, 'failed');
 
-      for (const id of ['implement', 'review', 'revise', 'seal']) {
-        const eng = updated.engines.find((e: EngineInstance) => e.id === id);
-        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
-        assert.equal(eng && latestAttempt(eng)?.endedAt, undefined, `${id} should not have endedAt`);
-        assert.equal(eng && latestAttempt(eng)?.error, undefined, `${id} should not have error`);
-      }
+      assertCancelled(updated, ['implement', 'review', 'revise', 'seal']);
     });
 
     it('(b) mid-pipeline failure preserves completed upstream, cancels pending downstream', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
-
-      // Pre-complete draft, then inject bad designId for implement
-      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' };
       await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: draftYields }] };
-          if (e.id === 'implement') return { ...e, designId: 'nonexistent-engine' };
-          return e;
-        }),
+        engines: withEngine(
+          completeEngine(rig.engines, 'draft', draftYields()),
+          'implement',
+          { designId: 'nonexistent-engine' },
+        ),
       });
 
-      const result = await spider.crawl();
+      const result = await fix.spider.crawl();
       assert.equal(result?.action, 'rig-completed');
       assert.equal((result as { outcome: string }).outcome, 'failed');
 
       const [updated] = await book.list();
-
-      // Completed upstream engine preserved
       const draftEng = updated.engines.find((e: EngineInstance) => e.id === 'draft');
-      assert.equal(draftEng?.status, 'completed', 'draft should remain completed');
+      assert.equal(draftEng?.status, 'completed');
 
-      // Failed engine
       const implEng = updated.engines.find((e: EngineInstance) => e.id === 'implement');
-      assert.equal(implEng?.status, 'failed', 'implement should be failed');
+      assert.equal(implEng?.status, 'failed');
 
-      // Pending downstream engines cancelled
-      for (const id of ['review', 'revise', 'seal']) {
-        const eng = updated.engines.find((e: EngineInstance) => e.id === id);
-        assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
-        assert.equal(eng && latestAttempt(eng)?.endedAt, undefined, `${id} should not have endedAt`);
-        assert.equal(eng && latestAttempt(eng)?.error, undefined, `${id} should not have error`);
-      }
+      assertCancelled(updated, ['review', 'revise', 'seal']);
     });
 
     it('(c) a running engine is not cancelled when another engine fails', async () => {
-      // This test manually places two engines in a runnable state within one rig,
-      // so raise per-rig limit to allow the second engine to run.
-      const { clerk, spider, stacks } = buildFixture({ spider: { maxConcurrentEnginesPerRig: 5 } });
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      // Manually places two engines runnable in one rig — raise the
+      // per-rig limit to allow it.
+      const fix2 = buildFixture({ spider: { maxConcurrentEnginesPerRig: 5 } });
+      await postWrit(fix2.clerk);
+      await fix2.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix2.stacks);
       const [rig] = await book.list();
-
-      // Draft completed, implement is running with a sessionId,
-      // review is pending — inject bad designId for review so it fails next
-      // But we need to fail via failEngine path: inject bad designId on review directly
-      // and manually set implement to running to test it isn't cancelled.
       const fakeSessionId = generateId('ses', 4);
-      const draftYields = { draftId: 'd1', codexName: 'c', branch: 'b', path: '/p', baseSha: 'sha1' };
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) => {
-          if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', endedAt: '2024-01-01T00:00:01Z', status: 'completed' as const, yields: draftYields }] };
-          if (e.id === 'implement') return { ...e, status: 'running' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', sessionId: fakeSessionId }] };
-          if (e.id === 'review') return { ...e, designId: 'nonexistent-engine', upstream: [] };
-          return e;
-        }),
+      const engines = rig.engines.map((e: EngineInstance) => {
+        if (e.id === 'draft') return { ...e, status: 'completed' as const, attempts: [completedAttempt(draftYields())] };
+        if (e.id === 'implement') return { ...e, status: 'running' as const, attempts: [runningAttempt(fakeSessionId)] };
+        if (e.id === 'review') return { ...e, designId: 'nonexistent-engine', upstream: [] };
+        return e;
       });
+      await book.patch(rig.id, { engines });
 
-      // review now has no upstream and bad designId — running it will fail it
-      const result = await spider.crawl();
-      // review fails (bad designId) → rig failed
+      const result = await fix2.spider.crawl();
       assert.equal(result?.action, 'rig-completed');
       assert.equal((result as { outcome: string }).outcome, 'failed');
 
       const [updated] = await book.list();
 
-      // The running engine (implement) must NOT be cancelled
       const implEng = updated.engines.find((e: EngineInstance) => e.id === 'implement');
       assert.equal(implEng?.status, 'running', 'running implement engine should not be cancelled');
 
-      // The failed engine
       const reviewEng = updated.engines.find((e: EngineInstance) => e.id === 'review');
-      assert.equal(reviewEng?.status, 'failed', 'review should be failed');
+      assert.equal(reviewEng?.status, 'failed');
 
-      // Only pending engines should be cancelled (revise and seal)
       for (const id of ['revise', 'seal']) {
         const eng = updated.engines.find((e: EngineInstance) => e.id === id);
         assert.equal(eng?.status, 'cancelled', `${id} should be cancelled`);
@@ -1667,90 +1279,63 @@ describe('Spider', () => {
     });
 
     it('cancelled engines have no completedAt', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) =>
-          e.id === 'draft' ? { ...e, designId: 'nonexistent-engine' } : e,
-        ),
-      });
+      await book.patch(rig.id, { engines: withEngine(rig.engines, 'draft', { designId: 'nonexistent-engine' }) });
 
-      await spider.crawl();
+      await fix.spider.crawl();
 
       const [updated] = await book.list();
       const cancelled = updated.engines.filter((e: EngineInstance) => e.status === 'cancelled');
-      assert.ok(cancelled.length > 0, 'expected cancelled engines');
+      assert.ok(cancelled.length > 0);
       for (const eng of cancelled) {
         assert.equal(latestAttempt(eng)?.endedAt, undefined, `${eng.id} should not have endedAt`);
       }
     });
 
     it('cancelled engines have no error', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
-      await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) =>
-          e.id === 'draft' ? { ...e, designId: 'nonexistent-engine' } : e,
-        ),
-      });
+      await book.patch(rig.id, { engines: withEngine(rig.engines, 'draft', { designId: 'nonexistent-engine' }) });
 
-      await spider.crawl();
+      await fix.spider.crawl();
 
       const [updated] = await book.list();
       const cancelled = updated.engines.filter((e: EngineInstance) => e.status === 'cancelled');
-      assert.ok(cancelled.length > 0, 'expected cancelled engines');
+      assert.ok(cancelled.length > 0);
       for (const eng of cancelled) {
         assert.equal(latestAttempt(eng)?.error, undefined, `${eng.id} should not have error`);
       }
     });
   });
 
-  // ── Walk returns null ──────────────────────────────────────────────
-
   describe('walk() returns null', () => {
     it('returns null when no rigs exist and no open writs', async () => {
-      const result = await fix.spider.crawl();
-      assert.equal(result, null);
+      assert.equal(await fix.spider.crawl(), null);
     });
 
     it('returns null when the rig has a running engine with no terminal session', async () => {
-      const { clerk, spider, stacks } = fix;
-      await postWrit(clerk);
-      await spider.crawl(); // spawn
+      await postWrit(fix.clerk);
+      await fix.spider.crawl();
 
-      const book = rigsBook(stacks);
+      const book = rigsBook(fix.stacks);
       const [rig] = await book.list();
       const fakeSessionId = generateId('ses', 4);
 
-      // Put draft in 'running' with a live session
       await book.patch(rig.id, {
-        engines: rig.engines.map((e: EngineInstance) =>
-          e.id === 'draft'
-            ? { ...e, status: 'running' as const, attempts: [{ startedAt: '2024-01-01T00:00:00Z', sessionId: fakeSessionId }] }
-            : e,
-        ),
+        engines: withEngine(rig.engines, 'draft', { status: 'running', attempts: [runningAttempt(fakeSessionId)] }),
       });
 
-      const sessBook = stacks.book<{
-        id: string; status: string; startedAt: string; provider: string; [key: string]: unknown;
-      }>('animator', 'sessions');
-      await sessBook.put({
-        id: fakeSessionId,
-        status: 'running',
-        startedAt: new Date().toISOString(),
-        provider: 'test',
-      });
+      const sessBook = fix.stacks.book<SessionDoc>('animator', 'sessions');
+      await sessBook.put({ id: fakeSessionId, status: 'running', startedAt: new Date().toISOString(), provider: 'test' } as SessionDoc);
 
-      const result = await spider.crawl();
-      assert.equal(result, null);
+      assert.equal(await fix.spider.crawl(), null);
     });
   });
 });
