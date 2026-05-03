@@ -64,7 +64,7 @@ supportKit: {
   roles: {
     'mender': { permissions: [], instructionsFile: 'loom-roles/mender.md' },
   },
-  tools: [crawlOneTool, crawlContinualTool],
+  tools: [/* rig-show, rig-list, rig-for-writ, … (see spider.ts) */],
 },
 ```
 
@@ -106,14 +106,9 @@ If nothing qualifies at any level, return null (the guild is idle or all work is
 
 ### Operational model
 
-The Spider exports two tools:
+The Spider's crawl loop runs **inside the guild daemon** (`nsg start`). The daemon calls `crawl()` repeatedly, sleeping `pollIntervalMs` (default 5000) when a tick returns null and yielding a macrotask between progress ticks so HTTP/timer handlers don't starve. New writs posted via `nsg commission-post` from a separate terminal are picked up on the next poll cycle.
 
-```
-nsg crawl-continual   # starts polling loop, crawls every ~5s, runs indefinitely
-nsg crawl-one         # single step (useful for debugging/testing)
-```
-
-The `crawl-continual` loop: call `crawl()`, sleep `pollIntervalMs` (default 5000), repeat. When `crawl()` returns null, the loop doesn't stop — it keeps polling. New writs posted via `nsg commission-post` from a separate terminal are picked up on the next poll cycle. Pass `--maxIdleCycles N` to stop after N consecutive idle cycles.
+The Spider does not expose patron-callable `crawl-one` / `crawl-continual` tools. Earlier versions did; they were removed because manual ticks raced with the daemon's loop and produced broken rig state (e.g. setup-phase advancing past fixture grafting). Operators who need to step a guild forward should use `nsg start --foreground` and watch its log; the daemon owns the crawl cadence.
 
 ---
 

@@ -69,16 +69,6 @@ describe('Spider tools — structure (V6/R8/R9/R10/R12)', () => {
       assert.ok(toolNames.includes('rig-list'), 'supportKit.tools must include rig-list');
       assert.ok(toolNames.includes('rig-for-writ'), 'supportKit.tools must include rig-for-writ');
     });
-
-    it('also contains crawl-one and crawl-continual tools', () => {
-      const spiderPlugin = createSpider();
-      const kit = spiderPlugin.apparatus.supportKit as { tools?: Array<{ name: string }> };
-      const tools = kit.tools ?? [];
-      const toolNames = tools.map((t) => t.name);
-
-      assert.ok(toolNames.includes('crawl-one'), 'supportKit.tools must include crawl-one');
-      assert.ok(toolNames.includes('crawl-continual'), 'supportKit.tools must include crawl-continual');
-    });
   });
 
   // ── rig-show structure ─────────────────────────────────────────────

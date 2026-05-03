@@ -344,8 +344,9 @@ async function startForeground(home: string): Promise<never> {
   //    handlers run between progress ticks (microtask-only awaits on
   //    steady work would otherwise starve them).
   //
-  // Mirror of the fix in packages/plugins/spider/src/tools/crawl-continual.ts
-  // (both loops exist independently and must be kept in sync).
+  // The patron-callable `crawl-one` / `crawl-continual` tools were
+  // retired — they raced with this loop and produced broken rig state.
+  // The daemon now owns the crawl cadence outright.
 
   let spider: SpiderApiLike | null = null;
   let intervalMs = 5000;

@@ -82,8 +82,6 @@ import {
 } from './block-types/index.ts';
 
 import {
-  crawlOneTool,
-  crawlContinualTool,
   rigShowTool,
   rigListTool,
   rigForWritTool,
@@ -3145,8 +3143,6 @@ export function createSpider(): Plugin {
         ],
         routes: spiderRoutes,
         tools: [
-          crawlOneTool,
-          crawlContinualTool,
           rigShowTool,
           rigListTool,
           rigForWritTool,

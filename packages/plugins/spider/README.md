@@ -235,7 +235,7 @@ A config-level template named `default` overrides the plugin-contributed `spider
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `pollIntervalMs` | `number` | `5000` | Polling interval for the `crawl-continual` tool (ms). |
+| `pollIntervalMs` | `number` | `5000` | Polling interval (ms) for the daemon's inline crawl loop. |
 | `buildCommand` | `string` | — | Build command forwarded to quick engines. |
 | `testCommand` | `string` | — | Test command forwarded to quick engines. |
 | `variables` | `Record<string, unknown>` | — | Named values available in rig template givens via `${vars.<path>}`. The plugin-default template requires `role`, `buildCommand`, and `testCommand`. |
@@ -387,8 +387,8 @@ The Spider contributes books, tools, engines, and a role for rig inspection and 
 | `rig-resume` | `write` | Manually clear a hold on a specific pending engine |
 | `rig-cancel` | `write` | Cancel a running rig (also tolerates legacy `'stuck'` / `'blocked'` rigs) |
 | `writ-rescue-stuck` | `write` | List, and with `--apply` requeue, writs still stuck under the legacy `engine-failure` cause that predate the engine-level-retry commission. Default lists candidates without mutating; `--apply` transitions each match `stuck → open`, clears its `status.spider` slot, and cancels every legacy `'stuck'` / `'blocked'` rig for that writ. Operator-stuck writs (no `status.spider` slot) and dependency-cause stucks (`failed-blocker` / `cycle`) are never touched. Pass `--id` to scope to a single writ; `--format json` for machine-readable output. |
-| `crawl` | `write` | Execute a single crawl step |
-| `crawl-continual` | `write` | Poll `crawl()` in a loop until no work remains |
+
+The Spider does not expose patron-callable `crawl-one` / `crawl-continual` tools — the crawl loop runs inside the guild daemon (`nsg start`). Earlier versions of the Spider exposed those tools; they were removed because manual ticks raced with the daemon's inline loop and produced broken rig state.
 
 #### Rig view enrichment
 

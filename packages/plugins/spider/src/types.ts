@@ -567,7 +567,7 @@ export interface SpiderApi {
  */
 export interface SpiderConfig {
   /**
-   * Polling interval for crawlContinual tool (milliseconds).
+   * Polling interval (milliseconds) for the daemon's inline crawl loop.
    * Default: 5000.
    */
   pollIntervalMs?: number;
