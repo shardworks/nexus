@@ -1711,15 +1711,16 @@ describe('Animator', () => {
         lastTriggeringSession: 'ses-old',
       });
 
-      // Start animator and await. The eager `read()` at the top of
-      // start() warms peek(); the DLQ drain + reconcileOnBoot run in
-      // a subsequent async IIFE we observe by polling getStatus().
+      // Start animator and await. start() runs DLQ drain + reconcileOnBoot
+      // + recoverOrphans inline-awaited so all startup state is observable
+      // by the time start() returns. (Pre-fix this was an unawaited IIFE,
+      // requiring a polling loop here. The polling loop is retained as
+      // defence in depth; on the awaited path it resolves on the first
+      // iteration.)
       const aa = (animatorPlugin as { apparatus: { start: (ctx: unknown) => Promise<void> | void; provides: unknown } }).apparatus;
       await Promise.resolve(aa.start({ on: () => {}, kits: () => [] }));
       const a = aa.provides as AnimatorApi;
 
-      // Allow the async startup IIFE (DLQ drain → reconcileOnBoot) to
-      // complete. On an empty DLQ this resolves on the next tick.
       for (let i = 0; i < 20; i++) {
         const status = await a.getStatus();
         if (status.state === 'running') break;

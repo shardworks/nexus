@@ -944,55 +944,64 @@ export function createAnimator(): Plugin {
         // terminal that opens a pause the reconciler must observe — and
         // BEFORE recoverOrphans() and the periodic timers, so the first
         // post-start dispatch reads reconciled persisted state.
-        (async () => {
-          try {
-            await drainDlq(g.home);
-          } catch (err) {
-            console.warn(
-              `[animator] DLQ drain failed: ${err instanceof Error ? err.message : err}`,
-            );
-          }
+        //
+        // STDOUT DISCIPLINE: this whole block is awaited inside start()
+        // so its console.warn diagnostics (DLQ drain count, reconciler
+        // count, etc.) all flush BEFORE start() returns. If this were
+        // fire-and-forget, recoverOrphans's tail console.log on a
+        // short-lived CLI invocation could land on stdout AFTER the
+        // tool's JSON output but BEFORE process exit, corrupting any
+        // consumer (e.g. the lab apparatus's xguild block-checker
+        // shellouts) that runs `JSON.parse(stdout)`. See:
+        // experiments/X022-implementer-behavior-nudges/artifacts/
+        // 2026-05-03-seizing-investigation.md for the full trace.
+        try {
+          await drainDlq(g.home);
+        } catch (err) {
+          console.warn(
+            `[animator] DLQ drain failed: ${err instanceof Error ? err.message : err}`,
+          );
+        }
 
-          // Eager reconciliation of the pause window (D22). If the
-          // persisted doc is paused and `pausedUntil <= now`, flip it
-          // back to running before orphan recovery runs and before the
-          // next animate() pre-check fires.
-          try {
-            await backoff.reconcileOnBoot();
-          } catch (err) {
-            console.warn(
-              `[animator] Rate-limit boot reconciliation failed: ${err instanceof Error ? err.message : err}`,
-            );
-          }
+        // Eager reconciliation of the pause window (D22). If the
+        // persisted doc is paused and `pausedUntil <= now`, flip it
+        // back to running before orphan recovery runs and before the
+        // next animate() pre-check fires.
+        try {
+          await backoff.reconcileOnBoot();
+        } catch (err) {
+          console.warn(
+            `[animator] Rate-limit boot reconciliation failed: ${err instanceof Error ? err.message : err}`,
+          );
+        }
 
-          // Compute downtime credit from the gap between previous guild_alive_at and now.
-          let downtimeCredit = 0;
-          try {
-            const prev = await state.get(GUILD_HEARTBEAT_DOC_ID);
-            if (prev?.guildAliveAt) {
-              const gap = Date.now() - new Date(prev.guildAliveAt).getTime();
-              downtimeCredit = Math.max(0, gap - GUILD_HEARTBEAT_INTERVAL_MS);
-            }
-          } catch { /* fresh install — no credit */ }
-
-          // Write the initial guild_alive_at.
-          try {
-            await state.put({ id: GUILD_HEARTBEAT_DOC_ID, guildAliveAt: new Date().toISOString() });
-          } catch (err) {
-            console.warn(
-              `[animator] Failed to write initial guild_alive_at: ${err instanceof Error ? err.message : err}`,
-            );
+        // Compute downtime credit from the gap between previous guild_alive_at and now.
+        let downtimeCredit = 0;
+        try {
+          const prev = await state.get(GUILD_HEARTBEAT_DOC_ID);
+          if (prev?.guildAliveAt) {
+            const gap = Date.now() - new Date(prev.guildAliveAt).getTime();
+            downtimeCredit = Math.max(0, gap - GUILD_HEARTBEAT_INTERVAL_MS);
           }
+        } catch { /* fresh install — no credit */ }
 
-          // Run initial reconciler with downtime credit.
-          try {
-            await recoverOrphans(sessions, downtimeCredit);
-          } catch (err) {
-            console.warn(
-              `[animator] Orphan recovery failed: ${err instanceof Error ? err.message : err}`,
-            );
-          }
-        })();
+        // Write the initial guild_alive_at.
+        try {
+          await state.put({ id: GUILD_HEARTBEAT_DOC_ID, guildAliveAt: new Date().toISOString() });
+        } catch (err) {
+          console.warn(
+            `[animator] Failed to write initial guild_alive_at: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+
+        // Run initial reconciler with downtime credit.
+        try {
+          await recoverOrphans(sessions, downtimeCredit);
+        } catch (err) {
+          console.warn(
+            `[animator] Orphan recovery failed: ${err instanceof Error ? err.message : err}`,
+          );
+        }
 
         // Guild self-heartbeat timer — updates guild_alive_at every 30s.
         const guildHeartbeatTimer = setInterval(async () => {

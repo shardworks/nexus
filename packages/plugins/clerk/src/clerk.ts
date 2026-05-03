@@ -1502,8 +1502,10 @@ export function createClerk(): Plugin {
           }
         }
         if (renamed > 0) {
-          // eslint-disable-next-line no-console
-          console.log(
+          // stderr (via console.warn) so the diagnostic doesn't pollute
+          // stdout for short-lived CLI invocations that print JSON to
+          // stdout — symmetric with the animator startup logs.
+          console.warn(
             `[clerk] Link migration: renamed ${renamed} "spider.follows" rows to "depends-on".`,
           );
         }

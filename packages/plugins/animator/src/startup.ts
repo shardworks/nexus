@@ -67,7 +67,10 @@ export async function drainDlq(guildHome: string): Promise<number> {
   }
 
   if (processed > 0) {
-    console.log(`[animator] DLQ drain: processed ${processed} of ${files.length} pending session results`);
+    // stderr (via console.warn) so the diagnostic doesn't pollute stdout
+    // for short-lived CLI invocations that print JSON to stdout — see
+    // animator's start() commentary on stdout discipline.
+    console.warn(`[animator] DLQ drain: processed ${processed} of ${files.length} pending session results`);
   }
 
   return processed;
@@ -120,7 +123,8 @@ export async function recoverOrphans(
           lastActivityAt: new Date().toISOString(),
         });
         await sessions.put(touched);
-        console.log(`[animator] Backfilled lastActivityAt for legacy session ${doc.id}`);
+        // stderr (via console.warn) — see animator/start() stdout-discipline note.
+        console.warn(`[animator] Backfilled lastActivityAt for legacy session ${doc.id}`);
       } catch (err) {
         console.warn(
           `[animator] Failed to backfill lastActivityAt for ${doc.id}: ${err instanceof Error ? err.message : err}`,
@@ -171,7 +175,8 @@ export async function recoverOrphans(
   }
 
   if (recovered > 0) {
-    console.log(`[animator] Reconciler: marked ${recovered} dead sessions as failed`);
+    // stderr (via console.warn) — see animator/start() stdout-discipline note.
+    console.warn(`[animator] Reconciler: marked ${recovered} dead sessions as failed`);
   }
 
   return recovered;
