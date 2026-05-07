@@ -1,5 +1,6 @@
 export { default as animaSessionEngine } from './anima-session.ts';
 export { default as draftEngine } from './draft.ts';
+export { default as graftRigTemplateEngine } from './graft-rig-template.ts';
 export { default as implementEngine } from './implement.ts';
 export { default as implementLoopEngine } from './implement-loop.ts';
 export { default as manualMergeEngine } from './manual-merge.ts';

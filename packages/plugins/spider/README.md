@@ -318,6 +318,27 @@ return {
 };
 ```
 
+The following built-in engines emit grafts:
+
+- **`implement-loop`** — grafts a chain of `step-session` engines (one per open child step writ).
+- **`seal`** (recovery path) — grafts `manual-merge` + retry `seal` when a rebase conflict is detected.
+- **`step-session`** — grafts additional `step-session` engines for dynamically-added child steps.
+- **`spider.graft-rig-template`** — grafts the full engine list of a named rig template. See below.
+
+#### `spider.graft-rig-template`
+
+A generic clockwork engine that looks up a named rig template and returns its engine slots as a tail graft. This lets trial shapes, scenarios, and other configurable sub-rigs be authored as named templates in `spider.rigTemplates` (or contributed via kit) rather than as bespoke one-off engines.
+
+**Givens:**
+- `template` *(required, string)* — name of the rig template to graft (looked up via `SpiderApi.getTemplate`).
+- `givens` *(optional, object)* — caller-supplied key/value pairs. For each `${vars.<key>}` reference found in the resolved template's engine givens, the matching value from this map is substituted before the graft is emitted. `${writ}`, `${yields.*}`, and any `${vars.<key>}` for which no caller-given value was supplied are left untouched — Spider's normal spawn-time and run-time resolution handles them.
+
+**Yields:** `{ template: <name>, givens: <caller givens or {}> }` — echoes the inputs for traceability.
+
+**graftTail rule:** Uses `template.resolutionEngine` when set; falls back to the `id` of the last engine in the template's `engines` array (declaration order).
+
+**Failure modes:** Throws on missing/non-string `template`, on non-object `givens.givens`, or when the named template is not found in the registry (the template name is included in the error message).
+
 ## Rig Template Kit Interface
 
 Apparatus plugins can contribute rig templates and block types via their kit:

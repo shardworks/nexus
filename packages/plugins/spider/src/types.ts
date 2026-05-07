@@ -558,6 +558,20 @@ export interface SpiderApi {
    * Config mappings override kit mappings for the same writ type.
    */
   listTemplateMappings(): Record<string, string>;
+
+  /**
+   * Look up a registered rig template by name.
+   *
+   * Returns the `RigTemplate` registered under `name` in the template
+   * registry, or `undefined` when no template with that name exists.
+   * The name is the bare registration key — the same string used in
+   * `listTemplates()` entries and in `rigTemplateMappings` values.
+   *
+   * This is a direct name-based lookup. Unlike `lookup(writType)`, it does
+   * not resolve writ-type → template-name mappings or apply any fallback
+   * logic; it reads the template registry by exact name.
+   */
+  getTemplate(name: string): RigTemplate | undefined;
 }
 
 // ── Configuration ─────────────────────────────────────────────────────

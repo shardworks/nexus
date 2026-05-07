@@ -743,6 +743,27 @@ Summoned by the `seal` engine's recovery tail. Runs the `spider.mender` anima in
 
 The marker prefix (`### Merge:`) deliberately differs from the review engine's `### Overall:` prefix to avoid cross-talk.
 
+### `spider.graft-rig-template` (clockwork)
+
+Generic sub-rig composition engine. Resolves a named rig template from the Spider's template registry, pre-substitutes `${vars.<key>}` references in the template's engine givens with caller-supplied values, and returns the template's engine slots as a tail graft. This generalises the inline graft-construction used by `implement-loop` and `seal` so that configurable sub-rig shapes can be authored as named templates rather than bespoke engines.
+
+**Givens:**
+- `template` *(required, string)* — name of the rig template to graft (looked up via `SpiderApi.getTemplate`).
+- `givens` *(optional, object)* — caller-supplied overlay. For each `${vars.<key>}` reference in the resolved template's engine givens, the matching value from this map is substituted before the graft is emitted. Keys not present in the overlay, and all `${writ}` / `${yields.*}` references, are left intact — Spider's normal spawn-time and run-time `resolveGivens` pipeline handles them as it would for any grafted engine.
+
+**Yields (success path):** `{ template: <name>, givens: <caller givens or {}> }` — echoes the engine's inputs for traceability.
+
+**graftTail computation.** If the resolved template declares `resolutionEngine`, that engine id is used as `graftTail`. Otherwise the `id` of the last engine in `template.engines` (declaration order) is used.
+
+**Failure modes.** The engine throws immediately (fail-fast, no retry) on:
+- `givens.template` not a non-empty string — bad engine configuration.
+- `givens.givens` present but not a plain object — bad engine configuration.
+- Named template not found in the registry — the template name is included in the error message.
+
+The engine does **not** re-validate the resolved template's structural validity (engines, DAG, resolutionEngine reference). Startup `validateTemplates` and Spider's `validateGraft` cover those layers; the engine adds no third pass.
+
+**Overlay semantics.** Only `${vars.<key>}` expressions matching a caller-given key are substituted. This is a deliberate narrow scope — the engine does not call `resolveGivens` and does not touch `${writ}`, `${writ.*}`, other `${vars.*}` values (resolved against `spiderConfig.variables` by `resolveGivens` at spawn time), or `${yields.*}` (resolved by Spider at engine run time). The substitution uses `interpolateTemplate` from `template.ts` with `SKIP` returned for every expression that does not match a caller-given key.
+
 ---
 
 ## CDC Handlers

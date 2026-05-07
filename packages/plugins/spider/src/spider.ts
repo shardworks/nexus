@@ -64,6 +64,7 @@ import type { EngineDesign, EngineRetryConfig } from '@shardworks/fabricator-app
 import {
   animaSessionEngine,
   draftEngine,
+  graftRigTemplateEngine,
   implementEngine,
   implementLoopEngine,
   manualMergeEngine,
@@ -496,6 +497,7 @@ function validateTemplates(
   const builtinEngineIds = new Set([
     animaSessionEngine.id,
     draftEngine.id,
+    graftRigTemplateEngine.id,
     implementEngine.id,
     implementLoopEngine.id,
     stepSessionEngine.id,
@@ -943,6 +945,7 @@ class RigTemplateRegistry {
     const builtinIds = [
       animaSessionEngine.id,
       draftEngine.id,
+      graftRigTemplateEngine.id,
       implementEngine.id,
       implementLoopEngine.id,
       stepSessionEngine.id,
@@ -3079,6 +3082,10 @@ export function createSpider(): Plugin {
     listTemplateMappings(): Record<string, string> {
       return rigTemplateRegistry.listTemplateMappings();
     },
+
+    getTemplate(name: string): RigTemplate | undefined {
+      return rigTemplateRegistry.templates.get(name);
+    },
   };
 
   // ── Apparatus ─────────────────────────────────────────────────────
@@ -3111,6 +3118,7 @@ export function createSpider(): Plugin {
         engines: {
           'anima-session': animaSessionEngine,
           draft:     draftEngine,
+          'graft-rig-template': graftRigTemplateEngine,
           implement: implementEngine,
           'implement-loop': implementLoopEngine,
           'manual-merge': manualMergeEngine,
