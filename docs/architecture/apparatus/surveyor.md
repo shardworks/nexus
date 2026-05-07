@@ -128,12 +128,19 @@ Six anima tools, all `callableBy: ['anima']`:
 
 | Tool | Permission | Description |
 |------|-----------|-------------|
-| `surveyor.create_charge` | `create-charge` | Create one charge under a vision |
-| `surveyor.create_charges` | `create-charge` | Create a batch of charges under one vision |
-| `surveyor.create_piece` | `create-piece` | Create one piece under a charge or piece |
-| `surveyor.create_pieces` | `create-piece` | Create a batch of pieces under one parent |
-| `surveyor.create_mandate` | `create-mandate` | Create one mandate and petition Reckoner |
-| `surveyor.create_mandates` | `create-mandate` | Create a batch of mandates |
+| `surveyor-create-charge`   | `create-charge`  | Create one charge under a vision |
+| `surveyor-create-charges`  | `create-charge`  | Create a batch of charges under one vision |
+| `surveyor-create-piece`    | `create-piece`   | Create one piece under a charge or piece |
+| `surveyor-create-pieces`   | `create-piece`   | Create a batch of pieces under one parent |
+| `surveyor-create-mandate`  | `create-mandate` | Create one mandate and petition Reckoner |
+| `surveyor-create-mandates` | `create-mandate` | Create a batch of mandates |
+
+**`descriptor.rigTemplates` role.** The `rigTemplates` field on a
+`SurveyorDescriptor` is a declarative inventory — it records which writ types
+the surveyor handles and serves as validation evidence at registration time
+(the substrate asserts it is a non-null object). The substrate does *not*
+forward this field to Spider; it is not wired into any routing machinery.
+See "Rig-template routing" below for how Spider dispatch actually works.
 
 Each create-charge / create-piece tool wraps one `stacks.transaction`:
 
@@ -146,6 +153,66 @@ Each create-mandate tool wraps one `stacks.transaction`:
 
 1. `clerk.post({ type: 'mandate', ... })`
 2. `reckoner.petition(writId, ext)` — stamp-only form
+
+---
+
+## Rig-template routing
+
+Survey writs reach Spider via the Astrolabe-pattern kit-channel mechanism —
+no Spider changes are required (source: commission D / c-moje41iq). Surveyor
+implementations contribute their rig templates and mappings directly through
+their own `supportKit`:
+
+```typescript
+// In the surveyor implementation's plugin definition:
+export default {
+  apparatus: {
+    // ...
+    supportKit: {
+      rigTemplates: [
+        {
+          name:     'survey-vision-v1',
+          engine:   'animator',
+          roleFile: 'roles/survey-vision.md',
+          // ...
+        },
+        {
+          name:     'survey-charge-v1',
+          engine:   'animator',
+          roleFile: 'roles/survey-charge.md',
+          // ...
+        },
+        {
+          name:     'survey-piece-v1',
+          engine:   'animator',
+          roleFile: 'roles/survey-piece.md',
+          // ...
+        },
+      ],
+      rigTemplateMappings: [
+        { writType: 'survey-vision', templateName: 'survey-vision-v1' },
+        { writType: 'survey-charge', templateName: 'survey-charge-v1' },
+        { writType: 'survey-piece',  templateName: 'survey-piece-v1'  },
+      ],
+    },
+  },
+};
+```
+
+Spider resolves the mapping at dispatch time: when a `survey-vision` writ
+enters the queue, Spider looks up `rigTemplateMappings` for the first
+matching entry and runs the associated template. The substrate imposes no
+naming convention on template names — implementations are free to version
+them (`survey-vision-v1`, `survey-vision-v2`, …) and update the mapping
+without touching the substrate.
+
+**Per-layer tool subsetting.** The brief assigns enforcement of per-layer
+tool availability (vision-layer rigs can call create-charge; charge-layer
+rigs can call create-piece or create-mandate; piece-layer rigs can call
+create-mandate) to the rig template author — the substrate exposes all six
+tools globally and does not key tool registration by writ type. Enforcing
+the constraint in role files or engine configuration is the surveyor
+implementation's responsibility.
 
 ---
 

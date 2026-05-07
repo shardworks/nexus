@@ -28,8 +28,25 @@ import { guild } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
 import type { ClerkApi } from '@shardworks/clerk-apparatus';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
-import { SURVEYOR_PLUGIN_ID } from '@shardworks/surveyor-apparatus';
-import type { SurveyorExt } from '@shardworks/surveyor-apparatus';
+/**
+ * Canonical plugin-id for the surveyor apparatus. Inlined here to avoid a
+ * circular package dependency (cartograph ← surveyor ← cartograph).
+ * The authoritative definition lives in `@shardworks/surveyor-apparatus`.
+ */
+const SURVEYOR_PLUGIN_ID = 'surveyor';
+
+/**
+ * Priority-hint shape owned by the surveyor apparatus and stored at
+ * `writ.ext['surveyor']` for vision/charge/piece writs. Inlined here to
+ * avoid the circular import; the canonical type lives in
+ * `@shardworks/surveyor-apparatus` as `SurveyorExt`.
+ */
+interface SurveyorExt {
+  severity?:   'moderate' | 'serious' | 'critical';
+  deadline?:   string;
+  decay?:      boolean;
+  complexity?: 'mechanical' | 'bounded' | 'exploratory' | 'open-ended';
+}
 import type { CartographApi, VisionDoc, VisionStage } from '../types.ts';
 
 /**

@@ -37,10 +37,11 @@ What ships here (T1 scaffold; T2-T6 fill in the full implementation):
 - Inspection helpers — `listSurveyors()`, `getActiveSurveyor()` — typed
   under `SurveyorApi` and reachable through
   `guild().apparatus<SurveyorApi>('surveyor')`.
-- Six anima tools (T3-T4): `surveyor.survey-vision`,
-  `surveyor.survey-charge`, `surveyor.survey-piece`,
-  `surveyor.get-survey-status`, `surveyor.list-surveyors`,
-  `surveyor.cancel-survey`.
+- Six anima tools: `surveyor-create-charge`, `surveyor-create-charges`,
+  `surveyor-create-piece`, `surveyor-create-pieces`,
+  `surveyor-create-mandate`, `surveyor-create-mandates`. All are
+  `callableBy: ['anima']` and wrap their operations in a single
+  `stacks.transaction`.
 
 The Surveyor requires `stacks`, `clerk`, `cartograph`, and `reckoner`.
 `spider`, `animator`, `loom`, `clockworks`, and `oculus` are soft
@@ -132,16 +133,23 @@ writ with the same `(parentId, parentUpdatedAt)` pair already exists.
 
 ## Anima tools
 
-Six tools are surfaced to agents (implemented in T3-T4):
+Six tools are surfaced to surveyor rigs. All require `callableBy: ['anima']`
+and execute inside a single `stacks.transaction`.
 
-| Tool name                      | Description                                      |
-| ------------------------------ | ------------------------------------------------ |
-| `surveyor.survey-vision`       | Queue a survey-vision writ for a vision node.    |
-| `surveyor.survey-charge`       | Queue a survey-charge writ for a charge node.    |
-| `surveyor.survey-piece`        | Queue a survey-piece writ for a piece node.      |
-| `surveyor.get-survey-status`   | Read the current survey status for a writ.       |
-| `surveyor.list-surveyors`      | List all registered surveyor descriptors.        |
-| `surveyor.cancel-survey`       | Cancel an in-flight survey writ.                 |
+| Tool name                       | Permission        | Description                                              |
+| ------------------------------- | ----------------- | -------------------------------------------------------- |
+| `surveyor-create-charge`        | `create-charge`   | Create one charge under a vision.                        |
+| `surveyor-create-charges`       | `create-charge`   | Create a batch of charges under one vision.              |
+| `surveyor-create-piece`         | `create-piece`    | Create one piece under a charge or piece.                |
+| `surveyor-create-pieces`        | `create-piece`    | Create a batch of pieces under one parent.               |
+| `surveyor-create-mandate`       | `create-mandate`  | Create one mandate and stamp it with Reckoner priority.  |
+| `surveyor-create-mandates`      | `create-mandate`  | Create a batch of mandates and petition each.            |
+
+Each create-charge / create-piece tool accepts optional `hints` (stamped at
+`ext['surveyor']`) and an optional `supersedes` id (recorded as a
+`surveyor.supersedes` link). Each create-mandate tool requires a `source`
+field matching the Reckoner source-id convention
+(`<surveyorId>.survey-<layer>`).
 
 ## Reading the active surveyor
 
