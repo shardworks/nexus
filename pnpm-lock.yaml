@@ -129,9 +129,6 @@ importers:
       '@shardworks/stacks-apparatus':
         specifier: workspace:*
         version: link:../stacks
-      '@shardworks/surveyor-apparatus':
-        specifier: workspace:*
-        version: link:../surveyor
       '@shardworks/tools-apparatus':
         specifier: workspace:*
         version: link:../tools
@@ -419,6 +416,46 @@ importers:
       '@shardworks/nexus-core':
         specifier: workspace:*
         version: link:../../framework/core
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
+  packages/plugins/scaffold-surveyor:
+    dependencies:
+      '@shardworks/animator-apparatus':
+        specifier: workspace:*
+        version: link:../animator
+      '@shardworks/clerk-apparatus':
+        specifier: workspace:*
+        version: link:../clerk
+      '@shardworks/loom-apparatus':
+        specifier: workspace:*
+        version: link:../loom
+      '@shardworks/spider-apparatus':
+        specifier: workspace:*
+        version: link:../spider
+      '@shardworks/surveyor-apparatus':
+        specifier: workspace:*
+        version: link:../surveyor
+    devDependencies:
+      '@shardworks/cartograph-apparatus':
+        specifier: workspace:*
+        version: link:../cartograph
+      '@shardworks/fabricator-apparatus':
+        specifier: workspace:*
+        version: link:../fabricator
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
+      '@shardworks/reckoner-apparatus':
+        specifier: workspace:*
+        version: link:../reckoner
+      '@shardworks/stacks-apparatus':
+        specifier: workspace:*
+        version: link:../stacks
+      '@shardworks/tools-apparatus':
+        specifier: workspace:*
+        version: link:../tools
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0

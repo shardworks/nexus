@@ -1,0 +1,52 @@
+{
+  "name": "@shardworks/scaffold-surveyor",
+  "version": "0.0.0",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shardworks/nexus",
+    "directory": "packages/plugins/scaffold-surveyor"
+  },
+  "description": "First-light scaffold surveyor — minimal LLM-driven decomposition for vision/charge/piece layers; designed to be replaced.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test 'src/**/*.test.ts'",
+    "test:coverage": "mkdir -p coverage && node --disable-warning=ExperimentalWarning --experimental-transform-types --experimental-test-coverage --test-coverage-exclude='**/*.test.ts' --test-coverage-exclude='**/*.test.js' --test-coverage-exclude='**/*.d.ts' --test-coverage-exclude='**/test-helpers.ts' --test-coverage-exclude='**/*.test-fixture.ts' --test-coverage-exclude='**/conformance/**' --test-coverage-exclude='coverage/**' --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info --test 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@shardworks/nexus-core": "0.x"
+  },
+  "dependencies": {
+    "@shardworks/surveyor-apparatus": "workspace:*",
+    "@shardworks/spider-apparatus": "workspace:*",
+    "@shardworks/animator-apparatus": "workspace:*",
+    "@shardworks/loom-apparatus": "workspace:*",
+    "@shardworks/clerk-apparatus": "workspace:*"
+  },
+  "devDependencies": {
+    "@shardworks/nexus-core": "workspace:*",
+    "@shardworks/stacks-apparatus": "workspace:*",
+    "@shardworks/cartograph-apparatus": "workspace:*",
+    "@shardworks/reckoner-apparatus": "workspace:*",
+    "@shardworks/fabricator-apparatus": "workspace:*",
+    "@shardworks/tools-apparatus": "workspace:*",
+    "@types/node": "25.5.0"
+  },
+  "files": [
+    "dist",
+    "loom-roles"
+  ],
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  }
+}

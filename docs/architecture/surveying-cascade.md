@@ -322,12 +322,19 @@ Three plugins, mirroring the Reckoner pattern:
      by the writ row itself.
    - Does NOT ship a concrete surveyor.
 
-3. **`@shardworks/scaffold-surveyor`** *(default)*
-   - Registers a surveyor with the substrate via kit contribution
-   - Provides minimal LLM-driven rig templates for each cartograph
-     layer
-   - Useful immediately; designed to be replaced as approaches are
-     iterated
+3. **`@shardworks/scaffold-surveyor`** *(shipped)*
+   - Pure kit plugin (no apparatus). Contributes one
+     `SurveyorDescriptor` with id `scaffold-surveyor` and three rig
+     templates (`survey-vision`, `survey-charge`, `survey-piece`).
+   - Registers the `scaffold-surveyor.summon` engine with the
+     Fabricator. The engine mirrors `anima-session` but falls back to
+     `guild().home` when `cwd` is absent, removing per-rig cwd
+     boilerplate.
+   - Provides three Loom role definitions (`scaffold-surveyor.survey-*`)
+     backed by instruction files in `loom-roles/`.
+   - Useful immediately; explicitly designed to be replaced — the
+     descriptor id convention (`id = pluginId`) ensures a replacement
+     kit can register its own surveyor without substrate changes.
 
 ### 3.8 Spider's dispatchable type set extends
 
@@ -695,10 +702,17 @@ mandate-clone registered by `@shardworks/surveyor-apparatus`.
 
 ### 5.4 Default scaffold-surveyor design
 
-What does the default surveyor actually do? Open: model selection,
-prompt structure, stop conditions (skip pieces and emit mandates
-directly?), how the rig decides priority hints, re-survey behavior
-(diff against prior surveys?).
+**Resolved.** `@shardworks/scaffold-surveyor` ships with:
+- One custom engine (`scaffold-surveyor.summon`) that wraps the
+  animator's summon call and falls back to `guild().home` when `cwd`
+  is absent.
+- Three rig templates (survey-vision / survey-charge / survey-piece),
+  each wired to the custom engine with `resolutionEngine = 'survey'`.
+- Three role files (`loom-roles/survey-*.md`) that describe the
+  expected anima behaviour for each layer.
+- Model: `sonnet`; strict tool surface.
+- Stop conditions, priority hints, and re-survey diff behaviour are
+  left to the role files and future replacement implementations.
 
 ### 5.5 Mandate creation by surveyor rigs — priority discipline
 

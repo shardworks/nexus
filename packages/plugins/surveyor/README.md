@@ -53,6 +53,27 @@ See the contract document at
 
 ---
 
+## Default surveyor implementation
+
+The Surveyor substrate ships **no concrete surveyor** — it only provides
+the registry. To start surveying immediately, install and configure the
+default first-light implementation:
+
+```json
+{
+  "dependencies": {
+    "@shardworks/scaffold-surveyor": "workspace:*"
+  }
+}
+```
+
+Add `@shardworks/scaffold-surveyor` to your guild's `plugins` array.
+`@shardworks/scaffold-surveyor` is explicitly designed to be replaced
+— replace it by contributing your own `SurveyorDescriptor` kit and
+removing the scaffold plugin from `guild.json`.
+
+---
+
 ## Installation
 
 ```json
