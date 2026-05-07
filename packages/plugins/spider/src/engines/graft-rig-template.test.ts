@@ -411,4 +411,187 @@ describe('spider.graft-rig-template engine', () => {
 
     assert.equal(result.graftTail, 'only');
   });
+
+  // ── Overlay ${yields.X} resolution ─────────────────────────────────────
+  //
+  // Spider's run-time resolveYieldRefs walks only the top level of an
+  // engine's givens, so any ${yields.X} refs nested inside the caller's
+  // overlay (givens.givens) survive unresolved unless graft-rig-template
+  // resolves them itself against context.upstream. These tests exercise
+  // that pre-pass.
+
+  it('resolves ${yields.X.Y} in caller overlay against context.upstream before substituting into ${vars.X}', async () => {
+    const template: RigTemplate = {
+      engines: [
+        {
+          id: 'do-work',
+          designId: 'anima-session',
+          givens: {
+            cwd:    '${vars.cwd}',                   // substituted via overlay
+            depth:  '${vars.depth}',                 // substituted via overlay
+            label:  'workdir=${vars.cwd}',           // mixed inline
+          },
+        },
+      ],
+    };
+    installGuild({ 'overlay-yields-template': template });
+
+    const ctx: EngineRunContext = {
+      rigId: 'rig-1',
+      engineId: 'graft',
+      upstream: {
+        'fixture-codex-checkout-setup': { workdir: '/tmp/lab/checkouts/foo' },
+        'fixture-meta-setup':           { depth: 2 },
+      },
+    };
+
+    const result = (await graftRigTemplateEngine.run(
+      {
+        template: 'overlay-yields-template',
+        givens: {
+          cwd:   '${yields.fixture-codex-checkout-setup.workdir}',
+          depth: '${yields.fixture-meta-setup.depth}',
+        },
+      },
+      ctx,
+    )) as SpiderEngineRunResult & {
+      status: 'completed';
+      graft: RigTemplateEngine[];
+      yields: Record<string, unknown>;
+    };
+
+    assert.equal(result.status, 'completed');
+    const g = result.graft[0]!.givens!;
+
+    // Yields refs in overlay → resolved to upstream values
+    assert.equal(g.cwd,   '/tmp/lab/checkouts/foo', 'overlay yields ref resolved before substitution');
+    assert.equal(g.depth, 2,                         'whole-value yields ref preserves type');
+    assert.equal(g.label, 'workdir=/tmp/lab/checkouts/foo', 'inline-mixed yields refs in overlay resolve');
+
+    // Echoed yields reflect post-resolution overlay
+    assert.deepEqual(result.yields.givens, {
+      cwd:   '/tmp/lab/checkouts/foo',
+      depth: 2,
+    });
+  });
+
+  it('drops overlay key when yields ref resolves to undefined (engine not in upstream)', async () => {
+    const template: RigTemplate = {
+      engines: [
+        {
+          id: 'do-work',
+          designId: 'anima-session',
+          givens: {
+            cwd: '${vars.cwd}',
+          },
+        },
+      ],
+    };
+    installGuild({ 'missing-yields-template': template });
+
+    const ctx: EngineRunContext = {
+      rigId: 'rig-1',
+      engineId: 'graft',
+      upstream: {}, // no fixture-codex-checkout-setup yield
+    };
+
+    const result = (await graftRigTemplateEngine.run(
+      {
+        template: 'missing-yields-template',
+        givens: {
+          cwd: '${yields.fixture-codex-checkout-setup.workdir}',
+          stable: 'still-here',
+        },
+      },
+      ctx,
+    )) as SpiderEngineRunResult & {
+      status: 'completed';
+      graft: RigTemplateEngine[];
+      yields: Record<string, unknown>;
+    };
+
+    // Overlay key dropped (whole-value yields ref → undefined → omit)
+    const g = result.graft[0]!.givens!;
+    // ${vars.cwd} in template — caller's cwd was dropped, so this stays unresolved
+    assert.equal(g.cwd, '${vars.cwd}', 'unmatched ${vars.X} preserved when overlay key was dropped');
+
+    // Stable keys remain
+    assert.equal((result.yields.givens as Record<string, unknown>).stable, 'still-here');
+    assert.equal((result.yields.givens as Record<string, unknown>).cwd, undefined);
+  });
+
+  it('non-yields expressions in overlay are left untouched (writ, vars survive)', async () => {
+    const template: RigTemplate = {
+      engines: [
+        {
+          id: 'do-work',
+          designId: 'anima-session',
+          givens: {
+            id:   '${vars.id}',
+            name: '${vars.name}',
+          },
+        },
+      ],
+    };
+    installGuild({ 'non-yields-template': template });
+
+    const ctx: EngineRunContext = {
+      rigId: 'rig-1',
+      engineId: 'graft',
+      upstream: {},
+    };
+
+    const result = (await graftRigTemplateEngine.run(
+      {
+        template: 'non-yields-template',
+        givens: {
+          id:   '${writ.id}',     // not a yields ref — survives the overlay pre-pass
+          name: '${vars.outer}',  // also survives
+        },
+      },
+      ctx,
+    )) as SpiderEngineRunResult & { status: 'completed'; graft: RigTemplateEngine[] };
+
+    const g = result.graft[0]!.givens!;
+    // Overlay values copied verbatim through ${vars.X} substitution.
+    // (These survive into the grafted engine's givens; Spider's normal
+    // spawn-time resolution would handle them against the rig's writ /
+    // spider config — out of scope for graft-rig-template's contract.)
+    assert.equal(g.id,   '${writ.id}');
+    assert.equal(g.name, '${vars.outer}');
+  });
+
+  it('non-string overlay values pass through literally (object, number, bool)', async () => {
+    const template: RigTemplate = {
+      engines: [
+        {
+          id: 'do-work',
+          designId: 'anima-session',
+          givens: {
+            opts:  '${vars.opts}',
+            count: '${vars.count}',
+            on:    '${vars.on}',
+          },
+        },
+      ],
+    };
+    installGuild({ 'literal-overlay-template': template });
+
+    const result = (await graftRigTemplateEngine.run(
+      {
+        template: 'literal-overlay-template',
+        givens: {
+          opts:  { a: 1, b: 'two' },
+          count: 42,
+          on:    true,
+        },
+      },
+      makeContext(),
+    )) as SpiderEngineRunResult & { status: 'completed'; graft: RigTemplateEngine[] };
+
+    const g = result.graft[0]!.givens!;
+    assert.deepEqual(g.opts, { a: 1, b: 'two' });
+    assert.equal(g.count, 42);
+    assert.equal(g.on, true);
+  });
 });
