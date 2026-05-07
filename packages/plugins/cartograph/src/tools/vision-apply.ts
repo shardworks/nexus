@@ -13,10 +13,11 @@
  * propagated back to the file.
  *
  * The tool also writes a `SurveyorExt` priority-hint payload into
- * `writ.ext['surveyor']` per the future surveying-cascade contract. The
- * substrate consuming that slot ships in a separate commission; the
- * slot is inert until then. The slot is always written (even when the
- * payload is `{}`) — its presence marks the writ as processed by apply.
+ * `writ.ext['surveyor']` per the surveying-cascade contract. The slot
+ * is owned by `@shardworks/surveyor-apparatus` and is consumed by its
+ * CDC observer when emitting survey petitions. The slot is always
+ * written (even when the payload is `{}`) — its presence marks the
+ * writ as processed by apply.
  */
 
 import { z } from 'zod';
@@ -27,16 +28,9 @@ import { guild } from '@shardworks/nexus-core';
 import { tool } from '@shardworks/tools-apparatus';
 import type { ClerkApi } from '@shardworks/clerk-apparatus';
 import type { StacksApi } from '@shardworks/stacks-apparatus';
+import { SURVEYOR_PLUGIN_ID } from '@shardworks/surveyor-apparatus';
+import type { SurveyorExt } from '@shardworks/surveyor-apparatus';
 import type { CartographApi, VisionDoc, VisionStage } from '../types.ts';
-
-/**
- * Plugin id used for the surveyor `ext` slot. The future
- * surveyor-apparatus commission will define its own constant; the
- * values agree because the brief fixes the string. Kept local to this
- * file to avoid exposing a public-API constant for a slot whose owner
- * does not yet exist.
- */
-const SURVEYOR_PLUGIN_ID = 'surveyor';
 
 /**
  * Tight slug regex: lowercase letters/digits/hyphens/underscores, no
@@ -86,18 +80,6 @@ const STAGE_TO_PHASE: Record<VisionStage, 'new' | 'open' | 'completed' | 'cancel
  * is in any of these phases. Per D5: all terminal phases plus missing.
  */
 const TERMINAL_PHASES = new Set(['cancelled', 'completed', 'failed']);
-
-/**
- * Surveyor-slot payload assembled from CLI flags + sidecar values per
- * D10/D11. Fields that neither source supplied are omitted; the slot
- * is still written even when the payload is `{}`.
- */
-interface SurveyorPayload {
-  severity?: string;
-  deadline?: string;
-  decay?: string;
-  complexity?: string;
-}
 
 /**
  * Result of parsing the sidecar. Holds both the structured fields and
@@ -195,8 +177,12 @@ function parseSidecar(raw: string, sidecarPath: string): ParsedSidecar {
 function buildSurveyorPayload(
   sidecar: ParsedSidecar,
   flags: { severity?: string; deadline?: string; decay?: string },
-): SurveyorPayload {
-  const payload: SurveyorPayload = {};
+): SurveyorExt {
+  // The payload values come from CLI flags and sidecar fields — untyped
+  // user input that the substrate stores via setWritExt (which takes
+  // unknown). The cast to SurveyorExt is nominal; runtime values are
+  // passed through as-is.
+  const payload: Record<string, unknown> = {};
   // CLI flags override sidecar values per D10/D11.
   const severity = flags.severity ?? sidecar.severity;
   const deadline = flags.deadline ?? sidecar.deadline;
@@ -207,7 +193,7 @@ function buildSurveyorPayload(
   if (deadline !== undefined) payload.deadline = deadline;
   if (decay !== undefined) payload.decay = decay;
   if (complexity !== undefined) payload.complexity = complexity;
-  return payload;
+  return payload as SurveyorExt;
 }
 
 /**
@@ -448,7 +434,3 @@ export default tool({
     return updatedDoc satisfies VisionDoc;
   },
 });
-
-// Re-export the SURVEYOR_PLUGIN_ID for tests; not part of the public
-// API since the future surveyor-apparatus commission owns the slot.
-export { SURVEYOR_PLUGIN_ID };

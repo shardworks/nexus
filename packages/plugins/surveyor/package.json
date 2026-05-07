@@ -1,0 +1,47 @@
+{
+  "name": "@shardworks/surveyor-apparatus",
+  "version": "0.0.0",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shardworks/nexus",
+    "directory": "packages/plugins/surveyor"
+  },
+  "description": "The Surveyor — cartograph-decomposition substrate: survey writ types, CDC observers, and anima tools",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-transform-types --test 'src/**/*.test.ts'",
+    "test:coverage": "mkdir -p coverage && node --disable-warning=ExperimentalWarning --experimental-transform-types --experimental-test-coverage --test-coverage-exclude='**/*.test.ts' --test-coverage-exclude='**/*.test.js' --test-coverage-exclude='**/*.d.ts' --test-coverage-exclude='**/test-helpers.ts' --test-coverage-exclude='**/*.test-fixture.ts' --test-coverage-exclude='**/conformance/**' --test-coverage-exclude='coverage/**' --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info --test 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@shardworks/nexus-core": "0.x"
+  },
+  "dependencies": {
+    "@shardworks/stacks-apparatus": "workspace:*",
+    "@shardworks/clerk-apparatus": "workspace:*",
+    "@shardworks/reckoner-apparatus": "workspace:*",
+    "@shardworks/cartograph-apparatus": "workspace:*",
+    "@shardworks/tools-apparatus": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@shardworks/nexus-core": "workspace:*",
+    "@types/node": "25.5.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  }
+}

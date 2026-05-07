@@ -282,8 +282,9 @@ Each section introduces one or more apparatus or kits from the default set. Unde
 | **[The Animator](apparatus/animator.md)** | `animator` | Session lifecycle — launches, monitors, and records anima sessions |
 | **[Claude Code](apparatus/claude-code.md)** | `claude-code` | Session provider — launches Claude Code CLI processes and parses their structured telemetry |
 | **[The Parlour](apparatus/parlour.md)** | `parlour` | Conversation orchestration — drives `nsg consult` and `nsg convene` across multiple turns |
+| **[The Surveyor](apparatus/surveyor.md)** | `surveyor` | Cartograph-decomposition substrate — survey writ types, CDC observers, surveyor kit registry, and anima tools |
 
-The Surveyor is anticipated as the planned `surveyor` package — the cartograph-decomposition substrate described in [Surveying Cascade](surveying-cascade.md), landing in a separate commission. The Executor is described elsewhere in this document as part of the guild's operational fabric, but is not yet extracted as a standalone package.
+The Executor is described elsewhere in this document as part of the guild's operational fabric, but is not yet extracted as a standalone package.
 
 ### Opt-in Apparatus
 

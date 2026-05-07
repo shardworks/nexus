@@ -6,7 +6,7 @@ Status: **Draft**
 > end-to-end cascade by which patron-authored product visions become
 > commissionable mandate work, spanning three apparatuses: the
 > Cartograph (data layer, shipped), the Surveyor (substrate +
-> extension + default, not yet built), and the Reckoner (petition
+> extension + default, shipped), and the Reckoner (petition
 > scheduler, shipped). It is a settled architectural reference; the
 > open questions section names the design problems that remain.
 
@@ -444,11 +444,11 @@ nsg vision apply <slug>
 |---|---|---|---|
 | `visionRelation` | `vision-advancer` for fresh; `vision-violator` for re-survey detecting contradiction | No | Yes (rig assesses on re-survey) |
 | `severity` | `moderate` | Yes (CLI flag) | Yes (`ext['surveyor'].severity`) |
-| `scope` | layer-based: vision=`major-area`, charge=`minor-area`, piece=`trivial` | No | No (substrate-derived from layer) |
+| `scope` | layer-based: vision=`major-area`, charge=`minor-area`, piece=`minor-area` | No | No (substrate-derived from layer) |
 | `time.decay` | `false` | Yes (CLI flag) | Yes (`ext['surveyor'].decay`) |
 | `time.deadline` | `null` | Yes (CLI flag) | Yes (`ext['surveyor'].deadline`) |
-| `domain` | `['planning']` | No | No |
-| `complexity` | `bounded` | No | Yes (`ext['surveyor'].complexity`) |
+| `domain` | `[]` | No | No |
+| `complexity` | unset (omitted from petition when hints absent) | No | Yes (`ext['surveyor'].complexity`) |
 
 #### `ext['surveyor']` shape
 
@@ -457,7 +457,7 @@ interface SurveyorExt {
   severity?: 'moderate' | 'serious' | 'critical';
   deadline?: string;       // ISO date
   decay?: boolean;
-  complexity?: 'bounded' | 'unbounded';
+  complexity?: 'mechanical' | 'bounded' | 'exploratory' | 'open-ended';
 }
 ```
 
@@ -540,9 +540,8 @@ surveyor-apparatus observer wakes:
       "severity": "serious",
       "scope": "major-area",
       "time": { "decay": false, "deadline": "2026-06-15" },
-      "domain": ["planning"]
-    },
-    "complexity": "bounded"
+      "domain": []
+    }
   }
   ```
 
@@ -689,11 +688,10 @@ across writ "kinds" (implementer/spec/reviewer/surveyor).
 
 ### 5.3 One survey writ type vs three
 
-Symmetric is decided; the sub-question is whether `survey-vision`,
-`survey-charge`, `survey-piece` are three writ types or one
-`survey { targetType: ... }` type. v0 lean: three (matches
-cartograph's per-layer types; Spider's static-config dispatch is
-direct).
+**Resolved.** Three types (`survey-vision`, `survey-charge`,
+`survey-piece`) — matches cartograph's per-layer types; Spider's
+static-config dispatch is direct. Each type is a six-state
+mandate-clone registered by `@shardworks/surveyor-apparatus`.
 
 ### 5.4 Default scaffold-surveyor design
 
@@ -724,10 +722,12 @@ registered.
 
 ### 5.8 Cascading supersedes — children of superseded nodes
 
-Substrate default: superseded charges' pieces stay attached to the
-superseded parent. Patron ergonomics caveat: walkthrough surfaces
-orphaned children for resolution. A "soft cancel" CLI surface
-(`nsg charge cancel ch-3 --cascade`) may be earlier than v0+1.
+**Resolved.** Substrate default: no cascade. Superseded charges'
+pieces stay attached to the superseded parent. The
+`surveyor.supersedes` link kind is registered by the substrate; the
+surveyor anima tools author the link when a `supersedes` argument is
+passed. A "soft cancel" CLI surface (`nsg charge cancel ch-3
+--cascade`) deferred to v0+1.
 
 ### 5.9 Vision completion criteria
 
@@ -737,10 +737,11 @@ action via `nsg vision transition`; no auto-completion.
 
 ### 5.10 Survey rig failure handling
 
-Spider has retry semantics for mandates. Do they compose with survey
-writ types? Lean: Spider's existing retry semantics apply uniformly
-across dispatchable types. Confirm during the substrate commission
-audit.
+**Resolved.** Spider's existing retry semantics apply uniformly
+across dispatchable types — confirmed during the substrate
+commission audit. Survey writs use the same `failOnError: false`
+CDC watcher path as mandates; Spider treats `survey-*` writ types
+as first-class dispatchable types.
 
 ### 5.11 Patron walkthrough CLI surface
 
@@ -764,11 +765,11 @@ into hidden system file + patron metadata file.
 
 ### 5.14 Zero-children survey rig behavior
 
-A rig may complete with no children created ("too vague",
-"sufficient as-is"). The substrate has no special handling — survey
-writ terminates with notes only; cartograph node sits without further
-decomposition. Lean: zero-children is a valid outcome; document and
-optionally surface in the dashboard.
+**Resolved.** Zero-children is a valid outcome with no special
+substrate handling. The survey writ terminates with notes only;
+`status['surveyor']` is stamped with `childCount: 0`. The
+cartograph node sits without further decomposition. Dashboard
+surfacing deferred.
 
 ### 5.15 Re-survey upstream-cascade behavior
 

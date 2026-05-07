@@ -49,7 +49,8 @@ import type { ClerkApi, WritDoc } from '@shardworks/clerk-apparatus';
 import { createCartograph } from '../cartograph.ts';
 import type { CartographApi, VisionDoc } from '../types.ts';
 
-import visionApply, { SURVEYOR_PLUGIN_ID } from './vision-apply.ts';
+import { SURVEYOR_PLUGIN_ID } from '@shardworks/surveyor-apparatus';
+import visionApply from './vision-apply.ts';
 
 // ── Fixture ──────────────────────────────────────────────────────────
 

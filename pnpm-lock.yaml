@@ -129,6 +129,9 @@ importers:
       '@shardworks/stacks-apparatus':
         specifier: workspace:*
         version: link:../stacks
+      '@shardworks/surveyor-apparatus':
+        specifier: workspace:*
+        version: link:../surveyor
       '@shardworks/tools-apparatus':
         specifier: workspace:*
         version: link:../tools
@@ -503,6 +506,34 @@ importers:
       '@types/better-sqlite3':
         specifier: 7.6.13
         version: 7.6.13
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
+
+  packages/plugins/surveyor:
+    dependencies:
+      '@shardworks/cartograph-apparatus':
+        specifier: workspace:*
+        version: link:../cartograph
+      '@shardworks/clerk-apparatus':
+        specifier: workspace:*
+        version: link:../clerk
+      '@shardworks/reckoner-apparatus':
+        specifier: workspace:*
+        version: link:../reckoner
+      '@shardworks/stacks-apparatus':
+        specifier: workspace:*
+        version: link:../stacks
+      '@shardworks/tools-apparatus':
+        specifier: workspace:*
+        version: link:../tools
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@shardworks/nexus-core':
+        specifier: workspace:*
+        version: link:../../framework/core
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
