@@ -665,12 +665,21 @@ export function runStatus(input: StatusInput): StatusOutput {
     return { lines: ['Clockworks daemon: not running.'], status };
   }
 
-  const lines = [
-    'Clockworks daemon: running',
+  // T4: include Host line so operators know whether Clockworks is
+  // running inside `nsg start` or as a dedicated `nsg clock start`
+  // daemon. The line is always present when `running: true` because
+  // `clockStatus` always sets `host` in the live-process branches.
+  const lines: string[] = ['Clockworks daemon: running'];
+  if (status.host === 'guild-daemon') {
+    lines.push('  Host:      unified guild daemon (nsg start)');
+  } else if (status.host === 'standalone') {
+    lines.push('  Host:      standalone (nsg clock start)');
+  }
+  lines.push(
     `  PID:       ${status.pid}`,
     `  Log file:  ${status.logFile}`,
     `  Uptime:    ${formatUptime(status.uptime ?? 0)}`,
-  ];
+  );
   return { lines, status };
 }
 
@@ -810,7 +819,9 @@ export function buildClockCommand(): Command {
   // ── start ─────────────────────────────────────────────────────────
 
   const start = new Command('start')
-    .description('Start the Clockworks daemon (detached background process).')
+    .description(
+      'Start the standalone Clockworks daemon (advanced; normally `nsg start` runs Clockworks automatically).',
+    )
     .option(
       '--interval <ms>',
       'Polling interval in milliseconds (default 2000).',

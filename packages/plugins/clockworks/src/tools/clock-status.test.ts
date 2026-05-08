@@ -106,6 +106,52 @@ describe('clock-status handler', () => {
     assert.equal(typeof status.uptime, 'number');
   });
 
+  it('returns { running: true, host: standalone, pid, logFile, uptime } for a live standalone daemon', async () => {
+    const home = makeTmpHome();
+    const dir = path.join(home, '.nexus');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'clock.pid'), String(process.pid), 'utf-8');
+    setupFakeGuild(home);
+
+    const status = await clockStatusTool.handler({}) as {
+      running: boolean;
+      host?: string;
+      pid?: number;
+      logFile?: string;
+      uptime?: number;
+    };
+    assert.equal(status.running, true);
+    assert.equal(status.host, 'standalone');
+    assert.equal(status.pid, process.pid);
+    assert.match(status.logFile ?? '', /clock\.log$/);
+    assert.equal(typeof status.uptime, 'number');
+  });
+
+  it('returns { running: true, host: guild-daemon } when only daemon.pid is alive (T4/D5)', async () => {
+    // When no clock.pid is present but daemon.pid is live, clockStatus
+    // falls back to the unified guild daemon. The MCP tool should expose
+    // the same guild-daemon branch that the CLI text output does.
+    const home = makeTmpHome();
+    const dir = path.join(home, '.nexus');
+    fs.mkdirSync(dir, { recursive: true });
+    // Write daemon.pid pointing at a live process — no clock.pid.
+    fs.writeFileSync(path.join(dir, 'daemon.pid'), String(process.pid), 'utf-8');
+    setupFakeGuild(home);
+
+    const status = await clockStatusTool.handler({}) as {
+      running: boolean;
+      host?: string;
+      pid?: number;
+      logFile?: string;
+      uptime?: number;
+    };
+    assert.equal(status.running, true);
+    assert.equal(status.host, 'guild-daemon');
+    assert.equal(status.pid, process.pid);
+    assert.match(status.logFile ?? '', /daemon\.out$/);
+    assert.equal(typeof status.uptime, 'number');
+  });
+
   it('reports stalePidfile and unlinks when the pidfile points at a dead pid', async () => {
     const home = makeTmpHome();
     const dir = path.join(home, '.nexus');

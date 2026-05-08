@@ -10,14 +10,21 @@
  *
  * - **Foreground (`--foreground` / `-f`):** the inline daemon loop. Boots the
  *   guild, starts the Tool HTTP Server (with a Stacks-backed authorize
- *   closure), starts the Oculus, runs the Spider continual crawl loop, writes
- *   the pidfile, installs SIGTERM/SIGINT handlers, and blocks forever.
+ *   closure), starts the Oculus, runs the Spider continual crawl loop, runs
+ *   the Clockworks tick loop (D2), writes the pidfile, installs SIGTERM/SIGINT
+ *   handlers, and blocks forever.
  *
  * The foreground mode IS the daemon — there is no separate daemon entry
  * point. `nsg start` (detached) just re-execs itself with --foreground.
  *
+ * The Clockworks tick loop (`processSchedules` + `processEvents`, 2000ms
+ * interval) runs as a sibling async task alongside the Spider crawl loop.
+ * The D4 guard skips it if a standalone `nsg clock start` daemon is already
+ * running. The D10 guard skips it if the Clockworks apparatus is not
+ * installed. Both are best-effort and non-fatal.
+ *
  * The pidfile lives at `.nexus/daemon.pid` relative to the guild home.
- * See: docs/architecture/detached-sessions.md, .scratch/nsg-daemon-mode-brief.md
+ * See: docs/architecture/detached-sessions.md, docs/architecture/clockworks.md
  */
 
 import fs from 'node:fs';
@@ -28,11 +35,13 @@ import { z } from 'zod';
 import { tool } from '@shardworks/tools-apparatus';
 import type { InstrumentariumApi } from '@shardworks/tools-apparatus';
 import {
+  clockPidPath,
   guild,
   isProcessAlive,
   readPidFile,
   tryUnlink,
 } from '@shardworks/nexus-core';
+import { runClockworksTick } from '@shardworks/clockworks-apparatus';
 
 import { getStartedGuild } from '../started-guild.ts';
 
@@ -54,6 +63,22 @@ interface SpiderApiLike {
 
 interface SpiderConfigLike {
   pollIntervalMs?: number;
+}
+
+/**
+ * Minimum Clockworks API surface needed by the unified daemon's tick task.
+ * Declared locally so the CLI package doesn't need a direct type dependency
+ * on the Clockworks plugin's internal ClockworksApi interface. The
+ * runtime apparatus is resolved via `g.apparatus<ClockworksApiLike>('clockworks')`.
+ */
+interface ClockworksApiLike {
+  processEvents(): Promise<{
+    processedEvents: number;
+    dispatches: number;
+    errors: number;
+    skipped: number;
+  }>;
+  processSchedules?(): Promise<{ fired: number; errors: number }>;
 }
 
 interface SessionDocLike {
@@ -158,6 +183,7 @@ async function startDetached(home: string): Promise<string> {
           `  Tool HTTP Server:  ${reached.url}`,
           `  Oculus:            ${oculusUrl ?? '(starting)'}`,
           `  Spider:            crawling (continual mode)`,
+          `  Clockworks:        running (2000ms interval)`,
           `  Logs:              ${path.relative(home, p.outLog)}, ${path.relative(home, p.errLog)}`,
         ].join('\n');
       }
@@ -263,19 +289,30 @@ async function startForeground(home: string): Promise<never> {
   //
   // Teardown order on SIGTERM/SIGINT:
   //   1. Flip `spiderStop` so the crawl loop exits at its next yield.
-  //   2. Close the tool HTTP server (D7: the daemon owns this handle —
+  //   2. Resolve `clockworksShutdownPromise` (D9) so the Clockworks
+  //      tick loop exits cleanly at its next sleep boundary.
+  //   3. Close the tool HTTP server (the daemon owns this handle —
   //      it is returned by tools.startToolServer() rather than wired
   //      into the apparatus's stop()).
-  //   3. Call guildInstance.shutdown(), which fires guild:shutdown,
+  //   4. Call guildInstance.shutdown(), which fires guild:shutdown,
   //      walks the started apparatus list in reverse topological
   //      order calling each `stop()` — including Oculus's, so the
   //      explicit oculus.stopServer() call that used to live here is
   //      now redundant and removed.
-  //   4. Unlink the pidfile and process.exit(0).
+  //   5. Unlink the pidfile and process.exit(0).
   //
-  // shutdown() is itself idempotent (D4), so the local "first signal
-  // wins" guard is no longer load-bearing for double-fire safety; we
-  // keep `spiderStop` local because the crawl loop reads it directly.
+  // shutdown() is itself idempotent, so the local "first signal wins"
+  // guard is no longer load-bearing for double-fire safety; we keep
+  // `spiderStop` local because the crawl loop reads it directly.
+
+  // D9: clockworks-shutdown deferred. Resolved at the top of the
+  // shutdown handler so the tick loop can exit cleanly before the
+  // apparatus stop() pass runs. Declared here so it is in scope for
+  // both the shutdown handler (resolver) and the tick task (promise).
+  let resolveClockworksShutdown!: () => void;
+  const clockworksShutdownPromise = new Promise<void>((resolve) => {
+    resolveClockworksShutdown = resolve;
+  });
 
   const startedGuild = getStartedGuild();
   let spiderStop = false;
@@ -284,6 +321,7 @@ async function startForeground(home: string): Promise<never> {
     console.log(`[daemon] ${signal} received — shutting down...`);
 
     spiderStop = true;
+    resolveClockworksShutdown(); // D9: signal Clockworks tick loop to stop.
     try {
       await toolServer.close();
     } catch (err) {
@@ -313,19 +351,76 @@ async function startForeground(home: string): Promise<never> {
 
     tryUnlink(p.pidFile);
     console.log('[daemon] stopped');
-    // D13: explicit exit. The crawl loop and other in-flight timers
-    // may keep the event loop alive even after apparatus stops; force
-    // exit to avoid hangs.
+    // Explicit exit. The crawl loop and other in-flight timers may
+    // keep the event loop alive even after apparatus stops; force exit
+    // to avoid hangs.
     process.exit(0);
   };
 
   process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
   process.on('SIGINT', () => { void shutdown('SIGINT'); });
 
+  // ── Clockworks tick task (D2, D7, D8, D9, D10) ────────────────────
+  //
+  // Runs `processSchedules` (if available) then `processEvents` every
+  // 2000ms as a sibling async task alongside the Spider crawl loop.
+  //
+  // D4: if a standalone `nsg clock start` daemon is already running
+  //     (clock.pid is live), skip the tick task — it is already covered.
+  // D10: if the Clockworks apparatus is not installed, log and skip.
+  // D2: spawned via a fire-and-forget IIFE before the Spider loop
+  //     starts; errors are caught and logged without killing the daemon.
+  // D7: interval hardcoded at 2000ms — no flag on `nsg start`.
+  // D8: every log line is prefixed with [clockworks] at this call site.
+  // D9: clockworksShutdownPromise resolves when the shutdown handler
+  //     fires, aborting the abortable sleep in the tick loop.
+
+  let clockworksStatus = 'not installed';
+
+  const standalonePid = readPidFile(clockPidPath(home));
+  if (standalonePid !== null && isProcessAlive(standalonePid)) {
+    // D4: standalone Clockworks daemon is running — skip the tick task.
+    clockworksStatus = `standalone daemon (pid ${standalonePid})`;
+    console.warn(
+      `[daemon] Clockworks standalone daemon is running (pid ${standalonePid}) — skipping tick task`,
+    );
+  } else {
+    try {
+      const clockworks = g.apparatus<ClockworksApiLike>('clockworks');
+      clockworksStatus = 'running (2000ms interval)';
+
+      // D2: fire-and-forget sibling task. Errors are caught so a
+      // Clockworks failure cannot kill the Spider loop or the servers.
+      void (async () => {
+        try {
+          await runClockworksTick({
+            // Wrap in arrow functions so the no-options shim signature
+            // satisfies the typed ClockworksApi slot without a cast.
+            processEvents: () => clockworks.processEvents(),
+            processSchedules: clockworks.processSchedules
+              ? () => clockworks.processSchedules!()
+              : undefined,
+            intervalMs: 2000, // D7
+            log: (line) => console.log(`[clockworks] ${line}`), // D8
+            shutdown: clockworksShutdownPromise, // D9
+          });
+        } catch (err) {
+          console.error(
+            `[daemon] Clockworks tick loop failed: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      })();
+    } catch {
+      // D10: best-effort — Clockworks not installed.
+      console.warn('[daemon] Clockworks not installed — skipping');
+    }
+  }
+
   console.log('[daemon] Guild daemon ready');
   console.log(`  Tool HTTP Server:  ${toolServer.url}`);
   if (oculusUrl) console.log(`  Oculus:            ${oculusUrl}`);
   console.log(`  Spider:            crawling (continual mode)`);
+  console.log(`  Clockworks:        ${clockworksStatus}`);
   console.log(`  Pidfile:           ${path.relative(home, p.pidFile)}`);
 
   // ── Spider continual crawl loop ────────────────────────────────────

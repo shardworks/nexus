@@ -23,12 +23,13 @@ including initial creation and cancellation). A fresh `start()` adds
 no boot-time noise to the events book — the legacy
 `guild.initialized` and per-book `migration.applied` emissions were
 removed in C2. The operator-facing `nsg clock list/tick/run` CLI
-composes on top of `processEvents()`. The daemon (`nsg clock
-start/stop/status`, plus the matching `clockStart` / `clockStop` /
-`clockStatus` core API and the anima-callable `clock-status` MCP
-tool) polls the events queue at a configurable interval, runs the
-scheduler pass before each event-processing pass, and drains
-dispatches without an operator at the keyboard.
+composes on top of `processEvents()`. The daemon polls the events
+queue at a configurable interval, runs the scheduler pass before each
+event-processing pass, and drains dispatches without an operator at
+the keyboard. **Canonical startup is `nsg start`**, which co-hosts
+the Clockworks tick loops as a sibling task inside the unified guild
+daemon. A dedicated standalone daemon (`nsg clock start`) is also
+available for advanced operator use.
 
 Stacks change-data-capture (CDC) → Clockworks `book.*` event
 auto-wiring lives in the dedicated
@@ -543,20 +544,23 @@ payload.
 - `nsg clock run` — loop `processEvents()` until the queue drains. No
   sleep, no daemon — finite drain. Mid-sweep arrivals are picked up on
   the next iteration.
-- `nsg clock start` — start the unattended Clockworks daemon as a
-  detached background process. `--interval <ms>` sets the polling
-  interval (default 2000); `--foreground`/`-f` is the inline body the
-  detached spawn re-execs into and is normally not invoked directly.
-  The detached path blocks until the pidfile is present and the named
-  pid is alive (~10s deadline) so "started" means "verified running".
+- `nsg clock start` — **advanced/standalone path.** Start a dedicated
+  Clockworks daemon as a detached background process. `--interval <ms>`
+  sets the polling interval (default 2000); `--foreground`/`-f` is the
+  inline body the detached spawn re-execs into and is normally not
+  invoked directly. Refuses when the unified guild daemon (`nsg start`)
+  is already hosting the Clockworks loops. The detached path blocks
+  until the pidfile is present and the named pid is alive (~10s
+  deadline) so "started" means "verified running".
 - `nsg clock stop` — graceful SIGTERM with SIGKILL escalation after a
   5s grace window. Removes the pidfile once the process is confirmed
-  dead.
+  dead. When Clockworks is hosted by the unified guild daemon, prints
+  an informative message and exits zero — use `nsg stop` instead.
 - `nsg clock status` — show whether the daemon is running, with pid,
-  log file path, and uptime. `--json` emits the structured payload.
-  When the pidfile points at a dead pid, the command surfaces
-  `stalePidfile: true` and unlinks the pidfile as a side effect; the
-  next call is silent.
+  host (`standalone` or `guild-daemon`), log file path, and uptime.
+  `--json` emits the structured payload. When the pidfile points at a
+  dead pid, the command surfaces `stalePidfile: true` and unlinks the
+  pidfile as a side effect; the next call is silent.
 
 `tick` and `run` print one summary line per dispatch — `[<handler>]
 <status> <durationMs>ms`, with `: <error>` appended on the same line
@@ -566,10 +570,11 @@ emit a one-line coexistence warning to stderr (the manual invocation
 runs concurrently with the daemon, so relays may be invoked more
 than once for overlapping events) and execute regardless.
 
-The two daemons (`nsg start` for the guild daemon and `nsg clock
-start` for the Clockworks daemon) are independent: different pidfiles
-(`daemon.pid` vs `clock.pid`), different log files, and different
-lifecycles.
+The canonical Clockworks host is the unified guild daemon (`nsg
+start`): one pidfile (`daemon.pid`), one log stream, one shutdown
+signal. The standalone `nsg clock start` daemon uses a separate
+pidfile (`clock.pid`) and log file (`clock.log`); conflict guards
+(D3/D4) prevent both from running their tick loops concurrently.
 
 ---
 

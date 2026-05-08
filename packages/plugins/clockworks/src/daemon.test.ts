@@ -26,6 +26,7 @@ import {
   clockStatus,
   clockStop,
   formatDispatchLogLine,
+  runForegroundDaemon,
   validateInterval,
 } from './daemon.ts';
 import type { DispatchObservation } from './types.ts';
@@ -162,6 +163,18 @@ describe('clockStop', () => {
 
 // ── clockStart (already-running refusal) ─────────────────────────────
 
+function daemonPidFile(home: string): string {
+  return path.join(home, '.nexus', 'daemon.pid');
+}
+
+function writeDaemonPid(home: string, pid: number): string {
+  const dir = path.join(home, '.nexus');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = daemonPidFile(home);
+  fs.writeFileSync(file, String(pid), 'utf-8');
+  return file;
+}
+
 describe('clockStart — already-running refusal', () => {
   it('throws when a live daemon is already recorded by the pidfile', async () => {
     const home = makeTmpHome();
@@ -174,7 +187,63 @@ describe('clockStart — already-running refusal', () => {
     // The pidfile is left in place — the existing daemon owns it.
     assert.equal(fs.existsSync(pidFile(home)), true);
   });
+
+  it('throws (D3) when the unified guild daemon is running', async () => {
+    const home = makeTmpHome();
+    // Write daemon.pid pointing at a live process (our test process).
+    writeDaemonPid(home, process.pid);
+
+    await assert.rejects(
+      clockStart(home),
+      /unified guild daemon/i,
+    );
+  });
+
+  it('does not block clockStatus when daemon.pid is stale (D3 guard only fires for live pids)', () => {
+    // Verifies that a stale daemon.pid does not cause clockStatus to
+    // report the unified daemon as host. The D3 guard in clockStart
+    // also only fires when the named pid is alive — same predicate.
+    const home = makeTmpHome();
+    writeDaemonPid(home, 999_999_999);
+    const status = clockStatus(home);
+    // A stale daemon.pid means the unified daemon is NOT running.
+    assert.equal(status.running, false, 'stale daemon.pid should not report running');
+    assert.notEqual(status.host, 'guild-daemon', 'stale daemon.pid should not report guild-daemon host');
+  });
 });
+
+// ── runForegroundDaemon D3 guard ────────────────────────────────────
+
+describe('runForegroundDaemon — D3 unified-daemon guard', () => {
+  it('throws when the unified guild daemon is running', async () => {
+    const home = makeTmpHome();
+    writeDaemonPid(home, process.pid);
+
+    const { stub } = buildProcessEventsStub();
+
+    await assert.rejects(
+      runForegroundDaemon({
+        home,
+        intervalMs: 50,
+        processEvents: stub,
+        skipSignalHandlers: true,
+      }),
+      /unified guild daemon/i,
+    );
+  });
+});
+
+// ── Helper for D3 guard tests ──────────────────────────────────────
+
+function buildProcessEventsStub() {
+  const stub = async (): Promise<{
+    processedEvents: number;
+    dispatches: number;
+    errors: number;
+    skipped: number;
+  }> => ({ processedEvents: 0, dispatches: 0, errors: 0, skipped: 0 });
+  return { stub };
+}
 
 // ── formatDispatchLogLine ────────────────────────────────────────────
 

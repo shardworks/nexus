@@ -7,9 +7,10 @@
  * reason to tear down the guild it is running inside (commission
  * decision D1). The bootstrap caller — `program.ts` — does have a
  * reason: when a long-lived foreground command (the `nsg start`
- * daemon, the Clockworks foreground daemon entry) finishes, the
- * SIGTERM/SIGINT handler must invoke `shutdown()` on the way out so
- * every apparatus's optional `stop()` runs and handles get released.
+ * unified daemon, or the standalone `nsg clock start --foreground`
+ * daemon) finishes, the SIGTERM/SIGINT handler must invoke
+ * `shutdown()` on the way out so every apparatus's optional
+ * `stop()` runs and handles get released.
  *
  * The threading channel used to be implicit (handlers called
  * `guild()` and trusted the singleton). With the lifecycle contract

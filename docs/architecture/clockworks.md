@@ -191,27 +191,32 @@ No daemon required. The operator decides when and how much the Clockworks runs.
 
 #### Phase 2 — daemon
 
-A background daemon polls the event queue and processes events automatically. Phase 2 is shipped — see commission c-moe3qifr.
+A background daemon polls the event queue and processes events automatically. Phase 2 is shipped — see commissions c-moe3qifr and c-mox7qt31.
+
+**Canonical startup — `nsg start`.** The unified guild daemon (`nsg start`) co-hosts the Clockworks tick loops as a sibling async task alongside the Spider crawl loop. A single pidfile (`daemon.pid`), a single log stream, and a single SIGTERM shut everything down together. No separate Clockworks daemon process is needed for typical operator use.
 
 | Command | Behavior |
 |---|---|
-| `nsg clock start [--interval <ms>] [--foreground|-f]` | Start the daemon as a detached background process (default interval: 2000ms). Refuses (exits nonzero) when a daemon is already running. Cleans up a stale pidfile and continues. `--foreground` runs the inline daemon body in this process and is the re-exec target the detached spawn uses. |
-| `nsg clock stop` | Send SIGTERM and clean up the PID file. Escalates to SIGKILL after a 5s grace window. Exits zero with a message when there is nothing to stop (no pidfile, or the pidfile was stale). |
-| `nsg clock status [--json]` | Show whether the daemon is running, with PID, uptime, and log file path. `--json` emits the structured payload. |
+| `nsg clock start [--interval <ms>] [--foreground|-f]` | **Advanced/standalone path.** Start a dedicated Clockworks daemon as a detached background process (default interval: 2000ms). Refuses (exits nonzero) when a daemon is already running or when the unified guild daemon is already hosting the Clockworks loops (D3 conflict guard). Cleans up a stale pidfile and continues. `--foreground` runs the inline daemon body in this process and is the re-exec target the detached spawn uses. |
+| `nsg clock stop` | Send SIGTERM and clean up the PID file. Escalates to SIGKILL after a 5s grace window. Exits zero with a message when there is nothing to stop (no pidfile, stale pidfile, or Clockworks is hosted by the unified guild daemon — in the last case, use `nsg stop` instead). |
+| `nsg clock status [--json]` | Show whether the daemon is running, with PID, host (`standalone` or `guild-daemon`), uptime, and log file path. `--json` emits the structured payload. |
 
-The daemon spawns as a detached child process by re-execing the same `nsg` binary with `clock start --foreground --guild-root <home>` (plus `--interval <ms>` if supplied). It writes a PID file at `<home>/.nexus/clock.pid` and logs to `<home>/.nexus/clock.log` (append mode). Both stdout and stderr land in the same log file. The detached parent calls `child.unref()` so closing the parent terminal does not take the daemon down.
+**Standalone daemon details.** The standalone daemon spawns as a detached child process by re-execing the same `nsg` binary with `clock start --foreground --guild-root <home>` (plus `--interval <ms>` if supplied). It writes a PID file at `<home>/.nexus/clock.pid` and logs to `<home>/.nexus/clock.log` (append mode). Both stdout and stderr land in the same log file. The detached parent calls `child.unref()` so closing the parent terminal does not take the daemon down.
 
 The startup banner names the pid, polling interval, and log path; the shutdown banner records the signal received. Per-dispatch lines emit on active ticks in the format `<ISO timestamp> <eventId> <eventName> [<handlerName>] <status> <durationMs>ms[: <error>]`. Idle ticks are silent. When `processEvents` itself throws, the loop logs `<ISO timestamp> [error] processEvents threw: <reason>` and continues at the next interval — the daemon stays unattended.
 
-The poll loop sleeps abortably between ticks (`Promise.race(timeout, shutdownDeferred)`) so SIGTERM is acted on immediately. Per-tick `processEvents` runs as a full drain — no `max` cap — and the post-completion sleep schedules the next tick after the previous one returns.
+The poll loop sleeps abortably between ticks (`Promise.race(timeout, shutdownDeferred)`) so SIGTERM is acted on immediately. Per-tick `processSchedules` runs first (firing any overdue scheduled orders), then `processEvents` drains the event queue — no `max` cap — and the post-completion sleep schedules the next tick after the previous one returns.
 
-Phase 1 commands (`list`, `tick`, `run`) continue to work alongside the daemon. If the daemon is running, `tick` and `run` emit a one-line coexistence warning to stderr and still execute. The dispatch sweep (read-pending → invoke → patch-processed) is not atomic across processes, so an overlapping manual invocation and the daemon can each see the same unprocessed events and a relay may be invoked more than once for the same event; the contract is upheld by relay-author idempotency rather than by substrate coordination (see the relay-handler `RelayHandler` JSDoc and `docs/guides/building-relays.md` for the worked pattern).
+**Conflict guards.** Two guards prevent a double-dispatch loop from running:
 
-`clockStatus(home)` cleans up stale pidfiles as a side effect: a pidfile pointing at a dead pid surfaces in the return shape as `stalePidfile: true` and is unlinked, so subsequent calls are silent on staleness.
+- **D3** (`nsg clock start` / `runForegroundDaemon`): refuses with an error when `daemon.pid` names a live unified guild daemon. Operators should use `nsg start` instead, or stop the unified daemon first.
+- **D4** (`nsg start` / unified daemon): when `clock.pid` is live at startup, the unified daemon skips its own Clockworks tick task and logs a warning. The standalone daemon covers the Clockworks loop.
 
-Core API: `clockStart(home, options?)`, `clockStop(home)`, `clockStatus(home)`, plus `runForegroundDaemon(...)` (the inline daemon body, with every dependency injected for tests) and `runForegroundDaemonFromGuild(...)` (the live-guild convenience wrapper the CLI re-exec target calls). The `clock-status` MCP tool exposes daemon status to animas.
+Phase 1 commands (`list`, `tick`, `run`) continue to work alongside either daemon flavour. If the daemon is running, `tick` and `run` emit a one-line coexistence warning to stderr and still execute. The dispatch sweep (read-pending → invoke → patch-processed) is not atomic across processes, so an overlapping manual invocation and the daemon can each see the same unprocessed events and a relay may be invoked more than once for the same event; the contract is upheld by relay-author idempotency rather than by substrate coordination (see the relay-handler `RelayHandler` JSDoc and `docs/guides/building-relays.md` for the worked pattern).
 
-The two-daemon coexistence with `nsg start` (the guild daemon) is intentional. Different pidfiles (`daemon.pid` vs `clock.pid`), different log files, different lifecycles. Both processes may dispatch the same event when their sweeps overlap, so relay-author idempotency carries the cross-process contract — relays must be safe to invoke more than once for the same event.
+`clockStatus(home)` probes `clock.pid` first; when absent or stale it falls back to `daemon.pid`. The return shape includes `host: 'standalone' | 'guild-daemon'` when `running: true` so callers know which daemon is covering the Clockworks loops. Stale pidfiles are unlinked as a side effect and surface as `stalePidfile: true`.
+
+Core API: `clockStart(home, options?)`, `clockStop(home)`, `clockStatus(home)`, `runClockworksTick(inputs)` (the pure tick-loop body shared by both daemon flavours — no pidfile, no banner, no signal handlers), `runForegroundDaemon(...)` (the inline standalone-daemon body, with every dependency injected for tests), and `runForegroundDaemonFromGuild(...)` (the live-guild convenience wrapper the CLI re-exec target calls). The `clock-status` MCP tool exposes daemon status to animas.
 
 ---
 

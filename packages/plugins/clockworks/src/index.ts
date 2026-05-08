@@ -59,13 +59,16 @@ export {
 // functions on the apparatus's public surface (commission decision D1):
 // `clockStart` / `clockStop` / `clockStatus` are the thin lifecycle
 // helpers, `runForegroundDaemon` is the inline daemon body the
-// detached spawn re-execs into, and `runForegroundDaemonFromGuild`
-// is the convenience wrapper the CLI's `--foreground` handler calls.
+// detached spawn re-execs into, `runForegroundDaemonFromGuild` is
+// the convenience wrapper the CLI's `--foreground` handler calls, and
+// `runClockworksTick` is the pure tick-loop helper both the standalone
+// foreground daemon and the unified guild daemon compose on top of.
 export {
   clockStart,
   clockStatus,
   clockStop,
   formatDispatchLogLine,
+  runClockworksTick,
   runForegroundDaemon,
   runForegroundDaemonFromGuild,
   validateInterval,
@@ -73,6 +76,7 @@ export {
   type ClockStartResult,
   type ClockStatus,
   type ClockStopResult,
+  type ClockworksTickInputs,
   type ForegroundDaemonInputs,
 } from './daemon.ts';
 

@@ -211,7 +211,7 @@ Prefixes are **caller-owned**, not nexus-core-owned. The framework does not main
 
 ## PID & Process Helpers
 
-Shared primitives for daemon-style commands. Two daemons live in the framework today (the guild daemon `nsg start` and the Clockworks daemon `nsg clock start`), and both share the same lifecycle: read a pidfile, decide whether the named pid is alive, unlink the pidfile when the daemon is gone, poll for exit after SIGTERM. These helpers live in `@shardworks/nexus-core` so the CLI and the Clockworks apparatus can consume them without depending on one another.
+Shared primitives for daemon-style commands. The canonical runtime process is the unified guild daemon (`nsg start`), which co-hosts the tool server, Oculus, Spider crawl loop, and Clockworks tick loops under a single pidfile (`daemon.pid`) and shutdown signal. A standalone Clockworks daemon (`nsg clock start`) is also available as an advanced path (custom intervals, migration). Both daemon implementations share the same lifecycle: read a pidfile, decide whether the named pid is alive, unlink the pidfile when the daemon is gone, poll for exit after SIGTERM. These helpers live in `@shardworks/nexus-core` so the CLI and the Clockworks apparatus can consume them without depending on one another.
 
 These exports are public substrate for daemon implementations. Plugin code that only wants to ask "is the Clockworks daemon running?" should prefer the Clockworks apparatus's `status` API — see the [Clockworks contract](../architecture/clockworks.md).
 

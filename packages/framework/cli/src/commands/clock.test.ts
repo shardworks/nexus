@@ -1098,16 +1098,35 @@ describe('runStatus', () => {
     assert.equal(out.status.running, false);
   });
 
-  it('plain text when running with pid/log/uptime', () => {
+  it('plain text when running shows Host, PID, log file, uptime (standalone)', () => {
     const home = makeTmpHome();
     fakeRunningDaemon(home);
     setupStubGuild(makeFixture(), home);
     const out = runStatus({});
     assert.equal(out.status.running, true);
+    assert.equal(out.status.host, 'standalone');
     assert.match(out.lines[0], /running/);
-    assert.match(out.lines[1], new RegExp(`PID:\\s+${process.pid}`));
-    assert.match(out.lines[2], /Log file:.*clock\.log/);
-    assert.match(out.lines[3], /Uptime:\s+\d+/);
+    assert.match(out.lines[1], /Host:.*standalone/);
+    assert.match(out.lines[2], new RegExp(`PID:\\s+${process.pid}`));
+    assert.match(out.lines[3], /Log file:.*clock\.log/);
+    assert.match(out.lines[4], /Uptime:\s+\d+/);
+  });
+
+  it('plain text when running under the unified guild daemon shows guild-daemon host', () => {
+    const home = makeTmpHome();
+    // Write daemon.pid pointing at a live process — no clock.pid.
+    const dir = path.join(home, '.nexus');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'daemon.pid'), String(process.pid), 'utf-8');
+    setupStubGuild(makeFixture(), home);
+    const out = runStatus({});
+    assert.equal(out.status.running, true);
+    assert.equal(out.status.host, 'guild-daemon');
+    assert.match(out.lines[0], /running/);
+    assert.match(out.lines[1], /Host:.*unified guild daemon/);
+    assert.match(out.lines[2], new RegExp(`PID:\\s+${process.pid}`));
+    assert.match(out.lines[3], /Log file:.*daemon\.out/);
+    assert.match(out.lines[4], /Uptime:\s+\d+/);
   });
 
   it('--json emits the structured status as JSON', () => {
@@ -1208,6 +1227,38 @@ describe('buildClockCommand — start/stop/status', () => {
     assert.deepEqual(parsed, { running: false });
   });
 
+  it('stop parseAsync exits zero with a guild-daemon message when unified daemon is running', async () => {
+    const home = makeTmpHome();
+    const dir = path.join(home, '.nexus');
+    fs.mkdirSync(dir, { recursive: true });
+    // daemon.pid is live; no clock.pid — so clockStop returns 'guild-daemon'.
+    fs.writeFileSync(path.join(dir, 'daemon.pid'), String(process.pid), 'utf-8');
+    setupStubGuild(makeFixture(), home);
+
+    const cmd = buildClockCommand();
+    cmd.exitOverride();
+    const stdout: string[] = [];
+    const origLog = console.log;
+    const origExit = process.exit;
+    let exitCode: number | string | undefined | null = null;
+    process.exit = ((code?: number | string | null) => {
+      exitCode = code;
+      throw new Error('process.exit-stub');
+    }) as never;
+    console.log = (...args: unknown[]): void => { stdout.push(args.map(String).join(' ')); };
+    try {
+      await cmd.parseAsync(['stop'], { from: 'user' });
+      assert.equal(exitCode, null, 'process.exit should not be called for guild-daemon branch');
+      assert.ok(
+        stdout.some((l) => /unified guild daemon/i.test(l)),
+        `expected a 'guild daemon' message on stdout, got: ${stdout.join(' | ')}`,
+      );
+    } finally {
+      console.log = origLog;
+      process.exit = origExit;
+    }
+  });
+
   it('stop parseAsync exits zero with a message when no daemon is running', async () => {
     const home = makeTmpHome();
     setupStubGuild(makeFixture(), home);
@@ -1266,6 +1317,41 @@ describe('buildClockCommand — start/stop/status', () => {
       assert.equal(fs.existsSync(pidFilePath), false);
     } finally {
       console.log = origLog;
+    }
+  });
+
+  it('start parseAsync exits nonzero (D3) when the unified guild daemon is running', async () => {
+    const home = makeTmpHome();
+    const dir = path.join(home, '.nexus');
+    fs.mkdirSync(dir, { recursive: true });
+    // daemon.pid is live; no clock.pid — D3 guard fires in clockStart.
+    fs.writeFileSync(path.join(dir, 'daemon.pid'), String(process.pid), 'utf-8');
+    setupStubGuild(makeFixture(), home);
+
+    const cmd = buildClockCommand();
+    cmd.exitOverride();
+    const errs: string[] = [];
+    const origErr = console.error;
+    const origExit = process.exit;
+    let exitCode: number | string | undefined | null = null;
+    process.exit = ((code?: number | string | null) => {
+      exitCode = code;
+      throw new Error('process.exit-stub');
+    }) as never;
+    console.error = (...args: unknown[]): void => { errs.push(args.map(String).join(' ')); };
+    try {
+      await assert.rejects(
+        () => cmd.parseAsync(['start'], { from: 'user' }),
+        /process\.exit-stub/,
+      );
+      assert.equal(exitCode, 1);
+      assert.ok(
+        errs.some((e) => /unified guild daemon/i.test(e)),
+        `expected a 'unified guild daemon' error, got: ${errs.join(' | ')}`,
+      );
+    } finally {
+      console.error = origErr;
+      process.exit = origExit;
     }
   });
 

@@ -20,10 +20,18 @@
  * The two surfaces are exported separately so unit tests can drive the
  * inline daemon without spawning a child process.
  *
- * Mirrors the pattern from `nsg start` (foreground vs. detached two
- * modes selected by a flag) but spawns a separate pidfile/logfile pair
- * so the guild daemon and the clockworks daemon coexist without
- * interfering with each other.
+ * **Pure tick-loop helper (`runClockworksTick`)** — extracted from
+ * `runForegroundDaemon` so the unified guild daemon (`nsg start`) can
+ * run the same scheduler + event-processing passes as a sibling async
+ * task without duplicating the loop body. The helper has no side effects
+ * beyond calling the supplied functions — no pidfile, no log-file
+ * creation, no banner, no signal handlers.
+ *
+ * **Unified daemon co-hosting:** when `nsg start` is running, the guild
+ * daemon hosts the Clockworks tick loops directly (one pidfile, one log,
+ * one shutdown signal). The standalone `nsg clock start` path remains
+ * for advanced use (custom intervals, migration paths), but the
+ * canonical startup is `nsg start` alone.
  *
  * See: docs/architecture/clockworks.md (Phase 2),
  * docs/reference/core-api.md (Clockworks).
@@ -77,8 +85,8 @@ export interface ClockStopResult {
   /**
    * `true` whenever the call resolves without an error — for the
    * `'signaled'` branch the daemon is confirmed dead, and for the
-   * `'no-pidfile'` / `'stale'` branches there was nothing alive to
-   * stop in the first place.
+   * `'no-pidfile'` / `'stale'` / `'guild-daemon'` branches there was
+   * nothing alive to stop in the first place.
    */
   stopped: true;
   /**
@@ -89,8 +97,11 @@ export interface ClockStopResult {
    *  - `'no-pidfile'` — there was no pidfile at all; nothing to stop.
    *  - `'stale'` — the pidfile pointed at a dead pid; the stale file
    *    was removed and there was nothing else to do.
+   *  - `'guild-daemon'` — the Clockworks tick loops are hosted by the
+   *    unified guild daemon (`nsg start`); the operator should use
+   *    `nsg stop` to terminate it.
    */
-  reason: 'signaled' | 'no-pidfile' | 'stale';
+  reason: 'signaled' | 'no-pidfile' | 'stale' | 'guild-daemon';
   /** Human-readable description for the operator. */
   message: string;
 }
@@ -101,7 +112,11 @@ export interface ClockStatus {
   running: boolean;
   /** Pid of the live daemon (omitted when `running: false`). */
   pid?: number;
-  /** Absolute path to `clock.log` (only set when `running: true`). */
+  /**
+   * Absolute path to the daemon log file (only set when `running: true`).
+   * Points at `clock.log` for the standalone daemon and `daemon.out`
+   * when the unified guild daemon is the host.
+   */
   logFile?: string;
   /** Wall-clock ms since the pidfile was created (only set when `running: true`). */
   uptime?: number;
@@ -111,6 +126,17 @@ export interface ClockStatus {
    * report `stalePidfile: undefined` (omitted entirely).
    */
   stalePidfile?: boolean;
+  /**
+   * Which daemon is hosting the Clockworks tick loops. Only present
+   * when `running: true`.
+   *
+   *  - `'standalone'` — the dedicated `nsg clock start` daemon
+   *    (`<home>/.nexus/clock.pid`).
+   *  - `'guild-daemon'` — the unified `nsg start` daemon
+   *    (`<home>/.nexus/daemon.pid`), which co-hosts the Clockworks
+   *    tick loops as a sibling task.
+   */
+  host?: 'standalone' | 'guild-daemon';
 }
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -127,43 +153,114 @@ const STOP_TERM_TIMEOUT_MS = 5_000;
 /** Window after SIGKILL during which the daemon must actually disappear. */
 const STOP_KILL_TIMEOUT_MS = 2_000;
 
+// ── Private path helpers ─────────────────────────────────────────────
+
+/**
+ * Path to the unified guild daemon's pidfile (`daemon.pid`).
+ * Lives alongside `clock.pid` inside `<home>/.nexus/`.
+ */
+function unifiedDaemonPidPath(home: string): string {
+  return path.join(path.dirname(clockPidPath(home)), 'daemon.pid');
+}
+
+/**
+ * Path to the unified guild daemon's primary log file (`daemon.out`).
+ * This is what `nsg clock status` reports as `logFile` when the guild
+ * daemon is the Clockworks host.
+ */
+function unifiedDaemonLogPath(home: string): string {
+  return path.join(path.dirname(clockPidPath(home)), 'logs', 'daemon.out');
+}
+
+/**
+ * Return the pid of the unified guild daemon if it is currently alive,
+ * otherwise null. Used by conflict guards (D3) and fallback status
+ * checks (D5, D11).
+ */
+function readUnifiedDaemonPid(home: string): number | null {
+  const pidFile = unifiedDaemonPidPath(home);
+  const pid = readPidFile(pidFile);
+  if (pid !== null && isProcessAlive(pid)) {
+    return pid;
+  }
+  return null;
+}
+
+/**
+ * Build a `ClockStatus` reflecting the unified guild daemon as the
+ * Clockworks host. Uses the daemon.pid birthtime for uptime.
+ */
+function buildGuildDaemonStatus(home: string, pid: number): ClockStatus {
+  const daemonPidFile = unifiedDaemonPidPath(home);
+  let uptime = 0;
+  try {
+    const stat = fs.statSync(daemonPidFile);
+    uptime = Math.max(0, Date.now() - stat.birthtimeMs);
+  } catch {
+    // Race: file vanished between readPidFile and statSync.
+    uptime = 0;
+  }
+  return {
+    running: true,
+    pid,
+    logFile: unifiedDaemonLogPath(home),
+    uptime,
+    host: 'guild-daemon',
+  };
+}
+
 // ── Public API: clockStatus ──────────────────────────────────────────
 
 /**
- * Read the clockworks daemon status for `home`.
+ * Read the Clockworks daemon status for `home`.
+ *
+ * Probe order:
+ *  1. `clock.pid` (standalone daemon) — live → return standalone status.
+ *  2. `clock.pid` stale → clean up, then fall through to step 3.
+ *  3. `daemon.pid` (unified guild daemon) — live → return guild-daemon
+ *     status with `host: 'guild-daemon'` and `logFile` pointing at
+ *     `daemon.out`.
+ *  4. Neither alive → return `{ running: false }`.
  *
  * Returns `{ running: false }` when there's no pidfile or the pidfile
  * is malformed. When the pidfile points at a dead pid, returns
  * `{ running: false, stalePidfile: true }` and unlinks the pidfile as
  * a side effect — a subsequent call from a fresh process is silent.
  *
- * Uptime is computed from the pidfile's birthtime (`fs.statSync(...).birthtimeMs`)
- * — wall-clock since the pidfile was created.
+ * Uptime is computed from the relevant pidfile's birthtime
+ * (`fs.statSync(...).birthtimeMs`) — wall-clock since the file was
+ * created.
  */
 export function clockStatus(home: string): ClockStatus {
   const pidFile = clockPidPath(home);
   const pid = readPidFile(pidFile);
 
   if (pid === null) {
+    // No clock.pid — check for the unified guild daemon (D5).
+    const daemonPid = readUnifiedDaemonPid(home);
+    if (daemonPid !== null) {
+      return buildGuildDaemonStatus(home, daemonPid);
+    }
     return { running: false };
   }
 
   if (!isProcessAlive(pid)) {
-    // Stale pidfile — clean it up and surface staleness in the return shape.
+    // Stale pidfile — clean it up, then check for unified daemon (D5).
     tryUnlink(pidFile);
+    const daemonPid = readUnifiedDaemonPid(home);
+    if (daemonPid !== null) {
+      return buildGuildDaemonStatus(home, daemonPid);
+    }
     return { running: false, stalePidfile: true };
   }
 
-  // The pidfile birthtime is our anchor for uptime. statSync may fail
-  // (e.g. the file vanished between readPidFile and statSync) — degrade
-  // gracefully and report uptime: 0.
+  // Live standalone clock.pid.
   let uptime = 0;
   try {
     const stat = fs.statSync(pidFile);
     uptime = Math.max(0, Date.now() - stat.birthtimeMs);
   } catch {
     // Race condition: pidfile vanished between readPidFile and statSync.
-    // Report a 0 uptime rather than throwing.
     uptime = 0;
   }
 
@@ -172,6 +269,7 @@ export function clockStatus(home: string): ClockStatus {
     pid,
     logFile: clockLogPath(home),
     uptime,
+    host: 'standalone',
   };
 }
 
@@ -181,8 +279,11 @@ export function clockStatus(home: string): ClockStatus {
  * Spawn the clockworks daemon as a detached background process.
  *
  * Throws if a daemon is already running (the pidfile points at a live
- * pid). Cleans up a stale pidfile (the pidfile points at a dead pid)
- * and continues. Spawns by re-execing the same `nsg` binary with
+ * pid). Throws (D3) if the unified guild daemon is currently running —
+ * Clockworks loops are already hosted there; starting a standalone
+ * daemon alongside them would create a second dispatch loop. Cleans up
+ * a stale pidfile (the pidfile points at a dead pid) and continues.
+ * Spawns by re-execing the same `nsg` binary with
  * `clock start --foreground --guild-root <home>` plus `--interval
  * <ms>` if supplied. Both stdout and stderr are piped to a single
  * `clock.log` (append mode). Calls `child.unref()` so the parent
@@ -213,6 +314,19 @@ export async function clockStart(
   }
   if (existing !== null && !isProcessAlive(existing)) {
     tryUnlink(pidFile);
+  }
+
+  // D3: refuse if the unified guild daemon is already hosting the
+  // Clockworks tick loops. Starting a standalone daemon alongside it
+  // would produce a second processEvents/processSchedules loop and
+  // potentially invoke relays twice for the same event.
+  const unifiedPid = readUnifiedDaemonPid(home);
+  if (unifiedPid !== null) {
+    throw new Error(
+      `Clockworks loops are already running inside the unified guild daemon ` +
+      `(nsg start, pid: ${unifiedPid}). Stop the unified daemon first, or ` +
+      `run \`nsg clock status\` to confirm.`,
+    );
   }
 
   const nexusDir = path.dirname(pidFile);
@@ -285,6 +399,11 @@ export async function clockStart(
  * (`'no-pidfile'` or `'stale'`) plus a human-readable message. The
  * stale-pidfile branch unlinks the dead-pid pidfile as a side effect.
  *
+ * Per D11, when there is no clock.pid (or it is stale) but the unified
+ * guild daemon is alive, the function returns `reason: 'guild-daemon'`
+ * with an informative message directing the operator to `nsg stop`.
+ * It does NOT signal the guild daemon.
+ *
  * Throws only when the process refuses to exit even after SIGKILL or
  * when the SIGTERM call itself fails for an unexpected reason.
  */
@@ -293,6 +412,18 @@ export async function clockStop(home: string): Promise<ClockStopResult> {
   const pid = readPidFile(pidFile);
 
   if (pid === null) {
+    // No clock.pid — check for unified daemon (D11).
+    const daemonPid = readUnifiedDaemonPid(home);
+    if (daemonPid !== null) {
+      return {
+        pid: daemonPid,
+        stopped: true,
+        reason: 'guild-daemon',
+        message:
+          `Clockworks is hosted by the unified guild daemon (pid ${daemonPid}). ` +
+          `Use "nsg stop" to terminate it.`,
+      };
+    }
     return {
       pid: null,
       stopped: true,
@@ -303,6 +434,18 @@ export async function clockStop(home: string): Promise<ClockStopResult> {
 
   if (!isProcessAlive(pid)) {
     tryUnlink(pidFile);
+    // Stale clock.pid — check for unified daemon (D11).
+    const daemonPid = readUnifiedDaemonPid(home);
+    if (daemonPid !== null) {
+      return {
+        pid: daemonPid,
+        stopped: true,
+        reason: 'guild-daemon',
+        message:
+          `Clockworks is hosted by the unified guild daemon (pid ${daemonPid}). ` +
+          `Use "nsg stop" to terminate it.`,
+      };
+    }
     return {
       pid,
       stopped: true,
@@ -349,6 +492,135 @@ export async function clockStop(home: string): Promise<ClockStopResult> {
     reason: 'signaled',
     message: `Clockworks daemon stopped (pid: ${pid}).`,
   };
+}
+
+// ── Public API: runClockworksTick ────────────────────────────────────
+
+/**
+ * Inputs accepted by the pure tick-loop helper.
+ *
+ * Unlike `ForegroundDaemonInputs`, this interface has no pidfile, log
+ * file, or signal-handler concerns. Both the standalone foreground
+ * daemon (`runForegroundDaemon`) and the unified guild daemon
+ * (`nsg start`) pass these inputs when they compose on top of this
+ * helper.
+ */
+export interface ClockworksTickInputs {
+  /**
+   * Function that runs one drain pass over the events queue. In
+   * production this is `clockworks.processEvents`. Tests can pass an
+   * in-memory fake.
+   */
+  processEvents: ClockworksApi['processEvents'];
+  /**
+   * Function that runs one tick of the scheduler pass over the
+   * in-memory schedule table. Optional — when omitted the scheduler
+   * pass is skipped and only the event-processing pass runs.
+   */
+  processSchedules?: ClockworksApi['processSchedules'];
+  /** Polling interval in milliseconds. */
+  intervalMs: number;
+  /**
+   * Log writer. Every per-dispatch line and every `[error]` line is
+   * written here. The standalone daemon wraps this around
+   * `fs.appendFileSync`; the unified daemon wraps it around
+   * `console.log` with a `[clockworks]` prefix.
+   */
+  log: (line: string) => void;
+  /**
+   * Shutdown signal. When this promise resolves, the tick loop exits
+   * cleanly after the current pass completes. The sleep between ticks
+   * is aborted immediately — responsiveness is one tick worth of
+   * in-flight work, not one full interval.
+   */
+  shutdown: Promise<void>;
+}
+
+/**
+ * Pure tick-loop body for the Clockworks daemon.
+ *
+ * Runs the scheduler pass (`processSchedules`, if supplied) then the
+ * event-processing pass (`processEvents`) in a loop until the
+ * `shutdown` promise resolves. Each pass is wrapped in an independent
+ * try/catch so a thrown handler does not kill the loop — the loop logs
+ * the error and continues at the next interval.
+ *
+ * The sleep between ticks is abortable: when `shutdown` resolves, the
+ * sleep races immediately so the loop exits without waiting a full
+ * interval.
+ *
+ * This function has **no side effects** beyond calling the supplied
+ * functions. It does not write a pidfile, open a log file, print
+ * banners, or install signal handlers. Those concerns belong to the
+ * callers that compose on top of it (`runForegroundDaemon` for the
+ * standalone path; `nsg start`'s foreground body for the unified
+ * daemon path).
+ *
+ * Per commission decision D18, `processSchedules` always runs before
+ * `processEvents` on each tick: events emitted from a scheduled relay
+ * land in the events book during the scheduler pass, so the following
+ * event-processing pass in the *same tick* picks them up, reducing
+ * cascade latency from two ticks to one.
+ */
+export async function runClockworksTick(inputs: ClockworksTickInputs): Promise<void> {
+  const { processEvents, processSchedules, intervalMs, log, shutdown } = inputs;
+
+  let shuttingDown = false;
+  let resolveAbort!: () => void;
+  const abortSleep = new Promise<void>((resolve) => {
+    resolveAbort = resolve;
+  });
+
+  // Wire the shutdown promise to abort the sleep and set the loop flag.
+  void shutdown.then(() => {
+    if (!shuttingDown) {
+      shuttingDown = true;
+      resolveAbort();
+    }
+  });
+
+  // ── Poll loop ──────────────────────────────────────────────────────
+  //
+  // Order matters (commission decision D18): scheduler pass runs first,
+  // event-processing pass second.
+
+  while (!shuttingDown) {
+    if (processSchedules) {
+      try {
+        await processSchedules({
+          onDispatch: (obs: DispatchObservation) => {
+            log(formatDispatchLogLine(obs));
+          },
+        });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        log(
+          `${new Date().toISOString()} [error] processSchedules threw: ${reason}`,
+        );
+      }
+    }
+
+    try {
+      await processEvents({
+        onDispatch: (obs: DispatchObservation) => {
+          log(formatDispatchLogLine(obs));
+        },
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      log(`${new Date().toISOString()} [error] processEvents threw: ${reason}`);
+    }
+
+    if (shuttingDown) break;
+
+    // Abortable sleep: resolves on either the timeout or the abort
+    // promise, whichever fires first. SIGTERM responsiveness comes
+    // from the shutdown promise resolving and `resolveAbort()` firing.
+    await Promise.race([
+      new Promise<void>((r) => setTimeout(r, intervalMs)),
+      abortSleep,
+    ]);
+  }
 }
 
 // ── Public API: runForegroundDaemon ──────────────────────────────────
@@ -426,11 +698,11 @@ export interface ForegroundDaemonInputs {
  *   2. Register SIGTERM/SIGINT handlers (unless `skipSignalHandlers`),
  *      each of which resolves the shutdown deferred.
  *   3. Write the startup banner.
- *   4. Loop: call `processEvents`. Per-dispatch lines are written via
- *      the timestamped formatter. Throws are caught, logged with
- *      `[error]`, and the loop continues. After each tick, sleep
- *      `intervalMs` — the sleep is abortable: when shutdown is
- *      triggered the sleep resolves immediately.
+ *   4. Delegate the tick loop to `runClockworksTick`. Per-dispatch
+ *      lines are written via the timestamped formatter. Throws are
+ *      caught, logged with `[error]`, and the loop continues. After
+ *      each tick, sleep `intervalMs` — the sleep is abortable: when
+ *      shutdown is triggered the sleep resolves immediately.
  *   5. On shutdown, write the shutdown banner, unlink the pidfile,
  *      and call `onShutdown` (default no-op).
  *
@@ -455,7 +727,7 @@ export async function runForegroundDaemon(
   const pidFile = clockPidPath(home);
   const logFile = clockLogPath(home);
 
-  // Idempotency: refuse to double-start.
+  // Idempotency: refuse to double-start (standalone daemon).
   const existing = readPidFile(pidFile);
   if (existing !== null && isProcessAlive(existing)) {
     throw new Error(
@@ -463,6 +735,18 @@ export async function runForegroundDaemon(
     );
   }
   if (existing !== null) tryUnlink(pidFile);
+
+  // D3: refuse if the unified guild daemon is already hosting the
+  // Clockworks tick loops. Starting a standalone daemon alongside it
+  // would produce a second processEvents/processSchedules loop.
+  const unifiedPid = readUnifiedDaemonPid(home);
+  if (unifiedPid !== null) {
+    throw new Error(
+      `Clockworks loops are already running inside the unified guild daemon ` +
+      `(nsg start, pid: ${unifiedPid}). Stop the unified daemon first, or ` +
+      `run \`nsg clock status\` to confirm.`,
+    );
+  }
 
   fs.mkdirSync(path.dirname(pidFile), { recursive: true });
   fs.writeFileSync(pidFile, String(process.pid), 'utf-8');
@@ -474,15 +758,15 @@ export async function runForegroundDaemon(
 
   // ── Shutdown wiring ────────────────────────────────────────────────
 
-  let shuttingDown = false;
+  let hasShutdownTriggered = false;
   let resolveAbort!: () => void;
   const abortSleep = new Promise<void>((resolve) => {
     resolveAbort = resolve;
   });
 
   const triggerShutdown = (signal: string): void => {
-    if (shuttingDown) return;
-    shuttingDown = true;
+    if (hasShutdownTriggered) return;
+    hasShutdownTriggered = true;
     log(`[clockworks] ${signal} received — shutting down`);
     resolveAbort();
   };
@@ -501,57 +785,26 @@ export async function runForegroundDaemon(
     void shutdownPromise.then(() => triggerShutdown('shutdown'));
   }
 
-  // ── Banners ────────────────────────────────────────────────────────
+  // ── Banner ────────────────────────────────────────────────────────
 
   log(
     `[clockworks] daemon started — pid=${process.pid} intervalMs=${intervalMs} log=${logFile}`,
   );
 
-  // ── Poll loop ──────────────────────────────────────────────────────
+  // ── Poll loop (delegated to the extracted pure tick-loop helper) ───
   //
-  // Order matters (commission decision D18): scheduler pass runs first,
-  // event-processing pass second. A scheduled relay that emits new
-  // events lands in the events book during the scheduler pass; the
-  // following event-processing pass in the *same tick* picks them up,
-  // so cascade latency is one tick instead of two.
+  // `abortSleep` resolves when `triggerShutdown` fires (via SIGTERM,
+  // SIGINT, or the caller-supplied `shutdownPromise`). Passing it as
+  // the `shutdown` signal lets `runClockworksTick` race its per-
+  // interval sleep against the shutdown event and exit promptly.
 
-  while (!shuttingDown) {
-    if (processSchedules) {
-      try {
-        await processSchedules({
-          onDispatch: (obs: DispatchObservation) => {
-            log(formatDispatchLogLine(obs));
-          },
-        });
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        log(
-          `${new Date().toISOString()} [error] processSchedules threw: ${reason}`,
-        );
-      }
-    }
-
-    try {
-      await processEvents({
-        onDispatch: (obs: DispatchObservation) => {
-          log(formatDispatchLogLine(obs));
-        },
-      });
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      log(`${new Date().toISOString()} [error] processEvents threw: ${reason}`);
-    }
-
-    if (shuttingDown) break;
-
-    // Abortable sleep: resolves on either the timeout or the abort
-    // promise, whichever fires first. SIGTERM responsiveness comes
-    // from the `resolveAbort()` call inside `triggerShutdown`.
-    await Promise.race([
-      new Promise<void>((r) => setTimeout(r, intervalMs)),
-      abortSleep,
-    ]);
-  }
+  await runClockworksTick({
+    processEvents,
+    processSchedules,
+    intervalMs,
+    log,
+    shutdown: abortSleep,
+  });
 
   // ── Shutdown ───────────────────────────────────────────────────────
 

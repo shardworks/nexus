@@ -97,8 +97,12 @@ GUILD_ROOT/
                                    guild-specific, not framework-prescribed
   .nexus/                       ← runtime state, gitignored
     nexus.db                    ← persistence database (SQLite)
-    clock.pid                   ← Clockworks daemon PID
-    clock.log                   ← Clockworks daemon log
+    daemon.pid                  ← unified guild daemon PID (nsg start)
+    clock.pid                   ← standalone Clockworks daemon PID (nsg clock start)
+    clock.log                   ← standalone Clockworks daemon log
+    logs/
+      daemon.out                ← unified guild daemon stdout log
+      daemon.err                ← unified guild daemon stderr log
     sessions/                   ← per-session working files
     codexes/                    ← bare git clones of registered codexes
     worktrees/                  ← git worktrees for active draft bindings
@@ -154,7 +158,9 @@ In the standard guild, `clockworks` contains events and standing orders; `codexe
 
 **`nexus.db`** — the SQLite database owned by The Stacks. All guild state that needs to survive process restarts lives here: anima records, writ history, session records, event and dispatch logs.
 
-**`clock.pid` / `clock.log`** — daemon bookkeeping for The Clockworks. `clock.pid` holds the PID of the running daemon process; `clock.log` is its output. Both are absent when the daemon is not running.
+**`daemon.pid` / `logs/daemon.out` / `logs/daemon.err`** — unified guild daemon bookkeeping. `daemon.pid` holds the PID of the running `nsg start` process; `daemon.out` and `daemon.err` are its stdout and stderr logs. All three are absent when the daemon is not running. The unified daemon co-hosts the tool server, Oculus, Spider, and Clockworks tick loops in one process under this single pidfile.
+
+**`clock.pid` / `clock.log`** — standalone Clockworks daemon bookkeeping (`nsg clock start`). Used for the advanced standalone-only path; absent when using the canonical `nsg start` setup.
 
 **`sessions/`** — working files for active and recently-completed sessions. Each session gets a JSON record here at launch; The Animator writes the result back when the session exits.
 
