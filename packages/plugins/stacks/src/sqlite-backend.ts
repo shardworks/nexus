@@ -70,8 +70,10 @@ interface SqlParts {
  * Any value that is not a recognised Scalar type is a caller error;
  * we surface a Stacks-attributed message that names the offending field
  * so the developer can diagnose without spelunking into better-sqlite3.
+ *
+ * Exported for unit testing only — not part of the public API.
  */
-function bindScalar(field: string, value: unknown): string | number | bigint | Buffer | null {
+export function bindScalar(field: string, value: unknown): string | number | bigint | Buffer | null {
   if (value === null) return null;
   if (typeof value === 'string') return value;
   if (typeof value === 'number') return value;
