@@ -59,6 +59,30 @@ interface SqlParts {
   args: unknown[];
 }
 
+/**
+ * Coerce a public `Scalar` value to a type that better-sqlite3 accepts.
+ *
+ * better-sqlite3 accepts: string | number | bigint | Buffer | null.
+ * The public Scalar contract also includes `boolean`, so we map:
+ *   true  → 1  (matches json_extract's integer return for JSON booleans)
+ *   false → 0
+ *
+ * Any value that is not a recognised Scalar type is a caller error;
+ * we surface a Stacks-attributed message that names the offending field
+ * so the developer can diagnose without spelunking into better-sqlite3.
+ */
+function bindScalar(field: string, value: unknown): string | number | bigint | Buffer | null {
+  if (value === null) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'bigint') return value;
+  if (Buffer.isBuffer(value)) return value;
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  throw new Error(
+    `[stacks/sqlite] Unsupported bind value for field "${field}": ${typeof value}`,
+  );
+}
+
 function buildWhere(conditions?: InternalCondition[]): SqlParts {
   if (!conditions || conditions.length === 0) {
     return { sql: '', args: [] };
@@ -73,31 +97,31 @@ function buildWhere(conditions?: InternalCondition[]): SqlParts {
     switch (cond.op) {
       case 'eq':
         clauses.push(`${extract} = ?`);
-        args.push(cond.value);
+        args.push(bindScalar(cond.field, cond.value));
         break;
       case 'neq':
         clauses.push(`${extract} != ?`);
-        args.push(cond.value);
+        args.push(bindScalar(cond.field, cond.value));
         break;
       case 'gt':
         clauses.push(`${extract} > ?`);
-        args.push(cond.value);
+        args.push(bindScalar(cond.field, cond.value));
         break;
       case 'gte':
         clauses.push(`${extract} >= ?`);
-        args.push(cond.value);
+        args.push(bindScalar(cond.field, cond.value));
         break;
       case 'lt':
         clauses.push(`${extract} < ?`);
-        args.push(cond.value);
+        args.push(bindScalar(cond.field, cond.value));
         break;
       case 'lte':
         clauses.push(`${extract} <= ?`);
-        args.push(cond.value);
+        args.push(bindScalar(cond.field, cond.value));
         break;
       case 'like':
         clauses.push(`${extract} LIKE ?`);
-        args.push(cond.value);
+        args.push(bindScalar(cond.field, cond.value));
         break;
       case 'in': {
         if (cond.values.length === 0) {
@@ -106,7 +130,7 @@ function buildWhere(conditions?: InternalCondition[]): SqlParts {
         } else {
           const placeholders = cond.values.map(() => '?').join(', ');
           clauses.push(`${extract} IN (${placeholders})`);
-          args.push(...cond.values);
+          args.push(...cond.values.map(v => bindScalar(cond.field, v)));
         }
         break;
       }

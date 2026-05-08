@@ -6,6 +6,9 @@
  */
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { StacksBackend, BookRef } from '../backend.ts';
 import type {
   BookEntry,
@@ -32,8 +35,27 @@ export interface TestStacks {
 }
 
 export function createTestStacks(backendFactory: () => StacksBackend): TestStacks {
+  // Give every test its own isolated home directory so that SQLite
+  // backends do not collide on a shared nexus.db file.  mkdtempSync
+  // is synchronous and therefore safe inside beforeEach without async.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'stacks-test-'));
+  // Ensure the .nexus sub-directory exists; SqliteBackend.open() writes
+  // its database file there and better-sqlite3 requires the parent dir
+  // to already exist.
+  fs.mkdirSync(path.join(home, '.nexus'), { recursive: true });
+
   const backend = backendFactory();
-  backend.open({ home: '/tmp/stacks-test' });
+  backend.open({ home });
+
+  // Proxy close() so that the temp directory is cleaned up automatically
+  // when the test's afterEach calls t.backend.close().  The memory
+  // backend ignores the home path entirely so this has no visible effect
+  // on memory-backend test runs.
+  const origClose = backend.close.bind(backend);
+  backend.close = () => {
+    origClose();
+    fs.rmSync(home, { recursive: true, force: true });
+  };
 
   const { api, sealCdc } = createTestableStacks(backend);
 
