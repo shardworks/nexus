@@ -193,10 +193,10 @@ describe('kit.roles', () => {
     assert.deepEqual(roles['survey-vision'].permissions, ['surveyor:create-charge', 'clerk:read']);
   });
 
-  it('survey-charge permissions match D21', () => {
+  it('survey-charge permissions match D21 (piece-producing only)', () => {
     assert.deepEqual(
       roles['survey-charge'].permissions,
-      ['surveyor:create-piece', 'surveyor:create-mandate', 'clerk:read'],
+      ['surveyor:create-piece', 'clerk:read'],
     );
   });
 

@@ -146,7 +146,7 @@ const visionRole: KitRoleDefinition = {
 };
 
 const chargeRole: KitRoleDefinition = {
-  permissions: ['surveyor:create-piece', 'surveyor:create-mandate', 'clerk:read'],
+  permissions: ['surveyor:create-piece', 'clerk:read'],
   strict: true,
   model: 'sonnet',
   instructionsFile: 'loom-roles/survey-charge.md',

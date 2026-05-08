@@ -9,7 +9,7 @@
 Registers one `SurveyorDescriptor` with the `@shardworks/surveyor-apparatus` substrate, contributing three rig templates — one per cartograph layer. Each rig template launches a single anima session using the `scaffold-surveyor.summon` engine:
 
 - **`survey-vision` rig** — Reads the vision writ, creates charges via `surveyor-create-charges`.
-- **`survey-charge` rig** — Reads the charge writ, creates pieces via `surveyor-create-pieces` or mandates directly via `surveyor-create-mandates`.
+- **`survey-charge` rig** — Reads the charge writ, creates pieces via `surveyor-create-pieces`.
 - **`survey-piece` rig** — Reads the piece writ, creates mandates via `surveyor-create-mandates`.
 
 The cascade: **1 vision → N charges → N×M pieces → leaf mandates.**
@@ -54,7 +54,7 @@ Three role markdown files ship in `loom-roles/` and are picked up by Loom at reg
 | Role (qualified) | File | Permission grants |
 |---|---|---|
 | `scaffold-surveyor.survey-vision` | `loom-roles/survey-vision.md` | `surveyor:create-charge`, `clerk:read` |
-| `scaffold-surveyor.survey-charge` | `loom-roles/survey-charge.md` | `surveyor:create-piece`, `surveyor:create-mandate`, `clerk:read` |
+| `scaffold-surveyor.survey-charge` | `loom-roles/survey-charge.md` | `surveyor:create-piece`, `clerk:read` |
 | `scaffold-surveyor.survey-piece`  | `loom-roles/survey-piece.md`  | `surveyor:create-mandate`, `clerk:read` |
 
 All roles use `model: 'sonnet'` and `strict: true`. Override a role in `guild.json` under its qualified name (`scaffold-surveyor.survey-vision` etc.) to change any of these.
