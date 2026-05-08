@@ -41,7 +41,7 @@ import {
   readPidFile,
   tryUnlink,
 } from '@shardworks/nexus-core';
-import { runClockworksTick } from '@shardworks/clockworks-apparatus';
+import { runClockworksTick, type ClockworksTickInputs } from '@shardworks/clockworks-apparatus';
 
 import { getStartedGuild } from '../started-guild.ts';
 
@@ -70,15 +70,37 @@ interface SpiderConfigLike {
  * Declared locally so the CLI package doesn't need a direct type dependency
  * on the Clockworks plugin's internal ClockworksApi interface. The
  * runtime apparatus is resolved via `g.apparatus<ClockworksApiLike>('clockworks')`.
+ *
+ * `processEvents` and `processSchedules` mirror the `ClockworksTickInputs`
+ * slot types exactly so `buildClockworksTickShims` can forward opts
+ * (including `onDispatch`) to the runtime apparatus without a cast.
  */
 interface ClockworksApiLike {
-  processEvents(): Promise<{
-    processedEvents: number;
-    dispatches: number;
-    errors: number;
-    skipped: number;
-  }>;
-  processSchedules?(): Promise<{ fired: number; errors: number }>;
+  processEvents: ClockworksTickInputs['processEvents'];
+  processSchedules?: ClockworksTickInputs['processSchedules'];
+}
+
+/**
+ * Build the processEvents/processSchedules wrappers for the unified daemon's
+ * Clockworks tick task. The wrappers forward all opts — including the
+ * `onDispatch` observer — to the runtime apparatus so per-dispatch log
+ * lines reach the unified daemon's `[clockworks]`-prefixed log stream.
+ *
+ * Wrapping rather than binding the methods directly keeps `this` stable
+ * and gives unit tests a named, importable boundary to assert the
+ * forwarding contract (see `start.test.ts`).
+ *
+ * @internal Exported for unit testing; not part of the public CLI API surface.
+ */
+export function buildClockworksTickShims(
+  clockworks: ClockworksApiLike,
+): Pick<ClockworksTickInputs, 'processEvents' | 'processSchedules'> {
+  return {
+    processEvents: (opts) => clockworks.processEvents(opts),
+    processSchedules: clockworks.processSchedules
+      ? (opts) => clockworks.processSchedules!(opts)
+      : undefined,
+  };
 }
 
 interface SessionDocLike {
@@ -391,15 +413,15 @@ async function startForeground(home: string): Promise<never> {
 
       // D2: fire-and-forget sibling task. Errors are caught so a
       // Clockworks failure cannot kill the Spider loop or the servers.
+      //
+      // buildClockworksTickShims wraps processEvents/processSchedules so
+      // opts (including onDispatch) are forwarded to the live apparatus,
+      // ensuring per-dispatch lines reach the [clockworks] log stream (D8).
+      const shims = buildClockworksTickShims(clockworks);
       void (async () => {
         try {
           await runClockworksTick({
-            // Wrap in arrow functions so the no-options shim signature
-            // satisfies the typed ClockworksApi slot without a cast.
-            processEvents: () => clockworks.processEvents(),
-            processSchedules: clockworks.processSchedules
-              ? () => clockworks.processSchedules!()
-              : undefined,
+            ...shims,
             intervalMs: 2000, // D7
             log: (line) => console.log(`[clockworks] ${line}`), // D8
             shutdown: clockworksShutdownPromise, // D9

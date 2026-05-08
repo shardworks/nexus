@@ -121,6 +121,43 @@ describe('clockStatus', () => {
     const status = clockStatus(home);
     assert.deepEqual(status, { running: false });
   });
+
+  it('reports host:guild-daemon when no clock.pid but daemon.pid is live (D5)', () => {
+    // The Clockworks loops are hosted by the unified guild daemon.
+    // clockStatus should fall back to the daemon.pid and report
+    // host:'guild-daemon' with the daemon.out log path.
+    const home = makeTmpHome();
+    writeDaemonPid(home, process.pid);
+
+    const status = clockStatus(home);
+    assert.equal(status.running, true);
+    assert.equal(status.host, 'guild-daemon');
+    assert.equal(status.pid, process.pid);
+    assert.match(status.logFile ?? '', /daemon\.out$/);
+    assert.equal(typeof status.uptime, 'number');
+    assert.ok((status.uptime ?? -1) >= 0);
+  });
+
+  it('reports host:guild-daemon when clock.pid is stale but daemon.pid is live (D5)', () => {
+    // A stale clock.pid plus a live daemon.pid: the standalone daemon exited
+    // but the unified daemon is now running Clockworks. clockStatus should
+    // clean up the stale file and report the guild-daemon as the host.
+    const home = makeTmpHome();
+    const staleFile = writePid(home, 999_999_999);
+    writeDaemonPid(home, process.pid);
+
+    const status = clockStatus(home);
+    assert.equal(status.running, true);
+    assert.equal(status.host, 'guild-daemon');
+    assert.equal(status.pid, process.pid);
+    assert.match(status.logFile ?? '', /daemon\.out$/);
+    // Stale clock.pid was cleaned up as a side effect.
+    assert.equal(
+      fs.existsSync(staleFile),
+      false,
+      'stale clock.pid should be removed',
+    );
+  });
 });
 
 // ── clockStop ────────────────────────────────────────────────────────
@@ -158,6 +195,45 @@ describe('clockStop', () => {
     assert.equal(result.pid, child.pid);
     assert.match(result.message, /stopped/i);
     assert.equal(fs.existsSync(file), false);
+  });
+
+  it('returns guild-daemon reason when no clock.pid but daemon.pid is live (D11)', async () => {
+    // When there is no clock.pid but the unified guild daemon is running,
+    // clockStop must return reason:'guild-daemon' and NOT signal it —
+    // only nsg stop owns that daemon.
+    const home = makeTmpHome();
+    writeDaemonPid(home, process.pid);
+
+    const result = await clockStop(home);
+    assert.equal(result.stopped, true);
+    assert.equal(result.reason, 'guild-daemon');
+    assert.equal(result.pid, process.pid, 'pid should be the guild daemon pid');
+    assert.match(result.message, /nsg stop/i);
+    // daemon.pid must NOT be removed — clockStop does not own it.
+    assert.ok(
+      fs.existsSync(daemonPidFile(home)),
+      'daemon.pid should remain untouched',
+    );
+  });
+
+  it('returns guild-daemon reason when clock.pid is stale and daemon.pid is live (D11)', async () => {
+    // A stale clock.pid plus a live daemon.pid: the standalone clock daemon
+    // was not running, but the unified guild daemon is hosting Clockworks.
+    const home = makeTmpHome();
+    const staleFile = writePid(home, 999_999_999);
+    writeDaemonPid(home, process.pid);
+
+    const result = await clockStop(home);
+    assert.equal(result.stopped, true);
+    assert.equal(result.reason, 'guild-daemon');
+    assert.equal(result.pid, process.pid);
+    assert.match(result.message, /nsg stop/i);
+    // Stale clock.pid should have been cleaned up as a side effect.
+    assert.equal(
+      fs.existsSync(staleFile),
+      false,
+      'stale clock.pid should be removed',
+    );
   });
 });
 

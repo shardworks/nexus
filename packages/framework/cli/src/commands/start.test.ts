@@ -12,7 +12,12 @@
  *    fast (no server running on 7471), and we assert the failure
  *    message tails the err log as designed.
  *
- * 2. **Foreground mode is NOT covered here** because it requires a
+ * 2. **`buildClockworksTickShims` unit tests** — exercise the exported
+ *    shim-builder in isolation to prove that `onDispatch` is forwarded
+ *    to the underlying apparatus (regression guard for RC1: the shims
+ *    previously discarded the opts argument).
+ *
+ * 3. **Foreground mode is NOT covered here** because it requires a
  *    real guild boot (Arbor + apparatuses + Stacks + tool server +
  *    oculus + spider). That's an integration test surface — see the
  *    daemon integration test plan.
@@ -23,7 +28,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import startTool from './start.ts';
+import type { DispatchObservation } from '@shardworks/clockworks-apparatus';
+
+import startTool, { buildClockworksTickShims } from './start.ts';
 import {
   setupGuildAccessor,
   makeTmpDir,
@@ -104,4 +111,74 @@ describe('start handler — detached mode idempotency', () => {
   // verify the live-PID branch above; the stale-cleanup branch is
   // covered indirectly by the stop.test.ts stale-pidfile test which
   // exercises the same readPidFile + isProcessAlive helpers.
+});
+
+// ── buildClockworksTickShims — onDispatch forwarding regression guard ──
+//
+// These tests verify that the shims produced by buildClockworksTickShims
+// forward opts (including `onDispatch`) to the underlying apparatus.
+//
+// Before RC1, the shims were `() => clockworks.processEvents()` — the
+// opts arg supplied by `runClockworksTick` was silently dropped. After the
+// fix the shims are `(opts) => clockworks.processEvents(opts)`, so any
+// `onDispatch` observer wired by the tick loop reaches the live apparatus.
+
+describe('buildClockworksTickShims — onDispatch forwarding', () => {
+  it('processEvents shim forwards opts.onDispatch to the underlying apparatus', async () => {
+    // Track what opts the mock apparatus actually receives.
+    const capturedOpts: Array<{ onDispatch?: unknown }> = [];
+
+    const shims = buildClockworksTickShims({
+      processEvents: async (opts) => {
+        capturedOpts.push({ onDispatch: opts?.onDispatch });
+        return { processedEvents: 0, dispatches: 0, errors: 0, skipped: 0 };
+      },
+    });
+
+    const mockDispatch = (_obs: DispatchObservation): void => {};
+    await shims.processEvents({ onDispatch: mockDispatch });
+
+    assert.equal(capturedOpts.length, 1, 'processEvents was called once');
+    assert.equal(
+      capturedOpts[0]!.onDispatch,
+      mockDispatch,
+      'onDispatch function was forwarded to the apparatus',
+    );
+  });
+
+  it('processSchedules shim forwards opts.onDispatch when the apparatus has processSchedules', async () => {
+    const capturedOpts: Array<{ onDispatch?: unknown }> = [];
+
+    const shims = buildClockworksTickShims({
+      processEvents: async () => ({ processedEvents: 0, dispatches: 0, errors: 0, skipped: 0 }),
+      processSchedules: async (opts) => {
+        capturedOpts.push({ onDispatch: opts?.onDispatch });
+        return { fired: 0, errors: 0 };
+      },
+    });
+
+    assert.ok(shims.processSchedules, 'shim should expose processSchedules');
+    const mockDispatch = (_obs: DispatchObservation): void => {};
+    await shims.processSchedules!({ onDispatch: mockDispatch });
+
+    assert.equal(capturedOpts.length, 1, 'processSchedules was called once');
+    assert.equal(
+      capturedOpts[0]!.onDispatch,
+      mockDispatch,
+      'onDispatch function was forwarded to the apparatus',
+    );
+  });
+
+  it('processSchedules is undefined when the apparatus does not have processSchedules', () => {
+    const shims = buildClockworksTickShims({
+      processEvents: async () => ({ processedEvents: 0, dispatches: 0, errors: 0, skipped: 0 }),
+      // no processSchedules
+    });
+
+    assert.equal(
+      shims.processSchedules,
+      undefined,
+      'processSchedules slot should be undefined when apparatus omits it',
+    );
+  });
 });
