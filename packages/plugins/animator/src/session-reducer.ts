@@ -12,9 +12,13 @@
  *
  * ## Merge invariants
  *
- *  - **Preserve from existing:** `startedAt`, `provider`, `authorizedTools`.
- *    Once these are set on the row they never get rewritten — the
- *    canonical first-write owns them.
+ *  - **Preserve from existing:** `startedAt`, `provider`, `authorizedTools`,
+ *    `prompt`, `systemPrompt`. Once these are set on the row they never
+ *    get rewritten — the canonical first-write owns them. (`prompt` and
+ *    `systemPrompt` are captured at first-write to record the exact
+ *    bytes that hit the provider so debugging/ethnography/lab probes
+ *    don't have to re-execute engine prompt builders to learn what was
+ *    asked.)
  *  - **Deep-merge:** `metadata`. Existing keys win when the transition
  *    does not provide a replacement; transition keys overlay existing
  *    keys when both are present.
@@ -95,6 +99,20 @@ interface PendingPreWriteTransition {
   metadata?: Record<string, unknown>;
   /** The full anima-callable tool set authorized for this session. */
   authorizedTools?: string[];
+  /**
+   * The user-side initial prompt (with cwd preamble for non-resumed
+   * sessions) — i.e. `SessionProviderConfig.initialPrompt`. Captured
+   * at first-write so historical reconstruction doesn't have to
+   * re-execute engine prompt builders.
+   */
+  prompt?: string;
+  /**
+   * The Loom-composed system prompt — i.e.
+   * `SessionProviderConfig.systemPrompt`. Today's MVP Loom returns no
+   * systemPrompt for summoned sessions, so this is typically absent or
+   * empty.
+   */
+  systemPrompt?: string;
 }
 
 /**
@@ -110,6 +128,20 @@ interface AttachRunningTransition {
   conversationId?: string;
   metadata?: Record<string, unknown>;
   cancelHandle?: CancelHandle;
+  /**
+   * The user-side initial prompt (with cwd preamble for non-resumed
+   * sessions) — i.e. `SessionProviderConfig.initialPrompt`. Captured
+   * at first-write so historical reconstruction doesn't have to
+   * re-execute engine prompt builders.
+   */
+  prompt?: string;
+  /**
+   * The Loom-composed system prompt — i.e.
+   * `SessionProviderConfig.systemPrompt`. Today's MVP Loom returns no
+   * systemPrompt for summoned sessions, so this is typically absent or
+   * empty.
+   */
+  systemPrompt?: string;
 }
 
 /**
@@ -281,6 +313,20 @@ function reducePendingPreWrite(
   } else if (existing?.authorizedTools !== undefined) {
     merged.authorizedTools = existing.authorizedTools;
   }
+  // First-write fields: write if the transition provides them, otherwise
+  // preserve any value already on the existing doc. Never overwrite an
+  // existing non-empty value with an absent one — the first-writer owns
+  // these like `startedAt` and `provider`.
+  if (t.prompt !== undefined) {
+    merged.prompt = t.prompt;
+  } else if (existing?.prompt !== undefined) {
+    merged.prompt = existing.prompt;
+  }
+  if (t.systemPrompt !== undefined) {
+    merged.systemPrompt = t.systemPrompt;
+  } else if (existing?.systemPrompt !== undefined) {
+    merged.systemPrompt = existing.systemPrompt;
+  }
   return merged;
 }
 
@@ -305,6 +351,19 @@ function reduceAttachRunning(
   }
   if (t.cancelHandle !== undefined) {
     merged.cancelHandle = t.cancelHandle;
+  }
+  // First-write fields: write if the transition provides them, otherwise
+  // preserve any value already on the existing doc. The in-process
+  // attached path is the canonical first writer for non-detached sessions.
+  if (t.prompt !== undefined) {
+    merged.prompt = t.prompt;
+  } else if (existing?.prompt !== undefined) {
+    merged.prompt = existing.prompt;
+  }
+  if (t.systemPrompt !== undefined) {
+    merged.systemPrompt = t.systemPrompt;
+  } else if (existing?.systemPrompt !== undefined) {
+    merged.systemPrompt = existing.systemPrompt;
   }
   return merged;
 }

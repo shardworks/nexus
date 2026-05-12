@@ -378,6 +378,13 @@ async function recordSession(
 
 /**
  * Write the initial 'running' session record to The Stacks.
+ *
+ * `prompt` and `systemPrompt` are the resolved provider-config values
+ * (i.e. `SessionProviderConfig.initialPrompt` and `.systemPrompt`) —
+ * the actual bytes handed to the provider, after cwd-preamble
+ * prepending and Loom composition. Persisted on the SessionDoc so
+ * later inspection doesn't have to re-execute engine prompt builders
+ * to learn what was asked.
  */
 async function recordRunning(
   sessions: Book<SessionDoc>,
@@ -385,6 +392,8 @@ async function recordRunning(
   startedAt: string,
   providerName: string,
   request: AnimateRequest,
+  initialPrompt: string | undefined,
+  systemPrompt: string | undefined,
   cancelHandle?: CancelHandle,
 ): Promise<void> {
   try {
@@ -402,6 +411,8 @@ async function recordRunning(
       ...(request.conversationId !== undefined ? { conversationId: request.conversationId } : {}),
       ...(request.metadata !== undefined ? { metadata: request.metadata } : {}),
       ...(cancelHandle !== undefined ? { cancelHandle } : {}),
+      ...(initialPrompt !== undefined ? { prompt: initialPrompt } : {}),
+      ...(systemPrompt !== undefined ? { systemPrompt } : {}),
     });
     await sessions.put(merged);
 
@@ -745,7 +756,16 @@ export function createAnimator(): Plugin {
             console.warn(`[animator] Failed to get processInfo for ${id}: ${err instanceof Error ? err.message : err}`);
           }
         }
-        await recordRunning(sessions, id, startedAt, provider.name, request, cancelHandle);
+        await recordRunning(
+          sessions,
+          id,
+          startedAt,
+          provider.name,
+          request,
+          providerConfig.initialPrompt,
+          providerConfig.systemPrompt,
+          cancelHandle,
+        );
       })();
 
       const result = (async () => {

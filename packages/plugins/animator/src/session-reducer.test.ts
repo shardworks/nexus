@@ -295,6 +295,241 @@ describe('attach-running', () => {
   });
 });
 
+// ── prompt / systemPrompt capture ──────────────────────────────────
+//
+// The `prompt` and `systemPrompt` fields are first-write-owned: the
+// pending-pre-write (detached) or attach-running (in-process) transition
+// captures them from the resolved SessionProviderConfig. Once on the row,
+// they are preserved through every subsequent transition variant via the
+// `...(existing ?? {})` spread. These tests pin the capture-and-preserve
+// invariants so a future reducer edit can't silently drop them.
+
+describe('prompt/systemPrompt capture (pending-pre-write)', () => {
+  it('writes prompt and systemPrompt when supplied', () => {
+    const next = reduceSessionTransition(undefined, {
+      kind: 'pending-pre-write',
+      id: 'ses-001',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      lastActivityAt: '2026-04-01T10:00:00Z',
+      prompt: 'Your working directory is: /tmp/x\n\nDo the thing.',
+      systemPrompt: 'You are an Artificer.',
+    });
+    assert.equal(
+      next.prompt,
+      'Your working directory is: /tmp/x\n\nDo the thing.',
+    );
+    assert.equal(next.systemPrompt, 'You are an Artificer.');
+  });
+
+  it('preserves existing prompt/systemPrompt when transition omits them', () => {
+    const existing = makeDoc({
+      status: 'pending',
+      prompt: 'original prompt',
+      systemPrompt: 'original system',
+    });
+    const next = reduceSessionTransition(existing, {
+      kind: 'pending-pre-write',
+      id: existing.id,
+      startedAt: existing.startedAt,
+      provider: existing.provider,
+      lastActivityAt: '2026-04-01T10:01:00Z',
+    });
+    assert.equal(next.prompt, 'original prompt');
+    assert.equal(next.systemPrompt, 'original system');
+  });
+
+  it('prefers transition values over existing when both supply them', () => {
+    const existing = makeDoc({
+      status: 'pending',
+      prompt: 'old',
+      systemPrompt: 'old-sys',
+    });
+    const next = reduceSessionTransition(existing, {
+      kind: 'pending-pre-write',
+      id: existing.id,
+      startedAt: existing.startedAt,
+      provider: existing.provider,
+      lastActivityAt: '2026-04-01T10:01:00Z',
+      prompt: 'new',
+      systemPrompt: 'new-sys',
+    });
+    assert.equal(next.prompt, 'new');
+    assert.equal(next.systemPrompt, 'new-sys');
+  });
+
+  it('leaves prompt/systemPrompt absent when neither side supplies them', () => {
+    const next = reduceSessionTransition(undefined, {
+      kind: 'pending-pre-write',
+      id: 'ses-001',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      lastActivityAt: '2026-04-01T10:00:00Z',
+    });
+    assert.equal(next.prompt, undefined);
+    assert.equal(next.systemPrompt, undefined);
+  });
+});
+
+describe('prompt/systemPrompt capture (attach-running)', () => {
+  it('writes prompt and systemPrompt when supplied', () => {
+    const next = reduceSessionTransition(null, {
+      kind: 'attach-running',
+      id: 'ses-001',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      prompt: 'Your working directory is: /tmp/y\n\nGo.',
+      systemPrompt: 'You are a Scribe.',
+    });
+    assert.equal(next.prompt, 'Your working directory is: /tmp/y\n\nGo.');
+    assert.equal(next.systemPrompt, 'You are a Scribe.');
+  });
+
+  it('preserves existing prompt/systemPrompt when transition omits them', () => {
+    const existing = makeDoc({
+      status: 'pending',
+      prompt: 'pre-write prompt',
+      systemPrompt: 'pre-write system',
+    });
+    const next = reduceSessionTransition(existing, {
+      kind: 'attach-running',
+      id: existing.id,
+      startedAt: existing.startedAt,
+      provider: existing.provider,
+    });
+    assert.equal(next.prompt, 'pre-write prompt');
+    assert.equal(next.systemPrompt, 'pre-write system');
+  });
+
+  it('prefers transition values over existing when both supply them', () => {
+    const existing = makeDoc({
+      status: 'pending',
+      prompt: 'old',
+      systemPrompt: 'old-sys',
+    });
+    const next = reduceSessionTransition(existing, {
+      kind: 'attach-running',
+      id: existing.id,
+      startedAt: existing.startedAt,
+      provider: existing.provider,
+      prompt: 'new',
+      systemPrompt: 'new-sys',
+    });
+    assert.equal(next.prompt, 'new');
+    assert.equal(next.systemPrompt, 'new-sys');
+  });
+});
+
+describe('prompt/systemPrompt preservation across non-first-write transitions', () => {
+  // The downstream variants (detached-ready, heartbeat-touch, terminal,
+  // cancel, orphan-failed) all carry prompt/systemPrompt through via
+  // `...(existing ?? {})` or `...existing` even though they don't have
+  // dedicated payload fields. Pin the invariant so a reducer refactor
+  // that switches one to selective-field-copying can't silently drop them.
+
+  const promptedExisting = (): SessionDoc => makeDoc({
+    status: 'pending',
+    prompt: 'captured prompt',
+    systemPrompt: 'captured system',
+    lastActivityAt: '2026-04-01T10:00:00Z',
+  });
+
+  it('detached-ready preserves prompt/systemPrompt from pending pre-write', () => {
+    const next = reduceSessionTransition(promptedExisting(), {
+      kind: 'detached-ready',
+      id: 'ses-existing-001',
+      startedAt: '2026-04-01T10:00:00Z',
+      provider: 'claude-code',
+      lastActivityAt: '2026-04-01T10:00:01Z',
+    });
+    assert.equal(next.prompt, 'captured prompt');
+    assert.equal(next.systemPrompt, 'captured system');
+  });
+
+  it('detached-ready running → running refresh preserves prompt/systemPrompt', () => {
+    const existing = makeDoc({
+      status: 'running',
+      prompt: 'captured prompt',
+      systemPrompt: 'captured system',
+      lastActivityAt: '2026-04-01T10:00:00Z',
+    });
+    const next = reduceSessionTransition(existing, {
+      kind: 'detached-ready',
+      id: existing.id,
+      startedAt: existing.startedAt,
+      provider: existing.provider,
+      lastActivityAt: '2026-04-01T10:01:00Z',
+    });
+    assert.equal(next.prompt, 'captured prompt');
+    assert.equal(next.systemPrompt, 'captured system');
+  });
+
+  it('heartbeat-touch preserves prompt/systemPrompt', () => {
+    const next = reduceSessionTransition(promptedExisting(), {
+      kind: 'heartbeat-touch',
+      id: 'ses-existing-001',
+      lastActivityAt: '2026-04-01T10:01:00Z',
+    });
+    assert.equal(next.prompt, 'captured prompt');
+    assert.equal(next.systemPrompt, 'captured system');
+  });
+
+  it('terminal preserves prompt/systemPrompt', () => {
+    const existing = makeDoc({
+      status: 'running',
+      prompt: 'captured prompt',
+      systemPrompt: 'captured system',
+    });
+    const next = reduceSessionTransition(existing, {
+      kind: 'terminal',
+      id: existing.id,
+      status: 'completed',
+      startedAt: existing.startedAt,
+      endedAt: '2026-04-01T10:05:00Z',
+      durationMs: 5000,
+      provider: existing.provider,
+      exitCode: 0,
+      lastActivityAt: '2026-04-01T10:05:00Z',
+    });
+    assert.equal(next.prompt, 'captured prompt');
+    assert.equal(next.systemPrompt, 'captured system');
+  });
+
+  it('cancel preserves prompt/systemPrompt', () => {
+    const existing = makeDoc({
+      status: 'running',
+      prompt: 'captured prompt',
+      systemPrompt: 'captured system',
+    });
+    const next = reduceSessionTransition(existing, {
+      kind: 'cancel',
+      id: existing.id,
+      endedAt: '2026-04-01T10:05:00Z',
+      durationMs: 5000,
+    });
+    assert.equal(next.prompt, 'captured prompt');
+    assert.equal(next.systemPrompt, 'captured system');
+  });
+
+  it('orphan-failed preserves prompt/systemPrompt', () => {
+    const existing = makeDoc({
+      status: 'running',
+      prompt: 'captured prompt',
+      systemPrompt: 'captured system',
+    });
+    const next = reduceSessionTransition(existing, {
+      kind: 'orphan-failed',
+      id: existing.id,
+      endedAt: '2026-04-01T10:05:00Z',
+      durationMs: 5000,
+      exitCode: 1,
+      error: 'host went silent',
+    });
+    assert.equal(next.prompt, 'captured prompt');
+    assert.equal(next.systemPrompt, 'captured system');
+  });
+});
+
 // ── detached-ready ─────────────────────────────────────────────────
 
 describe('detached-ready', () => {

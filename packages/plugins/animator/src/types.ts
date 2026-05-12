@@ -596,6 +596,66 @@ export interface SessionDoc {
    * back-off machine does not consume this field. See TerminationDiagnostic.
    */
   terminationDiagnostic?: TerminationDiagnostic;
+  /**
+   * The user-side initial prompt the session was launched with — i.e.
+   * `SessionProviderConfig.initialPrompt`, the actual bytes handed to
+   * the provider after cwd-preamble prepending and template
+   * substitution. Captured at first-write time (pending-pre-write for
+   * detached, attach-running for in-process) and preserved across
+   * subsequent transitions.
+   *
+   * Persisted so debugging, ethnographic capture, lab probes, and
+   * post-hoc reconstruction don't have to re-execute engine prompt
+   * builders or substitute templates against mutable rig data to learn
+   * what was asked. Absent on resumed sessions when the caller passed
+   * a follow-up turn without a cwd preamble — the field still carries
+   * the literal turn-prompt.
+   *
+   * Undefined for sessions launched before this field existed; the
+   * `bin/backfill-session-prompts.ts` script can reconstruct historical
+   * values where the relevant inputs are immutable.
+   */
+  prompt?: string;
+  /**
+   * The system prompt the session was launched with — i.e.
+   * `SessionProviderConfig.systemPrompt`, produced by `loom.weave({role})`
+   * from the anima's identity layers (charter, tool instructions, role
+   * instructions). Captured alongside `prompt` at first-write time and
+   * preserved across subsequent transitions.
+   *
+   * Absent on rows where the Loom resolved no systemPrompt for the role
+   * (e.g. roles without a definition, or with no charter/tool/role layers).
+   */
+  systemPrompt?: string;
+  /**
+   * Marker indicating the `prompt` / `systemPrompt` fields on this row
+   * were filled in post-hoc by `bin/backfill-session-prompts.ts` rather
+   * than captured live at session launch.
+   *
+   * `true` on rows backfilled against the framework content at the
+   * session's `frameworkSha` plus the current-on-disk vibers guild
+   * config (codex, charter, role instructions). Absent on rows written
+   * by the live capture path (`pending-pre-write` / `attach-running`
+   * reducer variants).
+   *
+   * Consumers that need ground-truth prompt bytes should branch on this
+   * marker — reconstructed prompts may differ from what the provider
+   * actually saw if any of the reconstruction inputs (engine prompt
+   * builders not pinned by sha, Loom config, codex content, plan
+   * decisions, writ body) have changed since the session ran.
+   */
+  promptReconstructed?: boolean;
+  /**
+   * The framework commit sha used to reconstruct `prompt` (and source
+   * the engine prompt-builders / prompt.md / EPILOGUE constants).
+   * Written by the backfill script as the framework's HEAD-most commit
+   * at or before `startedAt` — a best-effort inference, since the
+   * sha-at-startedAt is not captured live today.
+   *
+   * Absent on rows where reconstruction was not attempted, where sha
+   * inference failed, or that were captured live.
+   */
+  frameworkSha?: string;
   /** Index signature required by BookEntry. */
   [key: string]: unknown;
 }

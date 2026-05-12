@@ -375,6 +375,14 @@ export function launchDetached(
     // the record must exist before the babysitter's first tool call arrives.
     // Seeds `lastActivityAt` so the reconciler has a fair starting point
     // for the staleness calculation.
+    //
+    // `prompt` and `systemPrompt` are captured here from the resolved
+    // provider config (the actual bytes that will be handed to claude
+    // via stdin and --system-prompt-file) so the SessionDoc carries the
+    // ground-truth launch payload — no need for post-hoc reconstruction
+    // from engine prompt-builder logic against mutable rig data. The
+    // reducer's subsequent transitions (detached-ready, terminal) all
+    // preserve these fields via `...(existing ?? {})`.
     const sessions = getWritableSessionsBook();
     await sessions.put({
       id: config.sessionId,
@@ -384,6 +392,8 @@ export function launchDetached(
       authorizedTools,
       lastActivityAt: new Date().toISOString(),
       ...(opts?.metadata ? { metadata: opts.metadata } : {}),
+      ...(config.initialPrompt !== undefined ? { prompt: config.initialPrompt } : {}),
+      ...(config.systemPrompt !== undefined ? { systemPrompt: config.systemPrompt } : {}),
     });
 
     // Spawn the babysitter as a detached process.
