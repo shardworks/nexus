@@ -492,12 +492,47 @@ describe('Spider — rate-limit integration', () => {
     });
 
     it('conditionSchema.parse({ sessionId: 42 }) still throws a ZodError (malformed-rejection guard)', () => {
-      // Typed misuse is still caught — the optional wrap accepts only
-      // `undefined`, never `null` or a malformed inner object.
+      // Typed misuse is still caught at the schema level — the `.nullish()`
+      // wrap accepts `undefined` and `null` (both legacy shapes) but does
+      // not loosen the inner object shape. The BlockType's `check()` itself
+      // uses `safeParse` so a malformed condition no longer propagates as
+      // a thrown error to the dispatch predicate, but the schema can still
+      // be validated directly for typed-misuse detection.
       assert.throws(
         () => animatorPausedBlockType.conditionSchema.parse({ sessionId: 42 }),
         (err: unknown) => err instanceof Error && err.constructor.name === 'ZodError',
       );
+    });
+
+    it('check() returns gracefully on a malformed condition payload (fail-soft guard)', async () => {
+      // A `holdCondition` that doesn't match the schema must not propagate
+      // as a thrown error — the authoritative dispatch decision comes from
+      // the Animator's status book, and a malformed informational payload
+      // would otherwise leave the engine permanently stuck.
+      const originalWarn = console.warn;
+      const captured: string[] = [];
+      console.warn = (...args: unknown[]) => {
+        captured.push(args.map((a) => String(a)).join(' '));
+      };
+      try {
+        // Animator must be installed for check() to reach the safeParse branch.
+        fix.setStatus({
+          id: 'dispatch-status',
+          state: 'running',
+          backoffLevel: 0,
+          dispatchable: true,
+        });
+        const result = await animatorPausedBlockType.check({ sessionId: 42 });
+        // Status from the (running) Animator should be 'cleared'.
+        assert.equal(result.status, 'cleared');
+      } finally {
+        console.warn = originalWarn;
+      }
+      // A single fail-soft warning should have been emitted.
+      const ignored = captured.filter((line) =>
+        line.includes('[animator-paused] ignoring malformed holdCondition'),
+      );
+      assert.equal(ignored.length, 1, 'malformed-condition warning should fire exactly once');
     });
   });
 });

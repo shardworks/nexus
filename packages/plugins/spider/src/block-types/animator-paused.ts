@@ -19,18 +19,21 @@ import { isDispatchable } from '@shardworks/animator-apparatus';
 import type { AnimatorApi } from '@shardworks/animator-apparatus';
 import type { BlockType, CheckResult } from '../types.ts';
 
-// The outer object is `.optional()` so legacy engines persisted under
+// The outer wrapper is `.nullish()` so legacy engines persisted under
 // the pre-`attempts[]` schema — `holdReason: 'animator-paused'` with no
-// `holdCondition` — resolve quietly through `check()` instead of
-// throwing a ZodError that the dispatch predicate's catch logs as a
-// warning. Populated conditions still validate against the inner shape;
-// malformed payloads (e.g. `{ sessionId: 42 }`) are still rejected.
+// `holdCondition` (or with `holdCondition: null`) — resolve quietly
+// through `check()`. Populated conditions still validate against the
+// inner shape, but a malformed payload (e.g. `{ sessionId: 42 }`) is
+// no longer fatal: `check()` falls back to `safeParse` and treats
+// validation failure as "no informational session-id available", since
+// the authoritative state lives on the Animator's status book and the
+// condition is purely diagnostic.
 const conditionSchema = z
   .object({
     /** Session id that triggered the pause — informational. */
     sessionId: z.string().optional(),
   })
-  .optional();
+  .nullish();
 
 const animatorPausedBlockType: BlockType = {
   id: 'animator-paused',
@@ -40,7 +43,17 @@ const animatorPausedBlockType: BlockType = {
   // after `pausedUntil` elapses.
   pollIntervalMs: 10_000,
   async check(condition: unknown): Promise<CheckResult> {
-    conditionSchema.parse(condition);
+    // Use safeParse so a malformed `condition` payload (legacy / future
+    // schema drift) doesn't propagate as a ZodError that the dispatch
+    // predicate's catch turns into a permanent "hold-gate-pending"
+    // stall. The condition is informational only — the authoritative
+    // dispatch decision comes from the Animator's status below.
+    const parsed = conditionSchema.safeParse(condition);
+    if (!parsed.success) {
+      console.warn(
+        `[animator-paused] ignoring malformed holdCondition: ${parsed.error.message}`,
+      );
+    }
     let animator: AnimatorApi;
     try {
       animator = guild().apparatus<AnimatorApi>('animator');
