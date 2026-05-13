@@ -81,6 +81,18 @@ Assess the implementation against the spec. Produce your findings in this format
 
 ### Overall: PASS or FAIL
 
+The verdict is **FAIL** if any of the following are true, regardless of code quality elsewhere:
+
+1. **Unverified upstream contract.** The implementation consumes an external API, file format, or upstream data source whose shape the implementer authored without verifying against a captured real sample. Symptoms: schema fields hand-invented; fixtures synthetic rather than captured-from-real; tests pass against the synthetic fixture but no live verification was performed during implementation; payload schemas with every field \`.optional()\` and \`.passthrough()\` such that the validator accepts any input.
+
+2. **URL or endpoint drift from spec.** The spec names a specific external endpoint and the implementation calls a different one without justification recorded in code, comments, or commit message.
+
+3. **Load-bearing integration untested against real data.** The spec describes a non-trivial integration (catalog join, schema mapping, upstream-shape consumption) and the test suite exercises only synthetic happy-path fixtures with no anchor in real upstream data.
+
+4. **A required change would not be self-discoverable.** If you found something the implementer could not have caught with the tests they wrote, that is a FAIL — not an "improvement." The yardstick: would the implementer have known about this issue from the tests alone? If no, then the bug shipped behind a green test suite, and the test suite itself is the problem.
+
+If none of the above conditions hold, the verdict is **PASS**.
+
 ### Completeness
 - Which spec requirements are addressed?
 - Which are missing or partially addressed?
